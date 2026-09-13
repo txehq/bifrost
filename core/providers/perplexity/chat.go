@@ -326,7 +326,7 @@ func (response *PerplexityChatResponse) ToBifrostChatResponse(model string) *sch
 		}
 
 		if response.Usage.Cost != nil {
-			usage.Cost = response.Usage.Cost
+			usage.Cost = response.Usage.Cost.toBifrostCost()
 		}
 
 		bifrostResponse.Usage = usage

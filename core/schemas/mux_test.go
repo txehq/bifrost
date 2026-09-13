@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -1130,17 +1131,11 @@ func TestToChatRequest_TextFormat_JSONSchema(t *testing.T) {
 	if cr.Params == nil || cr.Params.ResponseFormat == nil {
 		t.Fatal("expected ResponseFormat to be set")
 	}
-	rfMap, ok := (*cr.Params.ResponseFormat).(map[string]interface{})
-	if !ok {
-		t.Fatal("expected ResponseFormat to be map[string]interface{}")
-	}
+	rfMap := responseFormatAsMap(t, cr.Params.ResponseFormat)
 	if rfMap["type"] != "json_schema" {
 		t.Fatalf("expected type json_schema, got %v", rfMap["type"])
 	}
-	jsObj, ok := rfMap["json_schema"].(map[string]interface{})
-	if !ok {
-		t.Fatal("expected json_schema inner object")
-	}
+	jsObj := nestedMap(t, rfMap, "json_schema")
 	if jsObj["name"] != "CityInfo" {
 		t.Fatalf("expected name=CityInfo, got %v", jsObj["name"])
 	}
@@ -1175,10 +1170,7 @@ func TestToChatRequest_TextFormat_JSONObject(t *testing.T) {
 	if cr.Params == nil || cr.Params.ResponseFormat == nil {
 		t.Fatal("expected ResponseFormat to be set")
 	}
-	rfMap, ok := (*cr.Params.ResponseFormat).(map[string]interface{})
-	if !ok {
-		t.Fatal("expected ResponseFormat to be map[string]interface{}")
-	}
+	rfMap := responseFormatAsMap(t, cr.Params.ResponseFormat)
 	if rfMap["type"] != "json_object" {
 		t.Fatalf("expected type json_object, got %v", rfMap["type"])
 	}
@@ -1214,17 +1206,11 @@ func TestResponseFormatRoundTrip_ChatToResponsesAndBack(t *testing.T) {
 	if cr.Params == nil || cr.Params.ResponseFormat == nil {
 		t.Fatal("expected ResponseFormat to survive round-trip")
 	}
-	rfMap, ok := (*cr.Params.ResponseFormat).(map[string]interface{})
-	if !ok {
-		t.Fatal("expected ResponseFormat to be map after round-trip")
-	}
+	rfMap := responseFormatAsMap(t, cr.Params.ResponseFormat)
 	if rfMap["type"] != "json_schema" {
 		t.Fatalf("type did not survive round-trip: got %v", rfMap["type"])
 	}
-	jsObj, ok := rfMap["json_schema"].(map[string]interface{})
-	if !ok {
-		t.Fatal("json_schema inner object missing after round-trip")
-	}
+	jsObj := nestedMap(t, rfMap, "json_schema")
 	if jsObj["name"] != "CityInfo" {
 		t.Fatalf("name did not survive round-trip: got %v", jsObj["name"])
 	}
@@ -1325,15 +1311,9 @@ func TestToChatRequest_TextFormat_TypedFields(t *testing.T) {
 		t.Fatal("expected ResponseFormat to be set")
 	}
 
-	rfMap, ok := (*cr.Params.ResponseFormat).(map[string]interface{})
-	if !ok {
-		t.Fatal("expected ResponseFormat to be a map")
-	}
+	rfMap := responseFormatAsMap(t, cr.Params.ResponseFormat)
 
-	jsObj, ok := rfMap["json_schema"].(map[string]interface{})
-	if !ok {
-		t.Fatal("expected json_schema inner object")
-	}
+	jsObj := nestedMap(t, rfMap, "json_schema")
 
 	// Schema body must be present and non-empty
 	schemaVal, ok := jsObj["schema"]
@@ -1341,14 +1321,17 @@ func TestToChatRequest_TextFormat_TypedFields(t *testing.T) {
 		t.Fatalf("schema body silently dropped: json_schema=%v", jsObj)
 	}
 
-	schemaMap, ok := schemaVal.(map[string]interface{})
+	// The schema is handed back as an OrderedMap so the key order the client
+	// declared survives the Responses -> Chat rewrite.
+	schemaMap, ok := SafeExtractOrderedMap(schemaVal)
 	if !ok {
-		t.Fatalf("expected schema to be a map, got %T", schemaVal)
+		t.Fatalf("expected schema to be an ordered map, got %T", schemaVal)
 	}
-	if schemaMap["type"] != "object" {
-		t.Fatalf("expected schema.type=object, got %v", schemaMap["type"])
+	if schemaType, _ := schemaMap.Get("type"); schemaType != "object" {
+		t.Fatalf("expected schema.type=object, got %v", schemaType)
 	}
-	propsBytes, err := MarshalSorted(schemaMap["properties"])
+	schemaProps, _ := schemaMap.Get("properties")
+	propsBytes, err := MarshalSorted(schemaProps)
 	if err != nil {
 		t.Fatalf("failed to marshal properties: %v", err)
 	}
@@ -1398,7 +1381,7 @@ func TestToBifrostResponsesStreamResponse_ReasoningOpensThinkingBlock(t *testing
 	}
 
 	var reasoningItemID string
-	var reasoningOutputIndex, textOutputIndex = -1, -1
+	reasoningOutputIndex, textOutputIndex := -1, -1
 	reasoningAddedIdx, reasoningDoneIdx, textAddedIdx := -1, -1, -1
 	firstReasoningDeltaIdx := -1
 
@@ -1464,5 +1447,242 @@ func TestToBifrostResponsesStreamResponse_ReasoningOpensThinkingBlock(t *testing
 	}
 	if textOutputIndex <= reasoningOutputIndex {
 		t.Fatalf("text output index %d must be greater than reasoning output index %d", textOutputIndex, reasoningOutputIndex)
+	}
+}
+
+// responseFormatAsMap reads a converted chat response_format regardless of its
+// representation. The Responses to Chat conversion emits raw JSON (the same
+// representation the chat wire decode produces), so tests read it through the
+// same accessor providers use rather than type-asserting a map.
+func responseFormatAsMap(t *testing.T, responseFormat *interface{}) map[string]interface{} {
+	t.Helper()
+	om, ok := SafeExtractOrderedMap(*responseFormat)
+	if !ok || om == nil {
+		t.Fatalf("expected response_format to be readable as an object, got %T", *responseFormat)
+	}
+	return om.ToMap()
+}
+
+func nestedMap(t *testing.T, parent map[string]interface{}, key string) map[string]interface{} {
+	t.Helper()
+	om, ok := SafeExtractOrderedMap(parent[key])
+	if !ok || om == nil {
+		t.Fatalf("expected %q to be an object, got %T", key, parent[key])
+	}
+	return om.ToMap()
+}
+
+func responsesTextOutput(text string) []ResponsesMessage {
+	return []ResponsesMessage{
+		{
+			Type: Ptr(ResponsesMessageTypeMessage),
+			Role: Ptr(ResponsesInputMessageRoleAssistant),
+			Content: &ResponsesMessageContent{
+				ContentBlocks: []ResponsesMessageContentBlock{
+					{Type: ResponsesOutputMessageContentTypeText, Text: &text},
+				},
+			},
+		},
+	}
+}
+
+func TestToBifrostChatResponse_MapsCompletedToStop(t *testing.T) {
+	chatResp := (&BifrostResponsesResponse{
+		Status: Ptr(ResponsesResponseStatusCompleted),
+		Output: responsesTextOutput("ok"),
+	}).ToBifrostChatResponse()
+
+	if chatResp == nil || len(chatResp.Choices) == 0 {
+		t.Fatal("expected at least one choice")
+	}
+	if chatResp.Choices[0].FinishReason == nil {
+		t.Fatal("expected finish_reason to be set")
+	}
+	if got := *chatResp.Choices[0].FinishReason; got != string(BifrostFinishReasonStop) {
+		t.Fatalf("expected finish_reason %q, got %q", BifrostFinishReasonStop, got)
+	}
+}
+
+func TestToBifrostChatResponse_MapsFunctionCallToToolCalls(t *testing.T) {
+	chatResp := (&BifrostResponsesResponse{
+		Status: Ptr(ResponsesResponseStatusCompleted),
+		Output: []ResponsesMessage{
+			{
+				Type: Ptr(ResponsesMessageTypeFunctionCall),
+				Role: Ptr(ResponsesInputMessageRoleAssistant),
+				ResponsesToolMessage: &ResponsesToolMessage{
+					CallID:    Ptr("call_1"),
+					Name:      Ptr("search"),
+					Arguments: Ptr(`{"q":"x"}`),
+				},
+			},
+		},
+	}).ToBifrostChatResponse()
+
+	if chatResp == nil || len(chatResp.Choices) == 0 {
+		t.Fatal("expected at least one choice")
+	}
+	if chatResp.Choices[0].FinishReason == nil {
+		t.Fatal("expected finish_reason to be set")
+	}
+	if got := *chatResp.Choices[0].FinishReason; got != string(BifrostFinishReasonToolCalls) {
+		t.Fatalf("expected finish_reason %q, got %q", BifrostFinishReasonToolCalls, got)
+	}
+}
+
+func TestToBifrostChatResponse_MapsIncompleteDetails(t *testing.T) {
+	cases := map[string]string{
+		ResponsesResponseIncompleteReasonMaxOutputTokens: string(BifrostFinishReasonLength),
+		ResponsesResponseIncompleteReasonContentFilter:   "content_filter",
+	}
+
+	for reason, expected := range cases {
+		t.Run(reason, func(t *testing.T) {
+			chatResp := (&BifrostResponsesResponse{
+				Status:            Ptr(ResponsesResponseStatusIncomplete),
+				IncompleteDetails: &ResponsesResponseIncompleteDetails{Reason: reason},
+				Output:            responsesTextOutput("partial"),
+			}).ToBifrostChatResponse()
+
+			if chatResp == nil || len(chatResp.Choices) == 0 {
+				t.Fatal("expected at least one choice")
+			}
+			if chatResp.Choices[0].FinishReason == nil {
+				t.Fatal("expected finish_reason to be set")
+			}
+			if got := *chatResp.Choices[0].FinishReason; got != expected {
+				t.Fatalf("expected finish_reason %q, got %q", expected, got)
+			}
+		})
+	}
+}
+
+func TestToBifrostChatResponse_PrefersExplicitStopReason(t *testing.T) {
+	// A recognized stop_reason wins over the status-derived reason.
+	chatResp := (&BifrostResponsesResponse{
+		Status:     Ptr(ResponsesResponseStatusCompleted),
+		StopReason: Ptr("guardrail_intervened"),
+		Output:     responsesTextOutput("blocked"),
+	}).ToBifrostChatResponse()
+
+	if chatResp == nil || len(chatResp.Choices) == 0 {
+		t.Fatal("expected at least one choice")
+	}
+	if chatResp.Choices[0].FinishReason == nil || *chatResp.Choices[0].FinishReason != "guardrail_intervened" {
+		t.Fatalf("expected finish_reason %q, got %v", "guardrail_intervened", chatResp.Choices[0].FinishReason)
+	}
+}
+
+func TestToBifrostChatResponse_LeavesFinishReasonUnsetForNonTerminalState(t *testing.T) {
+	for _, status := range []string{ResponsesResponseStatusInProgress, ResponsesResponseStatusQueued} {
+		t.Run(status, func(t *testing.T) {
+			// The stop_reason is deliberately set and recognized: an in-flight status
+			// must outrank it, otherwise this test passes for the wrong reason.
+			chatResp := (&BifrostResponsesResponse{
+				Status:     Ptr(status),
+				StopReason: Ptr(string(BifrostFinishReasonStop)),
+				Output:     responsesTextOutput("partial"),
+			}).ToBifrostChatResponse()
+
+			if chatResp == nil || len(chatResp.Choices) == 0 {
+				t.Fatal("expected at least one choice")
+			}
+			if chatResp.Choices[0].FinishReason != nil {
+				t.Fatalf("expected finish_reason to be nil, got %q", *chatResp.Choices[0].FinishReason)
+			}
+		})
+	}
+}
+
+func TestResponsesStreamToBifrostChatResponse_MapsIncompleteContentFilter(t *testing.T) {
+	chunk := &BifrostResponsesStreamResponse{
+		Type: ResponsesStreamResponseTypeIncomplete,
+		Response: &BifrostResponsesResponse{
+			Status:            Ptr(ResponsesResponseStatusIncomplete),
+			IncompleteDetails: &ResponsesResponseIncompleteDetails{Reason: ResponsesResponseIncompleteReasonContentFilter},
+		},
+	}
+
+	resp := chunk.ToBifrostChatResponse()
+	if resp == nil || len(resp.Choices) == 0 {
+		t.Fatal("expected at least one choice")
+	}
+	if resp.Choices[0].FinishReason == nil || *resp.Choices[0].FinishReason != "content_filter" {
+		t.Fatalf("expected finish_reason %q, got %v", "content_filter", resp.Choices[0].FinishReason)
+	}
+}
+
+// Cohere never sets Status and Gemini sets it only on error, so a nil or "failed"
+// status must still resolve through stop_reason rather than falling through to unset.
+func TestToBifrostChatResponse_MapsStopReasonWithoutTerminalStatus(t *testing.T) {
+	cases := []struct {
+		name       string
+		status     *string
+		stopReason string
+		expected   string
+	}{
+		{"nil status (cohere)", nil, string(BifrostFinishReasonStop), string(BifrostFinishReasonStop)},
+		{"nil status tool calls", nil, string(BifrostFinishReasonToolCalls), string(BifrostFinishReasonToolCalls)},
+		{"failed status (gemini safety)", Ptr(ResponsesResponseStatusFailed), "content_filter", "content_filter"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chatResp := (&BifrostResponsesResponse{
+				Status:     tc.status,
+				StopReason: Ptr(tc.stopReason),
+				Output:     responsesTextOutput("hi"),
+			}).ToBifrostChatResponse()
+
+			if chatResp == nil || len(chatResp.Choices) == 0 {
+				t.Fatal("expected at least one choice")
+			}
+			if chatResp.Choices[0].FinishReason == nil {
+				t.Fatal("expected finish_reason to be set")
+			}
+			if got := *chatResp.Choices[0].FinishReason; got != tc.expected {
+				t.Fatalf("expected finish_reason %q, got %q", tc.expected, got)
+			}
+		})
+	}
+}
+
+// The Responses schema requires reasoning.summary to be an array. A nil slice marshals
+// to null, which upstreams reject with "Invalid 'input': value did not match any
+// expected variant" — breaking multi-turn tool loops that replay encrypted reasoning.
+func TestToResponsesMessages_EncryptedReasoningMarshalsSummaryAsArray(t *testing.T) {
+	encrypted := "rsn_abc123"
+	cm := &ChatMessage{
+		Role: ChatMessageRoleAssistant,
+		ChatAssistantMessage: &ChatAssistantMessage{
+			ReasoningDetails: []ChatReasoningDetails{
+				{Index: 0, Type: BifrostReasoningDetailsTypeEncrypted, Data: &encrypted},
+			},
+		},
+	}
+
+	out := cm.ToResponsesMessages()
+	if len(out) == 0 {
+		t.Fatal("expected a reasoning message")
+	}
+	if out[0].Type == nil || *out[0].Type != ResponsesMessageTypeReasoning {
+		t.Fatalf("expected a reasoning item, got %#v", out[0].Type)
+	}
+	if out[0].ResponsesReasoning == nil {
+		t.Fatal("expected reasoning payload to be set")
+	}
+	if out[0].ResponsesReasoning.Summary == nil {
+		t.Fatal("summary must be a non-nil slice so it marshals as [] rather than null")
+	}
+
+	encoded, err := json.Marshal(out[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"summary":[]`) {
+		t.Fatalf(`expected "summary":[] in %s`, encoded)
+	}
+	if strings.Contains(string(encoded), `"summary":null`) {
+		t.Fatalf("summary must never marshal as null: %s", encoded)
 	}
 }

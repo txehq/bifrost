@@ -42,8 +42,14 @@ func TestXAIAnthropicMessagesAttachmentDoesNotChangeOpenAIEndpoints(t *testing.T
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	key := schemas.Key{Value: schemas.SecretVar{Val: "test-key"}}
-	_, _ = provider.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{Model: "grok-4.5"})
-	_, _ = provider.Responses(ctx, key, &schemas.BifrostResponsesRequest{Model: "grok-4.5"})
+	_, _ = provider.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{
+		Provider: schemas.XAI, Model: "grok-4.5",
+		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}}},
+	})
+	_, _ = provider.Responses(ctx, key, &schemas.BifrostResponsesRequest{
+		Provider: schemas.XAI, Model: "grok-4.5",
+		Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Hello")}}},
+	})
 	_, passthroughErr := provider.Passthrough(ctx, key, &schemas.BifrostPassthroughRequest{
 		Method: http.MethodPost, Path: "/v1/messages", Body: []byte(`{"model":"grok-4.5","messages":[]}`),
 	})

@@ -36,6 +36,7 @@ interface StoredOtelProfile {
 	tls_ca_cert?: string;
 	insecure?: boolean;
 	metrics_enabled?: boolean;
+	overhead_breakdown_enabled?: boolean;
 	metrics_endpoint?: string | SecretVar;
 	metrics_push_interval?: number;
 	export_timeout?: number;
@@ -104,6 +105,7 @@ const emptyProfile = (): ProfileForm => ({
 	tls_ca_cert: "",
 	insecure: true,
 	metrics_enabled: false,
+	overhead_breakdown_enabled: false,
 	metrics_endpoint: emptySecretVar(),
 	metrics_push_interval: 15,
 	export_timeout: 5,
@@ -127,6 +129,7 @@ const toProfileForm = (p?: StoredOtelProfile): ProfileForm => ({
 	tls_ca_cert: p?.tls_ca_cert ?? "",
 	insecure: p?.insecure ?? true,
 	metrics_enabled: p?.metrics_enabled ?? false,
+	overhead_breakdown_enabled: p?.overhead_breakdown_enabled ?? false,
 	metrics_endpoint: toSecretVarFormValue(p?.metrics_endpoint),
 	metrics_push_interval: p?.metrics_push_interval ?? 15,
 	export_timeout: p?.export_timeout ?? 5,
@@ -184,6 +187,11 @@ export function OtelFormFragment({
 		setProfileOpenState((prev) => ({ ...prev, [index]: open }));
 	};
 
+	const handleAddProfile = () => {
+		append(emptyProfile());
+		setProfileOpenState((prev) => ({ ...prev, [fields.length]: true }));
+	};
+
 	const handleRemoveProfile = (index: number) => {
 		remove(index);
 		setProfileOpenState((prev) => {
@@ -216,7 +224,7 @@ export function OtelFormFragment({
 							index={index}
 							hasOtelAccess={hasOtelAccess}
 							canRemove={fields.length > 1}
-							open={profileOpenState[index] ?? true}
+							open={profileOpenState[index] ?? false}
 							onOpenChange={(open) => handleProfileOpenChange(index, open)}
 							onRemove={() => handleRemoveProfile(index)}
 						/>
@@ -227,7 +235,7 @@ export function OtelFormFragment({
 					type="button"
 					variant="outline"
 					size="sm"
-					onClick={() => append(emptyProfile())}
+					onClick={handleAddProfile}
 					disabled={!hasOtelAccess}
 					data-testid="otel-add-profile-btn"
 				>
@@ -600,11 +608,12 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 											</FormItem>
 										)}
 									/>
+									<div className="flex flex-col gap-4 sm:flex-row sm:items-start">
 									<FormField
 										control={control}
 										name={`${base}.trace_type`}
 										render={({ field }) => (
-											<FormItem className="w-full max-w-xs">
+											<FormItem className="w-full sm:flex-1">
 												<FormLabel>Format</FormLabel>
 												<Select onValueChange={field.onChange} value={field.value ?? traceTypeOptions[0].value} disabled={!hasOtelAccess}>
 													<FormControl>
@@ -633,7 +642,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 										control={control}
 										name={`${base}.export_timeout`}
 										render={({ field }) => (
-											<FormItem className="w-full max-w-xs">
+											<FormItem className="w-full sm:flex-1">
 												<FormLabel>Export Timeout (seconds)</FormLabel>
 												<FormControl>
 													<Input
@@ -654,6 +663,7 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 											</FormItem>
 										)}
 									/>
+									</div>
 									<FormField
 										control={control}
 										name={`${base}.request_headers`}
@@ -776,6 +786,34 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 												<Switch
 													// First profile keeps the legacy testid for existing e2e coverage.
 													data-testid={index === 0 ? "otel-metrics-export-toggle" : `otel-profile-${index}-metrics-export-toggle`}
+													checked={field.value}
+													onCheckedChange={field.onChange}
+													disabled={!hasOtelAccess}
+												/>
+											</div>
+										</div>
+									</FormItem>
+								)}
+							/>
+
+							<FormField
+								control={control}
+								name={`${base}.overhead_breakdown_enabled`}
+								render={({ field }) => (
+									<FormItem className="flex flex-row items-center gap-2">
+										<div className="flex w-full flex-row items-center gap-2">
+											<div className="flex flex-col gap-1">
+												<h3 className="text-sm font-medium">Overhead breakdown</h3>
+												<p className="text-muted-foreground text-xs">
+													Export per-component Bifrost overhead latency as a histogram.
+												</p>
+											</div>
+											<div className="ml-auto">
+												<Switch
+													aria-label="Enable overhead breakdown"
+													data-testid={
+														index === 0 ? "otel-overhead-breakdown-toggle" : `otel-profile-${index}-overhead-breakdown-toggle`
+													}
 													checked={field.value}
 													onCheckedChange={field.onChange}
 													disabled={!hasOtelAccess}

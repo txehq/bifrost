@@ -822,6 +822,7 @@ append_dynamic_mcp_clients_insert() {
     generate_oauth2_issuance_tables_insert_postgres "$now" "$faker_sql"
     generate_sidekiq_insert_postgres "$now" "$past" "$faker_sql"
     append_dynamic_columns_postgres "$now" "$past" "$faker_sql"
+    append_v200_fixtures "$db_type" "$faker_sql" "$now" "$future"
   else
     now="datetime('now')"
     future="datetime('now', '+1 hour')"
@@ -844,7 +845,184 @@ append_dynamic_mcp_clients_insert() {
     generate_oauth2_issuance_tables_insert_sqlite "$now" "$faker_sql" "$config_db"
     generate_sidekiq_insert_sqlite "$now" "$past" "$faker_sql" "$config_db"
     append_dynamic_columns_sqlite "$now" "$past" "$faker_sql" "$config_db"
+    append_v200_fixtures "$db_type" "$faker_sql" "$now" "$future" "$config_db" "$logs_db"
   fi
+}
+
+# v2.0.0 introduced these columns and tables. Probe each column so the same
+# fixture set still runs against older releases. SQL literals below work in both
+# dialects; timestamps are supplied by the caller.
+v200_column_exists() {
+  local table="$1" column="$2"
+  if [ "$fixture_db_type" = "postgres" ]; then
+    column_exists_postgres "$table" "$column"
+  else
+    local db="$fixture_config_db"
+    case "$table" in logs|mcp_tool_logs|user_agent_mappings) db="$fixture_logs_db" ;; esac
+    column_exists_sqlite "$db" "$table" "$column"
+  fi
+}
+
+# Read column|SQL-value pairs from stdin, retaining only columns in this schema.
+v200_insert() {
+  local table="$1" column value cols="" vals=""
+  if ! v200_column_exists "$table" "id"; then
+    return
+  fi
+  while IFS='|' read -r column value; do
+    if v200_column_exists "$table" "$column"; then
+      cols="${cols:+$cols, }$column"
+      vals="${vals:+$vals, }$value"
+    fi
+  done
+  echo "INSERT INTO $table ($cols) VALUES ($vals) ON CONFLICT DO NOTHING;" >> "$fixture_output"
+}
+
+append_v200_fixtures() {
+  local fixture_db_type="$1" fixture_output="$2" now="$3" future="$4"
+  local fixture_config_db="${5:-}" fixture_logs_db="${6:-}"
+  local table column value predicate
+  while IFS='|' read -r table column value predicate; do
+    if v200_column_exists "$table" "$column"; then
+      echo "UPDATE $table SET $column = $value WHERE $predicate;" >> "$fixture_output"
+    fi
+  done <<'V200_COLUMNS'
+config_keys|bedrock_endpoints_json|NULL|name = 'migration-test-key-anthropic'
+config_keys|bedrock_mantle_endpoints_json|NULL|name = 'migration-test-key-anthropic'
+config_mcp_clients|needs_session_stickiness|false|client_id = 'mcp-migration-test-001'
+config_mcp_clients|token_exchange_json|NULL|client_id = 'mcp-migration-test-001'
+config_mcp_clients|pending_oauth_config_json|NULL|client_id = 'mcp-migration-test-001'
+governance_model_pricing|input_cost_per_token_ultrafast|NULL|id = 1
+governance_model_pricing|output_cost_per_token_ultrafast|NULL|id = 1
+governance_model_pricing|cache_read_input_token_cost_ultrafast|NULL|id = 1
+governance_model_pricing|cache_creation_input_token_cost_ultrafast|NULL|id = 1
+governance_model_pricing|output_cost_per_image_above_4_megapixels|NULL|id = 1
+governance_model_pricing|output_cost_per_image_above_8_megapixels|NULL|id = 1
+governance_model_pricing|output_cost_per_image_above_16_megapixels|NULL|id = 1
+governance_model_pricing|output_cost_per_image_above_32_megapixels|NULL|id = 1
+governance_model_pricing|output_cost_per_image_above_64_megapixels|NULL|id = 1
+governance_model_pricing|input_cost_per_query|NULL|id = 1
+governance_model_pricing|cost_per_request|NULL|id = 1
+logs|user_agent|'migration-test/2.0'|id = 'log-migration-test-001'
+logs|app|'migration-test'|id = 'log-migration-test-001'
+logs|video_edit_input|''|id = 'log-migration-test-001'
+logs|guardrail_debug|''|id = 'log-migration-test-001'
+logs|upstream_latency|100|id = 'log-migration-test-001'
+logs|overhead_latency|5|id = 'log-migration-test-001'
+logs|overhead_breakdown|'[]'|id = 'log-migration-test-001'
+logs|input_cost|0.001|id = 'log-migration-test-001'
+logs|output_cost|0.002|id = 'log-migration-test-001'
+logs|additional_cost|0.003|id = 'log-migration-test-001'
+logs|batch_debug|''|id = 'log-migration-test-001'
+mcp_tool_logs|user_agent|'migration-test/2.0'|id = 'mcp-log-migration-001'
+mcp_tool_logs|app|'migration-test'|id = 'mcp-log-migration-001'
+mcp_tool_logs|plugin_logs|'[]'|id = 'mcp-log-migration-001'
+mcp_tool_logs|redaction_mapping|NULL|id = 'mcp-log-migration-001'
+mcp_tool_logs|device_id|'migration-device'|id = 'mcp-log-migration-001'
+mcp_tool_logs|app_key|'migration-app'|id = 'mcp-log-migration-001'
+mcp_tool_logs|decision|'allow'|id = 'mcp-log-migration-001'
+mcp_tool_logs|source|'migration-test'|id = 'mcp-log-migration-001'
+V200_COLUMNS
+
+  # Terminal accounting state keeps the sweeper from polling the fake batch.
+  v200_insert batch_jobs <<V200_ROW
+id|'batch-migration-001'
+kind|'batch'
+provider|'openai'
+batch_id|'batch-provider-migration-001'
+model|'gpt-4'
+endpoint|'/v1/chat/completions'
+params|'{}'
+provider_status|'completed'
+input_file_id|'file-migration-001'
+output_file_id|NULL
+error_file_id|NULL
+results_url|NULL
+next_check_at|NULL
+poll_attempts|1
+accounting_status|'accounted'
+runner_id|NULL
+claimed_at|NULL
+unpriceable_reason|NULL
+last_error|NULL
+aggregate_log_written_at|$now
+governance_reported_at|$now
+selected_key_id|''
+virtual_key_id|NULL
+user_id|NULL
+team_id|NULL
+customer_id|NULL
+budget_ids|'[]'
+rate_limit_ids|'[]'
+source_log_id|NULL
+created_at|$now
+updated_at|$now
+V200_ROW
+
+  v200_insert mcp_oauth_flows <<V200_ROW
+id|'mcp-flow-migration-001'
+mcp_client_id|'mcp-migration-test-001'
+oauth_config_id|'oauth-config-migration-test-001'
+state|'migration-v200-state'
+redirect_uri|'https://example.com/callback'
+code_verifier|'migration-verifier'
+session_id|'migration-session'
+virtual_key_id|NULL
+user_id|NULL
+flow_mode|'session'
+status|'authorized'
+encryption_status|'plain_text'
+expires_at|$future
+created_at|$now
+updated_at|$now
+V200_ROW
+
+  v200_insert mcp_oauth_tokens <<V200_ROW
+id|'mcp-token-migration-001'
+auth_mode|'session'
+mcp_client_id|'mcp-migration-test-001'
+oauth_config_id|'oauth-config-migration-test-001'
+session_id|'migration-session'
+virtual_key_id|NULL
+user_id|NULL
+status|'active'
+status_reason|''
+access_token|'migration-access-token'
+refresh_token|'migration-refresh-token'
+token_type|'Bearer'
+expires_at|$future
+scopes|'[]'
+last_refreshed_at|$now
+encryption_status|'plain_text'
+created_at|$now
+updated_at|$now
+V200_ROW
+
+  v200_insert notifications <<V200_ROW
+id|'notification-migration-001'
+audience|'all'
+role_ids|'[]'
+severity|'info'
+title|'Migration test'
+message|'Preserve this notification during migration'
+action_label|'View logs'
+action_path|'/workspace/logs'
+created_at|$now
+expires_at|$future
+V200_ROW
+
+  v200_insert user_agent_mappings <<V200_ROW
+id|'user-agent-migration-001'
+pattern|'migration-test/2.0'
+match_type|'exact'
+app|'migration-test'
+logo|NULL
+logo_mime|NULL
+is_active|true
+created_at|$now
+updated_at|$now
+V200_ROW
+
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (PostgreSQL)
@@ -2077,11 +2255,66 @@ append_dynamic_columns_postgres() {
     fi
   done
 
+  # governance_model_pricing per-size and joint size+quality per-image output rates
+  # (added via add_image_size_quality_pricing_columns)
+  for col in output_cost_per_image_above_1024_and_1536_pixels output_cost_per_image_above_1536_and_1024_pixels \
+    output_cost_per_image_above_1024_and_1024_pixels_low_quality \
+    output_cost_per_image_above_1024_and_1536_pixels_low_quality \
+    output_cost_per_image_above_1536_and_1024_pixels_low_quality \
+    output_cost_per_image_above_1024_and_1024_pixels_medium_quality \
+    output_cost_per_image_above_1024_and_1536_pixels_medium_quality \
+    output_cost_per_image_above_1536_and_1024_pixels_medium_quality \
+    output_cost_per_image_above_1024_and_1024_pixels_high_quality \
+    output_cost_per_image_above_1024_and_1536_pixels_high_quality \
+    output_cost_per_image_above_1536_and_1024_pixels_high_quality \
+    output_cost_per_image_above_1024x1024_pixels_standard_quality \
+    output_cost_per_image_above_1024x1536_pixels_standard_quality \
+    output_cost_per_image_above_1536x1024_pixels_standard_quality; do
+    if column_exists_postgres "governance_model_pricing" "$col"; then
+      echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
+    fi
+  done
+
   # logs.redaction_mapping (added via logs_add_redaction_mapping_column)
   if column_exists_postgres "logs" "redaction_mapping"; then
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # -------------------------------------------------------------------------
+  # v1.6.3 columns - config store tables
+  # -------------------------------------------------------------------------
+
+  # config_client.mcp_server_auth_mode (added in v1.6.3 - varchar(20), default 'headers')
+  if column_exists_postgres "config_client" "mcp_server_auth_mode"; then
+    echo "UPDATE config_client SET mcp_server_auth_mode = 'headers' WHERE id = 1;" >> "$output_file"
+  fi
+
+  # config_client.oauth2_server_config_json (added in v1.6.3 - text, empty string when unset)
+  if column_exists_postgres "config_client" "oauth2_server_config_json"; then
+    echo "UPDATE config_client SET oauth2_server_config_json = '' WHERE id = 1;" >> "$output_file"
+  fi
+
+  # config_keys.bedrock_mantle_* (added in v1.6.3 - nullable text SecretVars for Bedrock Mantle auth)
+  for mantle_col in bedrock_mantle_access_key bedrock_mantle_secret_key bedrock_mantle_session_token bedrock_mantle_region bedrock_mantle_role_arn bedrock_mantle_external_id bedrock_mantle_role_session_name; do
+    if column_exists_postgres "config_keys" "$mantle_col"; then
+      echo "UPDATE config_keys SET $mantle_col = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET $mantle_col = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+  done
+
+  # governance_model_pricing.is_deprecated (added in v1.6.3 - bool, default false)
+  if column_exists_postgres "governance_model_pricing" "is_deprecated"; then
+    echo "UPDATE governance_model_pricing SET is_deprecated = false WHERE id = 1;" >> "$output_file"
+    echo "UPDATE governance_model_pricing SET is_deprecated = false WHERE id = 2;" >> "$output_file"
+  fi
+
+  # governance_virtual_keys.expires_at (added in v1.6.3 - nullable timestamp, NULL = never expires)
+  if column_exists_postgres "governance_virtual_keys" "expires_at"; then
+    echo "UPDATE governance_virtual_keys SET expires_at = NULL WHERE id = 'vk-migration-test-1';" >> "$output_file"
+    echo "UPDATE governance_virtual_keys SET expires_at = NULL WHERE id = 'vk-migration-test-2';" >> "$output_file"
   fi
 
   # -------------------------------------------------------------------------
@@ -2170,6 +2403,53 @@ append_dynamic_columns_postgres() {
     echo "UPDATE logs SET server_side_fallback_model = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET server_side_fallback_model = 'gpt-4-turbo' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET server_side_fallback_model = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # v1.6.4 columns
+  # -------------------------------------------------------------------------
+
+  # config_keys.vertex_force_single_region (added in v1.6.4 via add_vertex_force_single_region_column - nullable bool)
+  if column_exists_postgres "config_keys" "vertex_force_single_region"; then
+    echo "UPDATE config_keys SET vertex_force_single_region = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+    echo "UPDATE config_keys SET vertex_force_single_region = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+  fi
+
+  # config_keys.bedrock_project_id, bedrock_mantle_project_id (added in v1.6.4 via add_bedrock_project_id_columns - nullable text SecretVars)
+  for bedrock_proj_col in bedrock_project_id bedrock_mantle_project_id; do
+    if column_exists_postgres "config_keys" "$bedrock_proj_col"; then
+      echo "UPDATE config_keys SET $bedrock_proj_col = NULL WHERE name = 'migration-test-key-openai';" >> "$output_file"
+      echo "UPDATE config_keys SET $bedrock_proj_col = NULL WHERE name = 'migration-test-key-anthropic';" >> "$output_file"
+    fi
+  done
+
+  # governance_model_pricing flex/272k cache-creation tiers (added in v1.6.4 via
+  # add_flex_and_cache_creation_272k_pricing_columns), fast-mode cache pricing
+  # (add_fast_mode_cache_pricing_columns), and inference geo multiplier
+  # (add_inference_geo_multiplier_column) - all nullable float64
+  for pricing_col in \
+    input_cost_per_token_flex_above_272k_tokens \
+    output_cost_per_token_flex_above_272k_tokens \
+    cache_read_input_token_cost_flex_above_272k_tokens \
+    cache_creation_input_token_cost_above_272k_tokens \
+    cache_creation_input_token_cost_flex \
+    cache_creation_input_token_cost_flex_above_272k_tokens \
+    cache_creation_input_token_cost_priority \
+    cache_creation_input_token_cost_fast \
+    cache_creation_input_token_cost_above_1hr_fast \
+    cache_read_input_token_cost_fast \
+    inference_geo_us_multiplier; do
+    if column_exists_postgres "governance_model_pricing" "$pricing_col"; then
+      echo "UPDATE governance_model_pricing SET $pricing_col = NULL WHERE id = 1;" >> "$output_file"
+      echo "UPDATE governance_model_pricing SET $pricing_col = NULL WHERE id = 2;" >> "$output_file"
+    fi
+  done
+
+  # logs.redaction_mapping (added in v1.6.4 via logs_add_redaction_mapping_column -
+  # nullable text, stores the encrypted reversible redaction mapping)
+  if column_exists_postgres "logs" "redaction_mapping"; then
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
   fi
 
   # -------------------------------------------------------------------------
@@ -3483,6 +3763,27 @@ append_dynamic_columns_sqlite() {
         echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
       fi
     done
+
+    # governance_model_pricing per-size and joint size+quality per-image output rates
+    # (added via add_image_size_quality_pricing_columns)
+    for col in output_cost_per_image_above_1024_and_1536_pixels output_cost_per_image_above_1536_and_1024_pixels \
+      output_cost_per_image_above_1024_and_1024_pixels_low_quality \
+      output_cost_per_image_above_1024_and_1536_pixels_low_quality \
+      output_cost_per_image_above_1536_and_1024_pixels_low_quality \
+      output_cost_per_image_above_1024_and_1024_pixels_medium_quality \
+      output_cost_per_image_above_1024_and_1536_pixels_medium_quality \
+      output_cost_per_image_above_1536_and_1024_pixels_medium_quality \
+      output_cost_per_image_above_1024_and_1024_pixels_high_quality \
+      output_cost_per_image_above_1024_and_1536_pixels_high_quality \
+      output_cost_per_image_above_1536_and_1024_pixels_high_quality \
+      output_cost_per_image_above_1024x1024_pixels_standard_quality \
+      output_cost_per_image_above_1024x1536_pixels_standard_quality \
+      output_cost_per_image_above_1536x1024_pixels_standard_quality; do
+      if column_exists_sqlite "$config_db" "governance_model_pricing" "$col"; then
+        echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 1;" >> "$output_file"
+        echo "UPDATE governance_model_pricing SET $col = NULL WHERE id = 2;" >> "$output_file"
+      fi
+    done
   fi
 
   # logs.redaction_mapping (added via logs_add_redaction_mapping_column)
@@ -3490,6 +3791,14 @@ append_dynamic_columns_sqlite() {
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-001';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-002';" >> "$output_file"
     echo "UPDATE logs SET redaction_mapping = '' WHERE id = 'log-migration-test-003';" >> "$output_file"
+  fi
+
+  # logs.redaction_mapping (added in v1.6.4 via logs_add_redaction_mapping_column -
+  # nullable text, stores the encrypted reversible redaction mapping)
+  if column_exists_sqlite "$logs_db" "logs" "redaction_mapping"; then
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-001';" >> "$output_file"
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-002';" >> "$output_file"
+    echo "UPDATE logs SET redaction_mapping = NULL WHERE id = 'log-migration-test-003';" >> "$output_file"
   fi
 
   # -------------------------------------------------------------------------

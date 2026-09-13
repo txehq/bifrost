@@ -3,6 +3,7 @@ package vectorstore
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -95,6 +96,23 @@ func (s *QdrantStore) CreateNamespace(ctx context.Context, namespace string, dim
 	}
 
 	return nil
+}
+
+// ListNamespaces returns the Qdrant collections beginning with prefix. Qdrant's
+// list API takes no filter, so the prefix is applied here.
+func (s *QdrantStore) ListNamespaces(ctx context.Context, prefix string) ([]string, error) {
+	collections, err := s.client.ListCollections(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list collections: %w", err)
+	}
+	namespaces := make([]string, 0, len(collections))
+	for _, collection := range collections {
+		if strings.HasPrefix(collection, prefix) {
+			namespaces = append(namespaces, collection)
+		}
+	}
+	sort.Strings(namespaces)
+	return namespaces, nil
 }
 
 // DeleteNamespace deletes a collection from the Qdrant vector store.
@@ -194,10 +212,12 @@ func (s *QdrantStore) GetAll(ctx context.Context, namespace string, queries []Qu
 		}
 	}
 
-	scrollLimit := uint32(limit)
-	if limit <= 0 {
-		scrollLimit = 100
-	}
+	// Clamped rather than converted: a truncated-to-zero limit would scroll
+	// nothing, and the len(scrollResult) >= scrollLimit check below would then
+	// read 0 >= 0 as a full page and hand back a cursor pointing at the empty
+	// lastID — which the next call treats as no cursor at all, so a caller
+	// paging to completion would never advance.
+	scrollLimit := boundedPageLimit(limit, 100)
 
 	scrollResult, err := s.client.Scroll(ctx, &qdrant.ScrollPoints{
 		CollectionName: namespace,

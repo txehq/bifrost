@@ -85,8 +85,8 @@ echo "🔧 Using plugin versions from version files for transport..."
 cd transports
 
 # Normalize the local go.mod directive up front so prior-release artifacts
-# (e.g. `go 1.26.2` written by earlier `go get` runs) don't trip GOTOOLCHAIN=local.
-go mod edit -go=1.26.4 -toolchain=none
+# (e.g. `go 1.27.0` written by earlier `go get` runs) don't trip GOTOOLCHAIN=local.
+go mod edit -go=1.27.0 -toolchain=none
 
 for plugin_name in "${!PLUGIN_VERSIONS[@]}"; do
   plugin_version="${PLUGIN_VERSIONS[$plugin_name]}"
@@ -108,7 +108,7 @@ echo "  📦 Updating framework to $FRAMEWORK_VERSION"
 set_internal_module_version "${MODULE_ROOT}/framework" "$FRAMEWORK_VERSION"
 
 # Re-normalize before tidy in case any edit reintroduced a toolchain line
-go mod edit -go=1.26.4 -toolchain=none
+go mod edit -go=1.27.0 -toolchain=none
 go mod tidy
 
 cd ..

@@ -1,4 +1,4 @@
-go 1.26.5
+go 1.27.0
 
 use (
 	./cli
@@ -13,6 +13,7 @@ use (
 	./plugins/modelcatalogresolver
 	./plugins/otel
 	./plugins/prompts
+	./plugins/routing
 	./plugins/semanticcache
 	./plugins/telemetry
 	./transports
@@ -29,6 +30,7 @@ replace (
 	github.com/capsohq/bifrost/core v1.7.4 => ./core
 	github.com/capsohq/bifrost/core v1.7.5 => ./core
 	github.com/capsohq/bifrost/core v1.7.7 => ./core
+	github.com/capsohq/bifrost/core v1.8.6 => ./core
 )
 
 replace (
@@ -38,6 +40,7 @@ replace (
 	github.com/capsohq/bifrost/framework v1.5.5 => ./framework
 	github.com/capsohq/bifrost/framework v1.5.7 => ./framework
 	github.com/capsohq/bifrost/framework v1.5.9 => ./framework
+	github.com/capsohq/bifrost/framework v1.6.2 => ./framework
 )
 
 replace (
@@ -46,6 +49,7 @@ replace (
 	github.com/capsohq/bifrost/plugins/compat v0.1.31 => ./plugins/compat
 	github.com/capsohq/bifrost/plugins/compat v0.1.33 => ./plugins/compat
 	github.com/capsohq/bifrost/plugins/compat v0.1.35 => ./plugins/compat
+	github.com/capsohq/bifrost/plugins/compat v0.2.2 => ./plugins/compat
 )
 
 replace (
@@ -54,6 +58,7 @@ replace (
 	github.com/capsohq/bifrost/plugins/governance v1.6.3 => ./plugins/governance
 	github.com/capsohq/bifrost/plugins/governance v1.6.7 => ./plugins/governance
 	github.com/capsohq/bifrost/plugins/governance v1.6.9 => ./plugins/governance
+	github.com/capsohq/bifrost/plugins/governance v1.7.2 => ./plugins/governance
 )
 
 replace (
@@ -62,6 +67,7 @@ replace (
 	github.com/capsohq/bifrost/plugins/logging v1.6.5 => ./plugins/logging
 	github.com/capsohq/bifrost/plugins/logging v1.6.7 => ./plugins/logging
 	github.com/capsohq/bifrost/plugins/logging v1.6.9 => ./plugins/logging
+	github.com/capsohq/bifrost/plugins/logging v1.7.2 => ./plugins/logging
 )
 
 replace (
@@ -70,6 +76,7 @@ replace (
 	github.com/capsohq/bifrost/plugins/maxim v1.6.32 => ./plugins/maxim
 	github.com/capsohq/bifrost/plugins/maxim v1.6.34 => ./plugins/maxim
 	github.com/capsohq/bifrost/plugins/maxim v1.6.36 => ./plugins/maxim
+	github.com/capsohq/bifrost/plugins/maxim v1.7.2 => ./plugins/maxim
 )
 
 replace (
@@ -79,6 +86,7 @@ replace (
 	github.com/capsohq/bifrost/plugins/mocker v1.5.32 => ./plugins/mocker
 	github.com/capsohq/bifrost/plugins/mocker v1.5.34 => ./plugins/mocker
 	github.com/capsohq/bifrost/plugins/mocker v1.5.37 => ./plugins/mocker
+	github.com/capsohq/bifrost/plugins/mocker v1.6.2 => ./plugins/mocker
 )
 
 replace (
@@ -87,6 +95,7 @@ replace (
 	github.com/capsohq/bifrost/plugins/modelcatalogresolver v1.0.15 => ./plugins/modelcatalogresolver
 	github.com/capsohq/bifrost/plugins/modelcatalogresolver v1.0.17 => ./plugins/modelcatalogresolver
 	github.com/capsohq/bifrost/plugins/modelcatalogresolver v1.0.7 => ./plugins/modelcatalogresolver
+	github.com/capsohq/bifrost/plugins/modelcatalogresolver v1.1.2 => ./plugins/modelcatalogresolver
 )
 
 replace (
@@ -95,6 +104,7 @@ replace (
 	github.com/capsohq/bifrost/plugins/otel v1.4.4 => ./plugins/otel
 	github.com/capsohq/bifrost/plugins/otel v1.4.6 => ./plugins/otel
 	github.com/capsohq/bifrost/plugins/otel v1.4.8 => ./plugins/otel
+	github.com/capsohq/bifrost/plugins/otel v1.5.2 => ./plugins/otel
 )
 
 replace (
@@ -103,6 +113,7 @@ replace (
 	github.com/capsohq/bifrost/plugins/prompts v1.0.32 => ./plugins/prompts
 	github.com/capsohq/bifrost/plugins/prompts v1.0.34 => ./plugins/prompts
 	github.com/capsohq/bifrost/plugins/prompts v1.0.36 => ./plugins/prompts
+	github.com/capsohq/bifrost/plugins/prompts v1.1.2 => ./plugins/prompts
 )
 
 replace (
@@ -111,6 +122,7 @@ replace (
 	github.com/capsohq/bifrost/plugins/semanticcache v1.5.32 => ./plugins/semanticcache
 	github.com/capsohq/bifrost/plugins/semanticcache v1.5.34 => ./plugins/semanticcache
 	github.com/capsohq/bifrost/plugins/semanticcache v1.5.36 => ./plugins/semanticcache
+	github.com/capsohq/bifrost/plugins/semanticcache v1.6.2 => ./plugins/semanticcache
 )
 
 replace (
@@ -119,4 +131,7 @@ replace (
 	github.com/capsohq/bifrost/plugins/telemetry v1.5.32 => ./plugins/telemetry
 	github.com/capsohq/bifrost/plugins/telemetry v1.5.34 => ./plugins/telemetry
 	github.com/capsohq/bifrost/plugins/telemetry v1.5.36 => ./plugins/telemetry
+	github.com/capsohq/bifrost/plugins/telemetry v1.6.2 => ./plugins/telemetry
 )
+
+replace github.com/capsohq/bifrost/plugins/routing v1.0.2 => ./plugins/routing

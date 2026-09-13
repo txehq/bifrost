@@ -73,7 +73,7 @@ func TestAnthropicMessagesRouteNativeXAIEndToEnd(t *testing.T) {
 	defer client.Shutdown()
 
 	route := createAnthropicMessagesRouteConfig("/anthropic", bifrost.NewNoOpLogger())[0]
-	handler := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, bifrost.NewNoOpLogger()).createHandler(route)
+	handler := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger()).createHandler(route)
 	httpCtx := &fasthttp.RequestCtx{}
 	httpCtx.Request.Header.SetMethod(fasthttp.MethodPost)
 	httpCtx.Request.SetRequestURI("/anthropic/v1/messages")

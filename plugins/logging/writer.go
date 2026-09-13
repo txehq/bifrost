@@ -347,10 +347,18 @@ func (p *LoggerPlugin) repairRecentDuplicateBilling(logs []*logstore.Log) {
 				updates["completion_tokens"] = completionTokens
 				updates["total_tokens"] = totalTokens
 				updates["cached_read_tokens"] = cachedReadTokens
+				if log.TokenUsageParsed != nil && log.TokenUsageParsed.Cost != nil {
+					updates["input_cost"] = log.TokenUsageParsed.Cost.InputCost
+					updates["output_cost"] = log.TokenUsageParsed.Cost.OutputCost
+					updates["additional_cost"] = log.TokenUsageParsed.Cost.AdditionalCost
+				}
 			}
 		}
 		if !previous.hasCost && candidate.hasCost {
 			updates["cost"] = *log.Cost
+			updates["input_cost"] = log.InputCost
+			updates["output_cost"] = log.OutputCost
+			updates["additional_cost"] = log.AdditionalCost
 		}
 		if len(updates) > 0 {
 			if err := p.store.Update(p.ctx, log.ID, updates); err != nil {
@@ -594,6 +602,7 @@ func estimateLogEntrySize(log *logstore.Log) int {
 		len(log.ImageGenerationInput) +
 		len(log.ImageGenerationOutput) +
 		len(log.VideoGenerationInput) +
+		len(log.VideoEditInput) +
 		len(log.VideoGenerationOutput) +
 		len(log.VideoRetrieveOutput) +
 		len(log.VideoDownloadOutput) +
@@ -609,6 +618,7 @@ func estimateLogEntrySize(log *logstore.Log) int {
 		len(log.ContentSummary) +
 		len(log.CacheDebug) +
 		len(log.GuardrailDebug) +
+		len(log.RoutingMetadata) +
 		len(log.RoutingEngineLogs)
 	// Baseline for fixed-width columns and struct overhead
 	return n + 512
@@ -695,6 +705,7 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 		ImageEditInputParsed:        pending.InitialData.ImageEditInput,
 		ImageVariationInputParsed:   pending.InitialData.ImageVariationInput,
 		VideoGenerationInputParsed:  pending.InitialData.VideoGenerationInput,
+		VideoEditInputParsed:        pending.InitialData.VideoEditInput,
 		PassthroughRequestBody:      pending.InitialData.PassthroughRequestBody,
 	}
 	if pending.ParentRequestID != "" {
@@ -782,6 +793,19 @@ func applyResolvedAliasInfo(entry *logstore.Log, resolvedAlias *schemas.Resolved
 	}
 }
 
+// applyServedModel records the model the provider named on the response body when
+// it differs from the one the caller addressed.
+func applyServedModel(entry *logstore.Log, result *schemas.BifrostResponse) {
+	if entry == nil {
+		return
+	}
+	served := result.ServedModel()
+	if served == "" || served == entry.Model {
+		return
+	}
+	entry.ServedModel = &served
+}
+
 // applyOutputFieldsToEntry sets common output fields on a log entry.
 func applyOutputFieldsToEntry(
 	entry *logstore.Log,
@@ -793,8 +817,10 @@ func applyOutputFieldsToEntry(
 	customerID, customerName string,
 	userID, userName string,
 	businessUnitID, businessUnitName string,
+	projectID, projectName string,
 	numberOfRetries int,
 	latency int64,
+	upstreamLatency, overheadLatency *int64,
 	attemptTrail []schemas.KeyAttemptRecord,
 ) {
 	entry.SelectedKeyID = selectedKeyID
@@ -844,6 +870,12 @@ func applyOutputFieldsToEntry(
 	if businessUnitName != "" {
 		entry.BusinessUnitName = &businessUnitName
 	}
+	if projectID != "" {
+		entry.ProjectID = &projectID
+	}
+	if projectName != "" {
+		entry.ProjectName = &projectName
+	}
 	if numberOfRetries != 0 {
 		entry.NumberOfRetries = numberOfRetries
 	}
@@ -851,7 +883,30 @@ func applyOutputFieldsToEntry(
 		latF := float64(latency)
 		entry.Latency = &latF
 	}
+	setUpstreamOverheadLatency(entry, upstreamLatency, overheadLatency)
 	if len(attemptTrail) > 0 {
 		entry.AttemptTrailParsed = attemptTrail
 	}
+}
+
+// setUpstreamOverheadLatency copies upstream/overhead onto the entry. nil stays nil,
+// so an absent measurement is never persisted as zero.
+func setUpstreamOverheadLatency(entry *logstore.Log, upstreamLatency, overheadLatency *int64) {
+	if upstreamLatency != nil {
+		upF := float64(*upstreamLatency)
+		entry.UpstreamLatency = &upF
+	}
+	if overheadLatency != nil {
+		ovF := float64(*overheadLatency)
+		entry.OverheadLatency = &ovF
+	}
+}
+
+// applyUpstreamOverheadToEntry copies upstream/overhead from a response's ExtraFields
+// onto the entry. Used by the streaming path.
+func applyUpstreamOverheadToEntry(entry *logstore.Log, ef *schemas.BifrostResponseExtraFields) {
+	if ef == nil {
+		return
+	}
+	setUpstreamOverheadLatency(entry, ef.UpstreamLatency, ef.OverheadLatency)
 }

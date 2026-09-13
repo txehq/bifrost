@@ -11,6 +11,11 @@ func ExtractAnthropicPassthroughUsage(path string, requestBody, body []byte) *sc
 	return anthropicmsg.ExtractUsage(path, requestBody, body)
 }
 
+// ExtractAnthropicMessagesUsage supports native endpoints such as Vertex rawPredict.
+func ExtractAnthropicMessagesUsage(body []byte) *schemas.BifrostPassthroughUsage {
+	return anthropicmsg.ExtractUsage("/v1/messages", nil, body)
+}
+
 // HasAnthropicPassthroughUsage is retained for existing passthrough callers.
 func HasAnthropicPassthroughUsage(event []byte) bool {
 	return anthropicmsg.HasUsage(event)

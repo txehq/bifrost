@@ -97,7 +97,7 @@ func hexToBytes(hexStr string, length int) []byte {
 // profile service name. Span filtering and instance attributes are shared across profiles;
 // only the resource service name differs per profile.
 func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool, groupTracesBySession bool, disableRootSpanContent bool) *ResourceSpan {
-	reparent := p.pluginSpanFilter.BuildReparentMap(trace.Spans)
+	reparent := p.pluginSpanFilter.BuildReparentMapWithOverhead(trace.Spans, p.exportOverheadSpans)
 	filteredHeaders := schemas.FilterHeaders(trace.RequestHeaders, requestHeaders)
 
 	// The x-bf-session-id header is a trace-level attribute, so it is not emitted as a span
@@ -120,7 +120,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 
 	otelSpans := make([]*Span, 0, len(trace.Spans))
 	for _, span := range trace.Spans {
-		if !p.pluginSpanFilter.ShouldExportSpan(span) {
+		if !p.pluginSpanFilter.ShouldExportSpanWithOverhead(span, p.exportOverheadSpans) {
 			continue
 		}
 		// disableRootSpanContent drops content from the root span only (the framework duplicates
@@ -146,7 +146,6 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 			}
 			if requestID := trace.GetRequestID(); requestID != "" {
 				otelSpan.Attributes = append(otelSpan.Attributes,
-					kvStr(schemas.AttrRequestID, requestID), // legacy: gen_ai.* placement of bifrost-internal attr; replaced by bifrost.request.id
 					kvStr(schemas.AttrBifrostRequestID, requestID),
 				)
 			}
@@ -223,11 +222,6 @@ func convertAttributesToKeyValues(attrs map[string]any, disableContentLogging bo
 	kvs := make([]*KeyValue, 0, len(attrs))
 	for k, v := range attrs {
 		if disableContentLogging && schemas.IsContentAttribute(k) {
-			continue
-		}
-		// Overhead is not exported to connectors; it is still computed and stored in
-		// the logs DB. Skip it here so it does not ride the exported span.
-		if k == schemas.AttrBifrostOverheadDurationMs {
 			continue
 		}
 		kv := anyToKeyValue(k, v)

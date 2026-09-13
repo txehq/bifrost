@@ -60,6 +60,12 @@ jobs:
       CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+      DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+      DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+      GITHUB_COPILOT_APP_ID: ${{ secrets.GITHUB_COPILOT_APP_ID }}
+      GITHUB_COPILOT_INSTALLATION_ID: ${{ secrets.GITHUB_COPILOT_INSTALLATION_ID }}
+      GITHUB_COPILOT_REPOSITORY_ID: ${{ secrets.GITHUB_COPILOT_REPOSITORY_ID }}
+      GITHUB_COPILOT_PRIVATE_KEY: ${{ secrets.GITHUB_COPILOT_PRIVATE_KEY }}
       COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
       FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
       VERTEX_CREDENTIALS: ${{ secrets.VERTEX_CREDENTIALS }}
@@ -71,7 +77,10 @@ jobs:
       XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
       REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
       BEDROCK_GUARDRAIL_IDENTIFIER: ${{ secrets.BEDROCK_GUARDRAIL_IDENTIFIER }}
-      BEDROCK_GUARDRAIL_VERSION: ${{ secrets.BEDROCK_GUARDRAIL_VERSION }}
+      # Deliberately a variable, not a secret - see release-pipeline.yml. A
+      # short integer secret makes Actions redact that digit everywhere in the
+      # job log, corrupting the harness counters.
+      BEDROCK_GUARDRAIL_VERSION: ${{ vars.BEDROCK_GUARDRAIL_VERSION }}
       AWS_S3_BUCKET: ${{ secrets.AWS_S3_BUCKET }}
       AWS_BEDROCK_ROLE_ARN: ${{ secrets.AWS_BEDROCK_ROLE_ARN }}
       BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
@@ -92,6 +101,10 @@ jobs:
             api.elevenlabs.io:443
             api.fireworks.ai:443
             api.github.com:443
+            api.githubcopilot.com:443
+            api.business.githubcopilot.com:443
+            api.enterprise.githubcopilot.com:443
+            api.individual.githubcopilot.com:443
             api.groq.com:443
             api.mistral.ai:443
             api.openai.com:443
@@ -106,6 +119,7 @@ jobs:
             bedrock-runtime.us-east-1.amazonaws.com:443
             bedrock.us-east-1.amazonaws.com:443
             bifrost-batch-api-file-upload-testing.s3.us-east-1.amazonaws.com:443
+            discoveryengine.googleapis.com:443
             dl.google.com:443
             fal.media:443
             fonts.googleapis.com:443
@@ -127,10 +141,12 @@ jobs:
             proxy.golang.org:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
+            releases.astral.sh:443
             router.huggingface.co:443
             storage.googleapis.com:443
             sum.golang.org:443
             us-central1-aiplatform.googleapis.com:443
+            www.berkshirehathaway.com:443
             www.getbifrost.ai:443
 
       - name: Checkout requested branch
@@ -141,18 +157,38 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.26.5"
+          go-version: "1.27.0"
 
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "25"
 
+      # Required by the test-integration step below: test-integrations.sh installs the
+      # Python suite with `uv sync --frozen`, and its pip fallback cannot build
+      # tests/integrations/python (a dependency manifest, not a package). Kept in step
+      # with the same block in release-pipeline.yml's test-core-integrations job.
+      - name: Install uv
+        uses: step-security/setup-uv@ccf0a26ce9117d9e99292b0ce953ea5d9ffe778e # v7.3.0
+        with:
+          version: "0.11.0"
+          python-version: "3.12"
+
       - name: Install test dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y jq
-          npm install -g newman@6.2.1 newman-reporter-htmlextra@1.23.1
+
+      # `npm install -g newman@x` pins the version but verifies nothing, which is what
+      # Scorecard's Pinned-Dependencies check flags. `npm ci` against the committed
+      # lockfile enforces an integrity hash for newman and all 166 of its transitive
+      # deps. The bin directory goes on PATH because the test scripts probe for newman
+      # with `command -v` rather than calling it through npx.
+      - name: Install newman (hash-pinned via lockfile)
+        run: |
+          npm ci --no-audit --no-fund
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+        working-directory: .github/workflows/tools
 
       - name: Set up gcloud CLI
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1

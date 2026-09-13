@@ -65,10 +65,23 @@ echo "🏷️ Tag name: $TAG_NAME"
 echo "🔧 Updating plugin dependencies..."
 cd "$PLUGIN_DIR"
 
-# Update core dependency
+# Update all internal dependencies together so Go never resolves a mix of old
+# plugin code and new framework packages (e.g. batchaccounting -> jobaccounting).
 if [ -f "go.mod" ]; then
-  set_internal_module_version "${MODULE_ROOT}/core" "$CORE_VERSION"
-  set_internal_module_version "${MODULE_ROOT}/framework" "$FRAMEWORK_VERSION"
+  go mod edit -require="${MODULE_ROOT}/core@${CORE_VERSION}" -require="${MODULE_ROOT}/framework@${FRAMEWORK_VERSION}"
+  PLUGIN_DEPENDENCIES=$(go mod edit -json | jq -r --arg prefix "${MODULE_ROOT}/plugins/" '.Require[]? | .Path | select(startswith($prefix))')
+  while IFS= read -r dependency; do
+    [ -n "$dependency" ] || continue
+    dependency_name="${dependency#${MODULE_ROOT}/plugins/}"
+    dependency_version_file="../${dependency_name}/version"
+    if [ ! -f "$dependency_version_file" ]; then
+      echo "❌ Version file not found for plugin dependency: $dependency"
+      exit 1
+    fi
+    dependency_version=$(tr -d '\n\r' < "$dependency_version_file")
+    go mod edit -require="${dependency}@v${dependency_version#v}"
+  done <<< "$PLUGIN_DEPENDENCIES"
+  go mod tidy
   git add go.mod go.sum || true
 
   # Validate build

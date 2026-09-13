@@ -58,12 +58,15 @@
 // indistinguishable from the bug this suite hunts. Segments are therefore sized against the
 // WORST floor in the matrix (4096), not the target model's, which is why {{cachePrefix}} (~5.9K
 // tokens) is used whole and never sliced. Four segments puts each cell near 24K tokens.
+// Opus 5 uses a shorter visitor-guide fixture above its 512-token floor; its four
+// distinct sections preserve the conversation and breakpoint coverage.
 //
 // COST/CONCURRENCY: run this folder with PARALLEL=0. The harness forks one newman per provider,
 // and these rows match six of them (openai/anthropic/gemini/vertex/bedrock/azure), so a default
 // parallel run would execute every request up to six times over.
 
 import { createHash } from "node:crypto";
+import { libraryReference } from "./fixtures/library-cache-reference.mjs";
 
 const J = (v) => JSON.stringify(v);
 
@@ -73,10 +76,23 @@ const J = (v) => JSON.stringify(v);
 // it. Deliberately NOT applied to implicit-caching cells - see the header.
 const HIT_RATE_FLOOR = 0.85;
 
-// Rounds for implicit-caching cells. Four is enough to distinguish "this provider caches this
-// conversation sometimes" from "this conversation never caches": across the direct-baseline runs
-// above, every model that cached at all did so within the first four rounds.
-const IMPLICIT_ROUNDS = 4;
+// Rounds for implicit-caching cells, sized to distinguish "this provider caches this conversation
+// sometimes" from "this conversation never caches".
+//
+// This was 4, justified by the direct-baseline runs above, in which every model that cached at all
+// did so within the first four rounds. A later harness run refuted that: gemini-3-flash-preview
+// went 0%/0%/0%/0% on the control arm while its midconv arm went 0%/0%/0%/52% -- first engaging on
+// the very last round. gemini-2.5-flash (midconv 0%/0%/0%/97%) and vertex/gemini-2.5-flash
+// (control 0%/97%/97%/0%) sat on the same edge. A four-round window was therefore not measuring
+// whether the gateway breaks caching, it was sampling a coin flip and reporting the tail as FAIL.
+//
+// Six rounds keeps the assertion honest without weakening it: the bar is still "caching engaged at
+// least once", and a gateway that genuinely breaks caching still reports zero across every round.
+// The cost is 2 extra requests per implicit arm-cell.
+//
+// Exported so the unit tests drive their fixtures off it rather than hardcoding a round count that
+// silently goes stale the next time this is retuned.
+export const IMPLICIT_ROUNDS = 6;
 
 const SEG = "{{cachePrefix}}";
 const REMINDER =
@@ -161,8 +177,20 @@ const salt = (cellId) => `[cache-matrix cell ${cellId} run {{pcNonce}}]\n\n${SEG
 // only shape that carries cache_control; everything else uses the unified chat route.
 //
 // Model IDs are exactly those probed reachable against this account - notably
-// bedrock/openai.gpt-oss-120b-1:0 is NOT here (404s; the collection's bedrockOpenaiModel default
-// is stale) and bedrock/openai.gpt-5.6-sol stands in for the OpenAI-family-on-Bedrock cell.
+// bedrock/openai.gpt-oss-120b-1:0 is NOT here: it 404s against this account, which is also why
+// the collection's bedrockOpenaiModel default was retargeted to the OpenAI-family-on-Bedrock id.
+//
+// Which form of the id is correct depends on the ENDPOINT, not on the caller, and the two forms
+// are mutually exclusive (model-card-openai-gpt-56-sol.html, "Programmatic Access"):
+//   bedrock-runtime  in-region "Not supported"; requires us.openai.gpt-5.6-sol or
+//                    global.openai.gpt-5.6-sol (Converse is a supported API there)
+//   bedrock-mantle   Geo and Global "Not supported"; requires the bare openai.gpt-5.6-sol
+// So there is no single value both legs can share. bedrockOpenaiModel holds the bare id, used by
+// anything that goes through Bifrost - its `bedrock` provider routes all OpenAI-family models to
+// mantle, where a profile-prefixed id 404s. bedrockOpenaiDirectModel holds the global profile,
+// used only by the token-parity matrix's DIRECT leg, which calls bedrock-runtime converse.
+// (An earlier note here claimed Bifrost resolves the profile itself so the cells read either way;
+// it does not - that assumption is what made those parity rows 404.)
 // ---------------------------------------------------------------------------------------------
 const CELLS = [
   // --- Anthropic API, Claude family: latest through several generations back -----------------
@@ -231,11 +259,14 @@ const ARMS = [
 // only family routed here.
 function anthropicBody(cell, arm, cellId) {
   const cc = { type: "ephemeral" };
+  const reference = cell.model === "anthropic/claude-opus-5" ? libraryReference : null;
+  const question = reference ? "Where does the Thursday book group meet?" : QUESTION;
+  const reminder = reference ? "This week, the Thursday book group has moved to the Cedar study room upstairs. The starting time is unchanged." : REMINDER;
   const messages = [
-    { role: "user", content: [{ type: "text", text: `${SEG}\n\nDocument A. Reply ${ACK}` }] },
-    { role: "assistant", content: [{ type: "text", text: ACK }] },
-    { role: "user", content: [{ type: "text", text: `${SEG}\n\nDocument B. Reply ${ACK}` }] },
-    { role: "assistant", content: [{ type: "text", text: ACK }] },
+    { role: "user", content: [{ type: "text", text: reference ? `${reference.rooms}\n\nHow long does a study room reservation last?` : `${SEG}\n\nDocument A. Reply ${ACK}` }] },
+    { role: "assistant", content: [{ type: "text", text: reference ? "A study room reservation lasts one hour." : ACK }] },
+    { role: "user", content: [{ type: "text", text: reference ? `${reference.events}\n\nWhen are the family story sessions?` : `${SEG}\n\nDocument B. Reply ${ACK}` }] },
+    { role: "assistant", content: [{ type: "text", text: reference ? "Family story sessions take place on Saturday mornings." : ACK }] },
   ];
 
   if (arm.midconv) {
@@ -250,12 +281,12 @@ function anthropicBody(cell, arm, cellId) {
     // get hoisted instead and never surface the error, which makes the failure look
     // model-specific when it is really placement-specific. Trailing the user turn satisfies
     // both clauses on every provider in this matrix.
-    messages.push({ role: "user", content: [{ type: "text", text: QUESTION }] });
-    messages.push({ role: "system", content: [{ type: "text", text: REMINDER, cache_control: cc }] });
+    messages.push({ role: "user", content: [{ type: "text", text: question }] });
+    messages.push({ role: "system", content: [{ type: "text", text: reminder, cache_control: cc }] });
   } else {
     messages.push({
       role: "user",
-      content: [{ type: "text", text: REMINDER, cache_control: cc }, { type: "text", text: QUESTION }],
+      content: [{ type: "text", text: reminder, cache_control: cc }, { type: "text", text: question }],
     });
   }
 
@@ -263,8 +294,8 @@ function anthropicBody(cell, arm, cellId) {
     model: cell.model,
     max_tokens: maxTokensFor(cell),
     system: [
-      { type: "text", text: salt(cellId), cache_control: cc },
-      { type: "text", text: SEG, cache_control: cc },
+      { type: "text", text: reference ? `Visitor guide edition {{pcNonce}}-${createHash("sha256").update(cellId).digest("hex").slice(0, 12)}.\n\n${reference.welcome}` : salt(cellId), cache_control: cc },
+      { type: "text", text: reference ? reference.borrowing : SEG, cache_control: cc },
     ],
     messages,
   };
@@ -360,7 +391,12 @@ function round1Script(cell, cellId) {
 ${EXTRACT[cell.shape]}
 ${HIT_RATE}
 pm.test(${J(`Cache matrix [${cellId}] round 1 (write) succeeds`)}, function () {
-  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);
+  if (pm.response.code !== 200) throw new Error('request failed: HTTP ' + pm.response.code + ': ' + pm.response.text());
+  if (j.stop_reason === 'refusal') {
+    throw new Error('provider refused the cache fixture: ' + JSON.stringify(j.stop_details || {}));
+  }
+${cell.model === "anthropic/claude-opus-5" ? `  var answer = (j.content || []).filter(function (block) { return block.type === 'text'; }).map(function (block) { return block.text || ''; }).join(' ');
+  if (!/cedar/i.test(answer)) throw new Error('expected the updated book-group location (Cedar study room), got: ' + answer);` : ""}
 });
 if (pm.response.code < 400) {
   console.log('[cache-matrix] ' + ${J(cellId)} + ' round1(write) ' + detail);
@@ -374,7 +410,12 @@ function round2Script(cell, arm, cellId) {
 ${EXTRACT[cell.shape]}
 ${HIT_RATE}
 pm.test(${J(`Cache matrix [${label}] round 2 (read) succeeds`)}, function () {
-  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);
+  if (pm.response.code !== 200) throw new Error('request failed: HTTP ' + pm.response.code + ': ' + pm.response.text());
+  if (j.stop_reason === 'refusal') {
+    throw new Error('provider refused the cache fixture: ' + JSON.stringify(j.stop_details || {}));
+  }
+${cell.model === "anthropic/claude-opus-5" ? `  var answer = (j.content || []).filter(function (block) { return block.type === 'text'; }).map(function (block) { return block.text || ''; }).join(' ');
+  if (!/cedar/i.test(answer)) throw new Error('expected the updated book-group location (Cedar study room), got: ' + answer);` : ""}
 });
 if (pm.response.code < 400) {
   console.log('CACHE_MATRIX_REPORT', JSON.stringify({
@@ -410,7 +451,12 @@ function implicitRoundScript(cell, arm, cellId, round, isLast) {
 ${EXTRACT[cell.shape]}
 ${HIT_RATE}
 pm.test(${J(`Cache matrix [${label}] round ${round} succeeds`)}, function () {
-  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);
+  if (pm.response.code !== 200) throw new Error('request failed: HTTP ' + pm.response.code + ': ' + pm.response.text());
+  if (j.stop_reason === 'refusal') {
+    throw new Error('provider refused the cache fixture: ' + JSON.stringify(j.stop_details || {}));
+  }
+${cell.model === "anthropic/claude-opus-5" ? `  var answer = (j.content || []).filter(function (block) { return block.type === 'text'; }).map(function (block) { return block.text || ''; }).join(' ');
+  if (!/cedar/i.test(answer)) throw new Error('expected the updated book-group location (Cedar study room), got: ' + answer);` : ""}
 });
 if (pm.response.code < 400) {
   var series = [];
@@ -447,6 +493,11 @@ ${
     // The best round's counters, matching the hitRate below. The renderer prints these side by
     // side, and a row is only readable if both halves describe the same round.
     read: bestRound.r, write: bestRound.w, uncached: bestRound.u,
+    // Writes summed across every round, because the write happens on round 1 and the counters
+    // above describe the BEST round - which is almost never round 1. Judging "did this run
+    // exercise the write path" from the best round alone marked every correct cold run as warm:
+    // round 2 legitimately writes nothing, so write:0 there says nothing about round 1.
+    writeTotal: series.reduce(function (sum, x) { return sum + (x.w || 0); }, 0),
     // Implicit cells assert only "cached at least once", so the renderer scores hitRate > 0 for
     // them; hitRateFloor is carried anyway so the report can show the bar that was applied.
     hitRate: best, series: rates, hitRateFloor: 0

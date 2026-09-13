@@ -24,6 +24,8 @@ type outputTokensDetails struct {
 }
 
 type messagesUsage struct {
+	Type                     *string              `json:"type,omitempty"`
+	Iterations               []messagesUsage      `json:"iterations,omitempty"`
 	InputTokens              int                  `json:"input_tokens"`
 	OutputTokens             int                  `json:"output_tokens"`
 	CacheReadInputTokens     int                  `json:"cache_read_input_tokens"`
@@ -75,6 +77,7 @@ func buildUsage(au *messagesUsage) *schemas.BifrostPassthroughUsage {
 	if au == nil {
 		return nil
 	}
+	au = billableUsage(au)
 	totalInput := au.InputTokens + au.CacheReadInputTokens + au.CacheCreationInputTokens
 	total := totalInput + au.OutputTokens
 	if total == 0 {
@@ -148,6 +151,7 @@ func (a *StreamUsage) ObserveEvent(event []byte) *schemas.BifrostPassthroughUsag
 	if u == nil {
 		return a.usage()
 	}
+	u = billableUsage(u)
 
 	a.seen = true
 	c := &a.combined
@@ -186,6 +190,49 @@ func (a *StreamUsage) usage() *schemas.BifrostPassthroughUsage {
 		return nil
 	}
 	return buildUsage(&a.combined)
+}
+
+// Only compaction iterations add charges to the top-level serving attempt.
+// Declined server-side fallback attempts are not billable.
+func billableUsage(u *messagesUsage) *messagesUsage {
+	if len(u.Iterations) == 0 {
+		return u
+	}
+	out := *u
+	out.Iterations = nil
+	out.Type = nil
+	if u.OutputTokensDetails != nil {
+		details := *u.OutputTokensDetails
+		out.OutputTokensDetails = &details
+	}
+	if u.ServerToolUse != nil {
+		tools := *u.ServerToolUse
+		out.ServerToolUse = &tools
+	}
+	for _, it := range u.Iterations {
+		if it.Type == nil || *it.Type != "compaction" {
+			continue
+		}
+		out.InputTokens += it.InputTokens
+		out.OutputTokens += it.OutputTokens
+		out.CacheReadInputTokens += it.CacheReadInputTokens
+		out.CacheCreationInputTokens += it.CacheCreationInputTokens
+		out.CacheCreation.Ephemeral5mInputTokens += it.CacheCreation.Ephemeral5mInputTokens
+		out.CacheCreation.Ephemeral1hInputTokens += it.CacheCreation.Ephemeral1hInputTokens
+		if it.OutputTokensDetails != nil && it.OutputTokensDetails.ThinkingTokens > 0 {
+			if out.OutputTokensDetails == nil {
+				out.OutputTokensDetails = &outputTokensDetails{}
+			}
+			out.OutputTokensDetails.ThinkingTokens = max(out.OutputTokensDetails.ThinkingTokens, it.OutputTokensDetails.ThinkingTokens)
+		}
+		if it.ServerToolUse != nil {
+			if out.ServerToolUse == nil {
+				out.ServerToolUse = &serverToolUseUsage{}
+			}
+			out.ServerToolUse.WebSearchRequests = max(out.ServerToolUse.WebSearchRequests, it.ServerToolUse.WebSearchRequests)
+		}
+	}
+	return &out
 }
 
 func extractMessagesUsage(body []byte) *schemas.BifrostPassthroughUsage {

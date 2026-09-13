@@ -65,7 +65,7 @@ func makeTestLog(id string) *logstore.Log {
 // recover and persist all of them.
 func TestCleanupDrainsRecoveredBatchNoDrops(t *testing.T) {
 	rec := &recordingStore{LogStore: newTestStore(t)}
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -107,7 +107,7 @@ func TestCleanupDrainsCombinedQueueAndBatchNoDrops(t *testing.T) {
 		LogStore: newTestStore(t),
 		delay:    25 * time.Millisecond, // slow store keeps batchWriter busy so the channel buffer fills
 	}
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -142,7 +142,7 @@ func TestCleanupDrainsCombinedQueueAndBatchNoDrops(t *testing.T) {
 // subsequent enqueues are dropped at the source and do not panic.
 func TestCleanupRejectsNewSendsAfterClosed(t *testing.T) {
 	rec := &recordingStore{LogStore: newTestStore(t)}
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, rec, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -179,7 +179,7 @@ func TestCleanupRejectsNewSendsAfterClosed(t *testing.T) {
 // call must be a no-op rather than re-cancelling, re-closing channels, or
 // panicking.
 func TestCleanupIsIdempotent(t *testing.T) {
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -192,7 +192,7 @@ func TestCleanupIsIdempotent(t *testing.T) {
 }
 
 func TestWriterConfigDefaultsAndInitOverrides(t *testing.T) {
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, newTestStore(t), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -216,7 +216,7 @@ func TestWriterConfigDefaultsAndInitOverrides(t *testing.T) {
 		WriteQueueCapacity:       11,
 		DeferredUsageConcurrency: 2,
 	}
-	plugin, err = Init(context.Background(), &Config{Writer: writer}, testLogger{}, newTestStore(t), nil, nil)
+	plugin, err = Init(context.Background(), &Config{Writer: writer}, testLogger{}, newTestStore(t), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() with writer error = %v", err)
 	}
@@ -236,7 +236,7 @@ func TestWriterConfigDefaultsAndInitOverrides(t *testing.T) {
 
 func TestProcessBatchKeepsRicherDuplicateLogEntry(t *testing.T) {
 	store := newTestStore(t)
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -285,7 +285,7 @@ func TestProcessBatchKeepsRicherDuplicateLogEntry(t *testing.T) {
 
 func TestProcessBatchRepairsBillingAcrossBatchBoundary(t *testing.T) {
 	store := newTestStore(t)
-	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
@@ -308,6 +308,7 @@ func TestProcessBatchRepairsBillingAcrossBatchBoundary(t *testing.T) {
 		PromptTokens:     1600,
 		CompletionTokens: 120,
 		TotalTokens:      1720,
+		Cost:             &schemas.BifrostCost{InputCost: 0.001, OutputCost: 0.0008, AdditionalCost: 0.00004, TotalCost: cost},
 	}
 	plugin.processBatch([]*writeQueueEntry{{log: second}})
 
@@ -320,5 +321,8 @@ func TestProcessBatchRepairsBillingAcrossBatchBoundary(t *testing.T) {
 	}
 	if got.TokenUsageParsed == nil || got.TokenUsageParsed.TotalTokens != 1720 {
 		t.Fatalf("stored token usage = %+v, want 1720 total tokens", got.TokenUsageParsed)
+	}
+	if got.InputCost != 0.001 || got.OutputCost != 0.0008 || got.AdditionalCost != 0.00004 {
+		t.Fatalf("stored cost split = %g/%g/%g, want 0.001/0.0008/0.00004", got.InputCost, got.OutputCost, got.AdditionalCost)
 	}
 }
