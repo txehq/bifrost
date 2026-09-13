@@ -13,7 +13,7 @@ fi
 
 PLUGIN_NAME="$1"
 REPO_SLUG="${GITHUB_REPOSITORY:-capsohq/bifrost}"
-MODULE_ROOT="github.com/${REPO_SLUG}"
+MODULE_ROOT="$(go mod edit -json core/go.mod | jq -r '.Module.Path | sub("/core$"; "")')"
 
 # Get core version from parameter or version file
 if [ -n "${2:-}" ]; then

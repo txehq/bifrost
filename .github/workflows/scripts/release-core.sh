@@ -11,7 +11,7 @@ if [[ "${1:-}" == "" ]]; then
 fi
 VERSION="$1"
 REPO_SLUG="${GITHUB_REPOSITORY:-capsohq/bifrost}"
-MODULE_ROOT="github.com/${REPO_SLUG}"
+MODULE_ROOT="$(go mod edit -json core/go.mod | jq -r '.Module.Path | sub("/core$"; "")')"
 
 TAG_NAME="core/v${VERSION}"
 

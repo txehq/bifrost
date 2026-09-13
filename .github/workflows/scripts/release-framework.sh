@@ -15,7 +15,7 @@ fi
 
 VERSION_RAW="$1"
 REPO_SLUG="${GITHUB_REPOSITORY:-capsohq/bifrost}"
-MODULE_ROOT="github.com/${REPO_SLUG}"
+MODULE_ROOT="$(go mod edit -json core/go.mod | jq -r '.Module.Path | sub("/core$"; "")')"
 # Ensure leading 'v' for module/tag semver
 if [[ "$VERSION_RAW" == v* ]]; then
   VERSION="$VERSION_RAW"

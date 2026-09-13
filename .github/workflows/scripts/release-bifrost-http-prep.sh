@@ -23,7 +23,7 @@ fi
 
 VERSION="$1"
 REPO_SLUG="${GITHUB_REPOSITORY:-capsohq/bifrost}"
-MODULE_ROOT="github.com/${REPO_SLUG}"
+MODULE_ROOT="$(go mod edit -json core/go.mod | jq -r '.Module.Path | sub("/core$"; "")')"
 
 echo "🚀 Preparing bifrost-http v$VERSION release..."
 
