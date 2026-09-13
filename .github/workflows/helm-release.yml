@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   release:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
       contents: write
       packages: write
