@@ -3,10 +3,10 @@ entries:
   bifrost:
   - apiVersion: v2
     appVersion: 1.5.12
-    created: "2026-08-17T07:46:39.934542684Z"
+    created: "2026-09-13T15:16:04.606401375Z"
     description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
       for multiple providers
-    digest: 9291e061d9b2ba3c8e9c8cf5d4309f7c1e4162f0e6b680beb5d79ed71a66f8e9
+    digest: 0c4e7de0c169c4d41c2e2b98c87d81667c1c79990cb6bf3b147d77e624209290
     home: https://www.getmaxim.ai/bifrost
     icon: https://www.getbifrost.ai/favicon.png
     keywords:
@@ -23,7 +23,127 @@ entries:
     - https://github.com/capsohq/bifrost
     type: application
     urls:
-    - https://github.com/capsohq/bifrost/releases/download/helm-chart-v2.1.35/bifrost-2.1.35.tgz
+    - https://github.com/capsohq/bifrost/releases/download/helm-chart-v2.1.40/bifrost-2.1.40.tgz
+    version: 2.1.40
+  - apiVersion: v2
+    appVersion: 1.5.12
+    created: "2026-09-08T16:18:03.995305054Z"
+    description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+      for multiple providers
+    digest: 2c4701b32b9f740bb0e68feca30726d1a0269047fe69f177b350daa527376f2e
+    home: https://www.getmaxim.ai/bifrost
+    icon: https://www.getbifrost.ai/favicon.png
+    keywords:
+    - ai
+    - gateway
+    - llm
+    - openai
+    - anthropic
+    maintainers:
+    - email: support@getbifrost.ai
+      name: Bifrost Team
+    name: bifrost
+    sources:
+    - https://github.com/maximhq/bifrost
+    type: application
+    urls:
+    - https://github.com/maximhq/bifrost/releases/download/helm-chart-v2.1.39/bifrost-2.1.39.tgz
+    version: 2.1.39
+  - apiVersion: v2
+    appVersion: 1.5.12
+    created: "2026-09-04T13:58:23.716858894Z"
+    description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+      for multiple providers
+    digest: d1c2efca65ded34bf2c8082e6fd6b5580927e9431ac2b2e1dbb8f3c942732980
+    home: https://www.getmaxim.ai/bifrost
+    icon: https://www.getbifrost.ai/favicon.png
+    keywords:
+    - ai
+    - gateway
+    - llm
+    - openai
+    - anthropic
+    maintainers:
+    - email: support@getbifrost.ai
+      name: Bifrost Team
+    name: bifrost
+    sources:
+    - https://github.com/maximhq/bifrost
+    type: application
+    urls:
+    - https://github.com/maximhq/bifrost/releases/download/helm-chart-v2.1.38/bifrost-2.1.38.tgz
+    version: 2.1.38
+  - apiVersion: v2
+    appVersion: 1.5.12
+    created: "2026-08-26T21:02:34.586211013Z"
+    description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+      for multiple providers
+    digest: 4ca78fd0fda8e6500fb623f835552ad41a0d6ddd4a98a279d01422278089c608
+    home: https://www.getmaxim.ai/bifrost
+    icon: https://www.getbifrost.ai/favicon.png
+    keywords:
+    - ai
+    - gateway
+    - llm
+    - openai
+    - anthropic
+    maintainers:
+    - email: support@getbifrost.ai
+      name: Bifrost Team
+    name: bifrost
+    sources:
+    - https://github.com/maximhq/bifrost
+    type: application
+    urls:
+    - https://github.com/maximhq/bifrost/releases/download/helm-chart-v2.1.37/bifrost-2.1.37.tgz
+    version: 2.1.37
+  - apiVersion: v2
+    appVersion: 1.5.12
+    created: "2026-08-23T05:25:46.596816744Z"
+    description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+      for multiple providers
+    digest: eb4c2bc8c9a40a98b8f3b06fd5906e8dc0b61176415a7ac74da2783dfaa4e842
+    home: https://www.getmaxim.ai/bifrost
+    icon: https://www.getbifrost.ai/favicon.png
+    keywords:
+    - ai
+    - gateway
+    - llm
+    - openai
+    - anthropic
+    maintainers:
+    - email: support@getbifrost.ai
+      name: Bifrost Team
+    name: bifrost
+    sources:
+    - https://github.com/maximhq/bifrost
+    type: application
+    urls:
+    - https://github.com/maximhq/bifrost/releases/download/helm-chart-v2.1.36/bifrost-2.1.36.tgz
+    version: 2.1.36
+  - apiVersion: v2
+    appVersion: 1.5.12
+    created: "2026-08-13T12:54:03.779735804Z"
+    description: A Helm chart for deploying Bifrost - AI Gateway with unified interface
+      for multiple providers
+    digest: b4b39851e6ef320e800e74bb6e813597a96e11884b95b3e941c2ee04e7a9bd2a
+    home: https://www.getmaxim.ai/bifrost
+    icon: https://www.getbifrost.ai/favicon.png
+    keywords:
+    - ai
+    - gateway
+    - llm
+    - openai
+    - anthropic
+    maintainers:
+    - email: support@getbifrost.ai
+      name: Bifrost Team
+    name: bifrost
+    sources:
+    - https://github.com/maximhq/bifrost
+    type: application
+    urls:
+    - https://github.com/maximhq/bifrost/releases/download/helm-chart-v2.1.35/bifrost-2.1.35.tgz
     version: 2.1.35
   - apiVersion: v2
     appVersion: 1.5.12
@@ -1537,4 +1657,4 @@ entries:
     urls:
     - https://github.com/maximhq/bifrost/releases/download/helm-chart-v1.3.5/bifrost-1.3.5.tgz
     version: 1.3.5
-generated: "2026-08-17T07:46:39.931056656Z"
+generated: "2026-09-13T15:16:04.599787528Z"
