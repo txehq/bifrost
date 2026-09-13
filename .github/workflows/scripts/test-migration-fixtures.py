@@ -21,6 +21,19 @@ MISSING = {
     "user_agent_mappings": "id pattern match_type app is_active created_at updated_at",
 }
 NEW_TABLES = {"batch_jobs", "mcp_oauth_flows", "mcp_oauth_tokens", "notifications", "user_agent_mappings"}
+MISSING.update({
+    "config_client": "hidden_request_types_json vk_rotation_cooldown_ns compat_azure_deepseek",
+    "config_providers": "prompt_cache_json",
+    "enterprise_mcp_tool_groups": "id name endpoint_slug description enabled tools config_hash created_by_user_id created_at updated_at",
+    "enterprise_mcp_tool_group_virtual_keys": "id tool_group_id virtual_key_id",
+})
+MISSING["config_keys"] += " databricks_workspace_url databricks_client_id databricks_client_secret databricks_api_format databricks_forward_gateway_tags github_copilot_app_id github_copilot_installation_id github_copilot_repository_id github_copilot_private_key github_copilot_github_domain"
+MISSING["config_mcp_clients"] += " endpoint_slug"
+MISSING["governance_model_pricing"] += " output_cost_per_video_per_second_480p output_cost_per_video_per_second_720p output_cost_per_video_per_second_1024p output_cost_per_video_per_second_1080p output_cost_per_video_per_second_4k"
+MISSING["governance_virtual_keys"] = "allow_all_providers previous_value previous_value_hash previous_value_expires_at rotated_at"
+MISSING["logs"] += " served_model tool_call_names complexity_tier complexity_mechanism complexity_score session_id project_id project_name routing_metadata video_debug"
+MISSING["mcp_tool_logs"] += " project_id project_name"
+NEW_TABLES.update({"enterprise_mcp_tool_groups", "enterprise_mcp_tool_group_virtual_keys"})
 
 
 def generate(backend, present=True):

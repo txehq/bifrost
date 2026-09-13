@@ -889,6 +889,43 @@ append_v200_fixtures() {
   done <<'V200_COLUMNS'
 config_keys|bedrock_endpoints_json|NULL|name = 'migration-test-key-anthropic'
 config_keys|bedrock_mantle_endpoints_json|NULL|name = 'migration-test-key-anthropic'
+config_client|hidden_request_types_json|NULL|id = 1
+config_client|vk_rotation_cooldown_ns|0|id = 1
+config_client|compat_azure_deepseek|NULL|id = 1
+config_keys|databricks_workspace_url|NULL|name = 'migration-test-key-anthropic'
+config_keys|databricks_client_id|NULL|name = 'migration-test-key-anthropic'
+config_keys|databricks_client_secret|NULL|name = 'migration-test-key-anthropic'
+config_keys|databricks_api_format|NULL|name = 'migration-test-key-anthropic'
+config_keys|databricks_forward_gateway_tags|NULL|name = 'migration-test-key-anthropic'
+config_keys|github_copilot_app_id|NULL|name = 'migration-test-key-anthropic'
+config_keys|github_copilot_installation_id|NULL|name = 'migration-test-key-anthropic'
+config_keys|github_copilot_repository_id|NULL|name = 'migration-test-key-anthropic'
+config_keys|github_copilot_private_key|NULL|name = 'migration-test-key-anthropic'
+config_keys|github_copilot_github_domain|NULL|name = 'migration-test-key-anthropic'
+config_mcp_clients|endpoint_slug|'migration-test-mcp-one'|client_id = 'mcp-migration-test-001'
+config_providers|prompt_cache_json|NULL|name = 'anthropic'
+governance_model_pricing|output_cost_per_video_per_second_480p|NULL|id = 1
+governance_model_pricing|output_cost_per_video_per_second_720p|NULL|id = 1
+governance_model_pricing|output_cost_per_video_per_second_1024p|NULL|id = 1
+governance_model_pricing|output_cost_per_video_per_second_1080p|NULL|id = 1
+governance_model_pricing|output_cost_per_video_per_second_4k|NULL|id = 1
+governance_virtual_keys|allow_all_providers|false|id = 'vk-migration-test-1'
+governance_virtual_keys|previous_value|NULL|id = 'vk-migration-test-1'
+governance_virtual_keys|previous_value_hash|NULL|id = 'vk-migration-test-1'
+governance_virtual_keys|previous_value_expires_at|NULL|id = 'vk-migration-test-1'
+governance_virtual_keys|rotated_at|NULL|id = 'vk-migration-test-1'
+logs|served_model|'gpt-4'|id = 'log-migration-test-001'
+logs|tool_call_names|'lookup'|id = 'log-migration-test-001'
+logs|complexity_tier|'SIMPLE'|id = 'log-migration-test-001'
+logs|complexity_mechanism|'keyword'|id = 'log-migration-test-001'
+logs|complexity_score|0.1|id = 'log-migration-test-001'
+logs|session_id|'migration-session'|id = 'log-migration-test-001'
+logs|project_id|NULL|id = 'log-migration-test-001'
+logs|project_name|NULL|id = 'log-migration-test-001'
+logs|routing_metadata|'{}'|id = 'log-migration-test-001'
+logs|video_debug|''|id = 'log-migration-test-001'
+mcp_tool_logs|project_id|NULL|id = 'mcp-log-migration-001'
+mcp_tool_logs|project_name|NULL|id = 'mcp-log-migration-001'
 config_mcp_clients|needs_session_stickiness|false|client_id = 'mcp-migration-test-001'
 config_mcp_clients|token_exchange_json|NULL|client_id = 'mcp-migration-test-001'
 config_mcp_clients|pending_oauth_config_json|NULL|client_id = 'mcp-migration-test-001'
@@ -923,6 +960,26 @@ mcp_tool_logs|app_key|'migration-app'|id = 'mcp-log-migration-001'
 mcp_tool_logs|decision|'allow'|id = 'mcp-log-migration-001'
 mcp_tool_logs|source|'migration-test'|id = 'mcp-log-migration-001'
 V200_COLUMNS
+
+  # Disabled Virtual MCPs exercise both tables without exposing test tools.
+  v200_insert enterprise_mcp_tool_groups <<V200_ROW
+id|701
+name|'migration-test-virtual-mcp'
+endpoint_slug|'migration-test-virtual-mcp'
+description|'Preserve virtual MCP configuration'
+enabled|false
+tools|'[]'
+config_hash|''
+created_by_user_id|NULL
+created_at|$now
+updated_at|$now
+V200_ROW
+
+  v200_insert enterprise_mcp_tool_group_virtual_keys <<V200_ROW
+id|701
+tool_group_id|701
+virtual_key_id|'vk-migration-test-1'
+V200_ROW
 
   # Terminal accounting state keeps the sweeper from polling the fake batch.
   v200_insert batch_jobs <<V200_ROW
