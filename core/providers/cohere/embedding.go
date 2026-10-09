@@ -43,7 +43,7 @@ func cohereContentBlockFromEmbeddingPart(part schemas.EmbeddingContentPart) (*Co
 		}
 		return nil, providerUtils.InvalidRequestErrorf("cohere image part missing data")
 	default:
-		return nil, providerUtils.InvalidRequestErrorf("cohere embeddings support only text and image parts")
+		return nil, providerUtils.InvalidRequestErrorf("this provider supports only text and image embedding parts")
 	}
 }
 
@@ -141,7 +141,7 @@ func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*Coh
 		cohereReq.EmbeddingTypes = []string{*bifrostReq.Params.EncodingFormat}
 	}
 
-	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams("cohere"); err != nil {
+	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams(); err != nil {
 		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 	contents := schemas.EmbeddingInput(bifrostReq.Input).Contents()
