@@ -351,139 +351,139 @@ func (p *LoggerPlugin) retryTransientBatch(ctx context.Context, size int, kind s
 //     busy_timeout on the same writer lock.
 //   - anything else: the existing per-row fallback, perRow, isolates the bad
 //     row so one poisoned entry does not drop its neighbours. perRow reports
-//     false when ctx ended before the row was settled.
-func writeWithRecovery[T any](p *LoggerPlugin, ctx context.Context, kind string, entries []T, write func(context.Context, []T) error, perRow func(context.Context, T) bool) (unwritten []T) {
+//     whether the row was written, dropped, or interrupted because ctx ended
+//     before it was settled.
+//
+// Dropped entries (already counted in droppedRequests) are returned separately
+// so the caller does not mistake them for persisted rows.
+func writeWithRecovery[T any](p *LoggerPlugin, ctx context.Context, kind string, entries []T, write func(context.Context, []T) error, perRow func(context.Context, T) rowOutcome) (unwritten, dropped []T) {
 	if len(entries) == 0 {
-		return nil
+		return nil, nil
 	}
 	err := p.retryTransientBatch(ctx, len(entries), kind, func() error { return write(ctx, entries) })
 	switch {
 	case err == nil:
-		return nil
+		return nil, nil
 	case ctx.Err() != nil:
 		// The write was interrupted, not refused: hand the rows back whole.
 		p.logger.Warn("batch insert of %d %s entries interrupted (%v), handing them back for the drain", len(entries), kind, ctx.Err())
-		return entries
+		return entries, nil
 	case logstore.IsPostgresStatementTimeoutError(err):
 		if len(entries) == 1 {
 			p.logger.Warn("batch insert of %d %s entries timed out and cannot be split further, dropping: %v", len(entries), kind, err)
 			p.droppedRequests.Add(int64(len(entries)))
-			return nil
+			return nil, entries
 		}
 		mid := len(entries) / 2
 		p.logger.Warn("batch insert of %d %s entries hit statement_timeout, splitting into %d + %d: %v", len(entries), kind, mid, len(entries)-mid, err)
-		unwritten = append(unwritten, writeWithRecovery(p, ctx, kind, entries[:mid], write, perRow)...)
-		unwritten = append(unwritten, writeWithRecovery(p, ctx, kind, entries[mid:], write, perRow)...)
-		return unwritten
+		for _, half := range [][]T{entries[:mid], entries[mid:]} {
+			halfUnwritten, halfDropped := writeWithRecovery(p, ctx, kind, half, write, perRow)
+			unwritten = append(unwritten, halfUnwritten...)
+			dropped = append(dropped, halfDropped...)
+		}
+		return unwritten, dropped
 	case logstore.IsTransientWriteError(err):
 		p.logger.Warn("batch insert of %d %s entries dropped after transient store failure (per-row retry cannot help): %v", len(entries), kind, err)
 		p.droppedRequests.Add(int64(len(entries)))
-		return nil
+		return nil, entries
 	default:
 		p.logger.Warn("batch insert failed for %d %s entries, falling back to individual inserts: %v", len(entries), kind, err)
 		for i, entry := range entries {
 			if ctx.Err() != nil {
-				return append(unwritten, entries[i:]...)
+				return append(unwritten, entries[i:]...), dropped
 			}
-			if !perRow(ctx, entry) {
+			switch perRow(ctx, entry) {
+			case rowInterrupted:
 				unwritten = append(unwritten, entry)
+			case rowDropped:
+				dropped = append(dropped, entry)
 			}
 		}
-		return unwritten
+		return unwritten, dropped
 	}
 }
 
-// writtenLogs returns logs without the ones handed back unwritten, so billing repair
-// only runs against rows the store accepted.
-func writtenLogs(logs, unwritten []*logstore.Log) []*logstore.Log {
-	if len(unwritten) == 0 {
-		return logs
-	}
-	held := make(map[*logstore.Log]struct{}, len(unwritten))
-	for _, log := range unwritten {
-		held[log] = struct{}{}
-	}
-	written := make([]*logstore.Log, 0, len(logs)-len(unwritten))
-	for _, log := range logs {
-		if _, ok := held[log]; !ok {
-			written = append(written, log)
-		}
-	}
-	return written
-}
+// rowOutcome is how a per-row fallback write settled.
+type rowOutcome int
+
+const (
+	rowWritten     rowOutcome = iota // persisted (or already present)
+	rowDropped                       // refused by the store; counted in droppedRequests
+	rowInterrupted                   // ctx ended first; hand back for the drain
+)
 
 // insertLogIndividually is the per-row fallback for a log entry whose batch
 // failed with a row-level error. It isolates the bad entry instead of losing
 // the whole batch, and as a last resort strips the parsed payload fields (one
 // of them failed serialization) and keeps the scalar row: a log without
-// content beats a silently dropped request. It reports false when ctx ended
-// before the row was written or dropped, so the caller can hand it back.
-func (p *LoggerPlugin) insertLogIndividually(ctx context.Context, log *logstore.Log) bool {
+// content beats a silently dropped request. It reports rowInterrupted when ctx
+// ended before the row was written or dropped, so the caller can hand it back.
+func (p *LoggerPlugin) insertLogIndividually(ctx context.Context, log *logstore.Log) rowOutcome {
 	err := p.store.BatchCreateIfNotExists(ctx, []*logstore.Log{log})
 	if err == nil {
-		return true
+		return rowWritten
 	}
 	if ctx.Err() != nil {
-		return false
+		return rowInterrupted
 	}
 	p.logger.Warn("individual insert failed for log %s, retrying without payload fields: %v", log.ID, err)
 	stripUnserializablePayloads(log)
 	err = p.store.BatchCreateIfNotExists(ctx, []*logstore.Log{log})
 	if err == nil {
-		return true
+		return rowWritten
 	}
 	if ctx.Err() != nil {
-		return false
+		return rowInterrupted
 	}
 	p.logger.Warn("payload-stripped insert failed for log %s: %v", log.ID, err)
 	p.droppedRequests.Add(1)
-	return true
+	return rowDropped
 }
 
 // insertMCPLogIndividually is the per-row fallback for an MCP tool log entry.
-// It reports false when ctx ended before the row was written or dropped.
-func (p *LoggerPlugin) insertMCPLogIndividually(ctx context.Context, log *logstore.MCPToolLog) bool {
+// It reports rowInterrupted when ctx ended before the row was written or dropped.
+func (p *LoggerPlugin) insertMCPLogIndividually(ctx context.Context, log *logstore.MCPToolLog) rowOutcome {
 	err := p.store.BatchCreateMCPToolLogsIfNotExists(ctx, []*logstore.MCPToolLog{log})
 	if err == nil {
-		return true
+		return rowWritten
 	}
 	if ctx.Err() != nil {
-		return false
+		return rowInterrupted
 	}
 	p.logger.Warn("individual insert failed for MCP tool log %s: %v", log.ID, err)
 	p.droppedRequests.Add(1)
-	return true
+	return rowDropped
 }
 
 // insertAgentLogIndividually is the per-row fallback for an Agent log entry.
-// It reports false when ctx ended before the row was written or dropped.
-func (p *LoggerPlugin) insertAgentLogIndividually(ctx context.Context, log *logstore.AgentLog) bool {
+// It reports rowInterrupted when ctx ended before the row was written or dropped.
+func (p *LoggerPlugin) insertAgentLogIndividually(ctx context.Context, log *logstore.AgentLog) rowOutcome {
 	_, err := p.store.BatchCreateAgentLogsIfNotExists(ctx, []*logstore.AgentLog{log})
 	if err == nil {
-		return true
+		return rowWritten
 	}
 	if ctx.Err() != nil {
-		return false
+		return rowInterrupted
 	}
 	p.logger.Warn("individual insert failed for Agent log %s: %v", log.ID, err)
 	p.droppedRequests.Add(1)
-	return true
+	return rowDropped
 }
 
 // updateLogIndividually is the per-row fallback for a partial log update whose
-// batch failed with a row-level error. It reports false when ctx ended before
-// the row was written or dropped.
-func (p *LoggerPlugin) updateLogIndividually(ctx context.Context, log *logstore.Log) bool {
+// batch failed with a row-level error. It reports rowInterrupted when ctx ended
+// before the row was written or dropped.
+func (p *LoggerPlugin) updateLogIndividually(ctx context.Context, log *logstore.Log) rowOutcome {
 	err := p.store.BatchUpdate(ctx, []*logstore.Log{log})
 	if err == nil {
-		return true
+		return rowWritten
 	}
 	if ctx.Err() != nil {
-		return false
+		return rowInterrupted
 	}
 	p.logger.Warn("individual update failed for log %s: %v", log.ID, err)
 	p.droppedRequests.Add(1)
-	return true
+	return rowDropped
 }
 
 // processBatch writes a batch of log entries, chunked by the store, and
@@ -522,16 +522,18 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 	// Several copies of one request's row can share a batch; keep the one with the
 	// most billing data, since inserts are idempotent and the first copy wins.
 	logs = compactLogsForInsert(logs)
-	unwrittenLogs := writeWithRecovery(p, ctx, "log", logs, func(ctx context.Context, chunk []*logstore.Log) error {
+	unwrittenLogs, droppedLogs := writeWithRecovery(p, ctx, "log", logs, func(ctx context.Context, chunk []*logstore.Log) error {
 		return p.store.BatchCreateIfNotExists(ctx, chunk)
 	}, p.insertLogIndividually)
-	if len(logs) > 0 {
-		p.repairRecentDuplicateBilling(writtenLogs(logs, unwrittenLogs))
-	}
-	unwrittenMCP := writeWithRecovery(p, ctx, "MCP tool log", mcpLogs, func(ctx context.Context, chunk []*logstore.MCPToolLog) error {
+	// Only rows the store kept feed the duplicate-billing state. A duplicate whose
+	// insert landed but whose repair ctx interrupted is not finished either: it is
+	// handed back with the unwritten rows, and the drain reruns the no-op insert
+	// and the repair.
+	unwrittenLogs = append(unwrittenLogs, p.repairRecentDuplicateBilling(ctx, persistedLogs(logs, unwrittenLogs, droppedLogs))...)
+	unwrittenMCP, _ := writeWithRecovery(p, ctx, "MCP tool log", mcpLogs, func(ctx context.Context, chunk []*logstore.MCPToolLog) error {
 		return p.store.BatchCreateMCPToolLogsIfNotExists(ctx, chunk)
 	}, p.insertMCPLogIndividually)
-	unwrittenAgent := writeWithRecovery(p, ctx, "Agent log", agentLogs, func(ctx context.Context, chunk []*logstore.AgentLog) error {
+	unwrittenAgent, _ := writeWithRecovery(p, ctx, "Agent log", agentLogs, func(ctx context.Context, chunk []*logstore.AgentLog) error {
 		_, err := p.store.BatchCreateAgentLogsIfNotExists(ctx, chunk)
 		return err
 	}, p.insertAgentLogIndividually)
@@ -539,7 +541,7 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 	// update landing in the same batch resolve correctly: the row exists by the
 	// time the update runs. The queue is FIFO and the insert is always enqueued
 	// first (at eviction), so it is never in a later batch than its update.
-	unwrittenUpdates := writeWithRecovery(p, ctx, "log update", logUpdates, func(ctx context.Context, chunk []*logstore.Log) error {
+	unwrittenUpdates, _ := writeWithRecovery(p, ctx, "log update", logUpdates, func(ctx context.Context, chunk []*logstore.Log) error {
 		return p.store.BatchUpdate(ctx, chunk)
 	}, p.updateLogIndividually)
 
@@ -663,6 +665,28 @@ func compactLogsForInsert(logs []*logstore.Log) []*logstore.Log {
 	return compacted
 }
 
+// persistedLogs returns the logs that writeWithRecovery persisted, excluding
+// the ones it handed back for a later retry and the ones it dropped.
+func persistedLogs(logs, unwritten, dropped []*logstore.Log) []*logstore.Log {
+	if len(unwritten) == 0 && len(dropped) == 0 {
+		return logs
+	}
+	excluded := make(map[*logstore.Log]struct{}, len(unwritten)+len(dropped))
+	for _, log := range unwritten {
+		excluded[log] = struct{}{}
+	}
+	for _, log := range dropped {
+		excluded[log] = struct{}{}
+	}
+	persisted := make([]*logstore.Log, 0, len(logs))
+	for _, log := range logs {
+		if _, ok := excluded[log]; !ok {
+			persisted = append(persisted, log)
+		}
+	}
+	return persisted
+}
+
 // mergeMissingLogBilling combines complementary duplicate rows. Cost and usage
 // can be attached by different post-processing paths, so choosing only one row
 // may discard half of the billing data even when both copies share a batch.
@@ -697,8 +721,13 @@ func mergeMissingLogBilling(dst, src *logstore.Log) {
 
 // repairRecentDuplicateBilling handles the same duplicate pattern when a
 // timer or size flush lands between the two copies. Inserts are intentionally
-// idempotent, so a later richer row would otherwise be ignored forever.
-func (p *LoggerPlugin) repairRecentDuplicateBilling(logs []*logstore.Log) {
+// idempotent, so a later richer row would otherwise be ignored forever. logs
+// must be rows the store confirmed. It returns the logs whose repair ctx
+// interrupted; their state is left as it was, so a retry repairs them again.
+func (p *LoggerPlugin) repairRecentDuplicateBilling(ctx context.Context, logs []*logstore.Log) (interrupted []*logstore.Log) {
+	if len(logs) == 0 {
+		return nil
+	}
 	p.recentLogBillingMu.Lock()
 	defer p.recentLogBillingMu.Unlock()
 
@@ -761,7 +790,12 @@ func (p *LoggerPlugin) repairRecentDuplicateBilling(logs []*logstore.Log) {
 			updates["additional_cost"] = log.AdditionalCost
 		}
 		if len(updates) > 0 {
-			if err := p.store.Update(p.ctx, log.ID, updates); err != nil {
+			if err := p.store.Update(ctx, log.ID, updates); err != nil {
+				if ctx.Err() != nil {
+					p.logger.Warn("billing repair for duplicate log %s interrupted (%v), handing it back for the drain", log.ID, ctx.Err())
+					interrupted = append(interrupted, log)
+					continue
+				}
 				p.logger.Warn("failed to repair billing fields for duplicate log %s: %v", log.ID, err)
 				continue
 			}
@@ -777,6 +811,7 @@ func (p *LoggerPlugin) repairRecentDuplicateBilling(logs []*logstore.Log) {
 		p.recentLogBillingOrder = p.recentLogBillingOrder[1:]
 		delete(p.recentLogBilling, id)
 	}
+	return interrupted
 }
 
 func preferLogForInsert(candidate, current *logstore.Log) bool {
@@ -1070,9 +1105,26 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 // goroutine waits; the guardrails plugin runs the callback when its background
 // evaluation finishes, which it always does within its own timeout. Cleanup
 // writes rows still held at shutdown as they were built.
+//
+// Parking a row and a callback's claim-then-queue both run under the read side
+// of heldGuardrailMu, and Cleanup's release takes the write side, so a row is
+// always either released by Cleanup or already in the queue before Cleanup
+// drains and closes it.
 func (p *LoggerPlugin) holdForDeferredGuardrail(deferred *schemas.DeferredGuardrailResult, entry *logstore.Log, callback func(entry *logstore.Log)) {
+	p.heldGuardrailMu.RLock()
+	if p.heldGuardrailReleased {
+		// Cleanup's release already ran; nothing would write a row parked now.
+		p.heldGuardrailMu.RUnlock()
+		p.writeHeldRow(entry, callback)
+		return
+	}
 	p.heldGuardrailRows.Store(entry.ID, &writeQueueEntry{log: entry, callback: callback})
+	p.heldGuardrailMu.RUnlock()
+	// Not under the lock: OnComplete runs the callback inline when the result
+	// has already landed, and the callback takes the lock itself.
 	deferred.OnComplete(func(metadata *schemas.BifrostGuardrailMetadata, redaction schemas.RedactionData, pluginLogs []schemas.PluginLogEntry) {
+		p.heldGuardrailMu.RLock()
+		defer p.heldGuardrailMu.RUnlock()
 		if _, held := p.heldGuardrailRows.LoadAndDelete(entry.ID); !held {
 			return // Cleanup already wrote the row.
 		}
@@ -1088,8 +1140,13 @@ func (p *LoggerPlugin) holdForDeferredGuardrail(deferred *schemas.DeferredGuardr
 
 // releaseHeldGuardrailRows writes every row still waiting on an output-monitor
 // result as it was built, so shutdown loses only the late result, never the row.
-// Cleanup runs it after setting closed, so no row can be held behind it.
+// Cleanup runs it before draining the queue. Holding heldGuardrailMu waits out
+// any callback that has claimed its row but not queued it yet, and marks the
+// release done so no row can be held behind it.
 func (p *LoggerPlugin) releaseHeldGuardrailRows() {
+	p.heldGuardrailMu.Lock()
+	defer p.heldGuardrailMu.Unlock()
+	p.heldGuardrailReleased = true
 	p.heldGuardrailRows.Range(func(key, _ any) bool {
 		if value, held := p.heldGuardrailRows.LoadAndDelete(key); held {
 			row := value.(*writeQueueEntry)

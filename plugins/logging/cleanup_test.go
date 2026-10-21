@@ -3,8 +3,11 @@ package logging
 import (
 	"context"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -450,5 +453,140 @@ func TestCleanupTickSkipsFlushWhileMigrating(t *testing.T) {
 	plugin.cleanupOldProcessingLogs()
 	if got := store.count(); got != 3 {
 		t.Fatalf("expected the LLM, MCP and A2A flushes once the lock cleared, got %d", got)
+	}
+}
+
+// billingRepairStore lets a test fail the duplicate-billing repair UPDATE, and
+// lets a test fail inserts transiently, so the writer's completeness tracking can
+// be checked against what actually reached the store.
+type billingRepairStore struct {
+	logstore.LogStore
+	failInserts atomic.Bool
+	// onUpdate, when set, runs before each Update and may return an error in its place.
+	onUpdate func(ctx context.Context) error
+}
+
+func (s *billingRepairStore) BatchCreateIfNotExists(ctx context.Context, entries []*logstore.Log) error {
+	if s.failInserts.Load() {
+		return fmt.Errorf("write logs: %w", &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED})
+	}
+	return s.LogStore.BatchCreateIfNotExists(ctx, entries)
+}
+
+func (s *billingRepairStore) Update(ctx context.Context, id string, entry any) error {
+	if s.onUpdate != nil {
+		if err := s.onUpdate(ctx); err != nil {
+			return err
+		}
+	}
+	return s.LogStore.Update(ctx, id, entry)
+}
+
+func pricedTestLog(id string, cost float64) *logstore.Log {
+	log := makeTestLog(id)
+	log.Cost = &cost
+	log.InputCost = cost * 0.6
+	log.OutputCost = cost * 0.4
+	return log
+}
+
+func countedTestLog(id string) *logstore.Log {
+	log := makeTestLog(id)
+	log.TokenUsageParsed = &schemas.BifrostLLMUsage{PromptTokens: 40, CompletionTokens: 2, TotalTokens: 42}
+	return log
+}
+
+// A row the store never kept must not count as persisted billing: if it did, a
+// sparse duplicate that does get inserted would be treated as already carrying
+// the dropped row's cost and usage, and a later rich duplicate (a conflict-safe
+// no-op insert) would skip the repair that is now the only way to record them.
+func TestProcessBatchDroppedRowDoesNotMarkBillingPersisted(t *testing.T) {
+	store := &billingRepairStore{LogStore: newTestStore(t)}
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+
+	const id = "dropped-rich-row"
+	const cost = 0.0042
+	rich := pricedTestLog(id, cost)
+	rich.TokenUsageParsed = &schemas.BifrostLLMUsage{PromptTokens: 40, CompletionTokens: 2, TotalTokens: 42}
+
+	store.failInserts.Store(true)
+	plugin.processBatch(context.Background(), []*writeQueueEntry{{log: rich}})
+	store.failInserts.Store(false)
+	if dropped := plugin.droppedRequests.Load(); dropped != 1 {
+		t.Fatalf("expected the rich row to be dropped after transient failures, got %d drops", dropped)
+	}
+
+	sparse := makeTestLog(id)
+	plugin.processBatch(context.Background(), []*writeQueueEntry{{log: sparse}})
+	plugin.processBatch(context.Background(), []*writeQueueEntry{{log: cloneTestLog(rich, id)}})
+
+	got, err := store.FindByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if got.Cost == nil || *got.Cost != cost {
+		t.Fatalf("stored cost = %v, want %v: the dropped row's billing was cached as persisted", got.Cost, cost)
+	}
+	if got.TokenUsageParsed == nil || got.TokenUsageParsed.TotalTokens != 42 {
+		t.Fatalf("stored token usage = %+v, want 42 total tokens", got.TokenUsageParsed)
+	}
+}
+
+// A duplicate whose insert landed but whose billing repair was interrupted by
+// the batch context ending (Cleanup cancelling the writer) is not finished: it
+// must be handed back for the drain, which reruns the no-op insert and the
+// repair, instead of the repair failure only being logged.
+func TestProcessBatchHandsBackDuplicateWhoseRepairWasInterrupted(t *testing.T) {
+	store := &billingRepairStore{LogStore: newTestStore(t)}
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+
+	const id = "interrupted-repair"
+	const cost = 0.0031
+	plugin.processBatch(context.Background(), []*writeQueueEntry{{log: pricedTestLog(id, cost)}})
+
+	batchCtx, cancelBatch := context.WithCancel(context.Background())
+	store.onUpdate = func(ctx context.Context) error {
+		if ctx == batchCtx {
+			// Shutdown lands while the repair is in flight.
+			cancelBatch()
+			return ctx.Err()
+		}
+		return nil
+	}
+	var callbacks atomic.Int32
+	entry := &writeQueueEntry{log: countedTestLog(id), callback: func(*logstore.Log) { callbacks.Add(1) }}
+	left := plugin.processBatch(batchCtx, []*writeQueueEntry{entry})
+	if len(left) != 1 || left[0] != entry {
+		t.Fatalf("expected the duplicate with the interrupted repair handed back, got %d entries", len(left))
+	}
+
+	if left := plugin.processBatch(context.Background(), left); len(left) != 0 {
+		t.Fatalf("drain retry left %d entries", len(left))
+	}
+	got, err := store.FindByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if got.TokenUsageParsed == nil || got.TokenUsageParsed.TotalTokens != 42 {
+		t.Fatalf("stored token usage = %+v, want 42 total tokens after the drain's repair", got.TokenUsageParsed)
+	}
+	if got.Cost == nil || *got.Cost != cost {
+		t.Fatalf("stored cost = %v, want %v", got.Cost, cost)
+	}
+	waitFor(t, "the drain's callback", func() bool { return callbacks.Load() == 1 })
+	time.Sleep(20 * time.Millisecond)
+	if n := callbacks.Load(); n != 1 {
+		t.Fatalf("callback ran %d times, want once (only after the repair landed)", n)
+	}
+	if dropped := plugin.droppedRequests.Load(); dropped != 0 {
+		t.Fatalf("interrupted repair must not count as dropped, got %d", dropped)
 	}
 }

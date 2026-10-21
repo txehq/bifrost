@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2475,5 +2476,63 @@ func TestReleaseHeldGuardrailRowsWritesRowOnce(t *testing.T) {
 	}
 	if written := (<-plugin.writeQueue).log; written != entry || len(written.GuardrailDebugParsed.Detections) != 1 {
 		t.Fatalf("released row must be written as built, got %+v", written.GuardrailDebugParsed)
+	}
+}
+
+// TestCleanupWaitsForClaimedGuardrailRow covers a result landing while Cleanup
+// runs: the callback has already taken the held row out of heldGuardrailRows,
+// so the shutdown release no longer sees it, but has not queued it yet. Cleanup
+// must not drain and close the queue until that handoff finishes, or the row of
+// a completed request is lost to the closed channel. The row's large plugin log
+// document keeps the callback between its claim and its send long enough for
+// Cleanup to overtake it.
+func TestCleanupWaitsForClaimedGuardrailRow(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	requestLogs := make([]schemas.PluginLogEntry, 200000)
+	for i := range requestLogs {
+		requestLogs[i] = schemas.PluginLogEntry{PluginName: "guardrails", Level: schemas.LogLevelInfo, Message: fmt.Sprintf("[input] rule %d evaluated", i), Timestamp: int64(i)}
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	deferred := schemas.NewDeferredGuardrailResult()
+	ctx.SetValue(schemas.BifrostContextKeyDeferredGuardrail, deferred)
+	const id = "req-monitor-claimed"
+	entry := makeTestLog(id)
+	entry.PluginLogs = serializePluginLogs(requestLogs)
+	plugin.storeOrEnqueueEntry(ctx, entry, nil)
+	if _, held := plugin.heldGuardrailRows.Load(id); !held {
+		t.Fatal("row was not held for its guardrail result")
+	}
+
+	completed := make(chan struct{})
+	go func() {
+		defer close(completed)
+		metadata, redaction := monitorGuardrailResult()
+		deferred.Complete(metadata, redaction, []schemas.PluginLogEntry{{PluginName: "guardrails", Level: schemas.LogLevelInfo, Message: "[output-monitor] completed"}})
+	}()
+	for {
+		if _, held := plugin.heldGuardrailRows.Load(id); !held {
+			break
+		}
+		runtime.Gosched()
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	<-completed
+
+	if dropped := plugin.droppedRequests.Load(); dropped != 0 {
+		t.Fatalf("claimed guardrail row was dropped during shutdown (%d drops)", dropped)
+	}
+	got, err := store.FindByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("claimed guardrail row was not written before the queue closed: %v", err)
+	}
+	if got.GuardrailDebugParsed == nil || len(got.GuardrailDebugParsed.Detections) != 2 {
+		t.Fatalf("expected the row written with the landed result, got %+v", got.GuardrailDebugParsed)
 	}
 }
