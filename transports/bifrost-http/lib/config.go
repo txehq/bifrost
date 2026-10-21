@@ -6649,13 +6649,16 @@ func ResolveFrameworkPricingConfig(
 		persistedHash = fileHash
 	}
 
-	logger.Debug(
-		"resolved pricing config: url=%s source: %s sync_interval=%d seconds source: %s",
-		*resolvedPricingURL,
-		pricingURLSource,
-		*resolvedSyncSeconds,
-		pricingSyncIntervalSource,
-	)
+	// The package logger is unset when handlers are exercised without SetLogger.
+	if logger != nil {
+		logger.Debug(
+			"resolved pricing config: url=%s source: %s sync_interval=%d seconds source: %s",
+			*resolvedPricingURL,
+			pricingURLSource,
+			*resolvedSyncSeconds,
+			pricingSyncIntervalSource,
+		)
+	}
 
 	return &configstoreTables.TableFrameworkConfig{
 		ID:                     configID,
