@@ -295,6 +295,23 @@ func TestWarpRenderChartErrorRateIgnoresCancellations(t *testing.T) {
 		spec, _ := deps.charts.get(spec1(t, deps))
 		require.Equal(t, []ChartPoint{{X: "openai", Y: 5}}, spec.Points, "5 errors over 100 requests; the other 15 that did not succeed were cancelled")
 	})
+	t.Run("status filter excluding errors", func(t *testing.T) {
+		// Asked for successful requests only, the population holds no errors: the
+		// rate is 0, not the unfiltered errors over the success-only total.
+		fake := &fakeLogReader{
+			providerCostHistogramResult: &logstore.ProviderCostHistogramResult{Providers: []string{"openai"}},
+			statsByProvider:             map[string]*logstore.SearchStats{"openai": {TotalRequests: 80, SuccessRate: 100}},
+			errorStatsByProvider:        map[string]*logstore.SearchStats{"openai": {TotalRequests: 120}},
+		}
+		deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
+		_, err := runTool(t, RenderChartTool, deps, map[string]any{
+			"kind": "bar", "title": "Failure rate by provider", "metric": "error_rate", "group": "provider",
+			"filters": map[string]any{"start_time": "-7d", "status": []any{"success"}},
+		})
+		require.NoError(t, err)
+		spec, _ := deps.charts.get(spec1(t, deps))
+		require.Equal(t, []ChartPoint{{X: "openai", Y: 0}}, spec.Points)
+	})
 }
 
 func spec1(t *testing.T, deps *ToolDeps) string {
@@ -394,5 +411,34 @@ func TestWarpRenderChartFailureLinksOpenTheFailures(t *testing.T) {
 			spec, _ := deps.charts.get(spec1(t, deps))
 			require.Equal(t, wantErrors, strings.Contains(spec.Link, "status=error"), spec.Link)
 		})
+	}
+}
+
+// TestWarpRenderChartModelBarsAggregateAcrossProviders: rankings are per model and
+// provider, but a model chart labels bars by model, so one model served by two
+// providers is one bar with their combined value (latency weighted by requests),
+// not two identically labelled bars.
+func TestWarpRenderChartModelBarsAggregateAcrossProviders(t *testing.T) {
+	rankings := &logstore.ModelRankingResult{Rankings: []logstore.ModelRankingWithTrend{
+		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "gpt-4o", Provider: "openai", TotalRequests: 30, TotalCost: 3, AvgLatency: 100}},
+		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "gpt-4o", Provider: "azure", TotalRequests: 10, TotalCost: 2, AvgLatency: 300}},
+		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "claude", Provider: "anthropic", TotalRequests: 5, TotalCost: 4, AvgLatency: 50}},
+	}}
+	for _, tc := range []struct {
+		metric string
+		want   []ChartPoint
+	}{
+		{"cost", []ChartPoint{{X: "gpt-4o", Y: 5}, {X: "claude", Y: 4}}},
+		{"latency", []ChartPoint{{X: "gpt-4o", Y: 150}, {X: "claude", Y: 50}}},
+	} {
+		fake := &fakeLogReader{modelRankingResult: rankings}
+		deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
+		_, err := runTool(t, RenderChartTool, deps, map[string]any{
+			"kind": "bar", "title": tc.metric + " by model", "metric": tc.metric, "group": "model",
+			"filters": map[string]any{"start_time": "-7d"},
+		})
+		require.NoError(t, err)
+		spec, _ := deps.charts.get(spec1(t, deps))
+		require.Equal(t, tc.want, spec.Points, tc.metric)
 	}
 }

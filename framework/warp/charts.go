@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -376,8 +377,12 @@ func barChartPoints(ctx context.Context, deps *ToolDeps, filters *logstore.Searc
 		}
 		return roundTo(float64(failed)/float64(requests)*100, 2), true
 	}
+	// The numerator is the errors within the requested population: a status filter
+	// that excludes errors leaves none, rather than counting every error over a
+	// population that holds none of them.
 	errorsOnly := scoped
 	errorsOnly.Status = []string{"error"}
+	countErrors := metric == "error_rate" && (len(scoped.Status) == 0 || slices.Contains(scoped.Status, "error"))
 	value := func(requests, tokens int64, cost, latency float64) float64 {
 		switch metric {
 		case "cost":
@@ -406,7 +411,7 @@ func barChartPoints(ctx context.Context, deps *ToolDeps, filters *logstore.Searc
 			return nil, fmt.Errorf("per-provider totals failed: %w", err)
 		}
 		var failed map[string]providerTotal
-		if metric == "error_rate" {
+		if countErrors {
 			if failed, err = providerTotals(ctx, deps, &errorsOnly, discovered.Providers); err != nil {
 				return nil, fmt.Errorf("per-provider error totals failed: %w", err)
 			}
@@ -425,28 +430,51 @@ func barChartPoints(ctx context.Context, deps *ToolDeps, filters *logstore.Searc
 		if err != nil {
 			return nil, fmt.Errorf("model rankings failed: %w", err)
 		}
-		// Rankings are per model and provider, so the failed counts are keyed
-		// the same way.
-		type modelKey struct{ model, provider string }
-		var failed map[modelKey]int64
-		if metric == "error_rate" {
+		// Rankings are per model and provider, but the bars are labelled by
+		// model, so one model served by several providers is one bar: totals
+		// summed, latency weighted by each provider's requests.
+		type modelTotal struct {
+			requests, tokens, failed int64
+			cost, latencyWeight      float64
+		}
+		totals := map[string]*modelTotal{}
+		var order []string
+		for _, r := range result.Rankings {
+			t, ok := totals[r.Model]
+			if !ok {
+				t = &modelTotal{}
+				totals[r.Model] = t
+				order = append(order, r.Model)
+			}
+			t.requests += r.TotalRequests
+			t.tokens += r.TotalTokens
+			t.cost += r.TotalCost
+			t.latencyWeight += r.AvgLatency * float64(r.TotalRequests)
+		}
+		if countErrors {
 			failedResult, err := deps.logManager.GetModelRankings(ctx, &errorsOnly)
 			if err != nil {
 				return nil, fmt.Errorf("model error rankings failed: %w", err)
 			}
-			failed = map[modelKey]int64{}
 			for _, r := range failedResult.Rankings {
-				failed[modelKey{r.Model, r.Provider}] += r.TotalRequests
+				if t, ok := totals[r.Model]; ok {
+					t.failed += r.TotalRequests
+				}
 			}
 		}
-		for _, r := range result.Rankings {
+		for _, model := range order {
+			t := totals[model]
 			if metric == "error_rate" {
-				if rate, ok := failureRate(r.TotalRequests, failed[modelKey{r.Model, r.Provider}]); ok {
-					points = append(points, ChartPoint{X: r.Model, Y: rate})
+				if rate, ok := failureRate(t.requests, t.failed); ok {
+					points = append(points, ChartPoint{X: model, Y: rate})
 				}
 				continue
 			}
-			points = append(points, ChartPoint{X: r.Model, Y: value(r.TotalRequests, r.TotalTokens, r.TotalCost, r.AvgLatency)})
+			var latency float64
+			if t.requests > 0 {
+				latency = t.latencyWeight / float64(t.requests)
+			}
+			points = append(points, ChartPoint{X: model, Y: value(t.requests, t.tokens, t.cost, latency)})
 		}
 	default:
 		if metric == "latency" {
@@ -463,7 +491,7 @@ func barChartPoints(ctx context.Context, deps *ToolDeps, filters *logstore.Searc
 		// Dimension rankings carry no success rate, so a group's failure rate is
 		// the same ranking over failed requests divided by the full one.
 		var failed map[string]int64
-		if metric == "error_rate" {
+		if countErrors {
 			failedResult, err := deps.logManager.GetDimensionRankings(ctx, &errorsOnly, dimension)
 			if err != nil {
 				return nil, fmt.Errorf("%s error rankings failed: %w", group, err)
