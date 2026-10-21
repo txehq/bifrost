@@ -290027,6 +290027,141 @@
           ]
         }
       ]
+    },
+    {
+      "name": "277. Volcengine flat multimodal embedding input (fork multimodal embeddings)",
+      "description": "Pins the fork's /v1/embeddings multimodal input after the merge onto upstream's EmbeddingInputItem model. Clients send one Volcengine-native multimodal input as a flat part array, `[{\"type\":\"text\"},{\"type\":\"image_url\",\"image_url\":{\"url\":...}}]`, with image_url/video_url parts. Upstream reads a flat array as one item per element, so each part became an empty item and the request failed with 400 `input item 0: embedding content is empty`. The transport now folds a flat typed-part array into a single item and normalizes the legacy part shapes, and the provider fuses the item into one vector on /embeddings/multimodal. Case A is the text+image request. Case B is text-only on a vision model, which must still use the multimodal endpoint. Case C uses upstream's nested item shape and must keep producing one vector per item.",
+      "item": [
+        {
+          "name": "A. volcengine/doubao-embedding-vision-250615 flat text+image_url parts -> one vector (fork multimodal embeddings)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('flat multimodal parts embed as one input', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.data, 'data: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(json.data[0].embedding, 'embedding: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(pm.response.text()).to.not.include('embedding content is empty');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"volcengine/doubao-embedding-vision-250615\",\n  \"input\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"a photo of a cat\"\n    },\n    {\n      \"type\": \"image_url\",\n      \"image_url\": {\n        \"url\": \"https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/320px-Cat03.jpg\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "B. volcengine/doubao-embedding-vision-250615 flat text-only part -> one vector (fork multimodal embeddings)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('flat multimodal parts embed as one input', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.data, 'data: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(json.data[0].embedding, 'embedding: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(pm.response.text()).to.not.include('embedding content is empty');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"volcengine/doubao-embedding-vision-250615\",\n  \"input\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"the sky is blue\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "C. volcengine/doubao-embedding-vision-250615 nested item shape still one vector per item (fork multimodal embeddings)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('flat multimodal parts embed as one input', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.data, 'data: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(json.data[0].embedding, 'embedding: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(pm.response.text()).to.not.include('embedding content is empty');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"volcengine/doubao-embedding-vision-250615\",\n  \"input\": [\n    [\n      {\n        \"type\": \"text\",\n        \"text\": \"a photo of a cat\"\n      },\n      {\n        \"type\": \"image\",\n        \"image\": {\n          \"url\": \"https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/320px-Cat03.jpg\"\n        }\n      }\n    ]\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
