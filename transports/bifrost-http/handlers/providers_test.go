@@ -3353,3 +3353,100 @@ func TestProviderWrites_TellTheReloadWhetherTheyAdded(t *testing.T) {
 		t.Fatalf("an added provider's reload must be told it is new, got %v", mgr.reloadNew)
 	}
 }
+
+// TestUpdateProvider_HeaderSecretReferencesNeedAuthWhenBypassed: a header whose
+// value references a server secret (env./vault.) is resolved on every request and
+// sent to the provider, so under the fail-open bypass a caller may not introduce or
+// repoint one. Unchanged references, removals and literal values stay allowed, and
+// an authenticated caller may set any reference.
+func TestUpdateProvider_HeaderSecretReferencesNeedAuthWhenBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	stored := map[string]schemas.SecretVar{"X-Team": *schemas.NewSecretVar("env.BIFROST_TEST_TEAM_TOKEN")}
+	cases := []struct {
+		name          string
+		headers       map[string]schemas.SecretVar
+		authenticated bool
+		wantStatus    int
+	}{
+		{name: "unchanged reference", headers: map[string]schemas.SecretVar{"X-Team": *schemas.NewSecretVar("env.BIFROST_TEST_TEAM_TOKEN")}, wantStatus: fasthttp.StatusOK},
+		{name: "reference removed", headers: nil, wantStatus: fasthttp.StatusOK},
+		{name: "literal header added", headers: map[string]schemas.SecretVar{"X-Team": *schemas.NewSecretVar("env.BIFROST_TEST_TEAM_TOKEN"), "X-Trace": *schemas.NewSecretVar("literal")}, wantStatus: fasthttp.StatusOK},
+		{name: "new reference to another secret", headers: map[string]schemas.SecretVar{"X-Team": *schemas.NewSecretVar("env.BIFROST_TEST_TEAM_TOKEN"), "X-Leak": *schemas.NewSecretVar("env.AWS_SECRET_ACCESS_KEY")}, wantStatus: fasthttp.StatusForbidden},
+		{name: "reference repointed", headers: map[string]schemas.SecretVar{"X-Team": *schemas.NewSecretVar("env.AWS_SECRET_ACCESS_KEY")}, wantStatus: fasthttp.StatusForbidden},
+		{name: "vault reference added", headers: map[string]schemas.SecretVar{"X-Team": *schemas.NewSecretVar("env.BIFROST_TEST_TEAM_TOKEN"), "X-Vault": *schemas.NewSecretVar("vault.prod/db-password")}, wantStatus: fasthttp.StatusForbidden},
+		{name: "authenticated new reference", headers: map[string]schemas.SecretVar{"X-Leak": *schemas.NewSecretVar("env.SOME_OTHER_TOKEN")}, authenticated: true, wantStatus: fasthttp.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			customConfig := &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{
+					ClientConfig: &configstore.ClientConfig{},
+					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+						"mock-openai": {
+							NetworkConfig:            &schemas.NetworkConfig{ExtraHeaders: stored},
+							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+							CustomProviderConfig:     customConfig,
+						},
+					},
+				},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+			body, err := sonic.Marshal(providerUpdatePayload{
+				NetworkConfig:            schemas.NetworkConfig{ExtraHeaders: tc.headers},
+				ConcurrencyAndBufferSize: schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+				CustomProviderConfig:     customConfig,
+			})
+			if err != nil {
+				t.Fatalf("failed to marshal request body: %v", err)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
+			ctx.Request.SetRequestURI("/api/providers/mock-openai")
+			ctx.Request.SetBody(body)
+			ctx.SetUserValue("provider", "mock-openai")
+			if !tc.authenticated {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
+			h.updateProvider(ctx)
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+		})
+	}
+}
+
+// TestAddProvider_RejectsHeaderSecretReferenceWhenAuthBypassed is the create-path
+// counterpart of TestUpdateProvider_HeaderSecretReferencesNeedAuthWhenBypassed.
+func TestAddProvider_RejectsHeaderSecretReferenceWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		modelsManager: &mockModelsManager{},
+	}
+	body, err := sonic.Marshal(providerCreatePayload{
+		Provider:             "mock-openai",
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
+		NetworkConfig: &schemas.NetworkConfig{
+			ExtraHeaders: map[string]schemas.SecretVar{"X-Leak": *schemas.NewSecretVar("env.AWS_SECRET_ACCESS_KEY")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to marshal request body: %v", err)
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.SetBody(body)
+	ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	h.addProvider(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Fatalf("status got %d, want 403; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if _, exists := h.inMemoryStore.Providers["mock-openai"]; exists {
+		t.Fatalf("expected provider not to be persisted")
+	}
+}
