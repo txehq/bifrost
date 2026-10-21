@@ -48,6 +48,9 @@ type fakeLogReader struct {
 	// always returned.
 	modelRankingResult     *logstore.ModelRankingResult
 	dimensionRankingResult *logstore.DimensionRankingResult
+	// errorModelRankingResult answers a model ranking narrowed to status error,
+	// so a failure-rate test can give the failed rows their own counts.
+	errorModelRankingResult *logstore.ModelRankingResult
 
 	histogramBucket int64
 	// Canned histogram responses. Nil means "empty result, zero buckets" -
@@ -93,7 +96,10 @@ type fakeLogReader struct {
 	// one provider - order-independent, so concurrent per-provider calls get
 	// the right stats regardless of which one reaches the fake first.
 	statsByProvider map[string]*logstore.SearchStats
-	sawContext      context.Context
+	// errorStatsByProvider is statsByProvider for a call also narrowed to
+	// status error.
+	errorStatsByProvider map[string]*logstore.SearchStats
+	sawContext           context.Context
 	// *Delay, when set, makes the matching method take real wall-clock time
 	// before returning - the lever a test has to prove several calls actually
 	// overlap (or complete out of order) rather than just not visibly failing
@@ -180,6 +186,9 @@ func (f *fakeLogReader) GetModelRankings(ctx context.Context, filters *logstore.
 	defer f.mu.Unlock()
 	f.sawContext = ctx
 	f.rankingFilters = filters
+	if f.errorModelRankingResult != nil && slices.Equal(filters.Status, []string{"error"}) {
+		return f.errorModelRankingResult, nil
+	}
 	if f.modelRankingResult != nil {
 		return f.modelRankingResult, nil
 	}
@@ -207,7 +216,9 @@ func (f *fakeLogReader) GetStats(ctx context.Context, filters *logstore.SearchFi
 	f.statsCalled = true
 	f.statsFiltersSeen = append(f.statsFiltersSeen, filters)
 	var resp *logstore.SearchStats
-	if len(filters.Providers) == 1 && f.statsByProvider[filters.Providers[0]] != nil {
+	if len(filters.Providers) == 1 && slices.Equal(filters.Status, []string{"error"}) && f.errorStatsByProvider[filters.Providers[0]] != nil {
+		resp = f.errorStatsByProvider[filters.Providers[0]]
+	} else if len(filters.Providers) == 1 && f.statsByProvider[filters.Providers[0]] != nil {
 		resp = f.statsByProvider[filters.Providers[0]]
 	} else if len(f.statsResponses) > f.statsCalls {
 		resp = f.statsResponses[f.statsCalls]
@@ -1077,7 +1088,7 @@ func TestWarpMetricsSummarizesTokensHistogram(t *testing.T) {
 			{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150},
 			{PromptTokens: 200, CompletionTokens: 100, TotalTokens: 300},
 		},
-	}}
+	}, statsResponses: []*logstore.SearchStats{{PromptTokens: 300, CompletionTokens: 150, TotalTokens: 450}}}
 	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
 		"filters": map[string]any{}, "metrics": []any{"tokens"},
 	})
@@ -1099,7 +1110,7 @@ func TestWarpMetricsSummarizesCostHistogramKeepsModelList(t *testing.T) {
 			{TotalCost: 2.5, ByModel: map[string]float64{"gpt-4o": 2.5}},
 		},
 		Models: []string{"gpt-4o"},
-	}}
+	}, statsResponses: []*logstore.SearchStats{{TotalCost: 4}}}
 	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
 		"filters": map[string]any{}, "metrics": []any{"cost"},
 	})
@@ -1110,6 +1121,42 @@ func TestWarpMetricsSummarizesCostHistogramKeepsModelList(t *testing.T) {
 	require.InDelta(t, 4.0, *total.Total, 0.001)
 	require.Equal(t, []string{"gpt-4o"}, cost["models"])
 	require.NotContains(t, cost, "by_model", "a per-bucket, per-model series is the exact nested detail a summary must not reintroduce")
+}
+
+// Hourly buckets read on Postgres come from whole matview hours, so the first
+// and last cover spend from before and after a window that starts or ends
+// mid-hour. Summed, they reported more spend than the window held. The
+// additive totals are the window's own exact aggregate; the buckets still
+// give the shape.
+func TestWarpMetricsTotalsAreTheExactWindowAggregate(t *testing.T) {
+	fake := &fakeLogReader{
+		costHistogramResult: &logstore.CostHistogramResult{Buckets: []logstore.CostHistogramBucket{
+			{TotalCost: 3}, {TotalCost: 5}, {TotalCost: 4},
+		}},
+		tokenHistogramResult: &logstore.TokenHistogramResult{Buckets: []logstore.TokenHistogramBucket{
+			{PromptTokens: 300, CompletionTokens: 100, TotalTokens: 400},
+			{PromptTokens: 500, CompletionTokens: 200, TotalTokens: 700},
+		}},
+		statsResponses: []*logstore.SearchStats{{TotalCost: 9.25, PromptTokens: 640, CompletionTokens: 250, TotalTokens: 890}},
+	}
+	result, err := runTool(t, "query_metrics", &ToolDeps{logManager: fake}, map[string]any{
+		"filters": map[string]any{"start_time": "-48h"}, "metrics": []any{"cost", "tokens"},
+	})
+	require.NoError(t, err)
+
+	cost := result.(map[string]any)["cost"].(map[string]any)
+	total := cost["total_cost"].(seriesSummary)
+	require.NotNil(t, total.Total)
+	require.InDelta(t, 9.25, *total.Total, 0.0001, "the boundary buckets hold spend from outside the window")
+	require.InDelta(t, 5, total.Max, 0.0001, "the shape still comes from the buckets")
+
+	tokens := result.(map[string]any)["tokens"].(map[string]any)
+	for field, want := range map[string]float64{"prompt_tokens": 640, "completion_tokens": 250, "total_tokens": 890} {
+		summary := tokens[field].(seriesSummary)
+		require.NotNil(t, summary.Total, field)
+		require.InDelta(t, want, *summary.Total, 0.0001, field)
+	}
+	require.Equal(t, 1, fake.statsCalls, "one exact aggregate serves every series")
 }
 
 // The cost summary lists model names but no per-model amounts. Asked for

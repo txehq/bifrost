@@ -248,6 +248,9 @@ func TestWarpRenderChartErrorRateByModel(t *testing.T) {
 	fake := &fakeLogReader{modelRankingResult: &logstore.ModelRankingResult{Rankings: []logstore.ModelRankingWithTrend{
 		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "claude-3-5-sonnet", TotalRequests: 100, SuccessRate: 70}},
 		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "gpt-4o-mini", TotalRequests: 60, SuccessRate: 95}},
+	}}, errorModelRankingResult: &logstore.ModelRankingResult{Rankings: []logstore.ModelRankingWithTrend{
+		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "claude-3-5-sonnet", TotalRequests: 30}},
+		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "gpt-4o-mini", TotalRequests: 3}},
 	}}}
 	deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
 	_, err := runTool(t, RenderChartTool, deps, map[string]any{
@@ -257,6 +260,41 @@ func TestWarpRenderChartErrorRateByModel(t *testing.T) {
 	require.NoError(t, err)
 	spec, _ := deps.charts.get(spec1(t, deps))
 	require.Equal(t, []ChartPoint{{X: "claude-3-5-sonnet", Y: 30}, {X: "gpt-4o-mini", Y: 5}}, spec.Points)
+}
+
+// A cancelled request is not a failed one. The model and provider bars took
+// 100 minus the success rate, so 80 successes and 20 cancellations with no
+// error at all charted a 20% error rate, while the dimension bars, which count
+// failed requests, charted 0% for the same traffic.
+func TestWarpRenderChartErrorRateIgnoresCancellations(t *testing.T) {
+	t.Run("model", func(t *testing.T) {
+		fake := &fakeLogReader{modelRankingResult: &logstore.ModelRankingResult{Rankings: []logstore.ModelRankingWithTrend{
+			{ModelRankingEntry: logstore.ModelRankingEntry{Model: "gpt-4o", Provider: "openai", TotalRequests: 100, SuccessCount: 80, SuccessRate: 80}},
+		}}, errorModelRankingResult: &logstore.ModelRankingResult{}}
+		deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
+		_, err := runTool(t, RenderChartTool, deps, map[string]any{
+			"kind": "bar", "title": "Failure rate by model", "metric": "error_rate", "group": "model",
+			"filters": map[string]any{"start_time": "-7d"},
+		})
+		require.NoError(t, err)
+		spec, _ := deps.charts.get(spec1(t, deps))
+		require.Equal(t, []ChartPoint{{X: "gpt-4o", Y: 0}}, spec.Points, "20 cancellations and no errors is a 0% error rate")
+	})
+	t.Run("provider", func(t *testing.T) {
+		fake := &fakeLogReader{
+			providerCostHistogramResult: &logstore.ProviderCostHistogramResult{Providers: []string{"openai"}},
+			statsByProvider:             map[string]*logstore.SearchStats{"openai": {TotalRequests: 100, SuccessRate: 80}},
+			errorStatsByProvider:        map[string]*logstore.SearchStats{"openai": {TotalRequests: 5}},
+		}
+		deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
+		_, err := runTool(t, RenderChartTool, deps, map[string]any{
+			"kind": "bar", "title": "Failure rate by provider", "metric": "error_rate", "group": "provider",
+			"filters": map[string]any{"start_time": "-7d"},
+		})
+		require.NoError(t, err)
+		spec, _ := deps.charts.get(spec1(t, deps))
+		require.Equal(t, []ChartPoint{{X: "openai", Y: 5}}, spec.Points, "5 errors over 100 requests; the other 15 that did not succeed were cancelled")
+	})
 }
 
 func spec1(t *testing.T, deps *ToolDeps) string {

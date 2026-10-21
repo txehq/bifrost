@@ -659,3 +659,100 @@ func TestWarpSemanticSearchToldToJudgeRowsByContent(t *testing.T) {
 	require.Contains(t, tool.schemaJSON, `"queries"`)
 	require.Contains(t, SemanticSearchGuidance, "drop every row whose content is not about the topic")
 }
+
+// These filters were accepted and passed to the search, which applied none of
+// them: a project, error-type, token-minimum or request-id filter came back
+// with conversations that failed it. A project filter also counts as a named
+// scope, so it switched off the caller's default self-scoping as well -
+// widening the result rather than narrowing it.
+func TestWarpSemanticFiltersEnforceEveryAcceptedFilter(t *testing.T) {
+	text := func(v string) *string { return &v }
+	errType := "invalid_request_error"
+	status := 400
+	matching := &logstore.Log{
+		ID: "match", Timestamp: time.Now(), Object: string(schemas.ChatCompletionRequest), Status: "error",
+		ProjectID: text("project-a"), TotalTokens: 900, StopReason: text("length"), SessionID: text("session-1"),
+		ParentRequestID:    text("parent-1"),
+		ErrorDetailsParsed: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Type: &errType, Code: text("context_length_exceeded")}},
+	}
+	other := &logstore.Log{
+		ID: "other", Timestamp: time.Now(), Object: string(schemas.ResponsesRequest), Status: "error",
+		ProjectID: text("project-b"), TotalTokens: 10, StopReason: text("stop"), SessionID: text("session-2"),
+		ParentRequestID:    text("parent-2"),
+		ErrorDetailsParsed: &schemas.BifrostError{Error: &schemas.ErrorField{Type: text("overloaded_error")}},
+	}
+	minTokens, maxTokens := 500, 50
+	for name, filters := range map[string]*logstore.SearchFilters{
+		"project_ids":       {ProjectIDs: []string{"project-a"}},
+		"min_tokens":        {MinTokens: &minTokens},
+		"request_id":        {RequestID: "match"},
+		"error_types":       {ErrorTypes: []string{errType}},
+		"error_codes":       {ErrorCodes: []string{"context_length_exceeded"}},
+		"status_codes":      {StatusCodes: []int{400}},
+		"objects":           {Objects: []string{string(schemas.ChatCompletionRequest)}},
+		"stop_reasons":      {StopReasons: []string{"length"}},
+		"session_id":        {SessionID: "session-1"},
+		"parent_request_id": {ParentRequestID: "parent-1"},
+	} {
+		require.True(t, matchesSemanticFilters(matching, filters), name)
+		require.False(t, matchesSemanticFilters(other, filters), "%s: a row that fails the filter must not be returned", name)
+	}
+	require.False(t, matchesSemanticFilters(matching, &logstore.SearchFilters{MaxTokens: &maxTokens}), "max_tokens")
+	require.False(t, matchesSemanticFilters(&logstore.Log{Timestamp: time.Now()}, &logstore.SearchFilters{ProjectIDs: []string{"project-a"}}),
+		"a row with no project fails a project filter")
+}
+
+// A filter semantic search has no way to apply is refused before anything is
+// embedded, rather than accepted and silently ignored.
+func TestWarpSemanticSearchRefusesFiltersItCannotApply(t *testing.T) {
+	embedded := false
+	executor := func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		embedded = true
+		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
+	}
+	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, newFakeWarpVectorStore(), executor, &semanticLogReader{})
+	_, err := searcher.Search(context.Background(), []string{"refund requests"}, &logstore.SearchFilters{
+		ToolCallNames: []string{"lookup_order"}, MetadataFilters: map[string]string{"env": "prod"},
+	}, 5)
+	require.ErrorContains(t, err, "tool_call_names")
+	require.ErrorContains(t, err, "metadata_filters")
+	require.False(t, embedded, "a refused search must not pay for an embedding")
+}
+
+// A conversation can match on what the assistant said. Its stored summary is
+// the last user message only, and the row showed that alone - so a refund
+// answer behind an unrelated question read as irrelevant, and the relevance
+// instructions told the model to drop it.
+func TestWarpSemanticSearchShowsBothSidesOfTheConversation(t *testing.T) {
+	question := "Where is my order 1182?"
+	answer := "I have issued a refund of $20 to your card."
+	reader := &semanticLogReader{logs: map[string]logstore.Log{
+		"refund": {
+			ID: "refund", Timestamp: time.Now(), Object: string(schemas.ChatCompletionRequest), Status: "success",
+			ContentSummary:      question,
+			OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &answer}},
+		},
+	}}
+	score := 0.9
+	vectors := newFakeWarpVectorStore()
+	vectors.nearest = []vectorstore.SearchResult{{ID: "refund", Score: &score}}
+	executor := func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}}}, nil
+	}
+	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, vectors, executor, reader)
+	result, err := searcher.Search(context.Background(), []string{"customers given refunds"}, nil, 5)
+	require.NoError(t, err)
+	require.Len(t, result.Rows, 1)
+	require.Contains(t, result.Rows[0].Content, question)
+	require.Contains(t, result.Rows[0].Content, "refund of $20", "the assistant side is what matched")
+
+	// Both sides share the budget: a long question cannot crowd the answer out.
+	long := strings.Repeat("order status please ", 100)
+	entry := reader.logs["refund"]
+	entry.ContentSummary = long
+	reader.logs["refund"] = entry
+	result, err = searcher.Search(context.Background(), []string{"customers given refunds"}, nil, 5)
+	require.NoError(t, err)
+	require.Contains(t, result.Rows[0].Content, "refund of $20")
+	require.LessOrEqual(t, len([]rune(result.Rows[0].Content)), LogContentChars+64, "the preview stays bounded")
+}

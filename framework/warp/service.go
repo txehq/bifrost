@@ -69,6 +69,10 @@ type Service struct {
 	// an unguarded read elsewhere is the same race, just harder to find. A logging plugin enabled at runtime rebinds them while
 	// requests are already being served.
 	mu sync.RWMutex
+	// saveMu serializes SaveConfig from its first read to its last write. A
+	// save rolls back a namespace it believes it created, and that belief is
+	// only true while no other save can create the same one in between.
+	saveMu sync.Mutex
 	// closed records that Shutdown ran, so a later rebind cannot revive a
 	// service whose lifecycle is over.
 	closed bool

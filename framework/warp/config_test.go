@@ -3,8 +3,12 @@ package warp
 import (
 	"context"
 	"errors"
-	"github.com/bytedance/sonic"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/bytedance/sonic"
+	"github.com/capsohq/bifrost/framework/vectorstore"
 
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore/tables"
@@ -791,4 +795,173 @@ func TestWarpConfigIgnoresUnreadableAdditionalModels(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, config.AdditionalModels)
 	require.Equal(t, "gpt-4o", config.Model)
+}
+
+// A retired namespace still holds the vectors of the space it was retired
+// from. Switching a different model back onto it - same dimension, so the
+// store accepts it - searched model A's vectors with model B's embeddings, and
+// every new row indexed beside them mixed the two spaces in one place.
+func TestWarpSaveConfigRejectsReusingARetiredNamespace(t *testing.T) {
+	store := &recordingStore{row: validWarpConfigRow()}
+	service := newTestService(store)
+
+	moveToV2 := validWarpConfigInput()
+	moveToV2.EmbeddingModel = "text-embedding-3-large"
+	moveToV2.LogVectorStoreNamespace = "BifrostWarpLogsV2"
+	_, err := service.SaveConfig(context.Background(), moveToV2)
+	require.NoError(t, err)
+	require.Equal(t, []string{schemas.WarpDefaultLogVectorStoreNamespace}, retiredNamespaces(store.row))
+
+	backToV1 := validWarpConfigInput()
+	backToV1.EmbeddingModel = "text-embedding-3-large"
+	backToV1.LogVectorStoreNamespace = schemas.WarpDefaultLogVectorStoreNamespace
+	_, err = service.SaveConfig(context.Background(), backToV1)
+	require.ErrorIs(t, err, ErrInvalidConfig, "the retired namespace holds text-embedding-3-small vectors")
+	require.ErrorContains(t, err, "log_vector_store_namespace")
+	require.Equal(t, "BifrostWarpLogsV2", store.row.LogVectorStoreNamespace, "the rejected save changed nothing")
+}
+
+// namespaceVectorStore tracks which namespaces exist, so a test can tell one
+// that survived a failed save from one the save removed.
+type namespaceVectorStore struct {
+	*fakeWarpVectorStore
+	nsMu       sync.Mutex
+	namespaces map[string]bool
+	lists      int
+	// onFirstList runs inside the first ListNamespaces call, after its answer
+	// is fixed: the point between one save's existence check and its create.
+	onFirstList func()
+}
+
+func newNamespaceVectorStore() *namespaceVectorStore {
+	return &namespaceVectorStore{fakeWarpVectorStore: newFakeWarpVectorStore(), namespaces: map[string]bool{}}
+}
+
+func (s *namespaceVectorStore) ListNamespaces(context.Context, string) ([]string, error) {
+	s.nsMu.Lock()
+	names := make([]string, 0, len(s.namespaces))
+	for name := range s.namespaces {
+		names = append(names, name)
+	}
+	s.lists++
+	hook := s.onFirstList
+	if s.lists > 1 {
+		hook = nil
+	}
+	s.nsMu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return names, nil
+}
+
+func (s *namespaceVectorStore) CreateNamespace(_ context.Context, namespace string, _ int, _ map[string]vectorstore.VectorStoreProperties) error {
+	s.nsMu.Lock()
+	defer s.nsMu.Unlock()
+	s.namespaces[namespace] = true
+	return nil
+}
+
+func (s *namespaceVectorStore) DeleteNamespace(_ context.Context, namespace string) error {
+	s.nsMu.Lock()
+	defer s.nsMu.Unlock()
+	delete(s.namespaces, namespace)
+	return nil
+}
+
+func (s *namespaceVectorStore) exists(namespace string) bool {
+	s.nsMu.Lock()
+	defer s.nsMu.Unlock()
+	return s.namespaces[namespace]
+}
+
+// racingConfigStore fails the write of one model, and can land another
+// writer's row just before that failure - a save on another node.
+type racingConfigStore struct {
+	mu        sync.Mutex
+	row       *tables.TableWarpConfig
+	failModel string
+	landFirst *tables.TableWarpConfig
+}
+
+func (s *racingConfigStore) GetWarpConfig(context.Context) (*tables.TableWarpConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.row, nil
+}
+
+func (s *racingConfigStore) UpsertWarpConfig(_ context.Context, config *tables.TableWarpConfig) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if config.Model == s.failModel {
+		if s.landFirst != nil {
+			s.row = s.landFirst
+		}
+		return errors.New("write failed")
+	}
+	s.row = config
+	return nil
+}
+
+// Two saves both saw the namespace absent. One created it and stored a working
+// config; the other's create was then a no-op, its write failed, and its
+// rollback deleted the namespace the stored config now points at - along with
+// any vectors indexed into it meanwhile. Saves are serialized, and a failed
+// one never removes a namespace the stored config uses.
+func TestWarpSaveConfigRollbackSparesAConcurrentSavesNamespace(t *testing.T) {
+	namespace := schemas.WarpDefaultLogVectorStoreNamespace
+	failing := validWarpConfigInput()
+	failing.Model = "gpt-4o-fails"
+	winning := validWarpConfigInput()
+	winning.Model = "gpt-4o-mini"
+
+	t.Run("same process", func(t *testing.T) {
+		vectors := newNamespaceVectorStore()
+		store := &racingConfigStore{failModel: failing.Model}
+		service := NewService(nil, WithConfigStore(store), WithVectorStore(vectors))
+
+		entered, release := make(chan struct{}), make(chan struct{})
+		vectors.onFirstList = func() {
+			close(entered)
+			<-release
+		}
+		failingDone, winningDone := make(chan error, 1), make(chan error, 1)
+		go func() {
+			_, err := service.SaveConfig(context.Background(), failing)
+			failingDone <- err
+		}()
+		<-entered
+		go func() {
+			_, err := service.SaveConfig(context.Background(), winning)
+			winningDone <- err
+		}()
+		// Unserialized, the second save runs to completion here. Serialized, it
+		// waits for the first, which is held until released.
+		var winningErr error
+		finished := false
+		select {
+		case winningErr = <-winningDone:
+			finished = true
+		case <-time.After(200 * time.Millisecond):
+		}
+		close(release)
+		require.Error(t, <-failingDone)
+		if !finished {
+			winningErr = <-winningDone
+		}
+		require.NoError(t, winningErr)
+		require.Equal(t, winning.Model, store.row.Model)
+		require.True(t, vectors.exists(namespace), "the stored config points at this namespace")
+	})
+
+	t.Run("another node", func(t *testing.T) {
+		vectors := newNamespaceVectorStore()
+		landed := validWarpConfigRow()
+		landed.Model = winning.Model
+		store := &racingConfigStore{failModel: failing.Model, landFirst: landed}
+		service := NewService(nil, WithConfigStore(store), WithVectorStore(vectors))
+		_, err := service.SaveConfig(context.Background(), failing)
+		require.Error(t, err)
+		require.True(t, vectors.exists(namespace), "a config another writer stored points at this namespace")
+	})
 }

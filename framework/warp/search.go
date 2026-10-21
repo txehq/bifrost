@@ -80,6 +80,9 @@ func (s *SemanticSearcher) SearchVisible(ctx context.Context, queries []string, 
 	if s == nil || s.store == nil || s.vectors == nil || s.embed == nil || s.logs == nil {
 		return SemanticSearchResult{}, ErrUnavailable
 	}
+	if unapplied := unenforcedSemanticFilters(filters); len(unapplied) > 0 {
+		return SemanticSearchResult{}, fmt.Errorf("semantic search cannot filter by %s; drop those filters, or use query_logs or count_logs, which apply them", strings.Join(unapplied, ", "))
+	}
 	row, err := s.store.GetWarpConfig(ctx)
 	if err != nil {
 		return SemanticSearchResult{}, fmt.Errorf("read Warp configuration: %w", err)
@@ -142,9 +145,11 @@ func (s *SemanticSearcher) SearchVisible(ctx context.Context, queries []string, 
 			if entry == nil || entry.ContentHidden || !terminalWarpLogStatus(entry.Status) || !conversationalWarpObject(entry.Object) || !matchesSemanticFilters(entry, filters) {
 				continue
 			}
+			projected := projectLog(entry, false, 0)
+			projected.Content = semanticContentPreview(entry, LogContentChars)
 			result.Rows = append(result.Rows, SemanticSearchRow{
 				Score:  scores[id],
-				logRow: projectLog(entry, true, LogContentChars),
+				logRow: projected,
 			})
 			if len(result.Rows) == limit {
 				break
@@ -516,6 +521,20 @@ func matchesSemanticFilters(entry *logstore.Log, filters *logstore.SearchFilters
 	if !intersectsIDs(mergedIDs(entry.TeamID, entry.TeamIDs), filters.TeamIDs) || !intersectsIDs(mergedIDs(entry.CustomerID, entry.CustomerIDs), filters.CustomerIDs) || !intersectsIDs(mergedIDs(entry.BusinessUnitID, entry.BusinessUnitIDs), filters.BusinessUnitIDs) {
 		return false
 	}
+	if filters.RequestID != "" && entry.ID != filters.RequestID ||
+		filters.SessionID != "" && stringValue(entry.SessionID) != filters.SessionID ||
+		filters.ParentRequestID != "" && stringValue(entry.ParentRequestID) != filters.ParentRequestID {
+		return false
+	}
+	if !matchesPointer(entry.ProjectID, filters.ProjectIDs) || !matchesString(entry.Object, filters.Objects) || !matchesPointer(entry.StopReason, filters.StopReasons) {
+		return false
+	}
+	if filters.MinTokens != nil && entry.TotalTokens < *filters.MinTokens || filters.MaxTokens != nil && entry.TotalTokens > *filters.MaxTokens {
+		return false
+	}
+	if !matchesSemanticErrorFilters(entry.ErrorDetailsParsed, filters) {
+		return false
+	}
 	// A metric that was never recorded fails any bound on it, rather than being
 	// read as zero. Treating nil as 0 let "under $0.01" quietly include every
 	// request whose cost was never measured - and the logstore's own range
@@ -532,6 +551,87 @@ func matchesSemanticFilters(entry *logstore.Log, filters *logstore.SearchFilters
 		}
 	}
 	return true
+}
+
+// matchesSemanticErrorFilters applies the error_details filters the way the
+// store does: they only ever match a failed request that recorded the field.
+func matchesSemanticErrorFilters(be *schemas.BifrostError, filters *logstore.SearchFilters) bool {
+	if len(filters.ErrorTypes) == 0 && len(filters.ErrorCodes) == 0 && len(filters.StatusCodes) == 0 {
+		return true
+	}
+	if be == nil {
+		return false
+	}
+	var errorType, errorCode *string
+	if be.Error != nil {
+		errorType, errorCode = be.Error.Type, be.Error.Code
+	}
+	if !matchesPointer(errorType, filters.ErrorTypes) || !matchesPointer(errorCode, filters.ErrorCodes) {
+		return false
+	}
+	return len(filters.StatusCodes) == 0 || be.StatusCode != nil && slices.Contains(filters.StatusCodes, *be.StatusCode)
+}
+
+// unenforcedSemanticFilters names the set filters matchesSemanticFilters
+// cannot apply, as their filter keys. Accepting one would return rows that fail
+// it, which reads as an answer to the question asked. A filter added to
+// SearchFilters is enforced above or listed here.
+func unenforcedSemanticFilters(filters *logstore.SearchFilters) []string {
+	if filters == nil {
+		return nil
+	}
+	var names []string
+	for _, field := range []struct {
+		name string
+		set  bool
+	}{
+		{"aliases", len(filters.Aliases) > 0},
+		{"tool_call_names", len(filters.ToolCallNames) > 0},
+		{"selected_key_ids", len(filters.SelectedKeyIDs) > 0},
+		{"routing_rule_ids", len(filters.RoutingRuleIDs) > 0},
+		{"complexity_tiers", len(filters.ComplexityTiers) > 0},
+		{"complexity_mechanisms", len(filters.ComplexityMechanisms) > 0},
+		{"agent_names", len(filters.AgentNames) > 0},
+		{"agent_correlation_id", filters.AgentCorrelationID != ""},
+		{"routing_engine_used", len(filters.RoutingEngineUsed) > 0},
+		{"user_agents", len(filters.UserAgents) > 0},
+		{"missing_cost_only", filters.MissingCostOnly},
+		{"cache_hit_types", len(filters.CacheHitTypes) > 0},
+		{"guardrail_outcomes", len(filters.GuardrailOutcomes) > 0},
+		{"metadata_filters", len(filters.MetadataFilters) > 0},
+	} {
+		if field.set {
+			names = append(names, field.name)
+		}
+	}
+	return names
+}
+
+// semanticContentPreview is a matched row's content: the user side and the
+// assistant side, both of which the row was embedded from. ContentSummary is
+// the last user message only, so a row that matched on its answer showed an
+// unrelated question. Each side is guaranteed half of limit, and either may
+// use what the other leaves.
+func semanticContentPreview(entry *logstore.Log, limit int) string {
+	if entry.ContentHidden {
+		return ""
+	}
+	user := strings.Join(strings.Fields(entry.BuildInputContentSummary()), " ")
+	if user == "" {
+		user = strings.Join(strings.Fields(entry.ContentSummary), " ")
+	}
+	assistant := strings.Join(strings.Fields(logAssistantText(entry)), " ")
+	userChars, assistantChars := utf8.RuneCountInString(user), utf8.RuneCountInString(assistant)
+	userBudget := min(userChars, max(limit/2, limit-assistantChars))
+	assistantBudget := min(assistantChars, limit-userBudget)
+	parts := make([]string, 0, 2)
+	if user != "" {
+		parts = append(parts, "user: "+truncateText(user, userBudget))
+	}
+	if assistant != "" {
+		parts = append(parts, "assistant: "+truncateText(assistant, assistantBudget))
+	}
+	return strings.Join(parts, "\n")
 }
 
 // withinOptionalBound reports whether a nullable metric satisfies the bounds

@@ -367,14 +367,17 @@ func barChartPoints(ctx context.Context, deps *ToolDeps, filters *logstore.Searc
 	// unlimited) and cut to limit after sorting.
 	unlimited := 0
 	scoped.RankingLimit = &unlimited
-	// failureRate turns a success rate into the share that failed, for the
-	// groups whose results carry one (providers and models).
-	failureRate := func(requests int64, successRate float64) (float64, bool) {
+	// failureRate is failed requests over all requests. Not 100 minus the
+	// success rate: requests count cancellations too, so the complement read a
+	// cancelled request as a failed one.
+	failureRate := func(requests, failed int64) (float64, bool) {
 		if requests == 0 {
 			return 0, false
 		}
-		return roundTo(100-successRate, 2), true
+		return roundTo(float64(failed)/float64(requests)*100, 2), true
 	}
+	errorsOnly := scoped
+	errorsOnly.Status = []string{"error"}
 	value := func(requests, tokens int64, cost, latency float64) float64 {
 		switch metric {
 		case "cost":
@@ -402,9 +405,15 @@ func barChartPoints(ctx context.Context, deps *ToolDeps, filters *logstore.Searc
 		if err != nil {
 			return nil, fmt.Errorf("per-provider totals failed: %w", err)
 		}
+		var failed map[string]providerTotal
+		if metric == "error_rate" {
+			if failed, err = providerTotals(ctx, deps, &errorsOnly, discovered.Providers); err != nil {
+				return nil, fmt.Errorf("per-provider error totals failed: %w", err)
+			}
+		}
 		for name, t := range totals {
 			if metric == "error_rate" {
-				if rate, ok := failureRate(t.TotalRequests, t.SuccessRate); ok {
+				if rate, ok := failureRate(t.TotalRequests, failed[name].TotalRequests); ok {
 					points = append(points, ChartPoint{X: name, Y: rate})
 				}
 				continue
@@ -416,9 +425,23 @@ func barChartPoints(ctx context.Context, deps *ToolDeps, filters *logstore.Searc
 		if err != nil {
 			return nil, fmt.Errorf("model rankings failed: %w", err)
 		}
+		// Rankings are per model and provider, so the failed counts are keyed
+		// the same way.
+		type modelKey struct{ model, provider string }
+		var failed map[modelKey]int64
+		if metric == "error_rate" {
+			failedResult, err := deps.logManager.GetModelRankings(ctx, &errorsOnly)
+			if err != nil {
+				return nil, fmt.Errorf("model error rankings failed: %w", err)
+			}
+			failed = map[modelKey]int64{}
+			for _, r := range failedResult.Rankings {
+				failed[modelKey{r.Model, r.Provider}] += r.TotalRequests
+			}
+		}
 		for _, r := range result.Rankings {
 			if metric == "error_rate" {
-				if rate, ok := failureRate(r.TotalRequests, r.SuccessRate); ok {
+				if rate, ok := failureRate(r.TotalRequests, failed[modelKey{r.Model, r.Provider}]); ok {
 					points = append(points, ChartPoint{X: r.Model, Y: rate})
 				}
 				continue
@@ -441,8 +464,6 @@ func barChartPoints(ctx context.Context, deps *ToolDeps, filters *logstore.Searc
 		// the same ranking over failed requests divided by the full one.
 		var failed map[string]int64
 		if metric == "error_rate" {
-			errorsOnly := scoped
-			errorsOnly.Status = []string{"error"}
 			failedResult, err := deps.logManager.GetDimensionRankings(ctx, &errorsOnly, dimension)
 			if err != nil {
 				return nil, fmt.Errorf("%s error rankings failed: %w", group, err)
