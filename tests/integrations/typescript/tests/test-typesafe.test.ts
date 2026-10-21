@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { APIError, BadRequestError, choice, noul, score, TypeSafeClient, UnprocessableEntityError } from "@typesafe-ai/sdk";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getVirtualKey, isVirtualKeyConfigured } from "../src/utils/config-loader";
+import { isCapabilityRejection } from "../src/utils/capability";
 
 const STATE =
 	"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.";
@@ -427,14 +428,6 @@ const AGREEMENT_FAIL_THRESHOLD = MATRIX._agreement_fail_threshold ?? 0.7;
 // question at a time and merge (Perplexity returns a bare "invalid request" for
 // the 30-question schema but answers a single question fine).
 const SPLIT_PROVIDERS = new Set(MATRIX._split_question_providers ?? []);
-// Only a 400 schema rejection from a split provider is the documented capability
-// limit; any other status or error is a defect, never a skip.
-const CAPABILITY_REJECTION_MARKERS = ["invalid request", "invalid_request"];
-function isCapabilityRejection(provider: string, status: number, text: string): boolean {
-	if (!SPLIT_PROVIDERS.has(provider) || status !== 400) return false;
-	const low = text.toLowerCase();
-	return CAPABILITY_REJECTION_MARKERS.some((marker) => low.includes(marker));
-}
 const JEV_MODEL = "typesafe/jev-1.13.0";
 
 type MatrixRow = {
@@ -610,7 +603,7 @@ describe("Decision emulation matrix", () => {
 			// Capability-limited providers (Perplexity's sonar rejects choice/score decision
 			// schemas): the split was attempted and could not complete the set, so skip rather
 			// than fail - the identical schema works on every other provider.
-			if (isCapabilityRejection(provider, r.status, r.text)) {
+			if (isCapabilityRejection(SPLIT_PROVIDERS, provider, r.status, r.text)) {
 				MATRIX_ROWS.push({ modelId, status: "SKIP", agree: 0, total: QUESTION_COUNT, latencyMs, tokens: null, cost: "-", detail: `capability-limited - ${detail}` });
 				return;
 			}
