@@ -4,7 +4,11 @@ import test from 'node:test';
 
 const collection = JSON.parse(fs.readFileSync(new URL('../../collections/provider-harness.json', import.meta.url), 'utf8'));
 const collectionScript = collection.event.find(event => event.listen === 'test').script.exec.join('\n');
-const contentScript = collectionScript.slice(
+// The content check reads the request name the script derives earlier, so the
+// slice carries that definition with it.
+const requestNameLine = collectionScript.split('\n').find(line => line.startsWith('var __rn ='));
+assert.ok(requestNameLine, 'collection script no longer defines __rn');
+const contentScript = requestNameLine + '\n' + collectionScript.slice(
   collectionScript.indexOf('// Only register the content-shape test'),
   collectionScript.indexOf('// Routed-identity response headers'),
 );
@@ -12,6 +16,7 @@ const contentScript = collectionScript.slice(
 function contentFailures(body) {
   const failures = [];
   new Function('pm', contentScript)({
+    info: { requestName: 'decision content shape' },
     request: { url: { toString: () => 'http://localhost:8080/v1/decisions' } },
     response: {
       code: 200,
