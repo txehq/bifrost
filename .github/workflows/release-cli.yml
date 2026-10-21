@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   check-version:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     outputs:
       version: ${{ steps.get-version.outputs.version }}
       tag_exists: ${{ steps.check-tag.outputs.exists }}
@@ -60,7 +60,7 @@ jobs:
   test-cli:
     needs: [check-version]
     if: needs.check-version.outputs.tag_exists == 'false' && needs.check-version.outputs.has_changelog == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
       contents: read
     steps:
@@ -87,7 +87,7 @@ jobs:
   release-cli:
     needs: [check-version, test-cli]
     if: needs.check-version.outputs.tag_exists == 'false' && needs.check-version.outputs.has_changelog == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
       contents: write
     outputs:
@@ -128,7 +128,7 @@ jobs:
   push-mintlify-changelog:
     needs: [check-version, release-cli]
     if: needs.check-version.outputs.tag_exists == 'false' && needs.check-version.outputs.has_changelog == 'true' && needs.release-cli.result == 'success'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
       contents: read
     steps:
