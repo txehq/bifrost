@@ -46,11 +46,21 @@ func (TableAgentRegistration) TableName() string { return "config_agent_registra
 // is the registration's stable identity.
 func (r *TableAgentRegistration) VaultPathKey() string { return r.Name }
 
-// BeforeSave encrypts literal credential secrets so upstream credentials are never
-// stored in plaintext when encryption is enabled. Values sourced from an external
-// secret store hold only a reference and are left alone, and the status column
-// records the outcome so reads know how to interpret the row.
+// BeforeSave keeps only the reference for a credential sourced from an
+// environment variable or vault, whatever the encryption setting: SecretVar's JSON
+// form carries the resolved value next to the reference, and encryption skips
+// references, so the value would otherwise land in the column in plaintext. Loading
+// resolves the reference again. With encryption enabled it then encrypts literal
+// credential secrets, and the status column records the outcome so reads know how
+// to interpret the row. The store saves a clone, so the caller's values are intact.
 func (r *TableAgentRegistration) BeforeSave(*gorm.DB) error {
+	for _, auth := range []*schemas.UpstreamAuth{r.DiscoveryAuth, r.RuntimeAuth} {
+		forEachUpstreamAuthSecret(auth, func(ref *schemas.SecretVar) {
+			if ref.IsFromSecret() {
+				ref.Val = ""
+			}
+		})
+	}
 	if !encrypt.IsEnabled() {
 		return nil
 	}
@@ -78,37 +88,45 @@ func (r *TableAgentRegistration) AfterFind(*gorm.DB) error {
 }
 
 func transformUpstreamAuthSecrets(auth *schemas.UpstreamAuth, transform func(string) (string, error)) error {
+	var err error
+	forEachUpstreamAuthSecret(auth, func(ref *schemas.SecretVar) {
+		if err != nil || ref.IsFromSecret() || ref.GetValue() == "" {
+			return
+		}
+		var value string
+		if value, err = transform(ref.Val); err == nil {
+			ref.Val = value
+		}
+	})
+	return err
+}
+
+// forEachUpstreamAuthSecret calls fn with every non-nil credential secret in auth,
+// writing changes to header values back into the map.
+func forEachUpstreamAuthSecret(auth *schemas.UpstreamAuth, fn func(*schemas.SecretVar)) {
 	if auth == nil {
-		return nil
+		return
 	}
-	refs := make([]*schemas.SecretVar, 0, len(auth.Headers)+5)
-	// Map values are not addressable, so transform copies and write them back after.
-	headerRefs := make(map[string]*schemas.SecretVar, len(auth.Headers))
+	// Map values are not addressable, so fn sees a copy that is written back after.
 	for name := range auth.Headers {
 		value := auth.Headers[name]
-		refs = append(refs, &value)
-		headerRefs[name] = &value
+		fn(&value)
+		auth.Headers[name] = value
 	}
 	if auth.OAuth != nil {
-		refs = append(refs, auth.OAuth.ClientID, auth.OAuth.ClientSecret)
+		for _, ref := range []*schemas.SecretVar{auth.OAuth.ClientID, auth.OAuth.ClientSecret} {
+			if ref != nil {
+				fn(ref)
+			}
+		}
 	}
 	if auth.TLS != nil {
-		refs = append(refs, auth.TLS.CACertPEM, auth.TLS.ClientCertPEM, auth.TLS.ClientKeyPEM)
-	}
-	for _, ref := range refs {
-		if ref == nil || ref.IsFromSecret() || ref.GetValue() == "" {
-			continue
+		for _, ref := range []*schemas.SecretVar{auth.TLS.CACertPEM, auth.TLS.ClientCertPEM, auth.TLS.ClientKeyPEM} {
+			if ref != nil {
+				fn(ref)
+			}
 		}
-		value, err := transform(ref.Val)
-		if err != nil {
-			return err
-		}
-		ref.Val = value
 	}
-	for name, value := range headerRefs {
-		auth.Headers[name] = *value
-	}
-	return nil
 }
 
 // It is the single join table both the agent APIs and the virtual-key APIs write,
