@@ -17111,6 +17111,14 @@
                       "",
                       "// The field the header exists for must itself survive to the provider.",
                       "pm.test('cache-diagnosis-2026-04-07: the gated field reaches the provider', function () {",
+                      "  // /anthropic/v1/messages to Anthropic takes the native Messages passthrough, which forwards",
+                      "  // the caller's body as sent (only the model is normalized) and answers with Anthropic's own",
+                      "  // body, so there is no extra_fields.raw_request to read. The routed-identity headers name",
+                      "  // that path; any other path must show the field in raw_request.",
+                      "  if (pm.response.headers.get('x-bifrost-request-type') === 'passthrough') {",
+                      "    pm.expect(pm.response.headers.get('x-bifrost-passthrough-path'), 'native passthrough did not target /v1/messages: ' + txt.slice(0, 300)).to.eql('/v1/messages');",
+                      "    return;",
+                      "  }",
                       "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
                       "  pm.expect(rr.diagnostics, 'the diagnostics field was dropped before the provider: ' + wire.slice(0, 400)).to.be.an('object');",
                       "});"
@@ -17183,6 +17191,14 @@
                       "",
                       "// The field the header exists for must itself survive to the provider.",
                       "pm.test('context-management-2025-06-27: the gated field reaches the provider', function () {",
+                      "  // /anthropic/v1/messages to Anthropic takes the native Messages passthrough, which forwards",
+                      "  // the caller's body as sent (only the model is normalized) and answers with Anthropic's own",
+                      "  // body, so there is no extra_fields.raw_request to read. The routed-identity headers name",
+                      "  // that path; any other path must show the field in raw_request.",
+                      "  if (pm.response.headers.get('x-bifrost-request-type') === 'passthrough') {",
+                      "    pm.expect(pm.response.headers.get('x-bifrost-passthrough-path'), 'native passthrough did not target /v1/messages: ' + txt.slice(0, 300)).to.eql('/v1/messages');",
+                      "    return;",
+                      "  }",
                       "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
                       "  pm.expect(rr.context_management, 'context_management was dropped before the provider: ' + wire.slice(0, 400)).to.be.an('object');",
                       "  pm.expect(rr.context_management.edits[0].type, 'the clear-tool-uses edit was altered on the wire: ' + JSON.stringify(rr.context_management).slice(0, 300)).to.eql('clear_tool_uses_20250919');",
@@ -17256,6 +17272,14 @@
                       "",
                       "// The field the header exists for must itself survive to the provider.",
                       "pm.test('mcp-client-2025-11-20: the gated field reaches the provider', function () {",
+                      "  // /anthropic/v1/messages to Anthropic takes the native Messages passthrough, which forwards",
+                      "  // the caller's body as sent (only the model is normalized) and answers with Anthropic's own",
+                      "  // body, so there is no extra_fields.raw_request to read. The routed-identity headers name",
+                      "  // that path; any other path must show the field in raw_request.",
+                      "  if (pm.response.headers.get('x-bifrost-request-type') === 'passthrough') {",
+                      "    pm.expect(pm.response.headers.get('x-bifrost-passthrough-path'), 'native passthrough did not target /v1/messages: ' + txt.slice(0, 300)).to.eql('/v1/messages');",
+                      "    return;",
+                      "  }",
                       "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
                       "  pm.expect(rr.mcp_servers, 'mcp_servers was dropped before the provider: ' + wire.slice(0, 400)).to.be.an('array');",
                       "  pm.expect(rr.mcp_servers[0].name, 'the MCP server definition was altered on the wire: ' + JSON.stringify(rr.mcp_servers).slice(0, 300)).to.eql('harness_mcp');",
@@ -17329,6 +17353,14 @@
                       "",
                       "// The field the header exists for must itself survive to the provider.",
                       "pm.test('server-side-fallback-2026-07-01: the gated field reaches the provider', function () {",
+                      "  // /anthropic/v1/messages to Anthropic takes the native Messages passthrough, which forwards",
+                      "  // the caller's body as sent (only the model is normalized) and answers with Anthropic's own",
+                      "  // body, so there is no extra_fields.raw_request to read. The routed-identity headers name",
+                      "  // that path; any other path must show the field in raw_request.",
+                      "  if (pm.response.headers.get('x-bifrost-request-type') === 'passthrough') {",
+                      "    pm.expect(pm.response.headers.get('x-bifrost-passthrough-path'), 'native passthrough did not target /v1/messages: ' + txt.slice(0, 300)).to.eql('/v1/messages');",
+                      "    return;",
+                      "  }",
                       "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
                       "  pm.expect(rr.fallbacks, 'the fallbacks preset was dropped before the provider: ' + wire.slice(0, 400)).to.eql('default');",
                       "});"
@@ -22575,7 +22607,7 @@
                     "openai",
                     "openai",
                     "deployments",
-                    "o3",
+                    "gpt-5.4-mini",
                     "chat",
                     "completions"
                   ],
@@ -99878,8 +99910,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -99929,8 +99960,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -99980,8 +100010,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -100031,8 +100060,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -100082,8 +100110,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -100133,8 +100160,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -100184,8 +100210,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -100235,8 +100260,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -100286,8 +100310,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -112995,8 +113018,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -113046,8 +113068,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -113097,8 +113118,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -113148,8 +113168,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -113199,8 +113218,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -113250,8 +113268,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -113301,8 +113318,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -113352,8 +113368,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -113403,8 +113418,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -126112,8 +126126,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -126163,8 +126176,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -126214,8 +126226,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -126265,8 +126276,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -126316,8 +126326,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -126367,8 +126376,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -126418,8 +126426,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -126469,8 +126476,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -126520,8 +126526,7 @@
                           "var m = j.message || ((((j.choices || [])[0] || {}).message) || {});",
                           "var rt = (((j.usage || {}).completion_tokens_details) || {}).reasoning_tokens || 0;",
                           "var thinkBlocks = Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'thinking' && c.thinking; });",
-                          "var cohereText = !!(j.message && Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text' && c.text; }));",
-                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks || cohereText ||",
+                          "var think = !!(m.reasoning_content || m.reasoning || m.thinking || thinkBlocks ||",
                           "  (m.reasoning_details && m.reasoning_details.length) || rt > 0);",
                           "pm.test('reasoning surfaced (content block or reasoning tokens)', function () {",
                           "  pm.expect(think, 'no reasoning content and no reasoning tokens: ' +",
@@ -155054,8 +155059,12 @@
                   "var usageOnly = parsedFrames.filter(function (j) { return j.choices && j.choices.length === 0 && j.usage && j.usage.prompt_tokens > 0; });",
                   "var finishFrames = parsedFrames.filter(function (j) { return j.choices && j.choices.length > 0 && j.choices[0].finish_reason; });",
                   "var dbg = ' | frames=' + rawFrames.length + ' parsed=' + parsedFrames.length + ' sample=' + rawFrames.join(' ~~ ').slice(0, 1200);",
-                  "pm.test('91.3 the finish_reason frame is not duplicated across spread events', function () {",
-                  "  pm.expect(finishFrames.length, 'finish_reason frame captured ' + finishFrames.length + ' times; expected at most once' + dbg).to.be.below(2);",
+                  "// Zero captured frames would satisfy both upper bounds below, so capture is asserted first.",
+                  "pm.test('91.3 the upstream frames were captured on the stream', function () {",
+                  "  pm.expect(rawFrames.length, 'no event carried extra_fields.raw_response; x-bf-send-back-raw-response was not honored' + dbg).to.be.above(0);",
+                  "});",
+                  "pm.test('91.3 the finish_reason frame is captured exactly once across spread events', function () {",
+                  "  pm.expect(finishFrames.length, 'finish_reason frame captured ' + finishFrames.length + ' times; expected exactly once' + dbg).to.equal(1);",
                   "});",
                   "pm.test('91.3 the usage-only frame is not duplicated across spread events', function () {",
                   "  pm.expect(usageOnly.length, 'usage-only frame captured ' + usageOnly.length + ' times; expected at most once' + dbg).to.be.below(2);",
@@ -155321,7 +155330,6 @@
                 "type": "text/javascript",
                 "exec": [
                   "var code = pm.response.code;",
-                  "if ([401, 403, 429].indexOf(code) !== -1) { return; }",
                   "if (code === 503 && /ServiceUnavailable|Throttl|ModelNotReady/i.test(pm.response.text() || '')) { return; }",
                   "if (code === 529 && /overloaded/i.test(pm.response.text() || '')) { return; }",
                   "if (code === 500 || code === 502 || code === 504) { return; }",
@@ -155392,7 +155400,6 @@
                 "type": "text/javascript",
                 "exec": [
                   "var code = pm.response.code;",
-                  "if ([401, 403, 429].indexOf(code) !== -1) { return; }",
                   "if (code === 503 && /ServiceUnavailable|Throttl|ModelNotReady/i.test(pm.response.text() || '')) { return; }",
                   "if (code === 529 && /overloaded/i.test(pm.response.text() || '')) { return; }",
                   "if (code === 500 || code === 502 || code === 504) { return; }",
@@ -155729,7 +155736,6 @@
                 "exec": [
                   "var code = pm.response.code;",
                   "var text = pm.response.text() || '';",
-                  "if ([401, 403, 429].indexOf(code) !== -1) { return; }",
                   "if (code === 503 && /ServiceUnavailable|Throttl|ModelNotReady/i.test(text)) { return; }",
                   "if (code === 529 && /overloaded/i.test(text)) { return; }",
                   "if (code === 500 || code === 502 || code === 504) { return; }",
@@ -156592,7 +156598,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "var text = pm.response.text() || '';",
                   "pm.test('Excessive tool-schema branch expansion returns HTTP 400', function () {",
                   "  pm.expect(pm.response.code, 'expected local schema-complexity rejection: ' + text).to.equal(400);",
@@ -156636,7 +156642,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "var text = pm.response.text() || '';",
                   "pm.test('Excessive tool-schema recursion depth returns HTTP 400', function () {",
                   "  pm.expect(pm.response.code, 'expected local schema-complexity rejection: ' + text).to.equal(400);",
@@ -160531,7 +160537,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -160570,7 +160576,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -160609,7 +160615,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -160649,7 +160655,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -160688,7 +160694,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -160727,7 +160733,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -160766,7 +160772,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -160805,7 +160811,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -160844,7 +160850,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -160884,7 +160890,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -160929,7 +160935,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -160974,7 +160980,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -161021,7 +161027,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -161066,7 +161072,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -161112,7 +161118,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -161158,7 +161164,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -161203,7 +161209,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "if ([401, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
@@ -162072,11 +162078,11 @@
                 "exec": [
                   "var bk = pm.variables.get('awsS3Bucket') || '';",
                   "if (!bk || bk.indexOf('{{') === 0) { pm.test.skip('awsS3Bucket not configured', function () {}); return; }",
-                  "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                  "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                   "pm.test('valid bucket reaches AWS instead of the bucket gate', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'valid bucket was caught by the gate: ' + t.slice(0, 300)).to.not.match(/invalid s3 bucket name/);",
-                  "  pm.expect(pm.response.code, 'expected an upstream 4xx: ' + t.slice(0, 300)).to.be.within(400, 499);",
+                  "  pm.expect([403, 404], 'expected the AWS not-found or access-denied reply, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
                   "});"
                 ]
               }
@@ -169258,9 +169264,37 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "var events = [];",
+                  "pm.response.text().split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (!p || p === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(p)); } catch (e) {}",
+                  "});",
                   "pm.test('stream completed without an upstream rejection', function () {",
                   "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
                   "  pm.expect(pm.response.text(), 'stream carried an error frame').to.not.include('invalid_request_error');",
+                  "  var errors = events.filter(function (ev) { return ev.type === 'error' || ev.error; });",
+                  "  pm.expect(errors.length, 'stream carried an error event: ' + JSON.stringify(errors[0] || null).slice(0, 400)).to.equal(0);",
+                  "  var stops = events.filter(function (ev) { return ev.type === 'message_delta' && ev.delta && ev.delta.stop_reason; });",
+                  "  pm.expect(stops.length, 'no message_delta stop_reason, so the stream was cut short: ' + pm.response.text().slice(-400)).to.be.above(0);",
+                  "  pm.expect(stops[stops.length - 1].delta.stop_reason, 'the turn did not end on the tool call').to.eql('tool_use');",
+                  "  pm.expect(events.some(function (ev) { return ev.type === 'message_stop'; }), 'no message_stop, so the stream was cut short: ' + pm.response.text().slice(-400)).to.equal(true);",
+                  "});",
+                  "pm.test('a member call completes with valid JSON arguments', function () {",
+                  "  var blocks = {}, done = 0;",
+                  "  events.forEach(function (ev) {",
+                  "    if (ev.type === 'content_block_start' && ev.content_block && ev.content_block.type === 'tool_use') { blocks[ev.index] = { json: '', input: ev.content_block.input }; return; }",
+                  "    var b = blocks[ev.index];",
+                  "    if (!b) { return; }",
+                  "    if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'input_json_delta') { b.json += ev.delta.partial_json || ''; return; }",
+                  "    if (ev.type !== 'content_block_stop') { return; }",
+                  "    var args;",
+                  "    try { args = b.json ? JSON.parse(b.json) : b.input; } catch (e) { args = null; }",
+                  "    pm.expect(args, 'tool_use input is not valid JSON: ' + b.json.slice(0, 300)).to.be.an('object');",
+                  "    done++;",
+                  "  });",
+                  "  pm.expect(done, 'no tool_use block reached content_block_stop: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
                   "});",
                   "pm.test('content_block_start for a member call carries toolset_name', function () {",
                   "  var lines = pm.response.text().split('\\n');",
@@ -169784,9 +169818,37 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "var events = [];",
+                  "pm.response.text().split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (!p || p === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(p)); } catch (e) {}",
+                  "});",
                   "pm.test('stream completed without an upstream rejection', function () {",
                   "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
                   "  pm.expect(pm.response.text(), 'stream carried an error frame').to.not.include('invalid_request_error');",
+                  "  var errors = events.filter(function (ev) { return ev.type === 'error' || ev.error; });",
+                  "  pm.expect(errors.length, 'stream carried an error event: ' + JSON.stringify(errors[0] || null).slice(0, 400)).to.equal(0);",
+                  "  var stops = events.filter(function (ev) { return ev.type === 'message_delta' && ev.delta && ev.delta.stop_reason; });",
+                  "  pm.expect(stops.length, 'no message_delta stop_reason, so the stream was cut short: ' + pm.response.text().slice(-400)).to.be.above(0);",
+                  "  pm.expect(stops[stops.length - 1].delta.stop_reason, 'the turn did not end on the tool call').to.eql('tool_use');",
+                  "  pm.expect(events.some(function (ev) { return ev.type === 'message_stop'; }), 'no message_stop, so the stream was cut short: ' + pm.response.text().slice(-400)).to.equal(true);",
+                  "});",
+                  "pm.test('a member call completes with valid JSON arguments', function () {",
+                  "  var blocks = {}, done = 0;",
+                  "  events.forEach(function (ev) {",
+                  "    if (ev.type === 'content_block_start' && ev.content_block && ev.content_block.type === 'tool_use') { blocks[ev.index] = { json: '', input: ev.content_block.input }; return; }",
+                  "    var b = blocks[ev.index];",
+                  "    if (!b) { return; }",
+                  "    if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'input_json_delta') { b.json += ev.delta.partial_json || ''; return; }",
+                  "    if (ev.type !== 'content_block_stop') { return; }",
+                  "    var args;",
+                  "    try { args = b.json ? JSON.parse(b.json) : b.input; } catch (e) { args = null; }",
+                  "    pm.expect(args, 'tool_use input is not valid JSON: ' + b.json.slice(0, 300)).to.be.an('object');",
+                  "    done++;",
+                  "  });",
+                  "  pm.expect(done, 'no tool_use block reached content_block_stop: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
                   "});",
                   "pm.test('content_block_start for a member call carries toolset_name', function () {",
                   "  var lines = pm.response.text().split('\\n');",
@@ -170161,9 +170223,28 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "var events = [];",
+                  "pm.response.text().split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (!p || p === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(p)); } catch (e) {}",
+                  "});",
                   "pm.test('stream completed without an upstream rejection', function () {",
                   "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
                   "  pm.expect(pm.response.text(), 'stream carried an error frame').to.not.include('invalid_request_error');",
+                  "  var errors = events.filter(function (ev) { return ev.type === 'error' || ev.type === 'response.failed' || ev.type === 'response.incomplete'; });",
+                  "  pm.expect(errors.length, 'stream ended in an error or incomplete event: ' + JSON.stringify(errors[0] || null).slice(0, 400)).to.equal(0);",
+                  "  pm.expect(events.some(function (ev) { return ev.type === 'response.completed'; }), 'no response.completed, so the stream was cut short: ' + pm.response.text().slice(-400)).to.equal(true);",
+                  "});",
+                  "pm.test('a member call completes with valid JSON arguments', function () {",
+                  "  var done = events.filter(function (ev) { return ev.type === 'response.output_item.done' && ev.item && ev.item.type === 'function_call'; });",
+                  "  pm.expect(done.length, 'no function_call item reached response.output_item.done: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  done.forEach(function (ev) {",
+                  "    var args;",
+                  "    try { args = JSON.parse(ev.item.arguments === '' ? '{}' : ev.item.arguments); } catch (e) { args = null; }",
+                  "    pm.expect(args, 'function_call arguments are not valid JSON: ' + String(ev.item.arguments).slice(0, 300)).to.be.an('object');",
+                  "  });",
                   "});",
                   "pm.test('output_item.added for a member call carries toolset_name', function () {",
                   "  var lines = pm.response.text().split('\\n');",
@@ -170458,9 +170539,28 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "var events = [];",
+                  "pm.response.text().split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data: ') !== 0) { return; }",
+                  "  var p = l.slice(6).trim();",
+                  "  if (!p || p === '[DONE]') { return; }",
+                  "  try { events.push(JSON.parse(p)); } catch (e) {}",
+                  "});",
                   "pm.test('stream completed without an upstream rejection', function () {",
                   "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.eql(200);",
                   "  pm.expect(pm.response.text(), 'stream carried an error frame').to.not.include('invalid_request_error');",
+                  "  var errors = events.filter(function (ev) { return ev.type === 'error' || ev.type === 'response.failed' || ev.type === 'response.incomplete'; });",
+                  "  pm.expect(errors.length, 'stream ended in an error or incomplete event: ' + JSON.stringify(errors[0] || null).slice(0, 400)).to.equal(0);",
+                  "  pm.expect(events.some(function (ev) { return ev.type === 'response.completed'; }), 'no response.completed, so the stream was cut short: ' + pm.response.text().slice(-400)).to.equal(true);",
+                  "});",
+                  "pm.test('a member call completes with valid JSON arguments', function () {",
+                  "  var done = events.filter(function (ev) { return ev.type === 'response.output_item.done' && ev.item && ev.item.type === 'function_call'; });",
+                  "  pm.expect(done.length, 'no function_call item reached response.output_item.done: ' + pm.response.text().slice(0, 400)).to.be.above(0);",
+                  "  done.forEach(function (ev) {",
+                  "    var args;",
+                  "    try { args = JSON.parse(ev.item.arguments === '' ? '{}' : ev.item.arguments); } catch (e) { args = null; }",
+                  "    pm.expect(args, 'function_call arguments are not valid JSON: ' + String(ev.item.arguments).slice(0, 300)).to.be.an('object');",
+                  "  });",
                   "});",
                   "pm.test('output_item.added for a member call carries toolset_name', function () {",
                   "  var lines = pm.response.text().split('\\n');",
@@ -173803,7 +173903,7 @@
       "description": "Regression for a customer report: GET /oauth2/authorize rejected any state parameter longer than 512 characters with error=server_error (\"failed to create authorization request\"), because oauth2_authorize_requests.state was varchar(512). Postgres enforces that bound (SQLite does not), so a Gemini Enterprise connector sending a 620-char base64 JSON state could never complete per-user authorisation. The same class applied to every other client-controlled column on the OAuth2 AS tables: oauth2_clients.client_name and .scope (RFC 7591 section 2 bounds neither) and the scope columns on oauth2_authorize_requests and oauth2_refresh_tokens (RFC 6749 section 3.3), all varchar(255). All five are now text; the request header block (server.read_buffer_size) is the effective limit. Case 1 registers a public client via DCR with a 1024-char client_name and a 200-token scope, asserts both are echoed, and chains its client_id. Case 2 sends a 620-char state (the reported size) with scope omitted, so the long registered scope is what gets stored. Case 3 sends a 4096-char state plus the full long scope explicitly. Both pin that the authorize step reaches consent (302 to /oauth/consent?flow=) with no error= in the redirect; redirect following is disabled on those items so the 302 itself is asserted. No provider spend. Note: against the default SQLite-backed harness profile these cases are green both before and after the fix; the bounds only ever fired on Postgres. They pin the contract for Postgres-backed profiles and against any future explicit length validation on these fields.",
       "item": [
         {
-          "name": "oauth2 register public client with 1024-char client_name and 1693-char scope - oauth2 long fields",
+          "name": "[EXPECT-201] oauth2 register public client with 1024-char client_name and 1693-char scope - oauth2 long fields",
           "event": [
             {
               "listen": "test",
@@ -173847,7 +173947,7 @@
           }
         },
         {
-          "name": "oauth2 authorize with 620-char state redirects to consent, not server_error - oauth2 long fields",
+          "name": "[EXPECT-302] oauth2 authorize with 620-char state redirects to consent, not server_error - oauth2 long fields",
           "protocolProfileBehavior": {
             "followRedirects": false
           },
@@ -173910,7 +174010,7 @@
           }
         },
         {
-          "name": "oauth2 authorize with 4096-char state and 1693-char scope redirects to consent, not server_error - oauth2 long fields",
+          "name": "[EXPECT-302] oauth2 authorize with 4096-char state and 1693-char scope redirects to consent, not server_error - oauth2 long fields",
           "protocolProfileBehavior": {
             "followRedirects": false
           },
@@ -177206,8 +177306,22 @@
                   "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('invalid authentication credentials');",
                   "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('API keys are not supported by this API');",
                   "});",
-                  "pm.test('stream carried content frames', function () {",
-                  "  pm.expect(pm.response.text(), 'empty stream: ' + pm.response.text()).to.include('data:');",
+                  "pm.test('stream carried generated content and finished', function () {",
+                  "  var frames = [], done = false;",
+                  "  pm.response.text().split('\\n').forEach(function (l) {",
+                  "    if (l.indexOf('data: ') !== 0) { return; }",
+                  "    var p = l.slice(6).trim();",
+                  "    if (p === '[DONE]') { done = true; return; }",
+                  "    if (!p) { return; }",
+                  "    try { frames.push(JSON.parse(p)); } catch (e) {}",
+                  "  });",
+                  "  var errors = frames.filter(function (f) { return f.error; });",
+                  "  pm.expect(errors.length, 'stream carried an error frame: ' + JSON.stringify(errors[0] || null).slice(0, 400)).to.equal(0);",
+                  "  var text = frames.map(function (f) { var c = (f.choices || [])[0] || {}; return (c.delta && c.delta.content) || ''; }).join('');",
+                  "  pm.expect(text, 'no generated text in the stream: ' + pm.response.text().slice(0, 400)).to.not.equal('');",
+                  "  var finished = frames.some(function (f) { return !!((f.choices || [])[0] || {}).finish_reason; });",
+                  "  pm.expect(finished, 'no chunk carried a finish_reason: ' + pm.response.text().slice(-400)).to.equal(true);",
+                  "  pm.expect(done, 'the stream did not end with data: [DONE]').to.equal(true);",
                   "});"
                 ]
               }
@@ -177307,8 +177421,20 @@
                   "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('invalid authentication credentials');",
                   "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('API keys are not supported by this API');",
                   "});",
-                  "pm.test('stream carried content frames', function () {",
-                  "  pm.expect(pm.response.text(), 'empty stream: ' + pm.response.text()).to.include('data:');",
+                  "pm.test('stream carried generated content and finished', function () {",
+                  "  var frames = [];",
+                  "  pm.response.text().split('\\n').forEach(function (l) {",
+                  "    if (l.indexOf('data: ') !== 0) { return; }",
+                  "    var p = l.slice(6).trim();",
+                  "    if (p === '[DONE]') { return; }",
+                  "    if (!p) { return; }",
+                  "    try { frames.push(JSON.parse(p)); } catch (e) {}",
+                  "  });",
+                  "  var errors = frames.filter(function (f) { return f.type === 'error' || f.type === 'response.failed' || f.type === 'response.incomplete'; });",
+                  "  pm.expect(errors.length, 'stream ended in an error or incomplete event: ' + JSON.stringify(errors[0] || null).slice(0, 400)).to.equal(0);",
+                  "  var text = frames.map(function (f) { return f.type === 'response.output_text.delta' ? (f.delta || '') : ''; }).join('');",
+                  "  pm.expect(text, 'no generated text in the stream: ' + pm.response.text().slice(0, 400)).to.not.equal('');",
+                  "  pm.expect(frames.some(function (f) { return f.type === 'response.completed'; }), 'no response.completed: ' + pm.response.text().slice(-400)).to.equal(true);",
                   "});"
                 ]
               }
@@ -177410,8 +177536,21 @@
                   "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('invalid authentication credentials');",
                   "  pm.expect(text, 'upstream saw the forwarded Bearer: ' + text).to.not.include('API keys are not supported by this API');",
                   "});",
-                  "pm.test('stream carried content frames', function () {",
-                  "  pm.expect(pm.response.text(), 'empty stream: ' + pm.response.text()).to.include('data:');",
+                  "pm.test('stream carried generated content and finished', function () {",
+                  "  var frames = [];",
+                  "  pm.response.text().split('\\n').forEach(function (l) {",
+                  "    if (l.indexOf('data: ') !== 0) { return; }",
+                  "    var p = l.slice(6).trim();",
+                  "    if (p === '[DONE]') { return; }",
+                  "    if (!p) { return; }",
+                  "    try { frames.push(JSON.parse(p)); } catch (e) {}",
+                  "  });",
+                  "  var errors = frames.filter(function (f) { return f.error; });",
+                  "  pm.expect(errors.length, 'stream carried an error frame: ' + JSON.stringify(errors[0] || null).slice(0, 400)).to.equal(0);",
+                  "  var text = frames.map(function (f) { var c = (f.candidates || [])[0] || {}; return ((c.content || {}).parts || []).map(function (p) { return p.text || ''; }).join(''); }).join('');",
+                  "  pm.expect(text, 'no generated text in the stream: ' + pm.response.text().slice(0, 400)).to.not.equal('');",
+                  "  var finish = frames.map(function (f) { return ((f.candidates || [])[0] || {}).finishReason; }).filter(Boolean);",
+                  "  pm.expect(finish, 'no candidate finished normally: ' + pm.response.text().slice(-400)).to.satisfy(function (r) { return r.length > 0 && (r[r.length - 1] === 'STOP' || r[r.length - 1] === 'MAX_TOKENS'); });",
                   "});"
                 ]
               }
@@ -184669,7 +184808,7 @@
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                       "pm.test('an unsupported modality is a client error naming the part type', function () {",
                       "  pm.expect(pm.response.code, 'expected a 4xx, got ' + pm.response.code + ': ' + pm.response.text().slice(0, 300))",
                       "    .to.be.within(400, 499);",
@@ -184865,7 +185004,7 @@
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                       "pm.test('a one-parameter-block provider refuses the override instead of ignoring it', function () {",
                       "  pm.expect(pm.response.code, 'expected a 4xx, got ' + pm.response.code + ': ' + pm.response.text().slice(0, 300))",
                       "    .to.be.within(400, 499);",
@@ -184908,7 +185047,7 @@
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
+                      "if ([500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }",
                       "pm.test('Vertex text embedding refuses the override instead of ignoring it', function () {",
                       "  pm.expect(pm.response.code, 'expected a 4xx, got ' + pm.response.code + ': ' + pm.response.text().slice(0, 300))",
                       "    .to.be.within(400, 499);",
@@ -189170,7 +189309,7 @@
       "description": "Management-endpoint checks with no live provider involved. POST /api/mcp/client must validate connection_type against the enum (http, sse, stdio) before anything else, and an unauthenticated (auth-bypassed) registration whose target hostname cannot be resolved must be refused rather than handed to the connect path. Both run against the harness profile, which has no admin auth configured. DELETE /api/mcp/client/<id> for an id no client has must answer 404, not 500.",
       "item": [
         {
-          "name": "POST /api/mcp/client · unknown connection_type is rejected with 400",
+          "name": "[EXPECT-400] POST /api/mcp/client · unknown connection_type is rejected with 400",
           "event": [
             {
               "listen": "test",
@@ -189214,7 +189353,7 @@
           }
         },
         {
-          "name": "POST /api/mcp/client · unresolvable target is refused with 403 (fail closed)",
+          "name": "[EXPECT-403] POST /api/mcp/client · unresolvable target is refused with 403 (fail closed)",
           "event": [
             {
               "listen": "test",
@@ -190007,7 +190146,7 @@
       "description": "Three request-size limits on routes reachable before authentication. (1) Request decompression runs ahead of routing and auth; its zstd decoder now caps the declared back-reference window and content size, so a tiny body whose frame header declares a 512 MiB window is answered 413 at once instead of making the process reserve that window. (2) The realtime calls route hands the request body to the SDP parser; an offer with an empty simulcast rid segment is answered with an HTTP status (client error when the offer is rejected, bad gateway when the stubbed upstream is reached) rather than dropping the connection, and the gateway stays up. (3) A liveness probe after the malformed offer confirms the gateway still serves. No case opens with a status-skipping guard: every unexpected status fails the assertion. The zstd case sends a fixture file body so the exact nine bytes reach the server unaltered.",
       "item": [
         {
-          "name": "zstd request body declaring an oversized window is rejected with 413 - request-limits",
+          "name": "[EXPECT-413] zstd request body declaring an oversized window is rejected with 413 - request-limits",
           "event": [
             {
               "listen": "test",
@@ -190534,7 +190673,7 @@
       "description": "Deterministic, free fixture pin for #7906. A local SSE upstream emits original Mistral delta.content arrays through the real native provider parser. Three routes complete homogeneous text arrays; three routes stream a leading thinking block as reasoning followed by the answer text in the same delta (the zai-glm/magistral shape); text-then-thinking and reference arrays terminate with a structured error instead of being dropped. Uses real dashboard login, a fresh app profile with no preexisting Mistral, an owned native provider with a dummy key, upstream wire witness and cleanup. Mistral is not a supported custom-provider base in this revision, so no allowlist changes or bypass mocker plugin are used. Same-host fixture started by run-mistral-content-array-fixture.mjs; scoped INCLUDE_PREVIEW=1 PARALLEL=0 only. User-run live harness; complete preparation below.\n\nUser-run setup (Linux/WSL Bash, repo root; Node, Go, jq, curl, docker, nc and lsof):\n1. Start the profile backing service: docker compose -f tests/docker-compose.yml up -d weaviate. Wait for curl -sf http://localhost:9000/v1/.well-known/ready and nc -z localhost 50051 to succeed. Check lsof -nP -iTCP:3021 -sTCP:LISTEN prints no listener; use another free port consistently if occupied.\n2. Make a fresh isolated profile (never run this on an existing app directory):\nmkdir -p tmp\nTASK_MISTRAL_APP_DIR=$(mktemp -d \"$PWD/tmp/mistral-content-array.XXXXXX\")\ngit show HEAD:tests/integrations/python/config.json | jq --arg db \"$TASK_MISTRAL_APP_DIR/config.db\" --arg logs \"$TASK_MISTRAL_APP_DIR/logs.db\" '.providers={} | .governance.routing_rules=[] | .governance.virtual_keys=[] | .governance.auth_config={\"is_enabled\":true,\"admin_username\":\"mistral_array_harness\",\"admin_password\":\"harness-only-password\"} | .config_store.config.path=$db | .logs_store.config.path=$logs | .mcp.client_configs=[] | .client.oauth2_server_config.issuer_url=\"http://localhost:3021\"' > \"$TASK_MISTRAL_APP_DIR/config.json\"\nprintf '%s\\n' \"$TASK_MISTRAL_APP_DIR\" > tmp/mistral-content-array-app-dir\n3. In a separate terminal, start only the same-host fixture (ENV_FILE must not already exist; choose another path for concurrent runs):\nnode tests/e2e/api/runners/run-mistral-content-array-fixture.mjs --env-out tmp/mistral-content-array.env.json\n4. Start the gateway from the reviewed source in another terminal:\nmake dev PORT=3021 APP_DIR=$(cat tmp/mistral-content-array-app-dir)\n5. After /health answers, obtain a disposable bootstrap session for the Makefile's authenticated raw-override preflight (do not print its token):\nTASK_MISTRAL_BOOTSTRAP_TOKEN=$(curl -fsS -c - -o /dev/null -H 'Content-Type: application/json' --data '{\"username\":\"mistral_array_harness\",\"password\":\"harness-only-password\"}' http://localhost:3021/api/session/login | awk '$6==\"token\" {print $7}')\ntest -n \"$TASK_MISTRAL_BOOTSTRAP_TOKEN\" && export BIFROST_E2E_AUTH_HEADER=\"Bearer $TASK_MISTRAL_BOOTSTRAP_TOKEN\"\n6. Run the full owned setup/wire/cleanup chain in one Newman process:\nmake run-provider-harness-test PROVIDER=mistral FEATURE=\"mistral-content-array\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 ENV_FILE=tmp/mistral-content-array.env.json BASE_URL=http://localhost:3021\n7. The collection removes its provider/key, witness and login session. Invalidate the separate bootstrap session after the run, then stop the two foreground servers:\ncurl -fsS -X POST -H \"Authorization: $BIFROST_E2E_AUTH_HEADER\" http://localhost:3021/api/session/logout >/dev/null\nunset BIFROST_E2E_AUTH_HEADER TASK_MISTRAL_BOOTSTRAP_TOKEN\nThe submitted rows are structurally validated; live execution belongs to the user. These eight calls reach only the local fixture, with a dummy key; no real provider credential is needed.",
       "item": [
         {
-          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture local fixture identity - mistral-content-array - #7906",
+          "name": "[PREVIEW] [EXPECT-200] [NO-CONTENT] mistral mistral-array-fixture local fixture identity - mistral-content-array - #7906",
           "protocolProfileBehavior": {
             "disableCookies": true
           },
@@ -191228,7 +191367,7 @@
           ]
         },
         {
-          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture inspect actual eight upstream array frames - mistral-content-array - #7906",
+          "name": "[PREVIEW] [EXPECT-200] [NO-CONTENT] mistral mistral-array-fixture inspect actual eight upstream array frames - mistral-content-array - #7906",
           "protocolProfileBehavior": {
             "disableCookies": true
           },
@@ -191357,7 +191496,7 @@
           ]
         },
         {
-          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture delete nonce fixture witness - mistral-content-array - #7906",
+          "name": "[PREVIEW] [EXPECT-200] [NO-CONTENT] mistral mistral-array-fixture delete nonce fixture witness - mistral-content-array - #7906",
           "protocolProfileBehavior": {
             "disableCookies": true
           },
@@ -194859,7 +194998,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Google rejects the unknown datastore', function () { var t = pm.response.text(); pm.expect(t, 'rejection does not mention the datastore/retrieval path: ' + t).to.match(/data.?store|retrieval|not found|permission|search/i); });"
+                  "pm.test('Google rejects the unknown datastore', function () { var t = pm.response.text(); pm.expect(t, 'a general auth or model-invocation refusal says nothing about the datastore: ' + t).to.not.match(/aiplatform\\.endpoints\\.predict|API key|API_KEY_INVALID|UNAUTHENTICATED|authentication credentials/i); pm.expect(t, 'rejection does not identify the submitted datastore: ' + t).to.match(/h149-not-a-datastore-resource-name|data.?store|vertex_?ai_?search/i); });"
                 ]
               }
             }
@@ -194899,7 +195038,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Google rejects the unknown rag corpus', function () { var t = pm.response.text(); pm.expect(t, 'rejection does not mention the corpus/rag path: ' + t).to.match(/rag|corpus|not found|permission|retrieval/i); });"
+                  "pm.test('Google rejects the unknown rag corpus', function () { var t = pm.response.text(); pm.expect(t, 'a general auth or model-invocation refusal says nothing about the corpus: ' + t).to.not.match(/aiplatform\\.endpoints\\.predict|API key|API_KEY_INVALID|UNAUTHENTICATED|authentication credentials/i); pm.expect(t, 'rejection does not identify the submitted rag corpus: ' + t).to.match(/h149-does-not-exist|rag.?corpora|rag.?corpus/i); });"
                 ]
               }
             }
@@ -197883,7 +198022,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Google rejects the out-of-range temperature and names it', function () { var t = pm.response.text(); pm.expect(t, 'rejection does not mention out-of-range temperature; field may not have reached Google: ' + t).to.match(/temperature|range|invalid/i); });"
+                  "pm.test('Google rejects the out-of-range temperature and names it', function () { var t = pm.response.text(); pm.expect(pm.response.code, 'expected Google’s 400 validation error: ' + t).to.equal(400); pm.expect(t, 'an authentication error proves nothing about the parameter: ' + t).to.not.match(/API key|API_KEY_INVALID|UNAUTHENTICATED|PERMISSION_DENIED|authentication credentials/i); pm.expect(t, 'rejection does not name the out-of-range temperature; field may not have reached Google: ' + t).to.match(/temperature/i); });"
                 ]
               }
             }
@@ -197927,7 +198066,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Google rejects the out-of-range topP and names it', function () { var t = pm.response.text(); pm.expect(t, 'rejection does not mention out-of-range topP; field may not have reached Google: ' + t).to.match(/top.?p|range|invalid/i); });"
+                  "pm.test('Google rejects the out-of-range topP and names it', function () { var t = pm.response.text(); pm.expect(pm.response.code, 'expected Google’s 400 validation error: ' + t).to.equal(400); pm.expect(t, 'an authentication error proves nothing about the parameter: ' + t).to.not.match(/API key|API_KEY_INVALID|UNAUTHENTICATED|PERMISSION_DENIED|authentication credentials/i); pm.expect(t, 'rejection does not name the out-of-range topP; field may not have reached Google: ' + t).to.match(/top.?p/i); });"
                 ]
               }
             }
@@ -197971,7 +198110,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Google rejects the negative topK and names it', function () { var t = pm.response.text(); pm.expect(t, 'rejection does not mention negative topK; field may not have reached Google: ' + t).to.match(/top.?k|range|invalid/i); });"
+                  "pm.test('Google rejects the negative topK and names it', function () { var t = pm.response.text(); pm.expect(pm.response.code, 'expected Google’s 400 validation error: ' + t).to.equal(400); pm.expect(t, 'an authentication error proves nothing about the parameter: ' + t).to.not.match(/API key|API_KEY_INVALID|UNAUTHENTICATED|PERMISSION_DENIED|authentication credentials/i); pm.expect(t, 'rejection does not name the negative topK; field may not have reached Google: ' + t).to.match(/top.?k/i); });"
                 ]
               }
             }
@@ -198011,7 +198150,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Google rejects the retrieval shape and names it', function () { var t = pm.response.text(); pm.expect(t, 'rejection does not mention retrieval shape; field may not have reached Google: ' + t).to.match(/retrieval|unknown|invalid|dynamic/i); });"
+                  "pm.test('Google rejects the retrieval shape and names it', function () { var t = pm.response.text(); pm.expect(pm.response.code, 'expected Google’s 400 validation error: ' + t).to.equal(400); pm.expect(t, 'an authentication error proves nothing about the parameter: ' + t).to.not.match(/API key|API_KEY_INVALID|UNAUTHENTICATED|PERMISSION_DENIED|authentication credentials/i); pm.expect(t, 'rejection does not name the retrieval shape; field may not have reached Google: ' + t).to.match(/retrieval|dynamic/i); });"
                 ]
               }
             }
@@ -198163,7 +198302,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Google names the logprobs setting in its rejection', function () { var t = pm.response.text(); pm.expect(t, 'rejection does not mention logprobs/range; field may not have reached Google: ' + t).to.match(/logprob|range|invalid/i); });"
+                  "pm.test('Google names the logprobs setting in its rejection', function () { var t = pm.response.text(); pm.expect(pm.response.code, 'expected Google’s 400 validation error: ' + t).to.equal(400); pm.expect(t, 'an authentication error proves nothing about the parameter: ' + t).to.not.match(/API key|API_KEY_INVALID|UNAUTHENTICATED|PERMISSION_DENIED|authentication credentials/i); pm.expect(t, 'rejection does not name the logprobs/range; field may not have reached Google: ' + t).to.match(/logprob/i); });"
                 ]
               }
             }
@@ -213236,7 +213375,7 @@
                   "function send(stream, withFallback, cb, callerKey) {",
                   "  var h = { 'Content-Type': 'application/json', 'x-bf-direct-key': 'true' }; h[KEY_HEADER] = KEY_PREFIX + (callerKey || state.directKey);",
                   "  for (var k in EXTRA_HEADERS) { h[k] = EXTRA_HEADERS[k]; }",
-                  "  var b = body(); if (withFallback) { b.fallbacks = [state.fb + '/gpt-4o-mini']; }",
+                  "  var b = body(); if (stream) { b.stream = true; } if (withFallback) { b.fallbacks = [state.fb + '/gpt-4o-mini']; }",
                   "  pm.sendRequest({ url: BASE + (stream ? STREAM_PATH : PATH), method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {",
                   "    if (err) { pm.test('request reached the gateway', function () { pm.expect.fail(String(err)); }); }",
                   "    cb(err ? null : res);",
@@ -213248,13 +213387,22 @@
                   "    pm.expect(text, 'expected the rejection ' + PROVIDER + ' itself sends').to.include(REFUSAL_TEXT);",
                   "  });",
                   "}",
-                  "function rescued(label, res) {",
+                  "// A streamed success must be an SSE body that ran to its terminal event with no error frame.",
+                  "function streamedOk(res) {",
+                  "  var t = res ? res.text() : '';",
+                  "  pm.expect(res && res.headers.get('content-type'), 'not an SSE response: ' + t.slice(0, 300)).to.include('text/event-stream');",
+                  "  var errs = t.split('\\n').filter(function (l) { if (l.indexOf('data: ') !== 0) { return false; } try { var j = JSON.parse(l.slice(6)); return !!(j.error || j.type === 'error'); } catch (e) { return false; } });",
+                  "  pm.expect(errs.length, 'stream carried an error frame: ' + (errs[0] || '').slice(0, 300)).to.equal(0);",
+                  "  pm.expect(/^data: \\[DONE\\]\\s*$/m.test(t), 'stream did not reach its terminal event: ' + t.slice(-300)).to.equal(true);",
+                  "}",
+                  "function rescued(label, res, stream) {",
                   "  pm.test(label, function () {",
                   "    var text = res ? res.text().slice(0, 400) : 'no response';",
                   "    pm.expect(res && res.code, text).to.eql(200);",
                   "    pm.expect(res.headers.get('x-bifrost-routing-info-provider'), text).to.eql(state.fb);",
                   "    pm.expect(res.headers.get('x-bifrost-routing-info-is-fallback'), text).to.eql('true');",
                   "    pm.expect(res.headers.get('x-bifrost-routing-info-key'), 'the fallback runs on the gateway\\u2019s key: ' + text).to.eql(state.fbKey);",
+                  "    if (stream) { streamedOk(res); }",
                   "  });",
                   "}",
                   "refused(PROVIDER + ' refuses the caller\\u2019s key on ' + PATH_NAME + ' with its own error', pm.response.code, pm.response.text());",
@@ -213264,7 +213412,7 @@
                   "  send(false, true, function (res3) {",
                   "    rescued('with a fallback, the fallback serves on the gateway\\u2019s key after the caller\\u2019s key is refused', res3);",
                   "    send(true, true, function (res4) {",
-                  "      rescued('streamed, the fallback serves the same way', res4);",
+                  "      rescued('streamed, the fallback serves the same way', res4, true);",
                   "      healthy();",
                   "    });",
                   "  });",
@@ -213276,19 +213424,20 @@
                   "    pm.test('the runner passes a working caller key as openaiKey', function () { pm.expect.fail('openaiKey is empty: run with USE_INFISICAL=1 or the provider key set, so a direct key can serve'); });",
                   "    return cleanup();",
                   "  }",
-                  "  function onKey(label, res) {",
+                  "  function onKey(label, res, stream) {",
                   "    pm.test(label, function () {",
                   "      var text = res ? res.text().slice(0, 400) : 'no response';",
                   "      pm.expect(res && res.code, text).to.eql(200);",
                   "      pm.expect(res.headers.get('x-bifrost-routing-info-provider'), text).to.eql('openai');",
                   "      pm.expect(res.headers.get('x-bifrost-routing-info-key'), 'served on the caller\\u2019s key: ' + text).to.eql('header-provided');",
                   "      pm.expect(res.headers.get('x-bifrost-routing-info-is-fallback') === 'true', text).to.eql(false);",
+                  "      if (stream) { streamedOk(res); }",
                   "    });",
                   "  }",
                   "  send(false, false, function (res5) {",
                   "    onKey('a working caller key is served by ' + PROVIDER + ' on that key', res5);",
                   "    send(true, false, function (res6) {",
-                  "      onKey('streamed, a working caller key is served by ' + PROVIDER + ' on that key', res6);",
+                  "      onKey('streamed, a working caller key is served by ' + PROVIDER + ' on that key', res6, true);",
                   "      cleanup();",
                   "    }, working);",
                   "  }, working);",
@@ -213404,7 +213553,7 @@
                   "function send(stream, withFallback, cb, callerKey) {",
                   "  var h = { 'Content-Type': 'application/json', 'x-bf-direct-key': 'true' }; h[KEY_HEADER] = KEY_PREFIX + (callerKey || state.directKey);",
                   "  for (var k in EXTRA_HEADERS) { h[k] = EXTRA_HEADERS[k]; }",
-                  "  var b = body(); if (withFallback) { b.fallbacks = [state.fb + '/gpt-4o-mini']; }",
+                  "  var b = body(); if (stream) { b.stream = true; } if (withFallback) { b.fallbacks = [state.fb + '/gpt-4o-mini']; }",
                   "  pm.sendRequest({ url: BASE + (stream ? STREAM_PATH : PATH), method: 'POST', header: h, body: { mode: 'raw', raw: JSON.stringify(b) } }, function (err, res) {",
                   "    if (err) { pm.test('request reached the gateway', function () { pm.expect.fail(String(err)); }); }",
                   "    cb(err ? null : res);",
@@ -213416,13 +213565,22 @@
                   "    pm.expect(text, 'expected the rejection ' + PROVIDER + ' itself sends').to.include(REFUSAL_TEXT);",
                   "  });",
                   "}",
-                  "function rescued(label, res) {",
+                  "// A streamed success must be an SSE body that ran to its terminal event with no error frame.",
+                  "function streamedOk(res) {",
+                  "  var t = res ? res.text() : '';",
+                  "  pm.expect(res && res.headers.get('content-type'), 'not an SSE response: ' + t.slice(0, 300)).to.include('text/event-stream');",
+                  "  var errs = t.split('\\n').filter(function (l) { if (l.indexOf('data: ') !== 0) { return false; } try { var j = JSON.parse(l.slice(6)); return !!(j.error || j.type === 'error'); } catch (e) { return false; } });",
+                  "  pm.expect(errs.length, 'stream carried an error frame: ' + (errs[0] || '').slice(0, 300)).to.equal(0);",
+                  "  pm.expect(/\"type\"\\s*:\\s*\"message_stop\"/.test(t), 'stream did not reach its terminal event: ' + t.slice(-300)).to.equal(true);",
+                  "}",
+                  "function rescued(label, res, stream) {",
                   "  pm.test(label, function () {",
                   "    var text = res ? res.text().slice(0, 400) : 'no response';",
                   "    pm.expect(res && res.code, text).to.eql(200);",
                   "    pm.expect(res.headers.get('x-bifrost-routing-info-provider'), text).to.eql(state.fb);",
                   "    pm.expect(res.headers.get('x-bifrost-routing-info-is-fallback'), text).to.eql('true');",
                   "    pm.expect(res.headers.get('x-bifrost-routing-info-key'), 'the fallback runs on the gateway\\u2019s key: ' + text).to.eql(state.fbKey);",
+                  "    if (stream) { streamedOk(res); }",
                   "  });",
                   "}",
                   "refused(PROVIDER + ' refuses the caller\\u2019s key on ' + PATH_NAME + ' with its own error', pm.response.code, pm.response.text());",
@@ -213432,7 +213590,7 @@
                   "  send(false, true, function (res3) {",
                   "    rescued('with a fallback, the fallback serves on the gateway\\u2019s key after the caller\\u2019s key is refused', res3);",
                   "    send(true, true, function (res4) {",
-                  "      rescued('streamed, the fallback serves the same way', res4);",
+                  "      rescued('streamed, the fallback serves the same way', res4, true);",
                   "      healthy();",
                   "    });",
                   "  });",
@@ -213444,19 +213602,20 @@
                   "    pm.test('the runner passes a working caller key as anthropicKey', function () { pm.expect.fail('anthropicKey is empty: run with USE_INFISICAL=1 or the provider key set, so a direct key can serve'); });",
                   "    return cleanup();",
                   "  }",
-                  "  function onKey(label, res) {",
+                  "  function onKey(label, res, stream) {",
                   "    pm.test(label, function () {",
                   "      var text = res ? res.text().slice(0, 400) : 'no response';",
                   "      pm.expect(res && res.code, text).to.eql(200);",
                   "      pm.expect(res.headers.get('x-bifrost-routing-info-provider'), text).to.eql('anthropic');",
                   "      pm.expect(res.headers.get('x-bifrost-routing-info-key'), 'served on the caller\\u2019s key: ' + text).to.eql('header-provided');",
                   "      pm.expect(res.headers.get('x-bifrost-routing-info-is-fallback') === 'true', text).to.eql(false);",
+                  "      if (stream) { streamedOk(res); }",
                   "    });",
                   "  }",
                   "  send(false, false, function (res5) {",
                   "    onKey('a working caller key is served by ' + PROVIDER + ' on that key', res5);",
                   "    send(true, false, function (res6) {",
-                  "      onKey('streamed, a working caller key is served by ' + PROVIDER + ' on that key', res6);",
+                  "      onKey('streamed, a working caller key is served by ' + PROVIDER + ' on that key', res6, true);",
                   "      cleanup();",
                   "    }, working);",
                   "  }, working);",
@@ -247537,7 +247696,7 @@
           ]
         },
         {
-          "name": "[PREVIEW] openai plugin-config-roundtrip seed disabled otel row - #8228",
+          "name": "[PREVIEW] [EXPECT-201] openai plugin-config-roundtrip seed disabled otel row - #8228",
           "request": {
             "method": "POST",
             "header": [
@@ -247580,7 +247739,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('seeded the otel plugin row', function () {",
-                  "  pm.expect(pm.response.code, 'seed failed: ' + pm.response.text()).to.be.below(400);",
+                  "  pm.expect(pm.response.code, 'seed failed: ' + pm.response.text()).to.equal(201);",
                   "});"
                 ]
               }
@@ -253378,8 +253537,21 @@
                   "pm.test('stream emits OpenAI-shaped SSE chunks', function () {",
                   "  var body = pm.response.text() || '';",
                   "  pm.expect(pm.response.code, 'request failed: ' + body).to.be.below(400);",
-                  "  pm.expect(body, 'no SSE data frames').to.include('data:');",
-                  "  pm.expect(body, 'no chat.completion.chunk objects in the stream').to.include('chat.completion.chunk');",
+                  "  var frames = [], last = null;",
+                  "  body.split('\\n').forEach(function (l) {",
+                  "    if (l.indexOf('data: ') !== 0) { return; }",
+                  "    var p = l.slice(6).trim();",
+                  "    if (!p) { return; }",
+                  "    last = p;",
+                  "    if (p === '[DONE]') { return; }",
+                  "    try { frames.push(JSON.parse(p)); } catch (e) { frames.push({ unparsed: p }); }",
+                  "  });",
+                  "  var bad = frames.filter(function (f) { return f.error || f.unparsed; });",
+                  "  pm.expect(bad.length, 'stream carried an error or unparseable frame: ' + JSON.stringify(bad[0] || null).slice(0, 400)).to.equal(0);",
+                  "  pm.expect(frames.length, 'no SSE data frames: ' + body.slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(frames.every(function (f) { return f.object === 'chat.completion.chunk'; }), 'a frame is not a chat.completion.chunk: ' + body.slice(0, 400)).to.equal(true);",
+                  "  pm.expect(frames.some(function (f) { return !!((f.choices || [])[0] || {}).finish_reason; }), 'no chunk carried a finish_reason: ' + body.slice(-400)).to.equal(true);",
+                  "  pm.expect(last, 'the stream did not end with data: [DONE]').to.equal('[DONE]');",
                   "});"
                 ]
               }
@@ -257834,6 +258006,7 @@
                 "exec": [
                   "// The run id keeps parallel runs against one server from colliding on the key name.",
                   "function startFresh() {",
+                  "  pm.collectionVariables.unset('objStaleFilePending');",
                   "  pm.collectionVariables.unset('objOwnVkId');",
                   "  pm.collectionVariables.unset('objOwnVkValue');",
                   "  pm.collectionVariables.set('objOwnVkName', 'harness-object-ownership-A (owner)-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
@@ -257859,14 +258032,17 @@
                   "  var staleFileId = pm.collectionVariables.get('objFileId');",
                   "  var staleVkValue = pm.collectionVariables.get('objOwnVkValue');",
                   "  if (staleFileId && staleVkValue) {",
-                  "    // The retained owner key deletes the file it failed to delete last run; the key goes afterwards either way.",
+                  "    // The retained owner key deletes the file it failed to delete last run. Until that succeeds the",
+                  "    // key, its value and the file id are the only cleanup handles, so setup stops and keeps them.",
                   "    pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/v1/files/' + staleFileId + '?provider=openai', method: 'DELETE', header: {Authorization: 'Bearer ' + staleVkValue}}, function (err, response) {",
                   "      var gone = !err && (response.code === 200 || response.code === 404);",
                   "      pm.test('object-ownership: the retained file from an earlier run is deleted', function () {",
                   "        pm.expect(err, 'stale file ' + staleFileId + ' delete errored: ' + err).to.equal(null);",
                   "        pm.expect([200, 404], 'stale file ' + staleFileId + ' not deleted: ' + response.text()).to.include(response.code);",
                   "      });",
-                  "      if (gone) { pm.collectionVariables.unset('objFileId'); }",
+                  "      if (!gone) { pm.collectionVariables.set('objStaleFilePending', '1'); pm.execution.skipRequest(); return; }",
+                  "      pm.collectionVariables.unset('objFileId');",
+                  "      pm.collectionVariables.unset('objStaleFilePending');",
                   "      deleteStaleKey();",
                   "    });",
                   "  } else {",
@@ -258002,6 +258178,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// A retained file the setup could not delete keeps its id for the next run's cleanup.",
+                  "if (pm.collectionVariables.get('objStaleFilePending') === '1') { pm.execution.skipRequest(); return; }",
                   "pm.collectionVariables.unset('objFileId');",
                   "if (!pm.collectionVariables.get('objOwnVkValue') || !pm.collectionVariables.get('objOtherVkValue')) { pm.execution.skipRequest(); return; }"
                 ]
@@ -262753,7 +262931,26 @@
                   "pm.test('the auto-executed echo call is not handed back to the client', function () {",
                   "  var calls = (message.tool_calls || []).filter(function (c) { return ((c.function || {}).name || '').indexOf('echo') !== -1; });",
                   "  pm.expect(calls.length, 'tool_calls: ' + text).to.equal(0);",
-                  "});"
+                  "});",
+                  "// A direct answer satisfies every check above without the loop running at all, so the",
+                  "// continuation is established from the MCP log Bifrost writes for each executed tool call:",
+                  "// llm_request_id links it to this request (the agent loop's original request id).",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('x-bifrost-request-id identifies the request', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkEcho(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp-logs?llm_request_ids=' + encodeURIComponent(reqId || ''), method: 'GET' }, function (err, res) {",
+                  "    var logs = (!err && res && res.code === 200) ? ((res.json() || {}).logs || []) : [];",
+                  "    var echo = logs.filter(function (l) { return (l.tool_name || '').indexOf('echo') !== -1 && l.status === 'success'; });",
+                  "    if (echo.length > 0 || attempt >= 10) {",
+                  "      pm.test('the echo tool ran inside the agent loop, so a continuation turn followed it', function () {",
+                  "        pm.expect(echo.length, 'no successful echo MCP log for request ' + reqId + ' after ' + (attempt + 1) + ' reads: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))).to.be.above(0);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    setTimeout(function () { checkEcho(attempt + 1); }, 1000);",
+                  "  });",
+                  "}",
+                  "checkEcho(0);"
                 ]
               }
             }
@@ -262815,7 +263012,26 @@
                   "pm.test('the auto-executed echo call is not handed back to the client', function () {",
                   "  var calls = output.filter(function (o) { return o.type === 'function_call' && (o.name || '').indexOf('echo') !== -1; });",
                   "  pm.expect(calls.length, 'output: ' + text).to.equal(0);",
-                  "});"
+                  "});",
+                  "// A direct answer satisfies every check above without the loop running at all, so the",
+                  "// continuation is established from the MCP log Bifrost writes for each executed tool call:",
+                  "// llm_request_id links it to this request (the agent loop's original request id).",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('x-bifrost-request-id identifies the request', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkEcho(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp-logs?llm_request_ids=' + encodeURIComponent(reqId || ''), method: 'GET' }, function (err, res) {",
+                  "    var logs = (!err && res && res.code === 200) ? ((res.json() || {}).logs || []) : [];",
+                  "    var echo = logs.filter(function (l) { return (l.tool_name || '').indexOf('echo') !== -1 && l.status === 'success'; });",
+                  "    if (echo.length > 0 || attempt >= 10) {",
+                  "      pm.test('the echo tool ran inside the agent loop, so a continuation turn followed it', function () {",
+                  "        pm.expect(echo.length, 'no successful echo MCP log for request ' + reqId + ' after ' + (attempt + 1) + ' reads: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))).to.be.above(0);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    setTimeout(function () { checkEcho(attempt + 1); }, 1000);",
+                  "  });",
+                  "}",
+                  "checkEcho(0);"
                 ]
               }
             }
@@ -262875,7 +263091,26 @@
                   "  pm.expect(ri.model, 'routing_info.model: ' + text).to.eql('gpt-4o-mini');",
                   "  pm.expect(ri.requested_model, 'routing_info.requested_model: ' + text).to.eql('harness-requested-route-alias');",
                   "  pm.expect(pm.response.json().choices).to.be.an('array').that.is.not.empty;",
-                  "});"
+                  "});",
+                  "// A direct answer satisfies every check above without the loop running at all, so the",
+                  "// continuation is established from the MCP log Bifrost writes for each executed tool call:",
+                  "// llm_request_id links it to this request (the agent loop's original request id).",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('x-bifrost-request-id identifies the request', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkEcho(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp-logs?llm_request_ids=' + encodeURIComponent(reqId || ''), method: 'GET' }, function (err, res) {",
+                  "    var logs = (!err && res && res.code === 200) ? ((res.json() || {}).logs || []) : [];",
+                  "    var echo = logs.filter(function (l) { return (l.tool_name || '').indexOf('echo') !== -1 && l.status === 'success'; });",
+                  "    if (echo.length > 0 || attempt >= 10) {",
+                  "      pm.test('the echo tool ran inside the agent loop, so a continuation turn followed it', function () {",
+                  "        pm.expect(echo.length, 'no successful echo MCP log for request ' + reqId + ' after ' + (attempt + 1) + ' reads: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))).to.be.above(0);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    setTimeout(function () { checkEcho(attempt + 1); }, 1000);",
+                  "  });",
+                  "}",
+                  "checkEcho(0);"
                 ]
               }
             }
@@ -262936,7 +263171,26 @@
                   "pm.test('the provider-only fallback keeps the incoming model and answers', function () {",
                   "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model'), 'routing model header: ' + text).to.equal('gpt-4o-mini');",
                   "  pm.expect(pm.response.json().choices).to.be.an('array').that.is.not.empty;",
-                  "});"
+                  "});",
+                  "// A direct answer satisfies every check above without the loop running at all, so the",
+                  "// continuation is established from the MCP log Bifrost writes for each executed tool call:",
+                  "// llm_request_id links it to this request (the agent loop's original request id).",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('x-bifrost-request-id identifies the request', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkEcho(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp-logs?llm_request_ids=' + encodeURIComponent(reqId || ''), method: 'GET' }, function (err, res) {",
+                  "    var logs = (!err && res && res.code === 200) ? ((res.json() || {}).logs || []) : [];",
+                  "    var echo = logs.filter(function (l) { return (l.tool_name || '').indexOf('echo') !== -1 && l.status === 'success'; });",
+                  "    if (echo.length > 0 || attempt >= 10) {",
+                  "      pm.test('the echo tool ran inside the agent loop, so a continuation turn followed it', function () {",
+                  "        pm.expect(echo.length, 'no successful echo MCP log for request ' + reqId + ' after ' + (attempt + 1) + ' reads: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))).to.be.above(0);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    setTimeout(function () { checkEcho(attempt + 1); }, 1000);",
+                  "  });",
+                  "}",
+                  "checkEcho(0);"
                 ]
               }
             }
