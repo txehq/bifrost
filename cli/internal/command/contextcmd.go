@@ -213,15 +213,7 @@ func (r *Runner) deleteContext(statePath string, state *config.State, args []str
 
 // contextCredentialKinds lists every credential stored per context. Each is
 // issued by, and only valid for, the context's gateway.
-var contextCredentialKinds = []secrets.Kind{
-	secrets.VirtualKey,
-	secrets.ManagementKey,
-	secrets.SessionToken,
-	secrets.AgentToken,
-	secrets.AgentRefreshToken,
-	secrets.AgentUser,
-	secrets.AgentVirtualKeyID,
-}
+var contextCredentialKinds = secrets.ProfileCredentialKinds
 
 // contextID converts a display name into a stable local identifier.
 func contextID(name string) string {

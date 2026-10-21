@@ -228,6 +228,9 @@ func TestUpdateProfileBaseURLRevokesAndClearsEnterpriseSession(t *testing.T) {
 		"test:agent-refresh-token":  "refresh-test",
 		"test:agent-user":           `{"email":"developer@example.com"}`,
 		"test:agent-virtual-key-id": "vk-assigned",
+		"test:management-key":       "mk-old-gateway",
+		"test:session-token":        "dashboard-session-old-gateway",
+		"test:virtual-key":          "sk-bf-old-gateway",
 	}
 	application := New(nil, io.Discard, io.Discard, Options{Version: "test"})
 	application.statePath = t.TempDir() + "/state.json"
@@ -272,9 +275,8 @@ func TestUpdateProfileBaseURLRevokesAndClearsEnterpriseSession(t *testing.T) {
 	if profile.BaseURL != "https://new-gateway.example" {
 		t.Fatalf("base URL = %q", profile.BaseURL)
 	}
-	for _, kind := range []secrets.Kind{
-		secrets.AgentToken, secrets.AgentRefreshToken, secrets.AgentUser, secrets.AgentVirtualKeyID,
-	} {
+	// Every credential the old gateway issued goes, administrative ones included.
+	for _, kind := range secrets.ProfileCredentialKinds {
 		if got := store["test:"+string(kind)]; got != "" {
 			t.Fatalf("%s was retained after origin change", kind)
 		}

@@ -457,8 +457,10 @@ func (a *App) enterpriseAuthenticator(profileID, baseURL string) sessionauth.Aut
 }
 
 // updateProfileBaseURL invalidates the session at its issuing gateway before
-// making the edited URL the profile's trusted destination. Local credentials
-// are cleared even if remote revocation fails.
+// making the edited URL the profile's trusted destination. Every credential the
+// old gateway issued (management key, dashboard session and virtual key as well
+// as the agent session) is removed locally, even if remote revocation fails, and
+// the URL is not changed while any of them could not be removed.
 func (a *App) updateProfileBaseURL(ctx context.Context, profile *config.Profile, baseURL string) error {
 	previousBaseURL := strings.TrimSpace(profile.BaseURL)
 	newBaseURL := strings.TrimSpace(baseURL)
@@ -470,6 +472,12 @@ func (a *App) updateProfileBaseURL(ctx context.Context, profile *config.Profile,
 		var revocationErr *sessionauth.RevocationError
 		if !errors.As(err, &revocationErr) {
 			return err
+		}
+	}
+	store := a.agentSessionStore()
+	for _, kind := range secrets.ProfileCredentialKinds {
+		if deleteErr := store.Delete(profile.ID, kind); deleteErr != nil {
+			return fmt.Errorf("clear %s before changing the gateway URL: %w", kind, deleteErr)
 		}
 	}
 	profile.BaseURL = newBaseURL
