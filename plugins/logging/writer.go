@@ -671,7 +671,18 @@ func mergeMissingLogBilling(dst, src *logstore.Log) {
 		return
 	}
 	if dst.Cost == nil && src.Cost != nil {
+		// The split travels with the total; SerializeFields would otherwise
+		// attribute the whole total to input.
 		dst.Cost = src.Cost
+		dst.InputCost = src.InputCost
+		dst.OutputCost = src.OutputCost
+		dst.AdditionalCost = src.AdditionalCost
+		if src.TokenUsageParsed != nil && src.TokenUsageParsed.Cost != nil &&
+			dst.TokenUsageParsed != nil && dst.TokenUsageParsed.Cost == nil {
+			usage := *dst.TokenUsageParsed
+			usage.Cost = src.TokenUsageParsed.Cost
+			dst.TokenUsageParsed = &usage
+		}
 	}
 	if logHasUsage(dst) || !logHasUsage(src) {
 		return

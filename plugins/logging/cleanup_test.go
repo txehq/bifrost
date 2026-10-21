@@ -3,6 +3,7 @@ package logging
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -325,6 +326,71 @@ func TestProcessBatchRepairsBillingAcrossBatchBoundary(t *testing.T) {
 	if got.InputCost != 0.001 || got.OutputCost != 0.0008 || got.AdditionalCost != 0.00004 {
 		t.Fatalf("stored cost split = %g/%g/%g, want 0.001/0.0008/0.00004", got.InputCost, got.OutputCost, got.AdditionalCost)
 	}
+}
+
+// When the usage-bearing duplicate wins the merge, the cost copied in from the
+// priced duplicate must bring its input/output/additional split; copying the total
+// alone makes serialization attribute all of it to input.
+func TestProcessBatchMergeKeepsDuplicateCostSplit(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	defer func() {
+		if err := plugin.Cleanup(); err != nil {
+			t.Fatalf("Cleanup() error = %v", err)
+		}
+	}()
+
+	cost := 0.003
+	priced := makeTestLog("")
+	priced.Status = ""
+	priced.Cost = &cost
+	priced.InputCost = 0.002
+	priced.OutputCost = 0.0009
+	priced.AdditionalCost = 0.0001
+
+	counted := makeTestLog("")
+	counted.TokenUsageParsed = &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 3, TotalTokens: 13}
+
+	for name, order := range map[string][]*logstore.Log{
+		"priced first":  {priced, counted},
+		"counted first": {counted, priced},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rowID := "duplicate-cost-split-" + strings.ReplaceAll(name, " ", "-")
+			batch := make([]*writeQueueEntry, 0, len(order))
+			for _, log := range order {
+				batch = append(batch, &writeQueueEntry{log: cloneTestLog(log, rowID)})
+			}
+			plugin.processBatch(context.Background(), batch)
+
+			got, err := store.FindByID(context.Background(), rowID)
+			if err != nil {
+				t.Fatalf("FindByID() error = %v", err)
+			}
+			if got.Cost == nil || *got.Cost != cost {
+				t.Fatalf("stored cost = %v, want %v", got.Cost, cost)
+			}
+			if got.TokenUsageParsed == nil || got.TokenUsageParsed.TotalTokens != 13 {
+				t.Fatalf("stored token usage = %+v, want 13 total tokens", got.TokenUsageParsed)
+			}
+			if got.InputCost != 0.002 || got.OutputCost != 0.0009 || got.AdditionalCost != 0.0001 {
+				t.Fatalf("stored cost split = %g/%g/%g, want 0.002/0.0009/0.0001", got.InputCost, got.OutputCost, got.AdditionalCost)
+			}
+		})
+	}
+}
+
+func cloneTestLog(src *logstore.Log, id string) *logstore.Log {
+	clone := *src
+	clone.ID = id
+	if src.TokenUsageParsed != nil {
+		usage := *src.TokenUsageParsed
+		clone.TokenUsageParsed = &usage
+	}
+	return &clone
 }
 
 // flushCountingStore records the processing-row Flush calls the cleanup tick
