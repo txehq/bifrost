@@ -114,6 +114,13 @@ const hasRestrictedRequests = (source: ModelProvider): boolean => {
 	return Object.values(allowed as unknown as Record<string, boolean | undefined>).some((v) => v === false);
 };
 
+/** The Authorization header's value when the whole of it is an env. or vault. reference. */
+const wholeHeaderReference = (headers: Record<string, string> | undefined): string | undefined => {
+	const entry = Object.entries(headers ?? {}).find(([key]) => key.trim().toLowerCase() === "authorization");
+	const raw = entry?.[1].trim() ?? "";
+	return raw.startsWith("env.") || raw.startsWith("vault.") ? raw : undefined;
+};
+
 /** Builds the migration plan from the custom provider and its (redacted) keys. */
 export const buildCloudflareMigrationPlan = (source: ModelProvider, sourceKeys: ModelProviderKey[]): MigrationPlan => {
 	const warnings: string[] = [];
@@ -125,8 +132,17 @@ export const buildCloudflareMigrationPlan = (source: ModelProvider, sourceKeys: 
 	const isKeyless = Boolean(source.custom_provider_config?.is_key_less) || sourceKeys.length === 0;
 	let headerToken: MigrationPlan["headerToken"];
 	if (isKeyless) {
-		const auth = extractAuthFromHeaders(source.network_config?.extra_headers);
-		if (auth.problem === "missing") {
+		const headers = source.network_config?.extra_headers;
+		const wholeHeaderRef = wholeHeaderReference(headers);
+		// The custom provider sent the header verbatim, so a reference standing for the whole
+		// header resolves to "Bearer <token>". The native provider adds "Bearer " to its key
+		// itself, so reusing that reference as the key would send "Bearer Bearer <token>".
+		const auth = wholeHeaderRef ? {} : extractAuthFromHeaders(headers);
+		if (wholeHeaderRef) {
+			warnings.push(
+				`The Authorization header is the reference ${wholeHeaderRef}, which holds the whole header rather than the bare API token; enter the API token, or a reference to it alone, below.`,
+			);
+		} else if (auth.problem === "missing") {
 			warnings.push("No Authorization header was found on the custom provider; enter the API token below.");
 		} else if (auth.problem === "not_bearer") {
 			warnings.push("The Authorization header is not a Bearer token; enter the API token below.");

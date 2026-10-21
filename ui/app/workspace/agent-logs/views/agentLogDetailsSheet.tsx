@@ -44,6 +44,7 @@ import { parseAsBoolean, parseAsString, useQueryState } from "nuqs";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { A2APayloadView } from "./a2aPayloadView";
+import { selectedOperationDetail } from "./agentLogDetailsSheet.utils";
 import {
 	A2AConversationHistory,
 	A2AOperationConversation,
@@ -394,21 +395,18 @@ export function AgentLogDetailSheet({
 	hasPrev = false,
 	hasNext = false,
 }: AgentLogDetailSheetProps) {
-	const {
-		data: fullLog,
-		isLoading,
-		isError,
-	} = useGetAgentLogOperationByIdQuery(log?.id ?? "", {
+	const operationQuery = useGetAgentLogOperationByIdQuery(log?.id ?? "", {
 		skip: !open || !log?.id,
 	});
+	const { ready: isFullDataReady, detail, displayLog } = selectedOperationDetail(log, operationQuery);
 
 	const correlatedRows = useMemo(() => {
-		const rows = fullLog?.events ?? [];
+		const rows = detail?.events ?? [];
 		return [...rows].sort((a, b) => {
 			if (a.event_sequence != null && b.event_sequence != null) return a.event_sequence - b.event_sequence;
 			return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
 		});
-	}, [fullLog?.events]);
+	}, [detail?.events]);
 	const totalCorrelatedEvents = correlatedRows.length;
 
 	const [expandedEventIds, setExpandedEventIds] = useState<Set<string>>(new Set());
@@ -454,9 +452,6 @@ export function AgentLogDetailSheet({
 	);
 	const [tabParam, setTabParam] = useQueryState("agent_log_tab", parseAsString.withOptions({ history: "replace" }));
 
-	const isSelectedOperation = Boolean(log && fullLog && (fullLog.id === log.id || fullLog.request_id === log.request_id));
-	const isFullDataReady = Boolean(log) && (isError || (isSelectedOperation && !isLoading));
-	const displayLog = log ? (isFullDataReady && fullLog ? fullLog : log) : null;
 	const isCorrelatedConversation = displayLog ? isA2AConversationOperation(displayLog.operation) : false;
 	const logCorrelation = useMemo(
 		() => (isCorrelatedConversation && displayLog?.task_id ? { agent_correlation_id: displayLog.task_id } : null),
@@ -480,7 +475,6 @@ export function AgentLogDetailSheet({
 		);
 	}
 
-	const detail = isFullDataReady && isSelectedOperation ? fullLog : undefined;
 	const timestampDate = displayLog.timestamp ? new Date(displayLog.timestamp) : null;
 	const hasValidTimestamp = Boolean(timestampDate && isValid(timestampDate));
 	const hasValidLatency = displayLog.latency != null && !isNaN(displayLog.latency);

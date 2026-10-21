@@ -56,6 +56,8 @@ import { MCPClientCredentialSection, MCPClientSessionsSection } from "./mcpClien
 import {
 	applyParsedPreview,
 	buildOpenAPIConfigPayload,
+	reconcileReplacementCredentials,
+	storedDocumentProvenance,
 	collapseToolSelection,
 	isMissingStoredSpec,
 	openAPIBaseUrlError,
@@ -306,6 +308,13 @@ export default function MCPClientSheet({
 	);
 	const [replaceCredentialsDirty, setReplaceCredentialsDirty] = useState(false);
 	const [replaceSelection, setReplaceSelection] = useState<string[]>([]);
+	// Set while the draft is the stored document loaded unchanged.
+	const replaceProvenance = storedDocumentProvenance({
+		mode: replaceSourceMode,
+		specText: replaceSpecText,
+		loadedSpecText: replaceLoadedSpecText,
+		storedSpecUrl: mcpClient.config.openapi_config?.spec_url,
+	});
 	const [previewOpenAPISpec, { isLoading: isParsingReplaceSpec }] = usePreviewOpenAPISpecMutation();
 	// Its own instance, so the background baseline preview never shows Parse as busy.
 	const [previewStoredOpenAPISpec, { isLoading: isPreviewingStoredSpec }] = usePreviewOpenAPISpecMutation();
@@ -325,6 +334,10 @@ export default function MCPClientSheet({
 	// stored document, so edits to the draft must not discard it.
 	const replaceBaselineToken = useRef(0);
 	const replaceBaselineFailureAcknowledged = useRef(false);
+	// Settles once the stored document's preview does: the first replacement
+	// parse waits for it, since the stored credentials are checked against the
+	// schemes they were set for.
+	const replaceBaselineLoad = useRef<Promise<void> | null>(null);
 
 	const resetReplaceSpec = useCallback(() => {
 		replaceDraftToken.current++;
@@ -332,6 +345,7 @@ export default function MCPClientSheet({
 		replaceBaseline.current = null;
 		replaceBaselineFailed.current = false;
 		replaceBaselineFailureAcknowledged.current = false;
+		replaceBaselineLoad.current = null;
 		setReplaceSpecOpen(false);
 		setReplaceSourceMode("paste");
 		setReplaceSpecText("");
@@ -365,7 +379,7 @@ export default function MCPClientSheet({
 				setReplaceLoadedSpecText(stored);
 				// Best effort: without it the first parse matches by tool name, and
 				// named auto-execute entries and prices cannot be carried over.
-				previewStoredOpenAPISpec(
+				replaceBaselineLoad.current = previewStoredOpenAPISpec(
 					replacePreviewRequest(
 						"paste",
 						stored,
@@ -374,6 +388,8 @@ export default function MCPClientSheet({
 						mcpClient.config.openapi_config?.include_deprecated,
 						// The stored name: the saved tool names were cut with it.
 						mcpClient.config.name,
+						// Its relative servers resolve against the URL it was read from.
+						mcpClient.config.openapi_config?.spec_url,
 					),
 				)
 					.unwrap()
@@ -414,9 +430,14 @@ export default function MCPClientSheet({
 					customBase,
 					mcpClient.config.openapi_config?.include_deprecated,
 					requestedName,
+					replaceProvenance,
 				),
 			).unwrap();
 			if (token !== replaceDraftToken.current) return;
+			if (!replaceLatest.current.preview && replaceBaselineLoad.current) {
+				await replaceBaselineLoad.current;
+				if (token !== replaceDraftToken.current) return;
+			}
 			const latest = replaceLatest.current;
 			const nextSupported = supportedToolNames(response);
 			const previousAll = latest.preview ? supportedToolNames(latest.preview) : allToolNames;
@@ -436,6 +457,20 @@ export default function MCPClientSheet({
 			);
 			setReplaceBaseUrlChoice(nextBase.baseUrlChoice);
 			setReplaceBaseUrl(nextBase.baseUrl);
+			// Stored secrets were set for the stored document's schemes and typed
+			// ones for the previous parse's: one whose scheme was removed or now
+			// takes it elsewhere is cleared, and the save then sends the map so the
+			// server drops it too instead of keeping every stored secret.
+			const previousSchemes = latest.preview
+				? (latest.preview.security_schemes ?? [])
+				: replaceBaseline.current
+					? (replaceBaseline.current.security_schemes ?? [])
+					: undefined;
+			const nextCredentials = reconcileReplacementCredentials(latest.credentials, previousSchemes, response);
+			if (nextCredentials.changed) {
+				setReplaceCredentials(nextCredentials.credentials);
+				setReplaceCredentialsDirty(true);
+			}
 			setReplacePreview(response);
 			setReplaceFingerprint(specFingerprint(replaceSourceMode, replaceSpecText, replaceSpecUrl, requestedName));
 		} catch (error) {
@@ -556,12 +591,14 @@ export default function MCPClientSheet({
 		selection: replaceSelection,
 		baseUrl: replaceBaseUrl,
 		baseUrlChoice: replaceBaseUrlChoice,
+		credentials: replaceCredentials,
 	});
 	replaceLatest.current = {
 		preview: replacePreview,
 		selection: replaceSelection,
 		baseUrl: replaceBaseUrl,
 		baseUrlChoice: replaceBaseUrlChoice,
+		credentials: replaceCredentials,
 	};
 	const isDisabled = form.watch("disabled");
 	const needsSessionStickiness = form.watch("needs_session_stickiness");
@@ -773,6 +810,8 @@ export default function MCPClientSheet({
 						replaceSourceMode,
 						replacePreview,
 						replaceBaseUrlChoice,
+						[],
+						replaceProvenance,
 					)
 				: undefined;
 			const oauthClientID = data.oauth_config?.client_id;

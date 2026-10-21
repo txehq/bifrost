@@ -250,3 +250,23 @@ describe("runCloudflareMigration", () => {
 		expect(result).toMatchObject({ ok: true, partial: false });
 	});
 });
+describe("buildCloudflareMigrationPlan with a referenced Authorization header", () => {
+	it('asks for the bare token when the whole header is a secret reference, which resolves to "Bearer <token>"', () => {
+		for (const ref of ["env.CF_AUTH", "vault.secret/cf-auth"]) {
+			const source = custom("cloudflare", { network_config: { ...custom("x").network_config!, extra_headers: { Authorization: ref } } });
+			const plan = buildCloudflareMigrationPlan(source, []);
+			// The native provider adds "Bearer " itself, so reusing the reference would send "Bearer Bearer <token>".
+			expect(plan.headerToken?.value).toBeUndefined();
+			expect(plan.headerToken?.needsValue).toBe(true);
+			expect(planNeedsInput(plan)).toBe(true);
+			expect(plan.warnings.some((w) => w.includes(ref))).toBe(true);
+		}
+	});
+
+	it("keeps a reference to the bare token after Bearer", () => {
+		const source = custom("cloudflare", {
+			network_config: { ...custom("x").network_config!, extra_headers: { Authorization: "Bearer env.CF_TOKEN" } },
+		});
+		expect(buildCloudflareMigrationPlan(source, []).headerToken?.value).toMatchObject({ ref: "env.CF_TOKEN", type: "env" });
+	});
+});

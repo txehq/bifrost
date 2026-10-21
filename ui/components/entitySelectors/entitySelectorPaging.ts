@@ -77,3 +77,13 @@ export function shouldAutoLoadMore(state: {
 export function loadMoreNeedsRefetch(pages: EntityPages, offset: number, isError: boolean): boolean {
 	return isError && offset === pages.nextOffset;
 }
+/**
+ * The scroll position once the debounced search becomes `search`. A changed
+ * search starts from the first page, in the same update that changes the
+ * search: an offset left behind under an earlier search would otherwise come
+ * back when the user returns to it, and its page would be refused because the
+ * loaded pages belong to the search in between.
+ */
+export function pageForSearch(prev: { search: string; offset: number }, search: string): { search: string; offset: number } {
+	return prev.search === search ? prev : { search, offset: 0 };
+}

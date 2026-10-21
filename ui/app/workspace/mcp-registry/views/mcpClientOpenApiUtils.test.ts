@@ -34,6 +34,8 @@ import {
 	defaultSchemeHeader,
 	perUserSchemeHeaders,
 	mergePerUserHeaderKeys,
+	reconcileReplacementCredentials,
+	storedDocumentProvenance,
 } from "./mcpClientOpenApiUtils";
 
 const preview: MCPOpenAPIPreviewResponse = {
@@ -721,5 +723,62 @@ describe("needsHeadersVerification", () => {
 		expect(needsHeadersVerification({ auth_type: "per_user_headers", connection_type: "http" })).toBe(true);
 		expect(needsHeadersVerification({ auth_type: "per_user_headers", connection_type: "openapi" })).toBe(false);
 		expect(needsHeadersVerification({ auth_type: "headers", connection_type: "http" })).toBe(false);
+	});
+});
+describe("spec replacement credentials and provenance", () => {
+	const header: MCPOpenAPISecurityScheme = { name: "Key", type: "apiKey", in: "header", param_name: "X-API-Key", supported: true };
+	const basic: MCPOpenAPISecurityScheme = { name: "Basic", type: "http", scheme: "basic", supported: true };
+	const stored = { Key: { value: { value: "<redacted>" } }, Basic: { username: { value: "u" }, password: { value: "<redacted>" } } };
+
+	it("clears a stored credential whose same-named scheme moved from a header to the query string", () => {
+		const moved: MCPOpenAPIPreviewResponse = { ...preview, security_schemes: [{ ...header, in: "query", param_name: "key" }, basic] };
+		const next = reconcileReplacementCredentials(stored, [header, basic], moved);
+		expect(next.changed).toBe(true);
+		expect(next.credentials).toEqual({ Basic: stored.Basic });
+	});
+
+	it("keeps unchanged stored credentials without marking them changed", () => {
+		const same: MCPOpenAPIPreviewResponse = { ...preview, security_schemes: [{ ...header }, { ...basic }] };
+		const next = reconcileReplacementCredentials(stored, [header, basic], same);
+		expect(next.changed).toBe(false);
+		expect(next.credentials).toEqual(stored);
+	});
+
+	it("clears credentials of a removed scheme and every credential when the schemes they were set for are unknown", () => {
+		const onlyHeader: MCPOpenAPIPreviewResponse = { ...preview, security_schemes: [header] };
+		expect(reconcileReplacementCredentials(stored, [header, basic], onlyHeader)).toEqual({
+			credentials: { Key: stored.Key },
+			changed: true,
+		});
+		expect(reconcileReplacementCredentials(stored, undefined, onlyHeader)).toEqual({ credentials: {}, changed: true });
+		expect(reconcileReplacementCredentials({}, undefined, onlyHeader)).toEqual({ credentials: {}, changed: false });
+	});
+
+	it("resolves the unchanged stored document against its URL, and a new pasted document against nothing", () => {
+		const loaded = "openapi: 3.0.0\nservers: [{url: /v1}]";
+		const base = {
+			mode: "paste" as const,
+			specText: loaded,
+			loadedSpecText: loaded,
+			storedSpecUrl: "https://api.example.com/openapi.yaml",
+		};
+		expect(storedDocumentProvenance(base)).toBe("https://api.example.com/openapi.yaml");
+		expect(storedDocumentProvenance({ ...base, specText: "openapi: 3.0.0\nservers: [{url: /v2}]" })).toBeUndefined();
+		expect(storedDocumentProvenance({ ...base, mode: "upload" })).toBeUndefined();
+		expect(storedDocumentProvenance({ ...base, loadedSpecText: "" })).toBeUndefined();
+		expect(storedDocumentProvenance({ ...base, storedSpecUrl: undefined })).toBeUndefined();
+	});
+
+	it("sends the stored document's URL as provenance in its preview and keeps it on save", () => {
+		const provenance = "https://api.example.com/openapi.yaml";
+		expect(replacePreviewRequest("paste", "doc", "", undefined, false, "petstore", provenance)).toEqual({
+			spec: "doc",
+			spec_url: provenance,
+			client_name: "petstore",
+		});
+		expect(replacePreviewRequest("paste", "doc", "", undefined, false, "petstore").spec_url).toBeUndefined();
+		const relative: MCPOpenAPIPreviewResponse = { ...preview, servers: ["/v1"], base_url: "https://api.example.com/v1" };
+		expect(buildOpenAPIConfigPayload({ spec: "doc" }, "paste", relative, "server", [], provenance).spec_url).toBe(provenance);
+		expect(buildOpenAPIConfigPayload({ spec: "doc" }, "paste", relative, "server").spec_url).toBe("");
 	});
 });

@@ -223,4 +223,32 @@ describe("WarpStreamSession", () => {
 		await refused.send([], "hello");
 		expect(committed[0].error).toBe(":Warp request failed (500)");
 	});
+
+	// Closing the dock unmounts the panel, and switching between the docked and
+	// sheet panels mounts another one: follow-ups already cleared from the
+	// composer must outlive both.
+	it("keeps queued follow-ups after the panel that queued them unsubscribes", () => {
+		const unsubscribe = session.subscribe(() => {});
+		session.enqueue("and by model?");
+		session.enqueue("and last month?");
+		unsubscribe();
+		expect(session.getQueue().map((item) => item.text)).toEqual(["and by model?", "and last month?"]);
+		expect(session.takeQueued()?.text).toBe("and by model?");
+		expect(session.getQueue().map((item) => item.text)).toEqual(["and last month?"]);
+	});
+
+	it("notifies subscribers when the queue changes and removes entries by id", () => {
+		const listener = vi.fn();
+		session.subscribe(listener);
+		session.enqueue("a");
+		session.enqueue("b");
+		const [first, second] = session.getQueue();
+		expect(first.id).not.toBe(second.id);
+		session.removeQueued(first.id);
+		expect(session.getQueue()).toEqual([second]);
+		session.clearQueue();
+		expect(session.getQueue()).toEqual([]);
+		expect(session.takeQueued()).toBeUndefined();
+		expect(listener).toHaveBeenCalledTimes(4);
+	});
 });

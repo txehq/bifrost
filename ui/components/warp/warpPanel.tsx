@@ -69,6 +69,11 @@ export default function WarpPanel() {
 		discard,
 		resetConversation,
 		openConversation,
+		queue,
+		enqueue,
+		removeQueued,
+		clearQueue,
+		takeQueued,
 	} = useWarpStream();
 
 	const { containerRef, contentRef, isPinned, scrollToBottom } = useWarpAutoScroll();
@@ -104,16 +109,26 @@ export default function WarpPanel() {
 	// A missing chip reads as "all fine", so a failed status request shows an explicit notice instead.
 	const indexStatusUnavailable = !indexChip && isIndexStatusError;
 
-	// Ids, not positions: removing or draining one must not remount, and so re-animate, the rest.
-	const [queue, setQueue] = useState<{ id: number; text: string }[]>([]);
-	const nextQueueId = useRef(0);
+	// Queued follow-ups live in the stream session, so closing the dock or
+	// switching panels keeps them. Ids, not positions: removing or draining one
+	// must not remount, and so re-animate, the rest.
 	// Blocks the drain during a stored load, or a follow-up is filed under the thread being left.
 	const [isOpeningStored, setIsOpeningStored] = useState(false);
 	// ask closes over the transcript, so the drain effect reads it via a ref to avoid rerunning every render.
 	const askRef = useRef<((text: string) => void) | null>(null);
-	const wasStreaming = useRef(isStreaming);
+	// A panel mounting over follow-ups queued behind an answer that finished
+	// while no panel was open counts that answer as just finished, so they send.
+	const wasStreaming = useRef(isStreaming || queue.length > 0);
 	// Bumped by any action that moves the panel on, so a late stored load cannot overwrite newer state.
 	const openStoredEpoch = useRef(0);
+	// The load belongs to this panel: once it unmounts, a load it started must
+	// not discard a newer panel's stream or replace its conversation.
+	useEffect(
+		() => () => {
+			openStoredEpoch.current++;
+		},
+		[],
+	);
 	// Epoch bump and flag clear must happen together, or the queue stays blocked or drains too early.
 	const abandonStoredLoad = () => {
 		openStoredEpoch.current++;
@@ -125,10 +140,9 @@ export default function WarpPanel() {
 		const drain = shouldDrainQueue(wasStreaming.current, isStreaming, queue.length, question !== null, !!error);
 		wasStreaming.current = isStreaming;
 		if (!drain) return;
-		const [next, ...rest] = queue;
-		setQueue(rest);
-		askRef.current?.(next.text);
-	}, [isStreaming, queue, question, error, isOpeningStored]);
+		const next = takeQueued();
+		if (next) askRef.current?.(next.text);
+	}, [isStreaming, queue, question, error, isOpeningStored, takeQueued]);
 
 	if (!warp) return null;
 
@@ -144,7 +158,7 @@ export default function WarpPanel() {
 			if (epoch === openStoredEpoch.current) setIsOpeningStored(false);
 		}
 		if (epoch !== openStoredEpoch.current) return;
-		setQueue([]);
+		clearQueue();
 		// discard, not stop: stop() keeps the in-flight turn, which would land in the opened thread.
 		discard();
 		const stored = turnsFromStoredMessages(detail.messages);
@@ -176,10 +190,8 @@ export default function WarpPanel() {
 
 	// The queue does not auto-drain after an error; this is the manual way to resume it.
 	const resumeQueue = () => {
-		const [next, ...rest] = queue;
-		if (next === undefined) return;
-		setQueue(rest);
-		askRef.current?.(next.text);
+		const next = takeQueued();
+		if (next !== undefined) askRef.current?.(next.text);
 	};
 
 	return (
@@ -231,7 +243,7 @@ export default function WarpPanel() {
 								abandonStoredLoad();
 								resetConversation();
 								setShowHistory(false);
-								setQueue([]);
+								clearQueue();
 								warp.clear();
 							}}
 							className="text-muted-foreground hover:bg-accent hover:text-accent-foreground flex size-7 cursor-pointer items-center justify-center rounded-md transition-colors"
@@ -273,7 +285,7 @@ export default function WarpPanel() {
 						onDeleted={(id) => {
 							if (id !== activeConversationId) return;
 							discard();
-							setQueue([]);
+							clearQueue();
 							warp.clear();
 							// Forget the id too, or the next message recreates the deleted thread.
 							resetConversation();
@@ -350,7 +362,7 @@ export default function WarpPanel() {
 															type="button"
 															aria-label="Remove queued message"
 															data-testid="warp-queued-remove"
-															onClick={() => setQueue((current) => current.filter((queued) => queued.id !== item.id))}
+															onClick={() => removeQueued(item.id)}
 															className="hover:text-foreground cursor-pointer rounded-sm px-1 py-0.5 transition-colors"
 														>
 															Remove
@@ -404,7 +416,7 @@ export default function WarpPanel() {
 									stop();
 									clearQuestion();
 									resetConversation();
-									setQueue([]);
+									clearQueue();
 									warp.clear();
 								}
 							}}
@@ -413,10 +425,10 @@ export default function WarpPanel() {
 							onSelectModel={(model) => warp.selectModel(warpModelKey(model))}
 							canConfigure={canConfigure}
 							onSend={ask}
-							onQueue={(text) => setQueue((current) => [...current, { id: nextQueueId.current++, text }])}
+							onQueue={enqueue}
 							// Stopping also drops queued follow-ups so they don't fire right after the cut.
 							onStop={() => {
-								setQueue([]);
+								clearQueue();
 								stop();
 							}}
 						/>

@@ -1,8 +1,8 @@
 import { ProviderSelector } from "@/components/ui/providerSelector";
+import { ALL_PROVIDERS_VALUE, normalizeProviderFilter } from "./providerFilterSelect.utils";
 
 // The list here comes from the analytics series, not the providers API, so it can name a
 // provider that has since been deleted. The sentinel is what "no filter" is stored as.
-const ALL_PROVIDERS_VALUE = "all";
 const ALL_PROVIDERS_OPTION = { value: ALL_PROVIDERS_VALUE, label: "All Providers" };
 
 interface ProviderFilterSelectProps {
@@ -22,7 +22,7 @@ export function ProviderFilterSelect({ providers, selectedProvider, onProviderCh
 			contentWidth={220}
 			allOption={ALL_PROVIDERS_OPTION}
 			value={selectedProvider || ALL_PROVIDERS_VALUE}
-			onChange={onProviderChange}
+			onChange={(provider: string) => onProviderChange(normalizeProviderFilter(provider))}
 			data-testid={testId}
 		/>
 	);

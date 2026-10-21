@@ -28,6 +28,7 @@ import { AgentHeaderView } from "./views/agentHeaderView";
 import { AgentLogDetailSheet } from "./views/agentLogDetailsSheet";
 import { AgentLogsDataTable } from "./views/agentLogsTable";
 import { AGENT_COLUMN_LABELS, createAgentColumns } from "./views/columns";
+import { showAgentLogsOnboarding } from "./agentLogs.page.utils";
 import { AgentEmptyState } from "./views/emptyState";
 
 // Filters carried in the URL, matching the backend's query parameter names.
@@ -396,7 +397,12 @@ export default function AgentLogsPage() {
 
 	// The onboarding empty state is reserved for accounts with no Agent logs at
 	// all. An empty selected range keeps the full page so the user can widen it.
-	const showEmptyState = Boolean(probeData) && !hasAnyLogs;
+	const showEmptyState = showAgentLogsOnboarding({
+		probeLoaded: Boolean(probeData),
+		probeTotal: probeData?.pagination?.total_count ?? 0,
+		pageTotal: totalItems,
+		period: urlState.period,
+	});
 
 	// The default range is one hour. When logs exist but none fall inside it,
 	// widen to 30 days once so the user lands on data instead of an empty table.

@@ -1,4 +1,4 @@
-import { IDLE_WARP_STREAM, type WarpStreamSnapshot } from "@/components/warp/warpStreamSession";
+import { EMPTY_WARP_QUEUE, IDLE_WARP_STREAM, type WarpQueuedMessage, type WarpStreamSnapshot } from "@/components/warp/warpStreamSession";
 import type { WarpQuestion } from "@/components/warp/warpStream.utils";
 import { useWarp, type WarpTurn, type WarpTurnToolCall } from "@/lib/contexts/warpContext";
 import type { WarpModel } from "@/lib/types/warp";
@@ -22,11 +22,19 @@ interface UseWarpStreamResult {
 	resetConversation: () => void;
 	/** Continues a stored thread: the next question is filed under it. */
 	openConversation: (id: string) => void;
+	/** Follow-ups queued behind the streaming answer. Session-owned, so they survive the panel unmounting. */
+	queue: WarpQueuedMessage[];
+	enqueue: (text: string) => void;
+	removeQueued: (id: number) => void;
+	clearQueue: () => void;
+	/** Removes and returns the oldest queued follow-up. */
+	takeQueued: () => WarpQueuedMessage | undefined;
 }
 
 // Outside a provider there is nothing to stream; these keep the hook order stable.
 const subscribeToNothing = () => () => {};
 const getIdleSnapshot = (): WarpStreamSnapshot => IDLE_WARP_STREAM;
+const getEmptyQueue = (): WarpQueuedMessage[] => EMPTY_WARP_QUEUE;
 
 /**
  * The panel's view of the provider-owned stream (see WarpStreamSession).
@@ -44,6 +52,11 @@ export function useWarpStream(): UseWarpStreamResult {
 		session?.getSnapshot ?? getIdleSnapshot,
 		session?.getSnapshot ?? getIdleSnapshot,
 	);
+	const queue = useSyncExternalStore(
+		session?.subscribe ?? subscribeToNothing,
+		session?.getQueue ?? getEmptyQueue,
+		session?.getQueue ?? getEmptyQueue,
+	);
 	const question = warp?.question ?? null;
 	const setQuestion = warp?.setQuestion;
 
@@ -55,6 +68,10 @@ export function useWarpStream(): UseWarpStreamResult {
 	const stop = useCallback(() => session?.stop(), [session]);
 	const discard = useCallback(() => session?.discard(), [session]);
 	const clearQuestion = useCallback(() => setQuestion?.(null), [setQuestion]);
+	const enqueue = useCallback((text: string) => session?.enqueue(text), [session]);
+	const removeQueued = useCallback((id: number) => session?.removeQueued(id), [session]);
+	const clearQueue = useCallback(() => session?.clearQueue(), [session]);
+	const takeQueued = useCallback(() => session?.takeQueued(), [session]);
 
 	const resetConversation = useCallback(() => {
 		// Discard first, or an in-flight request writes its turn into the just-cleared transcript.
@@ -83,5 +100,10 @@ export function useWarpStream(): UseWarpStreamResult {
 		stop,
 		resetConversation,
 		openConversation,
+		queue,
+		enqueue,
+		removeQueued,
+		clearQueue,
+		takeQueued,
 	};
 }

@@ -232,7 +232,8 @@ export function pruneCredentials(
 /**
  * The openapi_config sent on create or replace: the document inline (URL mode
  * stores the text fetched for the preview, never older pasted or stored text,
- * and keeps the URL as provenance; paste and upload clear a stored URL), the
+ * and keeps the URL as provenance; paste and upload clear a stored URL unless
+ * provenanceUrl says the text is the stored document read from it), the
  * base URL as shown (empty clears a stored override), and the credentials
  * that were filled in. A provided credential map whose values were all cleared
  * is sent as {} so the server clears the stored secrets; leaving
@@ -244,6 +245,7 @@ export function buildOpenAPIConfigPayload(
 	preview: MCPOpenAPIPreviewResponse | null | undefined,
 	baseUrlChoice?: "server" | "custom",
 	perUserSchemes: string[] = [],
+	provenanceUrl?: string,
 ): MCPOpenAPIConfig {
 	const spec = mode === "url" ? preview?.spec : cfg?.spec?.trim() ? cfg.spec : preview?.spec;
 	// The fetched text is saved with the URL it was read from after redirects,
@@ -254,7 +256,8 @@ export function buildOpenAPIConfigPayload(
 	if (mode === "url") {
 		if (specUrl) out.spec_url = specUrl;
 	} else {
-		out.spec_url = "";
+		// The stored document saved back unchanged keeps the URL it came from.
+		out.spec_url = provenanceUrl?.trim() ?? "";
 	}
 	// The document's default server (its first absolute one) is sent as ""
 	// rather than pinned: the backend resolves the same default, operation-level
@@ -366,24 +369,73 @@ export function applyParsedPreview(
 			baseUrl = response.base_url ?? "";
 		}
 	}
-	// A credential carries over only to a scheme of the same name that still
-	// takes it the same way: a document that reuses the name for another type
-	// or location must not receive the old secret.
+	const credentials = carryOverCredentials(current.credentials, previousPreview?.security_schemes, !!previousPreview, response);
+	return { selection, baseUrl, baseUrlChoice, credentials };
+}
+
+// carryOverCredentials keeps a credential only for a scheme of the same name
+// that still takes it the same way: a document that reuses the name for another
+// type or location must not receive the old secret. Without previous schemes
+// to compare against (compare false), only the name is checked.
+function carryOverCredentials(
+	current: Record<string, MCPOpenAPICredential>,
+	previousSchemes: MCPOpenAPISecurityScheme[] | undefined,
+	compare: boolean,
+	response: MCPOpenAPIPreviewResponse,
+): Record<string, MCPOpenAPICredential> {
 	const schemeShape = (scheme: MCPOpenAPISecurityScheme) =>
 		[scheme.type, scheme.in ?? "", scheme.param_name ?? "", scheme.scheme ?? ""].join("|");
-	const previousShapes = new Map((previousPreview?.security_schemes ?? []).map((scheme) => [scheme.name, schemeShape(scheme)]));
+	const previousShapes = new Map((previousSchemes ?? []).map((scheme) => [scheme.name, schemeShape(scheme)]));
 	const declared = new Map(
 		(response.security_schemes ?? []).filter((scheme) => scheme.supported).map((scheme) => [scheme.name, schemeShape(scheme)]),
 	);
 	// No prototype, so a scheme named __proto__ is stored as an entry.
 	const credentials: Record<string, MCPOpenAPICredential> = Object.create(null);
-	for (const [name, cred] of Object.entries(current.credentials)) {
+	for (const [name, cred] of Object.entries(current)) {
 		const shape = declared.get(name);
 		if (shape === undefined) continue;
-		if (previousPreview && previousShapes.get(name) !== shape) continue;
+		if (compare && previousShapes.get(name) !== shape) continue;
 		credentials[name] = cred;
 	}
-	return { selection, baseUrl, baseUrlChoice, credentials };
+	return credentials;
+}
+
+/**
+ * The spec replacement's credentials after a parse. previousSchemes are the
+ * schemes the credentials were set for: the last parsed replacement's, or
+ * before the first parse the stored document's, since the stored secrets were
+ * entered for it. A credential survives only for a same-named scheme of the
+ * same shape, so a key that moved from a header to the query string is not sent
+ * in URLs; with the previous schemes unknown none survives. changed reports
+ * that something was dropped: the save must then send the map, because an
+ * omitted map keeps every stored secret.
+ */
+export function reconcileReplacementCredentials(
+	credentials: Record<string, MCPOpenAPICredential>,
+	previousSchemes: MCPOpenAPISecurityScheme[] | undefined,
+	response: MCPOpenAPIPreviewResponse,
+): { credentials: Record<string, MCPOpenAPICredential>; changed: boolean } {
+	const kept = previousSchemes
+		? carryOverCredentials(credentials, previousSchemes, true, response)
+		: (Object.create(null) as Record<string, MCPOpenAPICredential>);
+	return { credentials: { ...kept }, changed: Object.keys(kept).length !== Object.keys(credentials).length };
+}
+
+/**
+ * The URL a replacement draft was read from, when the draft is the stored
+ * document loaded unchanged: its relative servers resolve against it in the
+ * preview, and saving keeps it as provenance. A pasted, edited or uploaded
+ * document is a new source and has none.
+ */
+export function storedDocumentProvenance(draft: {
+	mode: OpenAPISourceMode;
+	specText: string;
+	loadedSpecText: string;
+	storedSpecUrl: string | undefined;
+}): string | undefined {
+	const url = draft.storedSpecUrl?.trim();
+	if (draft.mode !== "paste" || !url || !draft.loadedSpecText || draft.specText !== draft.loadedSpecText) return undefined;
+	return url;
 }
 
 /** Reads an uploaded spec file, returning its text or the error to show. */
@@ -683,9 +735,12 @@ export function replacePreviewRequest(
 	customBase: string | undefined,
 	includeDeprecated: boolean | undefined,
 	clientName?: string,
+	provenanceUrl?: string,
 ): MCPOpenAPIPreviewRequest {
 	const req: MCPOpenAPIPreviewRequest =
 		mode === "url" ? { spec_url: specUrl.trim(), base_url: customBase } : { spec: specText, base_url: customBase };
+	// Inline text with a spec_url is parsed as read from it: relative servers resolve against it.
+	if (mode !== "url" && provenanceUrl?.trim()) req.spec_url = provenanceUrl.trim();
 	if (includeDeprecated) req.include_deprecated = true;
 	if (clientName?.trim()) req.client_name = clientName.trim();
 	return req;

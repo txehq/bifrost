@@ -37,6 +37,14 @@ export interface WarpStreamSink {
 
 export const IDLE_WARP_STREAM: WarpStreamSnapshot = { text: "", toolCalls: [], isStreaming: false, error: null };
 
+/** A follow-up submitted while an answer streams, sent when the panel drains the queue. */
+export interface WarpQueuedMessage {
+	id: number;
+	text: string;
+}
+
+export const EMPTY_WARP_QUEUE: WarpQueuedMessage[] = [];
+
 /**
  * One Warp request at a time, owned by the provider rather than the panel.
  *
@@ -62,6 +70,11 @@ export class WarpStreamSession {
 	private requestId = 0;
 	/** The thread the next question is filed under. Empty opens a new one. */
 	conversationId = "";
+	// Held here rather than in the panel for the same reason the request is:
+	// closing the dock, or switching between the docked and sheet panels,
+	// unmounts the panel, and the composer has already cleared what was queued.
+	private queue: WarpQueuedMessage[] = EMPTY_WARP_QUEUE;
+	private nextQueueId = 0;
 
 	constructor(private readonly sink: WarpStreamSink) {}
 
@@ -77,8 +90,35 @@ export class WarpStreamSession {
 
 	private patch(next: Partial<WarpStreamSnapshot>) {
 		this.snapshot = { ...this.snapshot, ...next };
+		this.notify();
+	}
+
+	private notify() {
 		for (const listener of this.listeners) listener();
 	}
+
+	private setQueue(next: WarpQueuedMessage[]) {
+		this.queue = next;
+		this.notify();
+	}
+
+	/** Queued follow-ups, oldest first. A new array on every change, so it works as a snapshot. */
+	getQueue = (): WarpQueuedMessage[] => this.queue;
+
+	enqueue = (text: string) => this.setQueue([...this.queue, { id: this.nextQueueId++, text }]);
+
+	removeQueued = (id: number) => this.setQueue(this.queue.filter((item) => item.id !== id));
+
+	clearQueue = () => {
+		if (this.queue.length > 0) this.setQueue(EMPTY_WARP_QUEUE);
+	};
+
+	/** Removes and returns the oldest queued follow-up. */
+	takeQueued = (): WarpQueuedMessage | undefined => {
+		const [next, ...rest] = this.queue;
+		if (next !== undefined) this.setQueue(rest);
+		return next;
+	};
 
 	/** Sets the thread on both sides at once, so send() never reads a stale id. */
 	setConversationId = (id: string) => {
