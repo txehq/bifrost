@@ -274821,7 +274821,7 @@
       "description": "When Gemini refuses the prompt itself it returns HTTP 200 with no candidates and the reason only in promptFeedback ({\"promptFeedback\":{\"blockReason\":\"SAFETY\",\"blockReasonMessage\":\"...\"}}). The Gemini converters (reused by Vertex) only read candidates, so on /v1/responses the turn normalized to status \"completed\" with empty output, no error and zero tokens, which clients read as the model saying nothing. The stream ended in response.incomplete with no reason, and /v1/chat/completions reported finish_reason \"stop\" with empty content.\n\nThe fix keeps the provider's HTTP 200 and converts the block: Responses reports status \"failed\" with error {code: invalid_prompt, message: blockReasonMessage} (invalid_prompt is OpenAI's ResponseError code for a refused prompt; content_filter is not in that enum) and keeps stop_reason content_filter, the stream closes on the block chunk with a response.failed event carrying that response (candidate-level blocks keep their existing response.completed terminal), and chat finishes with content_filter.\n\nCases: the reporter's Vertex gemini-4-argon repro (write_file tool, tool_choice auto) on /openai/v1/responses, /v1/responses and /v1/chat/completions, unary and streamed. Each case has a trigger check that fails loudly if Gemini stops refusing this prompt (the case then needs a new trigger, Bifrost is not at fault) and the conversion check, red before the fix.\n\n/genai and /anthropic render the same converter output and are not pinned here: unary /genai has no promptFeedback home on the Responses egress (unchanged by this fix), and on the stream their existing response.failed rendering applies (an Anthropic error event, a GenAI promptFeedback carrying the block message).",
       "item": [
         {
-          "name": "vertex/gemini-4-argon /openai/v1/responses blocked prompt: prompt block reported, not an empty success",
+          "name": "[NO-CONTENT] vertex/gemini-4-argon /openai/v1/responses blocked prompt: prompt block reported, not an empty success",
           "request": {
             "method": "POST",
             "header": [
@@ -274938,7 +274938,7 @@
           ]
         },
         {
-          "name": "vertex/gemini-4-argon /v1/responses blocked prompt: prompt block reported, not an empty success",
+          "name": "[NO-CONTENT] vertex/gemini-4-argon /v1/responses blocked prompt: prompt block reported, not an empty success",
           "request": {
             "method": "POST",
             "header": [
@@ -279166,6 +279166,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
               }
             ],
             "body": {
@@ -279200,6 +279204,18 @@
                   "pm.test('openai native configuration_update: request-level reasoning.effort is unchanged', function () {",
                   "  var json = pm.response.json();",
                   "  if (json.reasoning) { pm.expect(json.reasoning.effort, 'response reasoning: ' + JSON.stringify(json.reasoning)).to.equal('low'); }",
+                  "});",
+                  "// A request that dropped the item would also pass the checks above, so the outbound body must",
+                  "// still carry it with its own effort, next to the unchanged request-level effort.",
+                  "pm.test('openai native configuration_update: the item reaches the provider with effort high, request effort low', function () {",
+                  "  var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "  var rr = (json.extra_fields || {}).raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + body.slice(0, 300)).to.be.an('object');",
+                  "  var items = (Array.isArray(rr.input) ? rr.input : []).filter(function (i) { return i && i.type === 'configuration_update'; });",
+                  "  pm.expect(items.length, 'configuration_update was dropped before the provider: ' + JSON.stringify(rr.input || null).slice(0, 400)).to.equal(1);",
+                  "  pm.expect((items[0].reasoning || {}).effort, 'item effort: ' + JSON.stringify(items[0])).to.equal('high');",
+                  "  pm.expect((rr.reasoning || {}).effort, 'request effort: ' + JSON.stringify(rr.reasoning || null)).to.equal('low');",
                   "});"
                 ]
               }
@@ -279214,6 +279230,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
               }
             ],
             "body": {
@@ -279247,6 +279267,18 @@
                   "pm.test('openai configuration_update: request-level reasoning.effort is unchanged', function () {",
                   "  var json = pm.response.json();",
                   "  if (json.reasoning) { pm.expect(json.reasoning.effort, 'response reasoning: ' + JSON.stringify(json.reasoning)).to.equal('low'); }",
+                  "});",
+                  "// A request that dropped the item would also pass the checks above, so the outbound body must",
+                  "// still carry it with its own effort, next to the unchanged request-level effort.",
+                  "pm.test('openai configuration_update: the item reaches the provider with effort high, request effort low', function () {",
+                  "  var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "  var rr = (json.extra_fields || {}).raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + body.slice(0, 300)).to.be.an('object');",
+                  "  var items = (Array.isArray(rr.input) ? rr.input : []).filter(function (i) { return i && i.type === 'configuration_update'; });",
+                  "  pm.expect(items.length, 'configuration_update was dropped before the provider: ' + JSON.stringify(rr.input || null).slice(0, 400)).to.equal(1);",
+                  "  pm.expect((items[0].reasoning || {}).effort, 'item effort: ' + JSON.stringify(items[0])).to.equal('high');",
+                  "  pm.expect((rr.reasoning || {}).effort, 'request effort: ' + JSON.stringify(rr.reasoning || null)).to.equal('low');",
                   "});"
                 ]
               }
