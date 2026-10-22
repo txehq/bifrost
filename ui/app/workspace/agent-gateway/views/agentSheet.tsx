@@ -18,6 +18,7 @@ import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useGetCoreConfigQuery, useGetVirtualKeysQuery } from "@/lib/store";
 import { useCreateAgentMutation, useInspectAgentCardMutation, useUpdateAgentMutation } from "@/lib/store/apis/agentsApi";
 import type { AgentRegistrationView, AgentSecurityScheme, AgentUpstreamAuth, InspectAgentCardResponse } from "@/lib/types/agents";
+import { mergeInspectedAuth } from "./agentSheet.utils";
 import AgentAccessProfiles from "@enterprise/components/agent-gateway/agentAccessProfiles";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertTriangle, ChevronDown, FileSearch, Info, Plus, RefreshCw, Trash2 } from "lucide-react";
@@ -246,22 +247,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 		setSelectedRequirement(index);
 		const next = authForRequirement(result, index);
 		if (!next) return;
-		setRuntimeAuth((current) => ({
-			...next,
-			headers: Object.fromEntries(
-				Object.entries(next.headers ?? {}).map(([header, empty]) => [header, current.headers?.[header] ?? empty]),
-			),
-			oauth:
-				next.oauth && current.type === "oauth"
-					? {
-							...next.oauth,
-							client_id: current.oauth?.client_id ?? next.oauth.client_id,
-							client_secret: current.oauth?.client_secret ?? next.oauth.client_secret,
-							token_url: next.oauth.token_url ?? current.oauth?.token_url,
-						}
-					: next.oauth,
-			tls: current.tls ?? next.tls,
-		}));
+		setRuntimeAuth((current) => mergeInspectedAuth(current, next));
 	};
 
 	const handleInspect = async () => {
@@ -277,7 +263,10 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 				discovery_auth: normalizeAuth(cardAuth),
 			}).unwrap();
 			setInspection(result);
-			applyRequirement(result, 0);
+			// Manual mode is the operator's own configuration: a refetch shows the card
+			// without replacing it.
+			if (manualMode) setSelectedRequirement(0);
+			else applyRequirement(result, 0);
 		} catch (error) {
 			setInspectionError(getErrorMessage(error));
 		}
