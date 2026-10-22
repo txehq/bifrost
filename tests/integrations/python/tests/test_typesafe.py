@@ -760,3 +760,10 @@ class TestDecisionEmulationMatrix:
         skipped = [r for r in _MATRIX_ROWS if r["status"] == "SKIP"]
         print(f"\nscore = questions agreeing with jev out of {len(_MATRIX_QUESTIONS)}; PASS threshold = {_AGREEMENT_FAIL_THRESHOLD:.0%}")
         print(f"PASS={len(passed)}  FAIL={len(failed)}  SKIP={len(skipped)}  TOTAL={len(_MATRIX_PAIRS)} (+jev reference)")
+        # Each unavailable combination skips, so a gateway that refuses everything (a bad
+        # key, an outage) would otherwise skip the whole matrix and report success.
+        min_passing = int(_MATRIX.get("_min_passing", 1))
+        assert len(passed) >= min_passing, (
+            f"only {len(passed)} of {len(_MATRIX_PAIRS)} combinations passed, below _min_passing={min_passing}; skipped: "
+            + "; ".join(f"{r['model_id']}: {r['detail']}" for r in skipped[:10])
+        )

@@ -390,6 +390,7 @@ const MATRIX = JSON.parse(readFileSync(MATRIX_PATH, "utf-8")) as {
 	scenario: { state: string; questions: Record<string, { kind: string }> };
 	_agreement_fail_threshold?: number;
 	_split_question_providers?: string[];
+	_min_passing?: number;
 };
 const MATRIX_PAIRS: Array<{ provider: string; model: string }> = Object.entries(MATRIX.providers).flatMap(
 	([provider, models]) => models.map((model) => ({ provider, model })),
@@ -580,7 +581,7 @@ describe("Decision emulation matrix", () => {
 		// readable BudgetExceededError before Vitest kills the hook.
 	}, 90000);
 
-	it.each(MATRIX_PAIRS)("$provider/$model matches jev", async ({ provider, model }) => {
+	it.for(MATRIX_PAIRS)("$provider/$model matches jev", { timeout: 90000 }, async ({ provider, model }, ctx) => {
 		const modelId = `${provider}/${model}`;
 		let r: DecisionResult;
 		try {
@@ -598,6 +599,8 @@ describe("Decision emulation matrix", () => {
 			const detail = `HTTP ${r.status}: ${r.text.slice(0, 160)}`;
 			if (isAvailability(r.status, r.text)) {
 				MATRIX_ROWS.push({ modelId, status: "SKIP", agree: 0, total: QUESTION_COUNT, latencyMs, tokens: null, cost: "-", detail });
+				// A real skip, not a pass: the case proved nothing.
+				ctx.skip(detail);
 				return;
 			}
 			// Capability-limited providers (Perplexity's sonar rejects choice/score decision
@@ -605,6 +608,7 @@ describe("Decision emulation matrix", () => {
 			// than fail - the identical schema works on every other provider.
 			if (isCapabilityRejection(SPLIT_PROVIDERS, provider, r.status, r.text)) {
 				MATRIX_ROWS.push({ modelId, status: "SKIP", agree: 0, total: QUESTION_COUNT, latencyMs, tokens: null, cost: "-", detail: `capability-limited - ${detail}` });
+				ctx.skip(`capability-limited - ${detail}`);
 				return;
 			}
 			// A malformed request we built (400) or emulation returning no decision (500): defect.
@@ -630,7 +634,17 @@ describe("Decision emulation matrix", () => {
 			expect.fail(`${modelId} agrees with jev on only ${matched}/${total}: ${mismatches.join(", ")}`);
 		}
 		MATRIX_ROWS.push(row);
-	}, 90000);
+	});
+
+	// Runs after the matrix cases (declaration order). Each unavailable combination
+	// skips, so a gateway that refuses everything (a bad key, an outage) would
+	// otherwise skip the whole matrix and report success.
+	it("covers at least _min_passing combinations", () => {
+		const minPassing = MATRIX._min_passing ?? 1;
+		const passed = MATRIX_ROWS.filter((r) => r.status === "PASS").length;
+		const skipped = MATRIX_ROWS.filter((r) => r.status === "SKIP").map((r) => `${r.modelId}: ${r.detail}`);
+		expect(passed, `only ${passed} of ${MATRIX_PAIRS.length} combinations passed; skipped: ${skipped.slice(0, 10).join("; ")}`).toBeGreaterThanOrEqual(minPassing);
+	});
 
 	afterAll(() => {
 		console.log(`\n=== Decision emulation matrix vs jev (1 scenario, ${QUESTION_COUNT} questions) ===`);
