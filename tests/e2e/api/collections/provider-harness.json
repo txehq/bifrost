@@ -90,6 +90,8 @@
           "    } else if (j.choices && j.choices[0] && j.choices[0].message) {",
           "        shape = 'openai-chat-completion';",
           "        hasContent = !!(j.choices[0].message.content || (j.choices[0].message.tool_calls && j.choices[0].message.tool_calls.length));",
+          "        // An audio-output reply (modalities [text, audio]) carries the answer in message.audio, with content null.",
+          "        if (!hasContent && j.choices[0].message.audio && j.choices[0].message.audio.data) { hasContent = true; }",
           "        // Stop-sequence truncation can yield content:null with non-zero completion_tokens — treat as valid response.",
           "        if (!hasContent && j.choices[0].finish_reason === 'stop' && j.usage && j.usage.completion_tokens > 0) { hasContent = true; }",
           "        // finish_reason 'length' is the openai-shaped twin of the anthropic-messages stop_reason 'max_tokens' forgiveness below. A reasoning model can spend the whole max_tokens cap thinking and end the turn mid-thought, returning content:null alongside a populated reasoning/reasoning_content field. Tokens were produced and the gateway relayed exactly what the provider sent, so failing here reports a defect in whatever the row was actually measuring rather than anything that went wrong. An empty content with zero completion tokens is still a failure.",
@@ -257881,7 +257883,7 @@
       ]
     },
     {
-      "name": "212. GenAI passthrough Interactions API create, flat and v1beta1 project paths (genai-interactions-passthrough)",
+      "name": "212. GenAI passthrough Interactions API create, flat and v1beta1 project paths (genai-interactions-passthrough) [SERIAL]",
       "description": "Interactions API creation through /genai_passthrough.\n\nGemini: POST /genai_passthrough/v1beta/interactions was refused with 403 by the passthrough inference filter, which only admitted models/*:generateContent-style paths.\n\nVertex: Google serves Interactions only at /v1beta1/projects/{p}/locations/{l}/interactions. The genai passthrough router strips /genai_passthrough/v1beta1 and the Vertex provider rebuilt the upstream URL with a hardcoded /v1, so the request reached /v1/.../interactions and Google answered 404. The router now carries the stripped version and Vertex honors v1beta1.\n\nBifrost rewrites the project and location in a Vertex passthrough path to the selected key's, so the {{vertexProject}} default needs no override; the key must hold service-account credentials (Interactions rejects API keys). get/cancel/delete of a stored interaction stay refused, so these rows only create.",
       "item": [
         {
