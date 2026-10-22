@@ -190150,7 +190150,7 @@
     },
     {
       "name": "137. MCP client registration validation (mcp-registration-validation)",
-      "description": "Management-endpoint checks with no live provider involved. POST /api/mcp/client must validate connection_type against the enum (http, sse, stdio) before anything else, and an unauthenticated (auth-bypassed) registration whose target hostname cannot be resolved must be refused rather than handed to the connect path. Both run against the harness profile, which has no admin auth configured. DELETE /api/mcp/client/<id> for an id no client has must answer 404, not 500.",
+      "description": "Management-endpoint checks with no live provider involved. POST /api/mcp/client must validate connection_type against the enum (http, sse, stdio) before anything else, and an anonymous registration of an unresolvable target must be refused; on the OSS gateway the setup lock answers it with 401 before the handler, whose fail-closed rule for auth-bypassed callers is unit-tested in handlers/mcpregistrationguard_test.go. DELETE /api/mcp/client/<id> for an id no client has must answer 404, not 500.",
       "item": [
         {
           "name": "[EXPECT-400] POST /api/mcp/client · unknown connection_type is rejected with 400",
@@ -190197,20 +190197,35 @@
           }
         },
         {
-          "name": "[EXPECT-403] POST /api/mcp/client · unresolvable target is refused with 403 (fail closed)",
+          "name": "[EXPECT-401] POST /api/mcp/client · anonymous registration of an unresolvable target is refused by the setup lock",
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The anonymous probe: drop the setup token and any admin credential the runner adds.",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');",
+                  "pm.request.headers.remove('Authorization');"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// .invalid never resolves (RFC 6761). With no admin auth configured the registration gate",
-                  "// has nothing to classify and must refuse, not fall through to the connect path.",
-                  "pm.test('unresolvable target is a 403 for an unauthenticated caller', function () {",
-                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(403);",
-                  "});",
-                  "pm.test('error explains the public-address requirement', function () {",
-                  "  pm.expect(pm.response.text()).to.include('public address');",
+                  "// An anonymous caller never reaches the registration handler on the OSS gateway: with no",
+                  "// dashboard auth the setup lock answers first, and with dashboard auth on, APIMiddleware does.",
+                  "// The handler's own fail-closed refusal of an unresolvable target for an auth-bypassed caller is",
+                  "// covered in handlers/mcpregistrationguard_test.go, since the injected setup token would make",
+                  "// the caller authenticated here and skip that rule.",
+                  "var setupLockActive = pm.collectionVariables.get('setupLockActive');",
+                  "pm.test('anonymous MCP client registration is a 401', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(401);",
+                  "  if (setupLockActive === 'true') {",
+                  "    pm.expect(pm.response.text(), 'lockout must name the header').to.include('X-Bifrost-Setup-Token');",
+                  "  }",
                   "});"
                 ]
               }
