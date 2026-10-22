@@ -443,7 +443,17 @@ type MatrixRow = {
 };
 const MATRIX_ROWS: MatrixRow[] = [];
 
-type DecisionResult = { status: number; answers: any; latencyMs: number; tokens: number | null; cost: string; text: string; split: boolean };
+type DecisionResult = {
+	status: number;
+	answers: any;
+	latencyMs: number;
+	tokens: number | null;
+	cost: string;
+	text: string;
+	split: boolean;
+	// In split mode, the kind of the question whose call failed.
+	failedKind?: string;
+};
 
 // The provider-side request timeout is up to 300s, far above the Vitest case
 // timeout, so every matrix call carries a shared client-side deadline: the
@@ -526,7 +536,7 @@ async function fetchDecisionSplit(modelId: string, batchedLatencyMs: number, dea
 			totalLatency += latencyMs;
 			if (response.status !== 200) {
 				const text = await response.text();
-				return { status: response.status, answers: null, latencyMs: totalLatency, tokens: null, cost: "-", text, split: true };
+				return { status: response.status, answers: null, latencyMs: totalLatency, tokens: null, cost: "-", text, split: true, failedKind: q.kind };
 			}
 			const body = (await response.json()) as any;
 			Object.assign(merged, body.answers);
@@ -606,7 +616,7 @@ describe("Decision emulation matrix", () => {
 			// Capability-limited providers (Perplexity's sonar rejects choice/score decision
 			// schemas): the split was attempted and could not complete the set, so skip rather
 			// than fail - the identical schema works on every other provider.
-			if (isCapabilityRejection(SPLIT_PROVIDERS, provider, r.status, r.text)) {
+			if (r.split && isCapabilityRejection(SPLIT_PROVIDERS, provider, r.status, r.text, r.failedKind)) {
 				MATRIX_ROWS.push({ modelId, status: "SKIP", agree: 0, total: QUESTION_COUNT, latencyMs, tokens: null, cost: "-", detail: `capability-limited - ${detail}` });
 				ctx.skip(`capability-limited - ${detail}`);
 				return;

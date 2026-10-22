@@ -535,8 +535,17 @@ _SPLIT_PROVIDERS = set(_MATRIX.get("_split_question_providers", []))
 _CAPABILITY_REJECTION_MARKERS = ("invalid request", "invalid_request")
 
 
-def _is_capability_rejection(provider, status_code, text):
+# The question kinds the split providers are documented to reject one at a time.
+_CAPABILITY_REJECTED_KINDS = ("choice", "score")
+
+
+def _is_capability_rejection(provider, status_code, text, rejected_kind=None):
+    # Only the demonstrated limit skips: a choice or score question rejected in the
+    # one-at-a-time split. The marker alone is a generic invalid-request error, which
+    # a request we built wrong also carries.
     if provider not in _SPLIT_PROVIDERS or status_code != 400:
+        return False
+    if rejected_kind not in _CAPABILITY_REJECTED_KINDS:
         return False
     low = text.lower()
     return any(marker in low for marker in _CAPABILITY_REJECTION_MARKERS)
@@ -622,7 +631,7 @@ def _fetch_decision_split(model_id, batched_latency_ms, deadline):
         resp, latency_ms = _post_raw(model_id, {name: q}, deadline)
         total_latency += latency_ms
         if resp.status_code != 200:
-            return {"status": resp.status_code, "answers": None, "latency_ms": total_latency, "tokens": None, "cost": "-", "text": resp.text, "split": True}
+            return {"status": resp.status_code, "answers": None, "latency_ms": total_latency, "tokens": None, "cost": "-", "text": resp.text, "split": True, "failed_kind": q.get("kind")}
         body = resp.json()
         merged.update(body["answers"])
         tokens, _ = _usage_cost(body)
@@ -713,7 +722,7 @@ class TestDecisionEmulationMatrix:
             # Capability-limited providers (e.g. Perplexity's sonar rejects choice/score
             # decision schemas): the split was attempted and the provider rejected the schema,
             # so skip rather than fail - the identical schema works on every other provider.
-            if _is_capability_rejection(provider, r["status"], r["text"]):
+            if r.get("split") and _is_capability_rejection(provider, r["status"], r["text"], r.get("failed_kind")):
                 _MATRIX_ROWS.append({"model_id": model_id, "status": "SKIP", "agree": 0, "total": total, "latency_ms": latency_ms, "tokens": None, "cost": "-", "detail": "capability-limited - " + detail})
                 pytest.skip(f"{model_id}: capability-limited - {detail}")
             # A malformed request we built (400) or emulation returning no decision (500): defect.
