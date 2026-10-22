@@ -567,3 +567,38 @@ func TestLiveSessionRowKeepsVirtualKeyMetadata(t *testing.T) {
 	assert.Equal(t, "cc-live", row.MetadataParsed["cost_center"], "the key's metadata lands on the session row")
 	assert.Equal(t, "vk-wins", row.MetadataParsed["realtime_transport"], "the key's value beats the realtime merge")
 }
+
+// TestLiveSessionRowKeepsItsCostSplit pins that a session row's input, output and
+// additional cost columns add up to its cost from the categories its units were
+// priced in, instead of the whole total landing in input_cost.
+func TestLiveSessionRowKeepsItsCostSplit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pricing.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+		"gpt-live-1":{"provider":"openai","mode":"live","input_cost_per_second":0.001},
+		"gpt-5.6-luna":{"provider":"openai","mode":"responses","input_cost_per_token":0.001,"output_cost_per_token":0.002}
+	}`), 0o600))
+	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + path})
+	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, modelcatalog.NewTestCatalogWithDatasheet(ds), nil)
+	require.NoError(t, err)
+
+	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-split", "unit-1", "voice", true, false), liveStartRequest("gpt-live-1"))
+	require.NoError(t, err)
+	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-split", "unit-1", "voice", false, false), liveVoiceResponse(10, nil), nil)
+	require.NoError(t, err)
+	usage := &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
+	_, _, err = plugin.PostLLMHook(liveDelegationCtx("bfsess-split", "unit-2", "item_1", 0), liveBackendResponse("resp_1", nil, usage), nil)
+	require.NoError(t, err)
+	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-split", "unit-3", "voice", false, true), liveVoiceResponse(0, &schemas.LiveSessionLog{Transport: "websocket"}), nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	row, err := store.FindByID(context.Background(), "bfsess-split")
+	require.NoError(t, err)
+	require.NotNil(t, row.Cost)
+	assert.InDelta(t, 0.03, *row.Cost, 1e-9, "10s of voice at 0.001 plus 10 in at 0.001 and 5 out at 0.002")
+	assert.InDelta(t, 0.01, row.OutputCost, 1e-9, "output tokens are output cost")
+	assert.InDelta(t, 0.02, row.InputCost, 1e-9)
+	assert.InDelta(t, *row.Cost, row.InputCost+row.OutputCost+row.AdditionalCost, 1e-9)
+}
