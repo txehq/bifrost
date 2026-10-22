@@ -1006,3 +1006,18 @@ func (s *lateLandingConfigStore) GetWarpConfig(ctx context.Context) (*tables.Tab
 	s.mu.Unlock()
 	return row, err
 }
+
+// TestWarpDraftClearingTheEmbeddingSpaceMustMoveNamespace pins that a draft which
+// clears the stored embedding model while keeping its namespace is refused: the
+// cleared row would no longer say what the namespace holds, and a later enable
+// could index another model into it. Clearing it onto a new namespace is fine.
+func TestWarpDraftClearingTheEmbeddingSpaceMustMoveNamespace(t *testing.T) {
+	store := &recordingStore{row: validWarpConfigRow()}
+	_, err := newTestService(store).SaveConfig(context.Background(), inputFromJSON(t, `{"enabled": false, "embedding_model": ""}`))
+	require.ErrorIs(t, err, ErrInvalidConfig)
+	require.ErrorContains(t, err, "log_vector_store_namespace")
+	require.Empty(t, store.upserted, "nothing is stored")
+
+	_, err = newTestService(store).SaveConfig(context.Background(), inputFromJSON(t, `{"enabled": false, "embedding_model": "", "log_vector_store_namespace": "BifrostWarpLogsCleared"}`))
+	require.NoError(t, err)
+}

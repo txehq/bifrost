@@ -235,6 +235,14 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		normalizedNamespace(previous.LogVectorStoreNamespace) == normalizedNamespace(input.LogVectorStoreNamespace) {
 		return ConfigView{}, fmt.Errorf("%w: log_vector_store_namespace must change when the embedding provider, model or dimension changes", ErrInvalidConfig)
 	}
+	// A save that clears the stored space's provider, model or dimension leaves no
+	// record of what the namespace holds, so a later save naming any space would
+	// not see a change and could index a different model into it. Clearing the
+	// space therefore moves to a new namespace, as changing it does.
+	if embeddingSpaceCleared(previous, input) &&
+		normalizedNamespace(previous.LogVectorStoreNamespace) == normalizedNamespace(input.LogVectorStoreNamespace) {
+		return ConfigView{}, fmt.Errorf("%w: log_vector_store_namespace must change when the embedding provider, model or dimension is cleared", ErrInvalidConfig)
+	}
 	// A retired namespace keeps the vectors of the space it was retired from,
 	// and nothing records which space that was. The store accepts any reuse at
 	// the same dimension, so moving back onto one would search, and then index
@@ -625,6 +633,15 @@ func embeddingSpaceChanged(row *tables.TableWarpConfig, input *ConfigInput) bool
 		return true
 	}
 	return row.EmbeddingProvider != string(input.EmbeddingProvider) || row.EmbeddingModel != input.EmbeddingModel || row.EmbeddingDimension != input.EmbeddingDimension
+}
+
+// embeddingSpaceCleared reports whether a write leaves out part of a complete
+// stored embedding space (provider, model or dimension), erasing its identity.
+func embeddingSpaceCleared(row *tables.TableWarpConfig, input *ConfigInput) bool {
+	if row == nil || row.EmbeddingProvider == "" || row.EmbeddingModel == "" || row.EmbeddingDimension <= 0 || input == nil {
+		return false
+	}
+	return input.EmbeddingProvider == "" || input.EmbeddingModel == "" || input.EmbeddingDimension <= 0
 }
 
 // normalizedNamespace matches what EffectiveLogVectorStoreNamespace resolves to,
