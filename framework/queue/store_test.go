@@ -1314,3 +1314,25 @@ func footprintOnce(b *testing.B, backend benchBackend, payload, groups int) {
 	backend.compact(b, s)
 	perMsg("purged-compacted")
 }
+
+// TestMemoryStorePurgeReleasesAckedDeliveriesOfIdleGroups: an acknowledged delivery
+// stays in its group's queue until that group claims again, so Purge compacts it out;
+// otherwise a group that stopped consuming keeps the purged message's payload alive.
+func TestMemoryStorePurgeReleasesAckedDeliveriesOfIdleGroups(t *testing.T) {
+	ctx := context.Background()
+	store := newMemoryStore()
+	require.NoError(t, store.EnsureGroup(ctx, "t", "g", StartFromEarliest))
+	require.NoError(t, store.Append(ctx, []*Message{{ID: "m1", Topic: "t", Payload: make([]byte, 1<<20)}}))
+	claimed, err := store.Claim(ctx, ClaimRequest{Topic: "t", Group: "g", Max: 1, Lease: time.Minute})
+	require.NoError(t, err)
+	require.Len(t, claimed, 1)
+	_, err = store.Ack(ctx, claimed)
+	require.NoError(t, err)
+
+	_, err = store.Purge(ctx, PurgePolicy{}, 100)
+	require.NoError(t, err)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	assert.Empty(t, store.queues[memoryGroupKey{"t", "g"}], "the acknowledged delivery still pins its message")
+	assert.Empty(t, store.messages, "the message itself is purged")
+}
