@@ -177,14 +177,14 @@ cmd+=(--env-var "base_url=$base_url")
 # it stops early (--bail, Ctrl-C). This trap repeats that restore on every exit, so a stopped
 # run never leaves the shared gateway in headers mode. It reads the stored config, changes only
 # extra_fields_placement (jq keeps the key order) and sends the whole config back, because
-# PUT /api/config resets omitted fields. A fresh install's log_retention_days 0 is raised to
-# 30, which the PUT requires.
+# PUT /api/config resets omitted fields. A fresh install's log_retention_days 0 (the gateway
+# default of 365) is sent as 365, since the PUT requires a value and a shorter one deletes history.
 restore_placement() {
     local cfg
     cfg=$(curl -sf -H "X-Bifrost-Setup-Token: $SETUP_TOKEN" "$base_url/api/config?from_db=true") || return 0
     [ "$(jq -r '.client_config.extra_fields_placement // "body"' <<<"$cfg")" = "body" ] && return 0
     echo -e "${YELLOW}Restoring extra_fields_placement to body (newman stopped before Teardown)${NC}"
-    jq '{client_config: (.client_config | .extra_fields_placement = "body" | if (.log_retention_days // 0) < 1 then .log_retention_days = 30 else . end)}' <<<"$cfg" |
+    jq '{client_config: (.client_config | .extra_fields_placement = "body" | if (.log_retention_days // 0) < 1 then .log_retention_days = 365 else . end)}' <<<"$cfg" |
         curl -sf -X PUT -H "X-Bifrost-Setup-Token: $SETUP_TOKEN" -H "Content-Type: application/json" --data-binary @- "$base_url/api/config" >/dev/null ||
         echo -e "${RED}Could not restore extra_fields_placement; set it back to body by hand${NC}"
 }
