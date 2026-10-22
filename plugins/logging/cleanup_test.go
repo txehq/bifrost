@@ -590,3 +590,45 @@ func TestProcessBatchHandsBackDuplicateWhoseRepairWasInterrupted(t *testing.T) {
 		t.Fatalf("interrupted repair must not count as dropped, got %d", dropped)
 	}
 }
+
+// TestInterruptedRepairSurvivesEvictionUntilItsRetry pins that a duplicate whose
+// billing repair was interrupted keeps its repair state through the recent-billing
+// cache's eviction, so the drain's retry still writes the UPDATE.
+func TestInterruptedRepairSurvivesEvictionUntilItsRetry(t *testing.T) {
+	store := &billingRepairStore{LogStore: newTestStore(t)}
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+	plugin.writerConfig.MaxBatchSize = 1 // the cache keeps two entries
+
+	const id = "interrupted-then-evicted"
+	const cost = 0.0031
+	plugin.processBatch(context.Background(), []*writeQueueEntry{{log: pricedTestLog(id, cost)}})
+	batchCtx, cancelBatch := context.WithCancel(context.Background())
+	store.onUpdate = func(ctx context.Context) error {
+		if ctx == batchCtx {
+			cancelBatch()
+			return ctx.Err()
+		}
+		return nil
+	}
+	left := plugin.processBatch(batchCtx, []*writeQueueEntry{{log: countedTestLog(id)}})
+	if len(left) != 1 {
+		t.Fatalf("expected the interrupted duplicate handed back, got %d", len(left))
+	}
+	// Newer rows push the cache past its bound before the drain retries.
+	plugin.processBatch(context.Background(), []*writeQueueEntry{{log: makeTestLog("newer-1")}, {log: makeTestLog("newer-2")}})
+
+	if left := plugin.processBatch(context.Background(), left); len(left) != 0 {
+		t.Fatalf("drain retry left %d entries", len(left))
+	}
+	got, err := store.FindByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if got.TokenUsageParsed == nil || got.TokenUsageParsed.TotalTokens != 42 {
+		t.Fatalf("stored token usage = %+v, want 42 total tokens after the retry's repair", got.TokenUsageParsed)
+	}
+}

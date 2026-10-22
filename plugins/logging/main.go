@@ -1291,6 +1291,10 @@ type LoggerPlugin struct {
 	recentLogBillingMu    sync.Mutex
 	recentLogBilling      map[string]persistedLogBillingState
 	recentLogBillingOrder []string
+	// recentLogBillingPinned holds the IDs whose repair was interrupted: their state
+	// must survive eviction until the retry repairs them, or the retry reads the
+	// duplicate as unseen and skips its UPDATE.
+	recentLogBillingPinned map[string]bool
 }
 
 // Init creates new logger plugin with given log store. batchStore is the

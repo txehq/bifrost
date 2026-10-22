@@ -794,6 +794,10 @@ func (p *LoggerPlugin) repairRecentDuplicateBilling(ctx context.Context, logs []
 				if ctx.Err() != nil {
 					p.logger.Warn("billing repair for duplicate log %s interrupted (%v), handing it back for the drain", log.ID, ctx.Err())
 					interrupted = append(interrupted, log)
+					if p.recentLogBillingPinned == nil {
+						p.recentLogBillingPinned = make(map[string]bool)
+					}
+					p.recentLogBillingPinned[log.ID] = true
 					continue
 				}
 				p.logger.Warn("failed to repair billing fields for duplicate log %s: %v", log.ID, err)
@@ -803,13 +807,23 @@ func (p *LoggerPlugin) repairRecentDuplicateBilling(ctx context.Context, logs []
 		previous.hasUsage = previous.hasUsage || candidate.hasUsage
 		previous.hasCost = previous.hasCost || candidate.hasCost
 		p.recentLogBilling[log.ID] = previous
+		delete(p.recentLogBillingPinned, log.ID)
 	}
 
-	for len(p.recentLogBillingOrder) > limit {
-		id := p.recentLogBillingOrder[0]
-		p.recentLogBillingOrder[0] = ""
-		p.recentLogBillingOrder = p.recentLogBillingOrder[1:]
-		delete(p.recentLogBilling, id)
+	// Evict oldest first, skipping a pinned (interrupted) entry: it is kept, in
+	// order, until its retry repairs it.
+	if excess := len(p.recentLogBillingOrder) - limit; excess > 0 {
+		kept := p.recentLogBillingOrder[:0]
+		for _, id := range p.recentLogBillingOrder {
+			if excess > 0 && !p.recentLogBillingPinned[id] {
+				delete(p.recentLogBilling, id)
+				excess--
+				continue
+			}
+			kept = append(kept, id)
+		}
+		clear(p.recentLogBillingOrder[len(kept):])
+		p.recentLogBillingOrder = kept
 	}
 	return interrupted
 }
