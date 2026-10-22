@@ -18,6 +18,10 @@ mkdir -p tmp
 if [ "${LIVE_PREBUILT:-}" = "1" ] && [ -x tmp/bifrost-http ]; then
   echo "📦 Using the prebuilt tmp/bifrost-http"
 else
+  # bifrost-http embeds the built UI (//go:embed all:ui); a clean checkout, as the
+  # scheduled and manual live runs use, has none, so give the embed a placeholder.
+  mkdir -p transports/bifrost-http/ui
+  [ -n "$(ls -A transports/bifrost-http/ui)" ] || echo "placeholder" > transports/bifrost-http/ui/.gitkeep
   echo "🔨 Building bifrost-http..."
   (cd transports && go build -o ../tmp/bifrost-http ./bifrost-http)
 fi
