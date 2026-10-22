@@ -111595,7 +111595,9 @@
           "wafer",
           "databricks",
           "cloudflare",
-          "typesafe"
+          "typesafe",
+          "minimax",
+          "byteplus"
         ]
       },
       "Fallback": {
