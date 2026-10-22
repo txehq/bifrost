@@ -167,7 +167,12 @@
                   "  pm.test('/oauth2/register is hidden in headers mode (404)', function () { pm.expect(code, pm.response.text()).to.equal(404); });",
                   "  return;",
                   "}",
-                  "pm.test('/oauth2/register is served when issuance is enabled (not 404)', function () { pm.expect(code, pm.response.text()).to.not.equal(404); });"
+                  "pm.test('/oauth2/register is served when issuance is enabled (not 404)', function () { pm.expect(code, pm.response.text()).to.not.equal(404); });",
+                  "// Served and asked with nothing, the endpoint refuses the request itself: a 4xx validation answer. A 5xx is the issuer failing, not answering.",
+                  "pm.test('/oauth2/register answers the empty request with a client error', function () { pm.expect(code, pm.response.text()).to.be.within(400, 499); });",
+                  "var payload = null;",
+                  "try { payload = pm.response.json(); } catch (e) { payload = null; }",
+                  "if (payload !== null) { pm.test('/oauth2/register names an OAuth error', function () { pm.expect(payload.error, pm.response.text()).to.be.a('string').and.not.empty; }); }"
                 ]
               }
             }
@@ -194,7 +199,12 @@
                   "  pm.test('/oauth2/authorize is hidden in headers mode (404)', function () { pm.expect(code, pm.response.text()).to.equal(404); });",
                   "  return;",
                   "}",
-                  "pm.test('/oauth2/authorize is served when issuance is enabled (not 404)', function () { pm.expect(code, pm.response.text()).to.not.equal(404); });"
+                  "pm.test('/oauth2/authorize is served when issuance is enabled (not 404)', function () { pm.expect(code, pm.response.text()).to.not.equal(404); });",
+                  "// Served and asked with nothing, the endpoint refuses the request itself: a 4xx validation answer. A 5xx is the issuer failing, not answering.",
+                  "pm.test('/oauth2/authorize answers the empty request with a client error', function () { pm.expect(code, pm.response.text()).to.be.within(400, 499); });",
+                  "var payload = null;",
+                  "try { payload = pm.response.json(); } catch (e) { payload = null; }",
+                  "if (payload !== null) { pm.test('/oauth2/authorize names an OAuth error', function () { pm.expect(payload.error, pm.response.text()).to.be.a('string').and.not.empty; }); }"
                 ]
               }
             }
@@ -220,7 +230,12 @@
                   "  pm.test('/oauth2/token is hidden in headers mode (404)', function () { pm.expect(code, pm.response.text()).to.equal(404); });",
                   "  return;",
                   "}",
-                  "pm.test('/oauth2/token is served when issuance is enabled (not 404)', function () { pm.expect(code, pm.response.text()).to.not.equal(404); });"
+                  "pm.test('/oauth2/token is served when issuance is enabled (not 404)', function () { pm.expect(code, pm.response.text()).to.not.equal(404); });",
+                  "// Served and asked with nothing, the endpoint refuses the request itself: a 4xx validation answer. A 5xx is the issuer failing, not answering.",
+                  "pm.test('/oauth2/token answers the empty request with a client error', function () { pm.expect(code, pm.response.text()).to.be.within(400, 499); });",
+                  "var payload = null;",
+                  "try { payload = pm.response.json(); } catch (e) { payload = null; }",
+                  "if (payload !== null) { pm.test('/oauth2/token names an OAuth error', function () { pm.expect(payload.error, pm.response.text()).to.be.a('string').and.not.empty; }); }"
                 ]
               }
             }
