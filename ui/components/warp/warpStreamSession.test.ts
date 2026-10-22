@@ -111,6 +111,30 @@ describe("WarpStreamSession", () => {
 		expect(committed[0]?.error).toBeTruthy();
 	});
 
+	// A failed turn is charged too: the usage its error frame carries is kept, and a turn
+	// that reports none does not pick up another turn's figures.
+	it("keeps the usage an error frame carries", async () => {
+		const sending = session.send([], "q");
+		await settle();
+		await net.push({
+			type: "error",
+			code: "upstream_error",
+			message: "boom",
+			conversation_id: "conv-err",
+			usage: { prompt_tokens: 7, completion_tokens: 1, total_tokens: 8 },
+		});
+		await net.close();
+		await sending;
+		expect(committed[0].usage).toEqual({ prompt_tokens: 7, completion_tokens: 1, total_tokens: 8 });
+
+		const retry = session.send([], "again");
+		await settle();
+		await net.push({ type: "error", code: "upstream_error", message: "boom again", conversation_id: "conv-err" });
+		await net.close();
+		await retry;
+		expect(committed[1].usage).toBeUndefined();
+	});
+
 	it("notifies subscribers per event and hands a late subscriber the in-flight state", async () => {
 		const seen: string[] = [];
 		session.subscribe(() => seen.push(session.getSnapshot().text));
