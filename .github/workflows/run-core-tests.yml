@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   authorize:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     steps:
       - name: Verify repository member access
         env:
@@ -30,7 +30,7 @@ jobs:
 
   run-core-tests:
     needs: authorize
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 360
     env:
       MAXIM_API_KEY: ${{ secrets.MAXIM_API_KEY }}
@@ -60,8 +60,11 @@ jobs:
       CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+      TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
       DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
       DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       GITHUB_COPILOT_APP_ID: ${{ secrets.GITHUB_COPILOT_APP_ID }}
       GITHUB_COPILOT_INSTALLATION_ID: ${{ secrets.GITHUB_COPILOT_INSTALLATION_ID }}
       GITHUB_COPILOT_REPOSITORY_ID: ${{ secrets.GITHUB_COPILOT_REPOSITORY_ID }}
@@ -96,6 +99,7 @@ jobs:
             aiplatform.googleapis.com:443
             api.anthropic.com:443
             api.cerebras.ai:443
+            api.cloudflare.com:443
             api.cohere.ai:443
             api.deepseek.com:443
             api.elevenlabs.io:443
@@ -126,6 +130,8 @@ jobs:
             fonts.gstatic.com:443
             generativelanguage.googleapis.com:443
             files.pythonhosted.org:443
+            iamcredentials.googleapis.com:443
+            petstore3.swagger.io:443
             pypi.org:443
             getbifrost.ai:443
             github.com:443
@@ -144,6 +150,7 @@ jobs:
             releases.astral.sh:443
             router.huggingface.co:443
             storage.googleapis.com:443
+            sts.googleapis.com:443
             sum.golang.org:443
             us-central1-aiplatform.googleapis.com:443
             www.berkshirehathaway.com:443
@@ -157,10 +164,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.3"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "25"
 
@@ -169,7 +176,7 @@ jobs:
       # tests/integrations/python (a dependency manifest, not a package). Kept in step
       # with the same block in release-pipeline.yml's test-core-integrations job.
       - name: Install uv
-        uses: step-security/setup-uv@ccf0a26ce9117d9e99292b0ce953ea5d9ffe778e # v7.3.0
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
         with:
           version: "0.11.0"
           python-version: "3.12"

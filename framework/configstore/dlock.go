@@ -4,12 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore/tables"
+	"github.com/capsohq/bifrost/framework/logstore"
 	"github.com/google/uuid"
 )
+
+// The ClickHouse log store serializes Warp history writes across instances
+// through this manager; logstore declares the interface because configstore
+// imports it, not the other way round.
+var _ logstore.DistributedLocker = (*DistributedLockManager)(nil)
 
 // Default lock configuration values
 const (
@@ -25,6 +32,9 @@ var (
 	ErrLockNotHeld     = errors.New("lock not held by this holder")
 	ErrLockExpired     = errors.New("lock has expired")
 	ErrEmptyLockKey    = errors.New("empty lock key")
+	// ErrLockLost is the cause on an Acquire context whose lease was lost while
+	// held: another holder may now have the key.
+	ErrLockLost = errors.New("distributed lock lost while held")
 )
 
 // LockStore defines the storage operations required for distributed locking.
@@ -135,6 +145,103 @@ func (m *DistributedLockManager) NewLockWithTTL(lockKey string, ttl time.Duratio
 	return lock, nil
 }
 
+// Acquire takes the lock for key, waiting as Lock does, and returns a context
+// for the critical section plus the function that releases the lock.
+//
+// The lease is renewed every third of its TTL for as long as it is held, so a
+// section that runs long keeps the lock instead of silently sharing it. If the
+// lease is lost anyway - the store was unreachable past the TTL and another
+// holder took the key - the returned context is cancelled with ErrLockLost, so
+// the caller stops rather than keep writing unprotected.
+//
+// Release stops the renewal and waits for it before unlocking, and is safe to
+// call more than once. It runs on a context detached from ctx's cancellation:
+// a request cancelled mid-write must still give the lock back, not leave every
+// other instance waiting out the TTL.
+func (m *DistributedLockManager) Acquire(ctx context.Context, key string) (context.Context, func(), error) {
+	lock, err := m.NewLock(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := lock.Lock(ctx); err != nil {
+		return nil, nil, err
+	}
+	detached := context.WithoutCancel(ctx)
+	held, lose := context.WithCancelCause(ctx)
+	if lock.store == nil {
+		// No store, no lease to renew or lose: Lock was a no-op.
+		return held, func() { lose(context.Canceled) }, nil
+	}
+	stop := make(chan struct{})
+	renewed := make(chan struct{})
+	// The lease is only as good as the last expiry the store confirmed. Past
+	// it another holder may have the key whatever a pending renewal later
+	// returns, so it is enforced on its own timer rather than by the result of
+	// a store call that may never come back.
+	expiry := time.AfterFunc(time.Until(lock.expiresAt), func() { lose(ErrLockLost) })
+	go func() {
+		defer close(renewed)
+		defer expiry.Stop()
+		ticker := time.NewTicker(max(lock.ttl/3, time.Millisecond))
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+			}
+			// Bounded by the confirmed lease: past it the lease is gone whatever
+			// this call returns, and a hung store must not hang the release
+			// behind it.
+			extendCtx, cancel := context.WithDeadline(detached, lock.expiresAt)
+			err := lock.Extend(extendCtx)
+			cancel()
+			if errors.Is(err, ErrLockNotHeld) {
+				lose(ErrLockLost)
+				return
+			}
+			if err == nil {
+				// A renewal that lands after the expiry timer fired is too late:
+				// the holder has already been told to stop.
+				if !expiry.Reset(time.Until(lock.expiresAt)) {
+					return
+				}
+				continue
+			}
+			// Anything else is transient: the next tick tries again while the
+			// confirmed lease lasts, and the expiry timer reports it lost after.
+			if m.logger != nil {
+				m.logger.Warn("failed to renew distributed lock %s: %v", key, err)
+			}
+			if !time.Now().Before(lock.expiresAt) {
+				lose(ErrLockLost)
+				return
+			}
+		}
+	}()
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			close(stop)
+			<-renewed
+			// Bounded by the confirmed lease, like a renewal: past it the row is any
+			// holder's to take, so a store blocked on row contention must not hold
+			// the caller beyond it.
+			if time.Now().Before(lock.expiresAt) {
+				unlockCtx, cancel := context.WithDeadline(detached, lock.expiresAt)
+				// ErrLockNotHeld here means the lease was already lost, which the
+				// held context has reported; there is nothing left to release.
+				if err := lock.Unlock(unlockCtx); err != nil && !errors.Is(err, ErrLockNotHeld) && m.logger != nil {
+					m.logger.Warn("failed to release distributed lock %s: %v", key, err)
+				}
+				cancel()
+			}
+			lose(context.Canceled)
+		})
+	}
+	return held, release, nil
+}
+
 // CleanupExpiredLocks removes all expired locks from the store.
 // This can be called periodically to clean up stale locks.
 func (m *DistributedLockManager) CleanupExpiredLocks(ctx context.Context) (int64, error) {
@@ -152,6 +259,9 @@ type DistributedLock struct {
 	retryInterval time.Duration
 	maxRetries    int
 	acquired      bool
+	// expiresAt is the lease expiry the store last confirmed, computed before
+	// the write that set it, so it never runs past the stored one.
+	expiresAt time.Time
 }
 
 // Lock acquires the lock, blocking until it's available or the context is cancelled.
@@ -253,6 +363,7 @@ func (l *DistributedLock) TryLock(ctx context.Context) (bool, error) {
 
 	if acquired {
 		l.acquired = true
+		l.expiresAt = lock.ExpiresAt
 		l.logger.Debug("acquired lock %s with holder %s", l.lockKey, l.holderID)
 	}
 
@@ -310,6 +421,7 @@ func (l *DistributedLock) Extend(ctx context.Context) error {
 		return fmt.Errorf("error extending lock: %w", err)
 	}
 
+	l.expiresAt = newExpiresAt
 	l.logger.Debug("extended lock %s to %v", l.lockKey, newExpiresAt)
 	return nil
 }

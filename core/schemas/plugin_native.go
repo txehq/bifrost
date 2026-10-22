@@ -31,6 +31,13 @@ type MCPPluginShortCircuit struct {
 	Error    *BifrostError       // If set, short-circuit with this error (can set AllowFallbacks field)
 }
 
+// A2APluginShortCircuit represents an A2A plugin's decision to short-circuit the normal flow.
+// It can contain either a response (success short-circuit), or an error (error short-circuit).
+type A2APluginShortCircuit struct {
+	Response *BifrostA2AResponse // If set, short-circuit with this response (skips the upstream agent call)
+	Error    *BifrostError       // If set, short-circuit with this error (e.g. an authorization denial)
+}
+
 // MCPConnectionShortCircuit is the typed short-circuit for MCPConnectionPlugin.
 // It carries a typed Connect response (instead of the generic envelope) so plugin
 // authors don't have to wrap responses in BifrostMCPResponse.

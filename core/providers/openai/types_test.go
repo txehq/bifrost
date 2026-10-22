@@ -1,9 +1,12 @@
 package openai
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
+	"github.com/capsohq/bifrost/core/internal/memtest"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -463,5 +466,69 @@ func TestOpenAIChatRequest_UnmarshalJSON_ValueAssertions(t *testing.T) {
 
 	if len(req.Stop) != 2 || req.Stop[0] != "END" || req.Stop[1] != "STOP" {
 		t.Errorf("Expected Stop value ['END', 'STOP'], got %v", req.Stop)
+	}
+}
+
+// TestStripCompactionItemSummary_AllocationScaling pins the allocation shape of the
+// compaction-summary strip.
+//
+// The loop deletes "<i>.summary" through the whole input array, once per compaction
+// item, and each sjson delete reserialises the entire array. A conversation carrying
+// many compaction items therefore costs that many copies of it.
+func TestStripCompactionItemSummary_AllocationScaling(t *testing.T) {
+	// items must line up with the payload, so both are built together and looked up
+	// by payload length when the assertion calls back.
+	itemsByLen := map[int][]schemas.ResponsesMessage{}
+
+	memtest.AssertAllocScaling(t, func(n int) []byte {
+		var b bytes.Buffer
+		items := make([]schemas.ResponsesMessage, 0, n)
+		compaction := schemas.ResponsesMessageTypeCompaction
+		b.WriteByte('[')
+		for i := range n {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			// encrypted_content is the bulk, so the payload grows with n; summary is
+			// what gets stripped.
+			b.WriteString(`{"type":"compaction","summary":null,"encrypted_content":"`)
+			b.WriteString(strings.Repeat("e", 400))
+			b.WriteString(`"}`)
+			items = append(items, schemas.ResponsesMessage{Type: &compaction})
+		}
+		b.WriteByte(']')
+		payload := b.Bytes()
+		itemsByLen[len(payload)] = items
+		return payload
+	}, func(body []byte) {
+		stripCompactionItemSummary(body, itemsByLen[len(body)])
+	})
+}
+
+// TestStripCompactionItemSummary_NoCompactionItemsReturnsInputWithoutAllocating pins that
+// an ordinary history (no compaction item) is returned as-is without parsing or copying
+// each serialized item.
+func TestStripCompactionItemSummary_NoCompactionItemsReturnsInputWithoutAllocating(t *testing.T) {
+	messageType := schemas.ResponsesMessageTypeMessage
+	items := make([]schemas.ResponsesMessage, 50)
+	var b bytes.Buffer
+	b.WriteByte('[')
+	for i := range items {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"type":"message","role":"user","content":"`)
+		b.WriteString(strings.Repeat("x", 400))
+		b.WriteString(`"}`)
+		items[i] = schemas.ResponsesMessage{Type: &messageType}
+	}
+	b.WriteByte(']')
+	data := b.Bytes()
+
+	if got := stripCompactionItemSummary(data, items); !bytes.Equal(got, data) {
+		t.Fatalf("ordinary history changed: %s", got)
+	}
+	if allocs := testing.AllocsPerRun(20, func() { stripCompactionItemSummary(data, items) }); allocs != 0 {
+		t.Fatalf("ordinary history allocated %v times, want 0", allocs)
 	}
 }

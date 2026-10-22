@@ -146,3 +146,81 @@ func TestExtractUsagePreservesThinkingTokensAndInferenceGeo(t *testing.T) {
 func testKey(value string) schemas.Key {
 	return schemas.Key{Value: schemas.SecretVar{Val: value}}
 }
+
+// A passthrough path must stay on the configured provider host; "//host" would make
+// the joined URL leave it with the provider credentials attached.
+func TestPassthroughRejectsPathThatLeavesProviderHost(t *testing.T) {
+	hits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := Passthrough(ctx, &fasthttp.Client{}, testKey("xai-secret"), &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "//attacker.example/v1/messages", Body: []byte(`{}`),
+	}, Config{Provider: schemas.XAI, Endpoint: server.URL})
+	if bifrostErr == nil {
+		t.Fatal("expected a bad-request error for a host-escaping path")
+	}
+	_, bifrostErr = PassthroughStream(ctx, nil, nil, &fasthttp.Client{}, testKey("xai-secret"), &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "//attacker.example/v1/messages", Body: []byte(`{}`),
+	}, Config{Provider: schemas.XAI, Endpoint: server.URL})
+	if bifrostErr == nil {
+		t.Fatal("expected a bad-request error for a host-escaping streaming path")
+	}
+	if hits != 0 {
+		t.Fatalf("provider received %d requests, want 0", hits)
+	}
+}
+
+// A caller's Authorization header is only forwarded over TLS or to loopback.
+func TestPassthroughStripsCallerAuthorizationForInsecureEndpoint(t *testing.T) {
+	headers := map[string]string{"Authorization": "Bearer caller", "anthropic-beta": "x"}
+	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	Config{}.setHeaders(ctx, req, "http://provider.example/v1/messages", testKey("k"), headers)
+	if got := req.Header.Peek("Authorization"); len(got) != 0 {
+		t.Fatalf("Authorization forwarded over plain http: %q", got)
+	}
+	if got := string(req.Header.Peek("anthropic-beta")); got != "x" {
+		t.Fatalf("anthropic-beta = %q, want x", got)
+	}
+
+	headers = map[string]string{"Authorization": "Bearer caller"}
+	req.Reset()
+	Config{}.setHeaders(ctx, req, "https://provider.example/v1/messages", testKey("k"), headers)
+	if got := string(req.Header.Peek("Authorization")); got != "Bearer caller" {
+		t.Fatalf("Authorization over https = %q, want Bearer caller", got)
+	}
+}
+
+func TestClassifyPath(t *testing.T) {
+	for path, want := range map[string]schemas.RequestType{
+		"/v1/messages":              schemas.ResponsesRequest,
+		"/v1/messages?beta=true":    schemas.ResponsesRequest,
+		"/v1/messages/count_tokens": schemas.CountTokensRequest,
+		"/v1/complete":              schemas.TextCompletionRequest,
+		"/v1/messages/batches":      "",
+		"/v1/models":                "",
+	} {
+		if got := ClassifyPath(path); got != want {
+			t.Errorf("ClassifyPath(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+func TestExtractUsageReportsWebSearchToolUsage(t *testing.T) {
+	usage := ExtractUsage("/v1/messages", nil, []byte(`{"usage":{"input_tokens":5,"output_tokens":2,"server_tool_use":{"web_search_requests":3}}}`))
+	if usage == nil || usage.LLMUsage == nil || usage.LLMUsage.ToolUsage == nil || usage.LLMUsage.ToolUsage.WebSearch == nil {
+		t.Fatalf("missing web search tool usage: %+v", usage)
+	}
+	if got := usage.LLMUsage.ToolUsage.WebSearch.NumRequests; got != 3 {
+		t.Fatalf("web search requests = %d, want 3", got)
+	}
+	if usage.LLMUsage.CompletionTokensDetails == nil || usage.LLMUsage.CompletionTokensDetails.NumSearchQueries == nil || *usage.LLMUsage.CompletionTokensDetails.NumSearchQueries != 3 {
+		t.Fatalf("deprecated NumSearchQueries must still be set: %+v", usage.LLMUsage.CompletionTokensDetails)
+	}
+}

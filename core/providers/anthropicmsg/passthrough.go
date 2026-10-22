@@ -35,16 +35,15 @@ type Config struct {
 	Logger               schemas.Logger
 }
 
-func (c Config) requestURL(req *schemas.BifrostPassthroughRequest) string {
-	url := strings.TrimRight(c.Endpoint, "/") + req.Path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
-	}
-	return url
+// requestURL joins the passthrough path onto the provider endpoint, rejecting
+// paths that would leave the provider host.
+func (c Config) requestURL(req *schemas.BifrostPassthroughRequest) (string, error) {
+	return providerUtils.BuildPassthroughURL(c.Endpoint, req.Path, req.RawQuery)
 }
 
-func (c Config) setHeaders(ctx *schemas.BifrostContext, req *fasthttp.Request, key schemas.Key, safeHeaders map[string]string) {
+func (c Config) setHeaders(ctx *schemas.BifrostContext, req *fasthttp.Request, requestURL string, key schemas.Key, safeHeaders map[string]string) {
 	providerUtils.SetExtraHeaders(ctx, req, c.NetworkConfig.ExtraHeaders, nil)
+	providerUtils.StripCallerAuthForInsecureURL(requestURL, safeHeaders)
 	for name, value := range safeHeaders {
 		req.Header.Set(name, value)
 	}
@@ -72,6 +71,10 @@ func Passthrough(ctx *schemas.BifrostContext, client *fasthttp.Client, key schem
 	if err := providerUtils.CheckOperationAllowed(cfg.Provider, cfg.CustomProviderConfig, schemas.PassthroughRequest); err != nil {
 		return nil, err
 	}
+	requestURL, urlErr := cfg.requestURL(req)
+	if urlErr != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(urlErr.Error())
+	}
 
 	upstreamReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -79,8 +82,8 @@ func Passthrough(ctx *schemas.BifrostContext, client *fasthttp.Client, key schem
 	defer fasthttp.ReleaseRequest(upstreamReq)
 
 	upstreamReq.Header.SetMethod(req.Method)
-	upstreamReq.SetRequestURI(cfg.requestURL(req))
-	cfg.setHeaders(ctx, upstreamReq, key, req.SafeHeaders)
+	upstreamReq.SetRequestURI(requestURL)
+	cfg.setHeaders(ctx, upstreamReq, requestURL, key, req.SafeHeaders)
 	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, upstreamReq, cfg.Provider) {
 		upstreamReq.SetBody(req.Body)
 	}
@@ -116,6 +119,10 @@ func PassthroughStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostH
 	if err := providerUtils.CheckOperationAllowed(cfg.Provider, cfg.CustomProviderConfig, schemas.PassthroughStreamRequest); err != nil {
 		return nil, err
 	}
+	requestURL, urlErr := cfg.requestURL(req)
+	if urlErr != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(urlErr.Error())
+	}
 
 	startTime := time.Now()
 	upstreamReq := fasthttp.AcquireRequest()
@@ -124,8 +131,8 @@ func PassthroughStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostH
 	defer fasthttp.ReleaseRequest(upstreamReq)
 
 	upstreamReq.Header.SetMethod(req.Method)
-	upstreamReq.SetRequestURI(cfg.requestURL(req))
-	cfg.setHeaders(ctx, upstreamReq, key, req.SafeHeaders)
+	upstreamReq.SetRequestURI(requestURL)
+	cfg.setHeaders(ctx, upstreamReq, requestURL, key, req.SafeHeaders)
 	upstreamReq.Header.Set("Connection", "close")
 	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, upstreamReq, cfg.Provider) {
 		upstreamReq.SetBody(req.Body)
@@ -158,11 +165,7 @@ func PassthroughStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostH
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, cfg.NetworkConfig.StreamIdleTimeoutInSeconds)
 	var observer func([]byte) *schemas.BifrostPassthroughUsage
-	strippedPath := req.Path
-	if idx := strings.IndexByte(strippedPath, '?'); idx >= 0 {
-		strippedPath = strippedPath[:idx]
-	}
-	if strings.HasSuffix(strippedPath, "/messages") {
+	if ClassifyPath(req.Path) == schemas.ResponsesRequest {
 		usage := &StreamUsage{}
 		observer = usage.ObserveEvent
 	} else {

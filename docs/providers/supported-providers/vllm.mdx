@@ -122,6 +122,12 @@ The alias-level setting takes precedence when both are present. Count Tokens alw
 Authentication remains `Authorization: Bearer <key>` in both modes. Bifrost omits the header when the key value is empty.
 </Note>
 
+### Server tool support
+
+Anthropic's server and client tools (`web_search`, `web_fetch`, `code_execution`, `computer`, `bash`, `memory`, `text_editor`, `tool_search`, `mcp_toolset`) run on Anthropic-operated infrastructure, so a self-hosted vLLM server does not implement them. Bifrost drops them from the request rather than forwarding a tool the server will reject. Your own function tools are never affected.
+
+This matters most for clients that enable a built-in web search by default, which would otherwise fail every request.
+
 ---
 
 ## Getting started
@@ -143,6 +149,10 @@ Authentication remains `Authorization: Bearer <key>` in both modes. Bifrost omit
 By default, vLLM supports standard OpenAI chat completion parameters on `/v1/chat/completions`. For the full parameter reference, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions). Message types, tools, extra parameters, and streaming follow the shared OpenAI-compatible behavior.
 
 With `use_anthropic_endpoints: true`, Bifrost builds an Anthropic Messages request and sends it to `/v1/messages`. For request conversion behavior, see [Anthropic Chat Completions](/providers/supported-providers/anthropic#1-chat-completions).
+
+### Reasoning effort
+
+vLLM is a self-hosted OpenAI-compatible server. Bifrost forwards Chat Completions `reasoning_effort` and Responses `reasoning.effort` without applying OpenAI's model-name taxonomy, so values such as `xhigh` reach your checkpoint as-is. Whether a given value is accepted depends on the model loaded in vLLM (for example Qwen3.8 accepts `xhigh`, `medium`, and `low`, but not `high`).
 
 ---
 
@@ -234,6 +244,12 @@ Count Tokens uses vLLM's Anthropic-compatible `/v1/messages/count_tokens` endpoi
 **Severity**: High
 **Behavior**: vLLM resolves request routing from `vllm_key_config.url`.
 **Impact**: Requests fail without `vllm_key_config.url`, even if a provider-level `network_config.base_url` is present.
+</Accordion>
+
+<Accordion title="Reasoning effort is not remapped by model name">
+**Severity**: Low
+**Behavior**: Unlike hosted OpenAI, Bifrost does not rewrite `xhigh` to `high` for vLLM based on the checkpoint name.
+**Impact**: Send the effort values your loaded model actually supports. A value OpenAI would coerce (for example `xhigh` on a non-GPT-5.2 name) is forwarded unchanged and may 400 if that checkpoint rejects it.
 </Accordion>
 
 <Accordion title="Error responses with HTTP 200">

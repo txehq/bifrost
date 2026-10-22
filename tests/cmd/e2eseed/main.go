@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	e2eseed "github.com/capsohq/bifrost/tests/cmd/seed"
+	"github.com/capsohq/bifrost/tests/cmd/seed"
 )
 
 // main runs the OSS API e2e seed command.

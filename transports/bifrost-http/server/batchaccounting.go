@@ -12,7 +12,7 @@ import (
 	"github.com/capsohq/bifrost/framework/jobaccounting"
 	"github.com/capsohq/bifrost/plugins/governance"
 	"github.com/capsohq/bifrost/plugins/logging"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/google/uuid"
 )
 

@@ -163,6 +163,33 @@ Add the range **before** clicking **Discover endpoints** - the allowlist is read
 
 To remove a range later, reopen the same **Trusted Networks** sheet and delete the row.
 
+You can also declare the allowlist in `config.json` instead of the dashboard:
+
+```json
+{
+  "scim_config": {
+    "enabled": true,
+    "provider": "generic",
+    "trusted_networks": [{ "cidr": "10.20.0.0/16", "description": "On-prem Keycloak" }],
+    "config": { "...": "provider fields" }
+  }
+}
+```
+
+Or, on Helm:
+
+```yaml
+bifrost:
+  scim:
+    enabled: true
+    provider: "generic"
+    trustedNetworks:
+      - cidr: "10.20.0.0/16"
+        description: "On-prem Keycloak"
+```
+
+Declaring the key makes the file own the whole list: it replaces whatever is stored, and an explicit `[]` clears ranges added from the dashboard. Omit the key entirely to leave dashboard-managed ranges alone.
+
 </Step>
 
 <Step title="Fill in the provider configuration">
@@ -257,7 +284,7 @@ Review your full configuration - connection details, attribute mappings, and SCI
 
 ## How background sync works
 
-Bifrost refreshes active OIDC sessions every **15 minutes**. If a session cannot be refreshed, Bifrost checks with your IdP whether the user is still active; if the IdP reports the user as inactive, Bifrost decommissions that user locally.
+Bifrost refreshes each OIDC session when it expires (sessions last at least 30 minutes). If a session cannot be refreshed, Bifrost checks with your IdP whether the user is still active; if the IdP reports the user as inactive, Bifrost decommissions that user locally.
 
 For providers that support it, see [SCIM with Generic OIDC](./scim) to enable real-time user and group provisioning.
 

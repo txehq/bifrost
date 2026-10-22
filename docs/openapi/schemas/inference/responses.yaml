@@ -50,7 +50,12 @@ ResponsesRequest:
     background:
       type: boolean
     conversation:
-      type: string
+      oneOf:
+        - type: string
+        - type: object
+          properties:
+            id:
+              type: string
     context_management:
       $ref: "#/ContextManagement"
     include:
@@ -132,12 +137,17 @@ ResponsesMessage:
       description: |
         Tool call output. A plain string for function/custom/local-shell tool
         outputs, an array of content blocks for structured function tool
-        outputs, or a computer-tool screenshot object for computer_call_output.
+        outputs, an array of command results for shell_call_output, or a
+        computer-tool screenshot object for computer_call_output.
       oneOf:
         - type: string
         - type: array
           items:
             $ref: "#/ResponsesMessageContentBlock"
+        - type: array
+          description: Shell command results (shell_call_output), one per command.
+          items:
+            $ref: "#/ResponsesShellCallOutputContent"
         - type: object
           description: Computer tool call output (computer_screenshot).
           properties:
@@ -148,10 +158,14 @@ ResponsesMessage:
               type: string
             image_url:
               type: string
+    async:
+      type: boolean
     action:
       type: object
     error:
-      type: string
+      oneOf:
+        - type: string
+        - type: object
     queries:
       type: array
       items:
@@ -165,6 +179,37 @@ ResponsesMessage:
       items:
         $ref: "#/ResponsesReasoningSummary"
     encrypted_content:
+      type: string
+    environment:
+      type: object
+      description: Where a shell_call runs.
+      additionalProperties: true
+    max_output_length:
+      type: integer
+      description: Output length cap a shell_call_output was produced under.
+
+ResponsesShellCallOutputContent:
+  type: object
+  required:
+    - stdout
+    - stderr
+    - outcome
+  properties:
+    stdout:
+      type: string
+    stderr:
+      type: string
+    outcome:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum: [exit, timeout]
+        exit_code:
+          type: integer
+    created_by:
       type: string
 
 ResponsesMessageType:
@@ -181,6 +226,10 @@ ResponsesMessageType:
     - code_interpreter_call
     - local_shell_call
     - local_shell_call_output
+    - shell_call
+    - shell_call_output
+    - apply_patch_call
+    - apply_patch_call_output
     - mcp_call
     - custom_tool_call
     - custom_tool_call_output
@@ -402,6 +451,29 @@ ResponsesTool:
   type: object
   required:
     - type
+  # `environment` means different things per tool type: a display environment
+  # string for computer_use_preview, an execution environment object for shell.
+  allOf:
+    - if:
+        properties:
+          type:
+            const: computer_use_preview
+        required:
+          - type
+      then:
+        properties:
+          environment:
+            type: string
+    - if:
+        properties:
+          type:
+            const: shell
+        required:
+          - type
+      then:
+        properties:
+          environment:
+            $ref: "#/ResponsesToolShellEnvironment"
   properties:
     type:
       type: string
@@ -415,6 +487,7 @@ ResponsesTool:
         - code_interpreter
         - image_generation
         - local_shell
+        - shell
         - custom
         - web_search_preview
         - memory
@@ -423,12 +496,16 @@ ResponsesTool:
       type: string
     description:
       type: string
+    async:
+      type: boolean
     cache_control:
       $ref: "./common.yaml#/CacheControl"
     parameters:
       $ref: "./chat.yaml#/ToolFunctionParameters"
     strict:
       type: boolean
+    output_schema:
+      type: object
     vector_store_ids:
       type: array
       items:
@@ -444,7 +521,12 @@ ResponsesTool:
     display_width:
       type: integer
     environment:
-      type: string
+      description: |
+        For `computer_use_preview`, the display environment as a string. For
+        `shell`, where commands run, as an object.
+      oneOf:
+        - type: string
+        - $ref: "#/ResponsesToolShellEnvironment"
     enable_zoom:
       type: boolean
     search_context_size:
@@ -455,8 +537,14 @@ ResponsesTool:
       type: string
     server_url:
       type: string
+    tunnel_id:
+      type: string
     allowed_tools:
-      type: object
+      oneOf:
+        - type: array
+          items:
+            type: string
+        - type: object
     authorization:
       type: string
     connector_id:
@@ -491,6 +579,86 @@ ResponsesTool:
       type: string
     format:
       type: object
+
+ResponsesToolShellEnvironment:
+  type: object
+  description: Where a `shell` tool's commands run.
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      enum: [local, container_auto, container_reference]
+    file_ids:
+      type: array
+      description: Files to mount (`container_auto`).
+      items:
+        type: string
+    memory_limit:
+      type: string
+      description: Container memory limit (`container_auto`), e.g. `1g`, `4g`, `16g` or `64g`.
+    network_policy:
+      type: object
+      description: Outbound network policy (`container_auto`).
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum: [disabled, allowlist]
+        allowed_domains:
+          type: array
+          items:
+            type: string
+        domain_secrets:
+          type: array
+          items:
+            type: object
+            required: [domain, name, value]
+            properties:
+              domain:
+                type: string
+              name:
+                type: string
+              value:
+                type: string
+    skills:
+      type: array
+      description: |
+        Skills available to the shell (`local` and `container_auto`): a local
+        skill (`name`, `description`, `path`), a `skill_reference` (`skill_id`,
+        `version`) or an `inline` bundle (`source`).
+      items:
+        type: object
+        properties:
+          type:
+            type: string
+            enum: [skill_reference, inline]
+          name:
+            type: string
+          description:
+            type: string
+          path:
+            type: string
+          skill_id:
+            type: string
+          version:
+            type: string
+          source:
+            type: object
+            required: [type, media_type, data]
+            properties:
+              type:
+                type: string
+                enum: [base64]
+              media_type:
+                type: string
+                enum: [application/zip]
+              data:
+                type: string
+    container_id:
+      type: string
+      description: Existing container to run in (`container_reference`).
 
 ResponsesReasoningSummary:
   type: object
@@ -576,6 +744,9 @@ ResponsesResponse:
       type: string
     usage:
       $ref: "#/ResponsesResponseUsage"
+    tool_usage:
+      $ref: "./usage.yaml#/ToolUsage"
+      description: Server-side tool call counts.
     extra_fields:
       $ref: "./common.yaml#/BifrostResponseExtraFields"
     search_results:
@@ -665,6 +836,8 @@ ResponsesResponseOutputTokens:
       type: integer
     num_search_queries:
       type: integer
+      deprecated: true
+      description: Deprecated, use tool_usage.web_search.num_requests. Will be removed in 3.0.0.
 
 ResponsesStreamResponse:
   type: object

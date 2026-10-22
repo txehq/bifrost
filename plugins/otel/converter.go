@@ -96,7 +96,7 @@ func hexToBytes(hexStr string, length int) []byte {
 // convertTraceToResourceSpan converts a Bifrost trace to OTEL ResourceSpan for the given
 // profile service name. Span filtering and instance attributes are shared across profiles;
 // only the resource service name differs per profile.
-func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool, groupTracesBySession bool, disableRootSpanContent bool) *ResourceSpan {
+func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schemas.Trace, requestHeaders []string, disableContentLogging bool, exportRawPayloads bool, groupTracesBySession bool, disableRootSpanContent bool) *ResourceSpan {
 	reparent := p.pluginSpanFilter.BuildReparentMapWithOverhead(trace.Spans, p.exportOverheadSpans)
 	filteredHeaders := schemas.FilterHeaders(trace.RequestHeaders, requestHeaders)
 
@@ -104,7 +104,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 	// attribute by default. Surface it on the root span as the OTEL-conventional session.id
 	// whenever present, so traces can always be filtered/correlated by session — independent
 	// of grouping.
-	sessionID := getStringAttr(trace.Attributes, schemas.TraceAttrSessionID)
+	sessionID := schemas.GetStringAttr(trace.Attributes, schemas.TraceAttrSessionID)
 
 	// Session grouping: when enabled and this request carries an x-bf-session-id but no
 	// inbound W3C traceparent (root span has no parent), pin every span to a trace ID
@@ -118,6 +118,11 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 		traceID = sessionTraceID(sessionID)
 	}
 
+	// A virtual key that turned content logging off marks the root span; it tightens this profile's
+	// own flag for this trace only and, like the flag, covers content attributes and raw payloads.
+	// The mark is never written as false, so it cannot loosen a profile that disables content.
+	traceDisableContent := disableContentLogging || schemas.ContentLoggingDisabledForTrace(trace)
+
 	otelSpans := make([]*Span, 0, len(trace.Spans))
 	for _, span := range trace.Spans {
 		if !p.pluginSpanFilter.ShouldExportSpanWithOverhead(span, p.exportOverheadSpans) {
@@ -125,8 +130,8 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 		}
 		// disableRootSpanContent drops content from the root span only (the framework duplicates
 		// input/output onto it for trace-level display); child spans keep their full content.
-		spanDisableContent := disableContentLogging || (disableRootSpanContent && span == trace.RootSpan)
-		otelSpan := convertSpanToOTELSpan(traceID, span, spanDisableContent)
+		spanDisableContent := traceDisableContent || (disableRootSpanContent && span == trace.RootSpan)
+		otelSpan := convertSpanToOTELSpan(traceID, span, spanDisableContent, exportRawPayloads)
 		// If the span's direct parent was filtered, rewrite its parent ID to the
 		// nearest exported ancestor so the hierarchy stays connected.
 		if effectiveParent, ok := reparent[span.ParentID]; ok {
@@ -170,7 +175,7 @@ func (p *OtelPlugin) convertTraceToResourceSpan(serviceName string, trace *schem
 }
 
 // convertSpanToOTELSpan converts a single Bifrost span to OTEL format
-func convertSpanToOTELSpan(traceID string, span *schemas.Span, disableContentLogging bool) *Span {
+func convertSpanToOTELSpan(traceID string, span *schemas.Span, disableContentLogging bool, exportRawPayloads bool) *Span {
 	otelSpan := &Span{
 		TraceId:           hexToBytes(traceID, 16),
 		SpanId:            hexToBytes(span.SpanID, 8),
@@ -179,8 +184,19 @@ func convertSpanToOTELSpan(traceID string, span *schemas.Span, disableContentLog
 		StartTimeUnixNano: uint64(span.StartTime.UnixNano()),
 		EndTimeUnixNano:   uint64(span.EndTime.UnixNano()),
 		Attributes:        convertAttributesToKeyValues(span.Attributes, disableContentLogging),
-		Status:            convertSpanStatus(span.Status, span.StatusMsg),
+		Status:            convertSpanStatus(span.Status, exportedStatusMessage(span, disableContentLogging)),
 		Events:            convertSpanEvents(span.Events, disableContentLogging),
+	}
+
+	// Raw bodies never live in Attributes, so export always requires an opt-in.
+	if exportRawPayloads && !disableContentLogging {
+		request, response := span.RawPayloads()
+		if request != "" {
+			otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrBifrostRawRequest, request))
+		}
+		if response != "" {
+			otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrBifrostRawResponse, response))
+		}
 	}
 
 	// Set parent span ID if present
@@ -355,6 +371,8 @@ func convertSpanKind(kind schemas.SpanKind) tracepb.Span_SpanKind {
 		return tracepb.Span_SPAN_KIND_CLIENT
 	case schemas.SpanKindMCPClient:
 		return tracepb.Span_SPAN_KIND_CLIENT
+	case schemas.SpanKindA2AOperation:
+		return tracepb.Span_SPAN_KIND_CLIENT
 	case schemas.SpanKindEmbedding:
 		return tracepb.Span_SPAN_KIND_CLIENT
 	case schemas.SpanKindSpeech:
@@ -376,6 +394,16 @@ func convertSpanStatus(status schemas.SpanStatus, msg string) *tracepb.Status {
 	default:
 		return &tracepb.Status{Code: tracepb.Status_STATUS_CODE_UNSET}
 	}
+}
+
+// exportedStatusMessage is the status message a span exports. An A2A operation's
+// message is the upstream agent's error text, which can echo the request it was
+// given, so it is withheld when content is suppressed; the error status remains.
+func exportedStatusMessage(span *schemas.Span, disableContentLogging bool) string {
+	if disableContentLogging && span.Kind == schemas.SpanKindA2AOperation {
+		return ""
+	}
+	return span.StatusMsg
 }
 
 // convertSpanEvents converts Bifrost span events to OTEL events

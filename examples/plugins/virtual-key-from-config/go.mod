@@ -1,6 +1,6 @@
 module github.com/capsohq/bifrost/examples/plugins/virtual-key-from-config
 
-go 1.27.0
+go 1.27.3
 
 require github.com/capsohq/bifrost/core v1.7.11
 

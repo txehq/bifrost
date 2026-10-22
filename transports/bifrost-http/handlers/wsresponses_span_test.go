@@ -14,8 +14,8 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/framework/tracing"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
-	bfws "github.com/capsohq/bifrost/transports/bifrost-http/websocket"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
+	bfws "github.com/capsohq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/fasthttp/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -82,8 +82,8 @@ func (p *wsLLMSpanCapture) Inject(_ context.Context, trace *schemas.Trace) error
 			p.model = span.Attributes[schemas.AttrRequestModel]
 			p.total = span.Attributes[schemas.AttrTotalTokens]
 			p.status = span.Status
-			p.statusCode = span.Attributes["status_code"]
-			p.errAttr = span.Attributes["error"]
+			p.statusCode = span.Attributes[schemas.AttrHTTPResponseStatusCode]
+			p.errAttr = span.Attributes[schemas.AttrError]
 		}
 	}
 	return nil

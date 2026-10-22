@@ -38,6 +38,9 @@ func TestPrepareEmbeddingRequest_MultimodalVolcengineFields(t *testing.T) {
 	if bifrostReq.Model != "doubao-embedding-vision-251215" {
 		t.Fatalf("expected model doubao-embedding-vision-251215, got %s", bifrostReq.Model)
 	}
+	if len(bifrostReq.Input) != 1 || len(bifrostReq.Input[0].Content) != 1 || bifrostReq.Input[0].Content[0].Type != schemas.EmbeddingContentPartTypeText {
+		t.Fatalf("expected one text input item, got %+v", bifrostReq.Input)
+	}
 
 	if bifrostReq.Params.Instructions == nil || *bifrostReq.Params.Instructions == "" {
 		t.Fatal("expected instructions to be parsed")
@@ -79,7 +82,7 @@ func TestPrepareEmbeddingRequest_ExtractsVolcengineInstructionsConfig(t *testing
 	if bifrostReq == nil || bifrostReq.Params == nil {
 		t.Fatal("expected non-nil bifrost request and params")
 	}
-	if bifrostReq.Input == nil || bifrostReq.Input.Text == nil || *bifrostReq.Input.Text != "hello" {
+	if len(bifrostReq.Input) != 1 || len(bifrostReq.Input[0].Content) != 1 || bifrostReq.Input[0].Content[0].Text == nil || *bifrostReq.Input[0].Content[0].Text != "hello" {
 		t.Fatalf("expected string input to be parsed, got %+v", bifrostReq.Input)
 	}
 	if bifrostReq.Params.ExtraParams == nil {
@@ -104,5 +107,64 @@ func TestPrepareEmbeddingRequest_ExtractsVolcengineInstructionsConfig(t *testing
 	}
 	if bifrostReq.Provider != schemas.Volcengine {
 		t.Fatalf("expected provider volcengine, got %s", bifrostReq.Provider)
+	}
+}
+
+// The flat Volcengine-native multimodal input is one input item: its parts are
+// fused into a single vector rather than embedded one per part.
+func TestPrepareEmbeddingRequest_FlatMultimodalPartsAreOneItem(t *testing.T) {
+	t.Parallel()
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{
+		"model": "volcengine/doubao-embedding-vision-250615",
+		"input": [
+			{"type": "text", "text": "a photo of a cat"},
+			{"type": "image_url", "image_url": {"url": "https://example.com/cat.jpg"}},
+			{"type": "video_url", "video_url": {"url": "https://example.com/cat.mp4"}}
+		]
+	}`)
+
+	_, bifrostReq, err := prepareEmbeddingRequest(ctx, nil)
+	if err != nil {
+		t.Fatalf("prepareEmbeddingRequest returned error: %v", err)
+	}
+	if len(bifrostReq.Input) != 1 {
+		t.Fatalf("expected one input item, got %d", len(bifrostReq.Input))
+	}
+	content := bifrostReq.Input[0].Content
+	if len(content) != 3 {
+		t.Fatalf("expected three parts, got %+v", content)
+	}
+	if content[1].Type != schemas.EmbeddingContentPartTypeImage || content[1].Image == nil || content[1].Image.URL == nil || *content[1].Image.URL != "https://example.com/cat.jpg" {
+		t.Fatalf("unexpected image part: %+v", content[1])
+	}
+	if content[2].Type != schemas.EmbeddingContentPartTypeVideo || content[2].Video == nil || content[2].Video.URL == nil || *content[2].Video.URL != "https://example.com/cat.mp4" {
+		t.Fatalf("unexpected video part: %+v", content[2])
+	}
+}
+
+// Upstream's item shapes still decode one item per entry next to the flat form.
+func TestPrepareEmbeddingRequest_ItemArraysStayPerItem(t *testing.T) {
+	t.Parallel()
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{
+		"model": "openai/text-embedding-3-small",
+		"input": [
+			[{"type": "text", "text": "first"}],
+			{"content": [{"type": "text", "text": "second"}], "params": {"task_type": "RETRIEVAL_QUERY"}}
+		]
+	}`)
+
+	_, bifrostReq, err := prepareEmbeddingRequest(ctx, nil)
+	if err != nil {
+		t.Fatalf("prepareEmbeddingRequest returned error: %v", err)
+	}
+	if len(bifrostReq.Input) != 2 {
+		t.Fatalf("expected two input items, got %d", len(bifrostReq.Input))
+	}
+	if bifrostReq.Input[1].Params == nil || bifrostReq.Input[1].Params.TaskType == nil || *bifrostReq.Input[1].Params.TaskType != "RETRIEVAL_QUERY" {
+		t.Fatalf("expected per-item params on the second item, got %+v", bifrostReq.Input[1].Params)
 	}
 }

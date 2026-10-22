@@ -51,16 +51,34 @@ type streamEvent struct {
 	Message *streamMessage `json:"message,omitempty"`
 }
 
-// ExtractUsage extracts billing usage from a native Anthropic response.
-func ExtractUsage(path string, _, body []byte) *schemas.BifrostPassthroughUsage {
+// ClassifyPath maps a native Anthropic path to the Bifrost request type it
+// addresses: /messages is a Responses-shaped request, /messages/count_tokens a
+// token count and /complete a legacy text completion. A query string is
+// ignored; anything else returns "". Usage extraction and passthrough log
+// parsing both dispatch on this.
+func ClassifyPath(path string) schemas.RequestType {
 	if idx := strings.IndexByte(path, '?'); idx >= 0 {
 		path = path[:idx]
 	}
 
 	switch {
 	case strings.HasSuffix(path, "/messages"):
-		return extractMessagesUsage(body)
+		return schemas.ResponsesRequest
+	case strings.HasSuffix(path, "/messages/count_tokens"):
+		return schemas.CountTokensRequest
 	case strings.HasSuffix(path, "/complete"):
+		return schemas.TextCompletionRequest
+	default:
+		return ""
+	}
+}
+
+// ExtractUsage extracts billing usage from a native Anthropic response.
+func ExtractUsage(path string, _, body []byte) *schemas.BifrostPassthroughUsage {
+	switch ClassifyPath(path) {
+	case schemas.ResponsesRequest:
+		return extractMessagesUsage(body)
+	case schemas.TextCompletionRequest:
 		return extractCompleteUsage(body)
 	default:
 		return nil
@@ -105,6 +123,7 @@ func buildUsage(au *messagesUsage) *schemas.BifrostPassthroughUsage {
 	if au.ServerToolUse != nil && au.ServerToolUse.WebSearchRequests > 0 {
 		n := au.ServerToolUse.WebSearchRequests
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{NumSearchQueries: &n}
+		usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: n}}
 	}
 	if au.OutputTokensDetails != nil && au.OutputTokensDetails.ThinkingTokens > 0 {
 		if usage.CompletionTokensDetails == nil {

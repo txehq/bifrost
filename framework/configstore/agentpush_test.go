@@ -1,0 +1,471 @@
+package configstore
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/configstore/tables"
+	"github.com/stretchr/testify/require"
+)
+
+func createPushFixtureAgent(t *testing.T, store *RDBConfigStore) {
+	t.Helper()
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateAgentRegistration(context.Background(), &schemas.AgentRegistration{Name: "fixture", AgentCardURL: "https://example.com", Enabled: true, CreatedAt: now, UpdatedAt: now}))
+}
+
+func TestAgentPushConfigCRUD(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	config := &schemas.AgentPushConfig{
+		AgentName:        "fixture",
+		TaskID:           "task-1",
+		ConfigID:         "cfg-1",
+		Tenant:           "downstream-tenant",
+		URL:              "https://client.example/callback",
+		Token:            &schemas.SecretVar{Val: "client-token", SecretType: schemas.SecretTypePlainText},
+		AuthScheme:       "Bearer",
+		AuthCredentials:  &schemas.SecretVar{Val: "client-credential", SecretType: schemas.SecretTypePlainText},
+		IngressTokenHash: "hash-1",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	require.NoError(t, store.SaveAgentPushConfig(ctx, config))
+	// The caller's secrets must remain plaintext after the row hook encrypted its copy.
+	require.Equal(t, "client-token", config.Token.GetValue())
+
+	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "downstream-tenant", got.Tenant)
+	require.Equal(t, "https://client.example/callback", got.URL)
+	require.Equal(t, "client-token", got.Token.GetValue())
+	require.Equal(t, "client-credential", got.AuthCredentials.GetValue())
+	require.Equal(t, "hash-1", got.IngressTokenHash)
+
+	byHash, err := store.GetAgentPushConfigByIngressTokenHash(ctx, "fixture", "hash-1")
+	require.NoError(t, err)
+	require.NotNil(t, byHash)
+	require.Equal(t, "cfg-1", byHash.ConfigID)
+	missing, err := store.GetAgentPushConfigByIngressTokenHash(ctx, "fixture", "other")
+	require.NoError(t, err)
+	require.Nil(t, missing)
+
+	// Re-registering the same key replaces the callback (upsert semantics).
+	config.URL = "https://client.example/replaced"
+	config.IngressTokenHash = "hash-2"
+	require.NoError(t, store.SaveAgentPushConfig(ctx, config))
+	listed, err := store.ListAgentPushConfigs(ctx, "fixture", "task-1")
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	require.Equal(t, "https://client.example/replaced", listed[0].URL)
+	require.Equal(t, "hash-2", listed[0].IngressTokenHash)
+
+	page, total, err := store.ListAgentPushConfigsPaginated(ctx, schemas.AgentPushConfigQuery{AgentNames: []string{"fixture"}, TaskID: "task-", ConfigID: "cfg-", URL: "replaced", Limit: 25})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, total)
+	require.Len(t, page, 1)
+	require.Equal(t, "fixture", page[0].AgentName)
+	require.Equal(t, "task-1", page[0].TaskID)
+	require.Equal(t, "cfg-1", page[0].ConfigID)
+	names, err := store.ListAgentPushConfigAgentNames(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []string{"fixture"}, names)
+
+	deleted, err := store.DeleteAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.True(t, deleted)
+	deleted, err = store.DeleteAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.False(t, deleted)
+	gone, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Nil(t, gone)
+}
+
+func TestPendingAgentPushConfigSettlementIsExact(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	for _, pending := range []struct {
+		taskID string
+		hash   string
+	}{
+		{taskID: "__bifrost_pending__:one", hash: "hash-one"},
+		{taskID: "__bifrost_pending__:two", hash: "hash-two"},
+	} {
+		require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{
+			AgentName:        "fixture",
+			TaskID:           pending.taskID,
+			ConfigID:         "shared-config",
+			URL:              "https://client.example/callback",
+			IngressTokenHash: pending.hash,
+			CreatedAt:        now,
+			UpdatedAt:        now,
+		}))
+	}
+
+	deleted, err := store.DeletePendingAgentPushConfig(ctx, "fixture", "hash-one", "__bifrost_pending__:one")
+	require.NoError(t, err)
+	require.True(t, deleted)
+	remaining, err := store.GetAgentPushConfigByIngressTokenHash(ctx, "fixture", "hash-two")
+	require.NoError(t, err)
+	require.NotNil(t, remaining)
+
+	require.NoError(t, store.BindAgentPushConfigTask(ctx, "fixture", "hash-two", "__bifrost_pending__:two", "task-two"))
+	bound, err := store.GetAgentPushConfig(ctx, "fixture", "task-two", "shared-config")
+	require.NoError(t, err)
+	require.NotNil(t, bound)
+	require.Equal(t, "hash-two", bound.IngressTokenHash)
+
+	deleted, err = store.DeletePendingAgentPushConfig(ctx, "fixture", "hash-two", "__bifrost_pending__:two")
+	require.NoError(t, err)
+	require.False(t, deleted)
+	bound, err = store.GetAgentPushConfig(ctx, "fixture", "task-two", "shared-config")
+	require.NoError(t, err)
+	require.NotNil(t, bound)
+}
+
+func TestAgentPushDeliveryOutbox(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	delivery := &schemas.AgentPushDelivery{
+		ID:            "digest-1",
+		AgentName:     "fixture",
+		TaskID:        "task-1",
+		ConfigID:      "cfg-1",
+		Payload:       `{"kind":"status-update"}`,
+		Status:        schemas.AgentPushDeliveryStatusPending,
+		NextAttemptAt: now,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	created, err := store.CreateAgentPushDeliveryIfNotExists(ctx, delivery)
+	require.NoError(t, err)
+	require.True(t, created)
+	// A retransmission with the same digest deduplicates.
+	created, err = store.CreateAgentPushDeliveryIfNotExists(ctx, delivery)
+	require.NoError(t, err)
+	require.False(t, created)
+
+	due, err := store.ListDueAgentPushDeliveries(ctx, now.Add(time.Second), 10)
+	require.NoError(t, err)
+	require.Len(t, due, 1)
+	require.Equal(t, "digest-1", due[0].ID)
+
+	for _, limit := range []int{0, -1} {
+		due, err = store.ListDueAgentPushDeliveries(ctx, now.Add(time.Second), limit)
+		require.EqualError(t, err, "delivery batch limit must be positive")
+		require.Nil(t, due)
+	}
+
+	// A row scheduled in the future is not due.
+	future := *delivery
+	future.ID = "digest-2"
+	future.NextAttemptAt = now.Add(time.Hour)
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, &future)
+	require.NoError(t, err)
+	due, err = store.ListDueAgentPushDeliveries(ctx, now.Add(time.Second), 10)
+	require.NoError(t, err)
+	require.Len(t, due, 1)
+
+	// Recording a dead outcome removes the row from the due set.
+	leaseUntil := time.Now().UTC().Add(time.Minute)
+	claimed, err := store.ClaimAgentPushDelivery(ctx, delivery.ID, "runner-1", leaseUntil)
+	require.NoError(t, err)
+	require.NotNil(t, claimed)
+	delivery.Status = schemas.AgentPushDeliveryStatusDead
+	delivery.Attempts = 3
+	delivery.LastError = "downstream returned 500"
+	delivery.UpdatedAt = time.Now().UTC()
+	require.NoError(t, store.UpdateAgentPushDeliveryOutcome(ctx, delivery, "runner-1", leaseUntil))
+	due, err = store.ListDueAgentPushDeliveries(ctx, now.Add(time.Second), 10)
+	require.NoError(t, err)
+	require.Empty(t, due)
+}
+
+func TestConcurrentAgentPushDeliveryClaimHasOneWinner(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	sqlDB, err := store.DB().DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	created, err := store.CreateAgentPushDeliveryIfNotExists(ctx, &schemas.AgentPushDelivery{
+		ID: "claim-race", AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1",
+		Payload: `{}`, Status: schemas.AgentPushDeliveryStatusPending, NextAttemptAt: now,
+		CreatedAt: now, UpdatedAt: now,
+	})
+	require.NoError(t, err)
+	require.True(t, created)
+
+	const contenders = 8
+	start := make(chan struct{})
+	results := make(chan *schemas.AgentPushDelivery, contenders)
+	errors := make(chan error, contenders)
+	for i := range contenders {
+		go func() {
+			<-start
+			won, claimErr := store.ClaimAgentPushDelivery(ctx, "claim-race", fmt.Sprintf("runner-%d", i), now.Add(time.Minute))
+			results <- won
+			errors <- claimErr
+		}()
+	}
+	close(start)
+	wins := 0
+	for range contenders {
+		require.NoError(t, <-errors)
+		if <-results != nil {
+			wins++
+		}
+	}
+	require.Equal(t, 1, wins)
+}
+
+func TestAgentPushDeliveryClaimAndFence(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	delivery := &schemas.AgentPushDelivery{
+		ID: "claimed-delivery", AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1",
+		Payload: `{}`, Status: schemas.AgentPushDeliveryStatusPending, NextAttemptAt: now,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	created, err := store.CreateAgentPushDeliveryIfNotExists(ctx, delivery)
+	require.NoError(t, err)
+	require.True(t, created)
+
+	firstLease := now.Add(time.Minute)
+	claimed, err := store.ClaimAgentPushDelivery(ctx, delivery.ID, "runner-1", firstLease)
+	require.NoError(t, err)
+	require.NotNil(t, claimed)
+	claimed, err = store.ClaimAgentPushDelivery(ctx, delivery.ID, "runner-2", now.Add(2*time.Minute))
+	require.NoError(t, err)
+	require.Nil(t, claimed)
+
+	due, err := store.ListDueAgentPushDeliveries(ctx, now.Add(time.Second), 10)
+	require.NoError(t, err)
+	require.Empty(t, due)
+
+	expired := now.Add(-time.Second)
+	require.NoError(t, store.DB().WithContext(ctx).Model(&tables.TableAgentPushDelivery{}).
+		Where("id = ?", delivery.ID).
+		Updates(map[string]any{"attempts": 1, "last_error": "first failure", "claimed_until": expired}).Error)
+	secondLease := now.Add(2 * time.Minute)
+	claimed, err = store.ClaimAgentPushDelivery(ctx, delivery.ID, "runner-2", secondLease)
+	require.NoError(t, err)
+	require.NotNil(t, claimed)
+	require.Equal(t, 1, claimed.Attempts)
+	require.Equal(t, "first failure", claimed.LastError)
+
+	staleOutcome := *delivery
+	staleOutcome.Status = schemas.AgentPushDeliveryStatusDead
+	staleOutcome.Attempts = 1
+	staleOutcome.UpdatedAt = now.Add(time.Second)
+	err = store.UpdateAgentPushDeliveryOutcome(ctx, &staleOutcome, "runner-1", firstLease)
+	require.EqualError(t, err, "agent push delivery not found or no longer owned by caller")
+
+	var row tables.TableAgentPushDelivery
+	require.NoError(t, store.DB().WithContext(ctx).First(&row, "id = ?", delivery.ID).Error)
+	require.Equal(t, schemas.AgentPushDeliveryStatusPending, row.Status)
+	require.Equal(t, "runner-2", row.ClaimedBy)
+	require.NotNil(t, row.ClaimedUntil)
+
+	winningOutcome := *delivery
+	winningOutcome.Status = schemas.AgentPushDeliveryStatusDelivered
+	winningOutcome.Attempts = 1
+	winningOutcome.UpdatedAt = now.Add(2 * time.Second)
+	require.NoError(t, store.UpdateAgentPushDeliveryOutcome(ctx, &winningOutcome, "runner-2", secondLease))
+	row = tables.TableAgentPushDelivery{}
+	require.NoError(t, store.DB().WithContext(ctx).First(&row, "id = ?", delivery.ID).Error)
+	require.Equal(t, schemas.AgentPushDeliveryStatusDelivered, row.Status)
+	require.Equal(t, 1, row.Attempts)
+	require.Empty(t, row.ClaimedBy)
+	require.Nil(t, row.ClaimedUntil)
+}
+
+func TestPruneAgentPushDeliveries(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	cutoff := time.Now().UTC().Add(-7 * 24 * time.Hour).Truncate(time.Second)
+	for _, status := range []string{schemas.AgentPushDeliveryStatusDelivered, schemas.AgentPushDeliveryStatusDead, schemas.AgentPushDeliveryStatusPending} {
+		for _, age := range []struct {
+			name      string
+			updatedAt time.Time
+			removed   bool
+		}{
+			{"old", cutoff.Add(-time.Second), status != schemas.AgentPushDeliveryStatusPending},
+			{"boundary", cutoff, false},
+			{"recent", cutoff.Add(time.Second), false},
+		} {
+			t.Run(status+"/"+age.name, func(t *testing.T) {
+				delivery := &schemas.AgentPushDelivery{
+					ID: status + "-" + age.name, AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1",
+					Status: status, Payload: `{}`, NextAttemptAt: cutoff,
+					CreatedAt: cutoff.Add(-24 * time.Hour), UpdatedAt: age.updatedAt,
+				}
+				created, err := store.CreateAgentPushDeliveryIfNotExists(ctx, delivery)
+				require.NoError(t, err)
+				require.True(t, created)
+				require.NoError(t, store.PruneAgentPushDeliveries(ctx, cutoff))
+				// Reinsertion proves deletion, or continued deduplication for retained rows.
+				created, err = store.CreateAgentPushDeliveryIfNotExists(ctx, delivery)
+				require.NoError(t, err)
+				require.Equal(t, age.removed, created)
+			})
+		}
+	}
+}
+
+// TestSaveAgentPushConfigRefusesAnotherTenantsRow pins that the upsert never
+// replaces a push config owned by a different tenant, even when two registrations
+// race past the caller's own check.
+func TestSaveAgentPushConfigRefusesAnotherTenantsRow(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	owned := &schemas.AgentPushConfig{AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "tenant-a", URL: "https://a.example/callback", IngressTokenHash: "hash-a", CreatedAt: now, UpdatedAt: now}
+	require.NoError(t, store.SaveAgentPushConfig(ctx, owned))
+
+	intruder := *owned
+	intruder.Tenant = "tenant-b"
+	intruder.URL = "https://b.example/callback"
+	intruder.IngressTokenHash = "hash-b"
+	require.ErrorIs(t, store.SaveAgentPushConfig(ctx, &intruder), ErrAgentPushConfigTenantConflict)
+
+	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "tenant-a", got.Tenant)
+	require.Equal(t, "https://a.example/callback", got.URL)
+	require.Equal(t, "hash-a", got.IngressTokenHash)
+
+	// The owning tenant still replaces its own callback.
+	owned.URL = "https://a.example/replaced"
+	require.NoError(t, store.SaveAgentPushConfig(ctx, owned))
+	got, err = store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "https://a.example/replaced", got.URL)
+}
+
+// TestBindAgentPushConfigTaskReplacesExistingRegistration covers a follow-up
+// send that embeds an existing task's config ID: binding replaces the earlier
+// registration and rotates its ingress token instead of colliding with the
+// (agent, task, config) key. Another tenant's row is never replaced.
+func TestBindAgentPushConfigTaskReplacesExistingRegistration(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	save := func(taskID, tenant, url, hash string) {
+		t.Helper()
+		require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{AgentName: "fixture", TaskID: taskID, ConfigID: "cfg-1", Tenant: tenant, URL: url, IngressTokenHash: hash, CreatedAt: now, UpdatedAt: now}))
+	}
+	save("task-1", "tenant-a", "https://a.example/first", "hash-old")
+	save("__bifrost_pending__:one", "tenant-a", "https://a.example/second", "hash-new")
+
+	require.NoError(t, store.BindAgentPushConfigTask(ctx, "fixture", "hash-new", "__bifrost_pending__:one", "task-1"))
+	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "https://a.example/second", got.URL)
+	require.Equal(t, "hash-new", got.IngressTokenHash)
+	stale, err := store.GetAgentPushConfigByIngressTokenHash(ctx, "fixture", "hash-old")
+	require.NoError(t, err)
+	require.Nil(t, stale, "the replaced registration's ingress token must stop authenticating")
+	pending, err := store.GetAgentPushConfigByIngressTokenHash(ctx, "fixture", "hash-new")
+	require.NoError(t, err)
+	require.Equal(t, "task-1", pending.TaskID)
+
+	// A pending row from another tenant must not replace tenant-a's registration.
+	save("__bifrost_pending__:two", "tenant-b", "https://b.example/callback", "hash-b")
+	require.ErrorIs(t, store.BindAgentPushConfigTask(ctx, "fixture", "hash-b", "__bifrost_pending__:two", "task-1"), ErrAgentPushConfigTenantConflict)
+	got, err = store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "tenant-a", got.Tenant)
+	require.Equal(t, "hash-new", got.IngressTokenHash)
+
+	// Binding a row that is no longer pending is a no-op.
+	require.NoError(t, store.BindAgentPushConfigTask(ctx, "fixture", "hash-new", "__bifrost_pending__:one", "task-1"))
+}
+
+// TestAgentPushDeliveryKeepsItsRegistrationHash: the registration a delivery was
+// accepted for survives the round trip through the outbox, so the relay can
+// refuse a delivery whose registration was replaced.
+func TestAgentPushDeliveryKeepsItsRegistrationHash(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	_, err := store.CreateAgentPushDeliveryIfNotExists(ctx, &schemas.AgentPushDelivery{
+		ID: "bound", AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", RegistrationHash: "registration-a",
+		Payload: `{"kind":"status-update"}`, Status: schemas.AgentPushDeliveryStatusPending,
+		NextAttemptAt: now, CreatedAt: now, UpdatedAt: now,
+	})
+	require.NoError(t, err)
+	due, err := store.ListDueAgentPushDeliveries(ctx, now.Add(time.Second), 10)
+	require.NoError(t, err)
+	require.Len(t, due, 1)
+	require.Equal(t, "registration-a", due[0].RegistrationHash)
+	claimed, err := store.ClaimAgentPushDelivery(ctx, "bound", "relay-1", now.Add(time.Minute))
+	require.NoError(t, err)
+	require.NotNil(t, claimed)
+	require.Equal(t, "registration-a", claimed.RegistrationHash)
+}
+
+// TestAgentPushDeliveriesStayInOrderPerRegistration: deliveries for one
+// registration are delivered in the order they were accepted. While an earlier
+// one waits on its retry backoff, a later one (an append after a replacement)
+// is neither listed nor claimable, so it cannot overtake it; once the earlier
+// one settles, the later one is due again.
+func TestAgentPushDeliveriesStayInOrderPerRegistration(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	delivery := func(id string, created, next time.Time) *schemas.AgentPushDelivery {
+		return &schemas.AgentPushDelivery{
+			ID: id, AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Payload: `{"kind":"artifact-update"}`,
+			Status: schemas.AgentPushDeliveryStatusPending, NextAttemptAt: next, CreatedAt: created, UpdatedAt: created,
+		}
+	}
+	// The replacement failed once and backs off; the append behind it is due now.
+	_, err := store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("replacement", now.Add(-time.Minute), now.Add(time.Minute)))
+	require.NoError(t, err)
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("append", now.Add(-time.Second), now.Add(-time.Second)))
+	require.NoError(t, err)
+	// Another registration's delivery is not held behind it.
+	other := delivery("other-config", now.Add(-time.Second), now.Add(-time.Second))
+	other.ConfigID = "cfg-2"
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, other)
+	require.NoError(t, err)
+
+	due, err := store.ListDueAgentPushDeliveries(ctx, now, 10)
+	require.NoError(t, err)
+	require.Len(t, due, 1)
+	require.Equal(t, "other-config", due[0].ID, "the append must not overtake the replacement it follows")
+	claimed, err := store.ClaimAgentPushDelivery(ctx, "append", "relay-1", now.Add(time.Minute))
+	require.NoError(t, err)
+	require.Nil(t, claimed, "a delivery behind a pending earlier one must not be claimable")
+
+	require.NoError(t, store.DB().Model(&tables.TableAgentPushDelivery{}).Where("id = ?", "replacement").
+		Update("status", schemas.AgentPushDeliveryStatusDelivered).Error)
+	due, err = store.ListDueAgentPushDeliveries(ctx, now, 10)
+	require.NoError(t, err)
+	ids := []string{}
+	for _, d := range due {
+		ids = append(ids, d.ID)
+	}
+	require.ElementsMatch(t, []string{"append", "other-config"}, ids)
+}

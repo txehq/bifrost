@@ -9,7 +9,7 @@ import (
 	"github.com/capsohq/bifrost/framework/logstore"
 	"github.com/capsohq/bifrost/framework/queryscope"
 	"github.com/capsohq/bifrost/plugins/logging"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/fasthttp/router"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"

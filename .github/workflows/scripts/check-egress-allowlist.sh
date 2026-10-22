@@ -152,9 +152,23 @@ NOT_DIALLED_HOSTS = {
     "example.com": "MCP server_url and web_fetch targets - dereferenced by the provider",
     "www.youtube.com": "Gemini video input - Google fetches the URL server-side",
     "en.wikipedia.org": "googleSearch excludeDomains filter value, not a URL anyone fetches",
+    "upload.wikimedia.org": "Volcengine multimodal embedding image_url - fetched by the provider",
+    "mcp.deepwiki.com": "Anthropic mcp_servers and Responses mcp tool server_url - the provider connects",
+    "does-not-exist-h146.search.windows.net": "azure_search data source in an Azure OpenAI body - Azure dereferences it",
+    "www.wikipedia.org": "URL inside a Gemini prompt; any url_context fetch is Google's",
     "placeholder.search.windows.net": "Azure AI Search placeholder in a request body; never resolved",
     # Deliberately unresolvable - negative tests assert the failure path.
     "bifrost.invalid": "reserved .invalid TLD; negative-path tests assert it fails to resolve",
+    "dbx-fixture-workspace.invalid": "reserved .invalid TLD; Databricks token-mint failure fixture",
+    "does-not-exist-h150.invalid": "reserved .invalid TLD; unreachable MCP server_url fixture",
+    "does-not-resolve.invalid": "reserved .invalid TLD; MCP registration validation fixture",
+    "harness-credential-guard.example.invalid": "reserved .invalid TLD; credential-check dial-target fixture",
+    "harness-endpoint-guard.example.invalid": "reserved .invalid TLD; provider endpoint update fixture",
+    "harness-lib-installed.invalid": "reserved .invalid TLD; MCP library rename fixture",
+    "harness-plugin-guard.example.invalid": "reserved .invalid TLD; plugin dial-target fixture",
+    "idp.example": "reserved .example TLD; oauth_key_config token_url fixture, never resolves",
+    "unlisted.example": "reserved .example TLD; OAuth redirect URI the policy must reject",
+    "replace-me.search.windows.net": "Azure AI Search placeholder collection variable; never resolved",
     # Documentation links inside descriptions and comments.
     "anthropic.com": "doc link in a folder description",
     "www.anthropic.com": "doc link in a folder description",
@@ -162,10 +176,14 @@ NOT_DIALLED_HOSTS = {
     "developers.openai.com": "doc link in a folder description",
     "docs.aws.amazon.com": "doc link in a folder description",
     "docs.x.ai": "doc link in a folder description",
+    "ai.google.dev": "doc link in a folder description",
+    "code.claude.com": "doc link in a folder description",
+    "learn.microsoft.com": "doc link in a test script comment",
     "schema.getpostman.com": "Postman collection schema declaration, not fetched at run time",
     # Identifiers that merely look like endpoints.
     "s3.amazonaws.com": "XML namespace URI in a ListBucketResult document; namespaces are names, not fetches",
     "www.googleapis.com": "the cloud-platform OAuth SCOPE string; the token exchange itself goes to oauth2.googleapis.com",
+    "www.ietf.org": "SDP a=extmap URI in a WebRTC offer; an identifier, not a fetch",
 }
 
 HOST_RE = re.compile(r"https?://([A-Za-z0-9._-]+\.[A-Za-z]{2,})")

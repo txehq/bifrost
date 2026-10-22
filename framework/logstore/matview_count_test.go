@@ -344,3 +344,54 @@ func TestGetStatsMatViewCacheHitsHybrid(t *testing.T) {
 	assert.Equal(t, int64(0), *stats.DirectCacheHits)
 	assert.Equal(t, int64(0), *stats.SemanticCacheHits)
 }
+
+// TestGetTokenHistogramMatViewTrimsBoundaryBuckets: like the request histogram,
+// the token histogram's matview path must not count the parts of its boundary
+// hours that fall outside a mid-hour window, so its bars sum to the tokens of
+// the terminal logs inside [start, end], cached-read tokens included.
+func TestGetTokenHistogramMatViewTrimsBoundaryBuckets(t *testing.T) {
+	store, db := setupPerfTestDB(t)
+	ctx := context.Background()
+
+	day := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	start := day.Add(10*time.Hour + 30*time.Minute)
+	end := day.Add(35*time.Hour + 45*time.Minute)
+	insert := func(ts time.Time, status string) {
+		t.Helper()
+		require.NoError(t, db.Exec(`
+			INSERT INTO logs (id, timestamp, object_type, provider, model, status,
+				created_at, latency, cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens)
+			VALUES (?, ?, 'chat_completion', 'openai', 'gpt-4', ?, ?, 100, 0.01, 10, 5, 15, 3)
+		`, uuid.New().String(), ts, status, ts).Error)
+	}
+	insert(day.Add(10*time.Hour+15*time.Minute), "success")   // before start -> must not count
+	insert(day.Add(10*time.Hour+45*time.Minute), "success")   // head sliver
+	insert(day.Add(18*time.Hour), "error")                    // interior
+	insert(day.Add(35*time.Hour+30*time.Minute), "success")   // tail sliver
+	insert(day.Add(35*time.Hour+50*time.Minute), "success")   // after end -> must not count
+	insert(day.Add(18*time.Hour+5*time.Minute), "processing") // in-flight -> terminal-only
+
+	refreshTestMatViews(t, db)
+	store.matViewsReady.Store(true)
+
+	filters := SearchFilters{StartTime: &start, EndTime: &end}
+	require.True(t, store.canUseMatView(filters), "filters must take the matview histogram path")
+
+	hist, err := store.GetTokenHistogram(ctx, filters, 3600)
+	require.NoError(t, err)
+	var prompt, completion, total, cachedRead int64
+	byBucket := make(map[int64]int64, len(hist.Buckets))
+	for _, b := range hist.Buckets {
+		prompt += b.PromptTokens
+		completion += b.CompletionTokens
+		total += b.TotalTokens
+		cachedRead += b.CachedReadTokens
+		byBucket[b.Timestamp.Unix()] = b.PromptTokens
+	}
+	assert.Equal(t, int64(30), prompt, "bars must sum to the terminal logs inside [start, end] only")
+	assert.Equal(t, int64(15), completion)
+	assert.Equal(t, int64(45), total)
+	assert.Equal(t, int64(9), cachedRead)
+	assert.Equal(t, int64(10), byBucket[day.Add(10*time.Hour).Unix()], "first bar holds only the in-window sliver row")
+	assert.Equal(t, int64(10), byBucket[day.Add(35*time.Hour).Unix()], "last bar holds only the in-window sliver row")
+}

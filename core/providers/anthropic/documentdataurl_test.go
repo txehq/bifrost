@@ -1,11 +1,14 @@
 package anthropic
 
 import (
+	"bytes"
 	"encoding/base64"
-	"github.com/capsohq/bifrost/core/schemas"
-	"github.com/tidwall/gjson"
 	"strings"
 	"testing"
+
+	"github.com/capsohq/bifrost/core/internal/memtest"
+	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // TestInlineTextDocumentDataURL verifies base64 transport becomes readable text in both inference APIs.
@@ -57,5 +60,81 @@ func TestNativeJSONDocument(t *testing.T) {
 		if err != nil || source.Get("type").String() != "text" || source.Get("media_type").String() != "text/plain" || source.Get("data").String() != `{"log":{}}` {
 			t.Fatalf("JSON normalization failed: %s %v", body, err)
 		}
+	}
+}
+
+// TestNormalizeBase64TextSources_AllocationScaling pins the allocation shape of the
+// base64 text-document rewrite.
+//
+// The loop performs three whole-body sjson.SetBytes calls per document source, and each
+// reserialises the entire request, so N text documents cost 3N copies of the body.
+func TestNormalizeBase64TextSources_AllocationScaling(t *testing.T) {
+	memtest.AssertAllocScaling(t, func(docs int) []byte {
+		// A base64 text/plain document source is what the rewrite targets; the payload
+		// grows with N because each document carries its own encoded body.
+		payload := base64.StdEncoding.EncodeToString([]byte(strings.Repeat("t", 300)))
+		var b bytes.Buffer
+		b.WriteString(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":[`)
+		for i := range docs {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(`{"type":"document","source":{"type":"base64","media_type":"text/plain","data":"`)
+			b.WriteString(payload)
+			b.WriteString(`"}}`)
+		}
+		b.WriteString(`]}]}`)
+		return b.Bytes()
+	}, func(body []byte) {
+		if _, err := normalizeBase64TextSources(body); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+// TestNormalizeBase64TextSources_UnmatchedPayloadNotCopied pins that a request whose only
+// documents are images/PDFs is returned unchanged without copying its messages or blocks.
+func TestNormalizeBase64TextSources_UnmatchedPayloadNotCopied(t *testing.T) {
+	payload := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0xff}, 1<<20))
+	body := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":[` +
+		`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + payload + `"}},` +
+		`{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"` + payload + `"}},` +
+		`{"type":"text","text":"describe"}]}]}`)
+	var out []byte
+	allocated := memtest.AllocBytesPerOp(func() {
+		var err error
+		if out, err = normalizeBase64TextSources(body); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+	if &out[0] != &body[0] {
+		t.Fatalf("unchanged body must be returned as-is")
+	}
+	if allocated > int64(len(body))/8 {
+		t.Fatalf("normalization allocated %d bytes for a %d-byte body with no eligible documents", allocated, len(body))
+	}
+}
+
+// TestNormalizeBase64TextSources_NormalizedTextNotCopied: a text document already in
+// Anthropic's text source shape next to large media is not eligible either, so the
+// request is returned without copying its blocks.
+func TestNormalizeBase64TextSources_NormalizedTextNotCopied(t *testing.T) {
+	payload := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0xff}, 1<<20))
+	body := []byte(`{"model":"claude-opus-4-8","messages":[{"role":"user","content":[` +
+		`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + payload + `"}},` +
+		`{"type":"document","source":{"type":"text","media_type":"text/plain","data":"notes"}},` +
+		`{"type":"text","text":"describe"}]}]}`)
+	var out []byte
+	allocated := memtest.AllocBytesPerOp(func() {
+		var err error
+		if out, err = normalizeBase64TextSources(body); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+	if &out[0] != &body[0] {
+		t.Fatalf("unchanged body must be returned as-is")
+	}
+	if allocated > int64(len(body))/8 {
+		t.Fatalf("normalization allocated %d bytes for a %d-byte body with no eligible documents", allocated, len(body))
 	}
 }

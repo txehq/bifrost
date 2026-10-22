@@ -7,7 +7,7 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 	configtables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/grant"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
@@ -35,6 +35,15 @@ type fakeAdmitter struct {
 func (f *fakeAdmitter) AdmitMCPGatewayRequest(ctx *schemas.BifrostContext) (schemas.Access, *schemas.BifrostError) {
 	f.seen = ctx
 	return f.access, f.refusal
+}
+
+// fakeAdmitter resolves no slugs; these tests only exercise the plain /mcp route.
+func (f *fakeAdmitter) VirtualMCPToolAccess(*schemas.BifrostContext, string, schemas.Access) ([]string, bool) {
+	return nil, false
+}
+
+func (f *fakeAdmitter) MCPClientToolAccess(*schemas.BifrostContext, string, schemas.Access) ([]string, bool) {
+	return nil, false
 }
 
 // newRequestCtx returns the pair a request is handled with: the fasthttp request, and a

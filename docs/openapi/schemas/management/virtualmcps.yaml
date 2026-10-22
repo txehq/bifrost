@@ -1,0 +1,115 @@
+# Schemas for Virtual MCP management.
+
+VirtualMCP:
+  type: object
+  properties:
+    id:
+      type: integer
+      format: uint
+      readOnly: true
+    name:
+      type: string
+    endpoint_slug:
+      type: string
+      description: |
+        Slug this Virtual MCP is served under at `/mcp/{endpoint_slug}`.
+        Set on create and immutable afterwards.
+    description:
+      type: string
+      nullable: true
+      description: Operator-facing note. Never sent to a model.
+    enabled:
+      type: boolean
+    tools:
+      type: array
+      items:
+        $ref: './mcptoolgroups.yaml#/MCPToolSpec'
+    virtual_key_ids:
+      type: array
+      readOnly: true
+      description: Virtual keys this Virtual MCP is assigned to. Change it with the attach and detach endpoints.
+      items:
+        type: string
+    created_at:
+      type: string
+      format: date-time
+      readOnly: true
+    updated_at:
+      type: string
+      format: date-time
+      readOnly: true
+
+CreateVirtualMCPRequest:
+  type: object
+  description: |
+    `name` is required. `enabled` defaults to `true`. `tools` may be omitted or
+    empty to create a Virtual MCP that exposes no tools yet.
+  required:
+    - name
+  properties:
+    name:
+      type: string
+    endpoint_slug:
+      type: string
+      description: Honored on create only.
+    description:
+      type: [string, 'null']
+    enabled:
+      type: boolean
+    tools:
+      type: array
+      description: Tools to expose. Omitted or empty selects none.
+      items:
+        $ref: './mcptoolgroups.yaml#/MCPToolSpec'
+
+UpdateVirtualMCPRequest:
+  type: object
+  description: |
+    Partial update: every field is optional and an omitted one preserves its current
+    value. `endpoint_slug` is ignored because it is immutable after create. `tools`,
+    when sent, replaces the whole list.
+  properties:
+    name:
+      type: string
+    endpoint_slug:
+      type: string
+      description: Honored on create only.
+    description:
+      type: string
+      nullable: true
+    enabled:
+      type: boolean
+    tools:
+      type: array
+      items:
+        $ref: './mcptoolgroups.yaml#/MCPToolSpec'
+
+VirtualMCPResponse:
+  type: object
+  properties:
+    virtual_mcp:
+      $ref: '#/VirtualMCP'
+
+VirtualMCPListResponse:
+  type: object
+  properties:
+    virtual_mcps:
+      type: array
+      items:
+        $ref: '#/VirtualMCP'
+    count:
+      type: integer
+      description: Number of Virtual MCPs in this page.
+    total_count:
+      type: integer
+      description: Total matching the query across all pages.
+    limit:
+      type: integer
+    offset:
+      type: integer
+
+VirtualMCPSuccessResponse:
+  type: object
+  properties:
+    success:
+      type: boolean

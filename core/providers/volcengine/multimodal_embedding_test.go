@@ -141,12 +141,10 @@ func TestMultiModalEmbedding_TextAndImage(t *testing.T) {
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.Volcengine,
 		Model:    "doubao-embedding-vision-251215",
-		Input: &schemas.EmbeddingInput{
-			MultiModalInputs: []schemas.MultiModalEmbeddingInput{
-				{Type: schemas.MultiModalEmbeddingText, Text: &text},
-				{Type: schemas.MultiModalEmbeddingImageURL, ImageURL: &schemas.MultiModalEmbeddingMediaURL{URL: "https://example.com/cat.jpg"}},
-			},
-		},
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+			{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("https://example.com/cat.jpg")}},
+		}}},
 		Params: &schemas.EmbeddingParameters{
 			Instructions:   &instructions,
 			EncodingFormat: &encodingFormat,
@@ -221,11 +219,9 @@ func TestMultiModalEmbedding_VideoInput(t *testing.T) {
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.Volcengine,
 		Model:    "doubao-embedding-vision-250615",
-		Input: &schemas.EmbeddingInput{
-			MultiModalInputs: []schemas.MultiModalEmbeddingInput{
-				{Type: schemas.MultiModalEmbeddingVideoURL, VideoURL: &schemas.MultiModalEmbeddingMediaURL{URL: "https://example.com/video.mp4"}},
-			},
-		},
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeVideo, Video: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("https://example.com/video.mp4")}},
+		}}},
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -269,11 +265,9 @@ func TestMultiModalEmbedding_ModelArkMetadata(t *testing.T) {
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.ModelArk,
 		Model:    "doubao-embedding-vision-251215",
-		Input: &schemas.EmbeddingInput{
-			MultiModalInputs: []schemas.MultiModalEmbeddingInput{
-				{Type: schemas.MultiModalEmbeddingText, Text: &text},
-			},
-		},
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+		}}},
 		Params: &schemas.EmbeddingParameters{
 			Instructions: &instructions,
 		},
@@ -314,9 +308,7 @@ func TestMultiModalEmbedding_FallsBackToTextEmbedding(t *testing.T) {
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.Volcengine,
 		Model:    "doubao-embedding-large-text-240915",
-		Input: &schemas.EmbeddingInput{
-			Text: &text,
-		},
+		Input:    []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -351,7 +343,7 @@ func TestMultiModalEmbedding_ModelArkTextOnlyVisionUsesMultimodalEndpoint(t *tes
 		if requestBody.Model != "skylark-embedding-vision-251215" {
 			t.Fatalf("expected model skylark-embedding-vision-251215, got %s", requestBody.Model)
 		}
-		if len(requestBody.Input) != 1 || requestBody.Input[0].Type != string(schemas.MultiModalEmbeddingText) {
+		if len(requestBody.Input) != 1 || requestBody.Input[0].Type != string(volcengineMultiModalText) {
 			t.Fatalf("expected one typed text multimodal input, got %+v", requestBody.Input)
 		}
 
@@ -371,9 +363,7 @@ func TestMultiModalEmbedding_ModelArkTextOnlyVisionUsesMultimodalEndpoint(t *tes
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.ModelArk,
 		Model:    "skylark-embedding-vision-251215",
-		Input: &schemas.EmbeddingInput{
-			Text: &text,
-		},
+		Input:    []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
 		Params: &schemas.EmbeddingParameters{
 			Instructions: &instructions,
 		},
@@ -405,11 +395,9 @@ func TestMultiModalEmbedding_ServerError(t *testing.T) {
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.Volcengine,
 		Model:    "nonexistent-model",
-		Input: &schemas.EmbeddingInput{
-			MultiModalInputs: []schemas.MultiModalEmbeddingInput{
-				{Type: schemas.MultiModalEmbeddingText, Text: &text},
-			},
-		},
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+		}}},
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -441,13 +429,11 @@ func TestMultiModalEmbedding_MixedInputs(t *testing.T) {
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.Volcengine,
 		Model:    "doubao-embedding-vision-250615",
-		Input: &schemas.EmbeddingInput{
-			MultiModalInputs: []schemas.MultiModalEmbeddingInput{
-				{Type: schemas.MultiModalEmbeddingText, Text: &text},
-				{Type: schemas.MultiModalEmbeddingImageURL, ImageURL: &schemas.MultiModalEmbeddingMediaURL{URL: "https://example.com/cat.jpg"}},
-				{Type: schemas.MultiModalEmbeddingVideoURL, VideoURL: &schemas.MultiModalEmbeddingMediaURL{URL: "https://example.com/cat.mp4"}},
-			},
-		},
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+			{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("https://example.com/cat.jpg")}},
+			{Type: schemas.EmbeddingContentPartTypeVideo, Video: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("https://example.com/cat.mp4")}},
+		}}},
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -490,11 +476,12 @@ func TestMultiModalEmbedding_RawRequestResponse(t *testing.T) {
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.Volcengine,
 		Model:    "test",
-		Input: &schemas.EmbeddingInput{
-			MultiModalInputs: []schemas.MultiModalEmbeddingInput{
-				{Type: schemas.MultiModalEmbeddingText, Text: &text},
-			},
-		},
+		// A media part routes to the multimodal endpoint whatever the model; a text-only
+		// input on a non-vision model goes to /embeddings instead.
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+			{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("https://example.com/cat.jpg")}},
+		}}},
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -546,11 +533,9 @@ func TestMultiModalEmbedding_TextOnlySparse(t *testing.T) {
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.Volcengine,
 		Model:    "doubao-embedding-vision-251215",
-		Input: &schemas.EmbeddingInput{
-			MultiModalInputs: []schemas.MultiModalEmbeddingInput{
-				{Type: schemas.MultiModalEmbeddingText, Text: &text},
-			},
-		},
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+		}}},
 		Params: &schemas.EmbeddingParameters{
 			Instructions: &instructions,
 			SparseEmbedding: map[string]interface{}{
@@ -578,13 +563,13 @@ func TestMultiModalEmbedding_TextInputUsesMultimodalEndpointAndHelperConfig(t *t
 		}
 
 		var requestBody struct {
-			Input        []schemas.MultiModalEmbeddingInput `json:"input"`
-			Instructions string                             `json:"instructions"`
+			Input        []volcengineMultiModalInput `json:"input"`
+			Instructions string                      `json:"instructions"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
 			t.Fatalf("failed to decode request body: %v", err)
 		}
-		if len(requestBody.Input) != 1 || requestBody.Input[0].Type != schemas.MultiModalEmbeddingText || requestBody.Input[0].Text == nil || *requestBody.Input[0].Text != "hello" {
+		if len(requestBody.Input) != 1 || requestBody.Input[0].Type != volcengineMultiModalText || requestBody.Input[0].Text == nil || *requestBody.Input[0].Text != "hello" {
 			t.Fatalf("unexpected multimodal input payload: %+v", requestBody.Input)
 		}
 		expectedInstructions := "Instruction:Compress the text into one word.\nQuery:"
@@ -602,9 +587,7 @@ func TestMultiModalEmbedding_TextInputUsesMultimodalEndpointAndHelperConfig(t *t
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.Volcengine,
 		Model:    "doubao-embedding-vision-251215",
-		Input: &schemas.EmbeddingInput{
-			Text: &text,
-		},
+		Input:    []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
 		Params: &schemas.EmbeddingParameters{
 			ExtraParams: map[string]interface{}{
 				"volcengine_instructions_config": map[string]interface{}{
@@ -652,11 +635,9 @@ func TestMultiModalEmbedding_HelperConfigAcceptsRetrievalQueryAlias(t *testing.T
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.Volcengine,
 		Model:    "doubao-embedding-vision-251215",
-		Input: &schemas.EmbeddingInput{
-			MultiModalInputs: []schemas.MultiModalEmbeddingInput{
-				{Type: schemas.MultiModalEmbeddingText, Text: &text},
-			},
-		},
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+		}}},
 		Params: &schemas.EmbeddingParameters{
 			ExtraParams: map[string]interface{}{
 				"volcengine_instructions_config": map[string]interface{}{
@@ -683,11 +664,9 @@ func TestMultiModalEmbedding_InstructionRequiredFor251215(t *testing.T) {
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.Volcengine,
 		Model:    "doubao-embedding-vision-251215",
-		Input: &schemas.EmbeddingInput{
-			MultiModalInputs: []schemas.MultiModalEmbeddingInput{
-				{Type: schemas.MultiModalEmbeddingText, Text: &text},
-			},
-		},
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+		}}},
 		Params: &schemas.EmbeddingParameters{},
 	}
 
@@ -710,11 +689,9 @@ func TestMultiModalEmbedding_InstructionUnsupportedBefore251215(t *testing.T) {
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.Volcengine,
 		Model:    "doubao-embedding-vision-250615",
-		Input: &schemas.EmbeddingInput{
-			MultiModalInputs: []schemas.MultiModalEmbeddingInput{
-				{Type: schemas.MultiModalEmbeddingText, Text: &text},
-			},
-		},
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+		}}},
 		Params: &schemas.EmbeddingParameters{
 			Instructions: &instructions,
 		},
@@ -755,11 +732,9 @@ func TestMultiModalEmbedding_HelperConfigGeneratesQueryInstructions(t *testing.T
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.Volcengine,
 		Model:    "doubao-embedding-vision-251215",
-		Input: &schemas.EmbeddingInput{
-			MultiModalInputs: []schemas.MultiModalEmbeddingInput{
-				{Type: schemas.MultiModalEmbeddingText, Text: &text},
-			},
-		},
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+		}}},
 		Params: &schemas.EmbeddingParameters{
 			ExtraParams: map[string]interface{}{
 				"volcengine_instructions_config": map[string]interface{}{
@@ -787,11 +762,9 @@ func TestMultiModalEmbedding_TemplateValidation(t *testing.T) {
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.Volcengine,
 		Model:    "doubao-embedding-vision-251215",
-		Input: &schemas.EmbeddingInput{
-			MultiModalInputs: []schemas.MultiModalEmbeddingInput{
-				{Type: schemas.MultiModalEmbeddingText, Text: &text},
-			},
-		},
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+		}}},
 		Params: &schemas.EmbeddingParameters{
 			Instructions: &badInstructions,
 			ExtraParams: map[string]interface{}{
@@ -821,12 +794,10 @@ func TestMultiModalEmbedding_SparseTextOnlyValidation(t *testing.T) {
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.Volcengine,
 		Model:    "doubao-embedding-vision-251215",
-		Input: &schemas.EmbeddingInput{
-			MultiModalInputs: []schemas.MultiModalEmbeddingInput{
-				{Type: schemas.MultiModalEmbeddingText, Text: &text},
-				{Type: schemas.MultiModalEmbeddingImageURL, ImageURL: &schemas.MultiModalEmbeddingMediaURL{URL: "https://example.com/cat.jpg"}},
-			},
-		},
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
+			{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("https://example.com/cat.jpg")}},
+		}}},
 		Params: &schemas.EmbeddingParameters{
 			Instructions: &instructions,
 			SparseEmbedding: map[string]interface{}{
@@ -847,4 +818,155 @@ func TestMultiModalEmbedding_SparseTextOnlyValidation(t *testing.T) {
 
 func intPtr(v int) *int {
 	return &v
+}
+
+func TestMultiModalEmbedding_InlineImageDataBecomesDataURL(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var requestBody struct {
+			Input []volcengineMultiModalInput `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if len(requestBody.Input) != 1 || requestBody.Input[0].Type != volcengineMultiModalImageURL || requestBody.Input[0].ImageURL == nil {
+			t.Fatalf("expected one image_url part, got %+v", requestBody.Input)
+		}
+		if got := requestBody.Input[0].ImageURL.URL; got != "data:image/png;base64,aGVsbG8=" {
+			t.Fatalf("unexpected image url %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data": {"embedding": [0.1]}, "model": "doubao-embedding-vision-250615"}`)
+	}))
+	defer server.Close()
+
+	provider := newTestVolcengineProvider(server.URL)
+	request := &schemas.BifrostEmbeddingRequest{
+		Provider: schemas.Volcengine,
+		Model:    "doubao-embedding-vision-250615",
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+			{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{Data: schemas.Ptr("aGVsbG8="), MIMEType: schemas.Ptr("image/png")}},
+		}}},
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, bifrostErr := provider.Embedding(ctx, schemas.Key{Value: *schemas.NewSecretVar("key")}, request); bifrostErr != nil {
+		t.Fatalf("Embedding returned error: %v", bifrostErr.Error)
+	}
+}
+
+func TestMultiModalEmbedding_RejectsUnsupportedShapes(t *testing.T) {
+	t.Parallel()
+
+	provider := newTestVolcengineProvider("http://localhost")
+	text := "a cat"
+	image := schemas.EmbeddingContentPart{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("https://example.com/cat.jpg")}}
+	cases := map[string]schemas.EmbeddingInput{
+		"two items": {
+			{Content: schemas.EmbeddingContent{image}},
+			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}},
+		},
+		"audio part": {
+			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeAudio, Audio: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("https://example.com/a.mp3")}}}},
+		},
+		"per-item params": {
+			{Content: schemas.EmbeddingContent{image}, Params: &schemas.EmbeddingParameters{}},
+		},
+	}
+	for name, input := range cases {
+		t.Run(name, func(t *testing.T) {
+			request := &schemas.BifrostEmbeddingRequest{Provider: schemas.Volcengine, Model: "doubao-embedding-vision-250615", Input: input}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if _, bifrostErr := provider.Embedding(ctx, schemas.Key{}, request); bifrostErr == nil {
+				t.Fatal("expected an error")
+			}
+		})
+	}
+}
+
+// TestMultiModalEmbedding_VisionMultipleTextPartsUseMultimodalEndpoint pins that one input
+// item with several text parts to a vision model stays on /embeddings/multimodal, for
+// Volcengine and ModelArk alike: /embeddings would join the parts and drop instructions
+// and sparse_embedding.
+func TestMultiModalEmbedding_VisionMultipleTextPartsUseMultimodalEndpoint(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		provider schemas.ModelProvider
+		model    string
+	}{
+		"volcengine": {provider: schemas.Volcengine, model: "doubao-embedding-vision-251215"},
+		"modelark":   {provider: schemas.ModelArk, model: "skylark-embedding-vision-251215"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			type sentBody struct {
+				Model string `json:"model"`
+				Input []struct {
+					Type string  `json:"type"`
+					Text *string `json:"text,omitempty"`
+				} `json:"input"`
+				Instructions    *string                `json:"instructions"`
+				SparseEmbedding map[string]interface{} `json:"sparse_embedding"`
+			}
+			sent := make(chan struct {
+				path string
+				body sentBody
+			}, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body sentBody
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				sent <- struct {
+					path string
+					body sentBody
+				}{r.URL.Path, body}
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/embeddings/multimodal" {
+					fmt.Fprintf(w, `{"data":{"embedding":[0.1,0.2],"sparse_embedding":[{"index":1,"value":0.5}]},"model":%q,"object":"list","usage":{"prompt_tokens":5,"total_tokens":5}}`, tc.model)
+					return
+				}
+				fmt.Fprintf(w, `{"data":[{"index":0,"object":"embedding","embedding":[0.1,0.2]}],"model":%q,"object":"list","usage":{"prompt_tokens":5,"total_tokens":5}}`, tc.model)
+			}))
+			defer server.Close()
+
+			provider := newTestVolcengineCompatibleProvider(server.URL, tc.provider)
+			first, second := "the sky", "is blue"
+			instructions := "Target_modality: text.\nInstruction:Retrieve semantically similar text\nQuery:"
+			request := &schemas.BifrostEmbeddingRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+					{Type: schemas.EmbeddingContentPartTypeText, Text: &first},
+					{Type: schemas.EmbeddingContentPartTypeText, Text: &second},
+				}}},
+				Params: &schemas.EmbeddingParameters{
+					Instructions:    &instructions,
+					SparseEmbedding: map[string]interface{}{"type": "enabled"},
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.Embedding(ctx, schemas.Key{Value: *schemas.NewSecretVar("key")}, request)
+			if bifrostErr != nil {
+				t.Fatalf("Embedding returned error: %v", bifrostErr.Error)
+			}
+			got := <-sent
+			if got.path != "/embeddings/multimodal" {
+				t.Fatalf("path = %s, want /embeddings/multimodal for a single vision input with two text parts", got.path)
+			}
+			if len(got.body.Input) != 2 || got.body.Input[0].Text == nil || *got.body.Input[0].Text != first ||
+				got.body.Input[1].Text == nil || *got.body.Input[1].Text != second {
+				t.Errorf("input = %+v, want both text parts in order", got.body.Input)
+			}
+			if got.body.Instructions == nil || *got.body.Instructions != instructions {
+				t.Errorf("instructions = %v, want them forwarded", got.body.Instructions)
+			}
+			if got.body.SparseEmbedding["type"] != "enabled" {
+				t.Errorf("sparse_embedding = %v, want it forwarded", got.body.SparseEmbedding)
+			}
+		})
+	}
 }

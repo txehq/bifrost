@@ -62,7 +62,8 @@ export class LogsPage extends BasePage {
       page.getByRole('button', { name: /Live updates/i })
     )
 
-    this.tableRows = page.getByTestId('log-table-row')
+    // Table elements - exclude the "Listening for logs" row which is not a data row
+    this.tableRows = this.logsTable.locator('tbody tr').filter({ hasNot: page.getByTestId('logs-table-status-row') }).filter({ hasNot: page.locator('text=Listening for logs') }).filter({ hasNot: page.locator('text=Live updates paused') }).filter({ hasNot: page.locator('text=Not connected') }).filter({ hasNot: page.locator('text=No results found') })
     // LLM logs pagination (data-testid added to logsTable.tsx)
     this.paginationControls = page.getByTestId('pagination')
     this.nextPageBtn = page.getByTestId('next-page')
@@ -177,18 +178,12 @@ export class LogsPage extends BasePage {
     await waitForNetworkIdle(this.page)
   }
 
-  async filterByStatus(status: 'success' | 'error' | 'pending'): Promise<void> {
+  async filterByStatus(status: 'success' | 'error' | 'processing'): Promise<void> {
     await this.dismissToasts()
-    await this.ensureFiltersSidebarExpanded()
-    const statusToggle = this.page.getByTestId('status-filter-toggle')
-    if (!(await this.page.getByTestId(`status-filter-checkbox-${status}`).isVisible().catch(() => false))) {
-      await statusToggle.waitFor({ state: 'visible', timeout: 5000 })
-      await statusToggle.click()
-    }
+    // Status is a checkbox group in the filter sidebar.
     const checkbox = this.page.getByTestId(`status-filter-checkbox-${status}`)
-    await checkbox.waitFor({ state: 'visible', timeout: 5000 })
     await checkbox.click()
-    await waitForNetworkIdle(this.page)
+    await expect(this.page).toHaveURL(new RegExp(`status=${status}`))
   }
 
   private async ensureFiltersSidebarExpanded(): Promise<void> {

@@ -1,14 +1,6 @@
 {
   "exceptions": [
     {
-      "workflow": ".github/workflows/release-pipeline.yml",
-      "scope": "workflow",
-      "action": "docker/login-action",
-      "ref": "c94ce9fb468520275223c153574b00df6fe4bcc9",
-      "expected_runtime": "node20",
-      "reason": "docker/login-action v3.7.0 still declares node20"
-    },
-    {
       "workflow": ".github/workflows/dependency-review.yml",
       "scope": "workflow",
       "action": "actions/dependency-review-action",

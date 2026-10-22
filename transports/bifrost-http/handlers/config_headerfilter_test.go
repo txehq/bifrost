@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 )
 
 func TestValidateHeaderFilterConfig(t *testing.T) {

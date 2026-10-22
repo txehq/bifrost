@@ -12,7 +12,7 @@ permissions:
 jobs:
   snyk-open-source:
     name: Snyk Open Source (deps)
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -47,7 +47,7 @@ jobs:
           node-version: "25"
 
       - name: Install uv
-        uses: step-security/setup-uv@ccf0a26ce9117d9e99292b0ce953ea5d9ffe778e # v7.3.0
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
         with:
           version: "0.11.0"
           python-version: "3.11"
@@ -59,7 +59,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.3"
 
       - name: Setup Go workspace
         run: make setup-workspace
@@ -67,12 +67,26 @@ jobs:
       - name: Build
         run: make build LOCAL=1
 
+      - name: Check Snyk credentials
+        id: snyk-credentials
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          if [ -n "$SNYK_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Snyk credentials are unavailable; the Snyk scan cannot run."
+          fi
+
       - name: Install Snyk CLI
+        if: steps.snyk-credentials.outputs.available == 'true'
         uses: maximhq/snyk-actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
         with:
           snyk-version: v1.1303.2
 
       - name: Snyk test (all projects)
+        if: steps.snyk-credentials.outputs.available == 'true'
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk test --all-projects --detection-depth=4 --exclude=examples,tests --sarif-file-output=snyk.sarif || true
@@ -85,7 +99,7 @@ jobs:
 
   snyk-code:
     name: Snyk Code (SAST)
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
@@ -108,6 +122,7 @@ jobs:
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             releases.astral.sh:443
+            static.snyk.io:443
             storage.googleapis.com:443
             sum.golang.org:443
 
@@ -120,7 +135,7 @@ jobs:
           node-version: "25"
 
       - name: Install uv
-        uses: step-security/setup-uv@ccf0a26ce9117d9e99292b0ce953ea5d9ffe778e # v7.3.0
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
         with:
           version: "0.11.0"
           python-version: "3.11"
@@ -132,7 +147,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.3"
 
       - name: Setup Go workspace
         run: make setup-workspace
@@ -140,12 +155,26 @@ jobs:
       - name: Build
         run: make build LOCAL=1
 
+      - name: Check Snyk credentials
+        id: snyk-credentials
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          if [ -n "$SNYK_TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Snyk credentials are unavailable; the Snyk scan cannot run."
+          fi
+
       - name: Install Snyk CLI
+        if: steps.snyk-credentials.outputs.available == 'true'
         uses: maximhq/snyk-actions/setup@9adf32b1121593767fc3c057af55b55db032dc04 # v1.0.0
         with:
           snyk-version: v1.1303.2
 
       - name: Snyk Code test
+        if: steps.snyk-credentials.outputs.available == 'true'
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk code test --sarif-file-output=snyk-code.sarif || true

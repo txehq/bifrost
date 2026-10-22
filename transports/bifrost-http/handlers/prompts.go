@@ -10,16 +10,15 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/framework/configstore/tables"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	"github.com/valyala/fasthttp"
 )
 
-// PromptCacheReloader is implemented by the prompts plugin to allow the HTTP handler
-// to trigger an in-memory cache refresh after any repository mutation.
+// PromptCacheReloader refreshes the in-memory prompt cache after a repository mutation.
 type PromptCacheReloader interface {
-	Reload(ctx context.Context) error
+	ReloadPromptCache(ctx context.Context) error
 }
 
 // PromptsHandler handles prompt repository endpoints
@@ -43,7 +42,7 @@ func (h *PromptsHandler) reloadCache(ctx context.Context) {
 	if h.reloader == nil {
 		return
 	}
-	if err := h.reloader.Reload(ctx); err != nil {
+	if err := h.reloader.ReloadPromptCache(ctx); err != nil {
 		logger.Error("failed to reload prompt cache: %v", err)
 	}
 }
@@ -864,6 +863,8 @@ func (h *PromptsHandler) createSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
+
 	SendJSON(ctx, map[string]any{
 		"session": session,
 	})
@@ -930,6 +931,8 @@ func (h *PromptsHandler) updateSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	h.reloadCache(ctx)
+
 	SendJSON(ctx, map[string]any{
 		"session": session,
 	})
@@ -962,6 +965,8 @@ func (h *PromptsHandler) deleteSession(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
+
+	h.reloadCache(ctx)
 
 	SendJSON(ctx, map[string]any{
 		"message": "session deleted successfully",
@@ -1008,6 +1013,8 @@ func (h *PromptsHandler) renameSession(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
+
+	h.reloadCache(ctx)
 
 	session.Name = req.Name
 	SendJSON(ctx, map[string]any{

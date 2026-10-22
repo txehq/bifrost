@@ -1,6 +1,10 @@
 package cohere
 
-import "github.com/capsohq/bifrost/core/schemas"
+import (
+	"strings"
+
+	"github.com/capsohq/bifrost/core/schemas"
+)
 
 var (
 	// Maps provider-specific finish reasons to Bifrost format
@@ -10,6 +14,15 @@ var (
 		FinishReasonMaxTokens:    "length",
 		FinishReasonToolCall:     "tool_calls",
 	}
+
+	// Maps Bifrost finish reasons back to Cohere's v2 response format.
+	bifrostFinishReasonToCohere = map[string]CohereFinishReason{
+		string(schemas.BifrostFinishReasonStop):      FinishReasonComplete,
+		string(schemas.BifrostFinishReasonLength):    FinishReasonMaxTokens,
+		string(schemas.BifrostFinishReasonToolCalls): FinishReasonToolCall,
+		"error":   FinishReasonError,
+		"timeout": FinishReasonTimeout,
+	}
 )
 
 // ConvertCohereFinishReasonToBifrost converts provider finish reasons to Bifrost format
@@ -18,6 +31,17 @@ func ConvertCohereFinishReasonToBifrost(providerReason CohereFinishReason) strin
 		return bifrostReason
 	}
 	return string(providerReason)
+}
+
+// ConvertBifrostFinishReasonToCohere converts a canonical finish reason to one
+// accepted by Cohere's v2 SDK. Unknown reasons become COMPLETE because Cohere's
+// response contract requires a finish_reason even when an upstream provider
+// uses a provider-specific value.
+func ConvertBifrostFinishReasonToCohere(bifrostReason string) CohereFinishReason {
+	if providerReason, ok := bifrostFinishReasonToCohere[bifrostReason]; ok {
+		return providerReason
+	}
+	return FinishReasonComplete
 }
 
 // convertInterfaceToToolFunctionParameters converts an interface{} to ToolFunctionParameters
@@ -294,4 +318,12 @@ func convertCohereResponseFormatToBifrost(cohereFormat *CohereResponseFormat) *i
 
 	var resultInterface interface{} = result
 	return &resultInterface
+}
+
+// DefaultSupportsToolChoice is the name-based fallback for ModelCaps.SupportsToolChoice
+// on Cohere. The reasoning models (command-a-reasoning-*) reject any tool_choice
+// with "tool_choice is not supported for this model"; every other chat model
+// accepts it.
+func DefaultSupportsToolChoice(model string) bool {
+	return !strings.Contains(strings.ToLower(model), "-reasoning")
 }

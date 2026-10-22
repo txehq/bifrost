@@ -265,7 +265,7 @@ func (provider *VolcengineProvider) ResponsesStream(ctx *schemas.BifrostContext,
 
 func (provider *VolcengineProvider) Embedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	// Doubao vision embeddings use the multimodal endpoint even for text-only input.
-	if request != nil && request.Input != nil && (request.Input.IsMultiModal() || (isVolcengineVisionEmbeddingModel(request.Model) && request.Input.Text != nil)) {
+	if useVolcengineMultiModalEmbedding(request) {
 		return provider.multiModalEmbedding(ctx, key, request)
 	}
 	return openai.HandleOpenAIEmbeddingRequest(
@@ -284,14 +284,104 @@ func (provider *VolcengineProvider) Embedding(ctx *schemas.BifrostContext, key s
 	)
 }
 
+// useVolcengineMultiModalEmbedding reports whether a request belongs on
+// /embeddings/multimodal: any media part does, and so does a single text input
+// to a vision embedding model, however many text parts it has. /embeddings would
+// join those parts and drop instructions and sparse_embedding.
+func useVolcengineMultiModalEmbedding(request *schemas.BifrostEmbeddingRequest) bool {
+	if request == nil || len(request.Input) == 0 {
+		return false
+	}
+	for _, item := range request.Input {
+		for _, part := range item.Content {
+			if part.Type != schemas.EmbeddingContentPartTypeText {
+				return true
+			}
+		}
+	}
+	return isVolcengineVisionEmbeddingModel(request.Model) && len(request.Input) == 1
+}
+
+// volcengineMultiModalInputType is the part type on Volcengine's native multimodal wire format.
+type volcengineMultiModalInputType string
+
+const (
+	volcengineMultiModalText     volcengineMultiModalInputType = "text"
+	volcengineMultiModalImageURL volcengineMultiModalInputType = "image_url"
+	volcengineMultiModalVideoURL volcengineMultiModalInputType = "video_url"
+)
+
+// volcengineMultiModalInput is one part of a native /embeddings/multimodal input.
+type volcengineMultiModalInput struct {
+	Type     volcengineMultiModalInputType `json:"type"`
+	Text     *string                       `json:"text,omitempty"`
+	ImageURL *volcengineMultiModalMediaURL `json:"image_url,omitempty"`
+	VideoURL *volcengineMultiModalMediaURL `json:"video_url,omitempty"`
+}
+
+// volcengineMultiModalMediaURL holds an image or video URL (http(s) or data URL).
+type volcengineMultiModalMediaURL struct {
+	URL string `json:"url"`
+}
+
+// volcengineMediaURL renders a media part as the URL Volcengine expects: the
+// URL itself, or a base64 data URL for inline data.
+func volcengineMediaURL(media *schemas.EmbeddingMediaPart, defaultMIMEType string) (string, error) {
+	if err := media.Validate(); err != nil {
+		return "", err
+	}
+	if media.URL != nil {
+		return *media.URL, nil
+	}
+	data := *media.Data
+	if strings.HasPrefix(data, "data:") {
+		return data, nil
+	}
+	mimeType := defaultMIMEType
+	if media.MIMEType != nil && strings.TrimSpace(*media.MIMEType) != "" {
+		mimeType = strings.TrimSpace(*media.MIMEType)
+	}
+	return "data:" + mimeType + ";base64," + data, nil
+}
+
+// toVolcengineMultiModalInputs converts one embedding input item into the native
+// part list. Volcengine fuses the parts into a single vector.
+func toVolcengineMultiModalInputs(content schemas.EmbeddingContent) ([]volcengineMultiModalInput, error) {
+	inputs := make([]volcengineMultiModalInput, 0, len(content))
+	for _, part := range content {
+		switch part.Type {
+		case schemas.EmbeddingContentPartTypeText:
+			if part.Text == nil {
+				return nil, fmt.Errorf("embedding text part has no text")
+			}
+			inputs = append(inputs, volcengineMultiModalInput{Type: volcengineMultiModalText, Text: part.Text})
+		case schemas.EmbeddingContentPartTypeImage:
+			url, err := volcengineMediaURL(part.Image, "image/jpeg")
+			if err != nil {
+				return nil, err
+			}
+			inputs = append(inputs, volcengineMultiModalInput{Type: volcengineMultiModalImageURL, ImageURL: &volcengineMultiModalMediaURL{URL: url}})
+		case schemas.EmbeddingContentPartTypeVideo:
+			url, err := volcengineMediaURL(part.Video, "video/mp4")
+			if err != nil {
+				return nil, err
+			}
+			inputs = append(inputs, volcengineMultiModalInput{Type: volcengineMultiModalVideoURL, VideoURL: &volcengineMultiModalMediaURL{URL: url}})
+		default:
+			return nil, fmt.Errorf("volcengine multimodal embedding does not support %q input parts", part.Type)
+		}
+	}
+	return inputs, nil
+}
+
 // volcengineMultiModalEmbeddingRequest is the native Volcengine request for /embeddings/multimodal.
 type volcengineMultiModalEmbeddingRequest struct {
-	Model           string                             `json:"model"`
-	Input           []schemas.MultiModalEmbeddingInput `json:"input"`
-	Instructions    *string                            `json:"instructions,omitempty"`
-	EncodingFormat  *string                            `json:"encoding_format,omitempty"`
-	Dimensions      *int                               `json:"dimensions,omitempty"`
-	SparseEmbedding map[string]interface{}             `json:"sparse_embedding,omitempty"`
+	Model           string                      `json:"model"`
+	Input           []volcengineMultiModalInput `json:"input"`
+	Instructions    *string                     `json:"instructions,omitempty"`
+	EncodingFormat  *string                     `json:"encoding_format,omitempty"`
+	Dimensions      *int                        `json:"dimensions,omitempty"`
+	SparseEmbedding map[string]interface{}      `json:"sparse_embedding,omitempty"`
 }
 
 // volcengineMultiModalEmbeddingResponse is the native Volcengine response from /embeddings/multimodal.
@@ -523,12 +613,12 @@ func isSparseEmbeddingEnabled(sparseEmbedding map[string]interface{}) bool {
 	return strings.EqualFold(strings.TrimSpace(typeValue), "enabled")
 }
 
-func isTextOnlyMultiModalInputs(inputs []schemas.MultiModalEmbeddingInput) bool {
+func isTextOnlyMultiModalInputs(inputs []volcengineMultiModalInput) bool {
 	if len(inputs) == 0 {
 		return false
 	}
 	for _, input := range inputs {
-		if input.Type != schemas.MultiModalEmbeddingText {
+		if input.Type != volcengineMultiModalText {
 			return false
 		}
 	}
@@ -589,7 +679,7 @@ func resolveAndValidateVolcengineInstructions(request *schemas.BifrostEmbeddingR
 	return instructions, shouldValidateTemplate, nil
 }
 
-func validateVolcengineSparseEmbeddingConstraints(request *schemas.BifrostEmbeddingRequest, sparseEmbedding map[string]interface{}) *schemas.BifrostError {
+func validateVolcengineSparseEmbeddingConstraints(request *schemas.BifrostEmbeddingRequest, inputs []volcengineMultiModalInput, sparseEmbedding map[string]interface{}) *schemas.BifrostError {
 	if !isSparseEmbeddingEnabled(sparseEmbedding) {
 		return nil
 	}
@@ -602,7 +692,7 @@ func validateVolcengineSparseEmbeddingConstraints(request *schemas.BifrostEmbedd
 		)
 	}
 
-	if request.Input == nil || !isTextOnlyMultiModalInputs(request.Input.MultiModalInputs) {
+	if !isTextOnlyMultiModalInputs(inputs) {
 		return providerUtils.NewBifrostOperationError("sparse_embedding supports text-only multimodal input", nil)
 	}
 
@@ -610,8 +700,20 @@ func validateVolcengineSparseEmbeddingConstraints(request *schemas.BifrostEmbedd
 }
 
 func (provider *VolcengineProvider) multiModalEmbedding(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
-	if request == nil || request.Input == nil {
+	if request == nil || len(request.Input) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: multimodal embedding input is required", nil)
+	}
+	// The multimodal endpoint fuses its parts into one vector, so a request maps to
+	// exactly one input item and one parameter block.
+	if len(request.Input) != 1 {
+		return nil, providerUtils.NewBifrostOperationError("volcengine multimodal embedding accepts exactly one input item per request", nil)
+	}
+	if err := schemas.EmbeddingInput(request.Input).RejectPerItemParams(); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(err.Error(), err)
+	}
+	inputs, err := toVolcengineMultiModalInputs(request.Input[0].Content)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(err.Error(), err)
 	}
 
 	resolvedInstructions, _, bifrostErr := resolveAndValidateVolcengineInstructions(request)
@@ -635,15 +737,7 @@ func (provider *VolcengineProvider) multiModalEmbedding(ctx *schemas.BifrostCont
 
 	nativeReq := volcengineMultiModalEmbeddingRequest{
 		Model: request.Model,
-		Input: request.Input.MultiModalInputs,
-	}
-	if len(nativeReq.Input) == 0 && request.Input.Text != nil {
-		nativeReq.Input = []schemas.MultiModalEmbeddingInput{
-			{
-				Type: schemas.MultiModalEmbeddingText,
-				Text: request.Input.Text,
-			},
-		}
+		Input: inputs,
 	}
 	if len(nativeReq.Input) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("volcengine multimodal embedding requires multimodal input or a single text input", nil)
@@ -654,7 +748,7 @@ func (provider *VolcengineProvider) multiModalEmbedding(ctx *schemas.BifrostCont
 		nativeReq.Dimensions = request.Params.Dimensions
 		nativeReq.SparseEmbedding = request.Params.SparseEmbedding
 	}
-	if bifrostErr := validateVolcengineSparseEmbeddingConstraints(request, nativeReq.SparseEmbedding); bifrostErr != nil {
+	if bifrostErr := validateVolcengineSparseEmbeddingConstraints(request, nativeReq.Input, nativeReq.SparseEmbedding); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 
@@ -1437,4 +1531,14 @@ func (provider *VolcengineProvider) Passthrough(_ *schemas.BifrostContext, _ sch
 // PassthroughStream is not supported by the Volcengine provider.
 func (provider *VolcengineProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// ModelRetrieve is not supported by the volcengine provider.
+func (provider *VolcengineProvider) ModelRetrieve(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the volcengine provider.
+func (provider *VolcengineProvider) Decision(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }

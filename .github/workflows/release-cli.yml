@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   check-version:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     outputs:
       version: ${{ steps.get-version.outputs.version }}
       tag_exists: ${{ steps.check-tag.outputs.exists }}
@@ -60,7 +60,7 @@ jobs:
   test-cli:
     needs: [check-version]
     if: needs.check-version.outputs.tag_exists == 'false' && needs.check-version.outputs.has_changelog == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
       contents: read
     steps:
@@ -78,7 +78,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.3"
 
       - name: Run CLI tests
         working-directory: cli
@@ -87,7 +87,7 @@ jobs:
   release-cli:
     needs: [check-version, test-cli]
     if: needs.check-version.outputs.tag_exists == 'false' && needs.check-version.outputs.has_changelog == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
       contents: write
     outputs:
@@ -108,7 +108,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.3"
 
       - name: Configure Git
         run: |
@@ -128,7 +128,7 @@ jobs:
   push-mintlify-changelog:
     needs: [check-version, release-cli]
     if: needs.check-version.outputs.tag_exists == 'false' && needs.check-version.outputs.has_changelog == 'true' && needs.release-cli.result == 'success'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
       contents: write
     steps:
