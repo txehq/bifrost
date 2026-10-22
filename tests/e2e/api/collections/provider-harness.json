@@ -248605,9 +248605,15 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var __list = (pm.response.json() || {}).plugins || [];",
+                  "// Only a listing that succeeded can show the row is absent: anything else keeps the gate closed.",
+                  "var __j = null; try { __j = pm.response.json(); } catch (e) { __j = null; }",
+                  "var __listed = pm.response.code === 200 && !!__j && Array.isArray(__j.plugins);",
+                  "var __list = __listed ? __j.plugins : [];",
                   "var __found = __list.filter(function (p) { return p && p.name === 'otel'; }).length > 0;",
-                  "pm.collectionVariables.set('h188Preexisting', __found ? 'true' : 'false');",
+                  "pm.collectionVariables.set('h188Preexisting', !__listed ? 'unknown' : (__found ? 'true' : 'false'));",
+                  "pm.test('the plugin listing succeeded', function () {",
+                  "  pm.expect(__listed, 'listing failed, so nothing shows the otel row is absent: ' + pm.response.text().slice(0, 300)).to.equal(true);",
+                  "});",
                   "pm.test('gateway has no otel row for this folder to create', function () {",
                   "  pm.expect(__found, 'this gateway already configures otel; the round-trip cases are skipped rather than overwrite and delete a row this run did not create, so point the folder at a gateway without one').to.equal(false);",
                   "});"
@@ -248650,6 +248656,8 @@
                   "// These cases create, rewrite and delete a plugin row, so they run only after the",
                   "// precondition above confirms there is no otel row to clobber. Skipping when that check",
                   "// did not run keeps a filtered run from mutating an unchecked gateway.",
+                  "// Ownership is recorded only by this seed's own 201, so clear what an earlier run left.",
+                  "pm.collectionVariables.unset('h188Owned');",
                   "if (pm.collectionVariables.get('h188Preexisting') !== 'false') { pm.execution.skipRequest(); }"
                 ]
               }
@@ -248661,7 +248669,9 @@
                 "exec": [
                   "pm.test('seeded the otel plugin row', function () {",
                   "  pm.expect(pm.response.code, 'seed failed: ' + pm.response.text()).to.equal(201);",
-                  "});"
+                  "});",
+                  "// A conflict means the row is someone else's: the cases below then leave it alone.",
+                  "if (pm.response.code === 201) { pm.collectionVariables.set('h188Owned', 'true'); }"
                 ]
               }
             }
@@ -248699,10 +248709,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// These cases create, rewrite and delete a plugin row, so they run only after the",
-                  "// precondition above confirms there is no otel row to clobber. Skipping when that check",
-                  "// did not run keeps a filtered run from mutating an unchecked gateway.",
-                  "if (pm.collectionVariables.get('h188Preexisting') !== 'false') { pm.execution.skipRequest(); }"
+                  "// These cases rewrite and delete the otel row, so they run only on the row this run's seed",
+                  "// created: a failed or skipped precondition, or a seed that hit an existing row, skips them.",
+                  "if (pm.collectionVariables.get('h188Preexisting') !== 'false' || pm.collectionVariables.get('h188Owned') !== 'true') { pm.execution.skipRequest(); }"
                 ]
               }
             },
@@ -248747,10 +248756,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// These cases create, rewrite and delete a plugin row, so they run only after the",
-                  "// precondition above confirms there is no otel row to clobber. Skipping when that check",
-                  "// did not run keeps a filtered run from mutating an unchecked gateway.",
-                  "if (pm.collectionVariables.get('h188Preexisting') !== 'false') { pm.execution.skipRequest(); }"
+                  "// These cases rewrite and delete the otel row, so they run only on the row this run's seed",
+                  "// created: a failed or skipped precondition, or a seed that hit an existing row, skips them.",
+                  "if (pm.collectionVariables.get('h188Preexisting') !== 'false' || pm.collectionVariables.get('h188Owned') !== 'true') { pm.execution.skipRequest(); }"
                 ]
               }
             },
@@ -248802,10 +248810,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// These cases create, rewrite and delete a plugin row, so they run only after the",
-                  "// precondition above confirms there is no otel row to clobber. Skipping when that check",
-                  "// did not run keeps a filtered run from mutating an unchecked gateway.",
-                  "if (pm.collectionVariables.get('h188Preexisting') !== 'false') { pm.execution.skipRequest(); }"
+                  "// These cases rewrite and delete the otel row, so they run only on the row this run's seed",
+                  "// created: a failed or skipped precondition, or a seed that hit an existing row, skips them.",
+                  "if (pm.collectionVariables.get('h188Preexisting') !== 'false' || pm.collectionVariables.get('h188Owned') !== 'true') { pm.execution.skipRequest(); }"
                 ]
               }
             },
@@ -248816,7 +248823,8 @@
                 "exec": [
                   "pm.test('cleaned up the otel plugin row', function () {",
                   "  pm.expect(pm.response.code, 'cleanup failed: ' + pm.response.text()).to.be.below(400);",
-                  "});"
+                  "});",
+                  "pm.collectionVariables.unset('h188Owned');"
                 ]
               }
             }
