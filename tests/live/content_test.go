@@ -84,13 +84,15 @@ func TestContent_LargeRecordingStreamsThroughTheGateway(t *testing.T) {
 	resp, err := (&http.Client{Timeout: 60 * time.Second}).Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	firstByte := time.Since(started)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, strconv.Itoa(recordingBytes), resp.Header.Get("Content-Length"), "the provider's length is passed through")
 
 	head := make([]byte, 4)
 	_, err = io.ReadFull(resp.Body, head)
 	require.NoError(t, err)
+	// Taken once body bytes are in hand: headers can arrive at once while a gateway
+	// that buffered the recording still sends the body only at the end.
+	firstByte := time.Since(started)
 	assert.Equal(t, "RIFF", string(head))
 	rest, err := io.Copy(io.Discard, resp.Body)
 	require.NoError(t, err)
