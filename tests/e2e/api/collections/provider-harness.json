@@ -191325,9 +191325,35 @@
                   "// Before the fix the primary conversion deleted cached_content from the shared ExtraParams",
                   "// map, the fallback transcribed the clip without it, and the request came back 200.",
                   "var txt = pm.response.text() || '';",
-                  "pm.test('the fallback attempt still carried cached_content, so Gemini rejected the bogus cache ref', function () {",
+                  "pm.test('the request is refused, not transcribed', function () {",
                   "  pm.expect(pm.response.code, 'got ' + pm.response.code + ' - a 2xx means the fallback attempt was sent without cached_content: ' + txt.slice(0, 300)).to.be.within(400, 499);",
-                  "});"
+                  "});",
+                  "// Any 4xx would pass the check above (auth, throttling, no fallback at all), so the fallback's own",
+                  "// log row must show it ran on gemini-2.5-flash and that Gemini refused it over the cache ref.",
+                  "// Child rows are written by the batching writer, so they are polled for.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "var tries = 0;",
+                  "(function children() {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?parent_request_id=' + encodeURIComponent(reqId || '') + '&limit=10', method: 'GET' }, function (err, res) {",
+                  "    var logs = []; try { logs = (res.json() || {}).logs || []; } catch (e) { logs = []; }",
+                  "    var fb = logs.filter(function (l) { return l.fallback_index === 1 && l.status !== 'processing'; })[0];",
+                  "    if (!fb && ++tries < 15) { return setTimeout(children, 1000); }",
+                  "    if (!fb) {",
+                  "      pm.test('the fallback attempt carried cached_content and Gemini refused the bogus cache ref', function () { pm.expect.fail('no settled fallback attempt logged under ' + reqId + ': ' + JSON.stringify(logs.map(function (l) { return [l.provider, l.model, l.status, l.fallback_index]; }))); });",
+                  "      return;",
+                  "    }",
+                  "    pm.sendRequest({ url: BASE + '/api/logs/' + encodeURIComponent(fb.id), method: 'GET' }, function (err2, res2) {",
+                  "      var j = null; if (!err2 && res2.code === 200) { try { j = res2.json(); } catch (e) { j = null; } }",
+                  "      pm.test('the fallback attempt carried cached_content and Gemini refused the bogus cache ref', function () {",
+                  "        pm.expect(j, 'log ' + fb.id + ' could not be read: ' + (err2 ? String(err2) : res2.code)).to.be.an('object');",
+                  "        pm.expect(j.provider + '/' + j.model, 'the fallback ran somewhere else').to.include('gemini-2.5-flash');",
+                  "        pm.expect(j.status).to.eql('error');",
+                  "        pm.expect(JSON.stringify(j.error_details || {}), 'the fallback failed for a reason other than the cache ref').to.match(/cached ?contents?/i);",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "})();"
                 ]
               }
             }
@@ -199514,7 +199540,9 @@
                 "type": "text/javascript",
                 "exec": [
                   "var j = pm.response.json();",
-                  "pm.test('Google error envelope came back through passthrough', function () { pm.expect(j.error, 'not a Google error envelope: ' + pm.response.text().slice(0, 400)).to.be.an('object'); pm.expect(j.error.code, pm.response.text().slice(0, 400)).to.be.within(400, 499); });"
+                  "// Only Google's not-found answers this probe: a 401, 403 or 429 also comes back as a Google error",
+                  "// envelope, but it says nothing about the unknown operation reaching Google.",
+                  "pm.test('Google error envelope came back through passthrough', function () { pm.expect(j.error, 'not a Google error envelope: ' + pm.response.text().slice(0, 400)).to.be.an('object'); pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(404); pm.expect(j.error.code, pm.response.text().slice(0, 400)).to.eql(404); pm.expect(j.error.status, pm.response.text().slice(0, 400)).to.eql('NOT_FOUND'); });"
                 ]
               }
             }
