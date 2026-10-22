@@ -20,14 +20,42 @@ const statusPresentation: Record<
 
 interface SidekiqJobsSectionProps {
 	jobs: SidekiqJob[];
+	// loading and failed describe a list that has not arrived; "No background jobs" is
+	// only true of a list that did.
+	loading?: boolean;
+	failed?: boolean;
+	onRetry?: () => void;
 	cancellingId?: string;
 	onCancel: (id: string) => void;
 	onDismiss: (ids: string[]) => void;
 }
 
-export default function SidekiqJobsSection({ jobs, cancellingId, onCancel, onDismiss }: SidekiqJobsSectionProps) {
+export default function SidekiqJobsSection({ jobs, loading, failed, onRetry, cancellingId, onCancel, onDismiss }: SidekiqJobsSectionProps) {
 	// Cancelling is final (a cancelled job is not resumable), so it takes a second click.
 	const [confirmId, setConfirmId] = useState<string>();
+
+	if (jobs.length === 0 && (loading || failed)) {
+		return (
+			<section
+				data-testid="sidekiq-jobs-section"
+				aria-label="Background jobs"
+				className="flex h-44 flex-col items-center justify-center gap-2 px-6 text-center"
+			>
+				{failed ? (
+					<>
+						<p className="text-sm font-medium">Couldn't load background jobs</p>
+						{onRetry && (
+							<Button variant="outline" size="sm" onClick={onRetry} data-testid="sidekiq-jobs-retry">
+								Try again
+							</Button>
+						)}
+					</>
+				) : (
+					<p className="text-muted-foreground text-sm">Loading background jobs…</p>
+				)}
+			</section>
+		);
+	}
 
 	if (jobs.length === 0) {
 		return (

@@ -91,7 +91,12 @@ export default function NotificationCenter() {
 	// Poll quickly while the tray is open or a job is active, slowly otherwise so a job started
 	// elsewhere still lights up the badge. The interval follows the data, hence the effect.
 	const [pollMs, setPollMs] = useState(() => sidekiqPollInterval({ open: false, activeCount: 0 }));
-	const { data: jobsData, error: jobsError } = useGetSidekiqJobsQuery(undefined, { pollingInterval: pollMs });
+	const {
+		data: jobsData,
+		error: jobsError,
+		isLoading: isJobsLoading,
+		refetch: refetchJobs,
+	} = useGetSidekiqJobsQuery(undefined, { pollingInterval: pollMs });
 	const [cancelJob, { originalArgs: cancellingId, isLoading: isCancelling }] = useCancelSidekiqJobMutation();
 	// A 403/503 means this caller never gets jobs; drop the section rather than show an error.
 	const jobsAvailable = !isSidekiqJobsUnavailable(jobsError);
@@ -270,6 +275,9 @@ export default function NotificationCenter() {
 							<TabsContent value="jobs">
 								<SidekiqJobsSection
 									jobs={jobs}
+									loading={isJobsLoading}
+									failed={!!jobsError && !jobsData}
+									onRetry={() => refetchJobs()}
 									cancellingId={isCancelling ? cancellingId : undefined}
 									onCancel={async (id) => {
 										try {
