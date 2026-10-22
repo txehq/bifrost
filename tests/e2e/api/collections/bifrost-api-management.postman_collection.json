@@ -4683,6 +4683,7 @@
                   "var json = null;",
                   "try { json = pm.response.json(); } catch (e) { json = null; }",
                   "var vk = (json && (json.virtual_key || json)) || {};",
+                  "pm.test('response is the virtual key under test', function () { pm.expect(json, pm.response.text()).to.be.an('object'); pm.expect(vk.id, JSON.stringify(vk)).to.eql(pm.collectionVariables.get('vkcl_id')); });",
                   "pm.test('null clears disable_content_logging back to inherit', function () { pm.expect(vk.disable_content_logging, JSON.stringify(vk)).to.be.oneOf([undefined, null]); });"
                 ]
               }
@@ -4726,6 +4727,7 @@
                   "var json = null;",
                   "try { json = pm.response.json(); } catch (e) { json = null; }",
                   "var vk = (json && (json.virtual_key || json)) || {};",
+                  "pm.test('response is the virtual key under test', function () { pm.expect(json, pm.response.text()).to.be.an('object'); pm.expect(vk.id, JSON.stringify(vk)).to.eql(pm.collectionVariables.get('vkcl_id')); });",
                   "pm.test('stored key inherits after the null update', function () { pm.expect(vk.disable_content_logging, JSON.stringify(vk)).to.be.oneOf([undefined, null]); });"
                 ]
               }
