@@ -135,6 +135,29 @@ describe("WarpStreamSession", () => {
 		expect(committed[1].usage).toBeUndefined();
 	});
 
+	// A clarifying question asked alongside narration must be in what the turn replays
+	// as, or the model cannot tell what the user's next message answers.
+	it("replays a question asked with narration alongside the narration", async () => {
+		const history: WarpTurn[] = [
+			{ role: "user", content: "why are requests failing?" },
+			{
+				role: "assistant",
+				content: "I can look at errors for you.",
+				question: { question: "Which time range?", options: [{ label: "Last 7 days", hint: "-7d" }] },
+			},
+		];
+		const sending = session.send(history, "Last 7 days");
+		await settle();
+		await net.push({ type: "done", finish_reason: "stop" });
+		await net.close();
+		await sending;
+
+		const messages = (net.calls[0].body as { messages: { role: string; content: string }[] }).messages;
+		expect(messages[1].content).toContain("I can look at errors for you.");
+		expect(messages[1].content).toContain("Which time range?");
+		expect(messages[1].content).toContain("Last 7 days (-7d)");
+	});
+
 	it("notifies subscribers per event and hands a late subscriber the in-flight state", async () => {
 		const seen: string[] = [];
 		session.subscribe(() => seen.push(session.getSnapshot().text));

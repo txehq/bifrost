@@ -4,6 +4,7 @@ import {
 	isEncodedTurnError,
 	isPartialAnswer,
 	parseWarpFrame,
+	replayedAssistantContent,
 	splitWarpFrames,
 	terminalConversationID,
 	warpTextLength,
@@ -220,7 +221,7 @@ export class WarpStreamSession {
 							// Lets the server cap how many times in a row Warp asks instead of answering.
 							.map((turn) => ({
 								role: turn.role,
-								content: turn.content,
+								content: turn.role === "assistant" ? replayedAssistantContent(turn.content, turn.question) : turn.content,
 								...(turn.role === "assistant" && turn.question ? { question: true } : {}),
 							})),
 						{ role: "user", content: question },

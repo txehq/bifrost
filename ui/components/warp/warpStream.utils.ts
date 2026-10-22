@@ -70,6 +70,19 @@ export function historyForRequest<T extends { content: string }>(history: T[]): 
 	return history.filter((turn) => turn.content.trim() !== "");
 }
 
+/**
+ * The text an assistant turn replays as. A clarifying question asked alongside
+ * narration was kept apart from the text, so the replay carried the narration
+ * alone and the model could not tell what the user's next message answered. The
+ * question and its choices are appended unless the text already holds the question.
+ */
+export function replayedAssistantContent(content: string, question?: WarpQuestion): string {
+	if (!question?.question || content.includes(question.question)) return content;
+	const choices = question.options.map((option) => (option.hint ? `${option.label} (${option.hint})` : option.label));
+	const asked = choices.length > 0 ? `${question.question}\nChoices: ${choices.join("; ")}` : question.question;
+	return content.trim() === "" ? asked : `${content}\n\n${asked}`;
+}
+
 /** Parses one SSE frame, or null for heartbeats and junk so the caller can skip it without tearing down the stream. */
 export function parseWarpFrame(frame: string): WarpEvent | null {
 	// The space after `data:` is optional in SSE; strip at most one, since further whitespace is part of the value.
