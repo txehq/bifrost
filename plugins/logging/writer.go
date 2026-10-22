@@ -1053,7 +1053,12 @@ func (p *LoggerPlugin) persistEvictedPartial(key any, pending *PendingLogData) {
 		dropCapturedInput(partial)
 	}
 	partial.ContentHidden = !policy.visible()
-	if !p.tryEnqueueLogEntry(partial, nil) {
+	queued := false
+	if release, ok := p.admitWrite(); ok {
+		queued = p.tryEnqueueLogEntry(partial, nil)
+		release()
+	}
+	if !queued {
 		// Nothing persisted: keep the entry so its input survives. The next sweep
 		// retries the insert, or a completion takes the entry and writes the full
 		// row. Still under the claim lock, so no terminal PostLLMHook can observe
@@ -1095,8 +1100,13 @@ func (p *LoggerPlugin) claimStaleMCPEntry(key any) (*logstore.MCPToolLog, bool) 
 // If the queue is full, the entry is dropped to prevent Postgres slowness
 // from cascading into request handling goroutines.
 func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry *logstore.Log)) {
-	if p.closed.Load() {
+	release, ok := p.admitWrite()
+	if !ok {
 		return
+	}
+	defer release()
+	if testHookAfterWriteAdmission != nil {
+		testHookAfterWriteAdmission()
 	}
 	// A row whose output-monitor guardrail result is still pending is written
 	// once that result lands (holdForDeferredGuardrail). The result is taken off
@@ -1194,6 +1204,22 @@ func (p *LoggerPlugin) writeHeldRow(entry *logstore.Log, callback func(entry *lo
 	}
 }
 
+// testHookAfterWriteAdmission runs right after a log entry is admitted for writing.
+// Nil outside tests; it lets a test land Cleanup between admission and hand-off.
+var testHookAfterWriteAdmission func()
+
+// admitWrite admits one producer hand-off to the writer, or reports closure. An
+// admitted producer holds Cleanup off until it has queued (or parked) its entry, so
+// the final drain sees every entry admitted before closure.
+func (p *LoggerPlugin) admitWrite() (release func(), ok bool) {
+	p.writeAdmission.RLock()
+	if p.closed.Load() {
+		p.writeAdmission.RUnlock()
+		return nil, false
+	}
+	return p.writeAdmission.RUnlock, true
+}
+
 // tryEnqueueLogEntry pushes a log entry to the write queue without blocking and
 // reports whether it was queued. It neither counts nor logs a failure, so a
 // caller that keeps the entry for a retry does not inflate droppedRequests.
@@ -1227,9 +1253,11 @@ func (p *LoggerPlugin) EnqueueLogEntry(entry *logstore.Log) {
 // (the partial persisted at eviction) instead of inserting. A full queue drops
 // the update, matching enqueueLogEntry's backpressure.
 func (p *LoggerPlugin) enqueueLogUpdate(entry *logstore.Log, callback func(entry *logstore.Log)) {
-	if p.closed.Load() {
+	release, ok := p.admitWrite()
+	if !ok {
 		return
 	}
+	defer release()
 	defer func() {
 		if r := recover(); r != nil {
 			p.logger.Error("recovered from a panic %v. dropping log update", r)
@@ -1258,9 +1286,11 @@ func (p *LoggerPlugin) EnqueueMCPToolLogEntry(entry *logstore.MCPToolLog) {
 // If the queue is full, the entry is dropped to prevent store slowness from
 // cascading into request handling goroutines.
 func (p *LoggerPlugin) enqueueMCPToolLogEntry(entry *logstore.MCPToolLog, callback func(entry *logstore.MCPToolLog)) {
-	if p.closed.Load() {
+	release, ok := p.admitWrite()
+	if !ok {
 		return
 	}
+	defer release()
 	defer func() {
 		if r := recover(); r != nil {
 			p.droppedRequests.Add(1)
@@ -1275,9 +1305,14 @@ func (p *LoggerPlugin) enqueueMCPToolLogEntry(entry *logstore.MCPToolLog, callba
 }
 
 func (p *LoggerPlugin) enqueueAgentLogEntry(entry *logstore.AgentLog) {
-	if entry == nil || p.closed.Load() {
+	if entry == nil {
 		return
 	}
+	release, ok := p.admitWrite()
+	if !ok {
+		return
+	}
+	defer release()
 	defer func() {
 		if recover() != nil {
 			p.droppedRequests.Add(1)

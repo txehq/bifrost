@@ -1295,6 +1295,10 @@ type LoggerPlugin struct {
 	// must survive eviction until the retry repairs them, or the retry reads the
 	// duplicate as unseen and skips its UPDATE.
 	recentLogBillingPinned map[string]bool
+	// writeAdmission is read-held by a producer from its closed check until its
+	// entry is queued or parked; Cleanup takes it after setting closed, so every
+	// admitted entry is in place before the held rows are released and drained.
+	writeAdmission sync.RWMutex
 }
 
 // Init creates new logger plugin with given log store. batchStore is the
@@ -2636,9 +2640,13 @@ func (p *LoggerPlugin) Cleanup() error {
 			p.videoSweeperCancel = nil
 		}
 		p.mu.Unlock()
-		// After closed is set, so no new row can be held behind this pass, and
-		// before the writer stops, so the released rows are drained with the rest.
+		// Taking writeAdmission waits out producers admitted before closed was set:
+		// each queues or parks its entry first, so the release and the drain below
+		// see it. After closed is set, so no new row can be held behind this pass,
+		// and before the writer stops, so the released rows are drained with the rest.
+		p.writeAdmission.Lock()
 		p.releaseHeldGuardrailRows()
+		p.writeAdmission.Unlock()
 		if p.cleanupTicker != nil {
 			p.cleanupTicker.Stop()
 		}

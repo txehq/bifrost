@@ -2536,3 +2536,48 @@ func TestCleanupWaitsForClaimedGuardrailRow(t *testing.T) {
 		t.Fatalf("expected the row written with the landed result, got %+v", got.GuardrailDebugParsed)
 	}
 }
+
+// TestRowAdmittedBeforeShutdownIsWritten pins that a row admitted for writing just
+// before Cleanup still reaches the store: Cleanup waits for the admitted producer to
+// park it, then releases and drains it, instead of closing the queue behind it.
+func TestRowAdmittedBeforeShutdownIsWritten(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	admitted, proceed := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	testHookAfterWriteAdmission = func() {
+		once.Do(func() {
+			close(admitted)
+			<-proceed
+		})
+	}
+	t.Cleanup(func() { testHookAfterWriteAdmission = nil })
+
+	produced := make(chan struct{})
+	go func() {
+		defer close(produced)
+		deferredGuardrailRow(t, plugin)
+	}()
+	<-admitted
+	cleaned := make(chan struct{})
+	go func() {
+		defer close(cleaned)
+		_ = plugin.Cleanup()
+	}()
+	// Unsynchronized, Cleanup finishes here and the row is handed off behind it.
+	select {
+	case <-cleaned:
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(proceed)
+	<-produced
+	<-cleaned
+
+	if _, err := store.FindByID(context.Background(), "req-monitor"); err != nil {
+		t.Fatalf("the row admitted before shutdown was lost: %v", err)
+	}
+}
