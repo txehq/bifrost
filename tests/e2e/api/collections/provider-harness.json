@@ -189359,11 +189359,12 @@
                   "pm.test('Bedrock converse guardContent (selective guardrail) - #7696: guardrail evaluated only the guarded block', function () {",
                   "  var trace = body.trace && body.trace.guardrail;",
                   "  pm.expect(trace, 'trace.guardrail missing although trace: enabled was sent: ' + txt.slice(0, 400)).to.be.an('object');",
+                  "  // trace: enabled makes AWS report the characters it evaluated; without them nothing shows the",
+                  "  // evaluation was selective, so their absence fails rather than skipping the comparison.",
                   "  var coverage = coverageOf(trace);",
-                  "  if (coverage) {",
-                  "    pm.expect(coverage.guarded, 'no characters guarded: ' + JSON.stringify(coverage)).to.be.above(0);",
-                  "    pm.expect(coverage.guarded, 'whole prompt evaluated, selective evaluation lost: ' + JSON.stringify(coverage)).to.be.below(coverage.total);",
-                  "  }",
+                  "  pm.expect(coverage, 'trace.guardrail carries no guardrailCoverage.textCharacters: ' + JSON.stringify(trace).slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(coverage.guarded, 'no characters guarded: ' + JSON.stringify(coverage)).to.be.above(0);",
+                  "  pm.expect(coverage.guarded, 'whole prompt evaluated, selective evaluation lost: ' + JSON.stringify(coverage)).to.be.below(coverage.total);",
                   "});"
                 ]
               }
@@ -189490,12 +189491,16 @@
                   "  pm.expect(txt, 'expected the metadata frame to carry trace.guardrail (trace: enabled was sent)').to.include('guardrail');",
                   "});",
                   "pm.test('Bedrock converse-stream guardContent (selective guardrail) - #7696: guardrail evaluated only the guarded block', function () {",
-                  "  var m = txt.match(/\"textCharacters\":\\{\"guarded\":(\\d+),\"total\":(\\d+)\\}/);",
-                  "  if (m) {",
-                  "    var guarded = parseInt(m[1], 10), total = parseInt(m[2], 10);",
-                  "    pm.expect(guarded, 'no characters guarded: ' + m[0]).to.be.above(0);",
-                  "    pm.expect(guarded, 'whole prompt evaluated, selective evaluation lost: ' + m[0]).to.be.below(total);",
+                  "  // The event-stream payload is JSON inside binary frames: read the textCharacters object itself,",
+                  "  // whatever its key order or spacing, and require it, since only it shows the evaluation was selective.",
+                  "  var coverage = null;",
+                  "  var re = /\"textCharacters\"\\s*:\\s*(\\{[^{}]*\\})/g, m;",
+                  "  while ((m = re.exec(txt)) !== null) {",
+                  "    try { var c = JSON.parse(m[1]); if (typeof c.guarded === 'number' && typeof c.total === 'number') { coverage = c; } } catch (e) {}",
                   "  }",
+                  "  pm.expect(coverage, 'the metadata frame carries no guardrailCoverage.textCharacters: ' + txt.slice(-400)).to.be.an('object');",
+                  "  pm.expect(coverage.guarded, 'no characters guarded: ' + JSON.stringify(coverage)).to.be.above(0);",
+                  "  pm.expect(coverage.guarded, 'whole prompt evaluated, selective evaluation lost: ' + JSON.stringify(coverage)).to.be.below(coverage.total);",
                   "});"
                 ]
               }
