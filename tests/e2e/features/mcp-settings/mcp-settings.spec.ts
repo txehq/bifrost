@@ -150,10 +150,19 @@ test.describe('MCP Settings', () => {
     })
 
     test.afterEach(async ({ request }) => {
+      // An omitted oauth2_server_config keeps the stored one (the config handler has no way
+      // to clear it), so a run that started with none restores an empty one: no issuer and
+      // no allowed redirect URIs. The readback proves the test's config is gone.
       await coreConfigApi.updateClientConfig(request, {
         mcp_server_auth_mode: originalAuthMode ?? 'headers',
-        oauth2_server_config: originalOAuth2Config,
+        oauth2_server_config: originalOAuth2Config ?? { allowed_redirect_uris: [] },
       })
+      const restored = (await coreConfigApi.get(request)).client_config
+      const config = restored.oauth2_server_config as { issuer_url?: unknown; allowed_redirect_uris?: string[] } | undefined
+      expect(restored.mcp_server_auth_mode).toBe(originalAuthMode ?? 'headers')
+      expect(config?.allowed_redirect_uris ?? []).toEqual((originalOAuth2Config?.allowed_redirect_uris as string[] | undefined) ?? [])
+      // issuer_url is a secret var (an object), so compare the serialized forms.
+      expect(JSON.stringify(config?.issuer_url ?? null)).toBe(JSON.stringify(originalOAuth2Config?.issuer_url ?? null))
     })
 
     test('should add an allowed redirect URI and persist it', async ({ mcpSettingsPage, request }) => {
