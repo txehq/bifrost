@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +25,7 @@ import (
 
 type backfillLogReader struct {
 	LogReaderStub
+	mu   sync.Mutex
 	logs []logstore.Log
 	// missing marks IDs Search still lists but GetLog no longer finds - the
 	// window retention deletes out from underneath a running backfill.
@@ -32,6 +35,8 @@ type backfillLogReader struct {
 }
 
 func (r *backfillLogReader) Search(_ context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	selected := make([]logstore.Log, 0, len(r.logs))
 	for _, entry := range r.logs {
 		if filters.StartTime != nil && entry.Timestamp.Before(*filters.StartTime) {
@@ -42,11 +47,28 @@ func (r *backfillLogReader) Search(_ context.Context, filters *logstore.SearchFi
 		}
 		selected = append(selected, entry)
 	}
+	total := len(selected)
+	// The (timestamp, id) order and keyset cursor the log store applies.
+	slices.SortStableFunc(selected, func(a, b logstore.Log) int {
+		if c := a.Timestamp.Compare(b.Timestamp); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	if pagination.AfterTimestamp != nil && pagination.AfterID != "" {
+		after := selected[:0:0]
+		for _, entry := range selected {
+			if entry.Timestamp.After(*pagination.AfterTimestamp) || (entry.Timestamp.Equal(*pagination.AfterTimestamp) && entry.ID > pagination.AfterID) {
+				after = append(after, entry)
+			}
+		}
+		selected = after
+	}
 	start := min(pagination.Offset, len(selected))
 	end := min(start+pagination.Limit, len(selected))
 	return &logstore.SearchResult{
-		Logs: selected[start:end], Pagination: logstore.PaginationOptions{TotalCount: int64(len(selected))},
-		Stats: logstore.SearchStats{TotalRequests: int64(len(selected))},
+		Logs: selected[start:end], Pagination: logstore.PaginationOptions{TotalCount: int64(total)},
+		Stats: logstore.SearchStats{TotalRequests: int64(total)},
 	}, nil
 }
 
@@ -246,33 +268,24 @@ func TestWarpEmbeddingSpaceChangeBlockedDuringBackfill(t *testing.T) {
 	require.ErrorIs(t, err, ErrBackfillInProgress)
 }
 
-func TestAdvanceBackfillCursorCountsTimestampTies(t *testing.T) {
+func TestAdvanceBackfillCursorRecordsTheLastRow(t *testing.T) {
 	timestamp := time.Now().UTC()
 	meta := BackfillJobMeta{}
-	// The cursor advances per page now, so ties are counted across pages: a
-	// resume has to skip every row already consumed at that exact timestamp,
-	// however many pages they arrived over.
-	advanceBackfillCursor(&meta, []logstore.Log{{Timestamp: timestamp}})
-	advanceBackfillCursor(&meta, []logstore.Log{{Timestamp: timestamp}})
-	require.Equal(t, 2, meta.CursorOffset)
-	advanceBackfillCursor(&meta, []logstore.Log{{Timestamp: timestamp}})
-	require.Equal(t, 3, meta.CursorOffset)
+	// The cursor is the last row consumed, ties included: the next page is read
+	// strictly after (timestamp, id).
+	advanceBackfillCursor(&meta, []logstore.Log{{ID: "a", Timestamp: timestamp}, {ID: "b", Timestamp: timestamp}})
+	require.True(t, meta.CursorTime.Equal(timestamp))
+	require.Equal(t, "b", meta.CursorID)
 
-	// Ties within one page are counted too, not just across pages.
-	page := BackfillJobMeta{}
-	advanceBackfillCursor(&page, []logstore.Log{{Timestamp: timestamp}, {Timestamp: timestamp}, {Timestamp: timestamp}})
-	require.Equal(t, 3, page.CursorOffset)
-
-	// A new timestamp restarts the count at that timestamp.
 	later := timestamp.Add(time.Second)
-	advanceBackfillCursor(&meta, []logstore.Log{{Timestamp: later}})
-	require.Equal(t, 1, meta.CursorOffset)
+	advanceBackfillCursor(&meta, []logstore.Log{{ID: "c", Timestamp: later}})
 	require.True(t, meta.CursorTime.Equal(later))
+	require.Equal(t, "c", meta.CursorID)
 
 	// An empty page leaves the cursor exactly where it was.
 	advanceBackfillCursor(&meta, nil)
-	require.Equal(t, 1, meta.CursorOffset)
 	require.True(t, meta.CursorTime.Equal(later))
+	require.Equal(t, "c", meta.CursorID)
 }
 
 // The cursor has to describe the same point the counters do. A page is indexed
@@ -284,20 +297,19 @@ func TestWarpBackfillCursorMatchesCountersPerPage(t *testing.T) {
 	meta := BackfillJobMeta{}
 
 	// One full page of two logs at the same timestamp, counted and passed.
-	page := []logstore.Log{{Timestamp: timestamp}, {Timestamp: timestamp}}
+	page := []logstore.Log{{ID: "a", Timestamp: timestamp}, {ID: "b", Timestamp: timestamp}}
 	meta.Scanned += len(page)
 	advanceBackfillCursor(&meta, page)
 
 	require.Equal(t, 2, meta.Scanned)
-	require.Equal(t, meta.Scanned, meta.CursorOffset,
-		"the cursor must have passed exactly the entries the counters claim")
+	require.Equal(t, "b", meta.CursorID, "the cursor must have passed exactly the entries the counters claim")
 
 	// A page that was cut short leaves both untouched, so the resume retries it.
 	before := *meta.CursorTime
-	offsetBefore, scannedBefore := meta.CursorOffset, meta.Scanned
+	idBefore, scannedBefore := meta.CursorID, meta.Scanned
 	advanceBackfillCursor(&meta, nil)
 	require.Equal(t, scannedBefore, meta.Scanned)
-	require.Equal(t, offsetBefore, meta.CursorOffset)
+	require.Equal(t, idBefore, meta.CursorID)
 	require.True(t, meta.CursorTime.Equal(before))
 }
 
@@ -879,7 +891,7 @@ func TestWarpBackfillResumesFromFailedRunCheckpoint(t *testing.T) {
 	var resumed BackfillJobMeta
 	require.NoError(t, sonic.Unmarshal([]byte(resumedJSON), &resumed))
 	require.Equal(t, failed.Scanned, resumed.Scanned)
-	require.Equal(t, failed.CursorOffset, resumed.CursorOffset)
+	require.Equal(t, failed.CursorID, resumed.CursorID)
 	require.NotNil(t, resumed.CursorTime)
 	require.Contains(t, resumed.Message, "Resuming")
 
@@ -909,4 +921,44 @@ func TestSummarizeBackfillMeta(t *testing.T) {
 	require.Equal(t, sidekiq.JobSummary{Done: 50, Total: 200}, got)
 
 	require.Equal(t, sidekiq.JobSummary{}, SummarizeBackfillMeta(`{not json`), "malformed metadata yields an empty summary")
+}
+
+// TestWarpBackfillDeletionAtTheCursorSkipsNoSurvivor: retention deleting a row the
+// backfill already consumed, at the cursor's own timestamp, must not make the next
+// page skip a surviving row - which an offset counted at that timestamp did.
+func TestWarpBackfillDeletionAtTheCursorSkipsNoSurvivor(t *testing.T) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	tied := start.Add(time.Hour)
+	logs := make([]logstore.Log, 0, backfillBatchSize+2)
+	for index := range backfillBatchSize + 2 {
+		id := fmt.Sprintf("log-%03d", index)
+		logs = append(logs, logstore.Log{ID: id, Timestamp: tied, Object: string(schemas.ChatCompletionRequest), Status: "success", ContentSummary: "payment failed " + id})
+	}
+	reader := &backfillLogReader{logs: logs}
+	service := NewService(nil,
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(reader),
+		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(backfillEmbeddingExecutor),
+	)
+	defer service.Shutdown()
+	metaJSON, err := service.BuildBackfillJobMeta(context.Background(), start, start.Add(24*time.Hour), false)
+	require.NoError(t, err)
+
+	deleted := false
+	finalJSON, err := service.RunBackfillJob(context.Background(), tables.TableSidekiqJob{Metadata: metaJSON}, func(value string) error {
+		var meta BackfillJobMeta
+		if sonic.Unmarshal([]byte(value), &meta) == nil && meta.Scanned == backfillBatchSize && !deleted {
+			// The first page is checkpointed; retention removes a row it consumed.
+			deleted = true
+			reader.mu.Lock()
+			reader.logs = reader.logs[1:]
+			reader.mu.Unlock()
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	require.True(t, deleted)
+	var final BackfillJobMeta
+	require.NoError(t, sonic.Unmarshal([]byte(finalJSON), &final))
+	require.Equal(t, backfillBatchSize+2, final.Scanned, "a surviving row was skipped")
+	require.Equal(t, backfillBatchSize+2, final.Indexed)
 }
