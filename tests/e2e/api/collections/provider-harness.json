@@ -161331,6 +161331,10 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  // A gateway refusal (governance, auth, budget) is a 403 too, so the error must be the provider's own:",
+                  "  // native routes answer with Bifrost's envelope, which flags an error Bifrost raised itself.",
+                  "  var j = null; try { j = JSON.parse(t); } catch (e) { j = null; }",
+                  "  pm.expect(j && j.is_bifrost_error, 'the refusal came from the gateway, not the provider: ' + t.slice(0, 300)).to.equal(false);",
                   "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
                   "});"
                 ]
@@ -161370,6 +161374,10 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  // A gateway refusal (governance, auth, budget) is a 403 too, so the error must be the provider's own:",
+                  "  // native routes answer with Bifrost's envelope, which flags an error Bifrost raised itself.",
+                  "  var j = null; try { j = JSON.parse(t); } catch (e) { j = null; }",
+                  "  pm.expect(j && j.is_bifrost_error, 'the refusal came from the gateway, not the provider: ' + t.slice(0, 300)).to.equal(false);",
                   "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
                   "});"
                 ]
@@ -161409,7 +161417,9 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
-                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "  // A drop-in error body carries no origin flag and a gateway refusal is a 403, so only the",
+                  "  // provider's own not-found shows the id reached it.",
+                  "  pm.expect(pm.response.code, 'expected the provider not-found, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.eql(404);",
                   "});"
                 ]
               }
@@ -161449,6 +161459,10 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  // A gateway refusal (governance, auth, budget) is a 403 too, so the error must be the provider's own:",
+                  "  // native routes answer with Bifrost's envelope, which flags an error Bifrost raised itself.",
+                  "  var j = null; try { j = JSON.parse(t); } catch (e) { j = null; }",
+                  "  pm.expect(j && j.is_bifrost_error, 'the refusal came from the gateway, not the provider: ' + t.slice(0, 300)).to.equal(false);",
                   "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
                   "});"
                 ]
@@ -161488,6 +161502,10 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  // A gateway refusal (governance, auth, budget) is a 403 too, so the error must be the provider's own:",
+                  "  // native routes answer with Bifrost's envelope, which flags an error Bifrost raised itself.",
+                  "  var j = null; try { j = JSON.parse(t); } catch (e) { j = null; }",
+                  "  pm.expect(j && j.is_bifrost_error, 'the refusal came from the gateway, not the provider: ' + t.slice(0, 300)).to.equal(false);",
                   "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
                   "});"
                 ]
@@ -161527,6 +161545,10 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  // A gateway refusal (governance, auth, budget) is a 403 too, so the error must be the provider's own:",
+                  "  // native routes answer with Bifrost's envelope, which flags an error Bifrost raised itself.",
+                  "  var j = null; try { j = JSON.parse(t); } catch (e) { j = null; }",
+                  "  pm.expect(j && j.is_bifrost_error, 'the refusal came from the gateway, not the provider: ' + t.slice(0, 300)).to.equal(false);",
                   "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
                   "});"
                 ]
@@ -161566,6 +161588,10 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  // A gateway refusal (governance, auth, budget) is a 403 too, so the error must be the provider's own:",
+                  "  // native routes answer with Bifrost's envelope, which flags an error Bifrost raised itself.",
+                  "  var j = null; try { j = JSON.parse(t); } catch (e) { j = null; }",
+                  "  pm.expect(j && j.is_bifrost_error, 'the refusal came from the gateway, not the provider: ' + t.slice(0, 300)).to.equal(false);",
                   "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
                   "});"
                 ]
@@ -161605,6 +161631,10 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  // A gateway refusal (governance, auth, budget) is a 403 too, so the error must be the provider's own:",
+                  "  // native routes answer with Bifrost's envelope, which flags an error Bifrost raised itself.",
+                  "  var j = null; try { j = JSON.parse(t); } catch (e) { j = null; }",
+                  "  pm.expect(j && j.is_bifrost_error, 'the refusal came from the gateway, not the provider: ' + t.slice(0, 300)).to.equal(false);",
                   "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
                   "});"
                 ]
@@ -161644,7 +161674,9 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
-                  "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
+                  "  // A drop-in error body carries no origin flag and a gateway refusal is a 403, so only the",
+                  "  // provider's own not-found shows the id reached it.",
+                  "  pm.expect(pm.response.code, 'expected the provider not-found, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.eql(404);",
                   "});"
                 ]
               }
@@ -161684,6 +161716,10 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  // A gateway refusal (governance, auth, budget) is a 403 too, so the error must be the provider's own:",
+                  "  // native routes answer with Bifrost's envelope, which flags an error Bifrost raised itself.",
+                  "  var j = null; try { j = JSON.parse(t); } catch (e) { j = null; }",
+                  "  pm.expect(j && j.is_bifrost_error, 'the refusal came from the gateway, not the provider: ' + t.slice(0, 300)).to.equal(false);",
                   "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
                   "});"
                 ]
@@ -161729,6 +161765,10 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  // A gateway refusal (governance, auth, budget) is a 403 too, so the error must be the provider's own:",
+                  "  // native routes answer with Bifrost's envelope, which flags an error Bifrost raised itself.",
+                  "  var j = null; try { j = JSON.parse(t); } catch (e) { j = null; }",
+                  "  pm.expect(j && j.is_bifrost_error, 'the refusal came from the gateway, not the provider: ' + t.slice(0, 300)).to.equal(false);",
                   "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
                   "});"
                 ]
@@ -161774,6 +161814,10 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  // A gateway refusal (governance, auth, budget) is a 403 too, so the error must be the provider's own:",
+                  "  // native routes answer with Bifrost's envelope, which flags an error Bifrost raised itself.",
+                  "  var j = null; try { j = JSON.parse(t); } catch (e) { j = null; }",
+                  "  pm.expect(j && j.is_bifrost_error, 'the refusal came from the gateway, not the provider: ' + t.slice(0, 300)).to.equal(false);",
                   "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
                   "});"
                 ]
@@ -161821,6 +161865,10 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  // A gateway refusal (governance, auth, budget) is a 403 too, so the error must be the provider's own:",
+                  "  // native routes answer with Bifrost's envelope, which flags an error Bifrost raised itself.",
+                  "  var j = null; try { j = JSON.parse(t); } catch (e) { j = null; }",
+                  "  pm.expect(j && j.is_bifrost_error, 'the refusal came from the gateway, not the provider: ' + t.slice(0, 300)).to.equal(false);",
                   "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
                   "});"
                 ]
@@ -161866,6 +161914,10 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  // A gateway refusal (governance, auth, budget) is a 403 too, so the error must be the provider's own:",
+                  "  // native routes answer with Bifrost's envelope, which flags an error Bifrost raised itself.",
+                  "  var j = null; try { j = JSON.parse(t); } catch (e) { j = null; }",
+                  "  pm.expect(j && j.is_bifrost_error, 'the refusal came from the gateway, not the provider: ' + t.slice(0, 300)).to.equal(false);",
                   "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
                   "});"
                 ]
@@ -161912,6 +161964,10 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  // A gateway refusal (governance, auth, budget) is a 403 too, so the error must be the provider's own:",
+                  "  // native routes answer with Bifrost's envelope, which flags an error Bifrost raised itself.",
+                  "  var j = null; try { j = JSON.parse(t); } catch (e) { j = null; }",
+                  "  pm.expect(j && j.is_bifrost_error, 'the refusal came from the gateway, not the provider: ' + t.slice(0, 300)).to.equal(false);",
                   "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
                   "});"
                 ]
@@ -161958,6 +162014,10 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  // A gateway refusal (governance, auth, budget) is a 403 too, so the error must be the provider's own:",
+                  "  // native routes answer with Bifrost's envelope, which flags an error Bifrost raised itself.",
+                  "  var j = null; try { j = JSON.parse(t); } catch (e) { j = null; }",
+                  "  pm.expect(j && j.is_bifrost_error, 'the refusal came from the gateway, not the provider: ' + t.slice(0, 300)).to.equal(false);",
                   "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
                   "});"
                 ]
@@ -162003,6 +162063,10 @@
                   "pm.test('well-formed ID passes the gate and reaches the provider', function () {",
                   "  var t = pm.response.text();",
                   "  pm.expect(t, 'a valid ID shape was rejected by the resource ID gate: ' + t.slice(0, 300)).to.not.match(/invalid [a-z_]+: (must not be empty|dot segments|path delimiters|control characters|unexpected|expected a Gemini|a Bedrock job ARN|URL delimiters)/);",
+                  "  // A gateway refusal (governance, auth, budget) is a 403 too, so the error must be the provider's own:",
+                  "  // native routes answer with Bifrost's envelope, which flags an error Bifrost raised itself.",
+                  "  var j = null; try { j = JSON.parse(t); } catch (e) { j = null; }",
+                  "  pm.expect(j && j.is_bifrost_error, 'the refusal came from the gateway, not the provider: ' + t.slice(0, 300)).to.equal(false);",
                   "  pm.expect([403, 404], 'expected a provider not-found or permission error, got ' + pm.response.code + ': ' + t.slice(0, 300)).to.include(pm.response.code);",
                   "});"
                 ]
