@@ -756,3 +756,42 @@ func TestWarpSemanticSearchShowsBothSidesOfTheConversation(t *testing.T) {
 	require.Contains(t, result.Rows[0].Content, "refund of $20")
 	require.LessOrEqual(t, len([]rune(result.Rows[0].Content)), LogContentChars+64, "the preview stays bounded")
 }
+
+// TestWarpSemanticSearchReportsEveryEmbeddingSpend pins that each query embedding a
+// search paid for is reported to the turn's spend sink, priced on the embedding
+// rate card, including one whose vector was then rejected.
+func TestWarpSemanticSearchReportsEveryEmbeddingSpend(t *testing.T) {
+	executor := func(_ *schemas.BifrostContext, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		dimension := 1536
+		if strings.Contains(*request.Input[0].Content[0].Text, "wrong") {
+			dimension = 8 // answered and billed, but unusable
+		}
+		return &schemas.BifrostEmbeddingResponse{
+			Data:  []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, dimension)}}},
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 7, TotalTokens: 7},
+		}, nil
+	}
+	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, newFakeWarpVectorStore(), executor, &semanticLogReader{})
+	searcher.price = func(usage *schemas.BifrostLLMUsage, config *schemas.WarpConfig) *schemas.BifrostCost {
+		require.Equal(t, "text-embedding-3-small", config.EmbeddingModel, "priced on the embedding model")
+		return &schemas.BifrostCost{TotalCost: float64(usage.TotalTokens) * 0.001, InputCost: float64(usage.TotalTokens) * 0.001}
+	}
+	sink := &spendSink{}
+	_, err := searcher.Search(withSpendSink(context.Background(), sink), []string{"declined cards", "wrong shape"}, nil, 10)
+	require.Error(t, err, "the rejected vector fails the search")
+	spent := sink.drain()
+	require.Len(t, spent, 2, "both answered calls were billed")
+	for _, usage := range spent {
+		require.Equal(t, 7, usage.TotalTokens)
+		require.NotNil(t, usage.Cost)
+		require.InDelta(t, 0.007, usage.Cost.TotalCost, 1e-9)
+	}
+
+	// Folded into the turn without the chat model's price.
+	var turn *schemas.BifrostLLMUsage
+	for _, usage := range spent {
+		turn = accumulateUsage(turn, usage, nil)
+	}
+	require.Equal(t, 14, turn.TotalTokens)
+	require.InDelta(t, 0.014, turn.Cost.TotalCost, 1e-9)
+}

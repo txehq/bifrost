@@ -891,6 +891,10 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 		// here needs a lock; wg.Wait() below is what makes reading results
 		// back afterward safe (the happens-before edge every prior Done gives
 		// the next Wait).
+		// Tools that spend on the turn's behalf (semantic search embeds its
+		// queries) report it here, so the turn's usage and cost include it.
+		spend := &spendSink{}
+		toolCtx := withSpendSink(ctx, spend)
 		var wg sync.WaitGroup
 		for _, q := range queued {
 			wg.Add(1)
@@ -932,7 +936,7 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 				}
 
 				started := time.Now()
-				result, failed := a.executeTool(ctx, q.name, q.args)
+				result, failed := a.executeTool(toolCtx, q.name, q.args)
 				end := Event{
 					Type: EventToolCallEnd, ToolID: q.id, ToolName: q.name,
 					DurationMs: time.Since(started).Milliseconds(), Failed: failed,
@@ -952,6 +956,11 @@ func (a *Agent) Run(ctx context.Context, messages []schemas.ResponsesMessage, ou
 			}(q)
 		}
 		wg.Wait()
+		// Already priced on the embedding model's rate card, so the chat price is
+		// not applied to it.
+		for _, spent := range spend.drain() {
+			usage = accumulateUsage(usage, spent, nil)
+		}
 
 		for _, result := range results {
 			if result != nil {

@@ -40,6 +40,41 @@ type SemanticSearcher struct {
 	// reader interface, where adding it breaks every implementation outside this
 	// repo - including ones with semantic search switched off.
 	logs SemanticHydrator
+	// price prices one query embedding by the embedding provider and model it ran
+	// on; nil when the deployment has no model catalog.
+	price func(usage *schemas.BifrostLLMUsage, config *schemas.WarpConfig) *schemas.BifrostCost
+}
+
+// spendSink collects the embedding usage a turn's tool calls spent, for the agent
+// to fold into what the turn reports.
+type spendSink struct {
+	mu     sync.Mutex
+	usages []*schemas.BifrostLLMUsage
+}
+
+type spendSinkKey struct{}
+
+func withSpendSink(ctx context.Context, sink *spendSink) context.Context {
+	return context.WithValue(ctx, spendSinkKey{}, sink)
+}
+
+// reportSpend records usage on ctx's sink, if any.
+func reportSpend(ctx context.Context, usage *schemas.BifrostLLMUsage) {
+	sink, _ := ctx.Value(spendSinkKey{}).(*spendSink)
+	if sink == nil || usage == nil {
+		return
+	}
+	sink.mu.Lock()
+	sink.usages = append(sink.usages, usage)
+	sink.mu.Unlock()
+}
+
+func (s *spendSink) drain() []*schemas.BifrostLLMUsage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	usages := s.usages
+	s.usages = nil
+	return usages
 }
 
 type SemanticSearchRow struct {
@@ -333,16 +368,30 @@ func (s *SemanticSearcher) nearestPages(ctx context.Context, namespace string, e
 // round trip, so they are not made to wait on one another.
 func (s *SemanticSearcher) embedQueries(ctx context.Context, config *schemas.WarpConfig, queries []string) ([][]float32, error) {
 	embeddings := make([][]float32, len(queries))
+	usages := make([]*schemas.BifrostLLMUsage, len(queries))
 	errs := make([]error, len(queries))
 	var wg sync.WaitGroup
 	for index, query := range queries {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			embeddings[index], _, errs[index] = generateWarpEmbedding(ctx, s.embed, config, query)
+			embeddings[index], usages[index], errs[index] = generateWarpEmbedding(ctx, s.embed, config, query)
 		}()
 	}
 	wg.Wait()
+	// Every answered call was billed, a rejected vector's included, so each is
+	// reported before any error returns. Priced here, on the embedding model's
+	// rate card, since the turn's own pricing is the chat model's.
+	for _, usage := range usages {
+		if usage == nil {
+			continue
+		}
+		spent := *usage
+		if spent.Cost == nil && s.price != nil {
+			spent.Cost = s.price(&spent, config)
+		}
+		reportSpend(ctx, &spent)
+	}
 	for _, err := range errs {
 		if err != nil {
 			return nil, fmt.Errorf("embed semantic query: %w", err)

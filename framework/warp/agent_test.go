@@ -2284,3 +2284,27 @@ func TestWarpSystemPromptKnowsItCannotSeeItsOwnPastConversations(t *testing.T) {
 	require.Contains(t, content, "never search the logs for them")
 	require.Contains(t, content, "conversation history in the Warp panel")
 }
+
+// TestWarpTurnUsageIncludesSemanticSearchEmbeddings pins that the embedding calls a
+// semantic search makes on the turn's behalf count in the turn's reported usage,
+// not just the chat model's turns.
+func TestWarpTurnUsageIncludesSemanticSearchEmbeddings(t *testing.T) {
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+		ToolTurn("call-1", SemanticSearchToolName, `{"queries":["payment failures"],"filters":{}}`),
+		TextTurn("none found."),
+	}}
+	embed := func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{
+			Data:  []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}},
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 7, TotalTokens: 7},
+		}, nil
+	}
+	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, newFakeWarpVectorStore(), embed, &semanticLogReader{})
+	agent := NewAgent(model.respond, nil, &fakeLogReader{}, nil, Scope{}, &schemas.WarpConfig{Enabled: true, Provider: schemas.OpenAI, Model: "gpt-4o"}, 0, "", searcher)
+
+	events := collectEvents(t, agent, context.Background())
+	done := events[len(events)-1]
+	require.Equal(t, EventDone, done.Type)
+	require.NotNil(t, done.Usage, "the turn paid for an embedding")
+	require.Equal(t, 7, done.Usage.TotalTokens)
+}
