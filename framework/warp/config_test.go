@@ -589,14 +589,16 @@ func (s *failingStore) UpsertWarpConfig(context.Context, *tables.TableWarpConfig
 // A namespace created by a save that then failed to persist is referenced by no
 // stored config, and the next save under a different name never reclaims it.
 // One that already existed belongs to whatever configuration is still live.
-func TestWarpSaveConfigCompensatesOnlyItsOwnNamespace(t *testing.T) {
-	t.Run("removes the namespace it created", func(t *testing.T) {
+func TestWarpSaveConfigNeverDeletesANamespaceOnFailure(t *testing.T) {
+	t.Run("keeps the namespace it created", func(t *testing.T) {
+		// Another node may store a config pointing at it at any moment, so a failed
+		// save cannot prove the namespace is only its own (see SaveConfig).
 		vectors := newFakeWarpVectorStore()
 		store := &failingStore{err: errors.New("write failed")}
 		service := NewService(nil, WithConfigStore(store), WithVectorStore(vectors))
 		_, err := service.SaveConfig(context.Background(), validWarpConfigInput())
 		require.Error(t, err)
-		require.Equal(t, []string{validWarpConfigInput().LogVectorStoreNamespace}, vectors.deleted)
+		require.Empty(t, vectors.deleted)
 	})
 
 	t.Run("leaves a namespace it did not create", func(t *testing.T) {
@@ -954,6 +956,17 @@ func TestWarpSaveConfigRollbackSparesAConcurrentSavesNamespace(t *testing.T) {
 		require.True(t, vectors.exists(namespace), "the stored config points at this namespace")
 	})
 
+	t.Run("another node lands after the read-back", func(t *testing.T) {
+		vectors := newNamespaceVectorStore()
+		landed := validWarpConfigRow()
+		landed.Model = winning.Model
+		store := &lateLandingConfigStore{racingConfigStore: racingConfigStore{failModel: failing.Model}, lands: landed}
+		service := NewService(nil, WithConfigStore(store), WithVectorStore(vectors))
+		_, err := service.SaveConfig(context.Background(), failing)
+		require.Error(t, err)
+		require.True(t, vectors.exists(namespace), "a config stored after any read-back points at this namespace")
+	})
+
 	t.Run("another node", func(t *testing.T) {
 		vectors := newNamespaceVectorStore()
 		landed := validWarpConfigRow()
@@ -964,4 +977,32 @@ func TestWarpSaveConfigRollbackSparesAConcurrentSavesNamespace(t *testing.T) {
 		require.Error(t, err)
 		require.True(t, vectors.exists(namespace), "a config another writer stored points at this namespace")
 	})
+}
+
+// lateLandingConfigStore is a racingConfigStore whose other writer commits just
+// after the failed save reads the config back, so no read-back can see it.
+type lateLandingConfigStore struct {
+	racingConfigStore
+	failed bool
+	lands  *tables.TableWarpConfig
+}
+
+func (s *lateLandingConfigStore) UpsertWarpConfig(ctx context.Context, config *tables.TableWarpConfig) error {
+	err := s.racingConfigStore.UpsertWarpConfig(ctx, config)
+	if err != nil {
+		s.mu.Lock()
+		s.failed = true
+		s.mu.Unlock()
+	}
+	return err
+}
+
+func (s *lateLandingConfigStore) GetWarpConfig(ctx context.Context) (*tables.TableWarpConfig, error) {
+	row, err := s.racingConfigStore.GetWarpConfig(ctx)
+	s.mu.Lock()
+	if s.failed && s.lands != nil {
+		s.row, s.lands = s.lands, nil
+	}
+	s.mu.Unlock()
+	return row, err
 }

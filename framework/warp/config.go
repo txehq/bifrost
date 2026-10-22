@@ -311,35 +311,17 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		row.SystemPromptSuffix = &input.SystemPromptSuffix
 	}
 	if err := s.store.UpsertWarpConfig(ctx, row); err != nil {
-		// Compensate: the namespace this save created is empty and no stored
-		// config points at it, so leaving it behind is a leak that the next save
-		// under a different name never reclaims. Only the one created here - a
-		// pre-existing namespace belongs to whatever configuration is still live.
-		//
-		// saveMu keeps another save in this process from creating the same
-		// namespace between our check and our create. A save on another node
-		// still can, so the stored config is read back first: if it now points at
-		// the namespace, someone else's save owns it and it is left alone. An
-		// unreadable config leaves ownership unknown, and a leak is the cheaper
-		// mistake than deleting a live index.
-		if createdNamespace != "" && s.vectorStore != nil && !s.storedConfigUsesNamespace(ctx, createdNamespace) {
-			if cleanupErr := s.vectorStore.DeleteNamespace(ctx, createdNamespace); cleanupErr != nil {
-				s.warnf("failed to remove warp vector namespace %s after a failed config save: %v", createdNamespace, cleanupErr)
-			}
+		// The namespace this save created is left in place. saveMu serializes saves
+		// in this process, but a save on another node can store a config pointing at
+		// it at any moment, including between a read-back and a delete, and deleting
+		// a live index loses every vector in it. An empty namespace left behind is the
+		// cheaper mistake.
+		if createdNamespace != "" {
+			s.warnf("warp vector namespace %s was created for a config save that failed; it is kept, since another node may already use it", createdNamespace)
 		}
 		return ConfigView{}, err
 	}
 	return s.configViewFromRow(row), nil
-}
-
-// storedConfigUsesNamespace reports whether the stored config indexes into
-// namespace, treating a failed read as yes.
-func (s *Service) storedConfigUsesNamespace(ctx context.Context, namespace string) bool {
-	current, err := s.store.GetWarpConfig(ctx)
-	if err != nil {
-		return true
-	}
-	return current != nil && normalizedNamespace(current.LogVectorStoreNamespace) == normalizedNamespace(namespace)
 }
 
 // mergeOmittedEmbeddingSettings fills embedding fields the write left empty
