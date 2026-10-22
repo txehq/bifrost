@@ -13,10 +13,13 @@ export interface WarpEmbeddingFields {
 }
 
 export const supportsWarpEmbedding = (provider: ModelProvider): boolean => {
-	if (provider.custom_provider_config) {
-		return provider.custom_provider_config.allowed_requests?.embedding === true;
+	const custom = provider.custom_provider_config;
+	// Absent allowed_requests means no restriction (the gateway allows every request
+	// type), so such a custom provider embeds if the provider it wraps does.
+	if (custom?.allowed_requests) {
+		return custom.allowed_requests.embedding === true;
 	}
-	return (EmbeddingSupportedProviders as readonly string[]).includes(provider.name);
+	return (EmbeddingSupportedProviders as readonly string[]).includes(custom?.base_provider_type ?? provider.name);
 };
 
 export const validateWarpEmbedding = (fields: WarpEmbeddingFields, enabled: boolean, vectorStoreConnected: boolean): string | null => {
