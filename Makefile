@@ -2379,11 +2379,12 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	fi; \
 	: "A row whose scripts call pm.sendRequest sends requests the entry count never sees: a"; \
 	: "retry loop, a session burst or a fallback probe turns one entry into up to thousands of"; \
-	: "calls. That number is not known before the row runs, so under a cap such a launch is"; \
+	: "calls. setNextRequest does the same by re-running entries (a row that retries itself)."; \
+	: "That number is not known before the row runs, so under a cap such a launch is"; \
 	: "refused, as the stream-cancellation probes are. A folder's script counts for every row"; \
 	: "under it. Prints the number of such rows, or 'unknown' when the file cannot be read."; \
 	scripted_rows() { \
-		node -e 'var c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); function s(x) { return JSON.stringify(x.event || []).indexOf("pm.sendRequest") !== -1; } function w(a, f) { var n = 0; (a || []).forEach(function (i) { var g = f || s(i); n += i.item ? w(i.item, g) : (g ? 1 : 0); }); return n; } console.log(w(c.item, s(c)));' "$$1" 2>/dev/null || echo unknown; \
+		node -e 'var c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); function s(x) { var e = JSON.stringify(x.event || []); return e.indexOf("pm.sendRequest") !== -1 || e.indexOf("setNextRequest(") !== -1; } function w(a, f) { var n = 0; (a || []).forEach(function (i) { var g = f || s(i); n += i.item ? w(i.item, g) : (g ? 1 : 0); }); return n; } console.log(w(c.item, s(c)));' "$$1" 2>/dev/null || echo unknown; \
 	}; \
 	budget_ok() { \
 		if [ -z "$(HARNESS_MAX_REQUESTS)" ]; then return 0; fi; \
@@ -2391,7 +2392,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			SCRIPTED_ROWS="$$(scripted_rows "$$3")"; \
 			if [ "$$SCRIPTED_ROWS" != "0" ]; then \
 				BUDGET_EXCEEDED=1; \
-				say "$(RED)[$$2] not launched: $$SCRIPTED_ROWS row(s) send requests from their scripts (pm.sendRequest), which no entry count bounds, so HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS) cannot cap them. Narrow PROVIDER/FEATURE/FOLDER to rows without scripted calls, or run without the cap.$(NC)"; \
+				say "$(RED)[$$2] not launched: $$SCRIPTED_ROWS row(s) send or re-run requests from their scripts (pm.sendRequest, setNextRequest), which no entry count bounds, so HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS) cannot cap them. Narrow PROVIDER/FEATURE/FOLDER to rows without scripted calls, or run without the cap.$(NC)"; \
 				return 1; \
 			fi; \
 		fi; \

@@ -140143,22 +140143,31 @@
           "name": "62.14 Azure: /anthropic content route returns real bytes (files-routes)",
           "event": [
             {
-              "listen": "test",
+              "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
                   "// Azure can still be processing the upload here (bifrost surfaces that as a",
                   "// 409 whose body says to poll until status is \"processed\"; see 62.13a).",
-                  "// Provider-side processing lag is not a routing defect, so re-run this row",
-                  "// instead of failing on it.",
-                  "var __tries = Number(pm.collectionVariables.get('filesAzureContentTries6214') || 0);",
-                  "if (pm.response.code === 409 && __tries < 10) {",
-                  "  pm.collectionVariables.set('filesAzureContentTries6214', __tries + 1);",
-                  "  setTimeout(function () {}, 2000);",
-                  "  postman.setNextRequest(pm.info.requestName);",
-                  "  return;",
-                  "}",
-                  "pm.collectionVariables.unset('filesAzureContentTries6214');",
+                  "// Provider-side processing lag is not a routing defect, so poll the same route",
+                  "// until it stops answering 409 and let the asserted request below run once:",
+                  "// re-running the row itself would leave each 409 attempt recorded as a failure.",
+                  "var url = pm.variables.replaceIn(pm.request.url.toString());",
+                  "var header = [];",
+                  "pm.request.headers.each(function (h) { if (!h.disabled) { header.push({ key: h.key, value: pm.variables.replaceIn(h.value) }); } });",
+                  "(function poll(attempt) {",
+                  "  pm.sendRequest({ url: url, method: 'GET', header: header }, function (err, res) {",
+                  "    if (!err && res && res.code === 409 && attempt < 10) { setTimeout(function () { poll(attempt + 1); }, 2000); }",
+                  "  });",
+                  "})(0);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
                   "pm.test('Azure via /anthropic: 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 200)).to.eql(200); });",
                   "pm.test('Azure via /anthropic: body is a PDF', function () { pm.expect((pm.response.text() || '').indexOf('%PDF')).to.eql(0); });",
                   "pm.test('Azure via /anthropic: not JSON', function () { pm.expect((pm.response.headers.get('Content-Type') || '')).to.not.include('json'); });"

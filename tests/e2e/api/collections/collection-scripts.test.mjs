@@ -1221,5 +1221,30 @@ test("provider-harness: a skipped native row that creates a routing rule does no
   assert.strictEqual(run({ include_skip: "1" }), 1, "an opted-in run did not create the routing rule");
 });
 
+// Azure can still be processing an upload when 62.14 reads its content (409). Re-running the row
+// left every 409 attempt recorded as a failed status check, so the row now polls in its
+// prerequest and the asserted request runs once.
+test("provider-harness: 62.14 polls Azure readiness before its asserted content request", () => {
+  let item = null;
+  (function walk(items) { for (const i of items) { if (i.item) walk(i.item); else if (i.name.startsWith("62.14 Azure: /anthropic content route")) item = i; } })(providerHarness.item);
+  assert.ok(item, "62.14 not found");
+  const script = (listen) => item.event.find((e) => e.listen === listen).script.exec.join("\n");
+  assert.ok(!/setNextRequest/.test(script("test")), "62.14 still re-runs itself from its test script");
+  const poll = (codes) => {
+    const seen = [];
+    const pm = {
+      variables: { replaceIn: (v) => v },
+      request: { url: { toString: () => "http://gw/anthropic/v1/files/f/content" }, headers: { each: (fn) => [{ key: "x-model-provider", value: "azure" }].forEach(fn) } },
+      sendRequest: (req, cb) => { seen.push(req); cb(null, { code: codes[Math.min(seen.length - 1, codes.length - 1)] }); },
+    };
+    new Function("pm", "setTimeout", script("prerequest"))(pm, (fn) => fn());
+    return seen;
+  };
+  const ready = poll([409, 409, 200]);
+  assert.strictEqual(ready.length, 3, "the poll did not stop at the first non-409");
+  assert.deepStrictEqual(ready[0].header, [{ key: "x-model-provider", value: "azure" }]);
+  assert.strictEqual(poll([409]).length, 11, "the poll is not bounded at 10 retries");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
