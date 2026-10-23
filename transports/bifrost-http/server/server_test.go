@@ -2348,7 +2348,7 @@ func TestGovernanceInMemoryStoreProvidersSurviveEdits(t *testing.T) {
 	assert.False(t, leaked, "the returned map is a snapshot, not the live map")
 }
 
-func startCustomAudioGateway(t *testing.T, dir string) (string, func()) {
+func startCustomAudioGateway(t *testing.T, dir string) (*BifrostHTTPServer, string, func()) {
 	t.Helper()
 	log := bifrost.NewNoOpLogger()
 	SetLogger(log)
@@ -2391,7 +2391,7 @@ func startCustomAudioGateway(t *testing.T, dir string) (string, func()) {
 		})
 	}
 	t.Cleanup(stop)
-	return "http://" + listener.Addr().String(), stop
+	return s, "http://" + listener.Addr().String(), stop
 }
 
 func TestCustomElevenlabsGateway(t *testing.T) {
@@ -2506,7 +2506,7 @@ func TestCustomElevenlabsGateway(t *testing.T) {
 	}
 	config := fmt.Sprintf(`{"client":{"enable_logging":false,"disable_content_logging":true},"providers":{},"framework":{"pricing":{"pricing_url":%q,"model_parameters_url":%q,"mcp_library_url":%q,"mcp_library_sync_interval":0,"live_models_sync_interval":0}}}`, "file://"+filepath.Join(dir, "pricing.json"), "file://"+filepath.Join(dir, "params.json"), "file://"+filepath.Join(dir, "mcp.json"))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(config), 0600))
-	base, stop := startCustomAudioGateway(t, dir)
+	gateway, base, stop := startCustomAudioGateway(t, dir)
 	client := &http.Client{Timeout: 10 * time.Second}
 	selectedName := "owned-selected"
 	call := func(method, path, body, contentType string, want int) ([]byte, http.Header) {
@@ -2609,7 +2609,7 @@ func TestCustomElevenlabsGateway(t *testing.T) {
 	speech("fail", "", 503)
 	require.Equal(t, before+1, speechCalls.Load())
 	stop()
-	base, stop = startCustomAudioGateway(t, dir)
+	gateway, base, stop = startCustomAudioGateway(t, dir)
 	assertContract()
 	before = speechCalls.Load()
 	speech("fail", "", 503)
@@ -2669,8 +2669,24 @@ func TestCustomElevenlabsGateway(t *testing.T) {
 		}
 		require.Equal(t, channel.name, headers.Get(lib.HeaderBifrostProvider))
 	}
+	snapshot, err := gateway.Config.GetProviderConfigRaw(provider)
+	require.NoError(t, err)
+	oldKey := snapshot.Keys[0]
+	gateway.updateKeyStatus(context.Background(), []schemas.KeyStatus{{
+		Provider: provider,
+		KeyID:    oldKey.ID,
+		Status:   schemas.KeyStatusListModelsFailed,
+		Error:    &schemas.BifrostError{Error: &schemas.ErrorField{Message: "owned status update"}},
+	}})
+	require.Equal(t, oldKey.Status, snapshot.Keys[0].Status)
+	require.Equal(t, oldKey.Description, snapshot.Keys[0].Description)
+	updated, err := gateway.Config.GetProviderConfigRaw(provider)
+	require.NoError(t, err)
+	require.Equal(t, schemas.KeyStatusListModelsFailed, updated.Keys[0].Status)
+	require.Equal(t, "owned status update", updated.Keys[0].Description)
 	stop()
 }
+
 
 // reloadVirtualKeyConfigStore provides the persistence calls used by ReloadVirtualKey.
 type reloadVirtualKeyConfigStore struct {

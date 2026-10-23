@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -259,6 +260,7 @@ func (s *BifrostHTTPServer) updateKeyStatus(
 		}
 
 		// Find and update the specific key in the Keys slice
+		providerConfig.Keys = slices.Clone(providerConfig.Keys)
 		updated := false
 		for i := range providerConfig.Keys {
 			if providerConfig.Keys[i].ID == ks.KeyID {

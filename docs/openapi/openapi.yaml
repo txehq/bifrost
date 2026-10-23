@@ -1793,6 +1793,8 @@ components:
       $ref: "./schemas/management/agents.yaml#/A2AJSONRPCRequest"
     A2AJSONRPCResponse:
       $ref: "./schemas/management/agents.yaml#/A2AJSONRPCResponse"
+    CustomBaseProvider:
+      $ref: "./schemas/management/providers.yaml#/CustomBaseProvider"
     # ==================== Common ====================
     ModelProvider:
       $ref: "./schemas/inference/common.yaml#/ModelProvider"

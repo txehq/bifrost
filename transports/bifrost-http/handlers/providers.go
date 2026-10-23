@@ -326,7 +326,9 @@ func (h *ProviderHandler) getProvider(ctx *fasthttp.RequestCtx) {
 
 	var config *configstore.ProviderConfig
 	if h.dbStore != nil {
-		config, err = h.dbStore.GetProviderConfig(ctx, provider)
+		dbCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		config, err = h.dbStore.GetProviderConfig(dbCtx, provider)
 		if err != nil {
 			if errors.Is(err, configstore.ErrNotFound) {
 				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
