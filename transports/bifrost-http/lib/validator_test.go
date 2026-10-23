@@ -13,10 +13,42 @@ import (
 	"testing"
 	"time"
 
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/vectorstore"
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/stretchr/testify/require"
 )
+
+func TestCustomBaseProviderSchemaContracts(t *testing.T) {
+	schema := loadLocalSchema(t)
+	_, filename, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	openAPI, err := os.ReadFile(filepath.Join(filepath.Dir(filename), "..", "..", "..", "docs", "openapi", "openapi.json"))
+	require.NoError(t, err)
+	for name, values := range map[string][]byte{"config": schema, "openapi": openAPI} {
+		path := "$defs.custom_provider_config.properties.base_provider_type.enum"
+		if name == "openapi" {
+			path = "components.schemas.CustomBaseProvider.enum"
+		}
+		var actual []schemas.ModelProvider
+		for _, value := range providerUtils.GetJSONField(values, path).Array() {
+			actual = append(actual, schemas.ModelProvider(value.String()))
+		}
+		require.ElementsMatch(t, schemas.SupportedBaseProviders, actual, name)
+	}
+	for _, base := range append(append([]schemas.ModelProvider{}, schemas.SupportedBaseProviders...), schemas.Azure, schemas.Vertex, "unknown-provider") {
+		t.Run(string(base), func(t *testing.T) {
+			config := []byte(fmt.Sprintf(`{"providers":{"tkp-audio":{"network_config":{"base_url":"https://reseller.example","max_retries":0},"custom_provider_config":{"base_provider_type":%q,"allowed_requests":{"list_models":true,"speech":true,"speech_stream":true,"transcription":true}}}}}`, base))
+			err := ValidateConfigSchema(config, schema)
+			if base == schemas.Azure || base == schemas.Vertex || base == "unknown-provider" {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
 
 // loadLocalSchema reads the local config.schema.json for use in tests,
 // avoiding remote fetches during test execution.

@@ -74,6 +74,7 @@ Sources:
 - [x] **Embeddings** (`POST /v1/embeddings`) - folder 53: batch-input arity (53.C1), `dimensions` maps to OpenAI `dimensions` (53.D1), `encoding_format: "base64"` returns a packed string (53.E1)
 - [x] **Audio speech (TTS)** (`POST /v1/audio/speech`) — audited: covered
 - [x] **Audio transcription** (`POST /v1/audio/transcriptions`) — audited: covered
+- [x] **ElevenLabs custom audio channels** — folder 278 (`custom-elevenlabs`): buffered speech, streamed speech with nonempty audio, and transcription retain the custom provider and selected key identity (TXE-5087).
 - [x] **Image generation** (`POST /v1/images/generations`) — audited: covered
 - [x] **Image edit** (`POST /v1/images/edits`) — built: folder 150.1 (openai/gpt-image-1, multipart)
 - [x] **Image variation** (`POST /v1/images/variations`) — gated: folder 150.2 [PREVIEW] (dall-e-2 availability unconfirmed)

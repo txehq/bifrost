@@ -2786,6 +2786,66 @@ func (m *MockConfigStore) RenamePromptSession(ctx context.Context, id uint, name
 }
 func (m *MockConfigStore) DeletePromptSession(ctx context.Context, id uint) error { return nil }
 
+func TestValidateCustomProviderAudioBase(t *testing.T) {
+	for _, tc := range []struct {
+		base    schemas.ModelProvider
+		allowed bool
+	}{
+		{schemas.Elevenlabs, true},
+		{schemas.OpenAI, true},
+		{schemas.Anthropic, true},
+		{schemas.Azure, false},
+		{schemas.Vertex, false},
+		{"unknown-provider", false},
+	} {
+		t.Run(string(tc.base), func(t *testing.T) {
+			cfg := configstore.ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{
+				BaseProviderType: tc.base,
+				AllowedRequests:  &schemas.AllowedRequests{ListModels: true, Speech: true, SpeechStream: true, Transcription: true},
+			}}
+			err := ValidateCustomProvider(cfg, "tkp-native-audio")
+			if tc.allowed {
+				require.NoError(t, err)
+				require.NoError(t, ValidateCustomProviderUpdate(cfg, cfg, "tkp-native-audio"))
+			} else {
+				require.ErrorContains(t, err, "unsupported base_provider_type")
+			}
+		})
+	}
+}
+
+func TestSQLiteCustomElevenlabsImportAndReload(t *testing.T) {
+	initTestLogger()
+	dir := createTempDir(t)
+	provider := schemas.ModelProvider("tkp-imported-elevenlabs")
+	cfg := makeProviderConfigWithNetwork("imported-key", "owned-imported-value", "https://reseller.example")
+	cfg.NetworkConfig.MaxRetries = 0
+	cfg.NetworkConfig.RetryBackoffInitial = 500 * time.Millisecond
+	cfg.NetworkConfig.RetryBackoffMax = 5 * time.Second
+	cfg.ConcurrencyAndBufferSize = &schemas.ConcurrencyAndBufferSize{Concurrency: 1000, BufferSize: 5000}
+	cfg.CustomProviderConfig = &schemas.CustomProviderConfig{
+		BaseProviderType: schemas.Elevenlabs,
+		AllowedRequests:  &schemas.AllowedRequests{ListModels: true, Speech: true, SpeechStream: true, Transcription: true},
+	}
+	createConfigFile(t, dir, makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{string(provider): cfg}, dir))
+	for round := 0; round < 2; round++ {
+		loaded, err := LoadConfig(context.Background(), dir)
+		require.NoError(t, err)
+		actual, err := loaded.GetProviderConfigRaw(provider)
+		require.NoError(t, err)
+		require.Equal(t, cfg.NetworkConfig, actual.NetworkConfig)
+		require.Equal(t, cfg.ConcurrencyAndBufferSize, actual.ConcurrencyAndBufferSize)
+		require.Equal(t, cfg.CustomProviderConfig.BaseProviderType, actual.CustomProviderConfig.BaseProviderType)
+		require.Equal(t, cfg.CustomProviderConfig.AllowedRequests, actual.CustomProviderConfig.AllowedRequests)
+		require.Equal(t, "owned-imported-value", actual.Keys[0].Value.GetValue())
+		persisted, err := loaded.ConfigStore.GetProvidersConfig(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, schemas.Elevenlabs, persisted[provider].CustomProviderConfig.BaseProviderType)
+		require.Zero(t, persisted[provider].NetworkConfig.MaxRetries)
+		loaded.Close(context.Background())
+	}
+}
+
 // Helper functions for tests
 
 // createTempDir creates a temporary directory for test files

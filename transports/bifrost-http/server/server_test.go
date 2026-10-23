@@ -1,15 +1,23 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2338,4 +2346,334 @@ func TestGovernanceInMemoryStoreProvidersSurviveEdits(t *testing.T) {
 	config.Mu.Unlock()
 	_, leaked := providers[schemas.Gemini]
 	assert.False(t, leaked, "the returned map is a snapshot, not the live map")
+}
+
+func startCustomAudioGateway(t *testing.T, dir string) (string, func()) {
+	t.Helper()
+	log := bifrost.NewNoOpLogger()
+	SetLogger(log)
+	lib.SetLogger(log)
+	handlers.SetLogger(log)
+	s := NewBifrostHTTPServer("txe5087", embed.FS{})
+	s.AppDir = dir
+	require.NoError(t, s.Bootstrap(context.Background()))
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	done := make(chan error, 1)
+	go func() { done <- s.Server.Serve(listener) }()
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			s.cancel()
+			require.NoError(t, s.Server.Shutdown())
+			require.NoError(t, <-done)
+			if s.IntegrationHandler != nil {
+				s.IntegrationHandler.Close()
+			}
+			s.stopLiveModelRefresher()
+			if s.WSTicketStore != nil {
+				s.WSTicketStore.Stop()
+			}
+			if s.TempTokenSweepWorker != nil {
+				s.TempTokenSweepWorker.Stop()
+			}
+			if s.OAuth2SweepWorker != nil {
+				s.OAuth2SweepWorker.stop()
+			}
+			if s.SidekiqDispatcherStop != nil {
+				s.SidekiqDispatcherStop()
+			}
+			if s.SidekiqRunner != nil {
+				s.SidekiqRunner.Shutdown()
+			}
+			s.Client.Shutdown()
+			s.Config.Close(context.Background())
+		})
+	}
+	t.Cleanup(stop)
+	return "http://" + listener.Addr().String(), stop
+}
+
+func TestCustomElevenlabsGateway(t *testing.T) {
+	const provider = "tkp-native-elevenlabs"
+	audio := bytes.Repeat([]byte("owned-audio"), 512)
+	var speechCalls atomic.Int32
+	var transcriptionCalls atomic.Int32
+	var selectedKey atomic.Value
+	cancelled := make(chan struct{}, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/openai/v1/models" || r.URL.Path == "/anthropic/v1/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_, err := io.WriteString(w, `{"data":[{"id":"owned-chat","object":"model","type":"model","display_name":"Owned chat"}]}`)
+			require.NoError(t, err)
+			return
+		}
+		if r.URL.Path == "/openai/v1/chat/completions" {
+			require.Equal(t, "Bearer owned-openai-value", r.Header.Get("Authorization"))
+			w.Header().Set("Content-Type", "application/json")
+			_, err := io.WriteString(w, `{"id":"chatcmpl-owned","object":"chat.completion","model":"owned-chat","choices":[{"index":0,"message":{"role":"assistant","content":"Owned chat"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+			require.NoError(t, err)
+			return
+		}
+		if r.URL.Path == "/anthropic/v1/messages" {
+			require.Equal(t, "owned-anthropic-value", r.Header.Get("x-api-key"))
+			w.Header().Set("Content-Type", "application/json")
+			_, err := io.WriteString(w, `{"id":"msg-owned","type":"message","role":"assistant","model":"owned-chat","content":[{"type":"text","text":"Owned chat"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+			require.NoError(t, err)
+			return
+		}
+		if r.URL.Path == "/reseller/v1/models" {
+			w.Header().Set("Content-Type", "application/json")
+			_, err := io.WriteString(w, `[{"model_id":"eleven_turbo_v2_5","name":"Owned speech","can_do_text_to_speech":true}]`)
+			require.NoError(t, err)
+			return
+		}
+		selectedKey.Store(r.Header.Get("xi-api-key"))
+		if r.URL.Path == "/reseller/v1/speech-to-text" {
+			transcriptionCalls.Add(1)
+			require.NoError(t, r.ParseMultipartForm(1024*1024))
+			require.Equal(t, "scribe_v2", r.FormValue("model_id"))
+			file, _, err := r.FormFile("file")
+			require.NoError(t, err)
+			data, err := io.ReadAll(file)
+			require.NoError(t, err)
+			require.NoError(t, file.Close())
+			require.Equal(t, []byte("owned-upload"), data)
+			w.Header().Set("Content-Type", "application/json")
+			_, err = io.WriteString(w, `{"text":"Owned transcription","language_code":"eng","language_probability":1,"words":[],"audio_duration_secs":1}`)
+			require.NoError(t, err)
+			return
+		}
+		require.True(t, r.URL.Path == "/reseller/v1/text-to-speech/owned-voice" || r.URL.Path == "/reseller/v1/text-to-speech/owned-voice/stream", r.URL.Path)
+		speechCalls.Add(1)
+		var request struct {
+			Text  string `json:"text"`
+			Model string `json:"model_id"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		require.Equal(t, "eleven_turbo_v2_5", request.Model)
+		if request.Text == "fail" {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, err := io.WriteString(w, `{"detail":{"status":"owned_failure","message":"controlled failure"}}`)
+			require.NoError(t, err)
+			return
+		}
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set("request-id", "owned-request")
+		w.Header().Set("x-character-count", "5")
+		if request.Text == "empty" {
+			w.Header().Set("Content-Length", "0")
+			return
+		}
+		if request.Text == "truncated" {
+			w.Header().Set("Content-Length", "100")
+			_, err := io.WriteString(w, "partial-audio")
+			require.NoError(t, err)
+			w.(http.Flusher).Flush()
+			return
+		}
+		if request.Text == "short" {
+			w.Header().Set("Content-Length", "28")
+			_, err := io.WriteString(w, "TXE-5087-owned-audio-payload")
+			require.NoError(t, err)
+			return
+		}
+		if request.Text == "cancel" {
+			_, err := w.Write(audio)
+			require.NoError(t, err)
+			w.(http.Flusher).Flush()
+			select {
+			case <-r.Context().Done():
+				cancelled <- struct{}{}
+			case <-time.After(5 * time.Second):
+				t.Error("upstream stream was not cancelled")
+			}
+			return
+		}
+		if request.Text == "slow" {
+			_, err := w.Write(audio)
+			require.NoError(t, err)
+			w.(http.Flusher).Flush()
+			time.Sleep(1200 * time.Millisecond)
+		}
+		_, err := w.Write(audio)
+		require.NoError(t, err)
+	}))
+	defer upstream.Close()
+	dir := t.TempDir()
+	for name, data := range map[string]string{"pricing.json": "{}", "params.json": "{}", "mcp.json": `{"servers":[]}`} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(data), 0600))
+	}
+	config := fmt.Sprintf(`{"client":{"enable_logging":false,"disable_content_logging":true},"providers":{},"framework":{"pricing":{"pricing_url":%q,"model_parameters_url":%q,"mcp_library_url":%q,"mcp_library_sync_interval":0,"live_models_sync_interval":0}}}`, "file://"+filepath.Join(dir, "pricing.json"), "file://"+filepath.Join(dir, "params.json"), "file://"+filepath.Join(dir, "mcp.json"))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(config), 0600))
+	base, stop := startCustomAudioGateway(t, dir)
+	client := &http.Client{Timeout: 10 * time.Second}
+	selectedName := "owned-selected"
+	call := func(method, path, body, contentType string, want int) ([]byte, http.Header) {
+		t.Helper()
+		req, err := http.NewRequest(method, base+path, strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", contentType)
+		req.Header.Set("x-bf-api-key", selectedName)
+		resp, err := client.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		data, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.Equal(t, want, resp.StatusCode, string(data))
+		return data, resp.Header
+	}
+	policy := `{"base_provider_type":"elevenlabs","allowed_requests":{"list_models":true,"speech":true,"speech_stream":true,"transcription":true}}`
+	network := fmt.Sprintf(`{"base_url":%q,"allow_private_network":true,"default_request_timeout_in_seconds":1,"max_retries":0,"retry_backoff_initial":500,"retry_backoff_max":5000}`, upstream.URL+"/reseller")
+	settings := `"network_config":` + network + `,"concurrency_and_buffer_size":{"concurrency":1000,"buffer_size":5000},"custom_provider_config":` + policy
+	call("POST", "/api/providers", `{"provider":"`+provider+`",`+settings+`}`, "application/json", 200)
+	for _, key := range []string{"owned-other", "owned-selected"} {
+		call("POST", "/api/providers/"+provider+"/keys", fmt.Sprintf(`{"name":%q,"value":%q,"models":["*"],"weight":1}`, key, key+"-value"), "application/json", 200)
+	}
+	assertContract := func() {
+		t.Helper()
+		data, _ := call("GET", "/api/providers/"+provider, "", "application/json", 200)
+		var cfg handlers.ProviderResponse
+		require.NoError(t, json.Unmarshal(data, &cfg))
+		require.Equal(t, schemas.ModelProvider(provider), cfg.Name)
+		require.Equal(t, schemas.SupportedBaseProviders, cfg.SupportedBaseProviders)
+		require.Equal(t, "active", cfg.ProviderStatus)
+		require.Equal(t, upstream.URL+"/reseller", cfg.NetworkConfig.BaseURL)
+		require.Contains(t, string(data), `"max_retries":0`)
+		require.Equal(t, 500*time.Millisecond, cfg.NetworkConfig.RetryBackoffInitial)
+		require.Equal(t, 5*time.Second, cfg.NetworkConfig.RetryBackoffMax)
+		require.Equal(t, schemas.ConcurrencyAndBufferSize{Concurrency: 1000, BufferSize: 5000}, cfg.ConcurrencyAndBufferSize)
+		require.Equal(t, schemas.Elevenlabs, cfg.CustomProviderConfig.BaseProviderType)
+		require.True(t, cfg.CustomProviderConfig.AllowedRequests.Speech)
+		require.True(t, cfg.CustomProviderConfig.AllowedRequests.SpeechStream)
+		require.True(t, cfg.CustomProviderConfig.AllowedRequests.Transcription)
+	}
+	assertContract()
+	keys, _ := call("GET", "/api/providers/"+provider+"/keys", "", "application/json", 200)
+	call("PUT", "/api/providers/"+provider, `{`+settings+`}`, "application/json", 200)
+	updatedKeys, _ := call("GET", "/api/providers/"+provider+"/keys", "", "application/json", 200)
+	require.JSONEq(t, string(keys), string(updatedKeys))
+	assertContract()
+	speech := func(text, stream string, want int) ([]byte, http.Header) {
+		return call("POST", "/v1/audio/speech", fmt.Sprintf(`{"model":"%s/eleven_turbo_v2_5","voice":"owned-voice","input":%q%s}`, provider, text, stream), "application/json", want)
+	}
+	data, headers := speech("hello", "", 200)
+	require.Equal(t, audio, data)
+	require.Equal(t, provider, headers.Get(lib.HeaderBifrostProvider))
+	require.Equal(t, "owned-selected-value", selectedKey.Load())
+	data, headers = speech("slow", `,"stream_format":"sse"`, 200)
+	require.Contains(t, string(data), "speech.audio.done")
+	decodeAudio := func(data []byte) []byte {
+		t.Helper()
+		var result []byte
+		for _, line := range strings.Split(string(data), "\n") {
+			if !strings.HasPrefix(line, "data: {") {
+				continue
+			}
+			var event struct {
+				Type  string `json:"type"`
+				Audio []byte `json:"audio"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event))
+			if event.Type == "speech.audio.delta" {
+				result = append(result, event.Audio...)
+			}
+		}
+		return result
+	}
+	require.Equal(t, append(append([]byte{}, audio...), audio...), decodeAudio(data))
+	require.Equal(t, provider, headers.Get(lib.HeaderBifrostProvider))
+	data, _ = speech("short", `,"stream_format":"sse"`, 200)
+	require.Equal(t, []byte("TXE-5087-owned-audio-payload"), decodeAudio(data))
+	data, _ = speech("empty", `,"stream_format":"sse"`, 200)
+	require.Empty(t, decodeAudio(data))
+	require.Contains(t, string(data), "speech.audio.done")
+	data, _ = speech("truncated", `,"stream_format":"sse"`, 200)
+	require.Equal(t, []byte("partial-audio"), decodeAudio(data))
+	require.Contains(t, string(data), `"error"`)
+	require.NotContains(t, string(data), "speech.audio.done")
+	var upload bytes.Buffer
+	writer := multipart.NewWriter(&upload)
+	require.NoError(t, writer.WriteField("model", provider+"/scribe_v2"))
+	file, err := writer.CreateFormFile("file", "owned.wav")
+	require.NoError(t, err)
+	_, err = file.Write([]byte("owned-upload"))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	data, headers = call("POST", "/v1/audio/transcriptions", upload.String(), writer.FormDataContentType(), 200)
+	require.Contains(t, string(data), "Owned transcription")
+	require.Equal(t, provider, headers.Get(lib.HeaderBifrostProvider))
+	require.Equal(t, "owned-selected-value", selectedKey.Load())
+	require.EqualValues(t, 1, transcriptionCalls.Load())
+	before := speechCalls.Load()
+	speech("fail", "", 503)
+	require.Equal(t, before+1, speechCalls.Load())
+	stop()
+	base, stop = startCustomAudioGateway(t, dir)
+	assertContract()
+	before = speechCalls.Load()
+	speech("fail", "", 503)
+	require.Equal(t, before+1, speechCalls.Load())
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, "POST", base+"/v1/audio/speech", strings.NewReader(fmt.Sprintf(`{"model":"%s/eleven_turbo_v2_5","voice":"owned-voice","input":"cancel","stream_format":"sse"}`, provider)))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-bf-api-key", "owned-selected")
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.StatusCode)
+	cancel()
+	require.NoError(t, resp.Body.Close())
+	select {
+	case <-cancelled:
+	case <-time.After(6 * time.Second):
+		t.Fatal("gateway did not cancel upstream stream")
+	}
+	for _, operation := range []string{"speech", "speech_stream", "transcription"} {
+		policy := fmt.Sprintf(`{"base_provider_type":"elevenlabs","allowed_requests":{"list_models":true,"speech":%t,"speech_stream":%t,"transcription":%t}}`, operation != "speech", operation != "speech_stream", operation != "transcription")
+		settings := `"network_config":` + network + `,"concurrency_and_buffer_size":{"concurrency":1000,"buffer_size":5000},"custom_provider_config":` + policy
+		call("PUT", "/api/providers/"+provider, `{`+settings+`}`, "application/json", 200)
+		before := speechCalls.Load() + transcriptionCalls.Load()
+		switch operation {
+		case "speech":
+			speech("hello", "", 400)
+		case "speech_stream":
+			speech("hello", `,"stream_format":"sse"`, 400)
+		case "transcription":
+			call("POST", "/v1/audio/transcriptions", upload.String(), writer.FormDataContentType(), 400)
+		}
+		require.Equal(t, before, speechCalls.Load()+transcriptionCalls.Load(), operation)
+	}
+	call("POST", "/api/providers", `{"provider":"owned-unsupported","custom_provider_config":{"base_provider_type":"azure"}}`, "application/json", 400)
+	for _, channel := range []struct{ name, base, prefix, key string }{
+		{"elevenlabs", "", "/reseller", "owned-builtin"},
+		{"owned-openai-custom", "openai", "/openai", "owned-openai"},
+		{"owned-anthropic-custom", "anthropic", "/anthropic", "owned-anthropic"},
+	} {
+		custom := ""
+		if channel.base != "" {
+			custom = fmt.Sprintf(`,"custom_provider_config":{"base_provider_type":%q}`, channel.base)
+		}
+		call("POST", "/api/providers", fmt.Sprintf(`{"provider":%q,"network_config":{"base_url":%q,"allow_private_network":true,"max_retries":0}%s}`, channel.name, upstream.URL+channel.prefix, custom), "application/json", 200)
+		call("POST", "/api/providers/"+channel.name+"/keys", fmt.Sprintf(`{"name":%q,"value":%q,"models":["*"],"weight":1}`, channel.key, channel.key+"-value"), "application/json", 200)
+		selectedName = channel.key
+		if channel.base == "" {
+			data, headers = call("POST", "/v1/audio/speech", `{"model":"elevenlabs/eleven_turbo_v2_5","voice":"owned-voice","input":"hello"}`, "application/json", 200)
+			require.Equal(t, audio, data)
+			require.Equal(t, "owned-builtin-value", selectedKey.Load())
+			data, _ = call("POST", "/v1/audio/speech", `{"model":"elevenlabs/eleven_turbo_v2_5","voice":"owned-voice","input":"short","stream_format":"sse"}`, "application/json", 200)
+			require.Equal(t, []byte("TXE-5087-owned-audio-payload"), decodeAudio(data))
+		} else {
+			data, headers = call("POST", "/v1/chat/completions", fmt.Sprintf(`{"model":"%s/owned-chat","messages":[{"role":"user","content":"hello"}],"max_tokens":8}`, channel.name), "application/json", 200)
+			require.Contains(t, string(data), "Owned chat")
+		}
+		require.Equal(t, channel.name, headers.Get(lib.HeaderBifrostProvider))
+	}
+	stop()
+}
+
+// reloadVirtualKeyConfigStore provides the persistence calls used by ReloadVirtualKey.
+type reloadVirtualKeyConfigStore struct {
+	configstore.ConfigStore
+	vk *configstoreTables.TableVirtualKey
 }
