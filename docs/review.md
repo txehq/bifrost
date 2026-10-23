@@ -43,7 +43,10 @@ its 15-minute wait; `@codex review` on the PR asks for another attempt.
    ```
 
    Done when `commit_sha` is your head (`gh pr view <n> -R txehq/bifrost --json headRefOid`)
-   and `status` is `completed`.
+   and `status` is `completed`. A `has_any_findings` that is neither true nor false (`null`
+   on txehq/txe PR 4047, TXE-5126) passes only on the connector's receipt for the head and
+   otherwise fails naming the value: comment `@codex review` once, which posts a receipt on
+   a clean head, and re-run the check.
 3. **Fix every P0 and P1 and push.** The push starts a new review; go back to 2. Fix a P2
    or P3 when it is right and cheap.
 4. **When a finding is wrong, reply in its thread with the evidence and stop.** Never add

@@ -1,0 +1,1523 @@
+[
+  {
+    "id": 4331288711,
+    "pull_request_review_id": 5592923685,
+    "commit_id": "d943b7cca2bbdcf018d321b62868c50423acc81b",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": null,
+    "original_line": 396,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reject runs with failed live writes**\n\nWhen a preliminary GET fails, a PATCH returns non-200, or a 200 response cannot be decoded, the write is omitted from `Expected`; the verdict checks only delivered observations and observer attachment, not `WritesAnswered == WritesAsked`. Consequently, a run with fewer than the required 200 writes and 10,000 observations can still report plain `\"met\"`. Treat every unsent or unsuccessful write as a failed expected observation and prevent a passing verdict.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/d943b7cca2bbdcf018d321b62868c50423acc81b/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4331288723,
+    "pull_request_review_id": 5592923685,
+    "commit_id": "d943b7cca2bbdcf018d321b62868c50423acc81b",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": null,
+    "original_line": 593,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Match the updated row by task ID**\n\nWhen another visible task has the same generated title and already has the desired state, this watcher resolves before the PATCH is reflected and records an artificial near-zero delivery time. The launch fixture generates 5,000 task titles from only 100 verb/noun combinations, so duplicate titles are expected; identify the row using the task ID encoded in its link or another stable DOM attribute rather than title text.\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4331668226,
+    "pull_request_review_id": 5593364070,
+    "commit_id": "d943b7cca2bbdcf018d321b62868c50423acc81b",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": null,
+    "original_line": 396,
+    "body": "Fixed in a14e1c9e9d: the offered workload is now every asked write times every asked observer (`Expected = writes x observers`, `Missing = Expected - Observed`), and `liveVerdict` is \"met\" only when all asked writes were answered, every observer attached, nothing missing or stale, and no resync or disconnect; otherwise \"incomplete, not met: …\" with the counts. `TestLiveVerdict` covers each case (a mutant dropping the stale check fails it)."
+  },
+  {
+    "id": 4331668403,
+    "pull_request_review_id": 5593364396,
+    "commit_id": "d943b7cca2bbdcf018d321b62868c50423acc81b",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": null,
+    "original_line": 593,
+    "body": "Fixed in a14e1c9e9d: the watcher now finds the task's own row by the id in its title link (`tr.flow-table__task a.flow-table__title[href*=\"/flow/tasks/<id>\"]`) and reads that row's State cell, so a row with the same generated title cannot resolve it."
+  },
+  {
+    "id": 4331694297,
+    "pull_request_review_id": 5593393757,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": 454,
+    "original_line": 379,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reject samples whose response body was incomplete**\n\nWhen a response returns 2xx headers and `io.ReadAll` subsequently fails, `client.do` stores the failure in `apiSample.Err`, but this branch still adds its server and partial round-trip times to the successful sample set. A run containing truncated focus, task, table, graph, or write responses can therefore report a target as `met`; treat a nonempty `s.Err` as a failed attempt and exclude it from the latency distribution.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/a14e1c9e9d928033f4935c208550ea8028f4aab7/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4331694305,
+    "pull_request_review_id": 5593393757,
+    "commit_id": "a14e1c9e9d928033f4935c208550ea8028f4aab7",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": null,
+    "original_line": 358,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Do not reuse a later arrival for multiple writes**\n\nWhen the writable-task sequence revisits a task and an observer misses an earlier invalidation, the same later arrival satisfies every preceding write because it is never consumed and `a.Version >= w.Version`. Since these writes toggle state, an arrival for a later `todo` version can falsely count as delivery of an earlier `doing` write that was never observed, allowing all expected observations and a passing verdict despite a missing update. Match each arrival to at most one write, or verify the expected state/version for each write.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/a14e1c9e9d928033f4935c208550ea8028f4aab7/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4331694314,
+    "pull_request_review_id": 5593393757,
+    "commit_id": "a14e1c9e9d928033f4935c208550ea8028f4aab7",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 272,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Fail material verification when its database read fails**\n\nIf the verifier connection drops or this query otherwise fails after the initial connection succeeds, the discarded `Scan` error turns the result into `0/0`. The material PATCH can still be recorded as a successful sample and the “50 watching supporters” target can be reported as `met` even though the harness never verified its workload; propagate the query error into a failed sample or abort the run instead of treating it as zero.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/a14e1c9e9d928033f4935c208550ea8028f4aab7/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4331714983,
+    "pull_request_review_id": 5593417009,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": 454,
+    "original_line": 379,
+    "body": "Fixed in 44d4fc2ba5: a sample whose body did not arrive whole (`Err` set) is classified `unverified` and counted as a failure (`failed_2xx_body_or_verification`), never as a time; `classify` is a pure function with `TestClassify` (a mutant dropping the Err case fails it)."
+  },
+  {
+    "id": 4331715188,
+    "pull_request_review_id": 5593417215,
+    "commit_id": "a14e1c9e9d928033f4935c208550ea8028f4aab7",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": null,
+    "original_line": 358,
+    "body": "Fixed in 44d4fc2ba5: `pairArrivals` joins each write with an arrival of exactly its task and the row version it made (the Flow event carries that row version, history.go `version: row`), received after the write was sent, and marks it used, so a later arrival never answers an earlier write that was missed. `TestPairArrivals` covers a missed earlier write and a stale pre-write arrival; a mutant back to `>=` fails it."
+  },
+  {
+    "id": 4331715385,
+    "pull_request_review_id": 5593417435,
+    "commit_id": "a14e1c9e9d928033f4935c208550ea8028f4aab7",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 272,
+    "body": "Fixed in 44d4fc2ba5: any error reading the flagged count or the alert candidates, or a change that did not flag every supporter (or added a different number of alert candidates), sets the sample's error, so it is a failure and the material target cannot be met on it."
+  },
+  {
+    "id": 4331750129,
+    "pull_request_review_id": 5593455274,
+    "commit_id": "54ff091c2035d50d0b146962496464159feb974d",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 277,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Scope candidate verification to the material change**\n\nDuring the API run, session goroutines concurrently perform comment replies and task changes, both of which can insert their own `ok_alert_candidates`, so this organization-wide count can change between `before` and `now` for reasons unrelated to the watched-source PATCH. A valid material change will then be classified as `unverified` whenever unrelated candidates make `added != total`, preventing the material target from passing under the intended concurrent workload; count only `flow_source_changed` candidates attributable to this change or its supporter tasks.\n\nAGENTS.md reference: [AGENTS.md:L133-L137](https://github.com/txehq/txe/blob/54ff091c2035d50d0b146962496464159feb974d/AGENTS.md#L133-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4331750139,
+    "pull_request_review_id": 5593455274,
+    "commit_id": "0cc255918ccd62c7680e64e9a5ecb293fcd307e0",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 210,
+    "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Exclude undersized pages from the 25-slice target**\n\nWhen pagination reaches a terminal page containing fewer than 25 slices, this branch records its size but leaves the sample successful, so `classify` includes its server time in the target named \"table page of 25 slices.\" Whenever `TotalSlices` is not divisible by 25, the benchmark can therefore report `met` using latency samples from a smaller workload; mark non-25-slice responses as unverified for this target or restart pagination before timing them.\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4331760943,
+    "pull_request_review_id": 5593467215,
+    "commit_id": "54ff091c2035d50d0b146962496464159feb974d",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 277,
+    "body": "Fixed in da21355668: the before/after count is scoped to `kind = 'flow_source_changed'` candidates whose `flow_task_id` is one of the watched source's own supporters (the insert in support_alerts.go records the supporting task there), so the sessions' concurrent replies and task changes cannot change it."
+  },
+  {
+    "id": 4331761101,
+    "pull_request_review_id": 5593467431,
+    "commit_id": "0cc255918ccd62c7680e64e9a5ecb293fcd307e0",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 210,
+    "body": "Fixed in da21355668: a session's walk of the pages starts over at the first page whenever the next would be shorter than 25 slices (`served+25 > total_slices`), and any table answer that still holds a number of slices other than 25 is marked unverified, so it is counted as a failure and never as a time for the 25-slice target."
+  },
+  {
+    "id": 4331779782,
+    "pull_request_review_id": 5593488350,
+    "commit_id": "0cc255918ccd62c7680e64e9a5ecb293fcd307e0",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 216,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reject malformed table responses**\n\nWhen `/flow/table` returns HTTP 200 with a complete but invalid JSON body, this branch leaves `s.Err` empty, so `classify` treats the response as timed and its server latency can contribute to a `\"met\"` table target; `TablePages` merely records zero slices and `targetVerdict` never checks that count. Record the decode error so malformed pages fail closed rather than becoming successful measurements.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/da2135566808fe367784507b77e843779fd03c64/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4331818778,
+    "pull_request_review_id": 5593531032,
+    "commit_id": "0cc255918ccd62c7680e64e9a5ecb293fcd307e0",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 516,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reject unexpected successful statuses before timing them**\n\nWhen a table or graph request returns an unexpected 2xx such as 204, this classifies it as timed even though the workload checks run only for status 200. The empty response therefore contributes its latency without a slice-count error or `smallGraphs` increment, so 100 such responses can report the table or graph target as `met` despite serving no workload; require the operation's expected status or validate every accepted 2xx response.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/0cc255918ccd62c7680e64e9a5ecb293fcd307e0/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4331818784,
+    "pull_request_review_id": 5593531032,
+    "commit_id": "0cc255918ccd62c7680e64e9a5ecb293fcd307e0",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 341,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Fail the material sample when its response cannot be decoded**\n\nWhen the material PATCH returns 200 and updates the database correctly but its complete response body is malformed, discarding this decode error leaves `r.err` empty and records `flow_material` as a successful timed sample. The ensuing acknowledgements may fail because `after.ContentVersion` remains zero, but those failures affect only the separate writes target, so the material-change target can still report `met`; classify the decode failure as an unverified material attempt.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/0cc255918ccd62c7680e64e9a5ecb293fcd307e0/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4331938068,
+    "pull_request_review_id": 5593669181,
+    "commit_id": "0cc255918ccd62c7680e64e9a5ecb293fcd307e0",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 516,
+    "body": "Fixed in 58de9ff332: each measured operation now has its own expected status (`expectedStatus`, all 200 as their handlers write and okr/api/openapi.yaml documents, the reply included); any other status, another 2xx included, is a failure. Each 200 body is checked against the workload it names (contract.go), and a material answer must decode as the watched task at a higher content version or the sample is unverified. Tests: TestClassifyUsesEachOperationsStatus, TestChecksRefuseBodiesThatAreNotTheWorkload (3 mutants killed)."
+  },
+  {
+    "id": 4331938279,
+    "pull_request_review_id": 5593669472,
+    "commit_id": "0cc255918ccd62c7680e64e9a5ecb293fcd307e0",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 341,
+    "body": "Fixed in 58de9ff332: each measured operation now has its own expected status (`expectedStatus`, all 200 as their handlers write and okr/api/openapi.yaml documents, the reply included); any other status, another 2xx included, is a failure. Each 200 body is checked against the workload it names (contract.go), and a material answer must decode as the watched task at a higher content version or the sample is unverified. Tests: TestClassifyUsesEachOperationsStatus, TestChecksRefuseBodiesThatAreNotTheWorkload (3 mutants killed)."
+  },
+  {
+    "id": 4331968197,
+    "pull_request_review_id": 5593705044,
+    "commit_id": "58de9ff332e977f01f7600a022ba36d790779b9a",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": null,
+    "original_line": 84,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Stop waiting for network idle while the event stream is open**\n\nIn the real web composition, `session.tsx` starts the persistent `/api/v1/events` fetch while the workspace is loading, and `source.ts` keeps reading its response body until the session ends. Consequently, `home()` cannot reach Playwright's `networkidle` state and each readiness, frame, or live measurement times out here before collecting samples. Wait for a finite application-ready condition instead of global network idleness.\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4332184756,
+    "pull_request_review_id": 5593963715,
+    "commit_id": "58de9ff332e977f01f7600a022ba36d790779b9a",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": null,
+    "original_line": 84,
+    "body": "Fixed in f48ec3c363: the spec never waits for network idle. home() waits for the page's load event and the Main navigation's Flow link; the other waits follow finite table conditions (25 groups drawn; Load more enabled or gone after the 500-row load)."
+  },
+  {
+    "id": 4332247104,
+    "pull_request_review_id": 5594034417,
+    "commit_id": "0cc255918ccd62c7680e64e9a5ecb293fcd307e0",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 216,
+    "body": "Fixed in 58de9ff332 (and kept since): every table answer goes through `checkTable` (contract.go), which returns an error for a body that does not decode, a slice naming no focus, or a page not of 25 slices; `verify` sets the sample's error, so `classify` counts it as `unverified`, a failure, never a time. `TestChecksRefuseBodiesThatAreNotTheWorkload` covers truncated JSON, `{}`, a short page and a slice without a focus."
+  },
+  {
+    "id": 4332250254,
+    "pull_request_review_id": 5594038049,
+    "commit_id": "2fcab8ad95f4302d2f944d224549455d288aadb9",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": null,
+    "original_line": 205,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Serialize batched refetches like the web client**\n\nWhen a focus refetch lasts until the next invalidation batch—possible with the default 1.5-second write interval even near the 2-second target—`flush` clears `timer` before doing its network reads, so the next event starts another `AfterFunc` callback and refetch concurrently. The real client serializes these refreshes through `LiveBus.run` and `useFlowTable`'s `serial` queue; allowing the harness's second refetch to bypass the first can make later observations complete much earlier and produce a passing p95 that the client would miss. Keep the batch marked as running and queue one follow-up flush instead.\n\nAGENTS.md reference: [AGENTS.md:L135-L137](https://github.com/txehq/txe/blob/2fcab8ad95f4302d2f944d224549455d288aadb9/AGENTS.md#L135-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4332257707,
+    "pull_request_review_id": 5594046358,
+    "commit_id": "bd8846acc93e1769ba8d098ef0b345fb061c890e",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/internal/httpapi/flow_read.go",
+    "line": 78,
+    "original_line": 77,
+    "body": "<!-- codex-security-review-finding:v1 -->\n\n### 🛡️ Codex Security Review · _Automatically triggered_\n\n**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> Security: Bound Flow audit fan-out per request**\n\nWhen Flow is enabled, an ordinary member can prepare 100 owned focuses with 200 tasks each and repeatedly request `/api/v1/flow/table?limit=100`. This new loop converts that one read token into at least 41 separate `Guard.Release` calls; each opens/commits a transaction and appends a 500-item audit row. The default limiter permits 600 reads/minute plus a 100-request burst per replica, while these rows are append-only and retained for a year, so a member can monopolize the API DB pool and grow durable audit storage until OKR is unavailable. Production is currently default-off, so impact is conditional, but staging is on. Cap total items/batches per response or charge limits by audited items.\n\nUseful? React with 👍 / 👎."
+  },
+  {
+    "id": 4332286557,
+    "pull_request_review_id": 5594078870,
+    "commit_id": "2fcab8ad95f4302d2f944d224549455d288aadb9",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": null,
+    "original_line": 205,
+    "body": "Fixed in 0fdb923988: the observers now refresh through `clientQueue` (queue.go), which mirrors live/bus.ts: invalidations are gathered for 100 ms, flushed to the follower, and read one refresh at a time; focuses named while a refresh runs wait and are read as soon as it settles. `TestClientQueueRefreshesOneAtATime` holds that (a mutant without the running check starts a second refresh and fails it); `close` stops a pending batch and waits for the refresh in flight, so nothing runs after the join (`TestClientQueueCloseLeavesNothingRunning`)."
+  },
+  {
+    "id": 4332312378,
+    "pull_request_review_id": 5594108817,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": 131,
+    "original_line": 118,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Drain in-flight requests before ending measurement**\n\nWhen a session starts its final request shortly before `end`, this deadline cancels the request exactly at the measurement boundary; because its `Sent` timestamp is still before `end`, the canceled request is retained as a measured failure. With 50 randomly phased sessions, requests whose legitimate latency overlaps the cutoff can therefore make an otherwise valid run permanently `incomplete, not met`, since every target requires zero failures. Stop scheduling new work at `end`, but allow already-started requests to finish under the caller's context before building the report.\n\nAGENTS.md reference: [AGENTS.md:L133-L137](https://github.com/txehq/txe/blob/0fdb9239888afd6e90c88f1777696d116aecc0c2/AGENTS.md#L133-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4332312381,
+    "pull_request_review_id": 5594108817,
+    "commit_id": "0fdb9239888afd6e90c88f1777696d116aecc0c2",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/main.go",
+    "line": null,
+    "original_line": 171,
+    "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Propagate tenant query errors**\n\nIf this startup query fails after the transaction has opened—for example because the connection drops—the error is discarded and the returned `rows` is passed to `pgx.CollectRows`; this can panic on a nil rows value or obscure the actual database error instead of returning it from `readTenant`. The following three `tx.Query` calls have the same defect, so check and return each query error before collecting rows.\n\nAGENTS.md reference: [AGENTS.md:L108-L108](https://github.com/txehq/txe/blob/0fdb9239888afd6e90c88f1777696d116aecc0c2/AGENTS.md#L108-L108)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4332324465,
+    "pull_request_review_id": 5594122523,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": 131,
+    "original_line": 118,
+    "body": "Fixed in e0ff70d71a: the measured window's end (rctx) now only stops the scheduling of new work; every request runs under the run's own context, so one sent before the end runs to its answer and is measured as what it is. `TestAPIRunDrainsRequestsSentBeforeTheEnd` runs the api load against a fake Flow API answering after 150 ms and requires every measured sample, including those in flight across the end, to be a whole timed answer; a mutant sending them under rctx again fails it with \"context deadline exceeded\"."
+  },
+  {
+    "id": 4332324603,
+    "pull_request_review_id": 5594122711,
+    "commit_id": "0fdb9239888afd6e90c88f1777696d116aecc0c2",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/main.go",
+    "line": null,
+    "original_line": 171,
+    "body": "Fixed in e0ff70d71a: readTenant checks each query's error before collecting its rows and returns it."
+  },
+  {
+    "id": 4332353297,
+    "pull_request_review_id": 5594155338,
+    "commit_id": "e0ff70d71ae288f544dd6f7f255cf40b88c34fbb",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": null,
+    "original_line": 208,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Parallelize focus reads within a live refresh**\n\nWhen invalidations for multiple focuses accumulate while an earlier refresh is running, this loop waits for each focus request before starting the next. The real client’s `useFlowTable.refreshFocuses` starts the named focus reads together with `Promise.all`; only `LiveBus.run` serializes successive refresh batches. The harness therefore measures the sum rather than the maximum of those request times and can report that the 2-second live target was missed even though the browser meets it. Preserve the outer queue serialization, but issue the focus reads within one refresh concurrently.\n\nAGENTS.md reference: [AGENTS.md:L133-L137](https://github.com/txehq/txe/blob/e0ff70d71ae288f544dd6f7f255cf40b88c34fbb/AGENTS.md#L133-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4332353310,
+    "pull_request_review_id": 5594155338,
+    "commit_id": "ffa3d69389ebc1b91a3f40a0925f6f90b77b7e2f",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 403,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Verify acknowledgements clear the source flag**\n\nWhen the acknowledge endpoint returns a valid task object but fails to record all supplied source versions, `checkTask` accepts the response solely because its ID matches, so that request is included as a successful timed `flow_acknowledge` sample even though `source.flagged` remains true. This can let the writes target pass without measuring completed acknowledgements, especially for the final material cycle, which has no subsequent change to expose the failed reset. Decode the task’s source status and require the flag to be cleared before timing the sample.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/e0ff70d71ae288f544dd6f7f255cf40b88c34fbb/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4332370926,
+    "pull_request_review_id": 5594175862,
+    "commit_id": "e0ff70d71ae288f544dd6f7f255cf40b88c34fbb",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": null,
+    "original_line": 208,
+    "body": "Fixed in 67734123fa: `refreshFocuses` reads a refresh's focuses at once (as useFlowTable's Promise.all), each through its pages following next_cursor, and the refresh is done when the last focus answers; clientQueue still serializes successive refreshes. `TestRefreshFocusesReadsTogetherThroughEveryPage` (3 focuses x 2 pages at 150 ms each take ~300 ms, not 900); a mutant reading them one after another fails it."
+  },
+  {
+    "id": 4332371070,
+    "pull_request_review_id": 5594176013,
+    "commit_id": "ffa3d69389ebc1b91a3f40a0925f6f90b77b7e2f",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 403,
+    "body": "Fixed in 67734123fa: `checkAck` requires the acknowledged task's id and its source status shown with `flagged: false`; anything else makes the sample unverified, a failure. `TestCheckAckRequiresTheFlagCleared` (still flagged, no source, another task, truncated JSON); a mutant dropping the flag check fails it. Against a real okr-api every acknowledgement passed it (28/28)."
+  },
+  {
+    "id": 4332402324,
+    "pull_request_review_id": 5594211378,
+    "commit_id": "67734123fad569419b731520a672259635fb470a",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/internal/loadfixture/flow.go",
+    "line": null,
+    "original_line": 218,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Keep random supports off the watched source**\n\nWhen `seed-flow -scale launch` uses the exposed default seed `1`, this draw selects task index 0 once, so the watched source receives 51 supporters rather than the 50 reserved above. `readTenant` then includes all 51, and the material benchmark verifies and times a 51-supporter change while still labeling the target \"material change with 50 watching supporters\"; exclude task 0 from the random target pool so every supported seed produces the declared workload.\n\nAGENTS.md reference: [AGENTS.md:L125-L129](https://github.com/txehq/txe/blob/67734123fad569419b731520a672259635fb470a/AGENTS.md#L125-L129)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4332402331,
+    "pull_request_review_id": 5594211378,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": 373,
+    "original_line": 278,
+    "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Synchronize the readiness-timeout snapshot**\n\nWhen any event stream has not completed readiness within 60 seconds, the timeout path proceeds without a happens-before edge and reads `obsRep[i].Attached` here while that observer goroutine can concurrently set it on a late `ready` event. This is a data race and can make the reported attached count depend on timing; guard the field with `mu`, or cancel and join late observers before taking the snapshot.\n\nAGENTS.md reference: [AGENTS.md:L135-L137](https://github.com/txehq/txe/blob/67734123fad569419b731520a672259635fb470a/AGENTS.md#L135-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4332432488,
+    "pull_request_review_id": 5594246898,
+    "commit_id": "67734123fad569419b731520a672259635fb470a",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/internal/loadfixture/flow.go",
+    "line": null,
+    "original_line": 218,
+    "body": "Fixed in b039873a3c: a draw of the watched source (task 0) is drawn again, so it has exactly its 50 supporters for every seed; `TestPlanFlowKeepsTheWatchedSourcesSupportersExact` checks seeds 1-40, 3054 and 4410 at the launch scale (without the fix, seeds 1, 4 and 5 make 51), and the pgtest now requires exactly Watched. The measured fixture's seed 4410 never drew it: its full launch plan hashes the same with and without the fix, so the seeded template is unchanged."
+  },
+  {
+    "id": 4332432636,
+    "pull_request_review_id": 5594247071,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": 373,
+    "original_line": 278,
+    "body": "Fixed in b039873a3c: the observer sets Attached under the run's lock, and the snapshot after the readiness wait reads it under the same lock."
+  },
+  {
+    "id": 4332721486,
+    "pull_request_review_id": 5594598643,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": 388,
+    "original_line": 368,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Require exactly 50 supporters for the material target**\n\nWhen the harness runs against a smaller fixture such as the supported isolation scale, `total == len(t.supporters) == 4` satisfies this condition, so 100 fast material samples can report the target named “material change with 50 watching supporters” as `met` after exercising only four supporters. Require exactly 50 supporters before accepting these samples, or mark non-launch fixtures as smoke-only rather than producing an acceptance verdict.\n\nAGENTS.md reference: [AGENTS.md:L139-L140](https://github.com/txehq/txe/blob/307bdba2258063aebb514258369da0c73d40399a/AGENTS.md#L139-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4332721490,
+    "pull_request_review_id": 5594598643,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": 574,
+    "original_line": 542,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Refuse reduced API loads before returning met**\n\nWhen `-sessions`, `-rate`, or `-duration` is reduced for a smoke run, this completeness gate still returns `met` once an operation accumulates 100 successful samples; it never verifies the declared method's 50 concurrent sessions at one request per second for ten minutes. A sufficiently long two-session run can therefore be recorded as satisfying the acceptance targets under much lower contention, so gate `met` on the canonical load profile or emit an explicit non-measurement verdict for overridden profiles.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/307bdba2258063aebb514258369da0c73d40399a/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4332721494,
+    "pull_request_review_id": 5594598643,
+    "commit_id": "886475acdd3b41989ec768367bb02801be347a8d",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": null,
+    "original_line": 395,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Refuse reduced live workloads before returning met**\n\nWhen the supported smoke overrides are used, such as `-observers 1 -writes 1`, this check compares delivery only with those reduced configuration values and can return plain `met` after one fast observation. The acceptance workload requires 50 observers and 200 writes (10,000 observations), so require that canonical workload before returning `met`, or label smaller runs as smoke-only evidence.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/307bdba2258063aebb514258369da0c73d40399a/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4332775931,
+    "pull_request_review_id": 5594664045,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": 388,
+    "original_line": 368,
+    "body": "Fixed in 71fb4874ec: an api run whose fixture does not have exactly 50 watched supporters is below the method (`apiConfig.belowMethod`, okr/cmd/okr-flow-perf/method.go), and every target of such a run is `smoke, not a measurement: 4 watched supporters in the fixture, not 50`, never met or missed. The shortfall is reported in `below_method`. Tests: `TestAPIBelowMethodIsASmoke` (isolation fixture, plus each target)."
+  },
+  {
+    "id": 4332776147,
+    "pull_request_review_id": 5594664320,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": 574,
+    "original_line": 542,
+    "body": "Fixed in 71fb4874ec: `apiConfig.belowMethod` compares the run with plan.md's method (50 sessions, 1 request a second a session, warmup at least 1m, at least 10m measured, a material change every 5s). Any shortfall makes every target `smoke, not a measurement: …`, with the reasons in `below_method`, however many samples it gathered. Tests: `TestAPIBelowMethodIsASmoke` covers each override; with the gate removed, 46 assertions fail."
+  },
+  {
+    "id": 4332776337,
+    "pull_request_review_id": 5594664548,
+    "commit_id": "886475acdd3b41989ec768367bb02801be347a8d",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": null,
+    "original_line": 395,
+    "body": "Fixed in 71fb4874ec: `liveConfig.belowMethod` requires 50 observers, 200 writes and a write every 1.5s. A smaller run is `smoke, not a measurement: …`, even when everything it asked for was delivered fast. Tests: `TestLiveBelowMethodIsASmoke`."
+  },
+  {
+    "id": 4332776502,
+    "pull_request_review_id": 5594664770,
+    "commit_id": "bd8846acc93e1769ba8d098ef0b345fb061c890e",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/internal/httpapi/flow_read.go",
+    "line": 78,
+    "original_line": 77,
+    "body": "Not fixed in this PR; filed as TXE-4770. The amplification is real: each 500-item chunk is its own `Guard.Release` transaction, so the largest table page is up to 41 audit transactions for one budgeted request. Before this PR, the same read failed outright (503 audit_unavailable), which is how the 1,000-node graph was never served. The fixes available (one transaction for all of a read's exposures, which changes `writeExposedAll`'s partial-failure semantics for every caller; charging the budget by audited items; a smaller largest page) are product and security decisions beyond this performance pass. Production has Flow default-off. TXE-4770 has the options and a done-when."
+  },
+  {
+    "id": 4332800601,
+    "pull_request_review_id": 5594692142,
+    "commit_id": "71fb4874eca38a44a1ffa3163fb49ef7529e969f",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": null,
+    "original_line": 136,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Require a full first page for the live workload**\n\nIf `/flow/table` returns a valid 200 response containing fewer than 25 slices, this accepts it as the observed page and can still report `met` after exercising writes from only those focuses. Because `ViewedFocuses` is informational and `liveVerdict` never checks it, an undersized response silently reduces the concurrent invalidation/refetch workload; validate this response with the same 25-slice contract used by the API measurement before starting observers.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/71fb4874eca38a44a1ffa3163fb49ef7529e969f/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4332800606,
+    "pull_request_review_id": 5594692142,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": 366,
+    "original_line": 349,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Preserve the failed material attempt's timestamp**\n\nWhen the watched-task GET is sent before the measurement cutoff but fails or finishes with malformed JSON after the cutoff, this synthetic failure is timestamped with `time.Now()` and therefore classified as warmup/out-of-window by `record`. The failed material cycle then disappears from the target entirely, so the remaining fast samples can still produce `met`; use the prerequisite request's `g.sent` timestamp to keep every offered in-window attempt accounted for.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/71fb4874eca38a44a1ffa3163fb49ef7529e969f/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4332818361,
+    "pull_request_review_id": 5594713170,
+    "commit_id": "71fb4874eca38a44a1ffa3163fb49ef7529e969f",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": null,
+    "original_line": 136,
+    "body": "Fixed in ffa3d69389: the live run starts only on a first page that meets the API measurement's contract. `firstPage` (live.go) runs `checkTable`: exactly 25 slices, each naming a focus. It also requires 25 distinct focuses. Anything else ends the run before an observer attaches. Tests: `TestLiveFirstPageIsAFullPage` (24 slices, one slice, 25 of one focus, a slice naming no focus, a 503, a truncated body, a 200 with a body error). Mutants: removing the checkTable call or the distinct check each fails it."
+  },
+  {
+    "id": 4332818530,
+    "pull_request_review_id": 5594713353,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": 366,
+    "original_line": 349,
+    "body": "Fixed in ffa3d69389: the failed material attempt is placed at its read's `g.sent`. The same defect was on the task write's read first (api.go, `flow_write_task`), and that is fixed the same way. `client.do` now stamps `sent` before anything can fail, so an attempt that never left still has its time. Tests: `TestAPIFailedPrerequisiteKeepsItsAttemptsTime` drives runAPI against a server whose writable tasks fail slowly across the end, and checks each write is measured exactly as its read; it fails with `time.Now()` restored. `TestClientAttemptThatNeverLeftKeepsItsTime` covers the stamp. The material beat needs the database, so it has the identical one-line change without its own unit test."
+  },
+  {
+    "id": 4332841274,
+    "pull_request_review_id": 5594739188,
+    "commit_id": "ffa3d69389ebc1b91a3f40a0925f6f90b77b7e2f",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 401,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Count acknowledgements skipped at the cutoff**\n\nWhen a measured material PATCH finishes near or after `end`—for example, after a delayed cycle causes the beat to catch up—`rctx` is already expired, so these goroutines return without sending or recording some or all of the 50 acknowledgements. The material sample remains successful, and the writes target sees neither failures nor missing attempts, allowing both targets to report `met` with part of the declared workload omitted; either stop starting material cycles that cannot finish their acknowledgements or record every skipped acknowledgement as a failed attempt.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/ffa3d69389ebc1b91a3f40a0925f6f90b77b7e2f/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4332907095,
+    "pull_request_review_id": 5594813875,
+    "commit_id": "ffa3d69389ebc1b91a3f40a0925f6f90b77b7e2f",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 401,
+    "body": "Fixed in 0b87830f36: the acknowledgements now go through `acknowledgeAll` (api.go). Every supporter of an answered material change acknowledges, under the run's own context, not the window's. The end of the window stops new cycles and never part of one already answered. Each acknowledgement is measured or not by its own sending, like every other request. A cancelled run still records every acknowledgement, as a failure, rather than dropping it. Test: `TestAcknowledgeAllSendsAndRecordsEverySupporter` checks that all 50 are sent once and verified, and that with a cancelled context all 50 are recorded as failures. With the old early return restored, it fails."
+  },
+  {
+    "id": 4333164520,
+    "pull_request_review_id": 5595112570,
+    "commit_id": "0b87830f361d04a4d4f5248dff7b4260b5d5c5ed",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": null,
+    "original_line": 57,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Preserve all three frame-time trials**\n\nWhen the method's required three frame trials are executed, every invocation writes to the same `flow-performance-frames.json`, so later trials overwrite earlier evidence; moreover, the documented command runs this test only once. The resulting report cannot retain each run or enforce the requirement that every run meet the frame targets. Aggregate three trials in one record or give each repeated run a unique output path before using this as acceptance evidence.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/0b87830f361d04a4d4f5248dff7b4260b5d5c5ed/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4333177997,
+    "pull_request_review_id": 5595127661,
+    "commit_id": "0b87830f361d04a4d4f5248dff7b4260b5d5c5ed",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": null,
+    "original_line": 57,
+    "body": "Fixed in cf4064aa08. Each frame-time run is one invocation with `OKR_FLOW_RUN=1`, `2` or `3`, and its record is its own file, `flow-performance-frames-run<n>.json`. `record()` never writes over an earlier record: when the file exists, the new record is kept beside it as `<file>.conflict-<ms>` and the test fails, so a repeated run can neither erase an earlier one nor stand in for it. Every write uses `flag: wx`. plan.md now gives the three invocations and the per-run files, and says each run is reported and a target is met only when every run meets it. The run script passes each trial its label. This spec runs only as a gated measurement (`OKR_FLOW_PERF`), not in a CI suite. It was checked with tsc, eslint and prettier."
+  },
+  {
+    "id": 4333213082,
+    "pull_request_review_id": 5595169166,
+    "commit_id": "cf4064aa0836514cf65245f858f1b05d26daf5ac",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 286,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Preserve the operation timestamp across prerequisite reads**\n\nWhen a task-write tick begins just before `end` and its prerequisite GET finishes after `end`, the PATCH still runs, but this call records `r.sent`, so `record` classifies the write outside the measurement window. Fresh evidence beyond the earlier failed-prerequisite fix is the successful continuation: the failure branch uses `g.sent`, while successful task writes—and the analogous material-change path—retain the later PATCH timestamp. A slow response at the cutoff can therefore erase an offered write or failure and let the writes target report `met` on incomplete workload; carry the original operation timestamp through the continuation.\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/cf4064aa0836514cf65245f858f1b05d26daf5ac/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4333213088,
+    "pull_request_review_id": 5595169166,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": 770,
+    "original_line": 535,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Include the client's final table read in live refreshes**\n\nOn the launch fixture the displayed table has more pages, so the real client’s `useFlowTable.refreshFocuses` performs an additional `api.table(query)` after all focused reads and does not resolve the refresh until that response is applied (`okr/web/apps/web/src/flow/useFlowTable.ts:281-285`). This harness instead returns immediately after the focused reads, omitting both that full-page request from the 50-observer load and its latency from every live observation; the harness can therefore report the 2-second target as `met` when the actual browser refresh would exceed it.\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/cf4064aa0836514cf65245f858f1b05d26daf5ac/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4333233730,
+    "pull_request_review_id": 5595194792,
+    "commit_id": "cf4064aa0836514cf65245f858f1b05d26daf5ac",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": null,
+    "original_line": 286,
+    "body": "Fixed in 886475acdd: a sample now carries `Offered`, the time its operation began, and `record` judges the window on it. A task write and a material change are offered at their read first's `g.sent`, so a write begun inside the window is measured, success or failure, however late its PATCH left. Every other sample is offered when it is sent. The material beat's `measured_cycles` uses the same rule. Test: `TestAPIWriteIsPlacedByWhenItBegan` drives runAPI with a slow read and a quick change. Each successful write is offered at its own read's sending and measured exactly as that read; in each run, 7 writes began inside the window and were sent after it, and all were measured. It fails if the write goes back to its own sending, or if `record` ignores `Offered`. plan.md states the rule."
+  },
+  {
+    "id": 4333233888,
+    "pull_request_review_id": 5595194975,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": 770,
+    "original_line": 535,
+    "body": "Fixed in 886475acdd, as `useFlowTable.refreshFocuses` does it. `firstPage` reports whether pages follow the viewed first page (on the launch fixture they do), and then every refresh reads the table's first page again for its count, after all the focused reads. The refresh is done only when that answers. A failed count fails the whole refresh (the client marks the table behind), so no focus in it counts as read again. After a failed focus read no count is read, because the client's Promise.all rejected. The report's config records `pages_beyond_first`. Test: `TestRefreshReadsTheCountLastWhenPagesRemain` covers one count read arriving after the last focus answered, `done` after it, none with every page on screen, a failed count failing every focus, and no count after a failed focus. Removing any of these makes it fail. plan.md describes it."
+  },
+  {
+    "id": 4333270973,
+    "pull_request_review_id": 5595239351,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": 42,
+    "original_line": 40,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Mark reduced browser runs as smoke**\n\nWhen `OKR_FLOW_SAMPLES`, `OKR_FLOW_WARMUP`, or `OKR_FLOW_FRAME_SECONDS` is reduced for a quick run, the readiness/live tests can write ordinary measurement records after only one sample, and the frame test can write one after only one second; unlike the Go harness, nothing marks these records as below-method or prevents them from being used for the fixed 30-sample/3-warmup/10-second acceptance method. Gate the browser records on the canonical values or label every reduced run explicitly as smoke.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/886475acdd3b41989ec768367bb02801be347a8d/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4333296010,
+    "pull_request_review_id": 5595269001,
+    "commit_id": "b59fe09b4e231c2477de48b8029058638d69b42a",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": null,
+    "original_line": 281,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Require an SSE ID before accepting stream events**\n\nWhen a `ready` or `invalidate` frame omits its `id:` field, this parser still attaches the observer and processes the invalidation, whereas the web client drops both frames in `live/model.ts:111-114`. A malformed stream can therefore produce all expected observations and a `met` verdict even though the browser would neither attach nor refresh; parse the SSE ID and reject frames under the same conditions as the client.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/b59fe09b4e231c2477de48b8029058638d69b42a/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4333374885,
+    "pull_request_review_id": 5595360739,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": 42,
+    "original_line": 40,
+    "body": "Fixed in cf98e6a10d. `record()` compares each run with the method: readiness 3 warmup and 30 measured samples, frames 10 s, live 30 samples. A run that falls short is written as `flow-performance-<name>…-smoke.json`, with `measurement: false`, `below_method` naming each shortfall, and `verdict: \"smoke, not a measurement\"`. A record of the method's own run carries `measurement: true`, so the two cannot be confused by name or by body. plan.md states the rule. Checked with tsc, eslint and prettier; this gated measurement spec runs in no CI suite."
+  },
+  {
+    "id": 4333375083,
+    "pull_request_review_id": 5595360966,
+    "commit_id": "b59fe09b4e231c2477de48b8029058638d69b42a",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": null,
+    "original_line": 281,
+    "body": "Fixed in cf98e6a10d. The harness now reads frames as `live/model.ts readWire` does (`sseWire`): `id`, `event` and `data` fields up to a blank line; comments skipped; one space after the colon dropped; data lines joined; unknown fields skipped without opening a frame. It acts on them as `decode`/`act` do: `ready`, `invalidate`, `flow-resync` and `authorization` without an id are dropped, and an id already seen is never acted on again. So an observer whose `ready` has no id never attaches. `authorization`, on which the client purges and reads everything again, is now counted and makes the run incomplete. Tests: `TestSSEWireReadsAsTheClient`. `TestRunLiveFollowsTheClient` now covers an observer whose ready has no id (not attached), id-less and repeated-id invalidations (not acted on), and an authorization event in the verdict. Mutants caught: ready accepted without an id, no dedup, id-less invalidations accepted, unknown fields opening a frame, authorization missing from the verdict. Removing the explicit comment rule is an equivalent mutant, because a comment has an empty field name and is already skipped as unknown."
+  },
+  {
+    "id": 4333412575,
+    "pull_request_review_id": 5595404936,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": 242,
+    "original_line": 237,
+    "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Synchronize observer errors with the attachment snapshot**\n\nWhen the attachment timeout expires while `stream.Do` is returning an error or non-200 response, the main goroutine ranges over `obsRep` to count attachments, which copies each whole `observerReport`, while these branches write its `Error` field without taking `mu`. Fresh evidence beyond the earlier `Attached` fix is that these early error/status assignments remain unsynchronized, so the timeout path still has a data race; protect every `obsRep` mutation with the mutex or snapshot attachment fields by index without copying the structs.\n\nAGENTS.md reference: [AGENTS.md:L135-L137](https://github.com/txehq/txe/blob/cf98e6a10df03e298673e2d1d6c539ae893b755f/AGENTS.md#L135-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4333412581,
+    "pull_request_review_id": 5595404936,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/internal/loadfixture/flow.go",
+    "line": 299,
+    "original_line": 299,
+    "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Make partial fixture creation recoverable**\n\nWhen any focus, task, support, or comment creation fails after another worker has committed at least one focus, this branch only remembers the error and returns with a partially populated organization. A retry against that organization is then unconditionally refused by the existing-focus check, so a transient failure during the thousands of service calls makes `seed-flow` permanently non-retryable without manually recreating the tenant; clean up the partial fixture on failure or resume it deterministically.\n\nAGENTS.md reference: [AGENTS.md:L135-L137](https://github.com/txehq/txe/blob/cf98e6a10df03e298673e2d1d6c539ae893b755f/AGENTS.md#L135-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4333468636,
+    "pull_request_review_id": 5595472520,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": 242,
+    "original_line": 237,
+    "body": "Agreed, the race is real; it is advisory (P2) and confined to a failure path. It happens only when an observer's stream fails to open (an error or a non-200) while the 60 s attach wait times out. That observer is then counted not attached, which already makes the run incomplete, so no measured time or count passes through it. The fix (taking `mu` for those two `Error` writes, as the other observer fields already do) will land in this PR's final commit with the measurement report, so the head under review now stays the pinned measurement build. The report will state that the measured binary predates this locking change, and that the change touches only that error path."
+  },
+  {
+    "id": 4333468844,
+    "pull_request_review_id": 5595472776,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/internal/loadfixture/flow.go",
+    "line": 299,
+    "original_line": 299,
+    "body": "Not changing this in this PR. `seed-flow` refuses an organization that already has Flow content on purpose: the fixture is exact (1,000 graph nodes, 50 watched supporters, fixed counts), and resuming over a partial one would risk a fixture that is not the declared one. After a failed seed, the remedy is a fresh organization or database, which is how the performance runs use it anyway: every section works on a fresh copy of a verified template. The failure is returned and reported, never silent."
+  },
+  {
+    "id": 4333491915,
+    "pull_request_review_id": 5595501666,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": 242,
+    "original_line": 237,
+    "body": "Correction to my reply above: per the coordinator, the fix lands before the measurement, not after. It is in 6aa08f22f7: both stream-open error writes now take `mu`, as every other observer field does. The new `TestRefusedStreamErrorIsRecordedUnderTheLock` has no attached observer to order the accesses by accident, so `go test -race` reported the race at live.go:242 against the snapshot before the fix. After the fix it reports none in 5 runs, and none across the whole package."
+  },
+  {
+    "id": 4333534358,
+    "pull_request_review_id": 5595554224,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": 114,
+    "original_line": 74,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Require all three numbered frame runs**\n\nWhen `OKR_FLOW_PERF=frames` runs without `OKR_FLOW_RUN`—which the usage line presents as optional—this is the only frame-specific method check, so `record` writes `flow-performance-frames.json` with `measurement: true`; arbitrary labels qualify too. The method requires distinct runs 1, 2, and 3 with every run passing, so incomplete evidence can still be classified as a measurement. Fresh evidence after the prior three-trial fix is that the current `belowMethod` validates only duration, not the run identity or completed set; reject or mark non-measurement frame runs outside the required set and verify all three before acceptance.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/6aa08f22f7d81ad5f9dde6d593c4ecbcb57d4564/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4333534366,
+    "pull_request_review_id": 5595554224,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/internal/httpapi/server_timing.go",
+    "line": 42,
+    "original_line": 32,
+    "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Preserve streaming for attachment downloads**\n\nWhen server timing is enabled in local or test and an attachment is downloaded, these lines retain the response until the handler returns because `attachmentContent` and `flowAttachmentContent` copy their bodies without calling `Flush`. Consequently, each download buffers the entire attachment—up to 25 MiB—in memory, sends no bytes while reading object storage, and cannot observe a client write failure until the full object has been consumed; concurrent downloads can produce a substantial memory spike. Exempt these streaming routes or switch the wrapper to passthrough before their copy begins.\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4333682073,
+    "pull_request_review_id": 5595734837,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": 114,
+    "original_line": 74,
+    "body": "Fixed in 49641c5574. The spec's `belowMethod` now requires a frames run to be named `OKR_FLOW_RUN=1`, `2` or `3`. A run with no label or any other label is recorded as smoke (`-smoke.json`, `measurement: false`, the shortfall named), never as a measurement. plan.md says the frame targets are judged only when all three records, run1 to run3, are present with `measurement: true`; a missing run is a missing measurement, never a pass. The run script passes 1, 2 and 3. Checked with tsc, eslint and prettier."
+  },
+  {
+    "id": 4333682300,
+    "pull_request_review_id": 5595735134,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/internal/httpapi/server_timing.go",
+    "line": 42,
+    "original_line": 32,
+    "body": "Fixed in 49641c5574. `serverTiming` now leaves `GET /api/v1/attachments/{id}/content` and `GET /api/v1/flow/attachments/{id}/content` alone (`servesContent`): they stream from storage as before, untimed, and are never held in memory. No target is timed on them. Every other route, attachment metadata included, is still timed. Test: `TestServerTimingLeavesDownloadsStreaming` covers both download paths (handler gets the server's own writer, no header), the metadata path, a longer path, a non-download route, and a POST to a content path (all timed). Removing the exemption fails it."
+  },
+  {
+    "id": 4333731234,
+    "pull_request_review_id": 5595793147,
+    "commit_id": "10e723b6ea96522cc69fdace83adc093d7259ea6",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/method.go",
+    "line": null,
+    "original_line": 48,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Validate the full launch fixture before issuing verdicts**\n\nWhen `-org` names a custom or partially seeded tenant with 100 members and 50 watched supporters but fewer than the required 500 focuses, 5,000 tasks, 2,500 threads, and 10,000 comments, this reports no fixture shortfall, so a canonical API run can return `met` against a materially smaller database. Fresh evidence beyond the earlier supporter-count fix is that `apiReport.Fixture` only records some cardinalities and this remains the sole fixture comparison; validate all launch-scale counts before treating the run as a measurement.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/49641c55747f59252619b30c1cb69624a9c63182/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4333731250,
+    "pull_request_review_id": 5595793147,
+    "commit_id": "10e723b6ea96522cc69fdace83adc093d7259ea6",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": null,
+    "original_line": 505,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reject live runs contaminated by off-page invalidations**\n\nWhen another Flow write occurs during the live section and names a focus outside the observers' first page, the harness increments `OffPage` and performs the extra refresh, but this completeness gate can still return `met`. Such an event proves the declared “nothing else changes” scenario was violated and changes the request load and batching around measured writes, so include `rep.OffPage > 0` in the incomplete verdict rather than accepting contaminated evidence.\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/49641c55747f59252619b30c1cb69624a9c63182/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4333978502,
+    "pull_request_review_id": 5596106491,
+    "commit_id": "968fc6b1e0b4df3e0819236db0c2f24c1dd8318e",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "ops/okr/perf/setup-linux.sh",
+    "line": null,
+    "original_line": 14,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Derive the setup pin from the requested SHA**\n\nThe workflow checks out the requested `SHA` but never exports `PIN`, so every PR-label or dispatch run defaults to commit `49641c55…`; the reviewed head is `a333c406…`, and the clean-pin check at line 21 therefore aborts before building or measuring anything. Pass the workflow's requested SHA into setup (or derive the pin from the checked-out HEAD) instead of embedding an earlier development commit.\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4333978508,
+    "pull_request_review_id": 5596106491,
+    "commit_id": "968fc6b1e0b4df3e0819236db0c2f24c1dd8318e",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "ops/okr/perf/timed3-linux.sh",
+    "line": null,
+    "original_line": 67,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Preserve the measured command's failure status**\n\nWhen an API harness or Playwright section exits nonzero—for example, the frame test rejects an interaction after writing its record—`rc` is only logged and this function returns the contamination judge's status. If the host was quiet, `j` is zero, so the failed section is treated as valid and later sections continue despite missing or explicitly rejected evidence; return a failure whenever either `rc` or `j` is nonzero.\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/968fc6b1e0b4df3e0819236db0c2f24c1dd8318e/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4333978517,
+    "pull_request_review_id": 5596106491,
+    "commit_id": "968fc6b1e0b4df3e0819236db0c2f24c1dd8318e",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "ops/okr/perf/timed3-linux.sh",
+    "line": null,
+    "original_line": 73,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Exit nonzero after an invalid monitored section**\n\nWhen `judge3.py` reports a section void or unmonitored, this branch merely breaks the loop; cleanup then succeeds and the script's final `log` makes the overall exit status zero. The workflow's timed step consequently goes green even though its own judge rejected the evidence, so retain the failure status through cleanup and exit nonzero afterward.\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/968fc6b1e0b4df3e0819236db0c2f24c1dd8318e/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4334054235,
+    "pull_request_review_id": 5596203803,
+    "commit_id": "968fc6b1e0b4df3e0819236db0c2f24c1dd8318e",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "ops/okr/perf/setup-linux.sh",
+    "line": null,
+    "original_line": 14,
+    "body": "Fixed in 5b82195348. `setup-linux.sh` has no default pin now: `PIN` is required, must be 40 hex, and must equal a clean HEAD. The workflow passes `PIN` from the validated requested SHA. Tests in `tests/scripts/test_okr_flow_perf_runs.py`: no PIN is refused; a PIN that is not HEAD is refused; a dirty checkout is refused; the clean pin goes on past the check. Restoring a stale default, or allowing a dirty tree, fails them."
+  },
+  {
+    "id": 4334054588,
+    "pull_request_review_id": 5596204199,
+    "commit_id": "968fc6b1e0b4df3e0819236db0c2f24c1dd8318e",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "ops/okr/perf/timed3-linux.sh",
+    "line": null,
+    "original_line": 67,
+    "body": "Fixed in 5b82195348. A section counts only when its workload exited 0, its record file is present, and its judge exited 0 with verdict `valid`. Both statuses go in `sections.tsv` (`workload_exit`, `output`, `judge_exit`, `verdict`). Tests: a failed API workload with a passing judge, a failed browser workload, and a missing record each fail the run (exit 3) with the statuses kept. Returning the judge's status alone fails them."
+  },
+  {
+    "id": 4334054958,
+    "pull_request_review_id": 5596204624,
+    "commit_id": "968fc6b1e0b4df3e0819236db0c2f24c1dd8318e",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "ops/okr/perf/timed3-linux.sh",
+    "line": null,
+    "original_line": 73,
+    "body": "Fixed in 5b82195348. The first section that is not a clean, valid measurement sets exit 3 and stops the run. The status survives cleanup (an EXIT/INT/TERM trap that stops exactly what the run started and verifies it). The sections not run are listed `not-run`. A baseline that does not qualify exits 2, and a cleanup failure exits 4. Tests: an invalid verdict with a passing workload exits 3; a non-qualifying baseline exits 2; a failed cleanup exits 4; SIGTERM stops everything and exits nonzero. Making cleanup exit 0, or dropping the TERM trap, fails them."
+  },
+  {
+    "id": 4334095768,
+    "pull_request_review_id": 5596255752,
+    "commit_id": "500137ec69806689c6c993875de624818e43912a",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "ops/okr/perf/timed3-linux.sh",
+    "line": null,
+    "original_line": 27,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Persist FL16_PERF_DIR after sourcing the helpers**\n\nIn the workflow's Linux run, this prefix assignment exists only while `source` executes; the functions imported from `lib.sh` resolve `FL16_PERF_DIR` later, after it has become unset. With `set -u`, the first `lstart_of` calls report an unbound variable, and because the workflow supplies `PG_CONTAINER_ID`, `container_root` then fails and aborts the run before the monitor starts. `monitor3.sh` uses the same temporary assignment and would also resolve the helper path incorrectly. Assign or export `FL16_PERF_DIR` separately before sourcing.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/5b82195348bd56d65047b59b7cd69936c0bbc234/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4334095773,
+    "pull_request_review_id": 5596255752,
+    "commit_id": "500137ec69806689c6c993875de624818e43912a",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "tests/scripts/test_okr_flow_perf_portable.py",
+    "line": null,
+    "original_line": 52,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Provide the synthetic cgroup tree to the host CPU test**\n\nOn Linux, `proc_tree` creates only an empty synthetic `self` directory, but this invocation now runs the complete script, whose `allotted()` requires `<proc-root>/self/cgroup`. It therefore exits 1 with an unknown cgroup hierarchy, making the assertion on the next line fail. The workflow runs this exact pytest file in its mandatory “monitor's own checks” step, so it stops before setup or measurement on every Linux runner; construct and pass a synthetic cgroup root here, or test `linux()` directly as the Darwin branch does.\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4334171216,
+    "pull_request_review_id": 5596353196,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "ops/okr/perf/timed3-linux.sh",
+    "line": 202,
+    "original_line": 144,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Start the API for standalone frame retries**\n\nWhen a frame trial is rerun as documented with, for example, `ATTEMPT=2 timed3-linux.sh … frames2`, no preceding readiness section has called `fresh`; this startup case excludes all frame sections, so no `okr-api` is listening when Playwright begins and the retry fails before producing a record. Start a fresh API for a standalone frame sequence, while allowing consecutive frame trials to reuse it.\n\nAGENTS.md reference: [AGENTS.md:L135-L137](https://github.com/txehq/txe/blob/500137ec69806689c6c993875de624818e43912a/AGENTS.md#L135-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4334180548,
+    "pull_request_review_id": 5596365669,
+    "commit_id": "500137ec69806689c6c993875de624818e43912a",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "ops/okr/perf/timed3-linux.sh",
+    "line": null,
+    "original_line": 27,
+    "body": "Confirmed and fixed in 4e9345d9ae. `lib.sh` now sets and exports `FL16_PERF_DIR` itself, from its own `BASH_SOURCE`; `timed3-linux.sh` and `monitor3.sh` just `source` it, with no prefix assignment. New test `test_the_helpers_dir_survives_sourcing_under_set_u` checks this under `bash -u`. The Mac never showed the bug (`lstart_of` uses `ps` there), so the four perf test files were run in a Linux container (python:3.13-slim): 83 passed. With the old prefix-source pattern restored on a scratch copy, 13 failed there."
+  },
+  {
+    "id": 4334180876,
+    "pull_request_review_id": 5596366053,
+    "commit_id": "500137ec69806689c6c993875de624818e43912a",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "tests/scripts/test_okr_flow_perf_portable.py",
+    "line": null,
+    "original_line": 52,
+    "body": "Fixed in 4e9345d9ae. The mapping test calls `hostcpu.linux()` directly on every OS. A new Linux-only test runs the whole script with a synthetic cgroup v2 tree (`0::/job`, `cpu.max` one CPU) and checks the line, alloc 1.00 and the basis `quota@/job=1.00`. It also checks that a cgroup v1 `self/cgroup` makes the script print nothing and exit 1. All four perf test files pass in a Linux container (83 passed)."
+  },
+  {
+    "id": 4334348904,
+    "pull_request_review_id": 5596579589,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "ops/okr/perf/timed3-linux.sh",
+    "line": 202,
+    "original_line": 144,
+    "body": "Fixed in ade7d41ade. A frames section with no running API of this run (a standalone retry such as `ATTEMPT=2 timed3-linux.sh … frames2`) now starts its own fresh API first; consecutive frames trials still reuse readiness's. Tests: `test_a_standalone_frames_retry_starts_its_own_api` (exit 0, one fresh API, stopped after) and `test_consecutive_frames_reuse_readinesss_api` (readiness plus frames 1–3 use one API). Removing the start fails the first."
+  },
+  {
+    "id": 4334415519,
+    "pull_request_review_id": 5596664108,
+    "commit_id": "ade7d41ade4ac82a108ae24e60c0ceea631188fe",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "ops/okr/perf/timed3-linux.sh",
+    "line": null,
+    "original_line": 146,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reset the fixture before frames that follow write sections**\n\nWhen the supported section list places a frame trial after `api`, `live`, or `browserlive` (for example, `timed3-linux.sh … api frames1`), this check sees the still-running API and skips `fresh`, so the frame trial runs against the database mutated by the preceding write workload while still being accepted as a valid measurement. Reuse is safe only after readiness or another frame trial; otherwise start a fresh API/database before the first frame section so every accepted section uses the declared fixture.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/ade7d41ade4ac82a108ae24e60c0ceea631188fe/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4334499531,
+    "pull_request_review_id": 5596771092,
+    "commit_id": "ade7d41ade4ac82a108ae24e60c0ceea631188fe",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "ops/okr/perf/timed3-linux.sh",
+    "line": null,
+    "original_line": 146,
+    "body": "Fixed in 9def4a0a5a. A frames trial reuses the running API and database only when the section just before it was read-only too (readiness, or another frames trial), so the declared fixture is untouched. After api, live or browserlive, or with no API of this run, it starts a fresh copy of the template first. Test: `test_frames_after_a_writing_section_start_from_the_fixture_again`, run for each of api, live and browserlive followed by frames1 and frames2, expects exactly two fresh copies: the writer's, then one shared by the frames. Restoring reuse after a writer fails all three."
+  },
+  {
+    "id": 4336765645,
+    "pull_request_review_id": 5599629392,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": 319,
+    "original_line": 304,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Finish the initial cover before attaching observers**\n\nBecause each observer reads its first page before opening the stream, the first `ready` makes the real client issue a `cover` and re-read everything on screen (`live/model.ts:436-454` and `useFlowTable.ts:297-320`). This branch instead immediately marks the observer attached and releases the write loop without performing or awaiting that read, despite `plan.md:204` claiming it occurs before the first write. The measured run therefore omits 50 initial table refreshes and can begin writes with different cache, connection-pool, and rate-budget state than the declared client workload; perform the cover refresh and call `ready.Done()` only after it completes successfully.\n\nAGENTS.md reference: [AGENTS.md:L125-L129](https://github.com/txehq/txe/blob/ad37968a03fdab5bf4b23c1864d4c9c8716a6825/AGENTS.md#L125-L129)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4336897559,
+    "pull_request_review_id": 5599799614,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": 319,
+    "original_line": 304,
+    "body": "Fixed in bd8846acc9. On its first `ready` with an id, an observer now makes the client's cover read: `GET /api/v1/flow/table`, the first page, which is everything on screen. It is checked as `firstPage` checks it and counted in the observer's reads, and only then does the observer count as attached and release the write loop. A failed cover leaves the observer unattached, so the run is incomplete. Test: in `TestRunLiveFollowsTheClient`, each attached observer has read its first page exactly twice when the first write arrives (its own, then the cover), and the observer whose ready had no id has read it once. Removing the cover fails it. plan.md's audit row now says the same.\n"
+  },
+  {
+    "id": 4336952297,
+    "pull_request_review_id": 5599868374,
+    "commit_id": "76d6d7a60c7f5ab2ddde9e0171f770f33cb46704",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "ops/okr/perf/timed3-linux.sh",
+    "line": null,
+    "original_line": 124,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reap the interrupted wait before exiting**\n\nWhen SIGTERM arrives during the baseline wait, this background `sleep` survives `cleanup`, inherits the runner's output pipe, and prevents the invoking process from observing EOF until the full baseline duration expires. The workflow's mandatory `test_a_signal_stops_what_the_run_started` exercises exactly this path with a 30-second sleep and a 30-second `communicate` timeout; I reproduced it failing while the script had already logged `done`, leaving the suite at 1 failed and 87 passed. Track and terminate/wait for the active timer (and similarly owned waits) during cleanup so a signaled run actually stops all descendants.\n\nAGENTS.md reference: [AGENTS.md:L135-L137](https://github.com/txehq/txe/blob/bd8846acc93e1769ba8d098ef0b345fb061c890e/AGENTS.md#L135-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4361356879,
+    "pull_request_review_id": 5630715979,
+    "commit_id": "10e723b6ea96522cc69fdace83adc093d7259ea6",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": null,
+    "original_line": 268,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Attribute late responses to the request's sample**\n\n`apiResponses` reads the mutable `at.sample` when a response finishes, rather than when its request starts. If an asynchronous cover or ancillary API read finishes after the view's readiness condition, line 318 resets the tag to `-1` before that response arrives; a late 429 is then absent from both `throttled_samples` and the pacing count, and `verify_record.py` can accept the readiness record while a retry overlaps later samples. Capture the sample when the request is issued, or drain all sample requests before closing its accounting window.\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/10e723b6ea96522cc69fdace83adc093d7259ea6/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4361476827,
+    "pull_request_review_id": 5630884212,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": 454,
+    "original_line": 379,
+    "body": "Already fixed before this head (raised on a14e1c9e9d). At 34a6ea1991, `classify` (okr/cmd/okr-flow-perf/api.go:589) returns `unverified` for any sample with a nonempty `Err`: a failed attempt, never a time. `targetVerdict` then makes any failure `incomplete, not met`. Tests: `TestClassify` (main_test.go) and `TestClassifyUsesEachOperationsStatus` (contract_test.go). In the measured run 39938941118, all 43,509 api samples were 200 with no `Err`."
+  },
+  {
+    "id": 4361477365,
+    "pull_request_review_id": 5630884885,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": 131,
+    "original_line": 118,
+    "body": "Already fixed before this head (raised on 0fdb923988). At 34a6ea1991, api.go:131 schedules new work under `rctx` (deadline `end`), while a request already sent runs to its answer under `ctx`. So no in-flight request is cancelled at the boundary. Test: `TestAPIRunDrainsRequestsSentBeforeTheEnd` (api_test.go)."
+  },
+  {
+    "id": 4361477855,
+    "pull_request_review_id": 5630885517,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": 373,
+    "original_line": 278,
+    "body": "Already fixed before this head (raised on 67734123fa). At 34a6ea1991, every write to `obsRep` is under `mu` (live.go:238 comment, the cover at live.go:308), and the attachment snapshot ranges `obsRep` under `mu` (live.go:371). Test: `TestRefusedStreamErrorIsRecordedUnderTheLock` (live_test.go)."
+  },
+  {
+    "id": 4361478321,
+    "pull_request_review_id": 5630886167,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": 388,
+    "original_line": 368,
+    "body": "Already fixed before this head (raised on 307bdba225), and widened in 3667f2872f. A run whose fixture is not the method's is a smoke, with no verdict. `apiConfig.belowMethod` (method.go:29) now compares every launch-fixture count through `fixtureBelowMethod` (method.go:69), watched supporters == 50 included. `targetVerdict` returns the smoke verdict (api.go:565). Test: `TestAPIBelowMethodIsASmoke` (method_test.go), the isolation fixture's 4 supporters case."
+  },
+  {
+    "id": 4361478763,
+    "pull_request_review_id": 5630886815,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": 574,
+    "original_line": 542,
+    "body": "Already fixed before this head (raised on 307bdba225). `apiConfig.belowMethod` (method.go:29) names any sessions, rate, warmup, duration or material beat other than the method's, and `targetVerdict` then returns `smoke, not a measurement` for every target (api.go:565), however fast it was. Test: `TestAPIBelowMethodIsASmoke` (method_test.go): fewer or more sessions, a slower rate, a shorter warmup or run."
+  },
+  {
+    "id": 4361479282,
+    "pull_request_review_id": 5630887490,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/api.go",
+    "line": 366,
+    "original_line": 349,
+    "body": "Already fixed before this head (raised on 71fb4874ec). The failed prerequisite is recorded with the prerequisite request's own `Sent: g.sent`: api.go:365 for the material beat, api.go:289 for session writes. It is never `time.Now()`, so an in-window attempt stays in its window. Test: `TestAPIFailedPrerequisiteKeepsItsAttemptsTime` (api_test.go)."
+  },
+  {
+    "id": 4361479795,
+    "pull_request_review_id": 5630888109,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": 770,
+    "original_line": 535,
+    "body": "Already fixed before this head (raised on cf4064aa08). When pages remain, `refreshFocuses` reads the table's first page again after every focused read (live.go:748, `if more`). The refresh is done only when that read has answered, and a failure there fails the whole refresh, as `useFlowTable.refreshFocuses` does. Test: `TestRefreshReadsTheCountLastWhenPagesRemain` (api_test.go)."
+  },
+  {
+    "id": 4361480313,
+    "pull_request_review_id": 5630888805,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": 42,
+    "original_line": 40,
+    "body": "Already fixed before this head (raised on 886475acdd). In flow-performance.real.spec.ts, `belowMethod` names any samples ≠ 30, warmup ≠ 3 or frame seconds ≠ 10. `record` then writes `measurement: false` and `below_method` to a `-smoke` file, and `verify_record.py` (`browser_common`) rejects any record without `measurement: true`. Test: tests/scripts/test_okr_flow_perf_records.py, `a smoke browser record`."
+  },
+  {
+    "id": 4361480839,
+    "pull_request_review_id": 5630889534,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": 242,
+    "original_line": 237,
+    "body": "Already fixed before this head (raised on cf98e6a10d). The early error and status branches now take `mu` (live.go, after the comment at :238: \"Every write to obsRep is under mu\"), and the snapshot reads under `mu` (live.go:371). Test: `TestRefusedStreamErrorIsRecordedUnderTheLock` (live_test.go)."
+  },
+  {
+    "id": 4361481468,
+    "pull_request_review_id": 5630890422,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/internal/loadfixture/flow.go",
+    "line": 299,
+    "original_line": 299,
+    "body": "Answered, not changed (P2, non-gating). The refusal is deliberate and fails closed: SeedFlow builds Flow content once, deterministically from a seed (loadfixture/flow.go:163). Resuming a partial tenant would give content no seed reproduces, and a measurement on it would not be the declared fixture. The perf procedure never retries in place. setup-linux.sh seeds a fresh organization in a fresh database, checks `seed-flow complete`, and refuses if its database or template exists (setup-linux.sh:32, :50–51). A failed seed is redone from scratch. Since 3667f2872f, okr-flow-perf also refuses a verdict on a partial tenant (`fixtureBelowMethod`, method.go:69)."
+  },
+  {
+    "id": 4361482118,
+    "pull_request_review_id": 5630891333,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": 114,
+    "original_line": 74,
+    "body": "Already fixed before this head (raised on 6aa08f22f7). `belowMethod` in the spec marks a frames record with no `OKR_FLOW_RUN`, or one other than 1, 2 or 3, as smoke (`measurement: false`). `verify_record.frames` requires `run` to equal its section's number. timed3-linux.sh runs frames1, frames2 and frames3 by default (line 36), and the first section that is not valid stops the run, so acceptance needs all three. Tests: tests/scripts/test_okr_flow_perf_records.py."
+  },
+  {
+    "id": 4361482705,
+    "pull_request_review_id": 5630892275,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/internal/httpapi/server_timing.go",
+    "line": 42,
+    "original_line": 32,
+    "body": "Already fixed before this head (raised on 6aa08f22f7). `serverTiming` passes attachment downloads straight through (`servesContent`, okr/internal/httpapi/server_timing.go), so they stream unbuffered and carry no Server-Timing. Test: `TestServerTimingLeavesDownloadsStreaming` (server_timing_test.go:78)."
+  },
+  {
+    "id": 4361483229,
+    "pull_request_review_id": 5630893096,
+    "commit_id": "10e723b6ea96522cc69fdace83adc093d7259ea6",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/method.go",
+    "line": null,
+    "original_line": 48,
+    "body": "Fixed in 3667f2872f. `tenant.fixture()` (main.go) counts members, open focuses, tasks, threads, comments and watched supporters. `fixtureBelowMethod` (method.go:69) compares each with the launch fixture (`loadfixture.Launch`/`FlowLaunch`): exact, except comments, which the api section's replies add to, so at least 10,000. Any difference makes the api and live runs a smoke. Tests: `TestAPIBelowMethodIsASmoke` (fewer focuses, tasks, threads, comments or members; comments not counted) and `TestLiveBelowMethodIsASmoke`. Mutation: without the call, those cases fail. The measured run 39938941118 had the exact launch counts, comments 10,000 (its `fixture-counts.txt`)."
+  },
+  {
+    "id": 4361483827,
+    "pull_request_review_id": 5630893915,
+    "commit_id": "10e723b6ea96522cc69fdace83adc093d7259ea6",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": null,
+    "original_line": 505,
+    "body": "Fixed in 3667f2872f. `liveVerdict` makes `rep.OffPage > 0` incomplete, not met (live.go:522), and names the count. Test: `TestLiveVerdictUnnamedFlowEventIsIncomplete` (main_test.go:237, one off-page event). Mutation: without the clause, the verdict is \"met\". The measured run had 0 off-page events."
+  },
+  {
+    "id": 4361484369,
+    "pull_request_review_id": 5630894653,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "ops/okr/perf/timed3-linux.sh",
+    "line": 202,
+    "original_line": 144,
+    "body": "Already fixed before this head (raised on 500137ec69). In timed3-linux.sh `section()`, a frames section starts a fresh API unless the previous section was read-only (readiness or frames) and its API is alive. A standalone retry (`ATTEMPT=2 … frames2`) therefore starts its own. Tests: `test_a_standalone_frames_retry_starts_its_own_api`, `test_consecutive_frames_reuse_readinesss_api` and `test_frames_after_a_writing_section_start_from_the_fixture_again` (tests/scripts/test_okr_flow_perf_runs.py)."
+  },
+  {
+    "id": 4361484948,
+    "pull_request_review_id": 5630895426,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/live.go",
+    "line": 319,
+    "original_line": 304,
+    "body": "Already fixed before this head (raised on ad37968a03). On its first `ready`, an observer reads its first page again (the client's cover; live.go:307). Only once that read has answered whole is it marked attached and `ready.Done()` called (live.go:319). A failed cover leaves it unattached, and the run incomplete. Test: `TestRunLiveFollowsTheClient` (live_test.go:231–240) requires two first-page reads before the first write."
+  },
+  {
+    "id": 4361485480,
+    "pull_request_review_id": 5630896152,
+    "commit_id": "10e723b6ea96522cc69fdace83adc093d7259ea6",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": null,
+    "original_line": 268,
+    "body": "Fixed in 3667f2872f. `apiResponses` tags each request with `at.sample` when it is sent (`page.on('request')`), and a response takes its request's tag. Each sample's requests not yet finished or failed are counted, and the readiness loop waits up to 30 s for them before counting its 429s and pacing. Samples that do not settle go in `unsettled_samples`, and between-sample 429s in `throttled_between_samples`. `verify_record.readiness` rejects either. Tests: three new cases in tests/scripts/test_okr_flow_perf_records.py; mutation without the checks: 3 failed. The measured run had 744 readiness responses, all 200, so no 429 could have been missed."
+  },
+  {
+    "id": 4361506459,
+    "pull_request_review_id": 5630924620,
+    "commit_id": "34a6ea1991d92259d3f3ffe2fbadb5ee7662eadd",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": null,
+    "original_line": 280,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reject failed requests from browser measurements**\n\nWhen an API request issued by a browser sample ends in Playwright's `requestfailed` event, this handler only decrements `open`; it adds no failure to `seen`, so `settled()` returns true and the readiness/frame/live checks—which only reject recorded 429 responses—can accept the run. In particular, a late asynchronous cover or ancillary read can fail after the visible readiness condition while `verify_record.py` still treats the record as healthy, and the missing response also shortens readiness pacing. Record transport failures and reject any affected measurement instead of treating them as completed reads.\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/34a6ea1991d92259d3f3ffe2fbadb5ee7662eadd/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4361506470,
+    "pull_request_review_id": 5630924620,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": 132,
+    "original_line": 95,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Require the launch fixture for browser measurements**\n\nWhen this spec is run against a custom or partial tenant that still has the locally asserted shape—for example, a first page with an open task, and for readiness/frames a capped 1,000-node graph—`belowMethod` can be empty and this code marks the record as a measurement without proving the required 100-member, 500-focus, 5,000-task, 2,500-thread, 10,000-comment launch fixture. Fresh evidence after the API fixture fix is that the browser `record()` path still checks only sample counts/duration/run labels, and `verify_record.py` likewise accepts these records; require fixture evidence before setting `measurement: true`.\n\nAGENTS.md reference: [AGENTS.md:L139-L140](https://github.com/txehq/txe/blob/34a6ea1991d92259d3f3ffe2fbadb5ee7662eadd/AGENTS.md#L139-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4361603065,
+    "pull_request_review_id": 5631048887,
+    "commit_id": "34a6ea1991d92259d3f3ffe2fbadb5ee7662eadd",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": null,
+    "original_line": 280,
+    "body": "Fixed in efa32e7fc5. `apiResponses` (flow-performance.real.spec.ts) now records a request that never answered (`requestfailed`) with status 0 and its `failure` text. `failedOf` counts it, and any answer other than 2xx, 3xx and the budget's 429, as failed.\n\n- **Readiness:** a sample with one goes in `failed_samples`. Between samples, only the runner's own reload ending a read sent in the gap (`net::ERR_ABORTED`) is exempt, counted apart in `aborted_between_samples`; any other failure there goes in `failed_between_samples`.\n- **Frames and browser live:** they carry `failed_requests`. Failures are taken before `context.close()`, so the close's own aborts are not counted.\n- **The spec asserts each is empty**, and `verify_record.py` rejects a record where one is not, or where the field is missing.\n\nTests: tests/scripts/test_okr_flow_perf_records.py, 6 new cases. A mutation without the checks fails them."
+  },
+  {
+    "id": 4361603667,
+    "pull_request_review_id": 5631049658,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": 132,
+    "original_line": 95,
+    "body": "Fixed in efa32e7fc5.\n\n- **The count:** `timed3-linux.sh` `fixture_json` counts the organization in the run's database before each browser section: members, open focuses, tasks, threads, comments and watched supporters, as okr-flow-perf's `tenant.fixture` does. It hands the counts to the spec as `OKR_FLOW_FIXTURE` and keeps them as `fixture-<section>.json`. A section whose fixture cannot be counted is not run.\n- **The spec:** `belowMethod` marks a record smoke unless the counts are the launch fixture's (exact, comments at least 10,000), and `record` writes them into the record.\n- **The verifier:** `verify_record.browser_common` rejects a browser record without them.\n\nTests: `test_the_browser_gets_the_fixture_counted_in_the_runs_database` and `test_a_browser_section_whose_fixture_cannot_be_counted_is_not_run` (test_okr_flow_perf_runs.py), plus 5 record cases. Mutations: without the hand-off, or without the verifier check, those cases fail."
+  },
+  {
+    "id": 4362139826,
+    "pull_request_review_id": 5631738938,
+    "commit_id": "efa32e7fc54cfe458d47b4d685b903a889d5d3dd",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": null,
+    "original_line": 884,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Wait for pending browser requests before snapshotting failures**\n\nWhen the final live invalidation updates its focused rows, `useFlowTable.refreshFocuses` applies that update before awaiting its final table-count read, so `shown` can resolve while that request is still pending. This snapshots `liveFailures` before `context.close()` aborts the request; the `requestfailed` handler then appends a status-0 entry to `liveRequests`, but the already-materialized failure array remains empty and `verify_record.py` accepts the incomplete run. Fresh evidence beyond the earlier request-failure fix is this pre-close snapshot; await `settled`, or compute failures only after all workload requests finish (the frame path at line 737 has the same pattern).\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/efa32e7fc54cfe458d47b4d685b903a889d5d3dd/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4362554635,
+    "pull_request_review_id": 5632266108,
+    "commit_id": "efa32e7fc54cfe458d47b4d685b903a889d5d3dd",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+    "line": null,
+    "original_line": 884,
+    "body": "Fixed in ebc9d70d4b. `apiResponses` now has `settledAll(ms)`, which waits until every request the page sent, of any sample, has answered or failed (the event stream aside). Frames (frameSettledAll), browser live (liveSettledAll) and readiness (settledAll) each wait up to 30 s for it, and only then count their failures, all before `context.close()`. That covers the last refresh's table-count read. Each record carries `requests_settled`: the spec asserts it, and `verify_record.browser_common` rejects a record where it is not true. Tests: 4 new cases in tests/scripts/test_okr_flow_perf_records.py; a mutation without the check fails all 4."
+  },
+  {
+    "id": 4362610410,
+    "pull_request_review_id": 5632340211,
+    "commit_id": "ebc9d70d4b1cc174a7d752a14925e8dc7570ce2a",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "okr/cmd/okr-flow-perf/main.go",
+    "line": null,
+    "original_line": 229,
+    "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Count only non-deleted comments in fixture validation**\n\nWhen a custom or previously modified tenant retains 10,000 soft-deleted comment rows, this query still reports the launch count, and `fixtureBelowMethod` accepts it because comments only need to meet a minimum; however, the measured table/graph query in `itemCommentCounts` filters `deleted_at IS NULL`, so the run can return a measurement verdict while exercising no comment-count workload. Fresh evidence beyond the earlier fixture-count fix is this mismatch between the fixture predicate and the production read predicate; apply the same non-deleted filter here and in `timed3-linux.sh`'s browser fixture count.\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/ebc9d70d4b1cc174a7d752a14925e8dc7570ce2a/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4362739348,
+    "pull_request_review_id": 5632509374,
+    "commit_id": "ebc9d70d4b1cc174a7d752a14925e8dc7570ce2a",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/cmd/okr-flow-perf/main.go",
+    "line": null,
+    "original_line": 229,
+    "body": "Fixed in 628ad3d0ae. okr-flow-perf counts comments with `liveCommentsSQL` (main.go: `deleted_at IS NULL`), the predicate flow's itemCommentCounts reads. timed3-linux.sh `fixture_json` counts the browser fixture's comments the same way, as setup-linux.sh already did. Tests: `TestFixtureCountsOnlyCommentsTheReadsCount` (main_test.go) and `test_the_browser_fixture_counts_only_comments_the_reads_count` (test_okr_flow_perf_runs.py); a mutation dropping the predicate fails each."
+  },
+  {
+    "id": 4362800809,
+    "pull_request_review_id": 5632584771,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    },
+    "path": "ops/okr/perf/timed3-linux.sh",
+    "line": 207,
+    "original_line": 207,
+    "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Track foreground workloads for signal cleanup**\n\nWhen `timed3-linux.sh` receives SIGTERM while this synchronous 10-minute workload (or one of the synchronous browser workloads below it) is running, Bash defers the trap until the foreground child exits, and cleanup has no workload PID to terminate. Fresh evidence after the earlier baseline-wait fix is that only `nap` is now interruptible; a signal during a measured section can still leave the workload, API, and monitor running until the section timeout instead of stopping the run promptly. Start each workload in the background, track its PID, and terminate and wait for it during cleanup.\n\nAGENTS.md reference: [AGENTS.md:L133-L137](https://github.com/txehq/txe/blob/628ad3d0aebb9f7fb9736c54f38433e35117ce48/AGENTS.md#L133-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+  },
+  {
+    "id": 4363002965,
+    "pull_request_review_id": 5632865003,
+    "commit_id": "4505be9c574eec2221a853465ce04d8070926f49",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "ops/okr/perf/timed3-linux.sh",
+    "line": 207,
+    "original_line": 207,
+    "body": "Left as a named P2, not fixed in this pull request.\n\n- **Why not now:** run 40003062550 is measuring this exact head (628ad3d0ae), and the coordinator asked for no optional pushes until the measurement settles. A push would put the merged head ahead of the commit measured.\n- **Where it matters:** on the reference (a GitHub-hosted VM, okr-flow-perf.yml), a cancelled or timed-out job ends with its VM destroyed, so no workload, API or monitor outlives the run.\n- **Where it remains:** a local or macOS run signalled mid-section keeps its foreground workload until that section's own bound (the api section's 11 min, a browser section's Playwright timeout) before cleanup runs. That is a delay, never a measurement: the section is not valid, and the run stops.\n\nCleanup itself is unchanged and verified (`cleanup ok` in each run's summary). Tracking the foreground workload's PID is a follow-up."
+  },
+  {
+    "id": 4363510813,
+    "pull_request_review_id": 5633521234,
+    "commit_id": "bd8846acc93e1769ba8d098ef0b345fb061c890e",
+    "user": {
+      "login": "connorwang",
+      "type": "User"
+    },
+    "path": "okr/internal/httpapi/flow_read.go",
+    "line": 78,
+    "original_line": 77,
+    "body": "Already addressed on `main`, and outside this pull request's diff.\n\n- **The finding's code:** it was raised on `2fcab8ad95`, a commit no longer in this branch's history.\n- **This PR:** `git diff --name-only origin/main...HEAD` does not include `okr/internal/httpapi/flow_read.go`.\n- **On `main`:**\n  - TXE-4802 batches a Flow read's exposures at `audit.MaxItems` (500) per event (`flowExposures.list`).\n  - TXE-4770 charges each Flow read one read-budget token per 500 audited items (`flowExposures.cost()`): \"the largest table page (100 focuses and 20,000 tasks, recorded in 41 events) costs 41\". `flowTable`, `flowTableContinuation` and `flowGraph` take that charge through `a.limitedMore(w, r, ex.cost())` before they release anything.\n\nThat is the remedy proposed here (\"charge limits by audited items\"). A member's 600-a-minute read budget therefore covers at most 600 audited batches, not 600 × 41."
+  }
+]

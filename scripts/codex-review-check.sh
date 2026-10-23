@@ -40,6 +40,10 @@
 #    the same SHA): pass, printing the receipt's id and time. A clean re-review after a fix
 #    loop keeps has_any_findings true while earlier findings' threads stay open (measured on
 #    txehq/txe PR 4022 at 83822e7eb), so the receipt is what a clean pass reads then.
+#    A has_any_findings that is neither true nor false is decided by that receipt alone (TXE-5125,
+#    txe's TXE-5123: txehq/txe PR 4047 at 4505be9c5 completed with null, no review and a receipt
+#    only on the manual re-request), so without one it fails until an `@codex review` posts it.
+#    Rule 7 is never read for it: null does not claim findings, so earlier threads say nothing.
 # 7. No bot review on the head, has_any_findings true and no receipt naming it (TXE-4787,
 #    txe's TXE-4786): a re-review after a fix loop completes at the head with
 #    has_any_findings still true from earlier pushes and posts neither a review nor a
@@ -243,7 +247,7 @@ receipt() {
 
 # evaluate sets VERDICT (pass, fail, or pending: worth polling again) and REASON.
 evaluate() {
-  local pull ev actor actor_type at summary state sha status reviews ids comments hits line found
+  local pull ev actor actor_type at summary state sha status reviews ids comments hits line found findings why
   DETAILS=() SECURITY='' REVIEWED=''
   pull=$(fetch pull "repos/$REPO/pulls/$PR")
   HEAD_SHA=$(jq -er '.head.sha' <<<"$pull")
@@ -304,17 +308,20 @@ evaluate() {
   reviews=$(jq -c --arg bot "$BOT" --arg head "$HEAD_SHA" '
     [.[] | select(.user.login == $bot and .user.type == "Bot" and .commit_id == $head)]' <<<"$reviews")
   if [[ $reviews == "[]" ]]; then
-    case $(jq -r '.code_review.has_any_findings' <<<"$state") in
+    findings=$(jq -c '.code_review.has_any_findings' <<<"$state")
+    case $findings in
       false) VERDICT=pass REASON="connector completed its review of $HEAD_SHA with no findings" ;;
-      true)
+      *)
         found=$(receipt)
+        if [[ $findings == true ]]; then why="stays true from earlier pushes"; else why="is $findings"; fi
         if [[ -n $found ]]; then
-          VERDICT=pass REASON="connector completed its review of $HEAD_SHA with no review on it, and its receipt $found says no major issues there (has_any_findings stays true from earlier pushes)"
+          VERDICT=pass REASON="connector completed its review of $HEAD_SHA with no review on it, and its receipt $found says no major issues there (has_any_findings $why)"
+        elif [[ $findings == true ]]; then
+          live_threads # null claims nothing the threads could answer
         else
-          live_threads
+          VERDICT=fail REASON="the connector's state block gives has_any_findings as $findings on $HEAD_SHA, and neither a connector review of $HEAD_SHA nor a receipt for it was found — comment @codex review once (a clean pass posts a receipt), then re-run this check; or a person decides on $OVERRIDE_LABEL"
         fi
         ;;
-      *) VERDICT=pending REASON="the state block does not say whether $HEAD_SHA has findings, and the connector has no review on that commit" ;;
     esac
     return
   fi

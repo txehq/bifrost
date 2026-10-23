@@ -11,7 +11,8 @@
 # labeled-event.json is a labeled event recorded from txehq/txe.
 # txe-pr4024/ and txe-pr4030/ are the two txehq/txe holds the live-thread rule (TXE-4787)
 # was measured on; txe-pr4022/ is the clean re-review the receipt rule (TXE-4801) passes, and
-# txe-pr3713-base-and-force-push-events.json the retarget the base-change rule is tested on.
+# txe-pr3713-base-and-force-push-events.json the retarget the base-change rule is tested on;
+# txe-pr4047/ is the completed review with has_any_findings null (TXE-5125).
 # tests/fixtures/codex-review/README.md says where every file came from.
 #
 # Each case below is that recording with the smallest edit that makes it the case.
@@ -322,6 +323,39 @@ expect receipt-other-commit fail "no review of it and no receipt for it"
 new_case receipt-not-connector "$TXE_4022"
 edit receipt-not-connector issue_comments.json 'map(if .id == 6241141339 then .user = {login: "a-maintainer", type: "User"} else . end)'
 expect receipt-not-connector fail "no review of it and no receipt for it"
+
+# A has_any_findings that is neither true nor false (TXE-5125, txe's TXE-5123): txehq/txe PR 4047
+# at 4505be9c, recorded on 2026-10-23. No review object on the head; receipt 6373791844 at
+# 20:11:33Z names it, 2 s before the Code Review row's 20:11:35Z. Null is decided by that receipt
+# alone. The live threads are irrelevant under null: every live P0/P1 thread in the recording was
+# resolved by a user, which would pass the live-thread rule, and null without a receipt still fails.
+TARGET=(txehq/txe 4047)
+TXE_4047="$ROOT/tests/fixtures/codex-review/txe-pr4047"
+HEAD_4047=4505be9c574eec2221a853465ce04d8070926f49
+NULL_NO_RECEIPT="gives has_any_findings as null on $HEAD_4047, and neither a connector review of $HEAD_4047 nor a receipt for it was found"
+NO_RECEIPT='map(select(.id != 6373791844))'
+new_case null-with-receipt "$TXE_4047"
+expect null-with-receipt pass "its receipt 6373791844 at 2026-10-23T20:11:33Z says no major issues there (has_any_findings is null)"
+new_case null-without-receipt "$TXE_4047"
+edit null-without-receipt issue_comments.json "$NO_RECEIPT"
+expect null-without-receipt fail "$NULL_NO_RECEIPT"
+new_case null-receipt-other-commit "$TXE_4047"
+edit null-receipt-other-commit issue_comments.json 'map(if .id == 6373791844 then .body |= sub("4505be9c57"; "0fd56af346") else . end)'
+expect null-receipt-other-commit fail "$NULL_NO_RECEIPT"
+new_case null-receipt-outside-window "$TXE_4047"
+edit null-receipt-outside-window issue_comments.json 'map(if .id == 6373791844 then .created_at = "2026-10-23T20:14:00Z" else . end)'
+expect null-receipt-outside-window fail "$NULL_NO_RECEIPT"
+# A live P1 thread (4361506470, unresolved) and no receipt: fails, on the null, not the thread.
+new_case null-live-p1 "$TXE_4047"
+edit null-live-p1 issue_comments.json "$NO_RECEIPT"
+edit null-live-p1 review_threads.json '.[].data.repository.pullRequest.reviewThreads.nodes |= map(
+  if .comments.nodes[0].databaseId == 4361506470 then .isResolved = false | .resolvedBy = null else . end)'
+expect null-live-p1 fail "$NULL_NO_RECEIPT"
+# The value is read as JSON, so a string "false" is not false.
+TARGET=(txehq/sub2api 290)
+new_case findings-malformed
+set_state findings-malformed "$RECORDED_HEAD" '"false"'
+expect findings-malformed fail "gives has_any_findings as \"false\" on $RECORDED_HEAD"
 
 if ((failures)); then
   echo "$failures case(s) failed" >&2
