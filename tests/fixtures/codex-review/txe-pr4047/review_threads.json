@@ -1,0 +1,1107 @@
+[
+  {
+    "data": {
+      "repository": {
+        "pullRequest": {
+          "reviewThreads": {
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0xMC0yM1QxODoxMDozMFrOr7jElA=="
+            },
+            "nodes": [
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 396,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4331288711,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/live.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reject runs with failed live writes**\n\nWhen a preliminary GET fails, a PATCH returns non-200, or a 200 response cannot be decoded, the write is omitted from `Expected`; the verdict checks only delivered observations and observer attachment, not `WritesAnswered == WritesAsked`. Consequently, a run with fewer than the required 200 writes and 10,000 observations can still report plain `\"met\"`. Treat every unsent or unsuccessful write as a failed expected observation and prevent a passing verdict.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/d943b7cca2bbdcf018d321b62868c50423acc81b/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 593,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4331288723,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Match the updated row by task ID**\n\nWhen another visible task has the same generated title and already has the desired state, this watcher resolves before the PATCH is reflected and records an artificial near-zero delivery time. The launch fixture generates 5,000 task titles from only 100 verb/noun combinations, so duplicate titles are expected; identify the row using the task ID encoded in its link or another stable DOM attribute rather than title text.\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": false,
+                "line": 454,
+                "originalLine": 379,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4331694297,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/api.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reject samples whose response body was incomplete**\n\nWhen a response returns 2xx headers and `io.ReadAll` subsequently fails, `client.do` stores the failure in `apiSample.Err`, but this branch still adds its server and partial round-trip times to the successful sample set. A run containing truncated focus, task, table, graph, or write responses can therefore report a target as `met`; treat a nonempty `s.Err` as a failed attempt and exclude it from the latency distribution.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/a14e1c9e9d928033f4935c208550ea8028f4aab7/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 358,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4331694305,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/live.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Do not reuse a later arrival for multiple writes**\n\nWhen the writable-task sequence revisits a task and an observer misses an earlier invalidation, the same later arrival satisfies every preceding write because it is never consumed and `a.Version >= w.Version`. Since these writes toggle state, an arrival for a later `todo` version can falsely count as delivery of an earlier `doing` write that was never observed, allowing all expected observations and a passing verdict despite a missing update. Match each arrival to at most one write, or verify the expected state/version for each write.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/a14e1c9e9d928033f4935c208550ea8028f4aab7/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 272,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4331694314,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/api.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Fail material verification when its database read fails**\n\nIf the verifier connection drops or this query otherwise fails after the initial connection succeeds, the discarded `Scan` error turns the result into `0/0`. The material PATCH can still be recorded as a successful sample and the “50 watching supporters” target can be reported as `met` even though the harness never verified its workload; propagate the query error into a failed sample or abort the run instead of treating it as zero.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/a14e1c9e9d928033f4935c208550ea8028f4aab7/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 277,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4331750129,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/api.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Scope candidate verification to the material change**\n\nDuring the API run, session goroutines concurrently perform comment replies and task changes, both of which can insert their own `ok_alert_candidates`, so this organization-wide count can change between `before` and `now` for reasons unrelated to the watched-source PATCH. A valid material change will then be classified as `unverified` whenever unrelated candidates make `added != total`, preventing the material target from passing under the intended concurrent workload; count only `flow_source_changed` candidates attributable to this change or its supporter tasks.\n\nAGENTS.md reference: [AGENTS.md:L133-L137](https://github.com/txehq/txe/blob/54ff091c2035d50d0b146962496464159feb974d/AGENTS.md#L133-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 210,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4331750139,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/api.go",
+                      "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Exclude undersized pages from the 25-slice target**\n\nWhen pagination reaches a terminal page containing fewer than 25 slices, this branch records its size but leaves the sample successful, so `classify` includes its server time in the target named \"table page of 25 slices.\" Whenever `TotalSlices` is not divisible by 25, the benchmark can therefore report `met` using latency samples from a smaller workload; mark non-25-slice responses as unverified for this target or restart pagination before timing them.\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 216,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4331779782,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/api.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reject malformed table responses**\n\nWhen `/flow/table` returns HTTP 200 with a complete but invalid JSON body, this branch leaves `s.Err` empty, so `classify` treats the response as timed and its server latency can contribute to a `\"met\"` table target; `TablePages` merely records zero slices and `targetVerdict` never checks that count. Record the decode error so malformed pages fail closed rather than becoming successful measurements.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/da2135566808fe367784507b77e843779fd03c64/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 516,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4331818778,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/api.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reject unexpected successful statuses before timing them**\n\nWhen a table or graph request returns an unexpected 2xx such as 204, this classifies it as timed even though the workload checks run only for status 200. The empty response therefore contributes its latency without a slice-count error or `smallGraphs` increment, so 100 such responses can report the table or graph target as `met` despite serving no workload; require the operation's expected status or validate every accepted 2xx response.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/0cc255918ccd62c7680e64e9a5ecb293fcd307e0/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 341,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4331818784,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/api.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Fail the material sample when its response cannot be decoded**\n\nWhen the material PATCH returns 200 and updates the database correctly but its complete response body is malformed, discarding this decode error leaves `r.err` empty and records `flow_material` as a successful timed sample. The ensuing acknowledgements may fail because `after.ContentVersion` remains zero, but those failures affect only the separate writes target, so the material-change target can still report `met`; classify the decode failure as an unverified material attempt.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/0cc255918ccd62c7680e64e9a5ecb293fcd307e0/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 84,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4331968197,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Stop waiting for network idle while the event stream is open**\n\nIn the real web composition, `session.tsx` starts the persistent `/api/v1/events` fetch while the workspace is loading, and `source.ts` keeps reading its response body until the session ends. Consequently, `home()` cannot reach Playwright's `networkidle` state and each readiness, frame, or live measurement times out here before collecting samples. Wait for a finite application-ready condition instead of global network idleness.\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 205,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4332250254,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/live.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Serialize batched refetches like the web client**\n\nWhen a focus refetch lasts until the next invalidation batch—possible with the default 1.5-second write interval even near the 2-second target—`flush` clears `timer` before doing its network reads, so the next event starts another `AfterFunc` callback and refetch concurrently. The real client serializes these refreshes through `LiveBus.run` and `useFlowTable`'s `serial` queue; allowing the harness's second refetch to bypass the first can make later observations complete much earlier and produce a passing p95 that the client would miss. Keep the batch marked as running and queue one follow-up flush instead.\n\nAGENTS.md reference: [AGENTS.md:L135-L137](https://github.com/txehq/txe/blob/2fcab8ad95f4302d2f944d224549455d288aadb9/AGENTS.md#L135-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": true,
+                "line": 78,
+                "originalLine": 77,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4332257707,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/internal/httpapi/flow_read.go",
+                      "body": "<!-- codex-security-review-finding:v1 -->\n\n### 🛡️ Codex Security Review · _Automatically triggered_\n\n**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub> Security: Bound Flow audit fan-out per request**\n\nWhen Flow is enabled, an ordinary member can prepare 100 owned focuses with 200 tasks each and repeatedly request `/api/v1/flow/table?limit=100`. This new loop converts that one read token into at least 41 separate `Guard.Release` calls; each opens/commits a transaction and appends a 500-item audit row. The default limiter permits 600 reads/minute plus a 100-request burst per replica, while these rows are append-only and retained for a year, so a member can monopolize the API DB pool and grow durable audit storage until OKR is unavailable. Production is currently default-off, so impact is conditional, but staging is on. Cap total items/batches per response or charge limits by audited items.\n\nUseful? React with 👍 / 👎."
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": false,
+                "line": 131,
+                "originalLine": 118,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4332312378,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/api.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Drain in-flight requests before ending measurement**\n\nWhen a session starts its final request shortly before `end`, this deadline cancels the request exactly at the measurement boundary; because its `Sent` timestamp is still before `end`, the canceled request is retained as a measured failure. With 50 randomly phased sessions, requests whose legitimate latency overlaps the cutoff can therefore make an otherwise valid run permanently `incomplete, not met`, since every target requires zero failures. Stop scheduling new work at `end`, but allow already-started requests to finish under the caller's context before building the report.\n\nAGENTS.md reference: [AGENTS.md:L133-L137](https://github.com/txehq/txe/blob/0fdb9239888afd6e90c88f1777696d116aecc0c2/AGENTS.md#L133-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 171,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4332312381,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/main.go",
+                      "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Propagate tenant query errors**\n\nIf this startup query fails after the transaction has opened—for example because the connection drops—the error is discarded and the returned `rows` is passed to `pgx.CollectRows`; this can panic on a nil rows value or obscure the actual database error instead of returning it from `readTenant`. The following three `tx.Query` calls have the same defect, so check and return each query error before collecting rows.\n\nAGENTS.md reference: [AGENTS.md:L108-L108](https://github.com/txehq/txe/blob/0fdb9239888afd6e90c88f1777696d116aecc0c2/AGENTS.md#L108-L108)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 208,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4332353297,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/live.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Parallelize focus reads within a live refresh**\n\nWhen invalidations for multiple focuses accumulate while an earlier refresh is running, this loop waits for each focus request before starting the next. The real client’s `useFlowTable.refreshFocuses` starts the named focus reads together with `Promise.all`; only `LiveBus.run` serializes successive refresh batches. The harness therefore measures the sum rather than the maximum of those request times and can report that the 2-second live target was missed even though the browser meets it. Preserve the outer queue serialization, but issue the focus reads within one refresh concurrently.\n\nAGENTS.md reference: [AGENTS.md:L133-L137](https://github.com/txehq/txe/blob/e0ff70d71ae288f544dd6f7f255cf40b88c34fbb/AGENTS.md#L133-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 403,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4332353310,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/api.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Verify acknowledgements clear the source flag**\n\nWhen the acknowledge endpoint returns a valid task object but fails to record all supplied source versions, `checkTask` accepts the response solely because its ID matches, so that request is included as a successful timed `flow_acknowledge` sample even though `source.flagged` remains true. This can let the writes target pass without measuring completed acknowledgements, especially for the final material cycle, which has no subsequent change to expose the failed reset. Decode the task’s source status and require the flag to be cleared before timing the sample.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/e0ff70d71ae288f544dd6f7f255cf40b88c34fbb/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 218,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4332402324,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/internal/loadfixture/flow.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Keep random supports off the watched source**\n\nWhen `seed-flow -scale launch` uses the exposed default seed `1`, this draw selects task index 0 once, so the watched source receives 51 supporters rather than the 50 reserved above. `readTenant` then includes all 51, and the material benchmark verifies and times a 51-supporter change while still labeling the target \"material change with 50 watching supporters\"; exclude task 0 from the random target pool so every supported seed produces the declared workload.\n\nAGENTS.md reference: [AGENTS.md:L125-L129](https://github.com/txehq/txe/blob/67734123fad569419b731520a672259635fb470a/AGENTS.md#L125-L129)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": false,
+                "line": 373,
+                "originalLine": 278,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4332402331,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/live.go",
+                      "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Synchronize the readiness-timeout snapshot**\n\nWhen any event stream has not completed readiness within 60 seconds, the timeout path proceeds without a happens-before edge and reads `obsRep[i].Attached` here while that observer goroutine can concurrently set it on a late `ready` event. This is a data race and can make the reported attached count depend on timing; guard the field with `mu`, or cancel and join late observers before taking the snapshot.\n\nAGENTS.md reference: [AGENTS.md:L135-L137](https://github.com/txehq/txe/blob/67734123fad569419b731520a672259635fb470a/AGENTS.md#L135-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": false,
+                "line": 388,
+                "originalLine": 368,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4332721486,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/api.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Require exactly 50 supporters for the material target**\n\nWhen the harness runs against a smaller fixture such as the supported isolation scale, `total == len(t.supporters) == 4` satisfies this condition, so 100 fast material samples can report the target named “material change with 50 watching supporters” as `met` after exercising only four supporters. Require exactly 50 supporters before accepting these samples, or mark non-launch fixtures as smoke-only rather than producing an acceptance verdict.\n\nAGENTS.md reference: [AGENTS.md:L139-L140](https://github.com/txehq/txe/blob/307bdba2258063aebb514258369da0c73d40399a/AGENTS.md#L139-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": false,
+                "line": 574,
+                "originalLine": 542,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4332721490,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/api.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Refuse reduced API loads before returning met**\n\nWhen `-sessions`, `-rate`, or `-duration` is reduced for a smoke run, this completeness gate still returns `met` once an operation accumulates 100 successful samples; it never verifies the declared method's 50 concurrent sessions at one request per second for ten minutes. A sufficiently long two-session run can therefore be recorded as satisfying the acceptance targets under much lower contention, so gate `met` on the canonical load profile or emit an explicit non-measurement verdict for overridden profiles.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/307bdba2258063aebb514258369da0c73d40399a/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 395,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4332721494,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/live.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Refuse reduced live workloads before returning met**\n\nWhen the supported smoke overrides are used, such as `-observers 1 -writes 1`, this check compares delivery only with those reduced configuration values and can return plain `met` after one fast observation. The acceptance workload requires 50 observers and 200 writes (10,000 observations), so require that canonical workload before returning `met`, or label smaller runs as smoke-only evidence.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/307bdba2258063aebb514258369da0c73d40399a/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 136,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4332800601,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/live.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Require a full first page for the live workload**\n\nIf `/flow/table` returns a valid 200 response containing fewer than 25 slices, this accepts it as the observed page and can still report `met` after exercising writes from only those focuses. Because `ViewedFocuses` is informational and `liveVerdict` never checks it, an undersized response silently reduces the concurrent invalidation/refetch workload; validate this response with the same 25-slice contract used by the API measurement before starting observers.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/71fb4874eca38a44a1ffa3163fb49ef7529e969f/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": false,
+                "line": 366,
+                "originalLine": 349,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4332800606,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/api.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Preserve the failed material attempt's timestamp**\n\nWhen the watched-task GET is sent before the measurement cutoff but fails or finishes with malformed JSON after the cutoff, this synthetic failure is timestamped with `time.Now()` and therefore classified as warmup/out-of-window by `record`. The failed material cycle then disappears from the target entirely, so the remaining fast samples can still produce `met`; use the prerequisite request's `g.sent` timestamp to keep every offered in-window attempt accounted for.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/71fb4874eca38a44a1ffa3163fb49ef7529e969f/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 401,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4332841274,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/api.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Count acknowledgements skipped at the cutoff**\n\nWhen a measured material PATCH finishes near or after `end`—for example, after a delayed cycle causes the beat to catch up—`rctx` is already expired, so these goroutines return without sending or recording some or all of the 50 acknowledgements. The material sample remains successful, and the writes target sees neither failures nor missing attempts, allowing both targets to report `met` with part of the declared workload omitted; either stop starting material cycles that cannot finish their acknowledgements or record every skipped acknowledgement as a failed attempt.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/ffa3d69389ebc1b91a3f40a0925f6f90b77b7e2f/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 57,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4333164520,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Preserve all three frame-time trials**\n\nWhen the method's required three frame trials are executed, every invocation writes to the same `flow-performance-frames.json`, so later trials overwrite earlier evidence; moreover, the documented command runs this test only once. The resulting report cannot retain each run or enforce the requirement that every run meet the frame targets. Aggregate three trials in one record or give each repeated run a unique output path before using this as acceptance evidence.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/0b87830f361d04a4d4f5248dff7b4260b5d5c5ed/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 286,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4333213082,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/api.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Preserve the operation timestamp across prerequisite reads**\n\nWhen a task-write tick begins just before `end` and its prerequisite GET finishes after `end`, the PATCH still runs, but this call records `r.sent`, so `record` classifies the write outside the measurement window. Fresh evidence beyond the earlier failed-prerequisite fix is the successful continuation: the failure branch uses `g.sent`, while successful task writes—and the analogous material-change path—retain the later PATCH timestamp. A slow response at the cutoff can therefore erase an offered write or failure and let the writes target report `met` on incomplete workload; carry the original operation timestamp through the continuation.\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/cf4064aa0836514cf65245f858f1b05d26daf5ac/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": false,
+                "line": 770,
+                "originalLine": 535,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4333213088,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/live.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Include the client's final table read in live refreshes**\n\nOn the launch fixture the displayed table has more pages, so the real client’s `useFlowTable.refreshFocuses` performs an additional `api.table(query)` after all focused reads and does not resolve the refresh until that response is applied (`okr/web/apps/web/src/flow/useFlowTable.ts:281-285`). This harness instead returns immediately after the focused reads, omitting both that full-page request from the 50-observer load and its latency from every live observation; the harness can therefore report the 2-second target as `met` when the actual browser refresh would exceed it.\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/cf4064aa0836514cf65245f858f1b05d26daf5ac/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": false,
+                "line": 42,
+                "originalLine": 40,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4333270973,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Mark reduced browser runs as smoke**\n\nWhen `OKR_FLOW_SAMPLES`, `OKR_FLOW_WARMUP`, or `OKR_FLOW_FRAME_SECONDS` is reduced for a quick run, the readiness/live tests can write ordinary measurement records after only one sample, and the frame test can write one after only one second; unlike the Go harness, nothing marks these records as below-method or prevents them from being used for the fixed 30-sample/3-warmup/10-second acceptance method. Gate the browser records on the canonical values or label every reduced run explicitly as smoke.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/886475acdd3b41989ec768367bb02801be347a8d/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 281,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4333296010,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/live.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Require an SSE ID before accepting stream events**\n\nWhen a `ready` or `invalidate` frame omits its `id:` field, this parser still attaches the observer and processes the invalidation, whereas the web client drops both frames in `live/model.ts:111-114`. A malformed stream can therefore produce all expected observations and a `met` verdict even though the browser would neither attach nor refresh; parse the SSE ID and reject frames under the same conditions as the client.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/b59fe09b4e231c2477de48b8029058638d69b42a/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": false,
+                "line": 242,
+                "originalLine": 237,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4333412575,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/live.go",
+                      "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Synchronize observer errors with the attachment snapshot**\n\nWhen the attachment timeout expires while `stream.Do` is returning an error or non-200 response, the main goroutine ranges over `obsRep` to count attachments, which copies each whole `observerReport`, while these branches write its `Error` field without taking `mu`. Fresh evidence beyond the earlier `Attached` fix is that these early error/status assignments remain unsynchronized, so the timeout path still has a data race; protect every `obsRep` mutation with the mutex or snapshot attachment fields by index without copying the structs.\n\nAGENTS.md reference: [AGENTS.md:L135-L137](https://github.com/txehq/txe/blob/cf98e6a10df03e298673e2d1d6c539ae893b755f/AGENTS.md#L135-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": false,
+                "line": 299,
+                "originalLine": 299,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4333412581,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/internal/loadfixture/flow.go",
+                      "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Make partial fixture creation recoverable**\n\nWhen any focus, task, support, or comment creation fails after another worker has committed at least one focus, this branch only remembers the error and returns with a partially populated organization. A retry against that organization is then unconditionally refused by the existing-focus check, so a transient failure during the thousands of service calls makes `seed-flow` permanently non-retryable without manually recreating the tenant; clean up the partial fixture on failure or resume it deterministically.\n\nAGENTS.md reference: [AGENTS.md:L135-L137](https://github.com/txehq/txe/blob/cf98e6a10df03e298673e2d1d6c539ae893b755f/AGENTS.md#L135-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": false,
+                "line": 114,
+                "originalLine": 74,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4333534358,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Require all three numbered frame runs**\n\nWhen `OKR_FLOW_PERF=frames` runs without `OKR_FLOW_RUN`—which the usage line presents as optional—this is the only frame-specific method check, so `record` writes `flow-performance-frames.json` with `measurement: true`; arbitrary labels qualify too. The method requires distinct runs 1, 2, and 3 with every run passing, so incomplete evidence can still be classified as a measurement. Fresh evidence after the prior three-trial fix is that the current `belowMethod` validates only duration, not the run identity or completed set; reject or mark non-measurement frame runs outside the required set and verify all three before acceptance.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/6aa08f22f7d81ad5f9dde6d593c4ecbcb57d4564/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": false,
+                "line": 42,
+                "originalLine": 32,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4333534366,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/internal/httpapi/server_timing.go",
+                      "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Preserve streaming for attachment downloads**\n\nWhen server timing is enabled in local or test and an attachment is downloaded, these lines retain the response until the handler returns because `attachmentContent` and `flowAttachmentContent` copy their bodies without calling `Flush`. Consequently, each download buffers the entire attachment—up to 25 MiB—in memory, sends no bytes while reading object storage, and cannot observe a client write failure until the full object has been consumed; concurrent downloads can produce a substantial memory spike. Exempt these streaming routes or switch the wrapper to passthrough before their copy begins.\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 48,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4333731234,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/method.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Validate the full launch fixture before issuing verdicts**\n\nWhen `-org` names a custom or partially seeded tenant with 100 members and 50 watched supporters but fewer than the required 500 focuses, 5,000 tasks, 2,500 threads, and 10,000 comments, this reports no fixture shortfall, so a canonical API run can return `met` against a materially smaller database. Fresh evidence beyond the earlier supporter-count fix is that `apiReport.Fixture` only records some cardinalities and this remains the sole fixture comparison; validate all launch-scale counts before treating the run as a measurement.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/49641c55747f59252619b30c1cb69624a9c63182/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 505,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4333731250,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/live.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reject live runs contaminated by off-page invalidations**\n\nWhen another Flow write occurs during the live section and names a focus outside the observers' first page, the harness increments `OffPage` and performs the extra refresh, but this completeness gate can still return `met`. Such an event proves the declared “nothing else changes” scenario was violated and changes the request load and batching around measured writes, so include `rep.OffPage > 0` in the incomplete verdict rather than accepting contaminated evidence.\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/49641c55747f59252619b30c1cb69624a9c63182/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 14,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4333978502,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "ops/okr/perf/setup-linux.sh",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Derive the setup pin from the requested SHA**\n\nThe workflow checks out the requested `SHA` but never exports `PIN`, so every PR-label or dispatch run defaults to commit `49641c55…`; the reviewed head is `a333c406…`, and the clean-pin check at line 21 therefore aborts before building or measuring anything. Pass the workflow's requested SHA into setup (or derive the pin from the checked-out HEAD) instead of embedding an earlier development commit.\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 67,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4333978508,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "ops/okr/perf/timed3-linux.sh",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Preserve the measured command's failure status**\n\nWhen an API harness or Playwright section exits nonzero—for example, the frame test rejects an interaction after writing its record—`rc` is only logged and this function returns the contamination judge's status. If the host was quiet, `j` is zero, so the failed section is treated as valid and later sections continue despite missing or explicitly rejected evidence; return a failure whenever either `rc` or `j` is nonzero.\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/968fc6b1e0b4df3e0819236db0c2f24c1dd8318e/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 73,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4333978517,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "ops/okr/perf/timed3-linux.sh",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Exit nonzero after an invalid monitored section**\n\nWhen `judge3.py` reports a section void or unmonitored, this branch merely breaks the loop; cleanup then succeeds and the script's final `log` makes the overall exit status zero. The workflow's timed step consequently goes green even though its own judge rejected the evidence, so retain the failure status through cleanup and exit nonzero afterward.\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/968fc6b1e0b4df3e0819236db0c2f24c1dd8318e/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 27,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4334095768,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "ops/okr/perf/timed3-linux.sh",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Persist FL16_PERF_DIR after sourcing the helpers**\n\nIn the workflow's Linux run, this prefix assignment exists only while `source` executes; the functions imported from `lib.sh` resolve `FL16_PERF_DIR` later, after it has become unset. With `set -u`, the first `lstart_of` calls report an unbound variable, and because the workflow supplies `PG_CONTAINER_ID`, `container_root` then fails and aborts the run before the monitor starts. `monitor3.sh` uses the same temporary assignment and would also resolve the helper path incorrectly. Assign or export `FL16_PERF_DIR` separately before sourcing.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/5b82195348bd56d65047b59b7cd69936c0bbc234/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 52,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4334095773,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "tests/scripts/test_okr_flow_perf_portable.py",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Provide the synthetic cgroup tree to the host CPU test**\n\nOn Linux, `proc_tree` creates only an empty synthetic `self` directory, but this invocation now runs the complete script, whose `allotted()` requires `<proc-root>/self/cgroup`. It therefore exits 1 with an unknown cgroup hierarchy, making the assertion on the next line fail. The workflow runs this exact pytest file in its mandatory “monitor's own checks” step, so it stops before setup or measurement on every Linux runner; construct and pass a synthetic cgroup root here, or test `linux()` directly as the Darwin branch does.\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": false,
+                "line": 202,
+                "originalLine": 144,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4334171216,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "ops/okr/perf/timed3-linux.sh",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Start the API for standalone frame retries**\n\nWhen a frame trial is rerun as documented with, for example, `ATTEMPT=2 timed3-linux.sh … frames2`, no preceding readiness section has called `fresh`; this startup case excludes all frame sections, so no `okr-api` is listening when Playwright begins and the retry fails before producing a record. Start a fresh API for a standalone frame sequence, while allowing consecutive frame trials to reuse it.\n\nAGENTS.md reference: [AGENTS.md:L135-L137](https://github.com/txehq/txe/blob/500137ec69806689c6c993875de624818e43912a/AGENTS.md#L135-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 146,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4334415519,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "ops/okr/perf/timed3-linux.sh",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reset the fixture before frames that follow write sections**\n\nWhen the supported section list places a frame trial after `api`, `live`, or `browserlive` (for example, `timed3-linux.sh … api frames1`), this check sees the still-running API and skips `fresh`, so the frame trial runs against the database mutated by the preceding write workload while still being accepted as a valid measurement. Reuse is safe only after readiness or another frame trial; otherwise start a fresh API/database before the first frame section so every accepted section uses the declared fixture.\n\nAGENTS.md reference: [AGENTS.md:L133-L140](https://github.com/txehq/txe/blob/ade7d41ade4ac82a108ae24e60c0ceea631188fe/AGENTS.md#L133-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": false,
+                "line": 319,
+                "originalLine": 304,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4336765645,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/live.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Finish the initial cover before attaching observers**\n\nBecause each observer reads its first page before opening the stream, the first `ready` makes the real client issue a `cover` and re-read everything on screen (`live/model.ts:436-454` and `useFlowTable.ts:297-320`). This branch instead immediately marks the observer attached and releases the write loop without performing or awaiting that read, despite `plan.md:204` claiming it occurs before the first write. The measured run therefore omits 50 initial table refreshes and can begin writes with different cache, connection-pool, and rate-budget state than the declared client workload; perform the cover refresh and call `ready.Done()` only after it completes successfully.\n\nAGENTS.md reference: [AGENTS.md:L125-L129](https://github.com/txehq/txe/blob/ad37968a03fdab5bf4b23c1864d4c9c8716a6825/AGENTS.md#L125-L129)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": false,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 124,
+                "resolvedBy": null,
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4336952297,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "ops/okr/perf/timed3-linux.sh",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reap the interrupted wait before exiting**\n\nWhen SIGTERM arrives during the baseline wait, this background `sleep` survives `cleanup`, inherits the runner's output pipe, and prevents the invoking process from observing EOF until the full baseline duration expires. The workflow's mandatory `test_a_signal_stops_what_the_run_started` exercises exactly this path with a 30-second sleep and a 30-second `communicate` timeout; I reproduced it failing while the script had already logged `done`, leaving the suite at 1 failed and 87 passed. Track and terminate/wait for the active timer (and similarly owned waits) during cleanup so a signaled run actually stops all descendants.\n\nAGENTS.md reference: [AGENTS.md:L135-L137](https://github.com/txehq/txe/blob/bd8846acc93e1769ba8d098ef0b345fb061c890e/AGENTS.md#L135-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 268,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4361356879,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Attribute late responses to the request's sample**\n\n`apiResponses` reads the mutable `at.sample` when a response finishes, rather than when its request starts. If an asynchronous cover or ancillary API read finishes after the view's readiness condition, line 318 resets the tag to `-1` before that response arrives; a late 429 is then absent from both `throttled_samples` and the pacing count, and `verify_record.py` can accept the readiness record while a retry overlaps later samples. Capture the sample when the request is issued, or drain all sample requests before closing its accounting window.\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/10e723b6ea96522cc69fdace83adc093d7259ea6/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 280,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4361506459,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Reject failed requests from browser measurements**\n\nWhen an API request issued by a browser sample ends in Playwright's `requestfailed` event, this handler only decrements `open`; it adds no failure to `seen`, so `settled()` returns true and the readiness/frame/live checks—which only reject recorded 429 responses—can accept the run. In particular, a late asynchronous cover or ancillary read can fail after the visible readiness condition while `verify_record.py` still treats the record as healthy, and the missing response also shortens readiness pacing. Record transport failures and reject any affected measurement instead of treating them as completed reads.\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/34a6ea1991d92259d3f3ffe2fbadb5ee7662eadd/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": false,
+                "line": 132,
+                "originalLine": 95,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4361506470,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Require the launch fixture for browser measurements**\n\nWhen this spec is run against a custom or partial tenant that still has the locally asserted shape—for example, a first page with an open task, and for readiness/frames a capped 1,000-node graph—`belowMethod` can be empty and this code marks the record as a measurement without proving the required 100-member, 500-focus, 5,000-task, 2,500-thread, 10,000-comment launch fixture. Fresh evidence after the API fixture fix is that the browser `record()` path still checks only sample counts/duration/run labels, and `verify_record.py` likewise accepts these records; require fixture evidence before setting `measurement: true`.\n\nAGENTS.md reference: [AGENTS.md:L139-L140](https://github.com/txehq/txe/blob/34a6ea1991d92259d3f3ffe2fbadb5ee7662eadd/AGENTS.md#L139-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 884,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4362139826,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/web/apps/web/e2e/real/flow-performance.real.spec.ts",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Wait for pending browser requests before snapshotting failures**\n\nWhen the final live invalidation updates its focused rows, `useFlowTable.refreshFocuses` applies that update before awaiting its final table-count read, so `shown` can resolve while that request is still pending. This snapshots `liveFailures` before `context.close()` aborts the request; the `requestfailed` handler then appends a status-0 entry to `liveRequests`, but the already-materialized failure array remains empty and `verify_record.py` accepts the incomplete run. Fresh evidence beyond the earlier request-failure fix is this pre-close snapshot; await `settled`, or compute failures only after all workload requests finish (the frame path at line 737 has the same pattern).\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/efa32e7fc54cfe458d47b4d685b903a889d5d3dd/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": true,
+                "line": null,
+                "originalLine": 229,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4362610410,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "okr/cmd/okr-flow-perf/main.go",
+                      "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Count only non-deleted comments in fixture validation**\n\nWhen a custom or previously modified tenant retains 10,000 soft-deleted comment rows, this query still reports the launch count, and `fixtureBelowMethod` accepts it because comments only need to meet a minimum; however, the measured table/graph query in `itemCommentCounts` filters `deleted_at IS NULL`, so the run can return a measurement verdict while exercising no comment-count workload. Fresh evidence beyond the earlier fixture-count fix is this mismatch between the fixture predicate and the production read predicate; apply the same non-deleted filter here and in `timed3-linux.sh`'s browser fixture count.\n\nAGENTS.md reference: [AGENTS.md:L135-L140](https://github.com/txehq/txe/blob/ebc9d70d4b1cc174a7d752a14925e8dc7570ce2a/AGENTS.md#L135-L140)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              },
+              {
+                "isResolved": true,
+                "isOutdated": false,
+                "line": 207,
+                "originalLine": 207,
+                "resolvedBy": {
+                  "__typename": "User",
+                  "login": "connorwang"
+                },
+                "comments": {
+                  "nodes": [
+                    {
+                      "databaseId": 4362800809,
+                      "author": {
+                        "__typename": "Bot",
+                        "login": "chatgpt-codex-connector"
+                      },
+                      "path": "ops/okr/perf/timed3-linux.sh",
+                      "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Track foreground workloads for signal cleanup**\n\nWhen `timed3-linux.sh` receives SIGTERM while this synchronous 10-minute workload (or one of the synchronous browser workloads below it) is running, Bash defers the trap until the foreground child exits, and cleanup has no workload PID to terminate. Fresh evidence after the earlier baseline-wait fix is that only `nap` is now interruptible; a signal during a measured section can still leave the workload, API, and monitor running until the section timeout instead of stopping the run promptly. Start each workload in the background, track its PID, and terminate and wait for it during cleanup.\n\nAGENTS.md reference: [AGENTS.md:L133-L137](https://github.com/txehq/txe/blob/628ad3d0aebb9f7fb9736c54f38433e35117ce48/AGENTS.md#L133-L137)\n\nUseful? React with 👍 / 👎.\n\n<!-- codex-code-review-finding:v1 -->"
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+]
