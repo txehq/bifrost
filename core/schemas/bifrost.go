@@ -91,6 +91,7 @@ var SupportedBaseProviders = []ModelProvider{
 	Bedrock,
 	Cohere,
 	DeepSeek,
+	Elevenlabs,
 	Gemini,
 	GLM,
 	Minimax,

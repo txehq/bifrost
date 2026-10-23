@@ -97216,6 +97216,28 @@
       }
     },
     "schemas": {
+      "CustomBaseProvider": {
+        "type": "string",
+        "description": "Supported driver for a separately named custom provider. ElevenLabs channels use their configured base URL and selected xi-api-key for model discovery, speech, streamed speech and transcription.",
+        "enum": [
+          "anthropic",
+          "bedrock",
+          "cohere",
+          "deepseek",
+          "elevenlabs",
+          "gemini",
+          "glm",
+          "minimax",
+          "modelark",
+          "moonshot",
+          "openai",
+          "qwen",
+          "xai",
+          "volcengine",
+          "huggingface",
+          "replicate"
+        ]
+      },
       "ModelProvider": {
         "type": "string",
         "description": "AI model provider identifier",
@@ -109884,6 +109906,13 @@
         "type": "object",
         "description": "Provider configuration response",
         "properties": {
+          "supported_base_providers": {
+            "type": "array",
+            "description": "Returned by GET /api/providers/{provider}. The gateway's current supported custom base drivers, derived from the same allowlist used for configuration and provider construction. Clients can check this before changing a channel's dialect.",
+            "items": {
+              "$ref": "#/components/schemas/CustomBaseProvider"
+            }
+          },
           "name": {
             "$ref": "#/components/schemas/ModelProvider"
           },
@@ -109941,7 +109970,7 @@
                 "description": "Provider ends streams on finish_reason without sending a data: [DONE] marker. Without this, a provider that also keeps the connection open leaves the stream waiting for a marker it never sends."
               },
               "base_provider_type": {
-                "$ref": "#/components/schemas/ModelProvider"
+                "$ref": "#/components/schemas/CustomBaseProvider"
               },
               "allowed_requests": {
                 "type": "object",
@@ -110180,7 +110209,7 @@
                 "description": "Provider ends streams on finish_reason without sending a data: [DONE] marker. Without this, a provider that also keeps the connection open leaves the stream waiting for a marker it never sends."
               },
               "base_provider_type": {
-                "$ref": "#/components/schemas/ModelProvider"
+                "$ref": "#/components/schemas/CustomBaseProvider"
               },
               "allowed_requests": {
                 "type": "object",
@@ -110377,7 +110406,7 @@
                 "description": "Provider ends streams on finish_reason without sending a data: [DONE] marker. Without this, a provider that also keeps the connection open leaves the stream waiting for a marker it never sends."
               },
               "base_provider_type": {
-                "$ref": "#/components/schemas/ModelProvider"
+                "$ref": "#/components/schemas/CustomBaseProvider"
               },
               "allowed_requests": {
                 "type": "object",

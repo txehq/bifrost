@@ -46,6 +46,32 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "elevenlabs_custom_audio": {
+      "keys": [
+        {
+          "name": "ElevenLabs custom audio key",
+          "value": "env.ELEVENLABS_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "base_url": "https://api.elevenlabs.io",
+        "default_request_timeout_in_seconds": 300,
+        "max_retries": 0,
+        "retry_backoff_initial": 500,
+        "retry_backoff_max": 5000
+      },
+      "custom_provider_config": {
+        "base_provider_type": "elevenlabs",
+        "allowed_requests": {
+          "list_models": true,
+          "speech": true,
+          "speech_stream": true,
+          "transcription": true
+        }
+      }
+    },
     "typesafe": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,

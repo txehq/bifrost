@@ -494,7 +494,14 @@
           "$ref": "#/$defs/provider_with_github_copilot_config"
         }
       },
-      "additionalProperties": true
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "custom_provider_config": {
+            "$ref": "#/$defs/custom_provider_config"
+          }
+        }
+      }
     },
     "governance": {
       "type": "object",
@@ -8778,47 +8785,23 @@
           "type": "string",
           "enum": [
             "openai",
-            "azure",
             "anthropic",
             "bedrock",
-            "bedrock_mantle",
             "cohere",
-            "vertex",
-            "mistral",
-            "ollama",
-            "groq",
-            "opencode-go",
-            "opencode-zen",
-            "sgl",
-            "parasail",
-            "perplexity",
-            "cerebras",
-            "databricks",
             "deepseek",
             "gemini",
-            "deepseek",
             "glm",
-            "github-copilot",
-            "openrouter",
             "elevenlabs",
             "huggingface",
-            "nebius",
             "qwen",
             "xai",
             "replicate",
-            "vllm",
-            "runway",
             "minimax",
             "moonshot",
             "modelark",
-            "volcengine",
-            "runware",
-            "fireworks",
-            "sarvam",
-            "wafer",
-            "typesafe"
+            "volcengine"
           ],
-          "description": "Base provider type to extend"
+          "description": "Supported base provider type to extend. ElevenLabs custom channels use their configured base_url and xi-api-key for model discovery, speech, streamed speech and transcription."
         },
         "request_path_overrides": {
           "type": "object",

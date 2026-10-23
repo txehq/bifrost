@@ -298,6 +298,27 @@ AllowedRequests:
     file_content:
       type: boolean
 
+CustomBaseProvider:
+  type: string
+  description: Supported driver for a separately named custom provider. ElevenLabs channels use their configured base URL and selected xi-api-key for model discovery, speech, streamed speech and transcription.
+  enum:
+    - anthropic
+    - bedrock
+    - cohere
+    - deepseek
+    - elevenlabs
+    - gemini
+    - glm
+    - minimax
+    - modelark
+    - moonshot
+    - openai
+    - qwen
+    - xai
+    - volcengine
+    - huggingface
+    - replicate
+
 CustomProviderConfig:
   type: object
   description: Custom provider configuration
@@ -311,7 +332,7 @@ CustomProviderConfig:
         Without this, a provider that also keeps the connection open leaves the stream
         waiting for a marker it never sends.
     base_provider_type:
-      $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+      $ref: '#/CustomBaseProvider'
     allowed_requests:
       $ref: '#/AllowedRequests'
     request_path_overrides:
@@ -323,6 +344,11 @@ ProviderResponse:
   type: object
   description: Provider configuration response
   properties:
+    supported_base_providers:
+      type: array
+      description: Returned by GET /api/providers/{provider}. The gateway's current supported custom base drivers, derived from the same allowlist used for configuration and provider construction. Clients can check this before changing a channel's dialect.
+      items:
+        $ref: '#/CustomBaseProvider'
     name:
       $ref: '../../schemas/inference/common.yaml#/ModelProvider'
     network_config:

@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -23,6 +24,22 @@ const (
 	ProviderAutoResolveErrorMessage = "could not auto resolve a provider for the request, please specify a provider explicitly"
 	ModelAutoResolveErrorMessage    = "could not auto resolve a model for the request, please specify a model explicitly"
 )
+
+// 复制 response 容器以隔离调用方的 metadata 写入，保留只读 payload 的引用。
+func copyResponseForCaller(response *schemas.BifrostResponse) *schemas.BifrostResponse {
+	copied := *response
+	fields := reflect.ValueOf(&copied).Elem()
+	for i := 0; i < fields.NumField(); i++ {
+		field := fields.Field(i)
+		if field.IsNil() {
+			continue
+		}
+		container := reflect.New(field.Elem().Type())
+		container.Elem().Set(field.Elem())
+		field.Set(container)
+	}
+	return &copied
+}
 
 // transientServerStatusCodes are upstream-side failures unrelated to the credential —
 // retried with the *same* key (a different credential gains nothing against a flaky

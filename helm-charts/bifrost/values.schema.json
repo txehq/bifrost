@@ -6147,7 +6147,9 @@
               "description": "With does_not_send_done_marker, keep reading past finish_reason so the trailing usage-only chunk is collected instead of dropped. Without it the request records zero tokens and zero cost"
             },
             "base_provider_type": {
-              "type": "string"
+              "type": "string",
+              "description": "Supported driver for a separately named provider, including native ElevenLabs audio channels.",
+              "enum": ["anthropic", "bedrock", "cohere", "deepseek", "elevenlabs", "gemini", "glm", "minimax", "modelark", "moonshot", "openai", "qwen", "xai", "volcengine", "huggingface", "replicate"]
             },
             "allowed_requests": {
               "type": "object",

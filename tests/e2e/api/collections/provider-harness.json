@@ -147,6 +147,9 @@
           "        shape = 'rerank-records';",
           "        // Discovery Engine's rank API is ID-keyed: it answers with records[] carrying id + score, not results[] with index + relevance_score, so the rerank branch above never claims it. Like that branch, the ranked list IS the content - a rank call generates no text. Matched on id + score rather than on `records` alone, which is too generic to claim off other shapes. This went missing because /genai/v1/rank only started returning the real Discovery Engine shape once the rank response converter landed; before that it leaked Bifrost's canonical results[] and was claimed by the rerank branch.",
           "        hasContent = j.records.length > 0;",
+          "    } else if (Array.isArray(j.supported_base_providers) && typeof j.name === 'string' && j.custom_provider_config) {",
+          "        shape = 'custom-provider-config';",
+          "        hasContent = j.supported_base_providers.indexOf(j.custom_provider_config.base_provider_type) !== -1;",
           "    } else if (Array.isArray(j.predictions)) {",
           "        shape = 'vertex-predictions';",
           "        hasContent = j.predictions.length > 0;",
@@ -160032,6 +160035,134 @@
                 "completions"
               ]
             }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "117. ElevenLabs custom audio channels (custom-elevenlabs, TXE-5087)",
+      "description": "A separately named ElevenLabs driver must route native audio with its configured URL and selected key while reporting the custom provider identity. The elevenlabs_custom_audio fixture in tests/integrations/python/config.json uses the same real account as built-in ElevenLabs, with its own name, explicit base URL, audio policy and zero retries. These requests require that custom provider to initialize successfully. Go gateway regressions additionally exercise admin create/update, persistent reload, unsupported operations, exact byte preservation, cancellation and one-call 503 handling with owned local endpoints.",
+      "item": [
+        {
+          "name": "117.1 elevenlabs_custom_audio/eleven_turbo_v2_5 buffered speech - custom-elevenlabs - #TXE-5087",
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('custom ElevenLabs buffered speech succeeds with audio and selected identity', function () {",
+                "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                "  pm.expect(pm.response.headers.get('content-type')).to.include('audio/');",
+                "  pm.expect(pm.response.stream.length, 'empty audio').to.be.above(0);",
+                "  pm.expect(pm.response.headers.get('x-bifrost-provider')).to.equal('elevenlabs_custom_audio');",
+                "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key')).to.equal('ElevenLabs custom audio key');",
+                "});"
+              ]
+            }
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "x-bf-api-key", "value": "ElevenLabs custom audio key"}
+            ],
+            "body": {"mode": "raw", "raw": "{\"model\":\"elevenlabs_custom_audio/eleven_turbo_v2_5\",\"voice\":\"21m00Tcm4TlvDq8ikWAM\",\"input\":\"Hello.\"}"},
+            "url": "{{baseUrl}}/v1/audio/speech"
+          },
+          "response": []
+        },
+        {
+          "name": "117.2 elevenlabs_custom_audio/eleven_turbo_v2_5 streamed speech - custom-elevenlabs - #TXE-5087",
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('custom ElevenLabs speech stream delivers audio and a terminal event', function () {",
+                "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                "  pm.expect(pm.response.headers.get('x-bifrost-provider')).to.equal('elevenlabs_custom_audio');",
+                "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key')).to.equal('ElevenLabs custom audio key');",
+                "  var audio = 0, done = false;",
+                "  pm.response.text().split('\\n').forEach(function (line) {",
+                "    if (line.indexOf('data: {') !== 0) { return; }",
+                "    var event = JSON.parse(line.slice(6));",
+                "    pm.expect(event.type, line).not.to.equal('error');",
+                "    if (event.type === 'speech.audio.delta') { audio += (event.audio || '').length; }",
+                "    if (event.type === 'speech.audio.done') { done = true; }",
+                "    if (event.extra_fields && event.extra_fields.provider) { pm.expect(event.extra_fields.provider).to.equal('elevenlabs_custom_audio'); }",
+                "  });",
+                "  pm.expect(audio, 'empty audio stream: ' + pm.response.text()).to.be.above(0);",
+                "  pm.expect(done, 'missing speech.audio.done').to.be.true;",
+                "});"
+              ]
+            }
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "x-bf-api-key", "value": "ElevenLabs custom audio key"}
+            ],
+            "body": {"mode": "raw", "raw": "{\"model\":\"elevenlabs_custom_audio/eleven_turbo_v2_5\",\"voice\":\"21m00Tcm4TlvDq8ikWAM\",\"input\":\"Hello.\",\"stream_format\":\"sse\"}"},
+            "url": "{{baseUrl}}/v1/audio/speech"
+          },
+          "response": []
+        },
+        {
+          "name": "117.3 elevenlabs_custom_audio/scribe_v2 transcription - custom-elevenlabs - #TXE-5087",
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('custom ElevenLabs transcription succeeds with custom identity', function () {",
+                "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                "  pm.expect(pm.response.json().text, 'missing transcription: ' + pm.response.text()).to.be.a('string');",
+                "  pm.expect(pm.response.headers.get('x-bifrost-provider')).to.equal('elevenlabs_custom_audio');",
+                "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key')).to.equal('ElevenLabs custom audio key');",
+                "});"
+              ]
+            }
+          }],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "x-bf-api-key", "value": "ElevenLabs custom audio key"}],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {"key": "model", "value": "elevenlabs_custom_audio/scribe_v2", "type": "text"},
+                {"key": "file", "src": "tests/e2e/api/fixtures/sample.mp3", "type": "file"}
+              ]
+            },
+            "url": "{{baseUrl}}/v1/audio/transcriptions"
+          },
+          "response": []
+        },
+        {
+          "name": "117.4 elevenlabs_custom_audio admin capability and policy readback - custom-elevenlabs - #TXE-5087",
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('custom ElevenLabs admin GET reports supported drivers and persisted policy', function () {",
+                "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                "  var provider = pm.response.json();",
+                "  pm.expect(provider.name).to.equal('elevenlabs_custom_audio');",
+                "  pm.expect(provider.supported_base_providers).to.include('elevenlabs');",
+                "  pm.expect(provider.supported_base_providers).not.to.include('azure');",
+                "  pm.expect(provider.network_config.max_retries).to.equal(0);",
+                "  pm.expect(provider.network_config.base_url).to.equal('https://api.elevenlabs.io');",
+                "  pm.expect(provider.custom_provider_config.base_provider_type).to.equal('elevenlabs');",
+                "  ['list_models', 'speech', 'speech_stream', 'transcription'].forEach(function (operation) { pm.expect(provider.custom_provider_config.allowed_requests[operation], operation).to.be.true; });",
+                "});"
+              ]
+            }
+          }],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/providers/elevenlabs_custom_audio"
           },
           "response": []
         }
