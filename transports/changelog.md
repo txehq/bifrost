@@ -1,5 +1,6 @@
 ## 🔒 Security
 
+[fix]: preserve key snapshots and bound provider-read database contexts (TXE-5087)
 - **Named ElevenLabs Channels** - Register native ElevenLabs custom channels and inspect supported base providers through the admin API (TXE-5087)
 - **Provider Configuration Ownership** - Key status updates preserve existing snapshots, and provider reads use database contexts bounded by the handler lifetime (TXE-5087)
 - **Proxied requests are pinned to the address the policy checked** - guarded HTTP clients (catalog and datasheet fetches, OpenAPI spec previews, RSS feeds) and MCP clients that reach their destination through a proxy now open a tunnel to the address the destination policy resolved and approved (CONNECT ip:port, or SOCKS5 to the IP, plain http included) instead of handing the proxy the hostname to resolve again. A DNS answer that changes after the check (rebinding) can no longer carry the request to a private, loopback or metadata address. The proxy's credentials, TLS settings and private-network reachability are unchanged
