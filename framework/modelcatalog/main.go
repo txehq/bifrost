@@ -54,7 +54,9 @@ type ModelCatalog struct {
 	providersForModel *gencache.Cache[[]schemas.ModelProvider]
 	modelsForProvider *gencache.Cache[[]string]
 
-	// MCP library sync configuration (protected by syncMu)
+	// MCP library sync configuration and the sync callbacks (protected by
+	// syncMu). The callbacks are set after Init, while startup syncs may
+	// already be running.
 	mcpLibraryURL          string
 	mcpLibrarySyncInterval time.Duration
 	lastMCPLibrarySyncedAt time.Time
@@ -297,15 +299,43 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 	return mc, nil
 }
 
+// SetShouldSyncGate registers a gate consulted before every URL sync. A false
+// result skips that sync; nil (the default) allows every sync. Safe to call
+// while background syncs are running.
 func (mc *ModelCatalog) SetShouldSyncGate(fn func(ctx context.Context) bool) {
+	mc.syncMu.Lock()
 	mc.shouldSyncGate = fn
+	mc.syncMu.Unlock()
 }
 
 // SetAfterSyncHook registers a callback invoked after every successful
 // URL → DB pricing sync. In enterprise this broadcasts a gossip message so
-// other pods reload from DB.
+// other pods reload from DB. Safe to call while background syncs are running.
 func (mc *ModelCatalog) SetAfterSyncHook(fn func(ctx context.Context)) {
+	mc.syncMu.Lock()
 	mc.afterSyncHook = fn
+	mc.syncMu.Unlock()
+}
+
+// shouldSync reports whether the registered gate allows a URL sync. The gate
+// is read under syncMu but invoked outside it, so it may block on I/O or call
+// back into the catalog.
+func (mc *ModelCatalog) shouldSync(ctx context.Context) bool {
+	mc.syncMu.RLock()
+	gate := mc.shouldSyncGate
+	mc.syncMu.RUnlock()
+	return gate == nil || gate(ctx)
+}
+
+// runAfterSyncHook invokes the registered after-sync hook, if any, outside
+// syncMu for the same reason as shouldSync.
+func (mc *ModelCatalog) runAfterSyncHook(ctx context.Context) {
+	mc.syncMu.RLock()
+	hook := mc.afterSyncHook
+	mc.syncMu.RUnlock()
+	if hook != nil {
+		hook(ctx)
+	}
 }
 
 // ReloadFromDB reloads pricing + model-parameters caches from the database.
@@ -418,9 +448,7 @@ func (mc *ModelCatalog) ForceReloadPricing(ctx context.Context) error {
 		return paramsErr
 	}
 
-	if mc.afterSyncHook != nil {
-		mc.afterSyncHook(ctx)
-	}
+	mc.runAfterSyncHook(ctx)
 
 	if mc.syncTicker != nil {
 		mc.syncTicker.Reset(mc.datasheet.SyncInterval())
@@ -514,9 +542,7 @@ func (mc *ModelCatalog) syncTick(ctx context.Context) {
 				}()
 				wg.Wait()
 				if pricingErr == nil && paramsErr == nil {
-					if mc.afterSyncHook != nil {
-						mc.afterSyncHook(ctx)
-					}
+					mc.runAfterSyncHook(ctx)
 					mc.datasheet.MarkSynced(time.Now())
 				}
 				if pricingErr != nil {
@@ -552,7 +578,7 @@ func (mc *ModelCatalog) syncTick(ctx context.Context) {
 
 // runPricingSync wraps the datasheet pricing sync with the gate check.
 func (mc *ModelCatalog) runPricingSync(ctx context.Context) error {
-	if mc.shouldSyncGate != nil && !mc.shouldSyncGate(ctx) {
+	if !mc.shouldSync(ctx) {
 		return nil
 	}
 	return mc.datasheet.SyncFromURL(ctx)
@@ -560,7 +586,7 @@ func (mc *ModelCatalog) runPricingSync(ctx context.Context) error {
 
 // runParamsSync wraps the datasheet params sync with the gate check.
 func (mc *ModelCatalog) runParamsSync(ctx context.Context) error {
-	if mc.shouldSyncGate != nil && !mc.shouldSyncGate(ctx) {
+	if !mc.shouldSync(ctx) {
 		mc.logger.Debug("model parameters sync cancelled by custom gate")
 		return nil
 	}
