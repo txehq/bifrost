@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/logstore"
 )
@@ -823,10 +824,13 @@ func groupByProvider(args map[string]any) (bool, error) {
 // the whole answer. An explicit refusal makes the model narrow its filters,
 // which produces a correct answer one round trip later.
 func boundToolResult(result any) string {
-	encoded, err := sonic.MarshalString(result)
+	// Sorted keys: the result becomes a function-call output in the next model
+	// prompt, so equal results must serialize to equal bytes for the prompt cache.
+	raw, err := providerUtils.MarshalSorted(result)
 	if err != nil {
 		return fmt.Sprintf(`{"error":"could not serialize result: %s"}`, err.Error())
 	}
+	encoded := string(raw)
 	if len(encoded) <= MaxToolResultBytes {
 		return encoded
 	}

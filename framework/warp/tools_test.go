@@ -2600,3 +2600,21 @@ func TestWarpObjectsFilterIsReportedOnAggregates(t *testing.T) {
 		})
 	}
 }
+
+// A tool result becomes a function-call output in the next model prompt, so a map
+// result must serialize with its keys in a stable order for the prompt cache.
+func TestBoundToolResultSortsMapKeys(t *testing.T) {
+	result := map[string]any{}
+	for i := 0; i < 64; i++ {
+		result[fmt.Sprintf("k%02d", 63-i)] = map[string]any{"z": i, "a": i}
+	}
+	first := boundToolResult(result)
+	for i := 0; i < 20; i++ {
+		if got := boundToolResult(result); got != first {
+			t.Fatalf("serialization changed between calls:\n%s\n%s", first, got)
+		}
+	}
+	if !strings.HasPrefix(first, `{"k00":{"a":63,"z":63},"k01":{"a":62,"z":62}`) {
+		t.Fatalf("keys not sorted: %.80s", first)
+	}
+}
