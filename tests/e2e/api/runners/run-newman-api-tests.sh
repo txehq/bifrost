@@ -215,6 +215,16 @@ if NPM_GLOBAL_ROOT="$(npm root -g 2>/dev/null)" && [ -n "$NPM_GLOBAL_ROOT" ]; th
     export NODE_PATH="$NPM_GLOBAL_ROOT${NODE_PATH:+:$NODE_PATH}"
 fi
 
+# The node runners below (the content-logging matrix) require pg. CI installs it
+# hash-pinned next to newman in .github/workflows/tools (npm ci), so the
+# node_modules that holds newman is added too; a repo-local or global install
+# still resolves as before.
+if NEWMAN_BIN="$(command -v newman 2>/dev/null)" && \
+    NEWMAN_MODULES="$(node -e 'const fs = require("fs"), path = require("path"); process.stdout.write(path.resolve(path.dirname(fs.realpathSync(process.argv[1])), "..", ".."))' "$NEWMAN_BIN" 2>/dev/null)" && \
+    [ -d "$NEWMAN_MODULES/pg" ]; then
+    export NODE_PATH="$NEWMAN_MODULES${NODE_PATH:+:$NODE_PATH}"
+fi
+
 # Validate optional reporters are resolvable before invoking newman so we fail
 # fast with a clear message instead of a cryptic mid-run newman error.
 #

@@ -39,6 +39,8 @@ const { readLogsDbUrl } = require("../lib/logs-db-url.js");
 
 const baseURL = (process.env.BIFROST_E2E_BASE_URL || process.env.BIFROST_BASE_URL || "http://localhost:8080").replace(/\/+$/, "");
 const adminAuthHeader = process.env.BIFROST_E2E_AUTH_HEADER || "";
+// OSS setup lock: while dashboard auth is not active, /api needs the setup token.
+const setupToken = (process.env.BIFROST_E2E_SETUP_TOKEN || process.env.BIFROST_SETUP_TOKEN || "bifrost-e2e-setup-token").trim();
 const runTag = `clmx${process.pid}${Date.now().toString(36)}`;
 const providerName = `clmx-provider-${runTag}`;
 const modelName = "echo-model";
@@ -122,6 +124,7 @@ function createEchoProvider() {
 
 async function request(method, path, body, headers = {}) {
 	const requestHeaders = adminAuthHeader ? { Authorization: adminAuthHeader, ...headers } : { ...headers };
+	if (setupToken) requestHeaders["X-Bifrost-Setup-Token"] = setupToken;
 	if (body !== undefined) requestHeaders["content-type"] = "application/json";
 	const res = await fetch(`${baseURL}${path}`, {
 		method,
