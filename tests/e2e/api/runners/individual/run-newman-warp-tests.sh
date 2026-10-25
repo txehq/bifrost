@@ -164,7 +164,9 @@ fi
 DSN="postgres://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:$POSTGRES_PORT/$WARP_DB?sslmode=$POSTGRES_SSLMODE"
 
 echo -e "${YELLOW}Building seeder...${NC}"
-( cd "$SEED_DIR" && go build -o "$WORK_DIR/warpseed" ./warpseed ) || {
+# tests/cmd/seed is its own module (its go.mod replaces core and framework with the
+# local tree) and is not listed in the fork's go.work, so it builds outside the workspace.
+( cd "$SEED_DIR" && GOWORK=off go build -o "$WORK_DIR/warpseed" ./warpseed ) || {
     echo -e "${RED}Error: failed to build tests/cmd/seed/warpseed${NC}"; exit 1; }
 
 echo -e "${YELLOW}Recreating database $WARP_DB...${NC}"
