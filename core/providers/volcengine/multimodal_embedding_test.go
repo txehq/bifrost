@@ -475,7 +475,7 @@ func TestMultiModalEmbedding_RawRequestResponse(t *testing.T) {
 	text := "test"
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: schemas.Volcengine,
-		Model:    "test",
+		Model:    "doubao-embedding-vision-250615",
 		Input: flatInput(
 			schemas.MultiModalEmbeddingInput{Type: schemas.MultiModalEmbeddingText, Text: &text},
 		),
