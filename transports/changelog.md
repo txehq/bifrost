@@ -35,3 +35,4 @@ All are additive and idempotent by ID. `move_pricing_override_search_context_to_
 - fix: a proxied MCP hostname the gateway cannot resolve is still refused for every client (TXE-5086), including on upstream's new per-request proxy transport
 - fix: native Anthropic and xAI Messages passthrough validate the path against the provider host like the other providers
 - chore: GLM, Qwen, MiniMax, Moonshot and Volcengine/ModelArk report model retrieve as unsupported
+- note: the `warp` feature flag now defaults to on (upstream #7757; it was off in v2.3.0-sync.1). Warp stays inert until an admin configures its chat and embedding models: no provider calls and no log indexing before that. Turn the flag off to hide it
