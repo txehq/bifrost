@@ -172,6 +172,11 @@ var reviewedSites = map[string]siteReview{
 		status: bounded,
 		reason: "loops over the fixed vertexCountTokensUnsupportedFields package var",
 	},
+	"configstore.migrationMovePricingOverrideSearchContextToWebSearch": {
+		status: elementSized,
+		reason: "one-time startup migration; each iteration rewrites that row's own small pricing_patch_json, " +
+			"never a request body",
+	},
 }
 
 type foundSite struct {
