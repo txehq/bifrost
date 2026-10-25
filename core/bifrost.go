@@ -103,7 +103,17 @@ func (m *ChannelMessage) claimDelivery() bool {
 // about to enter) the buffer and the caller must receive it, since no one else
 // will. After a successful abandon the caller must not touch the message again.
 func (m *ChannelMessage) abandonDelivery() bool {
-	return m.handoff.CompareAndSwap(handoffOpen, handoffAbandoned)
+	if !m.handoff.CompareAndSwap(handoffOpen, handoffAbandoned) {
+		return false
+	}
+	// The worker still writes response attributes and plugin logs, so the transport
+	// must not flush the trace yet. Set on the CAS so every abandonment marks it.
+	if m.Context != nil {
+		if tracer, traceID, err := GetTracerFromContext(m.Context); err == nil {
+			tracer.DeferTraceCompletion(traceID)
+		}
+	}
+	return true
 }
 
 // Bifrost manages providers and maintains specified open channels for concurrent processing.
@@ -388,6 +398,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 				codeModeConfig = &mcp.CodeModeConfig{
 					BindingLevel:         mcpConfig.ToolManagerConfig.CodeModeBindingLevel,
 					ToolExecutionTimeout: time.Duration(mcpConfig.ToolManagerConfig.ToolExecutionTimeout),
+					Limits:               mcpConfig.ToolManagerConfig.CodeModeLimits,
 				}
 			}
 			codeMode := starlark.NewStarlarkCodeMode(codeModeConfig, bifrost.logger)
@@ -520,8 +531,55 @@ func (bifrost *Bifrost) ListModelsRequest(ctx *schemas.BifrostContext, req *sche
 	return resp.ListModelsResponse, nil
 }
 
+// listAllModelsProviderTimeout bounds each provider's live poll inside
+// ListAllModels. The fan-out previously ran with no deadline, so a single
+// unreachable provider held the aggregate response back until the shared
+// request timeout (DefaultRequestTimeoutInSeconds, 300s by default) expired.
+// Listing models is a metadata read and should not wait inference-scale
+// timeouts. A var rather than a const so package tests can shrink it.
+var listAllModelsProviderTimeout = 5 * time.Second
+
+// providerModelLister is the optional model-catalog capability ListAllModels
+// falls back on when a provider's live poll fails. The framework's
+// modelcatalog.ModelCatalog implements it already; the public
+// schemas.ModelInfoProvider interface is left untouched so third-party
+// catalogs keep compiling.
+type providerModelLister interface {
+	GetModelsForProvider(provider schemas.ModelProvider) []string
+	GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string
+}
+
+// lastKnownModelsFromCatalog returns catalog-backed entries for a provider
+// whose live poll failed, or nil when no catalog with per-provider listings is
+// configured or it has nothing for this provider. IDs use the same
+// "<provider>/<model>" shape the live path produces, so downstream enrichment
+// and pagination treat them identically.
+func (bifrost *Bifrost) lastKnownModelsFromCatalog(providerKey schemas.ModelProvider, unfiltered bool) []schemas.Model {
+	lister, ok := bifrost.getModelCatalog().(providerModelLister)
+	if !ok {
+		return nil
+	}
+	var names []string
+	if unfiltered {
+		names = lister.GetUnfilteredModelsForProvider(providerKey)
+	} else {
+		names = lister.GetModelsForProvider(providerKey)
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	models := make([]schemas.Model, 0, len(names))
+	for _, name := range names {
+		models = append(models, schemas.Model{ID: string(providerKey) + "/" + name})
+	}
+	return models
+}
+
 // ListAllModels lists all models from all configured providers.
 // It accumulates responses from all providers with a limit of 1000 per provider to get all results.
+// Each provider poll is bounded by listAllModelsProviderTimeout so one unreachable provider
+// cannot block the aggregate; a provider whose poll fails contributes its last-known models
+// from the model catalog (when one with per-provider listings is configured) instead.
 func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if req == nil {
 		req = &schemas.BifrostListModelsRequest{}
@@ -578,7 +636,12 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 		go func(providerKey schemas.ModelProvider) {
 			defer wg.Done()
 
-			providerCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+			// Bound this provider's poll so one unreachable provider cannot
+			// hold the aggregate until the shared request timeout: at the
+			// deadline tryRequest stops waiting on the worker (the in-flight
+			// HTTP call is abandoned, not cancelled) and wg.Wait() finishes.
+			providerCtx := schemas.NewBifrostContext(ctx, time.Now().Add(listAllModelsProviderTimeout))
+			defer providerCtx.Cancel()
 			providerCtx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
 
 			providerModels := make([]schemas.Model, 0)
@@ -653,6 +716,20 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 				providerRequest.PageToken = response.NextPageToken
 			}
 
+			// A provider whose live poll failed shouldn't vanish from the
+			// aggregate while the catalog still remembers its models: serve
+			// the last-known list (kept fresh by the transport's background
+			// refresher) instead of nothing. Expected failures (no keys, not
+			// supported, blocked) leave providerErr nil and stay silent as
+			// before, and the poll error still propagates so an
+			// all-providers-down setup without a catalog keeps erroring.
+			if providerErr != nil && len(providerModels) == 0 {
+				if cached := bifrost.lastKnownModelsFromCatalog(providerKey, req.Unfiltered); len(cached) > 0 {
+					bifrost.logger.Warn("serving %d last-known models for provider %s from the model catalog after its live poll failed", len(cached), providerKey)
+					providerModels = cached
+				}
+			}
+
 			results <- providerResult{
 				provider:    providerKey,
 				models:      providerModels,
@@ -708,6 +785,62 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 	response = response.ApplyPagination(req.PageSize, req.PageToken)
 
 	return response, nil
+}
+
+// ModelRetrieveRequest retrieves a single model's metadata from the specified provider.
+func (bifrost *Bifrost) ModelRetrieveRequest(ctx *schemas.BifrostContext, req *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "model retrieve request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ModelRetrieveRequest,
+			},
+		}
+	}
+	if req.Provider == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "provider is required for model retrieve request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.ModelRetrieveRequest,
+			},
+		}
+	}
+	if req.Model == "" {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "model is required for model retrieve request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				Provider:    req.Provider,
+				RequestType: schemas.ModelRetrieveRequest,
+			},
+		}
+	}
+	if ctx == nil {
+		ctx = bifrost.ctx
+	}
+
+	reqCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	// Metadata lookup, no tokens spent.
+	reqCtx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.ModelRetrieveRequest
+	bifrostReq.ModelRetrieveRequest = req
+
+	resp, err := bifrost.handleRequest(reqCtx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp.ModelRetrieveResponse, nil
 }
 
 func filterProvidersByContext(ctx *schemas.BifrostContext, providerKeys []schemas.ModelProvider) []schemas.ModelProvider {
@@ -1357,9 +1490,7 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 			},
 		}
 	}
-	hasExtraInputs := req.Params != nil && req.Params.ExtraParams != nil &&
-		(req.Params.ExtraParams["inputs"] != nil || req.Params.ExtraParams["images"] != nil)
-	if (req.Input == nil || (req.Input.Text == nil && req.Input.Texts == nil && req.Input.Embedding == nil && req.Input.Embeddings == nil)) && !hasExtraInputs && !isLargePayloadPassthrough(ctx) {
+	if len(req.Input) == 0 && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -1371,6 +1502,22 @@ func (bifrost *Bifrost) EmbeddingRequest(ctx *schemas.BifrostContext, req *schem
 				OriginalModelRequested: req.Model,
 				ResolvedModelUsed:      req.Model,
 			},
+		}
+	}
+	if len(req.Input) > 0 {
+		if err := schemas.ValidateEmbeddingInput(req.Input); err != nil {
+			return nil, &schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Message: err.Error(),
+				},
+				ExtraFields: schemas.BifrostErrorExtraFields{
+					RequestType:            schemas.EmbeddingRequest,
+					Provider:               req.Provider,
+					OriginalModelRequested: req.Model,
+					ResolvedModelUsed:      req.Model,
+				},
+			}
 		}
 	}
 
@@ -4200,7 +4347,7 @@ func (bifrost *Bifrost) SetMCPStateChangeCallback(cb func(clientID, name string,
 // discovery, and the periodic checker's own refresh. core/mcp has no DB
 // access; this is the seam the transport layer persists through. Pass nil to
 // clear a previously registered callback. A no-op if MCP is not configured.
-func (bifrost *Bifrost) SetMCPToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string)) {
+func (bifrost *Bifrost) SetMCPToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string)) {
 	if bifrost.MCPManager == nil {
 		return
 	}
@@ -4260,6 +4407,16 @@ func (bifrost *Bifrost) GetAvailableMCPTools(ctx *schemas.BifrostContext) []sche
 		return nil
 	}
 	return bifrost.MCPManager.GetAvailableTools(ctx)
+}
+
+// GetMCPServerInstructions returns the aggregated initialize `instructions` of every MCP
+// client this request may see, ready to hand to a caller. Empty when nothing is visible,
+// nothing advertises instructions, or no MCP manager is configured.
+func (bifrost *Bifrost) GetMCPServerInstructions(ctx *schemas.BifrostContext) string {
+	if bifrost.MCPManager == nil {
+		return ""
+	}
+	return bifrost.MCPManager.GetAggregatedServerInstructions(ctx)
 }
 
 // AddMCPClient adds a new MCP client to the Bifrost instance.
@@ -4478,7 +4635,7 @@ func (bifrost *Bifrost) EnableMCPClient(id string) error {
 // server using a temporary access token and discover available tools. The
 // connection is closed after verification. If the MCP manager is not yet
 // initialized, it is lazily created (same as AddMCPClient).
-func (bifrost *Bifrost) VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, error) {
+func (bifrost *Bifrost) VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, string, error) {
 	// Ensure MCP manager is initialized (lazy init, same pattern as AddMCPClient)
 	if bifrost.MCPManager == nil {
 		bifrost.mcpInitOnce.Do(func() {
@@ -4498,7 +4655,7 @@ func (bifrost *Bifrost) VerifyPerUserOAuthConnection(ctx context.Context, config
 		})
 	}
 	if bifrost.MCPManager == nil {
-		return nil, nil, fmt.Errorf("MCP manager is not initialized")
+		return nil, nil, "", fmt.Errorf("MCP manager is not initialized")
 	}
 	return bifrost.MCPManager.VerifyPerUserOAuthConnection(ctx, config, accessToken)
 }
@@ -4507,7 +4664,7 @@ func (bifrost *Bifrost) VerifyPerUserOAuthConnection(ctx context.Context, config
 // server using caller-supplied header values (admin sample or user-submitted)
 // and discover available tools. Mirrors VerifyPerUserOAuthConnection's lazy
 // MCP-manager init.
-func (bifrost *Bifrost) VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, error) {
+func (bifrost *Bifrost) VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error) {
 	if bifrost.MCPManager == nil {
 		bifrost.mcpInitOnce.Do(func() {
 			mcpConfig := schemas.MCPConfig{
@@ -4526,34 +4683,60 @@ func (bifrost *Bifrost) VerifyHeadersConnection(ctx context.Context, config *sch
 		})
 	}
 	if bifrost.MCPManager == nil {
-		return nil, nil, fmt.Errorf("MCP manager is not initialized")
+		return nil, nil, "", fmt.Errorf("MCP manager is not initialized")
 	}
 	return bifrost.MCPManager.VerifyHeadersConnection(ctx, config, userHeaders)
 }
 
 // SetClientTools delegates to the MCP manager to update the tool map for an
 // existing MCP client.
-func (bifrost *Bifrost) SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+func (bifrost *Bifrost) SetClientTools(clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) {
 	if bifrost.MCPManager != nil {
-		bifrost.MCPManager.SetClientTools(clientID, tools, toolNameMapping)
+		bifrost.MCPManager.SetClientTools(clientID, tools, toolNameMapping, instructions)
 	}
 }
 
 // UpdateToolManagerConfig updates the tool manager config for the MCP manager.
 // This allows for hot-reloading of the tool manager config at runtime.
-// Pass the current value of disableAutoToolInject whenever only other fields
-// change so the flag is never silently reset to its zero value.
-func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool) error {
+// Pass the current value of disableAutoToolInject whenever only other fields change, so it
+// is not silently reset to its zero value.
+func (bifrost *Bifrost) UpdateToolManagerConfig(maxAgentDepth int, toolExecutionTimeoutInSeconds int, codeModeBindingLevel string, disableAutoToolInject bool, maxInstructionsPerClient int, maxInstructionsTotal int) error {
 	if bifrost.MCPManager == nil {
 		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
 	bifrost.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
-		MaxAgentDepth:         maxAgentDepth,
-		ToolExecutionTimeout:  schemas.Duration(time.Duration(toolExecutionTimeoutInSeconds) * time.Second),
-		CodeModeBindingLevel:  schemas.CodeModeBindingLevel(codeModeBindingLevel),
-		DisableAutoToolInject: disableAutoToolInject,
+		MaxAgentDepth:            maxAgentDepth,
+		ToolExecutionTimeout:     schemas.Duration(time.Duration(toolExecutionTimeoutInSeconds) * time.Second),
+		CodeModeBindingLevel:     schemas.CodeModeBindingLevel(codeModeBindingLevel),
+		DisableAutoToolInject:    disableAutoToolInject,
+		MaxInstructionsPerClient: maxInstructionsPerClient,
+		MaxInstructionsTotal:     maxInstructionsTotal,
 	})
+	return nil
+}
+
+// UpdateCodeModeLimits hot-reloads the per-execution code mode limits. Zero fields
+// use their defaults and nil restores all defaults; invalid limits are rejected by
+// the code mode, which keeps its current limits.
+func (bifrost *Bifrost) UpdateCodeModeLimits(limits *schemas.MCPCodeModeLimits) error {
+	if bifrost.MCPManager == nil {
+		return fmt.Errorf("mcp is not configured in this bifrost instance")
+	}
+	if limits == nil {
+		limits = &schemas.MCPCodeModeLimits{}
+	}
+	if err := limits.Validate(); err != nil {
+		return err
+	}
+	// An optional interface keeps MCPManagerInterface implementations source compatible.
+	updater, ok := bifrost.MCPManager.(interface {
+		UpdateCodeModeLimits(*schemas.MCPCodeModeLimits)
+	})
+	if !ok {
+		return fmt.Errorf("mcp manager does not support code mode limits")
+	}
+	updater.UpdateCodeModeLimits(limits)
 	return nil
 }
 
@@ -5379,6 +5562,7 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	var served *schemas.Route
 	servedFallback := false
 	defer func() { bifrost.observeSessionOutcome(ctx, requested, served, servedFallback, bifrostErr) }()
+	stampRequestedRoute(ctx, requested)
 
 	// Reset first: bifrost.ctx is shared across every nil-ctx caller.
 	ctx.ResetUpstreamLatency()
@@ -5553,6 +5737,7 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	var served *schemas.Route
 	servedFallback := false
 	defer func() { bifrost.observeSessionOutcome(ctx, requested, served, servedFallback, bifrostErr) }()
+	stampRequestedRoute(ctx, requested)
 
 	ctx.ResetUpstreamLatency()
 	ctx.ResetStreamOverhead()
@@ -6580,7 +6765,17 @@ func executeRequestWithRetries[T any](
 						},
 					}
 				}
-				return zero, newBifrostErrorFromMsg(err.Error())
+				statusCode := 500
+				return zero, &schemas.BifrostError{
+					IsBifrostError: true,
+					StatusCode:     &statusCode,
+					Error: &schemas.ErrorField{
+						Message: err.Error(),
+					},
+					ExtraFields: schemas.BifrostErrorExtraFields{
+						ErrorType: schemas.ErrorTypeBifrostInternal,
+					},
+				}
 			}
 			currentKey = selectedKey
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, currentKey.ID)
@@ -6884,14 +7079,8 @@ func executeRequestWithRetries[T any](
 				tracer.EndSpan(attrHandle, schemas.SpanStatusOk, "")
 			}
 
-			// End span with appropriate status
+			// Error attributes are stamped by PopulateLLMResponseAttributes above.
 			if bifrostError != nil {
-				if bifrostError.Error != nil {
-					tracer.SetAttribute(handle, "error", bifrostError.Error.Message)
-				}
-				if bifrostError.StatusCode != nil {
-					tracer.SetAttribute(handle, "status_code", *bifrostError.StatusCode)
-				}
 				tracer.EndSpan(handle, schemas.SpanStatusError, "request failed")
 			} else {
 				tracer.EndSpan(handle, schemas.SpanStatusOk, "")
@@ -7194,6 +7383,19 @@ func applyRawCaptureSignals(ctx *schemas.BifrostContext, config *schemas.Provide
 	ctx.SetValue(schemas.BifrostContextKeyShouldStoreRawInLogs, effectiveStore)
 }
 
+// applyProviderProxySignal publishes the serving provider's proxy config on ctx so
+// fetches made on the provider's behalf from deep inside its converters (image and
+// document URLs, via providerUtils.FetchAndEncodeURL) leave through the same proxy
+// as its inference traffic. Written on every attempt, nil included: a fallback to a
+// provider with a different proxy, or none, must never inherit the previous one.
+func applyProviderProxySignal(ctx *schemas.BifrostContext, config *schemas.ProviderConfig) {
+	var proxyConfig *schemas.ProxyConfig
+	if config != nil {
+		proxyConfig = config.ProxyConfig
+	}
+	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, proxyConfig)
+}
+
 // requestWorker handles incoming requests from the queue for a specific provider.
 // It manages retries, error handling, and response processing.
 func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas.ProviderConfig, pq *ProviderQueue, waitGroup *sync.WaitGroup) {
@@ -7482,6 +7684,14 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			Provider: provider.GetProviderKey(),
 			Model:    originalModelRequested,
 		}
+		// The per-attempt closures overwrite this with BuildRoutingInfo, which already
+		// carries the caller's requested route. The pre-seed only survives when every
+		// retry fails before a closure runs, so stamp the requested route here too or
+		// those errors would be the only responses without it. Not BuildRoutingInfo
+		// itself: it also reads BifrostContextKeyResolvedAlias, which at this point on a
+		// fallback still holds the previous attempt's alias (clearCtxForFallback keeps
+		// it), and would pin the primary's alias onto the fallback's error.
+		attemptRoutingInfo.ApplyRequestRouting(req.Context)
 		// lastAttemptFinalizer captures the LAST attempt's postHookSpanFinalizer for the
 		// worker-level error fallback below. Single-threaded write (assigned by the retry
 		// loop's per-attempt closure) and single-threaded read (after retries finish), so
@@ -7517,6 +7727,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// Disable it too when this attempt's provider has no native structured outputs.
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
+				applyProviderProxySignal(req.Context, config)
 				// Snapshot per-attempt so postHookRunner doesn't observe a later retry's
 				// alias while this attempt's provider goroutine is still emitting chunks.
 				attemptResolvedModel := resolvedModel
@@ -7621,6 +7832,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// Disable it too when this attempt's provider has no native structured outputs.
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
+				applyProviderProxySignal(req.Context, config)
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
 				return bifrost.handleProviderRequest(provider, config, req, k, keys)
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
@@ -7781,6 +7993,24 @@ func (bifrost *Bifrost) billAbandonedTerminal(req *ChannelMessage, result *schem
 		_, _ = pipeline.RunPostLLMHooks(req.Context, result, nil, pluginCount)
 	}
 	drainAndAttachPluginLogs(req.Context)
+	// Every writer has finished, so complete the trace here: one snapshot, all connectors.
+	bifrost.completeAbandonedTrace(req.Context)
+}
+
+// Ends the root span and flushes a trace whose completion the transport skipped,
+// mirroring the streaming trace completer.
+func (bifrost *Bifrost) completeAbandonedTrace(ctx *schemas.BifrostContext) {
+	tracer, traceID, err := GetTracerFromContext(ctx)
+	if err != nil || tracer == nil {
+		return
+	}
+	// Completing before the transport attaches its plugin logs would drop them.
+	tracer.AwaitTransportHandoff(traceID)
+	if rootHandle := tracer.GetSpanHandleByID(traceID, nil); rootHandle != nil {
+		tracer.EndSpan(rootHandle, schemas.SpanStatusError, "client disconnected before response")
+	}
+	tracer.ClearTraceCompletionDeferral(traceID)
+	tracer.CompleteAndFlushTrace(traceID)
 }
 
 // drainAbandonedStream consumes a stream that will never reach the caller, so
@@ -7850,6 +8080,81 @@ func promptCacheResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Pr
 // schemas.ResponsesNamespaceToolProvider (Bedrock: Mantle yes, Converse no); otherwise
 // the per-provider default in providerUtils applies, keyed on the BASE provider so a
 // custom provider wrapping OpenAI is treated like OpenAI.
+// routeChatReasoningMode sends a chat request that sets reasoning.mode to the
+// Responses API on wires that serve it there. Chat Completions has no mode field,
+// so staying on chat would serve and bill a pro request as standard. Elsewhere no
+// chat converter forwards the field, so the drop is reported via the compat list.
+func routeChatReasoningMode(ctx *schemas.BifrostContext, provider schemas.Provider, req *schemas.BifrostChatRequest) *schemas.BifrostError {
+	if req == nil || req.Params == nil || req.Params.Reasoning == nil || req.Params.Reasoning.Mode == nil {
+		return nil
+	}
+	// A raw-body request is sent upstream byte for byte: converting it would send the
+	// chat body to /responses, and the body still carries mode, so nothing is dropped.
+	if useRawBody, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); useRawBody {
+		return nil
+	}
+	if schemas.ChatReasoningModeRequiresResponses(schemas.ResolveBaseProvider(ctx, provider.GetProviderKey())) {
+		// The Responses API has no equivalent for these chat parameters, so the conversion
+		// would drop them silently and serve a weaker contract than the caller asked for.
+		if unsupported := chatParamsWithoutResponsesEquivalent(req.Params); len(unsupported) > 0 {
+			sc := fasthttp.StatusBadRequest
+			return &schemas.BifrostError{
+				IsBifrostError: false,
+				StatusCode:     &sc,
+				Error: &schemas.ErrorField{
+					Type:    new("invalid_request_error"),
+					Message: "reasoning.mode is served by the Responses API, which does not support: " + strings.Join(unsupported, ", ") + "; remove them or drop reasoning.mode",
+				},
+			}
+		}
+		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+		return nil
+	}
+	prior, _ := ctx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string)
+	if !slices.Contains(prior, "reasoning.mode") {
+		ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, append(slices.Clip(prior), "reasoning.mode"))
+	}
+	return nil
+}
+
+// chatParamsWithoutResponsesEquivalent lists the set chat parameters that
+// ToResponsesRequest cannot carry to the Responses API. user is left out: it only
+// buckets caching and abuse detection and does not change the output contract.
+func chatParamsWithoutResponsesEquivalent(p *schemas.ChatParameters) []string {
+	var out []string
+	if p.N != nil && *p.N > 1 {
+		out = append(out, "n > 1")
+	}
+	if len(p.Stop) > 0 {
+		out = append(out, "stop")
+	}
+	if p.Seed != nil {
+		out = append(out, "seed")
+	}
+	if p.LogitBias != nil && len(*p.LogitBias) > 0 {
+		out = append(out, "logit_bias")
+	}
+	if p.PresencePenalty != nil {
+		out = append(out, "presence_penalty")
+	}
+	if p.FrequencyPenalty != nil {
+		out = append(out, "frequency_penalty")
+	}
+	if p.LogProbs != nil && *p.LogProbs {
+		out = append(out, "logprobs")
+	}
+	if p.Audio != nil || slices.Contains(p.Modalities, "audio") {
+		out = append(out, "audio")
+	}
+	if p.Prediction != nil {
+		out = append(out, "prediction")
+	}
+	if p.WebSearchOptions != nil {
+		out = append(out, "web_search_options")
+	}
+	return out
+}
+
 func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, provider schemas.Provider, key schemas.Key, r *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, *schemas.BifrostError) {
 	r = restoreResponsesBillingHeader(ctx, provider.GetProviderKey(), r)
 	r = promptCacheResponsesRequest(ctx, config, provider.GetProviderKey(), r)
@@ -7981,6 +8286,12 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.ListModelsResponse = listModelsResponse
+	case schemas.ModelRetrieveRequest:
+		modelRetrieveResponse, bifrostError := provider.ModelRetrieve(req.Context, key, req.BifrostRequest.ModelRetrieveRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.ModelRetrieveResponse = modelRetrieveResponse
 	case schemas.TextCompletionRequest:
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {
 			chatRequest := req.BifrostRequest.TextCompletionRequest.ToBifrostChatRequest()
@@ -8000,6 +8311,9 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		}
 		response.TextCompletionResponse = textCompletionResponse
 	case schemas.ChatCompletionRequest:
+		if bifrostError := routeChatReasoningMode(req.Context, provider, req.BifrostRequest.ChatRequest); bifrostError != nil {
+			return nil, bifrostError
+		}
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
 			responsesRequest := req.BifrostRequest.ChatRequest.ToResponsesRequest()
 			if responsesRequest != nil {
@@ -8424,6 +8738,9 @@ func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, c
 		}
 		return provider.TextCompletionStream(req.Context, postHookRunner, postHookSpanFinalizer, key, req.BifrostRequest.TextCompletionRequest)
 	case schemas.ChatCompletionStreamRequest:
+		if bifrostError := routeChatReasoningMode(req.Context, provider, req.BifrostRequest.ChatRequest); bifrostError != nil {
+			return nil, bifrostError
+		}
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
 			responsesRequest := req.BifrostRequest.ChatRequest.ToResponsesRequest()
 			if responsesRequest != nil {
@@ -9323,6 +9640,7 @@ func (bifrost *Bifrost) releaseChannelMessage(msg *ChannelMessage) {
 func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.RequestType = ""
 	req.ListModelsRequest = nil
+	req.ModelRetrieveRequest = nil
 	req.TextCompletionRequest = nil
 	req.ChatRequest = nil
 	req.ResponsesRequest = nil

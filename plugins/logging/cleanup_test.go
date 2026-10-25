@@ -263,7 +263,7 @@ func TestProcessBatchKeepsRicherDuplicateLogEntry(t *testing.T) {
 	second.CompletionTokens = 3
 	second.TotalTokens = 13
 
-	plugin.processBatch([]*writeQueueEntry{
+	plugin.processBatch(context.Background(), []*writeQueueEntry{
 		{log: first},
 		{log: second},
 	})
@@ -300,7 +300,7 @@ func TestProcessBatchRepairsBillingAcrossBatchBoundary(t *testing.T) {
 	first := makeTestLog(id)
 	first.Status = "success"
 	first.Cost = &cost
-	plugin.processBatch([]*writeQueueEntry{{log: first}})
+	plugin.processBatch(context.Background(), []*writeQueueEntry{{log: first}})
 
 	second := makeTestLog(id)
 	second.Status = "success"
@@ -310,7 +310,7 @@ func TestProcessBatchRepairsBillingAcrossBatchBoundary(t *testing.T) {
 		TotalTokens:      1720,
 		Cost:             &schemas.BifrostCost{InputCost: 0.001, OutputCost: 0.0008, AdditionalCost: 0.00004, TotalCost: cost},
 	}
-	plugin.processBatch([]*writeQueueEntry{{log: second}})
+	plugin.processBatch(context.Background(), []*writeQueueEntry{{log: second}})
 
 	got, err := store.FindByID(context.Background(), id)
 	if err != nil {

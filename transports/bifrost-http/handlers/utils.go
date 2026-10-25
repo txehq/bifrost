@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -212,20 +211,7 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 		return
 	}
 
-	var statusCode int
-	if bifrostErr.StatusCode != nil {
-		statusCode = lib.NormalizeJSONErrorStatus(*bifrostErr.StatusCode)
-	} else if !bifrostErr.IsBifrostError {
-		statusCode = fasthttp.StatusBadRequest
-	} else {
-		if bifrostErr.Error != nil &&
-			(bifrostErr.Error.Message == bifrost.ProviderAutoResolveErrorMessage ||
-				bifrostErr.Error.Message == bifrost.ModelAutoResolveErrorMessage) {
-			statusCode = fasthttp.StatusBadRequest
-		} else {
-			statusCode = fasthttp.StatusInternalServerError
-		}
-	}
+	statusCode := bifrostErr.EffectiveHTTPStatus()
 	ctx.SetStatusCode(statusCode)
 	// The error envelope always carries the status actually sent. bifrostErr is the
 	// sanitizer's copy, so stamping it leaves the caller's error untouched.

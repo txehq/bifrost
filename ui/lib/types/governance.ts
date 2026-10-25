@@ -72,6 +72,8 @@ export interface Customer {
 	// Number of virtual keys owned by this customer (server-computed; the list
 	// endpoint reports this instead of embedding the virtual keys themselves)
 	virtual_key_count?: number;
+	// Number of teams attached to this customer (server-computed on the list endpoint)
+	team_count?: number;
 	// Populated relationships
 	teams?: Team[];
 	budgets?: Budget[];
@@ -632,7 +634,7 @@ export interface PricingOverridePatch {
 	output_cost_per_video_per_second_1080p?: number;
 	output_cost_per_video_per_second_4k?: number;
 	// Other
-	search_context_cost_per_query?: number;
+	web_search_cost_per_request?: number;
 	input_cost_per_query?: number;
 	code_interpreter_cost_per_session?: number;
 	inference_geo_us_multiplier?: number;

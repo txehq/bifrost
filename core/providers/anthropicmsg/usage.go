@@ -105,6 +105,7 @@ func buildUsage(au *messagesUsage) *schemas.BifrostPassthroughUsage {
 	if au.ServerToolUse != nil && au.ServerToolUse.WebSearchRequests > 0 {
 		n := au.ServerToolUse.WebSearchRequests
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{NumSearchQueries: &n}
+		usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: n}}
 	}
 	if au.OutputTokensDetails != nil && au.OutputTokensDetails.ThinkingTokens > 0 {
 		if usage.CompletionTokensDetails == nil {

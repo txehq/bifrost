@@ -40,12 +40,14 @@ type Config struct {
 	StripAnthropicOnlyFields bool
 }
 
-func (c Config) requestURL(req *schemas.BifrostPassthroughRequest) string {
-	url := strings.TrimRight(c.Endpoint, "/") + req.Path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
+// requestURL joins the endpoint with the caller's passthrough path and query, and
+// refuses one that would leave the endpoint's host (see BuildPassthroughURL).
+func (c Config) requestURL(req *schemas.BifrostPassthroughRequest) (string, *schemas.BifrostError) {
+	url, err := providerUtils.BuildPassthroughURL(c.Endpoint, req.Path, req.RawQuery)
+	if err != nil {
+		return "", providerUtils.NewBifrostBadRequestError(err.Error())
 	}
-	return url
+	return url, nil
 }
 
 func (c Config) requestBody(req *schemas.BifrostPassthroughRequest) ([]byte, *schemas.BifrostError) {
@@ -138,6 +140,10 @@ func Passthrough(ctx *schemas.BifrostContext, client *fasthttp.Client, key schem
 	if err := providerUtils.CheckOperationAllowed(cfg.Provider, cfg.CustomProviderConfig, schemas.PassthroughRequest); err != nil {
 		return nil, err
 	}
+	requestURL, bifrostErr := cfg.requestURL(req)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
 
 	upstreamReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -145,7 +151,6 @@ func Passthrough(ctx *schemas.BifrostContext, client *fasthttp.Client, key schem
 	defer fasthttp.ReleaseRequest(upstreamReq)
 
 	upstreamReq.Header.SetMethod(req.Method)
-	requestURL := cfg.requestURL(req)
 	upstreamReq.SetRequestURI(requestURL)
 	providerUtils.StripCallerAuthForInsecureURL(requestURL, req.SafeHeaders)
 	cfg.setHeaders(ctx, upstreamReq, key, req.SafeHeaders)
@@ -188,6 +193,10 @@ func PassthroughStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostH
 	if err := providerUtils.CheckOperationAllowed(cfg.Provider, cfg.CustomProviderConfig, schemas.PassthroughStreamRequest); err != nil {
 		return nil, err
 	}
+	requestURL, bifrostErr := cfg.requestURL(req)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
 
 	startTime := time.Now()
 	upstreamReq := fasthttp.AcquireRequest()
@@ -196,7 +205,6 @@ func PassthroughStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostH
 	defer fasthttp.ReleaseRequest(upstreamReq)
 
 	upstreamReq.Header.SetMethod(req.Method)
-	requestURL := cfg.requestURL(req)
 	upstreamReq.SetRequestURI(requestURL)
 	providerUtils.StripCallerAuthForInsecureURL(requestURL, req.SafeHeaders)
 	cfg.setHeaders(ctx, upstreamReq, key, req.SafeHeaders)

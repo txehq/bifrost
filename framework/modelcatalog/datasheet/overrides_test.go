@@ -1035,6 +1035,14 @@ func TestPatchPricing_PriorityAbove272kCacheCreationRate(t *testing.T) {
 	assert.Equal(t, 0.000025, *patched.CacheCreationInputTokenCostPriority)
 }
 
+func TestPatchPricing_WebSearchCostPerRequest(t *testing.T) {
+	base := configstoreTables.TableModelPricing{Model: "claude-haiku-4-5", Provider: "anthropic", Mode: "chat"}
+
+	patched := patchPricing(base, Options{WebSearchCostPerRequest: bifrost.Ptr(0.01)})
+	require.NotNil(t, patched.WebSearchCostPerRequest)
+	assert.Equal(t, 0.01, *patched.WebSearchCostPerRequest)
+}
+
 func TestPatchPricing_SizeAndQualityImageRates(t *testing.T) {
 	base := configstoreTables.TableModelPricing{
 		Model:    "gpt-image-1",
