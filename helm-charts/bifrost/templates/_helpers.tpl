@@ -1703,6 +1703,9 @@ false
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $datadogConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
+{{- if hasKey $inputConfig "metric_dimensions" }}
+{{- $_ := set $datadogConfig "metric_dimensions" $inputConfig.metric_dimensions }}
+{{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $datadogConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
 {{- end }}
@@ -1922,6 +1925,9 @@ false
 {{- end }}
 {{- if .Values.bifrost.auditLogs.hmacKey }}
 {{- $_ := set $auditLogs "hmac_key" .Values.bifrost.auditLogs.hmacKey }}
+{{- end }}
+{{- if .Values.bifrost.auditLogs.omitIpAddresses }}
+{{- $_ := set $auditLogs "omit_ip_addresses" true }}
 {{- end }}
 {{- if .Values.bifrost.auditLogs.archiveInterval }}
 {{- $_ := set $auditLogs "archive_interval" .Values.bifrost.auditLogs.archiveInterval }}

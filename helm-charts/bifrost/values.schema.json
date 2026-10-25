@@ -1190,6 +1190,16 @@
                       },
                       "description": "Request header names to capture as Datadog span tags"
                     },
+                    "metric_dimensions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^[A-Za-z0-9_.-]+$"
+                      },
+                      "uniqueItems": true,
+                      "description": "x-bf-dim-* dimension names to forward as DogStatsD metric tags. Off by default; each name multiplies metric series cardinality."
+                    },
                     "plugin_span_filter": {
                       "$ref": "#/$defs/pluginSpanFilter"
                     },
@@ -4452,6 +4462,11 @@
             },
             "hmacKey": {
               "type": "string"
+            },
+            "omitIpAddresses": {
+              "type": "boolean",
+              "description": "Stop recording client IP addresses in audit logs while keeping every other field. IPs already stored are hidden from the API, filter data, search, exports and archives but not deleted from the database. Default: false",
+              "default": false
             },
             "archiveInterval": {
               "type": "string",
