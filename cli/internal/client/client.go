@@ -133,7 +133,7 @@ func New(baseURL string, credentials Credentials, timeout time.Duration) *Client
 	}
 }
 
-// rejectInsecureRedirect blocks a redirect that changes scheme or host.
+// rejectInsecureRedirect blocks a redirect that changes scheme, host or port.
 // Go's default client only strips the Authorization and Cookie-family
 // headers, and only when a redirect changes host — a custom header this
 // client sends, such as x-bf-vk (the virtual key), is always forwarded
@@ -150,10 +150,28 @@ func rejectInsecureRedirect(req *http.Request, via []*http.Request) error {
 	if !strings.EqualFold(previous.Hostname(), req.URL.Hostname()) {
 		return fmt.Errorf("refusing to follow redirect to a different host: %s", req.URL)
 	}
+	// Another port on the same host is another origin, and Hostname drops the port.
+	if previous.Scheme == req.URL.Scheme && effectivePort(previous) != effectivePort(req.URL) {
+		return fmt.Errorf("refusing to follow redirect to a different port: %s", req.URL)
+	}
 	if previous.Scheme == "https" && req.URL.Scheme != "https" && !isLoopbackHost(req.URL.Hostname()) {
 		return fmt.Errorf("refusing to follow HTTPS to %s redirect to %s", req.URL.Scheme, req.URL)
 	}
 	return nil
+}
+
+// effectivePort is u's port, or the scheme's default when the URL names none.
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
 }
 
 // isLoopbackHost reports whether host refers to the local machine.

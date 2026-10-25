@@ -72,6 +72,34 @@ func TestClientRejectsCrossHostRedirect(t *testing.T) {
 	}
 }
 
+// TestClientRejectsCrossPortRedirect verifies a redirect to another port on the
+// same host is refused: it is a different origin, and the client would forward
+// x-bf-vk to it. The scheme's default port written out is still the same origin.
+func TestClientRejectsCrossPortRedirect(t *testing.T) {
+	for location, wantFollowed := range map[string]bool{
+		"https://gateway.example:9443/collect":         false,
+		"https://gateway.example:443/api/providers":    true,
+		"https://gateway.example/api/providers?page=2": true,
+	} {
+		api := New("https://gateway.example", Credentials{VirtualKey: "sk-bf-test"}, time.Second)
+		requestCount := 0
+		api.HTTPClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			requestCount++
+			if requestCount > 1 {
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{}")), Request: request}, nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusFound, Header: http.Header{"Location": {location}},
+				Body: io.NopCloser(strings.NewReader("")), Request: request,
+			}, nil
+		})
+		_, err := api.Do(context.Background(), Request{Path: "/api/providers"})
+		if followed := requestCount == 2; followed != wantFollowed || (err == nil) != wantFollowed {
+			t.Errorf("redirect to %s: followed=%v err=%v, want followed=%v", location, followed, err, wantFollowed)
+		}
+	}
+}
+
 // TestClientRejectsCrossHostRedirectToLoopback ensures the local-development
 // HTTP exception cannot be used by a remote gateway to forward credentials to
 // an unrelated service listening on the user's machine.
