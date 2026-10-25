@@ -479,15 +479,24 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 	const storedURL = "https://1.1.1.1/v1"
 	cases := []struct {
 		name                string
+		storedBaseURL       string
+		storedAllowPrivate  bool
 		baseURL             string
 		allowPrivateNetwork bool
+		authenticated       bool // a real credential, not the fail-open bypass
 		wantStatus          int
 		wantConcurrency     int
 	}{
-		{name: "unchanged base url, concurrency edit", baseURL: storedURL, allowPrivateNetwork: false, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
-		{name: "unchanged base url, allow_private_network turned on", baseURL: storedURL, allowPrivateNetwork: true, wantStatus: fasthttp.StatusForbidden, wantConcurrency: 1},
-		{name: "no base url, concurrency edit", baseURL: "", allowPrivateNetwork: false, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
-		{name: "no base url, allow_private_network turned on", baseURL: "", allowPrivateNetwork: true, wantStatus: fasthttp.StatusForbidden, wantConcurrency: 1},
+		{name: "unchanged base url, concurrency edit", storedBaseURL: storedURL, baseURL: storedURL, allowPrivateNetwork: false, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
+		{name: "unchanged base url, allow_private_network turned on", storedBaseURL: storedURL, baseURL: storedURL, allowPrivateNetwork: true, wantStatus: fasthttp.StatusForbidden, wantConcurrency: 1},
+		{name: "no base url, concurrency edit", storedBaseURL: "", baseURL: "", allowPrivateNetwork: false, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
+		{name: "no base url, allow_private_network turned on", storedBaseURL: "", baseURL: "", allowPrivateNetwork: true, wantStatus: fasthttp.StatusForbidden, wantConcurrency: 1},
+		// Narrowing the dial target needs no authenticated request.
+		{name: "stored base url cleared", storedBaseURL: storedURL, baseURL: "", allowPrivateNetwork: false, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
+		{name: "stored allow_private_network turned off", storedBaseURL: storedURL, storedAllowPrivate: true, baseURL: storedURL, allowPrivateNetwork: false, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
+		// Widening is refused only for the bypass; any authenticated caller may widen.
+		{name: "authenticated base url change", storedBaseURL: storedURL, baseURL: "https://8.8.8.8/v1", authenticated: true, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
+		{name: "authenticated allow_private_network turned on", storedBaseURL: storedURL, baseURL: storedURL, allowPrivateNetwork: true, authenticated: true, wantStatus: fasthttp.StatusOK, wantConcurrency: 2},
 	}
 
 	for _, tc := range cases {
@@ -498,7 +507,7 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 					ClientConfig: &configstore.ClientConfig{},
 					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 						"mock-openai": {
-							NetworkConfig:            &schemas.NetworkConfig{BaseURL: tc.baseURL},
+							NetworkConfig:            &schemas.NetworkConfig{BaseURL: tc.storedBaseURL, AllowPrivateNetwork: tc.storedAllowPrivate},
 							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
 							CustomProviderConfig:     customConfig,
 						},
@@ -522,7 +531,9 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 			ctx.Request.SetRequestURI("/api/providers/mock-openai")
 			ctx.Request.SetBody(body)
 			ctx.SetUserValue("provider", "mock-openai")
-			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			if !tc.authenticated {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
 
 			h.updateProvider(ctx)
 
@@ -535,6 +546,9 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 			}
 			if stored.NetworkConfig.AllowPrivateNetwork && tc.wantStatus == fasthttp.StatusForbidden {
 				t.Fatalf("expected allow_private_network not to be persisted")
+			}
+			if tc.wantStatus == fasthttp.StatusOK && (stored.NetworkConfig.BaseURL != tc.baseURL || stored.NetworkConfig.AllowPrivateNetwork != tc.allowPrivateNetwork) {
+				t.Fatalf("stored network config got base_url=%q allow_private_network=%v, want %q/%v", stored.NetworkConfig.BaseURL, stored.NetworkConfig.AllowPrivateNetwork, tc.baseURL, tc.allowPrivateNetwork)
 			}
 		})
 	}
