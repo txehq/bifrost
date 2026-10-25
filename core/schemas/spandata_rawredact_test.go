@@ -36,6 +36,13 @@ func TestRedactRawPayloadMatchesJSONEscapedContent(t *testing.T) {
 		}
 	}
 
+	// A matched number is replaced too, as the literal pass on the raw bytes did.
+	numeric := &LLMSpanData{RawResponse: `{"account": 4111111111111111, "n": 2}`}
+	numeric.redact(nil, map[string]string{"4111111111111111": masked})
+	if strings.Contains(numeric.RawResponse, "4111111111111111") || !strings.Contains(numeric.RawResponse, masked) {
+		t.Errorf("numeric match not redacted: %s", numeric.RawResponse)
+	}
+
 	// A body the replacements do not touch is left byte-for-byte as the provider sent it.
 	untouched := `{"b": 1,  "a": "fine"}`
 	d := &LLMSpanData{RawResponse: untouched}

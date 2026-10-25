@@ -295,6 +295,14 @@ func redactJSONStrings(raw string, replacements map[string]string) (string, bool
 				return r
 			}
 			return t
+		case json.Number:
+			// A matched number (a phone or account number, say) becomes the
+			// replacement string, as the literal pass on the raw bytes did.
+			if r := ApplyLiteralReplacements(t.String(), replacements); r != t.String() {
+				changed = true
+				return r
+			}
+			return t
 		case []any:
 			for i := range t {
 				t[i] = walk(t[i])
