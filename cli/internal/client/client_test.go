@@ -81,22 +81,35 @@ func TestClientRejectsCrossPortRedirect(t *testing.T) {
 		"https://gateway.example:443/api/providers":    true,
 		"https://gateway.example/api/providers?page=2": true,
 	} {
-		api := New("https://gateway.example", Credentials{VirtualKey: "sk-bf-test"}, time.Second)
-		requestCount := 0
-		api.HTTPClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-			requestCount++
-			if requestCount > 1 {
-				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{}")), Request: request}, nil
-			}
-			return &http.Response{
-				StatusCode: http.StatusFound, Header: http.Header{"Location": {location}},
-				Body: io.NopCloser(strings.NewReader("")), Request: request,
-			}, nil
-		})
-		_, err := api.Do(context.Background(), Request{Path: "/api/providers"})
-		if followed := requestCount == 2; followed != wantFollowed || (err == nil) != wantFollowed {
-			t.Errorf("redirect to %s: followed=%v err=%v, want followed=%v", location, followed, err, wantFollowed)
+		assertCrossPortRedirect(t, "https://gateway.example", location, wantFollowed)
+	}
+	// A scheme switch may not carry a port change either (plain HTTP is accepted
+	// only for loopback gateways).
+	for location, wantFollowed := range map[string]bool{
+		"https://localhost:9443/collect":  false,
+		"https://localhost/api/providers": true,
+	} {
+		assertCrossPortRedirect(t, "http://localhost", location, wantFollowed)
+	}
+}
+
+func assertCrossPortRedirect(t *testing.T, baseURL, location string, wantFollowed bool) {
+	t.Helper()
+	api := New(baseURL, Credentials{VirtualKey: "sk-bf-test"}, time.Second)
+	requestCount := 0
+	api.HTTPClient.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestCount++
+		if requestCount > 1 {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{}")), Request: request}, nil
 		}
+		return &http.Response{
+			StatusCode: http.StatusFound, Header: http.Header{"Location": {location}},
+			Body: io.NopCloser(strings.NewReader("")), Request: request,
+		}, nil
+	})
+	_, err := api.Do(context.Background(), Request{Path: "/api/providers"})
+	if followed := requestCount == 2; followed != wantFollowed || (err == nil) != wantFollowed {
+		t.Errorf("redirect to %s: followed=%v err=%v, want followed=%v", location, followed, err, wantFollowed)
 	}
 }
 

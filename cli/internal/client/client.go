@@ -151,7 +151,10 @@ func rejectInsecureRedirect(req *http.Request, via []*http.Request) error {
 		return fmt.Errorf("refusing to follow redirect to a different host: %s", req.URL)
 	}
 	// Another port on the same host is another origin, and Hostname drops the port.
-	if previous.Scheme == req.URL.Scheme && effectivePort(previous) != effectivePort(req.URL) {
+	// The only port change allowed is the implicit one a bare scheme switch makes
+	// (http://host to https://host), which the scheme checks below then judge.
+	defaultPortSwitch := previous.Scheme != req.URL.Scheme && previous.Port() == "" && req.URL.Port() == ""
+	if effectivePort(previous) != effectivePort(req.URL) && !defaultPortSwitch {
 		return fmt.Errorf("refusing to follow redirect to a different port: %s", req.URL)
 	}
 	if previous.Scheme == "https" && req.URL.Scheme != "https" && !isLoopbackHost(req.URL.Hostname()) {
