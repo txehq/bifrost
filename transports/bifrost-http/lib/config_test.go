@@ -2118,8 +2118,7 @@ func TestMergeGovernanceConfig_AppliesComplexityAnalyzerConfigWhenHashesAreEmpty
 		GovernanceConfig: dbGovernance,
 	}
 	fileConfig := testFileComplexityAnalyzerConfig()
-	// Startup reconciliation hashes the normalized file, including classifier defaults.
-	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(fileConfig.Normalized()))
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
 	require.NoError(t, err)
 	configData := &ConfigData{
 		Governance: &configstore.GovernanceConfig{
@@ -2135,6 +2134,45 @@ func TestMergeGovernanceConfig_AppliesComplexityAnalyzerConfigWhenHashesAreEmpty
 	require.Equal(t, fileConfig.TierBoundaries, stored.TierBoundaries)
 	require.ElementsMatch(t, []string{"file-code", "ui-code"}, stored.Keywords.MediumKeywords)
 	require.Equal(t, fileHashes, stored.ConfigHashes)
+}
+
+// A config.json that says nothing about the classifier has no opinion on it, so a keyword edit
+// in the file must not reset the classifier the dashboard chose. The hashes and the merge decide
+// presence from the file as written; normalising it first would invent a default classifier and
+// then "apply" it.
+func TestMergeGovernanceConfig_FileWithoutClassifierKeepsDashboardClassifier(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	oldFileConfig := testFileComplexityAnalyzerConfig()
+	oldFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(oldFileConfig)
+	require.NoError(t, err)
+
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHashes = oldFileHashes
+	dbConfig.Classifier = configstore.ComplexityClassifierJev
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+
+	newFileConfig := testFileComplexityAnalyzerConfig()
+	newFileConfig.Keywords.MediumKeywords = []string{"file-code", "file-code-new"}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: newFileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, configstore.ComplexityClassifierJev, stored.Classifier)
+	require.Empty(t, stored.ConfigHashes.ClassifierSettings)
 }
 
 func expectedMergedComplexityKeywords(base, overlay []string) []string {
@@ -2160,7 +2198,7 @@ func TestMergeGovernanceConfig_PreservesComplexityAnalyzerConfigWhenSectionHashe
 
 	store := NewMockConfigStore()
 	fileConfig := testFileComplexityAnalyzerConfig()
-	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(fileConfig.Normalized()))
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
 	require.NoError(t, err)
 
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
@@ -2210,7 +2248,7 @@ func TestMergeGovernanceConfig_MergesComplexityKeywordsWhenSectionHashesChange(t
 		GovernanceConfig: dbGovernance,
 	}
 	fileConfig := testFileComplexityAnalyzerConfig()
-	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(fileConfig.Normalized()))
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
 	require.NoError(t, err)
 	configData := &ConfigData{
 		Governance: &configstore.GovernanceConfig{
@@ -2295,7 +2333,7 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t
 		GovernanceConfig: dbGovernance,
 	}
 	fileConfig := testFileComplexityAnalyzerConfig()
-	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(fileConfig.Normalized()))
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
 	require.NoError(t, err)
 	configData := &ConfigData{
 		SourceOfTruth: SourceOfTruthConfigJSON,
