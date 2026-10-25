@@ -200,6 +200,10 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		metadata["attachments"] = attachments
 	}
 
+	// request_family separates endpoints whose input and params hash the same,
+	// such as chat and responses (issue #7560). It is set after the params so
+	// extra params cannot override it. Stream variants share a family because
+	// "stream" is already in the hash.
 	switch req.RequestType {
 	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
 		if req.TextCompletionRequest == nil {
@@ -208,6 +212,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.TextCompletionRequest != nil && req.TextCompletionRequest.Params != nil {
 			plugin.extractTextCompletionParametersToMetadata(req.TextCompletionRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.TextCompletionRequest
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		if req.ChatRequest == nil {
 			return nil, fmt.Errorf("chat payload is nil")
@@ -215,6 +220,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.ChatRequest != nil && req.ChatRequest.Params != nil {
 			plugin.extractChatParametersToMetadata(req.ChatRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.ChatCompletionRequest
 	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		if req.ResponsesRequest == nil {
 			return nil, fmt.Errorf("responses payload is nil")
@@ -222,6 +228,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
 			plugin.extractResponsesParametersToMetadata(req.ResponsesRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.ResponsesRequest
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		if req.SpeechRequest == nil {
 			return nil, fmt.Errorf("speech payload is nil")
@@ -229,6 +236,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.SpeechRequest != nil && req.SpeechRequest.Params != nil {
 			plugin.extractSpeechParametersToMetadata(req.SpeechRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.SpeechRequest
 	case schemas.EmbeddingRequest:
 		if req.EmbeddingRequest == nil {
 			return nil, fmt.Errorf("embedding payload is nil")
@@ -236,6 +244,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.EmbeddingRequest != nil && req.EmbeddingRequest.Params != nil {
 			plugin.extractEmbeddingParametersToMetadata(req.EmbeddingRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.EmbeddingRequest
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		if req.TranscriptionRequest == nil {
 			return nil, fmt.Errorf("transcription payload is nil")
@@ -243,6 +252,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.TranscriptionRequest != nil && req.TranscriptionRequest.Params != nil {
 			plugin.extractTranscriptionParametersToMetadata(req.TranscriptionRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.TranscriptionRequest
 	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
 		if req.ImageGenerationRequest == nil {
 			return nil, fmt.Errorf("image generation payload is nil")
@@ -250,6 +260,7 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		if req.ImageGenerationRequest != nil && req.ImageGenerationRequest.Params != nil {
 			plugin.extractImageGenerationParametersToMetadata(req.ImageGenerationRequest.Params, metadata)
 		}
+		metadata["request_family"] = schemas.ImageGenerationRequest
 	default:
 		return nil, fmt.Errorf("unsupported request type for semantic caching")
 	}
@@ -452,16 +463,16 @@ func (plugin *Plugin) buildUnifiedMetadata(provider schemas.ModelProvider, model
 	return unifiedMetadata
 }
 
-// addNonStreamingResponse marshals the response and writes it as a single
-// cache entry. The metadata map is mutated (response + stream_chunks added)
-// — safe because the calling goroutine owns it. The ttl parameter is
-// retained for symmetry with addStreamingResponse; the actual expiry is
-// already encoded in metadata["expires_at"] by buildUnifiedMetadata.
-func (plugin *Plugin) addNonStreamingResponse(ctx context.Context, responseID string, res *schemas.BifrostResponse, embedding []float32, metadata map[string]interface{}, ttl time.Duration) error {
-	responseData, err := json.Marshal(res)
-	if err != nil {
-		return fmt.Errorf("failed to marshal response: %w", err)
-	}
+// addNonStreamingResponse writes an already-serialized response as a single
+// cache entry. The caller (PostLLMHook) marshals the response synchronously
+// before the hook returns — this function must only ever receive owned bytes,
+// never the caller's *BifrostResponse, because core mutates that object right
+// after the post-hook chain returns (issue #7233). The metadata map is
+// mutated (response + stream_chunks added) — safe because the calling
+// goroutine owns it. The ttl parameter is retained for symmetry with
+// addStreamingResponse; the actual expiry is already encoded in
+// metadata["expires_at"] by buildUnifiedMetadata.
+func (plugin *Plugin) addNonStreamingResponse(ctx context.Context, responseID string, responseData []byte, embedding []float32, metadata map[string]interface{}, ttl time.Duration) error {
 	metadata["response"] = string(responseData)
 	metadata["stream_chunks"] = []string{}
 
@@ -473,24 +484,45 @@ func (plugin *Plugin) addNonStreamingResponse(ctx context.Context, responseID st
 	return nil
 }
 
-// addStreamingResponse appends one chunk to the per-request accumulator and,
-// when the final chunk arrives, flushes the accumulated stream to the cache.
+// addStreamingResponse appends one pre-serialized chunk to the per-request
+// accumulator and reports whether the caller should flush the accumulated
+// stream (final chunk observed, and this call won the completion gate). It
+// runs synchronously inside PostLLMHook — only the flush's store write is
+// async — so the accumulator never retains the caller's response pointer
+// (issue #7233).
+//
 // Errors never reach this function: PostLLMHook returns early on bifrostErr
 // (errors are always delivered as the final chunk), so an errored stream
-// simply leaves its accumulator behind for the periodic reaper.
-func (plugin *Plugin) addStreamingResponse(ctx context.Context, requestID string, storageID string, res *schemas.BifrostResponse, embedding []float32, metadata map[string]interface{}, ttl time.Duration, isFinalChunk bool) error {
+// simply leaves its accumulator behind for the periodic reaper. A stream
+// with a chunk that failed to serialize (see failStreamAccumulator) is
+// different: it is never flushed, and its accumulator is dropped as soon as
+// the final chunk arrives.
+func (plugin *Plugin) addStreamingResponse(requestID string, storageID string, chunk *StreamChunk, embedding []float32, metadata map[string]interface{}, ttl time.Duration, isFinalChunk bool) (shouldFlush bool, err error) {
 	accumulator := plugin.getOrCreateStreamAccumulator(requestID, storageID, embedding, metadata, ttl)
 
-	chunk := &StreamChunk{
-		Timestamp: time.Now(),
-		Response:  res,
+	accumulator.mu.Lock()
+	failed := accumulator.Failed
+	if failed {
+		// Discarded chunks still count as arrivals: keep LastSeenAt moving so
+		// the reaper doesn't evict the Failed marker mid-stream, which would
+		// let the next chunk start a clean accumulator and flush a partial
+		// entry on the final chunk.
+		accumulator.LastSeenAt = chunk.Timestamp
 	}
+	accumulator.mu.Unlock()
+	if failed {
+		if isFinalChunk {
+			plugin.cleanupStreamAccumulator(requestID)
+		}
+		return false, nil
+	}
+
 	if err := plugin.addStreamChunk(requestID, chunk); err != nil {
-		return fmt.Errorf("failed to add stream chunk: %w", err)
+		return false, fmt.Errorf("failed to add stream chunk: %w", err)
 	}
 
 	if !isFinalChunk {
-		return nil
+		return false, nil
 	}
 
 	// Gate final processing so it runs exactly once even if multiple chunks
@@ -502,13 +534,7 @@ func (plugin *Plugin) addStreamingResponse(ctx context.Context, requestID string
 	}
 	accumulator.mu.Unlock()
 
-	if alreadyComplete {
-		return nil
-	}
-	if err := plugin.processAccumulatedStream(ctx, requestID); err != nil {
-		plugin.logger.Warn("Failed to process accumulated stream for request %s: %v", requestID, err)
-	}
-	return nil
+	return !alreadyComplete, nil
 }
 
 // parseStreamChunks parses stream_chunks data from the various shapes

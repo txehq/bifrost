@@ -714,32 +714,10 @@ func TestCustomProviderDoesNotSendDoneMarkerEndsParkedStream(t *testing.T) {
 	}
 }
 
-// Test that transientServerStatusCodes are properly defined.
-// These are upstream-side failures unrelated to the credential — the same key is retried.
-func TestTransientServerStatusCodes(t *testing.T) {
-	// 529 is Anthropic's overloaded_error: capacity-wide, not credential-bound, so the
-	// same key is retried with backoff rather than rotated away.
-	expected := []int{500, 502, 503, 504, 529}
-	for _, code := range expected {
-		if !transientServerStatusCodes[code] {
-			t.Errorf("status code %d should be in transientServerStatusCodes", code)
-		}
-	}
-
-	// Codes that must NOT be in transientServerStatusCodes: per-key codes (rotated, not
-	// retried-same-key), success codes, and request-bound 4xx (terminal).
-	notTransient := []int{200, 201, 400, 401, 402, 403, 404, 422, 429}
-	for _, code := range notTransient {
-		if transientServerStatusCodes[code] {
-			t.Errorf("status code %d should not be in transientServerStatusCodes", code)
-		}
-	}
-}
-
 // TestExecuteRequestWithRetries_529RetriesSameKeyWithoutRotation pins the behavior behind the
-// map entry above. TestTransientServerStatusCodes only proves 529 is *classified* as transient;
-// this proves executeRequestWithRetries acts on that classification — retry on the same key,
-// with no rotation — which is the part that would actually regress.
+// transient classification. TestClassifyFailure_StatusOnly only proves 529 is *classified* as
+// transient; this proves executeRequestWithRetries acts on that classification (retry on the
+// same key, with no rotation), which is the part that would actually regress.
 //
 // 529 is Anthropic's overloaded_error: "the API experiences high traffic across all users"
 // (platform.claude.com/docs/en/api/errors). It says nothing about this credential, so rotating
@@ -789,28 +767,6 @@ func TestExecuteRequestWithRetries_529RetriesSameKeyWithoutRotation(t *testing.T
 		if id != keyA.ID {
 			t.Errorf("attempt %d used %s, expected the same key %s throughout (sequence: %v); "+
 				"529 is capacity-wide and must not rotate credentials", i+1, id, keyA.ID, seenKeyIDs)
-		}
-	}
-}
-
-// Test that perKeyFailureStatusCodes are properly defined.
-// These are credential/account-bound failures — rotate to the next key instead of retrying
-// the same one.
-func TestPerKeyFailureStatusCodes(t *testing.T) {
-	expected := []int{401, 402, 403, 429}
-	for _, code := range expected {
-		if !perKeyFailureStatusCodes[code] {
-			t.Errorf("status code %d should be in perKeyFailureStatusCodes", code)
-		}
-	}
-
-	// Request-bound 4xx, success codes, and transient-server 5xx must not trigger rotation.
-	// 529 included: an overloaded provider is not this key's fault, so burning the other
-	// keys on it would just multiply the failures.
-	notPerKey := []int{200, 201, 400, 404, 422, 500, 502, 503, 504, 529}
-	for _, code := range notPerKey {
-		if perKeyFailureStatusCodes[code] {
-			t.Errorf("status code %d should not be in perKeyFailureStatusCodes", code)
 		}
 	}
 }
@@ -4409,5 +4365,67 @@ func TestFallbackPinOutsideAllowedKeysIsRefused(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestSDKFidelityDecisionRequestNullStateReachesProvider pins #7599 at the core
+// entrypoint: a decision request whose state is null (an SDK-valid EntryType)
+// must be dispatched to the provider as {"state": null} instead of being
+// rejected before dispatch.
+func TestSDKFidelityDecisionRequestNullStateReachesProvider(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		mu.Unlock()
+		if r.URL.Path != "/v1/systemone" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.25}},"usage":{"input_tokens":3,"output_tokens":0}}`))
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.Typesafe, 1, 1, server.URL)
+	account.SetKeysForProvider(schemas.Typesafe, []schemas.Key{{
+		ID:     "test-key-typesafe",
+		Value:  *schemas.NewSecretVar("sk-test-typesafe"),
+		Models: schemas.WhiteList{"*"},
+		Weight: 100,
+	}})
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	client, err := Init(ctx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	resp, bifrostErr := client.DecisionRequest(ctx, &schemas.BifrostDecisionRequest{
+		Provider: schemas.Typesafe,
+		Model:    "jev-1.13.0",
+		State:    nil,
+		Questions: map[string]schemas.DecisionQuestion{
+			"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("null state must reach the provider, got error: %v", bifrostErr)
+	}
+	if resp == nil || resp.Answers["q"].Value != 0.25 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 1 || !strings.Contains(bodies[0], `"state":null`) {
+		t.Errorf("provider must receive state null, got bodies %v", bodies)
 	}
 }

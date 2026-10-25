@@ -2357,3 +2357,36 @@ func TestInvokeIngressCarriesEagerInputStreaming(t *testing.T) {
 		})
 	}
 }
+
+// --- Regression tests for #7649: the /invoke egress dropped the extended-thinking token
+// breakdown. Anthropic's native InvokeModel response carries
+// usage.output_tokens_details.thinking_tokens (a subset of output_tokens); Bifrost holds
+// the same figure as ResponsesResponseUsage.OutputTokensDetails.ReasoningTokens, but the
+// Anthropic-shaped response builders never wrote it out, so cost attribution that separates
+// thinking from answer tokens read zero. Both tests assert on the marshaled bytes rather than
+// a typed field so they pin the wire shape a client sees. ---
+
+// TestToBedrockInvokeAnthropicResponse_ThinkingTokens covers the non-streaming /invoke
+// response: output_tokens stays inclusive (thinking is already inside it upstream) and the
+// breakdown appears under output_tokens_details.thinking_tokens.
+// TestToBedrockInvokeAnthropicResponse_NoThinkingOmitsDetails guards the other direction:
+// a non-thinking response must not grow an output_tokens_details object, matching what
+// Anthropic itself returns (the field is absent on non-thinking responses).
+// TestToAnthropicInvokeStreamBytes_MessageDeltaCarriesThinkingTokens covers the
+// /invoke-with-response-stream half: native Anthropic reports the thinking breakdown on the
+// terminal message_delta usage, which is also the only event where Bifrost has the full
+// figures for a Bedrock-backed call (see the sibling cache tests above).
+// TestResponsesUsesAnthropicInvokePath_InvokeIngressThinking is the routing half of #7649.
+// AWS Converse's TokenUsage has no thinking-token breakdown (verified live: the same
+// adaptive-thinking Sonnet 5 request returns {inputTokens, outputTokens, totalTokens, cache*}
+// on Converse and usage.output_tokens_details.thinking_tokens on InvokeModel), so a request
+// that arrived on the InvokeModel-shaped ingress (/bedrock/model/{id}/invoke and its stream
+// sibling) with thinking requested must be served by InvokeModel upstream, where the shared
+// anthropic handlers already map thinking_tokens -> OutputTokensDetails.ReasoningTokens.
+// The ingress marks the context; the predicate keys on the marker so /v1 and /bedrock
+// converse ingress keep their Converse routing.
+// Issue #7601: a truncated or filtered Responses stream ends with response.incomplete.
+// The invoke-with-response-stream egress handled only response.completed, so the
+// terminal message_delta/message_stop pair was dropped, and its incomplete_details
+// fallback leaked the Responses vocabulary ("max_output_tokens") as an Anthropic
+// stop_reason.

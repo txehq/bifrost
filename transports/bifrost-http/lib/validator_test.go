@@ -3641,3 +3641,28 @@ func TestValidateConfigSchema_IssuerURLRequiredForDiscovery(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateConfigSchema_VirtualKeyDeleteAfterExpireRequiresExpiresAt(t *testing.T) {
+	schema := loadLocalSchema(t)
+	withoutExpiry := `{
+		"governance": {
+			"virtual_keys": [
+				{"id": "vk-1", "name": "Test Key", "delete_after_expire": true}
+			]
+		}
+	}`
+	if err := ValidateConfigSchema([]byte(withoutExpiry), schema); err == nil {
+		t.Error("expected delete_after_expire without expires_at to fail validation")
+	}
+
+	withExpiry := `{
+		"governance": {
+			"virtual_keys": [
+				{"id": "vk-1", "name": "Test Key", "expires_at": "2027-01-01T00:00:00Z", "delete_after_expire": true}
+			]
+		}
+	}`
+	if err := ValidateConfigSchema([]byte(withExpiry), schema); err != nil {
+		t.Errorf("expected delete_after_expire with expires_at to pass validation, got error: %v", err)
+	}
+}

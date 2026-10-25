@@ -186,6 +186,9 @@ export const baseApi = createApi({
 		"Versions",
 		"Sessions",
 		"AccessProfiles",
+		// The profile a team, business unit or customer holds. Separate from AccessProfiles so
+		// attaching to one entity does not refetch every template list on the page.
+		"EntityAccessProfiles",
 		"Projects",
 		"BusinessUnits",
 		"PromptDeployments",
@@ -211,9 +214,19 @@ export const baseApi = createApi({
 		"EdgeMCPServers",
 		"EdgeConfig",
 		"Notifications",
+		"WarpConfig",
+		"WarpConversations",
 	],
 	endpoints: () => ({}),
 });
+
+export const getErrorCode = (error: unknown): string | undefined => {
+	if (typeof error !== "object" || !error || !("data" in error)) {
+		return undefined;
+	}
+	const data = (error as { data?: BifrostErrorResponse }).data;
+	return typeof data?.error?.code === "string" ? data.error.code : undefined;
+};
 
 // Helper function to extract error message from RTK Query error
 export const getErrorMessage = (error: unknown): string => {
