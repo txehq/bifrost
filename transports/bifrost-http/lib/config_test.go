@@ -19203,6 +19203,7 @@ var excludedGoFields = map[string]map[string]bool{
 		"rate_limit":                true, // GORM relation
 		"team":                      true, // GORM relation
 		"customer":                  true, // GORM relation
+		"business_unit":             true, // Response-only (gorm:"-"), resolved on read from business_unit_id
 		"previous_value_expires_at": true, // Runtime rotation grace-period state; not config.json-settable
 		"rotated_at":                true, // Runtime rotation state; not config.json-settable
 	},
