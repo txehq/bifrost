@@ -163,3 +163,30 @@ func TestToVertexGeminiEmbeddingRequest_LeavesCallerExtraParamsIntact(t *testing
 		t.Fatalf("caller's extra params were modified: %v", req.Params.ExtraParams)
 	}
 }
+
+// Go SDK callers still pass task_type, title and autoTruncate through ExtraParams (the
+// documented aliases); the first-class fields win when both are set, and the consumed
+// aliases are not forwarded again as extra params.
+func TestToVertexEmbeddingRequest_HonoursExtraParamAliases(t *testing.T) {
+	text := "hello"
+	input := []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}}
+
+	req := &schemas.BifrostEmbeddingRequest{Model: "text-embedding-005", Input: input, Params: &schemas.EmbeddingParameters{
+		ExtraParams: map[string]interface{}{"task_type": "RETRIEVAL_QUERY", "title": "doc", "autoTruncate": false, "other": 1},
+	}}
+	out, err := ToVertexEmbeddingRequest(req)
+	require.NoError(t, err)
+	require.Equal(t, "RETRIEVAL_QUERY", *out.Instances[0].TaskType)
+	require.Equal(t, "doc", *out.Instances[0].Title)
+	require.False(t, *out.Parameters.AutoTruncate)
+	require.Equal(t, map[string]interface{}{"other": 1}, out.ExtraParams)
+	require.Len(t, req.Params.ExtraParams, 4, "the caller's extra params were modified")
+
+	first := "SEMANTIC_SIMILARITY"
+	req.Params.TaskType = &first
+	req.Params.AutoTruncate = schemas.Ptr(true)
+	out, err = ToVertexEmbeddingRequest(req)
+	require.NoError(t, err)
+	require.Equal(t, first, *out.Instances[0].TaskType, "the first-class field wins over the alias")
+	require.True(t, *out.Parameters.AutoTruncate)
+}

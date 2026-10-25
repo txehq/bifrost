@@ -32,6 +32,37 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*Ver
 		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 
+	// The first-class task_type/title/auto_truncate win; the older ExtraParams aliases
+	// (task_type, title, autoTruncate, still documented for the Go SDK) are honoured as
+	// fallbacks and removed from a copy of the extra params so they are not forwarded too.
+	var taskType, title *string
+	var autoTruncate *bool
+	var extraParams map[string]interface{}
+	if params := bifrostReq.Params; params != nil {
+		taskType, title, autoTruncate = params.TaskType, params.Title, params.AutoTruncate
+		if params.ExtraParams != nil {
+			extraParams = maps.Clone(params.ExtraParams)
+			if v, ok := schemas.SafeExtractStringPointer(extraParams["task_type"]); ok {
+				delete(extraParams, "task_type")
+				if taskType == nil {
+					taskType = v
+				}
+			}
+			if v, ok := schemas.SafeExtractStringPointer(extraParams["title"]); ok {
+				delete(extraParams, "title")
+				if title == nil {
+					title = v
+				}
+			}
+			if v, ok := schemas.SafeExtractBool(extraParams["autoTruncate"]); ok {
+				delete(extraParams, "autoTruncate")
+				if autoTruncate == nil {
+					autoTruncate = &v
+				}
+			}
+		}
+	}
+
 	instances := make([]VertexEmbeddingInstance, 0, len(bifrostReq.Input))
 	for _, item := range bifrostReq.Input {
 		var sb strings.Builder
@@ -45,23 +76,18 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*Ver
 			sb.WriteString(*part.Text)
 		}
 
-		instance := VertexEmbeddingInstance{Content: sb.String()}
-		if bifrostReq.Params != nil {
-			instance.TaskType = bifrostReq.Params.TaskType
-			instance.Title = bifrostReq.Params.Title
-		}
-		instances = append(instances, instance)
+		instances = append(instances, VertexEmbeddingInstance{Content: sb.String(), TaskType: taskType, Title: title})
 	}
 
 	vertexReq := &VertexEmbeddingRequest{Instances: instances}
 	if bifrostReq.Params != nil {
-		vertexReq.ExtraParams = bifrostReq.Params.ExtraParams
-		autoTruncate := true
-		if bifrostReq.Params.AutoTruncate != nil {
-			autoTruncate = *bifrostReq.Params.AutoTruncate
+		vertexReq.ExtraParams = extraParams
+		truncate := true
+		if autoTruncate != nil {
+			truncate = *autoTruncate
 		}
 		vertexReq.Parameters = &VertexEmbeddingParameters{
-			AutoTruncate:         &autoTruncate,
+			AutoTruncate:         &truncate,
 			OutputDimensionality: bifrostReq.Params.Dimensions,
 		}
 	}
