@@ -735,7 +735,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		// Gemini streaming sets status on all item types, but OpenAI rejects status on input.
-		// Strip it, with three exceptions. message is a value copy, so the caller's input is
+		// Strip it, with four exceptions. message is a value copy, so the caller's input is
 		// untouched.
 		switch {
 		case message.Type != nil && *message.Type == schemas.ResponsesMessageTypeComputerCall && message.Status != nil &&
@@ -747,6 +747,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			// has left on this surface: `error` on an input item is rejected outright, so
 			// dropping it too would make a failed tool call look like a successful one. Only
 			// this value is kept; any other status is still stripped.
+		case isNativeOpenAIWebSearchCall(message) && message.Status != nil &&
+			(*message.Status == "in_progress" || *message.Status == "searching" ||
+				*message.Status == "completed" || *message.Status == "failed"):
+			// A native web_search_call (ws_ id) is a ResponseFunctionWebSearchParam, where
+			// id and status are both required.
 		case isAssistantMessageItem(message) && message.ID != nil && *message.ID != "" && message.Status != nil &&
 			(*message.Status == "completed" || *message.Status == "in_progress" || *message.Status == "incomplete"):
 			// An assistant message that keeps its id is a ResponseOutputMessageParam, where id
@@ -760,12 +765,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// Gemini streaming generates non-standard IDs for reasoning items (msg_<id>_reasoning_N,
 		// reasoning_N) and function_call_output items (func_resp_<id>). OpenAI rejects these.
 		// Drop them; the call_id and output pairing are unaffected. message is a value copy.
-		// But preserve native OpenAI reasoning IDs (rs_ prefix) which are needed for replay.
+		// But preserve native OpenAI reasoning (rs_) and web_search_call (ws_) IDs, which
+		// are needed for replay.
 		if message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeReasoning ||
 			*message.Type == schemas.ResponsesMessageTypeFunctionCallOutput ||
 			*message.Type == schemas.ResponsesMessageTypeWebSearchCall) &&
 			message.ID != nil && *message.ID != "" &&
-			!(*message.Type == schemas.ResponsesMessageTypeReasoning && strings.HasPrefix(*message.ID, "rs_")) {
+			!(*message.Type == schemas.ResponsesMessageTypeReasoning && strings.HasPrefix(*message.ID, "rs_")) &&
+			!isNativeOpenAIWebSearchCall(message) {
 			message.ID = nil
 		}
 
@@ -1281,6 +1288,13 @@ func isMantleGPTOSSResponses(ctx *schemas.BifrostContext, provider schemas.Model
 // assistantOutputTextAsInputText retags a replayed assistant message's output_text blocks
 // as input_text. Mantle /v1 strips id, status and annotations from assistant items before
 // validating, so output_text history matches no input variant and the turn fails (#7074).
+// isNativeOpenAIWebSearchCall reports whether message is a web_search_call that OpenAI
+// itself produced (a ws_ id), as opposed to a foreign history's search item.
+func isNativeOpenAIWebSearchCall(message schemas.ResponsesMessage) bool {
+	return message.Type != nil && *message.Type == schemas.ResponsesMessageTypeWebSearchCall &&
+		message.ID != nil && strings.HasPrefix(*message.ID, "ws_")
+}
+
 // isAssistantMessageItem reports whether message is an assistant message item (an
 // explicit "message" type, or no type with a role).
 func isAssistantMessageItem(message schemas.ResponsesMessage) bool {

@@ -2892,6 +2892,33 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 			origMutable: true,
 		},
 		{
+			// A native OpenAI web_search_call (ws_ id) is a ResponseFunctionWebSearchParam,
+			// where id and status are both required. Replaying it must keep both.
+			name: "native web_search_call ID and status kept",
+			input: schemas.ResponsesMessage{
+				Type:   &webSearchCallType,
+				ID:     schemas.Ptr("ws_68a1b2c3"),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					Action: &schemas.ResponsesToolMessageActionStruct{
+						ResponsesWebSearchToolCallAction: &schemas.ResponsesWebSearchToolCallAction{
+							Type:  "search",
+							Query: schemas.Ptr("bifrost"),
+						},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if string(item["id"]) != `"ws_68a1b2c3"` {
+					t.Errorf("id: got %s, want \"ws_68a1b2c3\"", item["id"])
+				}
+				if string(item["status"]) != `"completed"` {
+					t.Errorf("status: got %s, want \"completed\"", item["status"])
+				}
+			},
+			origMutable: true,
+		},
+		{
 			name: "signature stripped from content blocks",
 			input: schemas.ResponsesMessage{
 				Type:   &messageType,
