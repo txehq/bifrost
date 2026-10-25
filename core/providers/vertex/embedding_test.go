@@ -132,3 +132,34 @@ func TestToVertexEmbeddingRequestBatch(t *testing.T) {
 		require.Contains(t, err.Error(), "only supports text parts")
 	})
 }
+
+// The converter runs again on a retry or fallback with the same request, so it must not
+// consume the caller's extra params while lifting documentOcr/audioTrackExtraction out.
+func TestToVertexGeminiEmbeddingRequest_LeavesCallerExtraParamsIntact(t *testing.T) {
+	text := "hello"
+	req := &schemas.BifrostEmbeddingRequest{
+		Model: "gemini-embedding-001",
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+		Params: &schemas.EmbeddingParameters{ExtraParams: map[string]interface{}{
+			"documentOcr": true, "audioTrackExtraction": false, "other": "kept",
+		}},
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		out, err := ToVertexGeminiEmbeddingRequest(req)
+		if err != nil {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+		if out.DocumentOCR == nil || !*out.DocumentOCR || out.AudioTrackExtraction == nil || *out.AudioTrackExtraction {
+			t.Fatalf("attempt %d: native fields not lifted: ocr=%v audio=%v", attempt, out.DocumentOCR, out.AudioTrackExtraction)
+		}
+		if _, ok := out.ExtraParams["documentOcr"]; ok {
+			t.Fatalf("attempt %d: documentOcr also left in the forwarded extra params", attempt)
+		}
+		if out.ExtraParams["other"] != "kept" {
+			t.Fatalf("attempt %d: unrelated extra param lost: %v", attempt, out.ExtraParams)
+		}
+	}
+	if len(req.Params.ExtraParams) != 3 {
+		t.Fatalf("caller's extra params were modified: %v", req.Params.ExtraParams)
+	}
+}

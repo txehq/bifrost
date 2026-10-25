@@ -235,3 +235,25 @@ func TestToCohereEmbeddingResponseMetaMatchesEmbedEndpoint(t *testing.T) {
 	require.NotNil(t, resp.Meta.BilledUnits.ImageTokens)
 	assert.Equal(t, 6, *resp.Meta.BilledUnits.ImageTokens)
 }
+
+// The converter runs again on a retry or fallback with the same request, so lifting the
+// native fields out of extra params must not consume the caller's map.
+func TestToCohereEmbeddingRequest_LeavesCallerExtraParamsIntact(t *testing.T) {
+	text := "hello"
+	req := &schemas.BifrostEmbeddingRequest{
+		Model: "embed-v4.0",
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+		Params: &schemas.EmbeddingParameters{ExtraParams: map[string]interface{}{
+			"input_type": "search_query", "truncate": "END", "other": "kept",
+		}},
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		out, err := ToCohereEmbeddingRequest(req)
+		require.NoError(t, err)
+		assert.Equal(t, "search_query", out.InputType, "attempt %d", attempt)
+		require.NotNil(t, out.Truncate, "attempt %d", attempt)
+		assert.NotContains(t, out.ExtraParams, "input_type", "attempt %d", attempt)
+		assert.Equal(t, "kept", out.ExtraParams["other"], "attempt %d", attempt)
+	}
+	assert.Len(t, req.Params.ExtraParams, 3, "the caller's extra params were modified")
+}

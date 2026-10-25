@@ -1,6 +1,7 @@
 package vertex
 
 import (
+	"maps"
 	"strings"
 
 	"github.com/capsohq/bifrost/core/providers/gemini"
@@ -99,7 +100,9 @@ func ToVertexGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest)
 		req.AutoTruncate = params.AutoTruncate
 
 		if params.ExtraParams != nil {
-			req.ExtraParams = params.ExtraParams
+			// A copy: the native fields are removed from it below, and a retry or
+			// fallback converts the same request again.
+			req.ExtraParams = maps.Clone(params.ExtraParams)
 			if documentOCR, ok := schemas.SafeExtractBoolPointer(params.ExtraParams["documentOcr"]); ok {
 				delete(req.ExtraParams, "documentOcr")
 				req.DocumentOCR = documentOCR
