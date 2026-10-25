@@ -103,15 +103,26 @@ func (m *ChannelMessage) claimDelivery() bool {
 // about to enter) the buffer and the caller must receive it, since no one else
 // will. After a successful abandon the caller must not touch the message again.
 func (m *ChannelMessage) abandonDelivery() bool {
-	if !m.handoff.CompareAndSwap(handoffOpen, handoffAbandoned) {
-		return false
-	}
-	// The worker still writes response attributes and plugin logs, so the transport
-	// must not flush the trace yet. Set on the CAS so every abandonment marks it.
+	// The worker still writes response attributes and plugin logs after an abandon,
+	// so the transport must not flush the trace yet. The deferral is installed before
+	// the CAS publishes the abandonment: from that moment the worker may bill and
+	// release this message (resetting Context for reuse), and its trace completion
+	// only waits for a deferral that already exists.
+	var tracer schemas.Tracer
+	var traceID string
 	if m.Context != nil {
-		if tracer, traceID, err := GetTracerFromContext(m.Context); err == nil {
+		if t, id, err := GetTracerFromContext(m.Context); err == nil {
+			tracer, traceID = t, id
 			tracer.DeferTraceCompletion(traceID)
 		}
+	}
+	if !m.handoff.CompareAndSwap(handoffOpen, handoffAbandoned) {
+		// The worker claimed delivery first: the caller receives the value and the
+		// transport completes the trace as usual.
+		if tracer != nil {
+			tracer.ClearTraceCompletionDeferral(traceID)
+		}
+		return false
 	}
 	return true
 }

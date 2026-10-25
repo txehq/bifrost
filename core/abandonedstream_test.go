@@ -472,6 +472,65 @@ func TestChannelMessageHandoffIsExclusive(t *testing.T) {
 	}
 }
 
+// handoffProbeTracer records the message's handoff state each time abandonDelivery
+// installs or drops the trace deferral.
+type handoffProbeTracer struct {
+	*recordingTracer
+	msg           *ChannelMessage
+	stateAtDefer  []int32
+	stateAtCancel []int32
+}
+
+func (p *handoffProbeTracer) DeferTraceCompletion(id string) {
+	p.stateAtDefer = append(p.stateAtDefer, p.msg.handoff.Load())
+	p.recordingTracer.DeferTraceCompletion(id)
+}
+
+func (p *handoffProbeTracer) ClearTraceCompletionDeferral(id string) {
+	p.stateAtCancel = append(p.stateAtCancel, p.msg.handoff.Load())
+	p.recordingTracer.ClearTraceCompletionDeferral(id)
+}
+
+// TestAbandonDeliveryDefersTraceBeforePublishing: once the abandon CAS lands the worker
+// may bill and release the message, so the deferral must already be in place (and
+// m.Context read) while the handoff is still open. When the worker claimed first, the
+// caller receives the value and the deferral is dropped again.
+func TestAbandonDeliveryDefersTraceBeforePublishing(t *testing.T) {
+	t.Parallel()
+	newMsg := func(probe *handoffProbeTracer) *ChannelMessage {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTracer, probe)
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-handoff")
+		msg := &ChannelMessage{Context: ctx}
+		probe.msg = msg
+		return msg
+	}
+
+	probe := &handoffProbeTracer{recordingTracer: newRecordingTracer()}
+	msg := newMsg(probe)
+	if !msg.abandonDelivery() {
+		t.Fatal("abandon of an open handoff must win")
+	}
+	if len(probe.stateAtDefer) != 1 || probe.stateAtDefer[0] != handoffOpen {
+		t.Fatalf("deferral installed in handoff states %v, want once while still open", probe.stateAtDefer)
+	}
+	if probe.cleared.Load() != 0 {
+		t.Fatal("a won abandon must keep the deferral for the worker")
+	}
+
+	probe = &handoffProbeTracer{recordingTracer: newRecordingTracer()}
+	msg = newMsg(probe)
+	if !msg.claimDelivery() {
+		t.Fatal("claim of an open handoff must win")
+	}
+	if msg.abandonDelivery() {
+		t.Fatal("abandon after a claim must lose")
+	}
+	if probe.deferred.Load() != 1 || probe.cleared.Load() != 1 {
+		t.Fatalf("deferred %d / cleared %d after a lost abandon, want the deferral dropped again", probe.deferred.Load(), probe.cleared.Load())
+	}
+}
+
 // TestRequestWorkerBillsAbandonedKeySelectionError covers the errors the worker
 // produces before any provider call (here: no key serves the model). They are
 // sent on the same channel as terminal errors and must obey the same ownership
