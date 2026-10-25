@@ -736,7 +736,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 		// Gemini streaming sets status on all item types, but OpenAI rejects status on input.
 		// Strip it from all items. message is a value copy, so the caller's input is untouched.
-		message.Status = nil
+		// Bedrock Mantle's gpt-oss is the exception: it validates a replayed assistant message
+		// as an output message, which requires status, so that item keeps it.
+		if !replayAssistantTextAsInput || !isAssistantMessageItem(message) {
+			message.Status = nil
+		}
 
 		// Gemini streaming generates non-standard IDs for reasoning items (msg_<id>_reasoning_N,
 		// reasoning_N) and function_call_output items (func_resp_<id>). OpenAI rejects these.
@@ -1262,6 +1266,13 @@ func isMantleGPTOSSResponses(ctx *schemas.BifrostContext, provider schemas.Model
 // assistantOutputTextAsInputText retags a replayed assistant message's output_text blocks
 // as input_text. Mantle /v1 strips id, status and annotations from assistant items before
 // validating, so output_text history matches no input variant and the turn fails (#7074).
+// isAssistantMessageItem reports whether message is an assistant message item (an
+// explicit "message" type, or no type with a role).
+func isAssistantMessageItem(message schemas.ResponsesMessage) bool {
+	return message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleAssistant &&
+		(message.Type == nil || *message.Type == schemas.ResponsesMessageTypeMessage)
+}
+
 func assistantOutputTextAsInputText(message schemas.ResponsesMessage) schemas.ResponsesMessage {
 	if message.Role == nil || *message.Role != schemas.ResponsesInputMessageRoleAssistant ||
 		message.Content == nil || len(message.Content.ContentBlocks) == 0 {
