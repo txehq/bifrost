@@ -1501,6 +1501,9 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 				responses = append(responses, webSearchResponses...)
 			}
 
+			// Record output items emitted so far in this frame before closing open items and building response.completed
+			recordGeminiOutputItems(state, responses)
+
 			// Close any open items
 			closeResponses := closeGeminiOpenItems(state, candidate.GroundingMetadata, response.UsageMetadata, sequenceNumber+len(responses), candidate.FinishReason, candidate.FinishMessage)
 			responses = append(responses, closeResponses...)
@@ -4729,12 +4732,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 
 					// Extract output from ResponsesToolMessage.Output
 					if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
-						output := *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
-						if json.Valid([]byte(output)) {
-							responseMap["output"] = json.RawMessage(output)
-						} else {
-							responseMap["output"] = output
-						}
+						responseMap["output"] = geminiFunctionOutputValue(*msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr)
 					} else if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
 						// Handle structured output blocks (e.g. from the OpenAI/Anthropic Responses API
 						// format where output is an array of content blocks like
@@ -4781,12 +4779,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 							}
 						}
 						if len(textParts) > 0 {
-							combined := strings.Join(textParts, "\n")
-							if json.Valid([]byte(combined)) {
-								responseMap["output"] = json.RawMessage(combined)
-							} else {
-								responseMap["output"] = combined
-							}
+							responseMap["output"] = geminiFunctionOutputValue(strings.Join(textParts, "\n"))
 						} else if len(funcMediaParts) > 0 {
 							// Media-only result: the content lives in parts. We intentionally emit
 							// {"output": ""} rather than leaving response as {} — an empty object would
@@ -4797,12 +4790,7 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						}
 					} else if msg.Content != nil && msg.Content.ContentStr != nil {
 						// Fallback to Content.ContentStr for backward compatibility
-						output := *msg.Content.ContentStr
-						if json.Valid([]byte(output)) {
-							responseMap["output"] = json.RawMessage(output)
-						} else {
-							responseMap["output"] = output
-						}
+						responseMap["output"] = geminiFunctionOutputValue(*msg.Content.ContentStr)
 					}
 
 					// Prefer the declared tool name; fallback to callIDToName lookup, then raw CallID

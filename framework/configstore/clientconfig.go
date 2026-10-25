@@ -111,6 +111,7 @@ type ClientConfig struct {
 	LoggingHeaders                        []string                              `json:"logging_headers,omitempty"`                   // Headers to capture in log metadata
 	WhitelistedRoutes                     []string                              `json:"whitelisted_routes,omitempty"`                // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters       bool                                  `json:"hide_deleted_virtual_keys_in_filters"`        // Hide deleted virtual keys from logs/MCP filter data
+	DeleteExpiredVirtualKeys              bool                                  `json:"delete_expired_virtual_keys"`                 // Delete expired virtual keys by default; a key's delete_after_expire overrides this
 	HiddenRequestTypes                    []string                              `json:"hidden_request_types,omitempty"`              // Request types excluded from dashboard and log API reads; logs are still written
 	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
@@ -215,6 +216,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn.
 	if c.HideDeletedVirtualKeysInFilters {
 		hash.Write([]byte("hideDeletedVirtualKeysInFilters:true"))
+	}
+	if c.DeleteExpiredVirtualKeys {
+		hash.Write([]byte("deleteExpiredVirtualKeys:true"))
 	}
 
 	// Always hash when non-zero — explicitly setting the default (10) is a meaningful
@@ -1055,9 +1059,24 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	} else {
 		hash.Write([]byte("allowAllProviders:false"))
 	}
+	// Hash DisableContentLogging only when the key says something. Nil is inherit, and writing
+	// nothing for it keeps every key that predates the column on the hash it already has, so
+	// config sync sees no drift on upgrade (the unconditional AllowAllProviders write above is
+	// what forced a backfill migration).
+	if vk.DisableContentLogging != nil {
+		if *vk.DisableContentLogging {
+			hash.Write([]byte("disableContentLogging:true"))
+		} else {
+			hash.Write([]byte("disableContentLogging:false"))
+		}
+	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
 		hash.Write([]byte("expiresAt:" + vk.ExpiresAt.UTC().Format(time.RFC3339Nano)))
+	}
+	// Hash DeleteAfterExpire only when set, for the same reason
+	if vk.DeleteAfterExpire != nil {
+		hash.Write([]byte(fmt.Sprintf("deleteAfterExpire:%t", *vk.DeleteAfterExpire)))
 	}
 	// Hash TeamID
 	if vk.TeamID != nil {
@@ -1066,6 +1085,11 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	// Hash CustomerID
 	if vk.CustomerID != nil {
 		hash.Write([]byte("customerID:" + *vk.CustomerID))
+	}
+	// Hash BusinessUnitID. Written only when set, like the owners above, so every key that
+	// predates business-unit ownership keeps the hash it already has and config sync sees no drift.
+	if vk.BusinessUnitID != nil {
+		hash.Write([]byte("businessUnitID:" + *vk.BusinessUnitID))
 	}
 	// Hash RateLimitID
 	if vk.RateLimitID != nil {
@@ -1490,6 +1514,8 @@ type routingTargetHashPayload struct {
 	Model    string  `json:"model"`
 	KeyID    string  `json:"key_id"`
 	Weight   float64 `json:"weight"`
+	// TTFTTimeoutMs is omitted when unset so targets without it keep their hash.
+	TTFTTimeoutMs int `json:"ttft_timeout_ms,omitempty"`
 }
 
 // derefStr returns the dereferenced value of s, or "" if s is nil.
@@ -1498,6 +1524,14 @@ func derefStr(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// derefInt returns the dereferenced value of n, or 0 if n is nil.
+func derefInt(n *int) int {
+	if n == nil {
+		return 0
+	}
+	return *n
 }
 
 // Skips: CreatedAt, UpdatedAt (dynamic fields)
@@ -1527,8 +1561,8 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	targets := make([]tables.TableRoutingTarget, len(r.Targets))
 	copy(targets, r.Targets)
 	sort.Slice(targets, func(i, j int) bool {
-		pi := routingTargetHashPayload{Provider: derefStr(targets[i].Provider), Model: derefStr(targets[i].Model), KeyID: derefStr(targets[i].KeyID), Weight: targets[i].Weight}
-		pj := routingTargetHashPayload{Provider: derefStr(targets[j].Provider), Model: derefStr(targets[j].Model), KeyID: derefStr(targets[j].KeyID), Weight: targets[j].Weight}
+		pi := routingTargetHashPayload{Provider: derefStr(targets[i].Provider), Model: derefStr(targets[i].Model), KeyID: derefStr(targets[i].KeyID), Weight: targets[i].Weight, TTFTTimeoutMs: derefInt(targets[i].TTFTTimeoutMs)}
+		pj := routingTargetHashPayload{Provider: derefStr(targets[j].Provider), Model: derefStr(targets[j].Model), KeyID: derefStr(targets[j].KeyID), Weight: targets[j].Weight, TTFTTimeoutMs: derefInt(targets[j].TTFTTimeoutMs)}
 		di, err := sonic.Marshal(pi)
 		if err != nil {
 			return false
@@ -1540,7 +1574,7 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 		return string(di) < string(dj)
 	})
 	for _, t := range targets {
-		payload := routingTargetHashPayload{Provider: derefStr(t.Provider), Model: derefStr(t.Model), KeyID: derefStr(t.KeyID), Weight: t.Weight}
+		payload := routingTargetHashPayload{Provider: derefStr(t.Provider), Model: derefStr(t.Model), KeyID: derefStr(t.KeyID), Weight: t.Weight, TTFTTimeoutMs: derefInt(t.TTFTTimeoutMs)}
 		data, err := sonic.Marshal(payload)
 		if err != nil {
 			return "", err

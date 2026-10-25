@@ -215,6 +215,16 @@ if NPM_GLOBAL_ROOT="$(npm root -g 2>/dev/null)" && [ -n "$NPM_GLOBAL_ROOT" ]; th
     export NODE_PATH="$NPM_GLOBAL_ROOT${NODE_PATH:+:$NODE_PATH}"
 fi
 
+# The node runners below (the content-logging matrix) require pg. CI installs it
+# hash-pinned next to newman in .github/workflows/tools (npm ci), so the
+# node_modules that holds newman is added too; a repo-local or global install
+# still resolves as before.
+if NEWMAN_BIN="$(command -v newman 2>/dev/null)" && \
+    NEWMAN_MODULES="$(node -e 'const fs = require("fs"), path = require("path"); process.stdout.write(path.resolve(path.dirname(fs.realpathSync(process.argv[1])), "..", ".."))' "$NEWMAN_BIN" 2>/dev/null)" && \
+    [ -d "$NEWMAN_MODULES/pg" ]; then
+    export NODE_PATH="$NEWMAN_MODULES${NODE_PATH:+:$NODE_PATH}"
+fi
+
 # Validate optional reporters are resolvable before invoking newman so we fail
 # fast with a clear message instead of a cryptic mid-run newman error.
 #
@@ -598,6 +608,37 @@ if [ "$AUTH_ENABLED_BY_RUN" = "1" ]; then
     if [ $EXIT_CODE -eq 0 ] && [ $AUTH_RESTORE_EXIT -ne 0 ]; then
         EXIT_CODE=$AUTH_RESTORE_EXIT
     fi
+fi
+
+# Content-logging permutation matrix: every combination of virtual key (inherit/on/off), client
+# disable_content_logging, OTel connector disable_content_logging, the per-request override gate
+# and the x-bf-disable-content-logging header, checked in both the log store and the OTel export.
+# It brings its own echo provider and OTLP collector (no provider credentials, no paid calls),
+# restores the client config and OTel plugin afterwards, and runs after auth is restored to
+# disabled because it provisions virtual keys through the unauthenticated management API.
+# Its echo provider and collector are on loopback, so the gateway must share this host (as it does
+# in every CI path and for the observability check above); for a gateway in another container or
+# host, set BIFROST_E2E_CALLBACK_HOST to an address it can reach this runner on.
+# Set BIFROST_E2E_SKIP_CONTENT_LOGGING_MATRIX=1 to skip it.
+if [ $EXIT_CODE -eq 0 ] && [ "${BIFROST_E2E_SKIP_CONTENT_LOGGING_MATRIX:-0}" != "1" ]; then
+    echo "" | tee -a "$LOG_FILE"
+    echo -e "${GREEN}Running content-logging permutation matrix...${NC}" | tee -a "$LOG_FILE"
+    # The matrix reads raw log rows, so it must look at the same logs database this run was pointed
+    # at: --logs-db-url and --config-path are plain shell variables here, not exported, so pass them
+    # on explicitly. Unset values are left out so a caller's exported BIFROST_LOGS_DB_URL still wins.
+    matrix_env=(BIFROST_E2E_BASE_URL="$BASE_URL")
+    [ -n "$LOGS_DB_URL" ] && matrix_env+=(BIFROST_LOGS_DB_URL="$LOGS_DB_URL")
+    [ -n "$DB_CONFIG_PATH" ] && matrix_env+=(BIFROST_E2E_CONFIG_PATH="$DB_CONFIG_PATH")
+    set +e
+    env "${matrix_env[@]}" node "$SCRIPT_DIR/run-content-logging-matrix.mjs" 2>&1 | tee -a "$LOG_FILE"
+    MATRIX_EXIT_CODE=${PIPESTATUS[0]}
+    set -e
+    if [ $MATRIX_EXIT_CODE -ne 0 ]; then
+        EXIT_CODE=$MATRIX_EXIT_CODE
+    fi
+elif [ $EXIT_CODE -eq 0 ]; then
+    echo "" | tee -a "$LOG_FILE"
+    echo -e "${YELLOW}Skipping content-logging permutation matrix (BIFROST_E2E_SKIP_CONTENT_LOGGING_MATRIX=1).${NC}" | tee -a "$LOG_FILE"
 fi
 
 # Governance suites (virtual key quota, rate limit / budget enforcement,

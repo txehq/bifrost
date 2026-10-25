@@ -1,5 +1,7 @@
 package schemas
 
+import "encoding/json"
+
 // DecisionKind identifies how a single question is decided. The vocabulary
 // mirrors Typesafe's System One question types.
 type DecisionKind string
@@ -32,6 +34,7 @@ type BifrostDecisionRequest struct {
 	Questions      map[string]DecisionQuestion `json:"questions"`
 	Fallbacks      []Fallback                  `json:"fallbacks,omitempty"`
 	RawRequestBody []byte                      `json:"-"`
+	ExtraParams    map[string]interface{}      `json:"-"` // native extensions; sent only under the passthrough-extra-params flag
 }
 
 // GetRawRequestBody returns the raw request body for the decision request.
@@ -62,8 +65,9 @@ type BifrostDecisionResponse struct {
 	Answers map[string]DecisionAnswer `json:"answers"`
 	Usage   *BifrostLLMUsage          `json:"usage,omitempty"`
 	// Tier the emulating text call was served on, which prices the decision as that call.
-	ServiceTier  *BifrostServiceTier        `json:"service_tier,omitempty"`
-	Speed        *string                    `json:"speed,omitempty"`
-	InferenceGeo *string                    `json:"inference_geo,omitempty"`
-	ExtraFields  BifrostResponseExtraFields `json:"extra_fields"`
+	ServiceTier    *BifrostServiceTier        `json:"service_tier,omitempty"`
+	Speed          *string                    `json:"speed,omitempty"`
+	InferenceGeo   *string                    `json:"inference_geo,omitempty"`
+	ExtraFields    BifrostResponseExtraFields `json:"extra_fields"`
+	NativeResponse json.RawMessage            `json:"-"` // provider body verbatim for native drop-in routes; never serialized
 }

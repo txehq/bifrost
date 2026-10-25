@@ -163,6 +163,9 @@ var ignoreGoFields = map[string]string{
 	// read paths so list responses can report it without loading the full VirtualKeys
 	// relation; never config.json input.
 	"/properties/governance/properties/customers/items|virtual_key_count": "response-only; derived count populated on read (TableCustomer.VirtualKeyCount), not user-configurable via config.json",
+	// business_unit is a non-persisted (gorm:"-") display object the governance read paths fill
+	// from the enterprise resolver; config.json links a key to a unit through business_unit_id.
+	"/properties/governance/properties/virtual_keys/items|business_unit": "response-only; resolved on read from business_unit_id (TableVirtualKey.BusinessUnit), not user-configurable via config.json",
 }
 
 // ignoreGoFieldNames are field names (regardless of parent path) that are

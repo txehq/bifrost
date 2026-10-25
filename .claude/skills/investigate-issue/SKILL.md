@@ -878,10 +878,12 @@ Once all approved changes are applied:
    make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python   # in the background; wait for /health = 200
    ```
    ```bash
-   make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
+   make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>" BASE_URL=http://localhost:<port>
    # cross-cutting change: the curated smoke set instead
-   make run-provider-harness-test SMOKE=1
+   make run-provider-harness-test SMOKE=1 BASE_URL=http://localhost:<port>
    ```
+   `<keyword>` is descriptive text that appears in the case or folder names (for example
+   `"sdk fidelity"`), never an issue or PR number; verify it with `filter-collection.mjs` first.
    End the report with exactly these two commands in a plain code block, ready to paste, with
    the scope filled in, and stop there. When the user has run it and shares the provider status
    table and `tmp/harness-failures.md`, investigate the findings. See AGENTS.md "Every

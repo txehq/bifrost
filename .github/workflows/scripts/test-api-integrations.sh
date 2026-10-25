@@ -45,6 +45,14 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "❌ jq is required" >&2
   exit 1
 fi
+
+# The content-logging matrix reads each request's raw logs row to prove disabled content never
+# reached the database. The server's logs_store is the Postgres overlay below, so hand the runner the
+# same database explicitly (the default config.json it would otherwise read uses sqlite).
+if [ -z "${BIFROST_LOGS_DB_URL:-}" ]; then
+  BIFROST_LOGS_DB_URL="postgresql://$(jq -rn --arg v "$POSTGRES_USER" '$v|@uri'):$(jq -rn --arg v "$POSTGRES_PASSWORD" '$v|@uri')@${POSTGRES_HOST}:${POSTGRES_PORT}/$(jq -rn --arg v "$POSTGRES_DB" '$v|@uri')?sslmode=${POSTGRES_SSLMODE}"
+fi
+export BIFROST_LOGS_DB_URL
 if ! command -v newman >/dev/null 2>&1; then
   echo "❌ newman is required (npm install -g newman newman-reporter-htmlextra)" >&2
   exit 1
@@ -251,3 +259,19 @@ fi
 echo ""
 echo "🧪 Running api-management newman collection..."
 "$RUNNER" $REPORT_ARGS
+
+# Warp boots its own server on its own database (bifrost_warp_e2e on the same
+# Postgres), because its answers cover every row in the logs table and the
+# api-management run above has just written to this server's.
+#
+# Its collection asks a live OpenAI model, so it runs only on an explicit opt-in,
+# BIFROST_E2E_RUN_LIVE_WARP=1, never because a key happens to be present: the
+# release pipeline makes no live provider calls. Warp's offline coverage is the
+# framework/warp and handler Go tests.
+echo ""
+if [ "${BIFROST_E2E_RUN_LIVE_WARP:-0}" = "1" ]; then
+  echo "🧪 Running Warp newman collection (live model, opted in)..."
+  "$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-warp-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 8))" $REPORT_ARGS
+else
+  echo "⏭️  Skipping the Warp newman collection: it calls a live model; set BIFROST_E2E_RUN_LIVE_WARP=1 to run it"
+fi

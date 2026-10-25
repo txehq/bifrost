@@ -288,6 +288,7 @@ func (provider *AzureProvider) realtimeWebRTCUpstreamError(ctx *schemas.BifrostC
 	if !providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		bifrostErr.ExtraFields.RawResponse = nil
 	}
+	providerUtils.ApplyRetryAfter(bifrostErr, &resp.Header)
 	return bifrostErr
 }
 
@@ -357,5 +358,6 @@ func (provider *AzureProvider) parseRealtimeClientSecretError(ctx *schemas.Bifro
 			"body":   string(body),
 		}
 	}
+	providerUtils.ApplyRetryAfter(bifrostErr, &resp.Header)
 	return bifrostErr
 }

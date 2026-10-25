@@ -48,6 +48,11 @@ func CreateTypesafeRouteConfigs(pathPrefix string) []RouteConfig {
 				if err != nil {
 					return nil, err
 				}
+				// The native surface is the wire shape: extensions the SDK
+				// forwarded always reach the provider, no header needed.
+				if len(decisionReq.ExtraParams) > 0 && ctx != nil {
+					ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+				}
 				return &schemas.BifrostRequest{
 					DecisionRequest: decisionReq,
 				}, nil
@@ -59,22 +64,26 @@ func CreateTypesafeRouteConfigs(pathPrefix string) []RouteConfig {
 			if err != nil {
 				return nil, err
 			}
-			// The raw provider body was kept before post-hooks ran; relay it only while it
-			// still carries the answers the processed response does, so a post-hook's change
-			// reaches the client.
-			if resp.ExtraFields.Provider == schemas.Typesafe && resp.ExtraFields.RawResponse != nil &&
-				typesafeRawAnswersMatch(resp.ExtraFields.RawResponse, native) {
-				return resp.ExtraFields.RawResponse, nil
+			// The raw and native provider bodies were kept before post-hooks ran; relay one
+			// only while it still carries the answers the processed response does, so a
+			// post-hook's change reaches the client.
+			if resp.ExtraFields.Provider == schemas.Typesafe {
+				if resp.ExtraFields.RawResponse != nil && typesafeRawAnswersMatch(resp.ExtraFields.RawResponse, native) {
+					return resp.ExtraFields.RawResponse, nil
+				}
+				if len(resp.NativeResponse) > 0 && typesafeRawAnswersMatch(resp.NativeResponse, native) {
+					return resp.NativeResponse, nil
+				}
 			}
 			return native, nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return typesafe.ToTypesafeNativeError(err)
+			return typesafe.ToTypesafeNativeErrorBody(err)
 		},
 	})
 
-	// Models endpoint. Typesafe documents no upstream listing API; the response
-	// is synthesized from the provider's static catalog in native shape.
+	// Models endpoint: the endpoint's native GET /v1/models catalog in native
+	// shape (the pinned jev catalog backs the default endpoint).
 	routes = append(routes, RouteConfig{
 		Type:   RouteConfigTypeTypesafe,
 		Path:   pathPrefix + "/v1/models",
@@ -100,7 +109,7 @@ func CreateTypesafeRouteConfigs(pathPrefix string) []RouteConfig {
 			return typesafe.ToTypesafeNativeListModelsResponse(resp), nil
 		},
 		ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
-			return typesafe.ToTypesafeNativeError(err)
+			return typesafe.ToTypesafeNativeErrorBody(err)
 		},
 	})
 
