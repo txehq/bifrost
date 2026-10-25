@@ -91,6 +91,26 @@ func (s *recordingWarpStore) UpsertWarpConfig(_ context.Context, config *tables.
 	return nil
 }
 
+// storeJob and setInFlight write the fake job store under its lock: a test that has
+// started a backfill shares the store with the sidekiq runner's goroutine.
+func (s *fakeSidekiqStore) storeJob(job *tables.TableSidekiqJob) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.jobs[job.ID] = job
+}
+
+func (s *fakeSidekiqStore) setInFlight(job *tables.TableSidekiqJob) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inFlight = job
+}
+
+func (s *fakeSidekiqStore) jobStatus(id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.jobs[id].Status
+}
+
 func newTestWarpHandler(store *recordingWarpStore) *WarpHandler {
 	return &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store))}
 }
@@ -199,7 +219,7 @@ func TestWarpStartBackfillEnqueuesDurableJob(t *testing.T) {
 func TestWarpStartBackfillReturnsConflictForActiveJob(t *testing.T) {
 	handler, jobs, cleanup := newBackfillTestHandler(t)
 	defer cleanup()
-	jobs.inFlight = &tables.TableSidekiqJob{ID: "running", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{}`}
+	jobs.setInFlight(&tables.TableSidekiqJob{ID: "running", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{}`})
 	ctx := adminCtx(`{"start_time":"2026-09-01T00:00:00Z","end_time":"2026-09-02T00:00:00Z"}`)
 	handler.startBackfill(ctx)
 	require.Equal(t, fasthttp.StatusConflict, ctx.Response.StatusCode())
@@ -210,8 +230,8 @@ func TestWarpBackfillStatusAndCancel(t *testing.T) {
 	handler, jobs, cleanup := newBackfillTestHandler(t)
 	defer cleanup()
 	job := &tables.TableSidekiqJob{ID: "job-1", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{"scanned":4,"indexed":3,"skipped":1}`}
-	jobs.jobs[job.ID] = job
-	jobs.inFlight = job
+	jobs.storeJob(job)
+	jobs.setInFlight(job)
 
 	statusCtx := adminCtx("")
 	statusCtx.QueryArgs().Set("id", job.ID)
@@ -246,7 +266,7 @@ func TestWarpLogIndexStatusSummarisesState(t *testing.T) {
 	require.Contains(t, body, `"state":"failed"`)
 	require.Contains(t, body, "no keys found")
 
-	jobs.inFlight = &tables.TableSidekiqJob{ID: "job-r", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{"scanned":40,"total":100}`}
+	jobs.setInFlight(&tables.TableSidekiqJob{ID: "job-r", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{"scanned":40,"total":100}`})
 	ctx = adminCtx("")
 	handler.logIndexStatus(ctx)
 	body = string(ctx.Response.Body())
@@ -277,7 +297,7 @@ func TestWarpBackfillStatusWithoutIDFallsBackToLatestJob(t *testing.T) {
 	require.Contains(t, body, "no keys found")
 
 	// An in-flight job still takes priority over the historical one.
-	jobs.inFlight = &tables.TableSidekiqJob{ID: "job-new", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{}`}
+	jobs.setInFlight(&tables.TableSidekiqJob{ID: "job-new", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{}`})
 	statusCtx = adminCtx("")
 	handler.backfillStatus(statusCtx)
 	require.Equal(t, fasthttp.StatusOK, statusCtx.Response.StatusCode())
@@ -499,7 +519,7 @@ func TestWarpBackfillEndpointsRejectForeignJobs(t *testing.T) {
 		ID: "pricing-sync-1", Kind: "pricing_sync",
 		Status: tables.SidekiqStatusRunning, Metadata: `{"scanned":99,"indexed":98}`,
 	}
-	jobs.jobs[foreign.ID] = foreign
+	jobs.storeJob(foreign)
 
 	statusCtx := adminCtx("")
 	statusCtx.QueryArgs().Set("id", foreign.ID)
@@ -513,7 +533,7 @@ func TestWarpBackfillEndpointsRejectForeignJobs(t *testing.T) {
 	handler.cancelBackfill(cancelCtx)
 	require.Equal(t, fasthttp.StatusNotFound, cancelCtx.Response.StatusCode(),
 		"the Warp endpoint must not be able to cancel an unrelated job")
-	require.Equal(t, tables.SidekiqStatusRunning, jobs.jobs[foreign.ID].Status,
+	require.Equal(t, tables.SidekiqStatusRunning, jobs.jobStatus(foreign.ID),
 		"the foreign job must still be running")
 }
 
@@ -524,8 +544,8 @@ func TestWarpCancelBackfillReportsCancelledWhenRereadFails(t *testing.T) {
 	handler, jobs, cleanup := newBackfillTestHandler(t)
 	defer cleanup()
 	job := &tables.TableSidekiqJob{ID: "job-1", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{}`}
-	jobs.jobs[job.ID] = job
-	jobs.inFlight = job
+	jobs.storeJob(job)
+	jobs.setInFlight(job)
 	jobs.failGetAfterCancel = true
 
 	ctx := adminCtx(`{"id":"job-1"}`)
@@ -546,7 +566,7 @@ func TestWarpCancelBackfillDoesNotClaimCancellingATerminalJob(t *testing.T) {
 	handler, jobs, cleanup := newBackfillTestHandler(t)
 	defer cleanup()
 	job := &tables.TableSidekiqJob{ID: "job-1", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusCompleted, Metadata: `{}`}
-	jobs.jobs[job.ID] = job
+	jobs.storeJob(job)
 	// The re-read fails as well, which is the only way the fallback is reached.
 	jobs.failGetAfterCancel = true
 
@@ -636,9 +656,9 @@ func TestWarpStartBackfillValidatesRangeBeforeConflict(t *testing.T) {
 		ID: "warp-backfill-1", Kind: warp.BackfillJobKind,
 		Status: tables.SidekiqStatusRunning, Metadata: `{}`,
 	}
-	jobs.jobs[running.ID] = running
+	jobs.storeJob(running)
 	// The conflict check reads inFlight, not the map.
-	jobs.inFlight = running
+	jobs.setInFlight(running)
 
 	// end before start, with that job in flight.
 	ctx := adminCtx(`{"start_time":"2026-09-02T00:00:00Z","end_time":"2026-09-01T00:00:00Z"}`)
@@ -647,7 +667,7 @@ func TestWarpStartBackfillValidatesRangeBeforeConflict(t *testing.T) {
 		"the range is wrong regardless of what else is running")
 
 	// With no job running the same range must still be rejected the same way.
-	jobs.inFlight = nil
+	jobs.setInFlight(nil)
 	delete(jobs.jobs, running.ID)
 	ctx = adminCtx(`{"start_time":"2026-09-02T00:00:00Z","end_time":"2026-09-01T00:00:00Z"}`)
 	handler.startBackfill(ctx)
@@ -712,8 +732,8 @@ func TestWarpAdminRoutesAdmitRBACAuthorizedCaller(t *testing.T) {
 	require.Equal(t, 1, jobs.createdCount())
 
 	job := &tables.TableSidekiqJob{ID: "job-1", Kind: warp.BackfillJobKind, Status: tables.SidekiqStatusRunning, Metadata: `{}`}
-	jobs.jobs[job.ID] = job
-	jobs.inFlight = job
+	jobs.storeJob(job)
+	jobs.setInFlight(job)
 
 	statusCtx := rbacAdminCtx("")
 	statusCtx.QueryArgs().Set("id", job.ID)
