@@ -22735,3 +22735,922 @@ func TestValidateCustomProvider_BaseProviderTypes(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported base_provider_type")
 }
+
+// Tests the upstream main backmerge (#7869) dropped while the code they cover stayed;
+// restored from the fork (TXE-5177).
+
+func TestAddProviderKey_AlreadyExists_PreservesConstraintDetail(t *testing.T) {
+	initTestLogger()
+	// Simulates parseGormError's message for a key-ID unique-index hit, distinct
+	// from the generic "already exists" the collapse used to leave behind.
+	detailed := fmt.Errorf("a record with this id %w. Please use a different value", configstore.ErrAlreadyExists)
+	mockStore := &mockConfigStoreAddProviderKey{
+		MockConfigStore:      *NewMockConfigStore(),
+		createProviderKeyErr: detailed,
+	}
+	cfg := &Config{
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			"test-provider": {},
+		},
+		ConfigStore: mockStore,
+	}
+
+	err := cfg.AddProviderKey(context.Background(), "test-provider", schemas.Key{ID: "key-1", Value: *schemas.NewSecretVar("test-key")})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("expected ErrAlreadyExists, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "record with this id") {
+		t.Fatalf("expected original constraint detail preserved in error, got: %v", err)
+	}
+}
+
+// TestGeneratePluginConfigHash_DelimiterInPathDoesNotForgeField verifies a delimiter inside
+// Path cannot impersonate a separate field. Under the previous delimited-string encoding
+// these two entries produced identical hash input, so a file edit would have been missed.
+func TestGeneratePluginConfigHash_DelimiterInPathDoesNotForgeField(t *testing.T) {
+	initTestLogger()
+
+	order1 := 1
+	embedded := "/plugins/model-swap.so|order=1"
+	plain := "/plugins/model-swap.so"
+
+	withDelimiterInPath, err := generatePluginConfigHash(&schemas.PluginConfig{
+		Name: "plugin-a", Enabled: true, Path: &embedded,
+	})
+	require.NoError(t, err)
+
+	withRealOrder, err := generatePluginConfigHash(&schemas.PluginConfig{
+		Name: "plugin-a", Enabled: true, Path: &plain, Order: &order1,
+	})
+	require.NoError(t, err)
+
+	require.NotEqual(t, withRealOrder, withDelimiterInPath, "a delimiter in path must not forge an order field")
+}
+
+// TestGeneratePluginConfigHash_HashesDeclaredPlacementAndOrder verifies that config.json
+// owns placement and order only when it declares them: each moves the hash when present, so
+// changing one reads as a file edit, while an entry that declares neither hashes the same no
+// matter what the database holds - which is what leaves stored ordering untouched.
+func TestGeneratePluginConfigHash_HashesDeclaredPlacementAndOrder(t *testing.T) {
+	initTestLogger()
+
+	preBuiltin := schemas.PluginPlacement("pre_builtin")
+	postBuiltin := schemas.PluginPlacement("post_builtin")
+	order0, order7 := 0, 7
+
+	base := func() *schemas.PluginConfig {
+		return &schemas.PluginConfig{
+			Name:    "plugin-a",
+			Enabled: true,
+			Config:  map[string]any{"setting": "value"},
+		}
+	}
+
+	bare, err := generatePluginConfigHash(base())
+	require.NoError(t, err)
+
+	// Declaring either field moves the hash, so the entry re-syncs from the file.
+	withPlacement := base()
+	withPlacement.Placement = &preBuiltin
+	placementHash, err := generatePluginConfigHash(withPlacement)
+	require.NoError(t, err)
+	require.NotEqual(t, bare, placementHash, "a declared placement must change the hash")
+
+	withOrder := base()
+	withOrder.Order = &order7
+	orderHash, err := generatePluginConfigHash(withOrder)
+	require.NoError(t, err)
+	require.NotEqual(t, bare, orderHash, "a declared order must change the hash")
+
+	// Different declared values hash differently.
+	other := base()
+	other.Placement = &postBuiltin
+	otherHash, err := generatePluginConfigHash(other)
+	require.NoError(t, err)
+	require.NotEqual(t, placementHash, otherHash, "differing placements must hash differently")
+
+	changedOrder := base()
+	changedOrder.Order = &order0
+	changedOrderHash, err := generatePluginConfigHash(changedOrder)
+	require.NoError(t, err)
+	require.NotEqual(t, orderHash, changedOrderHash, "differing orders must hash differently")
+
+	// Declaring neither is stable, so a plugin whose ordering lives only in the database is
+	// never seen as a file change.
+	again, err := generatePluginConfigHash(base())
+	require.NoError(t, err)
+	require.Equal(t, bare, again, "an entry declaring neither field must hash consistently")
+}
+
+// TestGeneratePluginConfigHash_StableAcrossMapOrdering verifies the hash does not depend on
+// Go map iteration order, which would otherwise make every restart look like a file change.
+func TestGeneratePluginConfigHash_StableAcrossMapOrdering(t *testing.T) {
+	initTestLogger()
+
+	build := func() *schemas.PluginConfig {
+		return &schemas.PluginConfig{
+			Name:    "plugin-a",
+			Enabled: true,
+			Config: map[string]any{
+				"alpha": "1", "bravo": "2", "charlie": "3", "delta": "4",
+				"echo": "5", "foxtrot": "6", "golf": "7", "hotel": "8",
+			},
+		}
+	}
+	first, err := generatePluginConfigHash(build())
+	require.NoError(t, err)
+	for range 50 {
+		again, err := generatePluginConfigHash(build())
+		require.NoError(t, err)
+		require.Equal(t, first, again, "hash must be stable across map iteration order")
+	}
+}
+
+// TestGeneratePluginConfigHash_StableAcrossNestedMapOrdering verifies the canonical encoder
+// sorts keys recursively, including maps nested inside other maps and inside arrays.
+func TestGeneratePluginConfigHash_StableAcrossNestedMapOrdering(t *testing.T) {
+	initTestLogger()
+
+	build := func() *schemas.PluginConfig {
+		return &schemas.PluginConfig{
+			Name:    "plugin-a",
+			Enabled: true,
+			Config: map[string]any{
+				"zulu": "z", "alpha": "a",
+				"inner": map[string]any{
+					"delta": 4, "bravo": 2, "charlie": 3, "alpha": 1,
+					"deeper": map[string]any{"yankee": 1, "xray": 2, "whiskey": 3, "victor": 4},
+				},
+				"list": []any{
+					map[string]any{"kilo": 1, "juliet": 2, "india": 3, "hotel": 4},
+				},
+			},
+		}
+	}
+
+	first, err := generatePluginConfigHash(build())
+	require.NoError(t, err)
+	for range 100 {
+		again, err := generatePluginConfigHash(build())
+		require.NoError(t, err)
+		require.Equal(t, first, again, "nested map keys must hash in a canonical order")
+	}
+}
+
+// TestGeneratePluginHash_GoldenValue pins the exact bytes GeneratePluginHash produced when
+// the config_hash migration backfilled config_plugins. Those hashes are on disk in every
+// upgraded deployment, so any change to the hashed fields or their order silently makes
+// every plugin read as "changed in config.json" on the next boot and reverts UI edits.
+// Change this value only alongside a migration that rewrites the stored hashes.
+func TestGeneratePluginHash_GoldenValue(t *testing.T) {
+	initTestLogger()
+
+	const golden = "af586e2a034b488799ba6abf64f087d7fd69ef41f92fb7515eb1f94cd31ae558"
+	got, err := configstore.GeneratePluginHash(tables.TablePlugin{
+		Name:       "test-plugin",
+		Enabled:    true,
+		ConfigJSON: `{"api_key":"x"}`,
+		Version:    1,
+	})
+	require.NoError(t, err)
+	require.Equal(t, golden, got, "plugin hash changed; hashes persisted by the config_hash migration would no longer match")
+}
+
+// TestMergeGovernanceConfig_FileMatchesPreviousValue_NoChange: when the file
+// still holds the pre-rotation value (rotated via API/UI after the file was
+// written), the active value is kept and no rotation happens; the file-derived
+// ConfigHash is stored so the next boot no-ops.
+func TestMergeGovernanceConfig_FileMatchesPreviousValue_NoChange(t *testing.T) {
+	graceExpiry := time.Now().UTC().Add(10 * time.Minute)
+	rotatedAt := time.Now().UTC().Add(-time.Minute)
+	dbVK := tables.TableVirtualKey{
+		ID:                     "vk-1",
+		Name:                   "rotated-vk",
+		Description:            "old description",
+		Value:                  *schemas.NewSecretVar("sk-bf-active"),
+		PreviousValue:          *schemas.NewSecretVar("sk-bf-rotated-out"),
+		PreviousValueHash:      encrypt.HashSHA256("sk-bf-rotated-out"),
+		PreviousValueExpiresAt: &graceExpiry,
+		RotatedAt:              &rotatedAt,
+	}
+	// The DB row was last synced when the file held the pre-rotation value.
+	oldFileState := tables.TableVirtualKey{ID: "vk-1", Name: "rotated-vk", Description: "old description", Value: *schemas.NewSecretVar("sk-bf-rotated-out")}
+	oldHash, err := configstore.GenerateVirtualKeyHash(oldFileState)
+	require.NoError(t, err)
+	dbVK.ConfigHash = oldHash
+
+	// The file still holds the pre-rotation value but changes another field, so
+	// the update branch is entered.
+	fileVK := tables.TableVirtualKey{ID: "vk-1", Name: "rotated-vk", Description: "new description", Value: *schemas.NewSecretVar("sk-bf-rotated-out")}
+	fileHash, err := configstore.GenerateVirtualKeyHash(fileVK)
+	require.NoError(t, err)
+
+	config, configData, dbGovernance := vkSyncTestSetup(t, dbVK, fileVK, 5*time.Minute)
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	merged := dbGovernance.VirtualKeys[0]
+	require.Equal(t, "sk-bf-active", merged.Value.GetValue(), "active value must be kept when the file holds the previous value")
+	require.Equal(t, "new description", merged.Description, "non-value fields must still sync")
+	require.Equal(t, fileHash, merged.ConfigHash, "ConfigHash must be the file-derived hash so the next boot no-ops")
+	require.Equal(t, "sk-bf-rotated-out", merged.PreviousValue.GetValue(), "in-flight grace state must be carried over")
+	require.NotNil(t, merged.PreviousValueExpiresAt)
+	require.Equal(t, &rotatedAt, merged.RotatedAt)
+
+	// Second boot with the same file: hash matches, value untouched.
+	configData2 := &ConfigData{
+		Governance: &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{{ID: "vk-1", Name: "rotated-vk", Description: "new description", Value: *schemas.NewSecretVar("sk-bf-rotated-out")}}},
+	}
+	mergeGovernanceConfig(context.Background(), config, configData2, dbGovernance)
+	require.Equal(t, "sk-bf-active", dbGovernance.VirtualKeys[0].Value.GetValue())
+}
+
+// TestMergeGovernanceConfig_FileValueDiffers_RotatesWithGrace: a config.json
+// value differing from both the active and previous values is treated as an
+// explicit rotation - active becomes previous with a grace expiry.
+func TestMergeGovernanceConfig_FileValueDiffers_RotatesWithGrace(t *testing.T) {
+	dbVK := tables.TableVirtualKey{ID: "vk-1", Name: "rotating-vk", Value: *schemas.NewSecretVar("sk-bf-active")}
+	oldHash, err := configstore.GenerateVirtualKeyHash(dbVK)
+	require.NoError(t, err)
+	dbVK.ConfigHash = oldHash
+
+	fileVK := tables.TableVirtualKey{ID: "vk-1", Name: "rotating-vk", Value: *schemas.NewSecretVar("sk-bf-from-file")}
+	fileHash, err := configstore.GenerateVirtualKeyHash(fileVK)
+	require.NoError(t, err)
+
+	config, configData, dbGovernance := vkSyncTestSetup(t, dbVK, fileVK, 5*time.Minute)
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	merged := dbGovernance.VirtualKeys[0]
+	require.Equal(t, "sk-bf-from-file", merged.Value.GetValue(), "config.json value must become active")
+	require.Equal(t, "sk-bf-active", merged.PreviousValue.GetValue(), "old active value must move to previous")
+	require.NotNil(t, merged.RotatedAt)
+	require.NotNil(t, merged.PreviousValueExpiresAt)
+	require.Equal(t, fileHash, merged.ConfigHash, "ConfigHash must be the file-derived hash")
+
+	// Second boot with the same file: hash matches, nothing re-syncs.
+	configData2 := &ConfigData{
+		Governance: &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{{ID: "vk-1", Name: "rotating-vk", Value: *schemas.NewSecretVar("sk-bf-from-file")}}},
+	}
+	firstRotatedAt := merged.RotatedAt
+	mergeGovernanceConfig(context.Background(), config, configData2, dbGovernance)
+	again := dbGovernance.VirtualKeys[0]
+	require.Equal(t, "sk-bf-from-file", again.Value.GetValue())
+	require.Equal(t, firstRotatedAt, again.RotatedAt, "second boot must not re-rotate")
+}
+
+// TestMergeGovernanceConfig_FileValueDiffers_ZeroCooldownFlipsImmediately: with
+// no cooldown configured the rotation still happens but no grace state is kept.
+func TestMergeGovernanceConfig_FileValueDiffers_ZeroCooldownFlipsImmediately(t *testing.T) {
+	dbVK := tables.TableVirtualKey{ID: "vk-1", Name: "flip-vk", Value: *schemas.NewSecretVar("sk-bf-active")}
+	oldHash, err := configstore.GenerateVirtualKeyHash(dbVK)
+	require.NoError(t, err)
+	dbVK.ConfigHash = oldHash
+
+	fileVK := tables.TableVirtualKey{ID: "vk-1", Name: "flip-vk", Value: *schemas.NewSecretVar("sk-bf-from-file")}
+
+	config, configData, dbGovernance := vkSyncTestSetup(t, dbVK, fileVK, 0)
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	merged := dbGovernance.VirtualKeys[0]
+	require.Equal(t, "sk-bf-from-file", merged.Value.GetValue())
+	require.False(t, merged.PreviousValue.IsSet(), "no grace state at zero cooldown")
+	require.Nil(t, merged.PreviousValueExpiresAt)
+	require.NotNil(t, merged.RotatedAt)
+}
+
+func TestMergeGovernanceConfig_RejectsComplexityKeywordMergeOverSemanticLimit(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.Semantic = &configstore.ComplexitySemanticConfig{
+		Provider:       "openai",
+		EmbeddingModel: "text-embedding-3-small",
+	}
+	dbConfig.Keywords.SimpleKeywords = make([]string, 400)
+	for index := range dbConfig.Keywords.SimpleKeywords {
+		dbConfig.Keywords.SimpleKeywords[index] = fmt.Sprintf("db-simple-%d", index)
+	}
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+
+	fileConfig := testFileComplexityAnalyzerConfig()
+	fileConfig.Semantic = &configstore.ComplexitySemanticConfig{
+		Provider:       "openai",
+		EmbeddingModel: "text-embedding-3-small",
+	}
+	fileConfig.Keywords.SimpleKeywords = make([]string, 400)
+	for index := range fileConfig.Keywords.SimpleKeywords {
+		fileConfig.Keywords.SimpleKeywords[index] = fmt.Sprintf("file-simple-%d", index)
+	}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: fileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.Same(t, dbConfig, stored, "an over-limit additive merge must leave the stored runtime config unchanged")
+	require.Len(t, stored.Keywords.SimpleKeywords, 400)
+}
+
+// TestMergePluginsFromFile_DeclaredPlacementReloadsEntry verifies the reload half of the
+// ordering rule end to end against a real store: an ordering-only edit in config.json is a
+// file edit, so the entry reloads from the file - configuration included - and the new
+// placement and order are persisted.
+func TestMergePluginsFromFile_DeclaredPlacementReloadsEntry(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	postBuiltin, preBuiltin := schemas.PluginPlacement("post_builtin"), schemas.PluginPlacement("pre_builtin")
+	order0, order7 := 0, 7
+
+	// Baseline recorded when config.json last declared "file-value" and post_builtin/0; the
+	// stored config has since been edited through the UI.
+	baseline, err := generatePluginConfigHash(&schemas.PluginConfig{
+		Name: "plugin-a", Enabled: true, Placement: &postBuiltin, Order: &order0,
+		Config: map[string]any{"setting": "file-value"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.CreatePlugin(ctx, &tables.TablePlugin{
+		Name: "plugin-a", Enabled: true, Placement: &postBuiltin, Order: &order0,
+		Config: map[string]any{"setting": "ui-value"}, ConfigHash: baseline,
+	}))
+
+	// config.json changes only placement and order.
+	config := &Config{ConfigStore: store}
+	loadPlugins(ctx, config, &ConfigData{Plugins: []*schemas.PluginConfig{
+		{Name: "plugin-a", Enabled: true, Placement: &preBuiltin, Order: &order7,
+			Config: map[string]any{"setting": "file-value"}},
+	}})
+
+	require.NotNil(t, config.PluginConfigs[0].Placement)
+	require.Equal(t, preBuiltin, *config.PluginConfigs[0].Placement, "declared placement must take effect in memory")
+	require.NotNil(t, config.PluginConfigs[0].Order)
+	require.Equal(t, order7, *config.PluginConfigs[0].Order, "declared order must take effect in memory")
+
+	stored, err := store.GetPlugin(ctx, "plugin-a")
+	require.NoError(t, err)
+	require.NotNil(t, stored.Placement)
+	require.Equal(t, preBuiltin, *stored.Placement, "declared placement must be persisted")
+	require.NotNil(t, stored.Order)
+	require.Equal(t, order7, *stored.Order, "declared order must be persisted")
+	require.Equal(t, map[string]any{"setting": "file-value"}, stored.Config, "the entry reloads from the file")
+}
+
+// TestMergePluginsFromFile_EmptyHashKeepsDBConfig covers the state every pre-existing row is
+// normalized into by migrationClearPluginConfigHashes: no baseline recorded. Nothing says
+// config.json changed, so the stored config (a UI/API edit, here) survives and this boot's
+// file hash is recorded as the baseline - after which a real file edit does sync.
+func TestMergePluginsFromFile_EmptyHashKeepsDBConfig(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	require.NoError(t, store.CreatePlugin(ctx, &tables.TablePlugin{
+		Name:    "plugin-a",
+		Enabled: true,
+		Config:  map[string]any{"setting": "ui-value"},
+		// no ConfigHash: the state the clear migration leaves every pre-existing row in
+	}))
+
+	filePlugin := &schemas.PluginConfig{
+		Name: "plugin-a", Enabled: true, Config: map[string]any{"setting": "file-value"},
+	}
+	fileHash, err := generatePluginConfigHash(filePlugin)
+	require.NoError(t, err)
+
+	config := &Config{ConfigStore: store}
+	loadPlugins(ctx, config, &ConfigData{Plugins: []*schemas.PluginConfig{filePlugin}})
+
+	require.Len(t, config.PluginConfigs, 1)
+	configMap, ok := config.PluginConfigs[0].Config.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "ui-value", configMap["setting"], "a row with no baseline must not be reverted to the file")
+
+	stored, err := store.GetPlugin(ctx, "plugin-a")
+	require.NoError(t, err)
+	require.Equal(t, fileHash, stored.ConfigHash, "this boot's file hash should be recorded as the baseline")
+
+	// config.json is then edited: now there is a baseline to disagree with, so the file wins.
+	config = &Config{ConfigStore: store}
+	loadPlugins(ctx, config, &ConfigData{Plugins: []*schemas.PluginConfig{
+		{Name: "plugin-a", Enabled: true, Config: map[string]any{"setting": "edited-value"}},
+	}})
+
+	configMap, ok = config.PluginConfigs[0].Config.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "edited-value", configMap["setting"], "a file edit after the baseline was recorded must sync")
+}
+
+// TestMergePluginsFromFile_FileSyncKeepsPlacementAndOrder verifies that re-syncing an entry
+// from config.json does not reset its placement and order. Both are DB-only - config.json is
+// documented as ignoring them and the UI cannot set them - so a file entry that declares
+// neither must inherit the stored values rather than null them.
+func TestMergePluginsFromFile_FileSyncKeepsPlacementAndOrder(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	preBuiltin, order7 := schemas.PluginPlacement("pre_builtin"), 7
+	baseline, err := generatePluginConfigHash(&schemas.PluginConfig{
+		Name: "plugin-a", Enabled: true, Config: map[string]any{"setting": "v1"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.CreatePlugin(ctx, &tables.TablePlugin{
+		Name: "plugin-a", Enabled: true, Placement: &preBuiltin, Order: &order7,
+		Config: map[string]any{"setting": "v1"}, ConfigHash: baseline,
+	}))
+
+	// config.json is edited, so the file wins - but it declares no placement or order.
+	config := &Config{ConfigStore: store}
+	loadPlugins(ctx, config, &ConfigData{Plugins: []*schemas.PluginConfig{
+		{Name: "plugin-a", Enabled: true, Config: map[string]any{"setting": "v2"}},
+	}})
+
+	configMap, ok := config.PluginConfigs[0].Config.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "v2", configMap["setting"], "the file edit should still sync the config")
+	require.NotNil(t, config.PluginConfigs[0].Placement)
+	require.Equal(t, preBuiltin, *config.PluginConfigs[0].Placement, "placement must survive in memory")
+	require.NotNil(t, config.PluginConfigs[0].Order)
+	require.Equal(t, order7, *config.PluginConfigs[0].Order, "order must survive in memory")
+
+	stored, err := store.GetPlugin(ctx, "plugin-a")
+	require.NoError(t, err)
+	require.NotNil(t, stored.Placement)
+	require.Equal(t, preBuiltin, *stored.Placement, "placement must survive in the store")
+	require.NotNil(t, stored.Order)
+	require.Equal(t, order7, *stored.Order, "order must survive in the store")
+}
+
+// TestGeneratePluginConfigHash_DelimiterInInjectTimeoutDoesNotCollide verifies the same for
+// inject_timeout: its value carried into another field must not produce the same hash input.
+func TestMergePluginsFromFile_HashMatchCarriesTracerLimits(t *testing.T) {
+	initTestLogger()
+
+	semaphore, timeout := 7, "9s"
+	filePlugin := &schemas.PluginConfig{
+		Name:          "plugin-a",
+		Enabled:       true,
+		Config:        map[string]any{"setting": "file-value"},
+		SemaphoreSize: &semaphore,
+		InjectTimeout: &timeout,
+	}
+
+	// semaphore_size and inject_timeout are not persisted on the plugin row, so they are
+	// outside the stored hash: the file entry hashes the same with or without them.
+	fileHash, err := generatePluginConfigHash(filePlugin)
+	require.NoError(t, err)
+	bareHash, err := generatePluginConfigHash(&schemas.PluginConfig{
+		Name: "plugin-a", Enabled: true, Config: map[string]any{"setting": "file-value"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, bareHash, fileHash, "tracer limits are not persisted, so they must stay out of the hash")
+
+	mock := &MockConfigStore{
+		plugins: []*tables.TablePlugin{
+			{
+				Name:       "plugin-a",
+				Enabled:    true,
+				ConfigJSON: `{"setting":"db-value"}`,
+				Config:     map[string]any{"setting": "db-value"},
+				Version:    1,
+				ConfigHash: fileHash,
+			},
+		},
+	}
+
+	config := &Config{ConfigStore: mock}
+	loadPlugins(context.Background(), config, &ConfigData{Plugins: []*schemas.PluginConfig{filePlugin}})
+
+	require.Len(t, config.PluginConfigs, 1)
+	configMap, ok := config.PluginConfigs[0].Config.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "db-value", configMap["setting"], "the UI edit must survive an unchanged file")
+	require.NotNil(t, config.PluginConfigs[0].SemaphoreSize)
+	require.Equal(t, semaphore, *config.PluginConfigs[0].SemaphoreSize, "semaphore_size must still come from the file")
+	require.NotNil(t, config.PluginConfigs[0].InjectTimeout)
+	require.Equal(t, timeout, *config.PluginConfigs[0].InjectTimeout, "inject_timeout must still come from the file")
+}
+
+// TestMergePluginsFromFile_HashMatchKeepsDBConfig verifies that mergePlugins keeps the
+// stored config when config.json is unchanged since the last sync, so UI/API edits survive.
+func TestMergePluginsFromFile_HashMatchKeepsDBConfig(t *testing.T) {
+	initTestLogger()
+
+	postBuiltin := schemas.PluginPlacement("post_builtin")
+	order0 := 0
+
+	// The plugin entry as it appears in config.json, unchanged since the last sync.
+	filePlugin := &schemas.PluginConfig{
+		Name:      "plugin-a",
+		Enabled:   true,
+		Placement: &postBuiltin,
+		Order:     &order0,
+		Config:    map[string]any{"setting": "file-value"},
+	}
+	fileHash, err := generatePluginConfigHash(filePlugin)
+	require.NoError(t, err)
+
+	// DB holds a later UI edit, stamped with the hash of the file at sync time.
+	mock := &MockConfigStore{
+		plugins: []*tables.TablePlugin{
+			{
+				Name:       "plugin-a",
+				Enabled:    true,
+				Placement:  &postBuiltin,
+				Order:      &order0,
+				ConfigJSON: `{"setting":"db-value"}`,
+				Config:     map[string]any{"setting": "db-value"},
+				ConfigHash: fileHash,
+			},
+		},
+	}
+
+	config := &Config{ConfigStore: mock}
+	loadPlugins(context.Background(), config, &ConfigData{Plugins: []*schemas.PluginConfig{filePlugin}})
+
+	configMap, ok := config.PluginConfigs[0].Config.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "db-value", configMap["setting"], "config should remain from DB when the file is unchanged since last sync")
+
+	// The stored hash must survive the write-back, or the next startup would see a false change.
+	require.Equal(t, fileHash, mock.plugins[0].ConfigHash, "stored hash should be preserved")
+}
+
+// TestMergePluginsFromFile_HashMismatchSyncsFromFile verifies that an edit to config.json
+// propagates to an already-stored plugin, which previously required a version bump.
+func TestMergePluginsFromFile_HashMismatchSyncsFromFile(t *testing.T) {
+	initTestLogger()
+
+	postBuiltin := schemas.PluginPlacement("post_builtin")
+	order0 := 0
+
+	// Hash recorded at the last sync, when the file still said "old-value".
+	staleHash, err := generatePluginConfigHash(&schemas.PluginConfig{
+		Name:      "plugin-a",
+		Enabled:   true,
+		Placement: &postBuiltin,
+		Order:     &order0,
+		Config:    map[string]any{"setting": "old-value"},
+	})
+	require.NoError(t, err)
+
+	mock := &MockConfigStore{
+		plugins: []*tables.TablePlugin{
+			{
+				Name:       "plugin-a",
+				Enabled:    true,
+				Placement:  &postBuiltin,
+				Order:      &order0,
+				ConfigJSON: `{"setting":"old-value"}`,
+				Config:     map[string]any{"setting": "old-value"},
+				ConfigHash: staleHash,
+			},
+		},
+	}
+
+	// config.json now says "new-value"; placement and order are untouched.
+	filePlugin := &schemas.PluginConfig{
+		Name:      "plugin-a",
+		Enabled:   true,
+		Placement: &postBuiltin,
+		Order:     &order0,
+		Config:    map[string]any{"setting": "new-value"},
+	}
+	newHash, err := generatePluginConfigHash(filePlugin)
+	require.NoError(t, err)
+
+	config := &Config{ConfigStore: mock}
+	loadPlugins(context.Background(), config, &ConfigData{Plugins: []*schemas.PluginConfig{filePlugin}})
+
+	configMap, ok := config.PluginConfigs[0].Config.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "new-value", configMap["setting"], "config change in the file should sync without a version bump")
+	require.Equal(t, newHash, mock.plugins[0].ConfigHash, "stored hash should advance to the new file hash")
+}
+
+// TestMergePluginsFromFile_MigrationBackfilledHashKeepsDBConfig covers the upgrade path:
+// the released config_hash migration pre-populated hashes with configstore.GeneratePluginHash
+// over the stored row, version included. A config.json entry that omits version must hash to
+// that same value, or the first boot after upgrade would read every plugin as changed and
+// discard its stored configuration.
+func TestMergePluginsFromFile_MigrationBackfilledHashKeepsDBConfig(t *testing.T) {
+	initTestLogger()
+
+	storedRow := tables.TablePlugin{
+		Name:       "plugin-a",
+		Enabled:    true,
+		ConfigJSON: `{"setting":"shared-value"}`,
+		Config:     map[string]any{"setting": "shared-value"},
+		Version:    1, // column default carried by every pre-existing row
+	}
+	migrationHash, err := configstore.GeneratePluginHash(storedRow)
+	require.NoError(t, err)
+	storedRow.ConfigHash = migrationHash
+
+	// The same entry as it appears in config.json, which never declared a version.
+	filePlugin := &schemas.PluginConfig{
+		Name:    "plugin-a",
+		Enabled: true,
+		Config:  map[string]any{"setting": "shared-value"},
+	}
+	fileHash, err := generatePluginConfigHash(filePlugin)
+	require.NoError(t, err)
+	require.Equal(t, migrationHash, fileHash, "an unversioned file entry must hash like the migration-backfilled row")
+
+	// A UI edit since the last sync must survive, because the file itself did not change.
+	storedRow.ConfigJSON = `{"setting":"ui-value"}`
+	storedRow.Config = map[string]any{"setting": "ui-value"}
+
+	mock := &MockConfigStore{plugins: []*tables.TablePlugin{&storedRow}}
+	config := &Config{ConfigStore: mock}
+	loadPlugins(context.Background(), config, &ConfigData{Plugins: []*schemas.PluginConfig{filePlugin}})
+
+	configMap, ok := config.PluginConfigs[0].Config.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "ui-value", configMap["setting"], "upgrade must not reset a plugin whose config.json is unchanged")
+	require.Equal(t, migrationHash, mock.plugins[0].ConfigHash, "stored hash should be left alone")
+}
+
+// TestMergePluginsFromFile_PlacementOnlyChangeSyncsFromFile verifies that declaring or
+// changing placement/order in config.json is a file edit like any other: it moves the hash,
+// so the entry reloads from the file rather than the change being silently dropped.
+func TestMergePluginsFromFile_PlacementOnlyChangeSyncsFromFile(t *testing.T) {
+	initTestLogger()
+
+	preBuiltin := schemas.PluginPlacement("pre_builtin")
+	postBuiltin := schemas.PluginPlacement("post_builtin")
+	order0, order7 := 0, 7
+
+	// Hash recorded at the last sync, when the file carried no ordering fields.
+	fileHash, err := generatePluginConfigHash(&schemas.PluginConfig{
+		Name:    "plugin-a",
+		Enabled: true,
+		Config:  map[string]any{"setting": "file-value"},
+	})
+	require.NoError(t, err)
+
+	// The file now also declares placement and order; nothing else changed.
+	filePlugin := &schemas.PluginConfig{
+		Name:      "plugin-a",
+		Enabled:   true,
+		Placement: &preBuiltin,
+		Order:     &order7,
+		Config:    map[string]any{"setting": "file-value"},
+	}
+
+	mock := &MockConfigStore{
+		plugins: []*tables.TablePlugin{
+			{
+				Name:       "plugin-a",
+				Enabled:    true,
+				Placement:  &postBuiltin,
+				Order:      &order0,
+				ConfigJSON: `{"setting":"db-value"}`,
+				Config:     map[string]any{"setting": "db-value"},
+				Version:    1,
+				ConfigHash: fileHash,
+			},
+		},
+	}
+
+	config := &Config{ConfigStore: mock}
+	loadPlugins(context.Background(), config, &ConfigData{Plugins: []*schemas.PluginConfig{filePlugin}})
+
+	configMap, ok := config.PluginConfigs[0].Config.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "file-value", configMap["setting"], "an ordering change must reload the entry from the file")
+	require.NotNil(t, config.PluginConfigs[0].Placement)
+	require.Equal(t, preBuiltin, *config.PluginConfigs[0].Placement, "the declared placement must be applied")
+	require.NotNil(t, config.PluginConfigs[0].Order)
+	require.Equal(t, order7, *config.PluginConfigs[0].Order, "the declared order must be applied")
+	require.NotEqual(t, fileHash, mock.plugins[0].ConfigHash, "the baseline must advance to the new file hash")
+}
+
+// TestMergePluginsFromFile_SkipsNilFileEntries covers a JSON null in the plugins array, which
+// unmarshals to a nil element. The empty-store branch used to alias the parsed slice straight
+// into config.PluginConfigs, and the store-update loop then dereferenced the nil.
+func TestMergePluginsFromFile_SkipsNilFileEntries(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	var doc struct {
+		Plugins []*schemas.PluginConfig `json:"plugins"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(`{"plugins":[null,{"name":"plugin-a","enabled":true,"config":{"setting":"v"}}]}`), &doc))
+	require.Nil(t, doc.Plugins[0], "precondition: a JSON null yields a nil entry")
+
+	config := &Config{ConfigStore: store}
+	loadPlugins(ctx, config, &ConfigData{Plugins: doc.Plugins})
+
+	for _, plugin := range config.PluginConfigs {
+		require.NotNil(t, plugin, "config.PluginConfigs must not carry nil entries")
+	}
+	require.Len(t, config.PluginConfigs, 1, "the valid plugin must be preserved")
+	require.Equal(t, "plugin-a", config.PluginConfigs[0].Name)
+
+	stored, err := store.GetPlugin(ctx, "plugin-a")
+	require.NoError(t, err)
+	require.Equal(t, "plugin-a", stored.Name, "the valid plugin must still be persisted")
+	require.NotEmpty(t, stored.ConfigHash, "and still get a baseline hash")
+}
+
+// TestMergePluginsFromFile_VersionChangeSyncsFromFile verifies version stays wired to
+// reconciliation for the deployments that still set it: bumping it in config.json changes
+// the entry's hash, so the file wins on the next boot.
+func TestMergePluginsFromFile_VersionChangeSyncsFromFile(t *testing.T) {
+	initTestLogger()
+
+	v1, v2 := int16(1), int16(2)
+	syncedHash, err := generatePluginConfigHash(&schemas.PluginConfig{
+		Name: "plugin-a", Enabled: true, Version: &v1, Config: map[string]any{"setting": "file-value"},
+	})
+	require.NoError(t, err)
+
+	mock := &MockConfigStore{
+		plugins: []*tables.TablePlugin{
+			{
+				Name:       "plugin-a",
+				Enabled:    true,
+				ConfigJSON: `{"setting":"db-value"}`,
+				Config:     map[string]any{"setting": "db-value"},
+				Version:    1,
+				ConfigHash: syncedHash,
+			},
+		},
+	}
+
+	filePlugin := &schemas.PluginConfig{
+		Name: "plugin-a", Enabled: true, Version: &v2, Config: map[string]any{"setting": "file-value"},
+	}
+
+	config := &Config{ConfigStore: mock}
+	loadPlugins(context.Background(), config, &ConfigData{Plugins: []*schemas.PluginConfig{filePlugin}})
+
+	configMap, ok := config.PluginConfigs[0].Config.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "file-value", configMap["setting"], "a version bump must re-sync the entry from the file")
+	require.Equal(t, int16(2), mock.plugins[0].Version, "the new version should be persisted")
+	require.NotEqual(t, syncedHash, mock.plugins[0].ConfigHash, "the stored hash should advance to the new file hash")
+}
+
+// TestSourceOfTruthConfigJSON_HashExcludesCarriedOrdering pins the baseline recorded by the
+// authoritative path to what config.json actually declares. Ordering carried over from the
+// stored row must stay out of it, or switching this deployment back to split mode would read
+// the entry as changed on the first boot and revert UI edits for no reason.
+func TestSourceOfTruthConfigJSON_HashExcludesCarriedOrdering(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	preBuiltin, order7 := schemas.PluginPlacement("pre_builtin"), 7
+	require.NoError(t, store.CreatePlugin(ctx, &tables.TablePlugin{
+		Name: "plugin-a", Enabled: true, Placement: &preBuiltin, Order: &order7,
+		Config: map[string]any{"setting": "ui-value"},
+	}))
+
+	// config.json declares no placement or order, so the entry inherits the stored ones.
+	filePlugin := &schemas.PluginConfig{
+		Name: "plugin-a", Enabled: true, Config: map[string]any{"setting": "file-value"},
+	}
+	declaredHash, err := generatePluginConfigHash(&schemas.PluginConfig{
+		Name: "plugin-a", Enabled: true, Config: map[string]any{"setting": "file-value"},
+	})
+	require.NoError(t, err)
+
+	config := &Config{ConfigStore: store}
+	syncPluginsFromFile(ctx, config, &ConfigData{Plugins: []*schemas.PluginConfig{filePlugin}})
+
+	stored, err := store.GetPlugin(ctx, "plugin-a")
+	require.NoError(t, err)
+	require.Equal(t, declaredHash, stored.ConfigHash,
+		"the baseline must hash the file entry as declared, not the ordering carried from the row")
+	require.NotNil(t, stored.Placement)
+	require.Equal(t, preBuiltin, *stored.Placement, "the carried placement is still persisted")
+	require.NotNil(t, stored.Order)
+	require.Equal(t, order7, *stored.Order, "the carried order is still persisted")
+
+	// The consequence: a later split-mode boot with the same file sees no change.
+	config = &Config{ConfigStore: store}
+	loadPlugins(ctx, config, &ConfigData{Plugins: []*schemas.PluginConfig{
+		{Name: "plugin-a", Enabled: true, Config: map[string]any{"setting": "file-value"}},
+	}})
+	after, err := store.GetPlugin(ctx, "plugin-a")
+	require.NoError(t, err)
+	require.Equal(t, declaredHash, after.ConfigHash, "the baseline must be stable across the mode switch")
+	require.NotNil(t, after.Placement)
+	require.Equal(t, preBuiltin, *after.Placement, "ordering must survive the mode switch")
+}
+
+// TestSourceOfTruthConfigJSON_KeepsPlacementAndOrder verifies the same for the authoritative
+// path: config.json owning the plugin list does not make it the owner of the DB-only
+// ordering fields.
+func TestSourceOfTruthConfigJSON_KeepsPlacementAndOrder(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	preBuiltin, order7 := schemas.PluginPlacement("pre_builtin"), 7
+	require.NoError(t, store.CreatePlugin(ctx, &tables.TablePlugin{
+		Name: "plugin-a", Enabled: true, Placement: &preBuiltin, Order: &order7,
+		Config: map[string]any{"setting": "v1"},
+	}))
+
+	config := &Config{ConfigStore: store}
+	configData := &ConfigData{Plugins: []*schemas.PluginConfig{
+		{Name: "plugin-a", Enabled: true, Config: map[string]any{"setting": "v2"}},
+	}}
+	syncPluginsFromFile(ctx, config, configData)
+
+	stored, err := store.GetPlugin(ctx, "plugin-a")
+	require.NoError(t, err)
+	require.NotNil(t, stored.Placement)
+	require.Equal(t, preBuiltin, *stored.Placement, "placement must survive an authoritative file sync")
+	require.NotNil(t, stored.Order)
+	require.Equal(t, order7, *stored.Order, "order must survive an authoritative file sync")
+	require.NotNil(t, config.PluginConfigs[0].Placement, "in-memory placement must match the store")
+}
+
+func TestUpdateProviderKey_AlreadyExists_PreservesConstraintDetail(t *testing.T) {
+	initTestLogger()
+	detailed := fmt.Errorf("a record with this id %w. Please use a different value", configstore.ErrAlreadyExists)
+	mockStore := &mockConfigStoreUpdateProviderKey{
+		MockConfigStore:      *NewMockConfigStore(),
+		updateProviderKeyErr: detailed,
+	}
+	cfg := &Config{
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			"test-provider": {Keys: []schemas.Key{{ID: "key-1", Value: *schemas.NewSecretVar("test-key")}}},
+		},
+		ConfigStore: mockStore,
+	}
+
+	err := cfg.UpdateProviderKey(context.Background(), "test-provider", "key-1", schemas.Key{ID: "key-1", Value: *schemas.NewSecretVar("test-key")})
+
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("expected ErrAlreadyExists, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "record with this id") {
+		t.Fatalf("expected original constraint detail preserved in error, got: %v", err)
+	}
+}
+
+// mockConfigStoreAddProviderKey is a ConfigStore mock that allows controlling CreateProviderKey behavior.
+type mockConfigStoreAddProviderKey struct {
+	MockConfigStore
+	createProviderKeyErr error
+}
+
+func (m *mockConfigStoreAddProviderKey) CreateProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key, tx ...*gorm.DB) error {
+	if m.createProviderKeyErr != nil {
+		return m.createProviderKeyErr
+	}
+	return m.MockConfigStore.CreateProviderKey(ctx, provider, key, tx...)
+}
+
+// vkSyncTestSetup builds a merge scenario: a DB VK (with ConfigHash derived from
+// an older file state so the update branch is entered) and a file VK.
+func vkSyncTestSetup(t *testing.T, dbVK tables.TableVirtualKey, fileVK tables.TableVirtualKey, cooldown time.Duration) (*Config, *ConfigData, *configstore.GovernanceConfig) {
+	t.Helper()
+	initTestLogger()
+	dbGovernance := &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{dbVK}}
+	config := &Config{
+		GovernanceConfig: dbGovernance,
+		ClientConfig:     &configstore.ClientConfig{VKRotationCooldown: schemas.Duration(cooldown)},
+	}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{fileVK}},
+	}
+	return config, configData, dbGovernance
+}
+
+// mockConfigStoreUpdateProviderKey is a ConfigStore mock that allows controlling UpdateProviderKey behavior.
+type mockConfigStoreUpdateProviderKey struct {
+	MockConfigStore
+	updateProviderKeyErr error
+}
+
+func (m *mockConfigStoreUpdateProviderKey) UpdateProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, key schemas.Key, tx ...*gorm.DB) error {
+	if m.updateProviderKeyErr != nil {
+		return m.updateProviderKeyErr
+	}
+	return m.MockConfigStore.UpdateProviderKey(ctx, provider, keyID, key, tx...)
+}
