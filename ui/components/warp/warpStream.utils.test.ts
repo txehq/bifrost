@@ -22,6 +22,7 @@ import {
 	splitWarpAnswer,
 	splitWarpCharts,
 	splitWarpFrames,
+	terminalConversationID,
 	turnsFromStoredMessages,
 	warpErrorDetail,
 	warpTextLength,
@@ -862,5 +863,17 @@ describe("weekly and rate charts", () => {
 	it("labels weekly points and time bars by date, not as category names", () => {
 		expect(formatWarpChartX({ kind: "bar", interval: "week" }, { x: "2026-09-14T00:00:00Z", y: 1 })).toBe("Wk of Sep 14");
 		expect(formatWarpChartX({ kind: "bar", interval: "day" }, { x: "2026-09-14T00:00:00Z", y: 1 })).toBe("Sep 14");
+	});
+});
+
+describe("terminalConversationID", () => {
+	it("takes the thread from a done or an error frame", () => {
+		expect(terminalConversationID({ type: "done", conversation_id: "conv-1" })).toBe("conv-1");
+		// A failed first turn is filed too; dropping its id split the history in two.
+		expect(terminalConversationID({ type: "error", code: "upstream", conversation_id: "conv-2" })).toBe("conv-2");
+	});
+	it("ignores other frames and an empty id", () => {
+		expect(terminalConversationID({ type: "delta", conversation_id: "conv-3" })).toBeUndefined();
+		expect(terminalConversationID({ type: "error", conversation_id: "" })).toBeUndefined();
 	});
 });

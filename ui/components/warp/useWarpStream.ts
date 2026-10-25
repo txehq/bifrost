@@ -5,6 +5,7 @@ import {
 	isUsableWarpEvent,
 	parseWarpFrame,
 	splitWarpFrames,
+	terminalConversationID,
 	type WarpEvent,
 	type WarpQuestion,
 	type WarpUsage,
@@ -117,6 +118,12 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 			const applyEvent = (event: WarpEvent) => {
 				// A read() that resolved before discard() can still deliver frames here.
 				if (!isCurrent()) return;
+				// The server mints the id for a new thread; a terminal frame is the only place the client learns it.
+				const threadID = terminalConversationID(event);
+				if (threadID) {
+					conversationRef.current = threadID;
+					setConversationID?.(threadID);
+				}
 				switch (event.type) {
 					case "delta":
 						text += event.delta ?? "";
@@ -137,11 +144,6 @@ export function useWarpStream({ onTurnComplete }: UseWarpStreamOptions): UseWarp
 						sawTerminal = true;
 						usage = event.usage;
 						partial = isPartialAnswer(event.finish_reason);
-						// The server mints the id for a new thread; this is the only place the client learns it.
-						if (event.conversation_id) {
-							conversationRef.current = event.conversation_id;
-							setConversationID?.(event.conversation_id);
-						}
 						break;
 					case "question":
 						posed = event.question ?? null;

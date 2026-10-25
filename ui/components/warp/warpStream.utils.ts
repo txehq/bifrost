@@ -38,7 +38,7 @@ export interface WarpEvent {
 	code?: string;
 	message?: string;
 	question?: WarpQuestion;
-	/** Echoed on done, including for a thread the server just created. */
+	/** Echoed on done and error, including for a thread the server just created. */
 	conversation_id?: string;
 	finish_reason?: string;
 	usage?: WarpUsage;
@@ -96,6 +96,15 @@ export function parseWarpFrame(frame: string): WarpEvent | null {
 }
 
 /** Rejects frames with mistyped fields, e.g. a non-string tool_name would crash the panel when rendered. */
+/**
+ * The thread a terminal frame names. The server files both a finished and a failed
+ * turn and echoes the thread on either, including one it just created, so the
+ * next question continues it instead of opening another.
+ */
+export function terminalConversationID(event: WarpEvent): string | undefined {
+	return event.type === "done" || event.type === "error" ? event.conversation_id || undefined : undefined;
+}
+
 export function isUsableWarpEvent(event: WarpEvent | null | undefined): event is WarpEvent {
 	if (!event) return false;
 	const raw = event as unknown as Record<string, unknown>;
