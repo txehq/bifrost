@@ -586,6 +586,31 @@ func (bifrost *Bifrost) lastKnownModelsFromCatalog(providerKey schemas.ModelProv
 	return models
 }
 
+// modelsAllowedByGrant narrows models to what the request's grant may reach, by the rule
+// the governance plugin applies to a live model listing: with a resolved access, a model
+// is kept only when the access allows it; a request that presented a credential which
+// resolved to no access sees nothing; a request nothing governs sees every model.
+func modelsAllowedByGrant(ctx *schemas.BifrostContext, models []schemas.Model) []schemas.Model {
+	grant := ctx.Grant()
+	if grant == nil || len(models) == 0 {
+		return models
+	}
+	if access := grant.Access(); access != nil {
+		allowed := make([]schemas.Model, 0, len(models))
+		for _, model := range models {
+			provider, name := schemas.ParseModelString(model.ID, "")
+			if access.IsModelAllowed(string(provider), name) {
+				allowed = append(allowed, model)
+			}
+		}
+		return allowed
+	}
+	if identity := grant.Identity(); identity != nil && (identity.Presented() || identity.User() != nil) {
+		return nil
+	}
+	return models
+}
+
 // ListAllModels lists all models from all configured providers.
 // It accumulates responses from all providers with a limit of 1000 per provider to get all results.
 // Each provider poll is bounded by listAllModelsProviderTimeout so one unreachable provider
@@ -735,7 +760,10 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 			// before, and the poll error still propagates so an
 			// all-providers-down setup without a catalog keeps erroring.
 			if providerErr != nil && len(providerModels) == 0 {
-				if cached := bifrost.lastKnownModelsFromCatalog(providerKey, req.Unfiltered); len(cached) > 0 {
+				// The live listing is narrowed to the caller's access by the governance
+				// post-hook; these entries never pass through it, so they are narrowed here
+				// by the same rule.
+				if cached := modelsAllowedByGrant(providerCtx, bifrost.lastKnownModelsFromCatalog(providerKey, req.Unfiltered)); len(cached) > 0 {
 					bifrost.logger.Warn("serving %d last-known models for provider %s from the model catalog after its live poll failed", len(cached), providerKey)
 					providerModels = cached
 				}
