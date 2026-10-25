@@ -1,5 +1,12 @@
 package schemas
 
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"strings"
+)
+
 // Typed payload for LLM-call spans, replacing the map[string]any attribute bag on
 // the hot path. Producers fill fields; connectors read fields and render their own
 // wire format. Nothing here is pre-serialized — a connector that needs JSON
@@ -228,14 +235,111 @@ func (d *LLMSpanData) redact(input, output map[string]string) {
 		return
 	}
 	if len(input) > 0 {
-		d.RawRequest = ApplyLiteralReplacements(d.RawRequest, input)
+		d.RawRequest = redactRawPayload(d.RawRequest, input)
 		redactMessageSummaries(d.InputMessages, input)
 	}
 	if len(output) > 0 {
-		d.RawResponse = ApplyLiteralReplacements(d.RawResponse, output)
+		d.RawResponse = redactRawPayload(d.RawResponse, output)
 		redactMessageSummaries(d.OutputMessages, output)
 		d.ReasoningText = ApplyLiteralReplacements(d.ReasoningText, output)
 	}
+}
+
+// redactRawPayload applies guardrail replacements to a raw provider body. The
+// replacements are literal text, but a JSON body carries that text escaped (a
+// quote, backslash or newline in it, or a non-ASCII rune written as \uXXXX), so a
+// literal match on the bytes can miss content the typed fields did redact. A JSON
+// body is therefore redacted on its decoded string values and re-encoded, and only
+// when a value changed; anything else gets the literal and the JSON-escaped forms.
+func redactRawPayload(raw string, replacements map[string]string) string {
+	if raw == "" || len(replacements) == 0 {
+		return raw
+	}
+	if redacted, ok := redactJSONStrings(raw, replacements); ok {
+		return redacted
+	}
+	escaped := make(map[string]string, len(replacements))
+	for from, to := range replacements {
+		if from == "" {
+			continue
+		}
+		escaped[from] = to
+		for _, escapeHTML := range []bool{false, true} {
+			if quotedFrom := jsonStringBody(from, escapeHTML); quotedFrom != from {
+				escaped[quotedFrom] = jsonStringBody(to, escapeHTML)
+			}
+		}
+	}
+	return ApplyLiteralReplacements(raw, escaped)
+}
+
+// redactJSONStrings reports ok when raw is a JSON document, returning it with the
+// replacements applied to every string value and object key.
+func redactJSONStrings(raw string, replacements map[string]string) (string, bool) {
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	var doc any
+	if err := dec.Decode(&doc); err != nil {
+		return "", false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return "", false
+	}
+	changed := false
+	var walk func(v any) any
+	walk = func(v any) any {
+		switch t := v.(type) {
+		case string:
+			if r := ApplyLiteralReplacements(t, replacements); r != t {
+				changed = true
+				return r
+			}
+			return t
+		case []any:
+			for i := range t {
+				t[i] = walk(t[i])
+			}
+			return t
+		case map[string]any:
+			out := make(map[string]any, len(t))
+			for k, val := range t {
+				nk := ApplyLiteralReplacements(k, replacements)
+				if nk != k {
+					changed = true
+				}
+				out[nk] = walk(val)
+			}
+			return out
+		}
+		return v
+	}
+	doc = walk(doc)
+	if !changed {
+		return raw, true
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(doc); err != nil {
+		return "", false
+	}
+	return strings.TrimSuffix(buf.String(), "\n"), true
+}
+
+// jsonStringBody is s as it appears between the quotes of a JSON string, with or
+// without HTML escaping (<, >, & as \u003c and so on), since encoders differ.
+func jsonStringBody(s string, escapeHTML bool) string {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(escapeHTML)
+	if err := enc.Encode(s); err != nil {
+		return s
+	}
+	b := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
+	if len(b) < 2 {
+		return s
+	}
+	return string(b[1 : len(b)-1])
 }
 
 func redactMessageSummaries(msgs []MessageSummary, replacements map[string]string) {
