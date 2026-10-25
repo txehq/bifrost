@@ -205,7 +205,7 @@ func SyncMCPLibrary(ctx context.Context, url string, store configstore.ConfigSto
 // and ForceReloadPricing. It delegates to the stateless SyncMCPLibrary function
 // using the catalog's configured URL and config store.
 func (mc *ModelCatalog) syncMCPLibrary(ctx context.Context) error {
-	if mc.shouldSyncGate != nil && !mc.shouldSyncGate(ctx) {
+	if !mc.syncGateAllows(ctx) {
 		mc.logger.Debug("MCP library sync cancelled by custom gate")
 		return nil
 	}
@@ -216,7 +216,7 @@ func (mc *ModelCatalog) syncMCPLibrary(ctx context.Context) error {
 // ForceReloadMCPLibrary triggers an immediate MCP library sync from the current
 // configured source and advances the MCP library sync timer on success.
 func (mc *ModelCatalog) ForceReloadMCPLibrary(ctx context.Context) (int, error) {
-	if mc.shouldSyncGate != nil && !mc.shouldSyncGate(ctx) {
+	if !mc.syncGateAllows(ctx) {
 		mc.logger.Debug("MCP library sync cancelled by custom gate")
 		return 0, nil
 	}

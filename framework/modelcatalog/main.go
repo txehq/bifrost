@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
@@ -64,7 +65,9 @@ type ModelCatalog struct {
 	lastMCPLibrarySyncedAt time.Time
 	syncMu                 sync.RWMutex
 
-	shouldSyncGate func(ctx context.Context) bool
+	// shouldSyncGate is read by the background sync workers Init starts and may be
+	// set after Init returns, so it is stored atomically.
+	shouldSyncGate atomic.Pointer[func(ctx context.Context) bool]
 	afterSyncHook  func(ctx context.Context)
 
 	// Background sync orchestration. The ticker, distributed lock, and gossip
@@ -302,7 +305,17 @@ func Init(ctx context.Context, config *Config, configStore configstore.ConfigSto
 }
 
 func (mc *ModelCatalog) SetShouldSyncGate(fn func(ctx context.Context) bool) {
-	mc.shouldSyncGate = fn
+	if fn == nil {
+		mc.shouldSyncGate.Store(nil)
+		return
+	}
+	mc.shouldSyncGate.Store(&fn)
+}
+
+// syncGateAllows reports whether the custom sync gate, if one is set, allows a sync.
+func (mc *ModelCatalog) syncGateAllows(ctx context.Context) bool {
+	gate := mc.shouldSyncGate.Load()
+	return gate == nil || (*gate)(ctx)
 }
 
 // SetAfterSyncHook registers a callback invoked after every successful
@@ -550,7 +563,7 @@ func (mc *ModelCatalog) syncTick(ctx context.Context) {
 
 // runPricingSync wraps the datasheet pricing sync with the gate check.
 func (mc *ModelCatalog) runPricingSync(ctx context.Context) error {
-	if mc.shouldSyncGate != nil && !mc.shouldSyncGate(ctx) {
+	if !mc.syncGateAllows(ctx) {
 		return nil
 	}
 	return mc.datasheet.SyncFromURL(ctx)
@@ -558,7 +571,7 @@ func (mc *ModelCatalog) runPricingSync(ctx context.Context) error {
 
 // runParamsSync wraps the datasheet params sync with the gate check.
 func (mc *ModelCatalog) runParamsSync(ctx context.Context) error {
-	if mc.shouldSyncGate != nil && !mc.shouldSyncGate(ctx) {
+	if !mc.syncGateAllows(ctx) {
 		mc.logger.Debug("model parameters sync cancelled by custom gate")
 		return nil
 	}
