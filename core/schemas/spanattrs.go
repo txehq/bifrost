@@ -68,7 +68,7 @@ func (d *LLMSpanData) appendFamily(attrs map[string]any) {
 	switch {
 	case d.Responses != nil:
 		d.appendResponsesRequest(attrs)
-	case d.TextCompletion != nil:
+	case d.TextCompletion != nil || d.TextPrompt != nil:
 		d.appendTextCompletionRequest(attrs)
 	case d.Embedding != nil || d.EmbeddingInput != nil:
 		d.appendEmbeddingRequest(attrs)
@@ -133,7 +133,20 @@ func (d *LLMSpanData) appendResponsesRequest(attrs map[string]any) {
 }
 
 func (d *LLMSpanData) appendTextCompletionRequest(attrs map[string]any) {
-	p := d.TextCompletion
+	// A request without parameters (valid through the Go SDK) still has a prompt.
+	if p := d.TextCompletion; p != nil {
+		d.appendTextCompletionParams(attrs, p)
+	}
+	if in := d.TextPrompt; in != nil {
+		if in.PromptStr != nil {
+			attrs[AttrInputText] = *in.PromptStr
+		} else if in.PromptArray != nil {
+			attrs[AttrInputText] = strings.Join(in.PromptArray, ",")
+		}
+	}
+}
+
+func (d *LLMSpanData) appendTextCompletionParams(attrs map[string]any, p *TextCompletionParameters) {
 	setIfNotNil(attrs, AttrMaxTokens, p.MaxTokens)
 	setIfNotNil(attrs, AttrTemperature, p.Temperature)
 	setIfNotNil(attrs, AttrTopP, p.TopP)
@@ -155,14 +168,6 @@ func (d *LLMSpanData) appendTextCompletionRequest(attrs map[string]any) {
 	setIfNotNil(attrs, AttrSeed, p.Seed)
 	setIfNotNil(attrs, AttrSuffix, p.Suffix)
 	setIfNotNil(attrs, AttrRequestUser, p.User)
-
-	if in := d.TextPrompt; in != nil {
-		if in.PromptStr != nil {
-			attrs[AttrInputText] = *in.PromptStr
-		} else if in.PromptArray != nil {
-			attrs[AttrInputText] = strings.Join(in.PromptArray, ",")
-		}
-	}
 }
 
 func (d *LLMSpanData) appendEmbeddingRequest(attrs map[string]any) {

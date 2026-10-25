@@ -20,3 +20,14 @@ func TestResponseAttributesCarryResponsesFinishReasons(t *testing.T) {
 		}
 	}
 }
+
+// A text completion sent without parameters (valid through the Go SDK) still
+// exports its prompt; the typed renderer used to key the whole branch on the
+// parameters and dropped gen_ai.input.text.
+func TestAttributesCarryTextPromptWithoutParams(t *testing.T) {
+	prompt := "say hi"
+	d := &LLMSpanData{RequestType: TextCompletionRequest, TextPrompt: &TextCompletionInput{PromptStr: &prompt}}
+	if got := d.Attributes()[AttrInputText]; got != prompt {
+		t.Fatalf("%s = %#v, want %q", AttrInputText, got, prompt)
+	}
+}
