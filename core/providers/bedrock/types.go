@@ -465,6 +465,9 @@ type BedrockToolSpec struct {
 	// DeferLoading carries Anthropic's per-tool defer_loading across the invoke
 	// ingress. Converse has no such field, so json:"-" keeps it off that wire.
 	DeferLoading *bool `json:"-"`
+	// EagerInputStreaming carries Anthropic's per-tool eager_input_streaming
+	// across the invoke ingress; json:"-" for the same reason.
+	EagerInputStreaming *bool `json:"-"`
 }
 
 // BedrockToolInputSchema represents the input schema for a tool (union type)
@@ -825,10 +828,16 @@ func (b BedrockInvokeMessagesContentBlock) MarshalJSON() ([]byte, error) {
 
 // BedrockInvokeMessagesUsage represents token usage in an Anthropic Messages response.
 type BedrockInvokeMessagesUsage struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	InputTokens              int                                       `json:"input_tokens"`
+	OutputTokens             int                                       `json:"output_tokens"`
+	CacheCreationInputTokens int                                       `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int                                       `json:"cache_read_input_tokens,omitempty"`
+	OutputTokensDetails      *BedrockInvokeMessagesOutputTokensDetails `json:"output_tokens_details,omitempty"` // Extended-thinking breakdown; absent on non-thinking responses
+}
+
+// BedrockInvokeMessagesOutputTokensDetails breaks down output_tokens for extended-thinking responses.
+type BedrockInvokeMessagesOutputTokensDetails struct {
+	ThinkingTokens int `json:"thinking_tokens"` // Subset of output_tokens, never additive
 }
 
 // BedrockInvokeAI21Response represents AI21 Jamba's InvokeModel response format.

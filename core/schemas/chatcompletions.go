@@ -331,6 +331,7 @@ type ChatReasoning struct {
 	Effort    *string `json:"effort,omitempty"`     // "none" |  "minimal" | "low" | "medium" | "high" (any value other than "none" will enable reasoning)
 	MaxTokens *int    `json:"max_tokens,omitempty"` // Maximum number of tokens to generate for the reasoning output (required for anthropic)
 	Display   *string `json:"display,omitempty"`    // Anthropic thinking.display: "summarized" | "omitted" (requires model support for adaptive thinking)
+	Type      *string `json:"type,omitempty"`       // Anthropic thinking.type: "between_tools" (no up-front thinking); independent of effort
 }
 
 // ChatPrediction represents predicted output content for the model to reference (OpenAI only).
@@ -1775,6 +1776,10 @@ const (
 	BifrostServiceTierPriority    BifrostServiceTier = "priority"
 	BifrostServiceTierUltrafast   BifrostServiceTier = "ultrafast"
 	BifrostServiceTierProvisioned BifrostServiceTier = "provisioned"
+	// BifrostServiceTierFast is OpenAI Fast mode, the Priority tier renamed on
+	// 2026-07-30. OpenAI accepts "priority" and "fast" interchangeably and bills
+	// both at the same rates, so the two values share the priority pricing columns.
+	BifrostServiceTierFast BifrostServiceTier = "fast"
 )
 
 type BifrostReasoningDetailsType string

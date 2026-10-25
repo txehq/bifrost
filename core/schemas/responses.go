@@ -420,7 +420,7 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 
 	if resp.ServiceTier != nil {
 		switch *resp.ServiceTier {
-		case BifrostServiceTierAuto, BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority, BifrostServiceTierUltrafast:
+		case BifrostServiceTierAuto, BifrostServiceTierDefault, BifrostServiceTierFlex, BifrostServiceTierPriority, BifrostServiceTierFast, BifrostServiceTierUltrafast:
 			result.ServiceTier = resp.ServiceTier
 		default:
 			result.ServiceTier = new(BifrostServiceTierAuto)
@@ -1255,6 +1255,7 @@ type ResponsesParametersReasoning struct {
 	Mode            *string `json:"mode,omitempty"`             // "standard" | "pro" (reasoning execution mode)
 	Summary         *string `json:"summary"`                    // "auto" | "concise" | "detailed"
 	MaxTokens       *int    `json:"max_tokens,omitempty"`       // Maximum number of tokens to generate for the reasoning output (required for anthropic)
+	Type            *string `json:"type,omitempty"`             // Anthropic thinking.type: "between_tools" (no up-front thinking); independent of effort
 }
 
 type ResponsesResponseConversationStruct struct {
@@ -1482,6 +1483,10 @@ type ResponsesMessage struct {
 	Role    *ResponsesMessageRoleType `json:"role,omitempty"`
 	Content *ResponsesMessageContent  `json:"content,omitempty"`
 
+	// OutputConfig carries a per-message effort override on a system item (Anthropic's
+	// mid-conversation output_config); providers without the concept drop it.
+	OutputConfig *ResponsesMessageOutputConfig `json:"output_config,omitempty"`
+
 	// Author and Recipient are required on multi-agent collab_tool_call items.
 	// Preserved as raw JSON to survive bifrost round-trip without schema coupling.
 	Author    json.RawMessage `json:"author,omitempty"`
@@ -1602,6 +1607,14 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 
 	m.setToolArguments(aux.Arguments)
 
+	// Gemini-shaped histories can carry a reasoning item's summary under a
+	// "reasoning" wrapper instead of OpenAI's top-level field. Lift it so the text
+	// survives to the provider; a top-level summary always wins.
+	if m.Type != nil && *m.Type == ResponsesMessageTypeReasoning &&
+		(m.ResponsesReasoning == nil || m.ResponsesReasoning.Summary == nil) {
+		m.liftReasoningWrapper(data)
+	}
+
 	// The embedded ResponsesMCPListTools decode of `tools` drops the type
 	// discriminator, so capture the raw array and skip that lossy parse.
 	if m.Type != nil && *m.Type == ResponsesMessageTypeToolSearchOutput {
@@ -1617,6 +1630,53 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// liftReasoningWrapper reads a reasoning item's {"reasoning":{"summary":[...],
+// "encrypted_content":"..."}} wrapper into the embedded ResponsesReasoning. Plain
+// string summary entries become summary_text blocks; object entries decode as-is
+// and default their type to summary_text. Fields already set from the top-level
+// shape are left alone. No-op when the wrapper is absent or carries neither field.
+func (m *ResponsesMessage) liftReasoningWrapper(data []byte) {
+	wrapper := gjson.GetBytes(data, "reasoning")
+	if !wrapper.IsObject() {
+		return
+	}
+	summary := wrapper.Get("summary")
+	encrypted := wrapper.Get("encrypted_content")
+	if !summary.IsArray() && encrypted.Type != gjson.String {
+		return
+	}
+	reasoning := m.ResponsesReasoning
+	if reasoning == nil {
+		reasoning = &ResponsesReasoning{}
+	}
+	if summary.IsArray() && reasoning.Summary == nil {
+		entries := summary.Array()
+		reasoning.Summary = make([]ResponsesReasoningSummary, 0, len(entries))
+		for _, entry := range entries {
+			switch {
+			case entry.Type == gjson.String:
+				reasoning.Summary = append(reasoning.Summary, ResponsesReasoningSummary{
+					Type: ResponsesReasoningContentBlockTypeSummaryText,
+					Text: entry.String(),
+				})
+			case entry.IsObject():
+				var block ResponsesReasoningSummary
+				if err := Unmarshal([]byte(entry.Raw), &block); err != nil {
+					continue
+				}
+				if block.Type == "" {
+					block.Type = ResponsesReasoningContentBlockTypeSummaryText
+				}
+				reasoning.Summary = append(reasoning.Summary, block)
+			}
+		}
+	}
+	if encrypted.Type == gjson.String && reasoning.EncryptedContent == nil {
+		reasoning.EncryptedContent = Ptr(encrypted.String())
+	}
+	m.ResponsesReasoning = reasoning
 }
 
 // setToolArguments normalizes a raw tool-call `arguments` value and records it on
@@ -1698,6 +1758,35 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 	}
 
 	return MarshalSorted(aux)
+}
+
+// ResponsesMessageOutputConfig is the per-message generation override a system item can
+// carry. It mirrors Anthropic's mid-conversation output_config (beta
+// mid-conversation-output-config-2026-07-01): a role:"system" item with empty content and
+// an effort changes the effort level from that point on without invalidating the cached
+// prefix. Effort uses the same vocabulary as ResponsesParametersReasoning.Effort. Only
+// providers with a native equivalent forward it; the rest drop the item fail-soft.
+type ResponsesMessageOutputConfig struct {
+	Effort *string `json:"effort,omitempty"` // "low" | "medium" | "high" | "xhigh" | "max"
+}
+
+// IsEffortOnlySystemItem reports whether m is a system or developer item that exists solely
+// to carry a per-message effort override: it has an OutputConfig and no content. Providers
+// without a native equivalent drop such an item rather than forwarding an empty system turn.
+func (m *ResponsesMessage) IsEffortOnlySystemItem() bool {
+	if m == nil || m.OutputConfig == nil || m.Role == nil {
+		return false
+	}
+	if *m.Role != ResponsesInputMessageRoleSystem && *m.Role != ResponsesInputMessageRoleDeveloper {
+		return false
+	}
+	if m.Content == nil {
+		return true
+	}
+	if m.Content.ContentStr != nil && *m.Content.ContentStr != "" {
+		return false
+	}
+	return len(m.Content.ContentBlocks) == 0
 }
 
 type ResponsesMessageRoleType string
@@ -2222,9 +2311,30 @@ func (output *ResponsesToolMessageOutputStruct) UnmarshalJSON(data []byte) error
 		output.ResponsesFunctionToolCallOutputBlocks = array
 		return nil
 	}
-	var computerToolCallOutput ResponsesComputerToolCallOutputData
-	if err := Unmarshal(data, &computerToolCallOutput); err == nil {
-		output.ResponsesComputerToolCallOutput = &computerToolCallOutput
+	// Only a computer screenshot decodes into the typed variant (OpenAI always sends
+	// type "computer_screenshot"; tolerate a typeless object that carries a file
+	// reference). Any other object - e.g. a Gemini-shaped function_call_output whose
+	// output is the tool's raw JSON result - is kept as its JSON text, which is what a
+	// string output would have carried and what OpenAI accepts. Decoding such an
+	// object as a screenshot used to put {"type":""} on the wire.
+	objectType := gjson.GetBytes(data, "type")
+	isScreenshot := objectType.String() == "computer_screenshot" ||
+		(!objectType.Exists() && (gjson.GetBytes(data, "image_url").Exists() || gjson.GetBytes(data, "file_id").Exists()))
+	if isScreenshot {
+		var computerToolCallOutput ResponsesComputerToolCallOutputData
+		if err := Unmarshal(data, &computerToolCallOutput); err == nil {
+			output.ResponsesComputerToolCallOutput = &computerToolCallOutput
+			return nil
+		}
+	}
+	var object map[string]interface{}
+	if err := Unmarshal(data, &object); err == nil && object != nil {
+		encoded, err := MarshalSorted(object)
+		if err != nil {
+			return fmt.Errorf("responses tool message output object could not be re-encoded: %w", err)
+		}
+		str := string(encoded)
+		output.ResponsesToolCallOutputStr = &str
 		return nil
 	}
 	return fmt.Errorf("responses tool message output struct is neither a string nor an array of responses message content blocks nor a computer tool call output data nor an image generation call output")

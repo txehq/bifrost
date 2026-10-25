@@ -15,18 +15,18 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.20.0
 	github.com/mark3labs/mcp-go v0.43.2
-	github.com/capsohq/bifrost/core v1.10.2
-	github.com/capsohq/bifrost/framework v1.7.4
-	github.com/capsohq/bifrost/plugins/compat v0.3.3
-	github.com/capsohq/bifrost/plugins/governance v1.8.3
-	github.com/capsohq/bifrost/plugins/logging v1.8.3
-	github.com/capsohq/bifrost/plugins/maxim v1.7.6
-	github.com/capsohq/bifrost/plugins/modelcatalogresolver v1.1.6
-	github.com/capsohq/bifrost/plugins/otel v1.5.6
-	github.com/capsohq/bifrost/plugins/prompts v1.1.6
-	github.com/capsohq/bifrost/plugins/routing v1.1.3
-	github.com/capsohq/bifrost/plugins/semanticcache v1.6.6
-	github.com/capsohq/bifrost/plugins/telemetry v1.8.2
+	github.com/capsohq/bifrost/core v1.11.2
+	github.com/capsohq/bifrost/framework v1.8.1
+	github.com/capsohq/bifrost/plugins/compat v0.3.6
+	github.com/capsohq/bifrost/plugins/governance v1.8.6
+	github.com/capsohq/bifrost/plugins/logging v1.8.6
+	github.com/capsohq/bifrost/plugins/maxim v1.7.9
+	github.com/capsohq/bifrost/plugins/modelcatalogresolver v1.1.9
+	github.com/capsohq/bifrost/plugins/otel v1.5.9
+	github.com/capsohq/bifrost/plugins/prompts v1.1.9
+	github.com/capsohq/bifrost/plugins/routing v1.1.6
+	github.com/capsohq/bifrost/plugins/semanticcache v1.6.9
+	github.com/capsohq/bifrost/plugins/telemetry v1.8.5
 	github.com/pion/rtcp v1.2.16
 	github.com/pion/webrtc/v4 v4.2.9
 	github.com/prometheus/client_golang v1.23.2
@@ -154,7 +154,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/capsohq/bifrost/plugins/mocker v1.6.6 // indirect
+	github.com/capsohq/bifrost/plugins/mocker v1.6.9 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect

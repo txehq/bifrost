@@ -282,7 +282,9 @@ func validateRoutingTargets(targets []RoutingTarget) error {
 	return nil
 }
 
-// validateRoutingFallbacks ensures each fallback names a known provider, which rejects both an empty string and an unknown provider prefix.
+// validateRoutingFallbacks ensures each fallback names a known provider. The legacy string form only
+// splits on a known prefix, so an unknown one surfaces as an empty provider; the object form carries
+// the provider verbatim, so it is checked against the registry explicitly to match.
 func validateRoutingFallbacks(fallbacks []configstoreTables.RoutingFallback) error {
 	for i, fb := range fallbacks {
 		provider := strings.TrimSpace(string(fb.Provider))

@@ -251,6 +251,7 @@ type BifrostHTTPServer struct {
 	IntegrationHandler  *handlers.IntegrationHandler
 
 	AuthMiddleware       *handlers.AuthMiddleware
+	setupLockInstalled   bool // OSS setup-lock gate guards /api (see AuthMiddleware.SetupLockMiddleware); never set on enterprise
 	CORSMiddleware       *handlers.CorsMiddleware
 	TracingMiddleware    *handlers.TracingMiddleware
 	WSTicketStore        *handlers.WSTicketStore
@@ -2452,6 +2453,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	configHandler := handlers.NewConfigHandler(callbacks, s.Config)
 	pluginsHandler := handlers.NewPluginsHandler(callbacks, s.Config.ConfigStore)
 	sessionHandler := handlers.NewSessionHandler(s.Config.ConfigStore, s.WSTicketStore)
+	if s.setupLockInstalled && s.AuthMiddleware != nil {
+		sessionHandler.SetSetupLock(s.AuthMiddleware)
+	}
 	promptsHandler := handlers.NewPromptsHandler(s.Config.ConfigStore, callbacks)
 	featureFlagsHandler := handlers.NewFeatureFlagsHandler(s.Config.FeatureFlags, s.Config.ConfigStore)
 	// Going ahead with API handlers
@@ -2866,6 +2870,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	inferenceMiddlewares := commonMiddlewares
 	if s.Config.ConfigStore == nil {
 		logger.Error("auth middleware requires config store, skipping auth middleware initialization")
+		// No auth runs in this mode, so mark every API request as bypassed; otherwise the
+		// handlers that require genuine auth for dangerous changes see an unmarked request and
+		// let it through.
+		apiMiddlewares = append(apiMiddlewares, handlers.AuthBypassedMiddleware())
 	} else {
 		// Use a signed (stateless) ticket store when an encryption key is configured
 		// so tickets are verifiable across nodes; otherwise fall back to in-memory.
@@ -2914,7 +2922,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			return fmt.Errorf("failed to initialize auth middleware: %v", err)
 		}
 		if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil {
-			apiMiddlewares = append(apiMiddlewares, s.AuthMiddleware.APIMiddleware())
+			// OSS only: lock /api behind the setup token while dashboard auth is not
+			// active. It must run before APIMiddleware, whose auth-off branch lets
+			// every request through.
+			apiMiddlewares = append(apiMiddlewares, s.AuthMiddleware.SetupLockMiddleware(), s.AuthMiddleware.APIMiddleware())
+			s.setupLockInstalled = true
 		}
 	}
 	// Add semantic cache plugin embedding request executor if it exists
@@ -2982,10 +2994,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	// TransportInterceptor runs AFTER the auth middlewares so HTTPTransportPreHook observes an
 	// authenticated request, and inside TracingMiddleware so the tracing defer runs AFTER
 	// transport post-hooks (capturing HTTPTransportPostHook plugin logs).
-	// Order: Tracing.pre → PreAuthInterceptor → auth → TransportInterceptor.pre → handler →
-	//        TransportInterceptor.post → Tracing.defer
+	// Recovery sits directly inside Tracing (see handlers.InferenceOuterMiddlewares).
+	// Order: Tracing.pre → Recovery → PreAuthInterceptor → auth → TransportInterceptor.pre → handler →
+	//        TransportInterceptor.post → Recovery.defer → Tracing.defer
 	inferenceMiddlewares = append(inferenceMiddlewares, handlers.TransportInterceptorMiddleware(s.Config))
-	inferenceMiddlewares = append([]schemas.BifrostHTTPMiddleware{s.TracingMiddleware.Middleware()}, inferenceMiddlewares...)
+	inferenceMiddlewares = append(handlers.InferenceOuterMiddlewares(s.TracingMiddleware, s.CORSMiddleware), inferenceMiddlewares...)
 
 	err = s.RegisterInferenceRoutes(s.Ctx, inferenceMiddlewares...)
 	if err != nil {
@@ -3084,7 +3097,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
-		Handler:            handlers.SecurityHeadersMiddleware()(s.CORSMiddleware.Middleware()(handlers.RequestDecompressionMiddleware(s.Config)(s.Router.Handler))),
+		Handler:            handlers.ServerRootHandler(s.CORSMiddleware, s.Config, s.Router.Handler),
 		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
 	}
