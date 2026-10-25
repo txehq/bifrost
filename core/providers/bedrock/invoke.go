@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/bytedance/sonic"
+	"github.com/capsohq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/google/uuid"
@@ -1038,12 +1039,24 @@ func cacheControlTTLFromJSON(cacheControl gjson.Result) *string {
 }
 
 // convertAnthropicTools converts Anthropic-format tools to Bedrock ToolConfig.
+// BedrockContextKeyAnthropicInvokeIngress marks a request that arrived on the
+// InvokeModel-shaped ingress (/bedrock/model/{id}/invoke and its stream sibling).
+// The transport sets it; responsesUsesAnthropicInvokePath reads it to send
+// Anthropic-family requests with thinking on to InvokeModel upstream, because
+// Converse TokenUsage carries no thinking-token breakdown (#7649). Requests
+// from every other ingress keep their Converse routing.
+const BedrockContextKeyAnthropicInvokeIngress schemas.BifrostContextKey = "bedrock-anthropic-invoke-ingress"
+
 // Anthropic tools are: [{"name": "...", "description": "...", "input_schema": {...}}]
 func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 	toolsSlice, ok := r.Tools.([]interface{})
 	if !ok || len(toolsSlice) == 0 {
 		return nil
 	}
+
+	// The legacy opt-in is the fine-grained-tool-streaming beta alone, which
+	// applies to every custom tool; carry it as the per-tool flag.
+	fineGrained := r.hasAnthropicBetaPrefix(anthropic.AnthropicEagerInputStreamingBetaHeaderPrefix)
 
 	var bedrockTools []BedrockTool
 	for _, toolIface := range toolsSlice {
@@ -1098,6 +1111,11 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 		if deferLoading, ok := toolMap["defer_loading"].(bool); ok {
 			spec.DeferLoading = new(deferLoading)
 		}
+		if eager, ok := toolMap["eager_input_streaming"].(bool); ok {
+			spec.EagerInputStreaming = new(eager)
+		} else if fineGrained {
+			spec.EagerInputStreaming = new(true)
+		}
 
 		bedrockTools = append(bedrockTools, BedrockTool{ToolSpec: spec})
 
@@ -1130,6 +1148,30 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 	}
 
 	return toolConfig
+}
+
+// hasAnthropicBetaPrefix reports whether the body's anthropic_beta (a string
+// or an array of strings) lists a beta starting with prefix.
+func (r *BedrockInvokeRequest) hasAnthropicBetaPrefix(prefix string) bool {
+	var betas []string
+	switch v := r.AnthropicBeta.(type) {
+	case string:
+		betas = strings.Split(v, ",")
+	case []string:
+		betas = v
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				betas = append(betas, s)
+			}
+		}
+	}
+	for _, beta := range betas {
+		if strings.HasPrefix(strings.TrimSpace(beta), prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // convertAnthropicToolChoice converts Anthropic-format tool_choice to Bedrock ToolChoice.
@@ -1535,9 +1577,33 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 			CacheReadInputTokens:     usage.CacheReadInputTokens,
 			CacheCreationInputTokens: usage.CacheWriteInputTokens,
 		}
+		// Thinking tokens are already inside OutputTokens on both sides, so only the
+		// breakdown is added; OutputTokens is left untouched (#7649).
+		if thinking, ok := invokeThinkingTokens(resp.Usage); ok {
+			result.Usage.OutputTokensDetails = &BedrockInvokeMessagesOutputTokensDetails{ThinkingTokens: thinking}
+		}
 	}
 
 	return result
+}
+
+// invokeThinkingTokens returns the extended-thinking token count Bifrost holds for a
+// response and whether a thinking breakdown is present at all. The Bedrock InvokeModel
+// upstream path fills OutputTokensDetails through the shared anthropic handlers,
+// including Anthropic's explicit thinking_tokens: 0 when adaptive thinking chose not to
+// think - that zero must reach the client (#7649). Converse never reports the figure,
+// so Converse-backed responses carry no details and the Anthropic-shaped egress omits
+// output_tokens_details exactly as Anthropic does for non-thinking responses. Details
+// that only carry web-search counts are not a thinking breakdown either.
+func invokeThinkingTokens(usage *schemas.ResponsesResponseUsage) (int, bool) {
+	if usage == nil || usage.OutputTokensDetails == nil {
+		return 0, false
+	}
+	details := usage.OutputTokensDetails
+	if details.ReasoningTokens == 0 && details.NumSearchQueries != nil {
+		return 0, false
+	}
+	return details.ReasoningTokens, true
 }
 
 // toBedrockInvokeAI21Response converts BifrostResponsesResponse to AI21 Jamba format.
@@ -1814,6 +1880,9 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 				if usage.CacheWriteInputTokens > 0 {
 					usageMap["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
 				}
+				if thinking, ok := invokeThinkingTokens(resp.Response.Usage); ok {
+					usageMap["output_tokens_details"] = map[string]interface{}{"thinking_tokens": thinking}
+				}
 				msgStart["message"].(map[string]interface{})["usage"] = usageMap
 			}
 		}
@@ -1988,13 +2057,23 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 		// Skip — the content_block_stop is emitted on OutputItemDone
 		return nil, nil
 
-	case schemas.ResponsesStreamResponseTypeCompleted:
-		// The terminal event: no block can open or close after it.
+	// response.incomplete is terminal too: a truncated or filtered turn must still close
+	// with message_delta + message_stop, or the client never sees the stop reason.
+	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
+		// The terminal events: no block can open or close after them.
 		releaseBedrockInvokeStreamState(ctx)
 		// Emit message_delta + message_stop as two separate events
 		stopReason := "end_turn"
 		if resp.Response != nil && resp.Response.IncompleteDetails != nil {
-			stopReason = resp.Response.IncompleteDetails.Reason
+			// Translate the Responses vocabulary into Anthropic stop reasons.
+			switch resp.Response.IncompleteDetails.Reason {
+			case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
+				stopReason = "max_tokens"
+			case schemas.ResponsesResponseIncompleteReasonContentFilter:
+				stopReason = "refusal"
+			default:
+				stopReason = resp.Response.IncompleteDetails.Reason
+			}
 		}
 
 		// Build message_delta event
@@ -2021,6 +2100,10 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 			}
 			if usage.CacheWriteInputTokens > 0 {
 				usageMap["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
+			}
+			// Native Anthropic reports the thinking breakdown on message_delta (#7649).
+			if thinking, ok := invokeThinkingTokens(resp.Response.Usage); ok {
+				usageMap["output_tokens_details"] = map[string]interface{}{"thinking_tokens": thinking}
 			}
 			messageDelta["usage"] = usageMap
 		}

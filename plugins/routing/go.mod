@@ -6,9 +6,9 @@ require (
 	github.com/blevesearch/go-porterstemmer v1.0.3
 	github.com/google/cel-go v0.30.0
 	github.com/google/uuid v1.6.0
-	github.com/capsohq/bifrost/core v1.10.2
-	github.com/capsohq/bifrost/framework v1.7.4
-	github.com/capsohq/bifrost/plugins/governance v1.8.3
+	github.com/capsohq/bifrost/core v1.11.2
+	github.com/capsohq/bifrost/framework v1.8.1
+	github.com/capsohq/bifrost/plugins/governance v1.8.6
 	github.com/stretchr/testify v1.11.1
 	gorm.io/gorm v1.31.1
 )

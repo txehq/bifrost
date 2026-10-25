@@ -8,7 +8,7 @@ replace (
 )
 
 require (
-	github.com/capsohq/bifrost/core v1.10.2
+	github.com/capsohq/bifrost/core v1.11.2
 	github.com/capsohq/bifrost/framework v1.3.16
 	github.com/google/uuid v1.6.0
 	gorm.io/driver/postgres v1.6.0

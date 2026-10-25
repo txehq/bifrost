@@ -2,7 +2,7 @@ module github.com/capsohq/bifrost/plugins/jsonparser
 
 go 1.27.0
 
-require github.com/capsohq/bifrost/core v1.10.2
+require github.com/capsohq/bifrost/core v1.11.2
 
 require (
 	cloud.google.com/go v0.123.0 // indirect

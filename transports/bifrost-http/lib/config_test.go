@@ -383,6 +383,181 @@ import (
 	"gorm.io/gorm"
 )
 
+// First-admin file setup must default inference auth on without changing existing
+// deployments, and file reconciliation must not undo it on the next restart.
+func TestLoadClientConfig_InferenceAuthSetup(t *testing.T) {
+	SetLogger(&testLogger{})
+	for _, location := range []string{"auth_config", "governance"} {
+		for _, field := range []string{"", `,"enforce_auth_on_inference":false`, `,"enforce_auth_on_inference":true`} {
+			for _, source := range []string{SourceOfTruthSplit, SourceOfTruthConfigJSON} {
+				t.Run(location+field+source, func(t *testing.T) {
+					store := &MockConfigStore{}
+					cfg := &Config{ConfigStore: store}
+					auth := `{"is_enabled":true,"admin_username":"admin","admin_password":"StrongPassword1!"}`
+					if location == "governance" {
+						auth = `{"auth_config":` + auth + `}`
+					}
+					raw := `{"source_of_truth":"` + source + `","client":{"log_retention_days":7` + field + `},"` + location + `":` + auth + `}`
+					want := field != `,"enforce_auth_on_inference":false`
+					for i := 0; i < 2; i++ {
+						var data ConfigData
+						require.NoError(t, json.Unmarshal([]byte(raw), &data))
+						require.NoError(t, loadClientConfig(context.Background(), cfg, &data))
+						assert.Equal(t, want, cfg.ClientConfig.EnforceAuthOnInference, "startup %d", i)
+						require.NoError(t, loadAuthConfig(context.Background(), cfg, &data))
+					}
+					if field == "" {
+						store.clientConfig.EnforceAuthOnInference = false
+						store.clientConfig.LogRetentionDays = 99
+						var restart ConfigData
+						require.NoError(t, json.Unmarshal([]byte(raw), &restart))
+						require.NoError(t, loadClientConfig(context.Background(), cfg, &restart))
+						assert.False(t, cfg.ClientConfig.EnforceAuthOnInference, "preserve later opt-out")
+						if source == "split" {
+							assert.Equal(t, 99, cfg.ClientConfig.LogRetentionDays, "unchanged file preserves UI edits")
+						}
+						store.clientConfig.EnforceAuthOnInference = true
+					}
+					// An explicit file opt-out after the secure default must be detected.
+					var changed ConfigData
+					require.NoError(t, json.Unmarshal([]byte(`{"client":{"log_retention_days":7,"enforce_auth_on_inference":false}}`), &changed))
+					changed.SourceOfTruth = source
+					require.NoError(t, loadClientConfig(context.Background(), cfg, &changed))
+					assert.False(t, cfg.ClientConfig.EnforceAuthOnInference)
+				})
+			}
+		}
+	}
+}
+
+func TestLoadClientConfig_InferenceAuthExistingAndAbsentClient(t *testing.T) {
+	SetLogger(&testLogger{})
+	for _, existing := range []bool{false, true} {
+		for _, enabled := range []bool{false, true} {
+			for _, client := range []string{"", `,"client":{"log_retention_days":7}`} {
+				t.Run(fmt.Sprintf("existing=%v/enabled=%v/client=%s", existing, enabled, client), func(t *testing.T) {
+					store := NewMockConfigStore()
+					if existing {
+						store.clientConfig = &configstore.ClientConfig{EnforceAuthOnInference: enabled}
+						store.authConfig = &configstore.AuthConfig{IsEnabled: true, AdminUserName: schemas.NewSecretVar("admin"), AdminPassword: schemas.NewSecretVar("stored")}
+					}
+					var data ConfigData
+					require.NoError(t, json.Unmarshal([]byte(`{"auth_config":{"is_enabled":true,"admin_username":"admin","admin_password":"StrongPassword1!"}`+client+`}`), &data))
+					cfg := &Config{ConfigStore: store}
+					require.NoError(t, loadClientConfig(context.Background(), cfg, &data))
+					assert.Equal(t, !existing || enabled, cfg.ClientConfig.EnforceAuthOnInference)
+				})
+			}
+		}
+	}
+}
+
+// File-only deployments (no config store) with dashboard auth must still boot. With no
+// stored client config to honor, an omitted enforce_auth_on_inference takes the secure
+// default (true), the same as any fresh deployment.
+func TestLoadClientConfig_InferenceAuthWithoutConfigStore(t *testing.T) {
+	SetLogger(&testLogger{})
+	var data ConfigData
+	require.NoError(t, json.Unmarshal([]byte(`{"client":{"log_retention_days":7},"auth_config":{"is_enabled":true,"admin_username":"admin","admin_password":"StrongPassword1!"}}`), &data))
+	cfg := &Config{}
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &data))
+	assert.True(t, cfg.ClientConfig.EnforceAuthOnInference)
+	require.NoError(t, loadAuthConfig(context.Background(), cfg, &data))
+	require.NotNil(t, cfg.GovernanceConfig.AuthConfig)
+	assert.True(t, cfg.GovernanceConfig.AuthConfig.IsEnabled)
+}
+
+// TestLoadClientConfig_InferenceAuthDefaultsOnForFreshDeployments pins the default flip:
+// with no admin account involved, a fresh deployment (no stored client config) gets
+// enforce_auth_on_inference=true when the file omits it, an existing deployment keeps its
+// stored value, and an explicit false is honored and persisted as false.
+func TestLoadClientConfig_InferenceAuthDefaultsOnForFreshDeployments(t *testing.T) {
+	SetLogger(&testLogger{})
+	for _, tt := range []struct {
+		name   string
+		stored *bool
+		file   string
+		want   bool
+	}{
+		{name: "fresh, no client section", file: `{}`, want: true},
+		{name: "fresh, client omits field", file: `{"client":{"log_retention_days":7}}`, want: true},
+		{name: "fresh, explicit false", file: `{"client":{"log_retention_days":7,"enforce_auth_on_inference":false}}`, want: false},
+		{name: "existing false, client omits field", stored: new(false), file: `{"client":{"log_retention_days":7}}`, want: false},
+		{name: "existing false, no client section", stored: new(false), file: `{}`, want: false},
+		{name: "existing true, client omits field", stored: new(true), file: `{"client":{"log_retention_days":7}}`, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			store := NewMockConfigStore()
+			if tt.stored != nil {
+				store.clientConfig = &configstore.ClientConfig{EnforceAuthOnInference: *tt.stored}
+			}
+			var data ConfigData
+			require.NoError(t, json.Unmarshal([]byte(tt.file), &data))
+			cfg := &Config{ConfigStore: store}
+			require.NoError(t, loadClientConfig(context.Background(), cfg, &data))
+			assert.Equal(t, tt.want, cfg.ClientConfig.EnforceAuthOnInference)
+			persisted, err := store.GetClientConfig(context.Background())
+			require.NoError(t, err)
+			require.NotNil(t, persisted)
+			assert.Equal(t, tt.want, persisted.EnforceAuthOnInference, "stored value")
+
+			// A restart with the same file must not flip the resolved value.
+			var restart ConfigData
+			require.NoError(t, json.Unmarshal([]byte(tt.file), &restart))
+			require.NoError(t, loadClientConfig(context.Background(), cfg, &restart))
+			assert.Equal(t, tt.want, cfg.ClientConfig.EnforceAuthOnInference, "after restart")
+		})
+	}
+}
+
+type inferenceAuthFailingStore struct {
+	configstore.ConfigStore
+	fail string
+}
+
+func (s inferenceAuthFailingStore) GetAuthConfig(ctx context.Context) (*configstore.AuthConfig, error) {
+	if s.fail == "read auth" {
+		return nil, errors.New("auth read failed")
+	}
+	return s.ConfigStore.GetAuthConfig(ctx)
+}
+func (s inferenceAuthFailingStore) UpdateClientConfig(ctx context.Context, c *configstore.ClientConfig) error {
+	if s.fail == "write client" {
+		return errors.New("client write failed")
+	}
+	return s.ConfigStore.UpdateClientConfig(ctx, c)
+}
+func (s inferenceAuthFailingStore) UpdateAuthConfig(ctx context.Context, c *configstore.AuthConfig) error {
+	if s.fail == "write auth" {
+		return errors.New("auth write failed")
+	}
+	return s.ConfigStore.UpdateAuthConfig(ctx, c)
+}
+
+func TestLoadConfig_InferenceAuthSetupFailures(t *testing.T) {
+	SetLogger(&testLogger{})
+	for _, failure := range []string{"read auth", "write client", "write auth", "missing password"} {
+		t.Run(failure, func(t *testing.T) {
+			store := NewMockConfigStore()
+			cfg := &Config{ConfigStore: inferenceAuthFailingStore{store, failure}}
+			var data ConfigData
+			require.NoError(t, json.Unmarshal([]byte(`{"auth_config":{"is_enabled":true,"admin_username":"admin","admin_password":"StrongPassword1!"}}`), &data))
+			if failure == "missing password" {
+				data.AuthConfig.AdminPassword = nil
+			}
+			err := loadClientConfig(context.Background(), cfg, &data)
+			if err == nil {
+				err = loadAuthConfig(context.Background(), cfg, &data)
+			}
+			require.Error(t, err)
+			assert.Nil(t, store.authConfig)
+			if failure == "missing password" || failure == "read auth" {
+				assert.Nil(t, store.clientConfig)
+			}
+		})
+	}
+}
+
 // MockConfigStore implements the ConfigStore interface for testing
 type MockConfigStore struct {
 	clientConfig     *configstore.ClientConfig
@@ -2665,6 +2840,68 @@ func TestValidateClientConfig_VKRotationCooldown(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValidateClientConfig_IssuerURLRequiredForDiscovery locks in that OAuth
+// discovery (mode oauth|both) cannot be enabled without a pinned issuer_url -
+// left unset, every issuer reference would derive from the unauthenticated,
+// per-request Host header.
+func TestValidateClientConfig_IssuerURLRequiredForDiscovery(t *testing.T) {
+	withMode := func(mode tables.MCPServerAuthMode, issuerURL string) *configstore.ClientConfig {
+		cc := &configstore.ClientConfig{MCPServerAuthMode: mode}
+		if issuerURL != "" {
+			cc.OAuth2ServerConfig = &tables.OAuth2ServerConfig{IssuerURL: schemas.NewSecretVar(issuerURL)}
+		}
+		return cc
+	}
+	tests := []struct {
+		name    string
+		cc      *configstore.ClientConfig
+		wantErr bool
+	}{
+		{"headers mode, no issuer_url", withMode(tables.MCPServerAuthModeHeaders, ""), false},
+		{"unset mode, no issuer_url", withMode("", ""), false},
+		{"oauth mode, no issuer_url", withMode(tables.MCPServerAuthModeOAuth, ""), true},
+		{"both mode, no issuer_url", withMode(tables.MCPServerAuthModeBoth, ""), true},
+		{"oauth mode, issuer_url set", withMode(tables.MCPServerAuthModeOAuth, "https://issuer.example.com"), false},
+		{"both mode, issuer_url set", withMode(tables.MCPServerAuthModeBoth, "https://issuer.example.com"), false},
+		// A reference to an unset env var is "set" as a reference but resolves to
+		// nothing, which would leave discovery running with no fixed issuer.
+		{"oauth mode, issuer_url env reference unset", withMode(tables.MCPServerAuthModeOAuth, "env.BIFROST_TEST_UNSET_ISSUER_URL"), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateClientConfig(tc.cc)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "issuer_url")
+				require.NotContains(t, err.Error(), "BIFROST_TEST_UNSET_ISSUER_URL", "the error must not echo the reference")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestLoadConfig_OAuthDiscoveryWithoutIssuerURLFailsBoot verifies OAuth
+// discovery enabled with no issuer_url in config.json makes LoadConfig fail
+// rather than silently falling back to Host-derived issuer identity.
+func TestLoadConfig_OAuthDiscoveryWithoutIssuerURLFailsBoot(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	createConfigFile(t, tempDir, &ConfigData{
+		Client: &configstore.ClientConfig{
+			MCPServerAuthMode: tables.MCPServerAuthModeOAuth,
+		},
+	})
+
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, tempDir)
+	if config != nil {
+		defer config.Close(ctx)
+	}
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "issuer_url")
 }
 
 // TestLoadConfig_AuthCodeTTLAboveMaxFailsBoot verifies an over-cap auth_code_ttl
@@ -20893,7 +21130,7 @@ func assertDefaultClientConfigValues(t *testing.T, cc configstore.ClientConfig) 
 	require.NotNil(t, cc.EnableLogging, "EnableLogging should not be nil")
 	require.Equal(t, true, *cc.EnableLogging, "EnableLogging should default to true")
 	require.Equal(t, false, cc.DisableContentLogging, "DisableContentLogging should default to false")
-	require.Equal(t, false, cc.EnforceAuthOnInference, "EnforceAuthOnInference should default to false")
+	require.Equal(t, true, cc.EnforceAuthOnInference, "EnforceAuthOnInference should default to true")
 	require.Equal(t, []string{"*"}, cc.AllowedOrigins, "AllowedOrigins should default to [*]")
 	require.Equal(t, 100, cc.MaxRequestBodySizeMB, "MaxRequestBodySizeMB should default to 100")
 	require.Equal(t, 10, cc.MCPAgentDepth, "MCPAgentDepth should default to 10")
@@ -22595,4 +22832,89 @@ func TestRedactMCPClientConfig_MasksQueryCredentialInConnectionString(t *testing
 		assert.True(t, redacted.ConnectionString.IsMaskedPlaceholder(), "%s should be the masked placeholder an update restores", url)
 		assert.Equal(t, url, config.ConnectionString.GetValue(), "the live config keeps the full URL")
 	}
+}
+
+// governanceWithRoutingFallbacks decodes routing rules the way config.json is read, so each
+// fallback goes through RoutingFallback.UnmarshalJSON.
+func governanceWithRoutingFallbacks(t *testing.T, fallbacksJSON string) *configstore.GovernanceConfig {
+	t.Helper()
+	var governance configstore.GovernanceConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"routing_rules":[{"id":"rr-1","name":"rr","cel_expression":"true","scope":"global",`+
+		`"targets":[{"provider":"openai","weight":1}],"fallbacks":`+fallbacksJSON+`}]}`), &governance))
+	return &governance
+}
+
+// TestResolveGovernanceKeyReferences_RoutingFallbacks pins config.json provider_key_name resolution
+// for routing-rule fallbacks: a name resolves to that provider's key_id and the alias is dropped,
+// other entries are untouched, and every invalid combination fails the load.
+func TestResolveGovernanceKeyReferences_RoutingFallbacks(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	// Key names are unique across providers; the lookup still checks the name belongs to the fallback's provider.
+	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, configstore.ProviderConfig{Keys: []schemas.Key{
+		{ID: "k-anthropic-prod", Name: "Anthropic Prod", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	}}))
+	require.NoError(t, store.AddProvider(ctx, schemas.Vertex, configstore.ProviderConfig{Keys: []schemas.Key{
+		{ID: "k-vertex-prod", Name: "Vertex Prod", Value: *schemas.NewSecretVar("sk-v"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	}}))
+	config := &Config{ConfigStore: store}
+
+	t.Run("resolves names per provider and leaves other entries alone", func(t *testing.T) {
+		governance := governanceWithRoutingFallbacks(t, `["openai/gpt-4o",`+
+			`{"provider":"vertex","model":"gemini-2.5-pro","provider_key_name":"Vertex Prod"},`+
+			`{"provider":"anthropic","provider_key_name":" Anthropic Prod "},`+
+			`{"provider":"anthropic","model":"claude-sonnet-4","key_id":"k-explicit"}]`)
+		require.NoError(t, resolveGovernanceKeyReferences(ctx, config, governance))
+
+		got := governance.RoutingRules[0].ParsedFallbacks
+		require.Len(t, got, 4)
+		want := []schemas.Fallback{
+			{Provider: schemas.OpenAI, Model: "gpt-4o"},
+			{Provider: schemas.Vertex, Model: "gemini-2.5-pro", KeyID: "k-vertex-prod"},
+			{Provider: schemas.Anthropic, KeyID: "k-anthropic-prod"},
+			{Provider: schemas.Anthropic, Model: "claude-sonnet-4", KeyID: "k-explicit"},
+		}
+		for i, fb := range got {
+			assert.Equal(t, want[i], fb.Resolved(), "fallback %d", i)
+			assert.Nil(t, fb.ProviderKeyName, "fallback %d kept its config-only alias", i)
+		}
+
+		// What gets stored: the resolved key_id, never the alias, and legacy strings untouched.
+		data, err := json.Marshal(got)
+		require.NoError(t, err)
+		assert.Equal(t, `["openai/gpt-4o",{"provider":"vertex","model":"gemini-2.5-pro","key_id":"k-vertex-prod"},`+
+			`{"provider":"anthropic","model":"","key_id":"k-anthropic-prod"},{"provider":"anthropic","model":"claude-sonnet-4","key_id":"k-explicit"}]`, string(data))
+	})
+
+	errorCases := []struct {
+		name      string
+		fallbacks string
+		wantErr   string
+	}{
+		{name: "unknown key name", fallbacks: `[{"provider":"vertex","provider_key_name":"Missing"}]`, wantErr: "fallback provider_key_name resolution failed"},
+		{name: "key name that belongs to another provider", fallbacks: `[{"provider":"anthropic","provider_key_name":"Vertex Prod"}]`, wantErr: "fallback provider_key_name resolution failed"},
+		{name: "key_id together with provider_key_name", fallbacks: `[{"provider":"vertex","key_id":"k","provider_key_name":"Vertex Prod"}]`, wantErr: "cannot set key_id together with provider_key_name"},
+		{name: "provider_key_name without a provider", fallbacks: `[{"provider_key_name":"Vertex Prod"}]`, wantErr: "requires provider to be set"},
+	}
+	for _, tc := range errorCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := resolveGovernanceKeyReferences(ctx, config, governanceWithRoutingFallbacks(t, tc.fallbacks))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+			assert.Contains(t, err.Error(), `"rr-1"`, "the error must name the rule")
+		})
+	}
+
+	t.Run("a name reference without a config store fails the load", func(t *testing.T) {
+		err := resolveGovernanceKeyReferences(ctx, &Config{}, governanceWithRoutingFallbacks(t, `[{"provider":"vertex","provider_key_name":"Vertex Prod"}]`))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "require config store")
+	})
+
+	t.Run("rules without name references need no config store", func(t *testing.T) {
+		governance := governanceWithRoutingFallbacks(t, `["openai/gpt-4o",{"provider":"vertex","key_id":"k-explicit"}]`)
+		require.NoError(t, resolveGovernanceKeyReferences(ctx, &Config{}, governance))
+		assert.Equal(t, schemas.Fallback{Provider: schemas.Vertex, KeyID: "k-explicit"}, governance.RoutingRules[0].ParsedFallbacks[1].Resolved())
+	})
 }

@@ -669,8 +669,9 @@ func serveInfoRefs(ctx *fasthttp.RequestCtx, repoDir, label string) {
 		return
 	}
 
-	// Not derived from ctx; see gitCommandContext.
-	cmdCtx, cancel := gitCommandContext()
+	// Bound the git process so a stalled upload-pack cannot hang the worker.
+	// Never derive from the RequestCtx: see skillsServingWorkContext.
+	cmdCtx, cancel := skillsServingWorkContext()
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, gitBinaryPath, "upload-pack", "--stateless-rpc", "--advertise-refs", ".") //nolint:gosec // gitBinaryPath is from exec.LookPath
 	cmd.Dir = repoDir
@@ -695,22 +696,12 @@ func serveInfoRefs(ctx *fasthttp.RequestCtx, repoDir, label string) {
 	ctx.Write(stdout.Bytes())                             //nolint:errcheck
 }
 
-// gitCommandContext bounds a git subprocess serving one request. 30s is
-// generous: upload-pack on these in-memory repos completes in <1s normally, with
-// headroom for large all-skills repos under load. The parent is deliberately not
-// the fasthttp RequestCtx. Its Done() reads server state that Server.Shutdown
-// writes, so a context derived from it races shutdown (go test -race), and it
-// never fires on a client disconnect anyway. Shutdown waits for in-flight
-// handlers, so the timeout is the bound that matters.
-func gitCommandContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), 30*time.Second)
-}
-
 // serveUploadPack handles POST /git-upload-pack by piping the request body
 // into `git upload-pack --stateless-rpc` and streaming the output back.
 func serveUploadPack(ctx *fasthttp.RequestCtx, repoDir, label string) {
-	// Not derived from ctx; see gitCommandContext.
-	cmdCtx, cancel := gitCommandContext()
+	// Bound the git process so a stalled upload-pack cannot hang the worker.
+	// Never derive from the RequestCtx: see skillsServingWorkContext.
+	cmdCtx, cancel := skillsServingWorkContext()
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, gitBinaryPath, "upload-pack", "--stateless-rpc", ".") //nolint:gosec // gitBinaryPath is from exec.LookPath
 	cmd.Dir = repoDir
