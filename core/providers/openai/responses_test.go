@@ -4278,3 +4278,38 @@ func TestInputStatusStripExceptions(t *testing.T) {
 		}
 	}
 }
+
+// TestNativeServerToolCallReplayKeepsRequiredStatus replays native OpenAI server-tool
+// history. Each of these items' input params requires status, so a valid one is kept;
+// a value the param does not accept is still stripped.
+func TestNativeServerToolCallReplayKeepsRequiredStatus(t *testing.T) {
+	var input []schemas.ResponsesMessage
+	if err := sonic.Unmarshal([]byte(`[
+		{"type":"file_search_call","id":"fs_1","status":"completed","queries":["q"]},
+		{"type":"code_interpreter_call","id":"ci_1","status":"completed","code":"print(1)","container_id":"cntr_1"},
+		{"type":"image_generation_call","id":"ig_1","status":"completed","result":"AA=="},
+		{"type":"local_shell_call","id":"ls_1","call_id":"call_ls","status":"completed","action":{"type":"exec","command":["ls"]}},
+		{"type":"file_search_call","id":"fs_2","status":"bogus","queries":["q"]}
+	]`), &input); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI, Model: "gpt-5.4", Input: input,
+	})
+	wire, err := sonic.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var payload struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := sonic.Unmarshal(wire, &payload); err != nil || len(payload.Input) != 5 {
+		t.Fatalf("decode %s: %v", wire, err)
+	}
+	want := []any{"completed", "completed", "completed", "completed", nil}
+	for i, w := range want {
+		if got := payload.Input[i]["status"]; got != w {
+			t.Errorf("input[%d] (%v).status = %v, want %v: %s", i, payload.Input[i]["type"], got, w, wire)
+		}
+	}
+}

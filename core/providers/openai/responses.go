@@ -735,12 +735,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		// Gemini streaming sets status on all item types, but OpenAI rejects status on input.
-		// Strip it, with four exceptions. message is a value copy, so the caller's input is
-		// untouched.
+		// Strip it, except where the item's input schema requires or depends on it. message
+		// is a value copy, so the caller's input is untouched.
 		switch {
-		case message.Type != nil && *message.Type == schemas.ResponsesMessageTypeComputerCall && message.Status != nil &&
-			(*message.Status == "in_progress" || *message.Status == "completed" || *message.Status == "incomplete"):
-			// A replayed computer_call is a ResponseComputerToolCallParam, where status is required.
+		case hasRequiredToolCallStatus(message):
+			// A replayed server-tool call (computer, file search, code interpreter, image
+			// generation, local shell) is an input param whose status is required.
 		case message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCallOutput &&
 			message.Status != nil && *message.Status == "incomplete":
 			// "incomplete" on a function_call_output is the only marker a failed tool result
@@ -1288,6 +1288,25 @@ func isMantleGPTOSSResponses(ctx *schemas.BifrostContext, provider schemas.Model
 // assistantOutputTextAsInputText retags a replayed assistant message's output_text blocks
 // as input_text. Mantle /v1 strips id, status and annotations from assistant items before
 // validating, so output_text history matches no input variant and the turn fails (#7074).
+// requiredToolCallStatuses lists, per input item type whose OpenAI param requires a
+// status, the values that param accepts.
+var requiredToolCallStatuses = map[schemas.ResponsesMessageType][]string{
+	schemas.ResponsesMessageTypeComputerCall:        {"in_progress", "completed", "incomplete"},
+	schemas.ResponsesMessageTypeFileSearchCall:      {"in_progress", "searching", "completed", "incomplete", "failed"},
+	schemas.ResponsesMessageTypeCodeInterpreterCall: {"in_progress", "completed", "incomplete", "interpreting", "failed"},
+	schemas.ResponsesMessageTypeImageGenerationCall: {"in_progress", "completed", "generating", "failed"},
+	schemas.ResponsesMessageTypeLocalShellCall:      {"in_progress", "completed", "incomplete"},
+}
+
+// hasRequiredToolCallStatus reports whether message is a tool call whose input param
+// requires status and carries a value that param accepts.
+func hasRequiredToolCallStatus(message schemas.ResponsesMessage) bool {
+	if message.Type == nil || message.Status == nil {
+		return false
+	}
+	return slices.Contains(requiredToolCallStatuses[*message.Type], *message.Status)
+}
+
 // isNativeOpenAIWebSearchCall reports whether message is a web_search_call that OpenAI
 // itself produced (a ws_ id), as opposed to a foreign history's search item.
 func isNativeOpenAIWebSearchCall(message schemas.ResponsesMessage) bool {
