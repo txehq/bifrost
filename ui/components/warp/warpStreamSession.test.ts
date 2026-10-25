@@ -97,6 +97,20 @@ describe("WarpStreamSession", () => {
 		expect(conversationIds).toEqual(["conv-1"]);
 	});
 
+	// A failed first turn still opened a thread on the server; its error frame carries the id,
+	// so the retry continues that thread instead of splitting the history.
+	it("keeps the thread id from an error frame", async () => {
+		const sending = session.send([], "q");
+		await settle();
+		await net.push({ type: "error", code: "upstream_error", message: "boom", conversation_id: "conv-err" });
+		await net.close();
+		await sending;
+
+		expect(session.conversationId).toBe("conv-err");
+		expect(conversationIds).toEqual(["conv-err"]);
+		expect(committed[0]?.error).toBeTruthy();
+	});
+
 	it("notifies subscribers per event and hands a late subscriber the in-flight state", async () => {
 		const seen: string[] = [];
 		session.subscribe(() => seen.push(session.getSnapshot().text));
