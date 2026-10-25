@@ -254,6 +254,11 @@ func (d *LLMSpanData) appendResponseEnvelope(attrs map[string]any) {
 		setIfNotEmpty(attrs, AttrServiceTier, d.ServiceTier)
 		d.appendOutputMessagesJSON(attrs, AttrOutputMessages)
 		d.appendResponsesEcho(attrs)
+		// The Responses stop_reason, carried as the one-element finish_reasons the
+		// chat path emits; the tracer derives gen_ai.response.finish_reason from it.
+		if len(d.FinishReasons) > 0 {
+			attrs[AttrFinishReasons] = d.FinishReasons
+		}
 
 	case TextCompletionRequest, TextCompletionStreamRequest:
 		attrs[AttrResponseID] = d.ResponseID
