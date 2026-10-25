@@ -135,23 +135,34 @@ func newOAuthDiscoveryTransport(dial func(ctx context.Context, network, addr str
 // environment) so proxy-only installations keep working without losing the
 // destination guard. When a proxy is chosen, http.Transport hands DialContext
 // the proxy's address rather than the OAuth endpoint's, so the dial-time check
-// alone would validate the proxy and let it forward to a blocked target. What
-// can be verified without DNS is verified here: an IP-literal destination must
-// be public. A hostname is left to the proxy to resolve, which is operator
-// configuration, exactly as core/mcp does for MCP connections.
+// alone would validate the proxy and let it forward to a blocked target. The
+// destination is therefore checked here, before the proxy is chosen: an IP
+// literal must be public, and a hostname must resolve on the gateway to public
+// addresses only. A name the gateway cannot resolve is refused rather than
+// handed to the proxy, whose resolver could map it into its own network - the
+// same rule core/mcp applies to proxied MCP connections (TXE-5086). The proxy
+// still resolves the name again on its own side, so this binds the destination
+// as far as the gateway can see it, not what the proxy dials.
 func oauthProxySelector(next func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
 	return func(req *http.Request) (*url.URL, error) {
 		proxyURL, err := next(req)
 		if err != nil || proxyURL == nil {
 			return proxyURL, err
 		}
-		host := req.URL.Hostname()
-		if ip := net.ParseIP(host); ip != nil && !network.IsPublicIP(ip) {
-			return nil, fmt.Errorf("blocked proxied connection to non-public address %s", host)
+		ctx, cancel := context.WithTimeout(req.Context(), oauthProxyResolveTimeout)
+		defer cancel()
+		if err := network.CheckResolvedProxiedDestination(ctx, req.URL.Hostname(), true, oauthProxyResolver); err != nil {
+			return nil, fmt.Errorf("blocked proxied OAuth connection: %w", err)
 		}
 		return proxyURL, nil
 	}
 }
+
+// oauthProxyResolver resolves proxied OAuth destinations; tests replace it.
+var oauthProxyResolver network.IPLookuper = net.DefaultResolver
+
+// oauthProxyResolveTimeout bounds the gateway-side lookup of a proxied destination.
+const oauthProxyResolveTimeout = 5 * time.Second
 
 func newOAuthDiscoveryHTTPClient(timeout time.Duration) *http.Client {
 	transport := oauthDiscoveryTransport

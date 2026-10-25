@@ -2,6 +2,7 @@ package oauth2
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -77,11 +78,30 @@ func TestNewOAuthDiscoveryHTTPClientRefusesRedirectForPOST(t *testing.T) {
 	require.Equal(t, 1, hits)
 }
 
+// oauthTestResolver answers per hostname; a name it does not know fails to resolve.
+type oauthTestResolver map[string][]net.IP
+
+func (r oauthTestResolver) LookupIP(_ context.Context, _ string, host string) ([]net.IP, error) {
+	if ips, ok := r[host]; ok {
+		return ips, nil
+	}
+	return nil, errors.New("no such host")
+}
+
 // TestOAuthProxySelectorGuardsDestination pins the policy applied when a proxy
-// is chosen: a public or hostname destination goes through the proxy, an
-// IP-literal private, loopback or link-local destination is refused before the
-// proxy could forward to it, and no proxy means no change.
+// is chosen: a public literal, or a hostname resolving to public addresses only,
+// goes through the proxy; a private, loopback or link-local literal, a hostname
+// resolving to one, or a hostname the gateway cannot resolve is refused before
+// the proxy could forward to it; and no proxy means no change.
 func TestOAuthProxySelectorGuardsDestination(t *testing.T) {
+	prev := oauthProxyResolver
+	oauthProxyResolver = oauthTestResolver{
+		"auth.example.com":   {net.ParseIP("93.184.216.34")},
+		"internal.corp":      {net.ParseIP("10.0.0.7")},
+		"mixed.example.com":  {net.ParseIP("93.184.216.34"), net.ParseIP("127.0.0.1")},
+		"metadata.attack.io": {net.ParseIP("169.254.169.254")},
+	}
+	t.Cleanup(func() { oauthProxyResolver = prev })
 	proxy, _ := url.Parse("http://proxy.internal:3128")
 	viaProxy := oauthProxySelector(func(*http.Request) (*url.URL, error) { return proxy, nil })
 	direct := oauthProxySelector(func(*http.Request) (*url.URL, error) { return nil, nil })
@@ -97,9 +117,13 @@ func TestOAuthProxySelectorGuardsDestination(t *testing.T) {
 
 	got, err = viaProxy(mk("https://auth.example.com/token"))
 	require.NoError(t, err)
-	require.Equal(t, proxy, got, "hostnames are resolved by the proxy")
+	require.Equal(t, proxy, got, "a hostname resolving to a public address goes through the proxy")
 
-	for _, raw := range []string{"http://127.0.0.1:8080/token", "http://10.0.0.5/register", "http://169.254.169.254/latest/meta-data/"} {
+	for _, raw := range []string{
+		"http://127.0.0.1:8080/token", "http://10.0.0.5/register", "http://169.254.169.254/latest/meta-data/",
+		"https://internal.corp/token", "https://mixed.example.com/register", "https://metadata.attack.io/token",
+		"https://only-the-proxy-knows.example/token",
+	} {
 		_, err := viaProxy(mk(raw))
 		require.Error(t, err, raw)
 	}
