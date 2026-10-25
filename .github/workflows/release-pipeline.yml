@@ -365,11 +365,13 @@ jobs:
             ghcr.io:443
             pkg-containers.githubusercontent.com:443
             huggingface.co:443
+            iamcredentials.googleapis.com:443
             iojs.org:443
             login.microsoftonline.com:443
             maxim-o1.openai.azure.com:443
             nodejs.org:443
             oauth2.googleapis.com:443
+            sts.googleapis.com:443
             objects.githubusercontent.com:443
             openrouter.ai:443
             packages.cloud.google.com:443

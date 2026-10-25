@@ -154,10 +154,17 @@ NOT_DIALLED_HOSTS = {
     "example.com": "MCP server_url and web_fetch targets - dereferenced by the provider",
     "mcp.deepwiki.com": "Anthropic mcp_servers url (12.B17 beta-header row) - Anthropic's MCP connector dials it",
     "www.youtube.com": "Gemini video input - Google fetches the URL server-side",
+    "www.wikipedia.org": "Gemini urlContext target in a prompt - Google fetches it server-side",
+    "does-not-exist-h146.search.windows.net": "Azure On Your Data azure_search endpoint in a request body; Azure dereferences it",
+    "replace-me.search.windows.net": "Azure AI Search placeholder collection variable; never resolved",
+    "does-not-exist-h150.invalid": "OpenAI Responses MCP tool server_url; OpenAI dials it, and .invalid never resolves",
     "en.wikipedia.org": "googleSearch excludeDomains filter value, not a URL anyone fetches",
     "placeholder.search.windows.net": "Azure AI Search placeholder in a request body; never resolved",
     # Deliberately unresolvable - negative tests assert the failure path.
     "bifrost.invalid": "reserved .invalid TLD; negative-path tests assert it fails to resolve",
+    "does-not-resolve.invalid": "reserved .invalid TLD; the unresolvable MCP client probe asserts the connect fails",
+    "harness-endpoint-guard.example.invalid": "reserved .invalid TLD; the endpoint-guard row asserts the key endpoint change is refused",
+    "unlisted.example": "reserved .example TLD; a redirect_uri value in the OAuth registration redirect-check row, never fetched",
     "harness.example": "reserved .example TLD; an OAuth redirect_uri value in the 114 raw-path-auth rows, which do not follow redirects",
     # Documentation links inside descriptions and comments.
     "anthropic.com": "doc link in a folder description",
