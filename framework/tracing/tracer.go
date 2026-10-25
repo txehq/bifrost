@@ -501,6 +501,9 @@ func (t *Tracer) PopulateLLMRequestAttributes(handle schemas.SpanHandle, req *sc
 	var attrs map[string]any
 	if t.Demand().Any {
 		attrs = span.LLM.Attributes()
+		if untypedSpanFamily(req.RequestType) {
+			mergeMissingAttributes(attrs, PopulateRequestAttributes(req))
+		}
 		span.SetAttributes(attrs)
 	}
 
@@ -555,6 +558,12 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 	var respAttrs map[string]any
 	if t.Demand().Any {
 		respAttrs = span.LLM.ResponseAttributes()
+		if untypedSpanFamily(span.LLM.RequestType) {
+			if respAttrs == nil {
+				respAttrs = make(map[string]any)
+			}
+			mergeMissingAttributes(respAttrs, PopulateResponseAttributes(resp))
+		}
 	}
 	// A cancelled stream arrives here with an accumulated response whose usage
 	// is missing the final chunk, so its aggregate token counts read zero. When
@@ -1195,3 +1204,28 @@ func (t *Tracer) ObservabilityDropCounts() map[string]int64 {
 
 // Ensure Tracer implements schemas.Tracer at compile time
 var _ schemas.Tracer = (*Tracer)(nil)
+
+// untypedSpanFamily reports the request families the typed LLMSpanData record does
+// not model yet: batch and file operations. Their attributes (batch and file ids,
+// status, filenames, sizes) still come from the PopulateBatch* and PopulateFile*
+// helpers, so the tracer renders those alongside the typed record.
+func untypedSpanFamily(requestType schemas.RequestType) bool {
+	switch requestType {
+	case schemas.BatchCreateRequest, schemas.BatchListRequest, schemas.BatchRetrieveRequest,
+		schemas.BatchCancelRequest, schemas.BatchResultsRequest,
+		schemas.FileUploadRequest, schemas.FileListRequest, schemas.FileRetrieveRequest,
+		schemas.FileDeleteRequest, schemas.FileContentRequest:
+		return true
+	}
+	return false
+}
+
+// mergeMissingAttributes copies the legacy attributes the typed record did not
+// already render, so the typed values win where both have a key.
+func mergeMissingAttributes(attrs, legacy map[string]any) {
+	for k, v := range legacy {
+		if _, ok := attrs[k]; !ok {
+			attrs[k] = v
+		}
+	}
+}

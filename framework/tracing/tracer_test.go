@@ -1047,3 +1047,41 @@ func (p *rawDemandStub) GetName() string                                  { retu
 func (p *rawDemandStub) Inject(_ context.Context, _ *schemas.Trace) error { return nil }
 func (p *rawDemandStub) Cleanup() error                                   { return nil }
 func (p *rawDemandStub) ConsumesRawPayloads() bool                        { return p.wants }
+
+// Batch and file operations are not modelled by the typed LLMSpanData record, so
+// their attributes must still reach the span from the PopulateBatch*/PopulateFile*
+// helpers once a connector reads attributes.
+func TestTracer_PopulateLLMAttributesKeepBatchAttributes(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, handle := tracer.StartSpan(ctx, "llm.call", schemas.SpanKindLLMCall)
+
+	tracer.PopulateLLMRequestAttributes(handle, &schemas.BifrostRequest{
+		RequestType: schemas.BatchCreateRequest,
+		BatchCreateRequest: &schemas.BifrostBatchCreateRequest{
+			Provider:    schemas.OpenAI,
+			InputFileID: "file-in-1",
+			Endpoint:    schemas.BatchEndpointChatCompletions,
+		},
+	})
+	tracer.PopulateLLMResponseAttributes(schemas.NewBifrostContext(context.Background(), time.Time{}), handle, &schemas.BifrostResponse{
+		BatchCreateResponse: &schemas.BifrostBatchCreateResponse{ID: "batch_1", Status: schemas.BatchStatusValidating},
+	}, nil)
+
+	span := store.GetTrace(traceID).RootSpan
+	for key, want := range map[string]any{
+		schemas.AttrBatchInputFileID: "file-in-1",
+		schemas.AttrBatchID:          "batch_1",
+		schemas.AttrBatchStatus:      string(schemas.BatchStatusValidating),
+	} {
+		if got := span.Attributes[key]; got != want {
+			t.Errorf("attribute %s = %v, want %v", key, got, want)
+		}
+	}
+}
