@@ -1129,7 +1129,13 @@ export default function VirtualKeySheet({ virtualKey, defaultTeamId, onSave, onC
 											Couldn&apos;t check whether an access profile governs the keys you create. You can still create one — if a profile
 											does govern it, the profile&apos;s providers, budgets, rate limits and MCP access replace what you set here.
 										</span>
-										<Button type="button" size="sm" variant="outline" onClick={() => refetchVkCreationPolicy()}>
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											data-testid="vk-creation-policy-retry-button"
+											onClick={() => refetchVkCreationPolicy()}
+										>
 											Retry
 										</Button>
 									</AlertDescription>

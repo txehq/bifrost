@@ -139,7 +139,10 @@ export default function SetupTokenView({ setupTokenConfigured }: SetupTokenViewP
 								</form>
 							</Form>
 							<Collapsible open={helpOpen} onOpenChange={setHelpOpen}>
-								<CollapsibleTrigger className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-sm transition-colors">
+								<CollapsibleTrigger
+									className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-sm transition-colors"
+									data-testid="setup-token-help-toggle"
+								>
 									Where do I find the setup token?
 									<ChevronDown className={`h-4 w-4 transition-transform ${helpOpen ? "rotate-180" : ""}`} />
 								</CollapsibleTrigger>
