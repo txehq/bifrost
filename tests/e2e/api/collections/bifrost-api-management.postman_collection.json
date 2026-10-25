@@ -3679,7 +3679,7 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/models?limit=5000",
+              "raw": "{{base_url}}/api/models?limit=5000&include_deprecated=true",
               "host": [
                 "{{base_url}}"
               ],
@@ -3691,6 +3691,10 @@
                 {
                   "key": "limit",
                   "value": "5000"
+                },
+                {
+                  "key": "include_deprecated",
+                  "value": "true"
                 }
               ]
             }
