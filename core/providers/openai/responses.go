@@ -735,10 +735,25 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		// Gemini streaming sets status on all item types, but OpenAI rejects status on input.
-		// Strip it from all items. message is a value copy, so the caller's input is untouched.
-		// Bedrock Mantle's gpt-oss is the exception: it validates a replayed assistant message
-		// as an output message, which requires status, so that item keeps it.
-		if !replayAssistantTextAsInput || !isAssistantMessageItem(message) {
+		// Strip it, with three exceptions. message is a value copy, so the caller's input is
+		// untouched.
+		switch {
+		case message.Type != nil && *message.Type == schemas.ResponsesMessageTypeComputerCall && message.Status != nil &&
+			(*message.Status == "in_progress" || *message.Status == "completed" || *message.Status == "incomplete"):
+			// A replayed computer_call is a ResponseComputerToolCallParam, where status is required.
+		case message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCallOutput &&
+			message.Status != nil && *message.Status == "incomplete":
+			// "incomplete" on a function_call_output is the only marker a failed tool result
+			// has left on this surface: `error` on an input item is rejected outright, so
+			// dropping it too would make a failed tool call look like a successful one. Only
+			// this value is kept; any other status is still stripped.
+		case isAssistantMessageItem(message) && message.ID != nil && *message.ID != "" && message.Status != nil &&
+			(*message.Status == "completed" || *message.Status == "in_progress" || *message.Status == "incomplete"):
+			// An assistant message that keeps its id is a ResponseOutputMessageParam, where id
+			// and status are both required. Dropping only the status leaves an item that
+			// matches neither input shape, and strict validators (Bedrock Mantle's gpt-oss)
+			// reject it.
+		default:
 			message.Status = nil
 		}
 

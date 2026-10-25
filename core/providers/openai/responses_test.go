@@ -963,17 +963,18 @@ func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 					}
 				}
 
-				// Verify that original message fields are preserved.
-				// Note: Status is stripped by the sanitizer for all item types,
-				// including message types, since OpenAI rejects status on input.
+				// Verify that original message fields are preserved. An assistant message
+				// that keeps its id is a ResponseOutputMessageParam, so its status is
+				// required and kept alongside the id (upstream #8593).
 				if tt.message.ID != nil && (resultMsg.ID == nil || *resultMsg.ID != *tt.message.ID) {
 					t.Errorf("Expected ID to be preserved")
 				}
 				if tt.message.Type != nil && (resultMsg.Type == nil || *resultMsg.Type != *tt.message.Type) {
 					t.Errorf("Expected Type to be preserved")
 				}
-				if resultMsg.Status != nil {
-					t.Errorf("Expected Status to be stripped (OpenAI rejects status on input)")
+				if tt.message.ID != nil && tt.message.Status != nil &&
+					(resultMsg.Status == nil || *resultMsg.Status != *tt.message.Status) {
+					t.Errorf("Expected Status to be preserved with the ID on an assistant output message")
 				}
 			} else {
 				// For other cases, verify message is preserved as-is
@@ -4183,4 +4184,70 @@ func TestToOpenAIResponsesRequest_EffortOnlySystemItemSkipped(t *testing.T) {
 		"effort-only system item reached the OpenAI wire: %s", raw)
 	require.NotContains(t, string(raw), "output_config",
 		"per-message output_config leaked onto the OpenAI wire: %s", raw)
+}
+
+// TestComputerCallReplayKeepsStatus pins that a replayed computer_call keeps its
+// status, which OpenAI requires on that input item, in the serialized request.
+func TestComputerCallReplayKeepsStatus(t *testing.T) {
+	var input []schemas.ResponsesMessage
+	if err := sonic.Unmarshal([]byte(`[
+		{"type":"computer_call","id":"cu_1","call_id":"call_cu","status":"completed","action":{"type":"screenshot"},"pending_safety_checks":[]},
+		{"type":"computer_call_output","call_id":"call_cu","output":{"type":"computer_screenshot","image_url":"data:image/png;base64,AA=="}}
+	]`), &input); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI, Model: "computer-use-preview", Input: input,
+	})
+	wire, err := sonic.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var payload struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := sonic.Unmarshal(wire, &payload); err != nil || len(payload.Input) != 2 {
+		t.Fatalf("decode %s: %v", wire, err)
+	}
+	if payload.Input[0]["status"] != "completed" {
+		t.Fatalf("computer_call lost its required status: %s", wire)
+	}
+}
+
+// TestInputStatusStripExceptions pins which input statuses survive the strip: an
+// assistant message that keeps its id, and a failed tool result's "incomplete".
+// Everything else, including a user message's status and any other tool-result
+// status, is still removed.
+func TestInputStatusStripExceptions(t *testing.T) {
+	var input []schemas.ResponsesMessage
+	if err := sonic.Unmarshal([]byte(`[
+		{"type":"message","role":"user","status":"completed","content":"hi"},
+		{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello","annotations":[]}]},
+		{"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"no id","annotations":[]}]},
+		{"type":"function_call","id":"fc_1","call_id":"call_1","name":"f","arguments":"{}","status":"completed"},
+		{"type":"function_call_output","call_id":"call_1","output":"boom","status":"incomplete"},
+		{"type":"function_call","id":"fc_2","call_id":"call_2","name":"f","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_2","output":"ok","status":"completed"}
+	]`), &input); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI, Model: "gpt-5.4", Input: input,
+	})
+	wire, err := sonic.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var payload struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := sonic.Unmarshal(wire, &payload); err != nil || len(payload.Input) != 7 {
+		t.Fatalf("decode %s: %v", wire, err)
+	}
+	want := []any{nil, "completed", nil, nil, "incomplete", nil, nil}
+	for i, w := range want {
+		if got := payload.Input[i]["status"]; got != w {
+			t.Errorf("input[%d].status = %v, want %v: %s", i, got, w, wire)
+		}
+	}
 }
