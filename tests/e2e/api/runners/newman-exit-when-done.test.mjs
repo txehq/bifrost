@@ -45,7 +45,14 @@ function preload(name, source) {
 }
 const leakTimer = preload("leak-timer", "setInterval(() => {}, 1000);");
 // A peer that accepts and never reads: a large write to it stays pending.
-const sink = net.createServer((socket) => socket.pause());
+// Its accepted sockets are destroyed at teardown: close() alone leaves them, paused and
+// holding unread data, keeping this process alive.
+const sinkSockets = new Set();
+const sink = net.createServer((socket) => {
+  socket.pause();
+  sinkSockets.add(socket);
+  socket.on("close", () => sinkSockets.delete(socket));
+});
 await new Promise((resolve) => sink.listen(0, "127.0.0.1", resolve));
 const pendingWrite = preload("pending-write",
   `const s = require("net").connect(${sink.address().port}, "127.0.0.1", () => s.write(Buffer.alloc(64 * 1024 * 1024)));`);
@@ -128,6 +135,7 @@ try {
 } finally {
   server.closeAllConnections();
   server.close();
+  for (const socket of sinkSockets) socket.destroy();
   sink.close();
   fs.rmSync(dir, { recursive: true, force: true });
 }
