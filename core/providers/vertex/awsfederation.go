@@ -309,10 +309,10 @@ func newAWSFederatedTokenSourceFromJSON(ctx context.Context, jsonData []byte) (o
 	// The exchange posts a subject token signed with the gateway's own AWS identity, and the
 	// impersonation call carries the Google-issued federated token, so both URLs must be
 	// Google's: a key's credentials JSON can come in over the management API.
-	if err := checkGoogleFederationEndpoint("token_url", conf.TokenURL, gcpSTSTokenURL); err != nil {
+	if err := checkGoogleFederationEndpoint("token_url", conf.TokenURL, gcpSTSTokenURL, "sts.googleapis.com", "/v1/token"); err != nil {
 		return nil, err
 	}
-	if err := checkGoogleFederationEndpoint("service_account_impersonation_url", conf.ServiceAccountImpersonationURL, gcpIAMCredentialsBaseURL); err != nil {
+	if err := checkGoogleFederationEndpoint("service_account_impersonation_url", conf.ServiceAccountImpersonationURL, gcpIAMCredentialsBaseURL, "iamcredentials.googleapis.com", "/v1/projects/-/serviceAccounts/"); err != nil {
 		return nil, err
 	}
 	ts, err := externalaccount.NewTokenSource(ctx, conf)
@@ -322,10 +322,10 @@ func newAWSFederatedTokenSourceFromJSON(ctx context.Context, jsonData []byte) (o
 	return ts, nil
 }
 
-// checkGoogleFederationEndpoint accepts an empty URL, the trusted endpoint itself (its scheme
-// and host), or an https URL on a *.googleapis.com host with no explicit port; anything else is
-// refused before a token is sent to it.
-func checkGoogleFederationEndpoint(field, raw, trusted string) error {
+// checkGoogleFederationEndpoint accepts an empty URL, or a URL whose path is under pathPrefix
+// on either the trusted endpoint's scheme and host (tests point it at a local fake) or https on
+// exactly googleHost with no explicit port. Anything else is refused before a token is sent.
+func checkGoogleFederationEndpoint(field, raw, trusted, googleHost, pathPrefix string) error {
 	if raw == "" {
 		return nil
 	}
@@ -333,13 +333,16 @@ func checkGoogleFederationEndpoint(field, raw, trusted string) error {
 	if err != nil || u.Host == "" {
 		return fmt.Errorf("vertex aws federation: %s is not a valid URL", field)
 	}
+	if !strings.HasPrefix(u.Path, pathPrefix) {
+		return fmt.Errorf("vertex aws federation: %s must be https://%s%s..., got %q", field, googleHost, pathPrefix, u.Host+u.Path)
+	}
 	if t, err := url.Parse(trusted); err == nil && u.Scheme == t.Scheme && u.Host == t.Host {
 		return nil
 	}
-	if u.Scheme == "https" && u.Port() == "" && strings.HasSuffix(strings.ToLower(u.Hostname()), ".googleapis.com") {
+	if u.Scheme == "https" && u.Port() == "" && strings.EqualFold(u.Hostname(), googleHost) {
 		return nil
 	}
-	return fmt.Errorf("vertex aws federation: %s must be a Google endpoint (https://*.googleapis.com), got host %q", field, u.Host)
+	return fmt.Errorf("vertex aws federation: %s must be https://%s%s..., got %q", field, googleHost, pathPrefix, u.Host+u.Path)
 }
 
 // awsFederatedTokenSourceFromADCFile checks whether GOOGLE_APPLICATION_CREDENTIALS points at an AWS

@@ -1962,14 +1962,16 @@
                   "var txt = pm.response.text() || '';",
                   "var msg = '';",
                   "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
-                  "pm.test('passthrough path with //: responds 400', function () {",
-                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(400);",
+                  "pm.test('passthrough path with //: responds 400 or 403', function () {",
+                  "  // 400 from the path or provider checks; 403 when this checkpoint's inference-route",
+                  "  // guard (#7959, \"passthrough requires a supported inference endpoint\") refuses first.",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.be.oneOf([400, 403]);",
                   "});",
                   "pm.test('passthrough path with //: answered by the gateway, not an upstream', function () {",
                   "  // sgl is not this route's provider and is not configured, so every gateway-side refusal is",
                   "  // acceptable: the path check, the route's provider check (#7959) or the config lookup. What",
                   "  // must never happen is a dispatch to an upstream.",
-                  "  pm.expect(msg, 'body: ' + txt).to.match(/invalid passthrough path|provider does not match the passthrough route|failed to get config for provider/);",
+                  "  pm.expect(msg, 'body: ' + txt).to.match(/invalid passthrough path|provider does not match the passthrough route|failed to get config for provider|passthrough requires a supported inference endpoint/);",
                   "});"
                 ]
               }

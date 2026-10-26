@@ -747,15 +747,18 @@ func TestNewAWSFederatedTokenSourceFromJSON_RefusesNonGoogleEndpoints(t *testing
 		{"http googleapis token_url", "http://sts.googleapis.com/v1/token", ""},
 		{"googleapis lookalike", "https://sts.googleapis.com.attacker.example/v1/token", ""},
 		{"explicit port", "https://sts.googleapis.com:8443/v1/token", ""},
+		{"other googleapis host", "https://storage.googleapis.com/v1/token", ""},
+		{"wrong path", "https://sts.googleapis.com/upload/v1/token", ""},
 		{"attacker impersonation url", "https://sts.googleapis.com/v1/token", "https://attacker.example/v1/projects/-/serviceAccounts/x:generateAccessToken"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := newAWSFederatedTokenSourceFromJSON(context.Background(), build(tc.token, tc.imp))
 			require.Error(t, err)
-			require.Contains(t, err.Error(), "must be a Google endpoint")
+			require.Contains(t, err.Error(), "must be https://")
 		})
 	}
-	require.NoError(t, checkGoogleFederationEndpoint("token_url", "https://sts.googleapis.com/v1/token", gcpSTSTokenURL))
+	require.NoError(t, checkGoogleFederationEndpoint("token_url", "https://sts.googleapis.com/v1/token", gcpSTSTokenURL, "sts.googleapis.com", "/v1/token"))
 	require.NoError(t, checkGoogleFederationEndpoint("service_account_impersonation_url",
-		"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/a@b.iam.gserviceaccount.com:generateAccessToken", gcpIAMCredentialsBaseURL))
+		"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/a@b.iam.gserviceaccount.com:generateAccessToken",
+		gcpIAMCredentialsBaseURL, "iamcredentials.googleapis.com", "/v1/projects/-/serviceAccounts/"))
 }
