@@ -3,12 +3,19 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"iter"
 	"maps"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -2073,6 +2080,88 @@ func TestUpdateTransitionsAndRedactedSecretPreservation(t *testing.T) {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+// testTLSMaterial returns a self-signed CA certificate and a client certificate
+// and key it signed, as PEM, so a registration can carry every TLS field that
+// a management read masks.
+func testTLSMaterial(t *testing.T) (caPEM, certPEM, keyPEM string) {
+	t.Helper()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	caTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "fixture-ca"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	require.NoError(t, err)
+	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	clientTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "fixture-client"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	clientDER, err := x509.CreateCertificate(rand.Reader, clientTemplate, caTemplate, &clientKey.PublicKey, caKey)
+	require.NoError(t, err)
+	clientKeyDER, err := x509.MarshalECPrivateKey(clientKey)
+	require.NoError(t, err)
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})),
+		string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: clientDER})),
+		string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: clientKeyDER}))
+}
+
+// TestUpdatePreservesMaskedTLSMaterial pins that an edit which hands back the
+// masked TLS material every management read serves keeps the stored
+// certificates. The placeholders used to reach TLS validation as PEM and fail
+// the whole update, so a registration with certificates could not be edited
+// at all without re-pasting them; a placeholder with nothing stored behind it
+// is still refused rather than written as a certificate.
+func TestUpdatePreservesMaskedTLSMaterial(t *testing.T) {
+	upstream, _, _ := fixture(t, nil, nil)
+	defer upstream.Close()
+	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	require.NoError(t, err)
+	defer m.Close()
+	base := upstream.URL + agentCardPath
+	caPEM, certPEM, keyPEM := testTLSMaterial(t)
+	tlsAuth := func() *schemas.UpstreamAuth {
+		return &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeNone, TLS: &schemas.UpstreamTLSConfig{CACertPEM: schemas.NewSecretVar(caPEM), ClientCertPEM: schemas.NewSecretVar(certPEM), ClientKeyPEM: schemas.NewSecretVar(keyPEM)}}
+	}
+	_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: base, Enabled: boolPtr(false), DiscoveryAuth: tlsAuth(), RuntimeAuth: tlsAuth()})
+	require.NoError(t, err)
+
+	// Exactly what the UI sends back: the redacted view, with one unrelated change.
+	view, err := m.Get(context.Background(), "fixture")
+	require.NoError(t, err)
+	require.Equal(t, "<REDACTED>", view.RuntimeAuth.TLS.CACertPEM.GetValue())
+	_, err = m.Update(context.Background(), "fixture", UpdateRequest{AgentCardURL: &base, Enabled: boolPtr(false), AllowByDefault: true, DiscoveryAuth: view.DiscoveryAuth, RuntimeAuth: view.RuntimeAuth})
+	require.NoError(t, err, "an edit that leaves the masked TLS material untouched is accepted")
+	stored, _ := store.GetAgentRegistration(context.Background(), "fixture")
+	require.True(t, stored.AllowByDefault)
+	for _, auth := range []*schemas.UpstreamAuth{stored.DiscoveryAuth, stored.RuntimeAuth} {
+		require.Equal(t, caPEM, auth.TLS.CACertPEM.GetValue())
+		require.Equal(t, certPEM, auth.TLS.ClientCertPEM.GetValue())
+		require.Equal(t, keyPEM, auth.TLS.ClientKeyPEM.GetValue())
+	}
+
+	// A new certificate replaces the stored one, and a cleared field is dropped.
+	newCA, _, _ := testTLSMaterial(t)
+	_, err = m.Update(context.Background(), "fixture", UpdateRequest{AgentCardURL: &base, Enabled: boolPtr(false), RuntimeAuth: &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeNone, TLS: &schemas.UpstreamTLSConfig{CACertPEM: schemas.NewSecretVar(newCA)}}})
+	require.NoError(t, err)
+	stored, _ = store.GetAgentRegistration(context.Background(), "fixture")
+	require.Equal(t, newCA, stored.RuntimeAuth.TLS.CACertPEM.GetValue())
+	require.Nil(t, stored.RuntimeAuth.TLS.ClientCertPEM)
+
+	// A placeholder with nothing stored behind it is refused, never written as PEM.
+	_, err = m.Create(context.Background(), CreateRequest{Name: "fixture2", AgentCardURL: base, Enabled: boolPtr(false)})
+	require.NoError(t, err)
+	_, err = m.Update(context.Background(), "fixture2", UpdateRequest{AgentCardURL: &base, Enabled: boolPtr(false), RuntimeAuth: &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeNone, TLS: &schemas.UpstreamTLSConfig{CACertPEM: schemas.NewSecretVar("<REDACTED>")}}})
+	require.ErrorContains(t, err, "cannot preserve missing upstream TLS ca_cert_pem")
+	stored, _ = store.GetAgentRegistration(context.Background(), "fixture2")
+	require.Nil(t, stored.RuntimeAuth)
+}
 
 // TestUpdateWritesAnOAuthSecretSwitchedToAReference pins that switching an upstream
 // OAuth secret to an env reference is written: every reference used to count as

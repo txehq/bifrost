@@ -767,6 +767,34 @@ func (m *Manager) Update(ctx context.Context, name string, req UpdateRequest) (s
 				}
 			}
 		}
+		// TLS material is masked on every management read exactly like the
+		// credentials above, so an edit that leaves it untouched hands the
+		// placeholder back; it used to reach TLS validation as PEM and fail the
+		// whole update, so a registration with certificates could not be edited
+		// without re-pasting them.
+		if submitted.TLS != nil {
+			var storedTLS *schemas.UpstreamTLSConfig
+			if stored != nil {
+				storedTLS = stored.TLS
+			}
+			for _, field := range []struct {
+				name      string
+				submitted **schemas.SecretVar
+				stored    func(*schemas.UpstreamTLSConfig) *schemas.SecretVar
+			}{
+				{"ca_cert_pem", &submitted.TLS.CACertPEM, func(c *schemas.UpstreamTLSConfig) *schemas.SecretVar { return c.CACertPEM }},
+				{"client_cert_pem", &submitted.TLS.ClientCertPEM, func(c *schemas.UpstreamTLSConfig) *schemas.SecretVar { return c.ClientCertPEM }},
+				{"client_key_pem", &submitted.TLS.ClientKeyPEM, func(c *schemas.UpstreamTLSConfig) *schemas.SecretVar { return c.ClientKeyPEM }},
+			} {
+				if !(*field.submitted).IsMaskedPlaceholder() {
+					continue
+				}
+				if storedTLS == nil || !field.stored(storedTLS).IsSet() {
+					return nil, fmt.Errorf("cannot preserve missing upstream TLS %s", field.name)
+				}
+				*field.submitted = field.stored(storedTLS)
+			}
+		}
 		return submitted, nil
 	}
 	discoveryAuth, err := preserveAuth(req.DiscoveryAuth, existing.DiscoveryAuth)
