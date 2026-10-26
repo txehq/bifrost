@@ -206,3 +206,124 @@ func TestAdoptCalendarAlignmentInMemoryPreservesConcurrentSpend(t *testing.T) {
 	assert.Equal(t, float64(bumps), live.CurrentUsage,
 		"every concurrent bump survived: adoption changed the boundary, not the accounting")
 }
+
+// TestInMemoryEditsKeepConcurrentUsage edits an entity over and over while its
+// budget and rate limit are charged. Every edit carries a config with zero usage,
+// as a reload from the database does, so an edit that loads the live usage,
+// copies it and stores the config drops any charge that lands in between; the
+// counters must end at exactly the number of charges (TXE-5272).
+func TestInMemoryEditsKeepConcurrentUsage(t *testing.T) {
+	ctx := context.Background()
+	const rlID, budgetID = "edited-rl", "edited-budget"
+	freshRL := func() *configstoreTables.TableRateLimit { return buildRateLimit(rlID, 1_000_000_000, 1_000_000_000) }
+	freshBudget := func() configstoreTables.TableBudget { return *buildBudget(budgetID, 1_000_000_000, "24h") }
+
+	cases := []struct {
+		name string
+		// seed installs the entity; edit replaces it with a zero-usage config.
+		seed, edit func(gs *LocalGovernanceStore)
+	}{
+		{
+			name: "virtual key",
+			seed: func(gs *LocalGovernanceStore) {
+				vk := buildVirtualKey("vk-edit", "sk-bf-edit", "edit", true)
+				vk.RateLimitID, vk.RateLimit, vk.Budgets = schemas.Ptr(rlID), freshRL(), []configstoreTables.TableBudget{freshBudget()}
+				gs.CreateVirtualKeyInMemory(ctx, vk)
+			},
+			edit: func(gs *LocalGovernanceStore) {
+				vk := buildVirtualKey("vk-edit", "sk-bf-edit", "edit", true)
+				vk.RateLimitID, vk.RateLimit, vk.Budgets = schemas.Ptr(rlID), freshRL(), []configstoreTables.TableBudget{freshBudget()}
+				gs.UpdateVirtualKeyInMemory(ctx, vk, nil, nil, nil)
+			},
+		},
+		{
+			name: "virtual key provider config",
+			seed: func(gs *LocalGovernanceStore) {
+				vk := buildVirtualKey("vk-edit", "sk-bf-edit", "edit", true)
+				vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{{ID: 1, Provider: "openai", RateLimitID: schemas.Ptr(rlID), RateLimit: freshRL(), Budgets: []configstoreTables.TableBudget{freshBudget()}}}
+				gs.CreateVirtualKeyInMemory(ctx, vk)
+			},
+			edit: func(gs *LocalGovernanceStore) {
+				vk := buildVirtualKey("vk-edit", "sk-bf-edit", "edit", true)
+				vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{{ID: 1, Provider: "openai", RateLimitID: schemas.Ptr(rlID), RateLimit: freshRL(), Budgets: []configstoreTables.TableBudget{freshBudget()}}}
+				gs.UpdateVirtualKeyInMemory(ctx, vk, nil, nil, nil)
+			},
+		},
+		{
+			name: "team",
+			seed: func(gs *LocalGovernanceStore) {
+				gs.CreateTeamInMemory(ctx, &configstoreTables.TableTeam{ID: "team-edit", RateLimit: freshRL(), Budgets: []configstoreTables.TableBudget{freshBudget()}})
+			},
+			edit: func(gs *LocalGovernanceStore) {
+				gs.UpdateTeamInMemory(ctx, &configstoreTables.TableTeam{ID: "team-edit", RateLimit: freshRL(), Budgets: []configstoreTables.TableBudget{freshBudget()}}, nil)
+			},
+		},
+		{
+			name: "customer",
+			seed: func(gs *LocalGovernanceStore) {
+				gs.CreateCustomerInMemory(ctx, &configstoreTables.TableCustomer{ID: "customer-edit", RateLimit: freshRL(), Budgets: []configstoreTables.TableBudget{freshBudget()}})
+			},
+			edit: func(gs *LocalGovernanceStore) {
+				gs.UpdateCustomerInMemory(ctx, &configstoreTables.TableCustomer{ID: "customer-edit", RateLimit: freshRL(), Budgets: []configstoreTables.TableBudget{freshBudget()}}, nil)
+			},
+		},
+		{
+			name: "model config",
+			edit: func(gs *LocalGovernanceStore) {
+				gs.UpdateModelConfigInMemory(ctx, &configstoreTables.TableModelConfig{ID: "mc-edit", ModelName: "m", Scope: "global", RateLimit: freshRL(), Budgets: []configstoreTables.TableBudget{freshBudget()}})
+			},
+		},
+		{
+			name: "provider",
+			edit: func(gs *LocalGovernanceStore) {
+				b := freshBudget()
+				gs.UpdateProviderInMemory(ctx, &configstoreTables.TableProvider{Name: "openai", RateLimit: freshRL(), Budget: &b})
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gs := newStandaloneStore(t)
+			if tc.seed != nil {
+				tc.seed(gs)
+			} else {
+				tc.edit(gs)
+			}
+			require.NotNil(t, gs.LoadRateLimit(ctx, rlID))
+			require.NotNil(t, gs.LoadBudget(ctx, budgetID))
+
+			const chargers, perCharger = 8, 400
+			var charging sync.WaitGroup
+			var charged atomic.Bool
+			charging.Add(chargers)
+			for range chargers {
+				go func() {
+					defer charging.Done()
+					for range perCharger {
+						assert.NoError(t, gs.BumpRateLimitUsage(ctx, rlID, 1, true, true))
+						assert.NoError(t, gs.BumpBudgetUsage(ctx, budgetID, 1))
+					}
+				}()
+			}
+			editorDone := make(chan struct{})
+			go func() {
+				defer close(editorDone)
+				for !charged.Load() {
+					tc.edit(gs)
+				}
+			}()
+			charging.Wait()
+			charged.Store(true)
+			<-editorDone
+
+			const total = chargers * perCharger
+			rl := gs.LoadRateLimit(ctx, rlID)
+			require.NotNil(t, rl)
+			assert.EqualValues(t, total, rl.RequestCurrentUsage, "an edit dropped request charges")
+			assert.EqualValues(t, total, rl.TokenCurrentUsage, "an edit dropped token charges")
+			budget := gs.LoadBudget(ctx, budgetID)
+			require.NotNil(t, budget)
+			assert.EqualValues(t, total, budget.CurrentUsage, "an edit dropped budget charges")
+		})
+	}
+}
