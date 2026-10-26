@@ -156,3 +156,9 @@ jobs:
       - name: Check Helm OCI publication
         if: ${{ !cancelled() }}
         run: ./.github/workflows/scripts/helm-publish-oci.test.sh
+
+      # gh is a shim on PATH: a stable chart version is released plain, a
+      # hyphenated one with --prerelease, and the workflow delegates to the script.
+      - name: Check Helm release flags
+        if: ${{ !cancelled() }}
+        run: ./.github/workflows/scripts/helm-release-create.test.sh
