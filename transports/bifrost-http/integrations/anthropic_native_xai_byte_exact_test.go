@@ -18,7 +18,9 @@ import (
 
 // TXE-5193: the xAI native Messages passthrough forwards the caller's body to xAI
 // byte-for-byte, system included. The only rewrite allowed is the provider prefix on
-// the top-level model value, which routing needs.
+// the top-level model value, which routing needs; an unprefixed body is forwarded
+// untouched. The large-payload path is covered through a test hook: nothing in this
+// build installs one, so the path is unreachable in production today.
 
 const (
 	xaiByteExactCallerModel   = "xai/grok-4.5"
@@ -29,12 +31,12 @@ const (
 // would change: Anthropic-only fields, a billing-header system block beside a cached
 // one, thinking and tool blocks, unknown fields, odd whitespace and unicode escapes.
 // padding adds that many bytes to a user message, for the large-payload path.
-func xaiByteExactBody(stream bool, padding int) []byte {
+func xaiByteExactBody(model string, stream bool, padding int) []byte {
 	streamField := ""
 	if stream {
 		streamField = "\"stream\" :true,\n"
 	}
-	return []byte("{\"model\":\"" + xaiByteExactCallerModel + "\",\n" +
+	return []byte("{\"model\":\"" + model + "\",\n" +
 		"  \"max_tokens\":\t1024 ,\n" + streamField +
 		"  \"safeguards\":{\"cyber\":{\"level\":\"strict\"},\"flags\":[1,2.50,true,null]},\n" +
 		"  \"diagnostics\" : {\"session\":\"s-1\",\"trace\":\"\\u00e9\\u2028\\/x\"},\n" +
@@ -120,6 +122,7 @@ func (p *passthroughUsagePlugin) assertCacheUsage(t *testing.T) {
 func TestAnthropicMessagesRouteXAIForwardsBodyByteExact(t *testing.T) {
 	cases := []struct {
 		name         string
+		unprefixed   bool
 		stream       bool
 		largePayload bool
 	}{
@@ -127,6 +130,10 @@ func TestAnthropicMessagesRouteXAIForwardsBodyByteExact(t *testing.T) {
 		{name: "stream", stream: true},
 		{name: "large_payload_unary", largePayload: true},
 		{name: "large_payload_stream", stream: true, largePayload: true},
+		{name: "unprefixed_unary", unprefixed: true},
+		{name: "unprefixed_stream", unprefixed: true, stream: true},
+		{name: "unprefixed_large_payload_unary", unprefixed: true, largePayload: true},
+		{name: "unprefixed_large_payload_stream", unprefixed: true, stream: true, largePayload: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -135,8 +142,15 @@ func TestAnthropicMessagesRouteXAIForwardsBodyByteExact(t *testing.T) {
 				// Past the 256KB prefix the large-payload model rewrite scans.
 				padding = 300 * 1024
 			}
-			requestBody := xaiByteExactBody(tc.stream, padding)
-			want := xaiByteExactWant(t, requestBody)
+			callerModel := xaiByteExactCallerModel
+			if tc.unprefixed {
+				callerModel = xaiByteExactUpstreamModel
+			}
+			requestBody := xaiByteExactBody(callerModel, tc.stream, padding)
+			want := requestBody
+			if !tc.unprefixed {
+				want = xaiByteExactWant(t, requestBody)
+			}
 			contentType, responseBody := "application/json", []byte(xaiByteExactResponse)
 			if tc.stream {
 				contentType, responseBody = "text/event-stream", []byte(xaiByteExactSSE)
@@ -190,7 +204,7 @@ func TestAnthropicMessagesRouteXAIForwardsBodyByteExact(t *testing.T) {
 					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(requestBody))
 					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, "application/json")
 					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{
-						Model: xaiByteExactCallerModel, StreamRequested: schemas.Ptr(tc.stream),
+						Model: callerModel, StreamRequested: schemas.Ptr(tc.stream),
 					})
 					return true, nil
 				})
@@ -201,6 +215,10 @@ func TestAnthropicMessagesRouteXAIForwardsBodyByteExact(t *testing.T) {
 			httpCtx.Request.SetRequestURI("/anthropic/v1/messages")
 			httpCtx.Request.Header.SetContentType("application/json")
 			httpCtx.Request.Header.Set("anthropic-version", "2023-06-01")
+			if tc.unprefixed {
+				// An unprefixed model names its provider in the header instead.
+				httpCtx.Request.Header.Set("x-model-provider", string(schemas.XAI))
+			}
 			httpCtx.Request.SetBody(requestBody)
 			handler(httpCtx)
 
