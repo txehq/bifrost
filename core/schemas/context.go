@@ -389,6 +389,39 @@ func (bc *BifrostContext) Err() error {
 	return bc.err
 }
 
+// Cancelled reports whether this context, or a context above it, has been cancelled.
+//
+// A parent's cancellation reaches Done and Err through watchCancellation, a goroutine,
+// so for a moment after the parent is cancelled Err still returns nil. A decision that
+// must not outrun that moment, such as opening another provider turn right after a tool
+// call cancelled the request, asks the parents directly. A cancellation found above is
+// applied here at once, so Done and Err agree with it from then on.
+func (bc *BifrostContext) Cancelled() bool {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.Cancelled()
+	}
+	if bc.Err() != nil {
+		return true
+	}
+	parent := bc.parent
+	if parent == nil || isNonCancellingContext(parent) {
+		return false
+	}
+	var err error
+	if pbc, ok := parent.(*BifrostContext); ok {
+		if pbc.Cancelled() {
+			err = pbc.Err()
+		}
+	} else {
+		err = parent.Err()
+	}
+	if err == nil {
+		return false
+	}
+	bc.cancel(err)
+	return true
+}
+
 // Value returns the value associated with the key.
 // For scoped contexts, delegates to the root context via valueDelegate.
 // Otherwise checks the internal userValues map, then delegates to the parent context.

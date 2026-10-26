@@ -454,9 +454,12 @@ func chainInjectedStream(ctx *schemas.BifrostContext, turns injectedStreamTurns,
 			}
 			resetStreamTurnState(ctx)
 			// A cancel while no upstream stream is open (before or during the injected
-			// calls) has no provider to report it, so the stream ends here.
+			// calls) has no provider to report it, so the stream ends here. The injected
+			// call itself may be what cancelled the request, an instant ago: Cancelled asks
+			// the parents directly, since Err lags a parent's cancel by a goroutine hop,
+			// and that hop was enough to open another provider turn.
 			cancelled := func() bool {
-				if ctx.Err() == nil {
+				if !ctx.Cancelled() {
 					return false
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
