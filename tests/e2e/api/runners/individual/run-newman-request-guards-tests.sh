@@ -159,7 +159,10 @@ SETUP_TOKEN="${BIFROST_E2E_SETUP_TOKEN:-${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup
 SETUP_COLLECTION="$REPORT_DIR/$(basename "$COLLECTION" .postman_collection.json)-setup-token.postman_collection.json"
 node "$SCRIPT_DIR/../add-setup-token-header.mjs" "$COLLECTION" "$SETUP_COLLECTION"
 
-cmd=(newman run "$SETUP_COLLECTION")
+# newman can finish this run and then never exit on the Linux release runner; the hook
+# exits with newman's own result once the run is done and names what was left open.
+NEWMAN_BIN="$(command -v newman)" || { echo -e "${RED}Error: newman not found${NC}"; exit 1; }
+cmd=(node --require "$SCRIPT_DIR/../newman-exit-when-done.cjs" "$NEWMAN_BIN" run "$SETUP_COLLECTION")
 cmd+=(--env-var "base_url=$base_url")
 cmd+=(--env-var "setup_token=$SETUP_TOKEN")
 cmd+=(--env-var "admin_exists=$admin_exists")
