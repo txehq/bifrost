@@ -37,3 +37,37 @@ func TestExtractEmbeddingParametersToMetadata_IncludesVectorAffectingParams(t *t
 		})
 	}
 }
+
+// EmbeddingParameters.ExtraParams is json:"-", so a per-item extra parameter only reaches
+// the request hash because the hash input carries it explicitly. Without that, Go SDK
+// requests differing only in an item's extra params would share a direct-cache entry.
+func TestGenerateRequestHash_IncludesPerItemEmbeddingExtraParams(t *testing.T) {
+	plugin := newTestPlugin(t, newObservableStore())
+	hashFor := func(extra map[string]interface{}) string {
+		text := "hello"
+		req := &schemas.BifrostRequest{
+			RequestType: schemas.EmbeddingRequest,
+			EmbeddingRequest: &schemas.BifrostEmbeddingRequest{
+				Input: []schemas.EmbeddingInputItem{{
+					Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}},
+					Params:  &schemas.EmbeddingParameters{ExtraParams: extra},
+				}},
+			},
+		}
+		hash, err := plugin.generateRequestHash(req, nil)
+		if err != nil {
+			t.Fatalf("generateRequestHash: %v", err)
+		}
+		return hash
+	}
+	query := hashFor(map[string]interface{}{"taskType": "RETRIEVAL_QUERY"})
+	if doc := hashFor(map[string]interface{}{"taskType": "RETRIEVAL_DOCUMENT"}); query == doc {
+		t.Fatal("requests differing only in an item's ExtraParams share a request hash")
+	}
+	if none := hashFor(nil); query == none {
+		t.Fatal("an item's ExtraParams do not change the request hash")
+	}
+	if again := hashFor(map[string]interface{}{"taskType": "RETRIEVAL_QUERY"}); query != again {
+		t.Fatal("identical requests hash differently")
+	}
+}

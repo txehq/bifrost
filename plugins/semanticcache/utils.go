@@ -792,7 +792,7 @@ func (plugin *Plugin) getNormalizedInputForCaching(req *schemas.BifrostRequest) 
 		// Deep copy contents and normalize text parts; non-text parts are
 		// copied as-is so multimodal inputs participate in cache hashing.
 		src := req.EmbeddingRequest.Input
-		copiedItems := make([]schemas.EmbeddingInputItem, len(src))
+		copiedItems := make([]embeddingItemHashInput, len(src))
 		for i, item := range src {
 			copiedContent := make(schemas.EmbeddingContent, len(item.Content))
 			for j, part := range item.Content {
@@ -804,7 +804,11 @@ func (plugin *Plugin) getNormalizedInputForCaching(req *schemas.BifrostRequest) 
 				copiedContent[j] = copied
 			}
 			// Per-item params change the vector, so they belong in the hash.
-			copiedItems[i] = schemas.EmbeddingInputItem{Content: copiedContent, Params: item.Params}
+			// ExtraParams is json:"-" on the schema, so it is carried explicitly.
+			copiedItems[i] = embeddingItemHashInput{Content: copiedContent, Params: item.Params}
+			if item.Params != nil && len(item.Params.ExtraParams) > 0 {
+				copiedItems[i].ExtraParams = item.Params.ExtraParams
+			}
 		}
 		return copiedItems
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
@@ -819,6 +823,13 @@ func (plugin *Plugin) getNormalizedInputForCaching(req *schemas.BifrostRequest) 
 	default:
 		return nil
 	}
+}
+
+// embeddingItemHashInput is the hashed form of one embedding input item.
+type embeddingItemHashInput struct {
+	Content     schemas.EmbeddingContent     `json:"content"`
+	Params      *schemas.EmbeddingParameters `json:"params,omitempty"`
+	ExtraParams map[string]interface{}       `json:"extra_params,omitempty"`
 }
 
 // normalizeChatMessage returns a shallow copy of msg with its Content
