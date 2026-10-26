@@ -184,6 +184,10 @@ func TestDiscoverOAuthMetadataUsesGlobalProxy(t *testing.T) {
 		Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: "http://127.0.0.1:" + set.Config.Port(), EnableForAPI: true,
 	}, nil))
 	t.Cleanup(func() { network.SetDefaultHTTPClientFactory(nil) })
+	// A proxied name must resolve on the gateway (TXE-5086), and .test never does in real DNS.
+	prev := oauthProxyResolver
+	oauthProxyResolver = oauthTestResolver{"mcp.bifrost.test": {net.ParseIP("93.184.216.34")}}
+	t.Cleanup(func() { oauthProxyResolver = prev })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
