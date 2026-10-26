@@ -1,0 +1,22 @@
+---
+title: "v2.1.46"
+description: "Helm v2.1.46 changelog - 2026-10-26"
+---
+
+<Update label="Bifrost Helm" description="v2.1.46">
+
+## Changelog
+
+
+- Added `topologySpreadConstraints` (top-level value): pod topology spread constraints rendered into the Bifrost Deployment or StatefulSet pod spec. A constraint without a `labelSelector` defaults to the release's server pod labels.
+- Added `extraContainers` (top-level value): sidecar containers appended to the Bifrost pod after the Bifrost container; native sidecars (`initContainers` entries with `restartPolicy: Always`) are refused on clusters older than Kubernetes 1.29.
+- Added `bifrost.agents[]`, `bifrost.client.a2aExternalClientUrl`, `bifrost.server.a2aGrpcBaseDomain`, `bifrost.server.a2aGrpcPort` and `bifrost.server.a2aAllowPrivatePushCallbacks` for the A2A agent gateway (`agents`, `client.a2a_external_client_url`, `server.a2a_grpc_base_domain`, `server.a2a_grpc_port`, `server.a2a_allow_private_push_callbacks`).
+- Added `bifrost.governance.complexityAnalyzerConfig.decision` (`complexity_analyzer_config.decision`), which replaces the `jev` classifier block: any decision model on Typesafe or a custom provider with `base_provider_type: typesafe`, with the same per-tier `criteria` overrides.
+- Added `ignore_provider_cost` to `bifrost.providers.<name>` and `bifrost.governance.providers[]`, `injected_tools` on providers, and `web_search` provider settings.
+- Added `bifrost.client.compat.forceReasoningOnlyModelsToResponses` (`client.compat.force_reasoning_only_models_to_responses`, default `true`).
+- Added `storage.logsStore.clickhouse.maxQuerySize` (`logs_store.config.max_query_size`, default 16 MiB) and `storage.logsStore.objectStorageExcludeRequestTypes` (`logs_store.object_storage_exclude_request_types`).
+- Added `storage.configStore.statementTimeout` / `.idleInTransactionSessionTimeout` and the same pair on `storage.logsStore` (default `120s`).
+- Added `bifrost.client.deleteExpiredVirtualKeys` and per-key `delete_after_expire`, `disable_content_logging` and `business_unit_id` on `bifrost.governance.virtualKeys[]`.
+- Added `bifrost.client.oauth2ServerConfig.allowedRedirectUris`, `bifrost.mcp.clientConfigs[].requirePublicTarget`, MCP client `oauth`/`tls`/`headers`/`upstreamAuth` settings, `cache_tool_call_responses` on the semantic cache plugin, the object form of `bifrost.governance.routingRules[].fallbacks` (`{ provider, model, provider_key_name }`) and `displayName` on the generic OIDC `bifrost.scim.config`.
+
+</Update>

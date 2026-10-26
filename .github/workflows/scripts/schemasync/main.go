@@ -194,6 +194,29 @@ var ignoreGoFieldNames = map[string]string{
 var ignoreEnumPaths = map[string]string{
 	"/properties/governance/properties/complexity_analyzer_config/properties/semantic/properties/provider": "accepts custom provider names; enum would reject them",
 	"/properties/governance/properties/complexity_analyzer_config/properties/llm/properties/provider":      "accepts custom provider names; enum would reject them",
+	"/properties/governance/properties/complexity_analyzer_config/properties/decision/properties/provider": "accepts custom provider names (Laya, Nimble, Clef); enum would reject them",
+}
+
+// narrowedEnumPaths are schema paths whose enum intentionally omits some of the Go
+// type's consts, because the Go type is shared with a feature that accepts more values
+// than this config path does. Only the listed consts are excused; any new Go const
+// still surfaces as enum drift.
+var narrowedEnumPaths = map[string]struct {
+	excluded []string
+	reason   string
+}{
+	"/properties/proxy_config/properties/type": {
+		excluded: []string{"socks5", "tcp"},
+		reason:   "global proxy rejects socks5/tcp at load (lib/configproxy.go) and on the API; only http is supported today",
+	},
+	"/properties/agents/items/properties/discovery_auth/properties/type": {
+		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange"},
+		reason:   "UpstreamAuth reuses MCPAuthType; Agent Gateway accepts only none, headers, and oauth (agent.validateUpstreamAuth)",
+	},
+	"/properties/agents/items/properties/runtime_auth/properties/type": {
+		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange"},
+		reason:   "UpstreamAuth reuses MCPAuthType; Agent Gateway accepts only none, headers, and oauth (agent.validateUpstreamAuth)",
+	},
 }
 
 // narrowedEnumPaths are schema paths whose enum intentionally omits some of the Go

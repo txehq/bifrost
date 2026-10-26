@@ -600,8 +600,16 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	messages = make([]schemas.ResponsesMessage, 0, len(bifrostReq.Input))
 	// Tools lifted out of codex additional_tools items for providers that reject them.
 	var hoistedTools []schemas.ResponsesTool
-	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider)
+	// Models older than GPT-5 reject custom tools with "Invalid value: 'custom'", so
+	// each one is sent as a function tool and its replayed calls follow suit. Their
+	// additional_tools items are lifted to the top level so the tools inside them get
+	// the same rewrite; the item's tools live in raw bytes that are not rewritten in place.
+	customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
+	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider) && !customToolsAsFunctions
 	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
+	replayComputerActions := bifrostReq.Params != nil && slices.ContainsFunc(bifrostReq.Params.Tools, func(t schemas.ResponsesTool) bool {
+		return t.Type == schemas.ResponsesToolTypeComputer
+	})
 	for _, message := range bifrostReq.Input {
 		if !keepAdditionalTools && message.Type != nil &&
 			*message.Type == schemas.ResponsesMessageTypeAdditionalTools {
@@ -700,6 +708,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// Gemini, Cohere, chat bridge) never carry one, so default missing values to "auto".
 		message = defaultImageDetail(message)
 
+		if replayComputerActions {
+			message = computerCallActionAsActions(message)
+		}
+
 		if replayAssistantTextAsInput {
 			message = assistantOutputTextAsInputText(message)
 		}
@@ -738,6 +750,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// Strip it, except where the item's input schema requires or depends on it. message
 		// is a value copy, so the caller's input is untouched.
 		switch {
+		case message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeApplyPatchCall ||
+			*message.Type == schemas.ResponsesMessageTypeApplyPatchCallOutput):
+			// OpenAI requires status here, and it carries whether the patch failed.
 		case hasRequiredToolCallStatus(message):
 			// A replayed server-tool call (computer, file search, code interpreter, image
 			// generation, local shell) is an input param whose status is required.
@@ -930,27 +945,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				}
 				messages = append(messages, message)
 			}
-		} else if message.ResponsesToolMessage != nil &&
-			message.ResponsesToolMessage.Action != nil &&
-			message.ResponsesToolMessage.Action.ResponsesComputerToolCallAction != nil {
-			action := message.ResponsesToolMessage.Action.ResponsesComputerToolCallAction
-			if action.Type == "zoom" || action.Region != nil {
-				// Copy action and modify
-				newAction := *action
-				newAction.Region = nil
-				if newAction.Type == "zoom" {
-					newAction.Type = "screenshot"
-				}
-
-				actionStructCopy := *message.ResponsesToolMessage.Action
-				actionStructCopy.ResponsesComputerToolCallAction = &newAction
-
-				toolMsgCopy := *message.ResponsesToolMessage
-				toolMsgCopy.Action = &actionStructCopy
-
-				message.ResponsesToolMessage = &toolMsgCopy
-			}
-
+		} else if message.ResponsesToolMessage != nil {
+			message.ResponsesToolMessage = openAIComputerToolMessage(message.ResponsesToolMessage)
 			messages = append(messages, message)
 		} else {
 			messages = append(messages, message)
@@ -980,6 +976,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	params := bifrostReq.Params
 	asyncToolsSupported := caps.SupportsAsyncTools(defaultSupportsAsyncTools(capModel))
 	messages = normalizeAsyncCallItems(messages, asyncToolsSupported)
+	if customToolsAsFunctions {
+		messages = responsesCustomCallItemsAsFunctions(messages)
+	}
 	// Create the responses request with properly mapped parameters
 	req := &OpenAIResponsesRequest{
 		Model:    bifrostReq.Model,
@@ -1124,6 +1123,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 					return s == "message.output_text.logprobs"
 				})
 			}
+			// Codex asks for encrypted reasoning on every request; models that do not
+			// reason reject it ("Encrypted content is not supported with this model").
+			if !caps.SupportsReasoning(IsOpenAIReasoningModel(capModel)) &&
+				slices.Contains(req.ResponsesParameters.Include, "reasoning.encrypted_content") {
+				req.ResponsesParameters.Include = slices.DeleteFunc(slices.Clone(req.ResponsesParameters.Include), func(s string) bool {
+					return s == "reasoning.encrypted_content"
+				})
+			}
 		}
 	}
 
@@ -1159,6 +1166,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		req.Tools = kept
 	}
 
+	// Runs before the normalization below so the rewritten tools are normalized too.
+	if customToolsAsFunctions {
+		req.Tools = responsesCustomToolsAsFunctions(req.Tools)
+		req.ToolChoice = responsesCustomToolChoiceAsFunction(req.ToolChoice)
+	}
+
 	// Normalize function tool parameters for deterministic JSON serialization, and
 	// default a nil strict to false — OpenAI resolves null to false anyway, while
 	// strict-pydantic upstreams (e.g. sglang) reject the explicit null outright.
@@ -1183,7 +1196,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	// Filter out tools that the OpenAI-compatible target doesn't support.
 	toolCaps := schemas.ResolveModelCaps(toolProvider, capModel)
-	req.filterUnsupportedTools(supportsWebSearchContentTypes(toolCaps, toolProvider))
+	req.filterUnsupportedTools(supportsWebSearchContentTypes(toolCaps, toolProvider), toolProvider)
 	req.keepDeferLoading = toolCaps.SupportsToolSearch(defaultSupportsToolSearch(toolProvider, capModel))
 
 	if bifrostReq.Params != nil {
@@ -1321,6 +1334,82 @@ func isAssistantMessageItem(message schemas.ResponsesMessage) bool {
 		(message.Type == nil || *message.Type == schemas.ResponsesMessageTypeMessage)
 }
 
+// openAIComputerAction replaces what OpenAI's computer actions lack: zoom becomes a
+// screenshot and the region goes. It reports whether anything changed.
+func openAIComputerAction(action schemas.ResponsesComputerToolCallAction) (schemas.ResponsesComputerToolCallAction, bool) {
+	if action.Type != "zoom" && action.Region == nil {
+		return action, false
+	}
+	action.Region = nil
+	if action.Type == "zoom" {
+		action.Type = "screenshot"
+	}
+	return action, true
+}
+
+// openAIComputerToolMessage applies openAIComputerAction to a computer call's action and to
+// every entry of its actions list, copying before it changes anything.
+func openAIComputerToolMessage(toolMsg *schemas.ResponsesToolMessage) *schemas.ResponsesToolMessage {
+	var out *schemas.ResponsesToolMessage
+	own := func() *schemas.ResponsesToolMessage {
+		if out == nil {
+			c := *toolMsg
+			out = &c
+		}
+		return out
+	}
+	if toolMsg.Action != nil && toolMsg.Action.ResponsesComputerToolCallAction != nil {
+		if action, changed := openAIComputerAction(*toolMsg.Action.ResponsesComputerToolCallAction); changed {
+			actionStruct := *toolMsg.Action
+			actionStruct.ResponsesComputerToolCallAction = &action
+			own().Action = &actionStruct
+		}
+	}
+	if toolMsg.ResponsesComputerToolCall != nil {
+		var actions []schemas.ResponsesComputerToolCallAction
+		for i, entry := range toolMsg.ResponsesComputerToolCall.Actions {
+			if cleaned, changed := openAIComputerAction(entry); changed {
+				if actions == nil {
+					actions = slices.Clone(toolMsg.ResponsesComputerToolCall.Actions)
+				}
+				actions[i] = cleaned
+			}
+		}
+		if actions != nil {
+			call := *toolMsg.ResponsesComputerToolCall
+			call.Actions = actions
+			own().ResponsesComputerToolCall = &call
+		}
+	}
+	if out == nil {
+		return toolMsg
+	}
+	return out
+}
+
+// computerCallActionAsActions replays a computer_call's single action as its actions list.
+// The GA computer tool rejects action, alone or beside actions, on OpenAI, Azure and Bedrock.
+func computerCallActionAsActions(message schemas.ResponsesMessage) schemas.ResponsesMessage {
+	if message.Type == nil || *message.Type != schemas.ResponsesMessageTypeComputerCall || message.ResponsesToolMessage == nil {
+		return message
+	}
+	toolMsg := *message.ResponsesToolMessage
+	if toolMsg.Action == nil || toolMsg.Action.ResponsesComputerToolCallAction == nil {
+		return message
+	}
+	call := schemas.ResponsesComputerToolCall{}
+	if toolMsg.ResponsesComputerToolCall != nil {
+		call = *toolMsg.ResponsesComputerToolCall
+	}
+	if len(call.Actions) == 0 {
+		call.Actions = []schemas.ResponsesComputerToolCallAction{*toolMsg.Action.ResponsesComputerToolCallAction}
+	}
+	toolMsg.ResponsesComputerToolCall = &call
+	toolMsg.Action = nil
+	message.ResponsesToolMessage = &toolMsg
+	return message
+}
+
 func assistantOutputTextAsInputText(message schemas.ResponsesMessage) schemas.ResponsesMessage {
 	if message.Role == nil || *message.Role != schemas.ResponsesInputMessageRoleAssistant ||
 		message.Content == nil || len(message.Content.ContentBlocks) == 0 {
@@ -1352,38 +1441,44 @@ func assistantOutputTextAsInputText(message schemas.ResponsesMessage) schemas.Re
 	return message
 }
 
-func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypesSupported bool) {
+// isOpenAISupportedToolType reports whether a tool type is forwarded to OpenAI-compatible providers.
+func isOpenAISupportedToolType(t schemas.ResponsesToolType, provider schemas.ModelProvider) bool {
+	switch t {
+	case schemas.ResponsesToolTypeFunction,
+		schemas.ResponsesToolTypeFileSearch,
+		schemas.ResponsesToolTypeComputer,
+		schemas.ResponsesToolTypeWebSearch,
+		schemas.ResponsesToolTypeWebFetch,
+		schemas.ResponsesToolTypeMCP,
+		schemas.ResponsesToolTypeApplyPatch,
+		schemas.ResponsesToolTypeCustom,
+		schemas.ResponsesToolTypeWebSearchPreview,
+		schemas.ResponsesToolTypeMemory,
+		schemas.ResponsesToolTypeToolSearch,
+		schemas.ResponsesToolTypeNamespace:
+		return true
+	case schemas.ResponsesToolTypeShell,
+		schemas.ResponsesToolTypeLocalShell,
+		schemas.ResponsesToolTypeCodeInterpreter,
+		schemas.ResponsesToolTypeImageGeneration,
+		schemas.ResponsesToolTypeComputerUsePreview,
+		schemas.ResponsesToolTypeProgrammaticToolCalling:
+		return provider != schemas.BedrockMantle && provider != schemas.Bedrock
+	case schemas.ResponsesToolTypeXSearch:
+		return provider == schemas.XAI
+	}
+	return false
+}
+
+func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypesSupported bool, baseProvider schemas.ModelProvider) {
 	if len(resp.Tools) == 0 {
 		return
 	}
 
-	// Define OpenAI-supported tool types
-	supportedTypes := map[schemas.ResponsesToolType]bool{
-		schemas.ResponsesToolTypeFunction:           true,
-		schemas.ResponsesToolTypeFileSearch:         true,
-		schemas.ResponsesToolTypeComputerUsePreview: true,
-		schemas.ResponsesToolTypeComputer:           true,
-		schemas.ResponsesToolTypeWebSearch:          true,
-		schemas.ResponsesToolTypeWebFetch:           true,
-		schemas.ResponsesToolTypeMCP:                true,
-		schemas.ResponsesToolTypeCodeInterpreter:    true,
-		schemas.ResponsesToolTypeImageGeneration:    true,
-		schemas.ResponsesToolTypeLocalShell:         true,
-		schemas.ResponsesToolTypeCustom:             true,
-		schemas.ResponsesToolTypeWebSearchPreview:   true,
-		schemas.ResponsesToolTypeMemory:             true,
-		schemas.ResponsesToolTypeToolSearch:         true,
-		schemas.ResponsesToolTypeNamespace:          true,
-	}
-
-	// Allow provider-native tools that are not part of the OpenAI spec
-	if resp.Provider == schemas.XAI {
-		supportedTypes[schemas.ResponsesToolTypeXSearch] = true
-	}
-
 	// Filter tools to only include supported types
 	filteredTools := make([]schemas.ResponsesTool, 0, len(resp.Tools))
-	for _, tool := range resp.Tools {
+	for i := range resp.Tools {
+		tool := &resp.Tools[i]
 		// OpenRouter exposes server-side tools under the "openrouter:" namespace
 		// (web_search, web_fetch, datetime, image_generation, apply_patch, subagent, ...).
 		// They are native to OpenRouter and must not be stripped by the
@@ -1391,10 +1486,10 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 		// covered without per-tool additions.
 		isOpenRouterServerTool := resp.Provider == schemas.OpenRouter &&
 			strings.HasPrefix(string(tool.Type), schemas.ResponsesToolTypeOpenRouterPrefix)
-		if supportedTypes[tool.Type] || isOpenRouterServerTool {
+		if isOpenAISupportedToolType(tool.Type, baseProvider) || isOpenRouterServerTool {
 			// check for computer use preview
 			if tool.Type == schemas.ResponsesToolTypeComputerUsePreview && tool.ResponsesToolComputerUsePreview != nil && tool.ResponsesToolComputerUsePreview.EnableZoom != nil {
-				newTool := tool
+				newTool := *tool
 				newComputerUse := &schemas.ResponsesToolComputerUsePreview{
 					DisplayHeight: tool.ResponsesToolComputerUsePreview.DisplayHeight,
 					DisplayWidth:  tool.ResponsesToolComputerUsePreview.DisplayWidth,
@@ -1405,7 +1500,7 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 				filteredTools = append(filteredTools, newTool)
 			} else if tool.Type == schemas.ResponsesToolTypeWebSearch && tool.ResponsesToolWebSearch != nil {
 				// Create a proper deep copy with new nested pointers to avoid mutating the original
-				newTool := tool
+				newTool := *tool
 				newWebSearch := &schemas.ResponsesToolWebSearch{}
 
 				// MaxUses is intentionally omitted (nil) - OpenAI doesn't support it
@@ -1443,7 +1538,7 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 				newTool.ResponsesToolWebSearch = newWebSearch
 				filteredTools = append(filteredTools, newTool)
 			} else {
-				filteredTools = append(filteredTools, tool)
+				filteredTools = append(filteredTools, *tool)
 			}
 		}
 	}

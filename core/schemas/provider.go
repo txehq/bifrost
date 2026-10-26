@@ -407,6 +407,7 @@ type AllowedRequests struct {
 	PassthroughStream     bool `json:"passthrough_stream"`
 	WebSocketResponses    bool `json:"websocket_responses"`
 	Realtime              bool `json:"realtime"`
+	Live                  bool `json:"live"`
 	CachedContentCreate   bool `json:"cached_content_create"`
 	CachedContentList     bool `json:"cached_content_list"`
 	CachedContentRetrieve bool `json:"cached_content_retrieve"`
@@ -537,6 +538,10 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.WebSocketResponses
 	case RealtimeRequest:
 		return ar.Realtime
+	case LiveRequest:
+		return ar.Live
+	case LiveContentRequest:
+		return ar.Live
 	case CachedContentCreateRequest:
 		return ar.CachedContentCreate
 	case CachedContentListRequest:
@@ -583,9 +588,11 @@ type ProviderConfig struct {
 	SendBackRawRequest      bool                  `json:"send_back_raw_request"`      // Send raw request back in the bifrost response (default: false)
 	SendBackRawResponse     bool                  `json:"send_back_raw_response"`     // Send raw response back in the bifrost response (default: false)
 	StoreRawRequestResponse bool                  `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
+	IgnoreProviderCost      bool                  `json:"ignore_provider_cost"`       // Ignore provider-reported usage.cost and price the request from Bifrost's catalog and overrides (default: false)
 	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
 	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
 	PromptCache             *PromptCacheConfig    `json:"prompt_cache,omitempty"`
+	InjectedTools           *InjectedToolsConfig  `json:"injected_tools,omitempty"`
 }
 
 // PromptCacheConfig opts a provider into synthesizing prompt-cache breakpoints for
@@ -632,6 +639,28 @@ type CacheControlInjectionPoint struct {
 
 // CacheControlInjectionLocationMessage is the only Location value currently honoured.
 const CacheControlInjectionLocationMessage = "message"
+
+// InjectedToolsConfig names MCP tools that Bifrost adds to every chat and responses
+// request served by this provider and executes server side when the model calls them.
+//
+// Each slot has a fixed role. The role is what lets Bifrost replace the matching
+// native tool a client sent (a web_search server tool, web_search_options) with the
+// configured MCP tool, so one search backend serves every model on the provider.
+type InjectedToolsConfig struct {
+	WebSearch *InjectedToolRef `json:"web_search,omitempty"` // MCP tool that replaces native web search
+}
+
+// InjectedToolRef identifies one MCP tool by client name and the tool's own name,
+// without the "<client>-" prefix Bifrost adds when it exposes the tool to a model.
+type InjectedToolRef struct {
+	MCPClientName string `json:"mcp_client_name"`
+	ToolName      string `json:"tool_name"`
+}
+
+// IsEmpty reports whether no injected tool slot is configured.
+func (c *InjectedToolsConfig) IsEmpty() bool {
+	return c == nil || c.WebSearch == nil
+}
 
 // OpenAIConfig holds OpenAI-specific provider configuration.
 type OpenAIConfig struct {
