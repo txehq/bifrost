@@ -538,6 +538,9 @@ func (provider *XAIProvider) ContainerFileDelete(_ *schemas.BifrostContext, _ []
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
 }
 
+// Passthrough forwards a native Messages body to xAI byte-for-byte, system included:
+// unlike upstream, this fork does not set StripAnthropicOnlyFields, so Claude Code's
+// safeguards, diagnostics and billing-header block reach xAI as sent (TXE-5193).
 func (provider *XAIProvider) Passthrough(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
 	if !anthropicmsg.IsMessagesPath(req.Path) {
 		return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
@@ -546,10 +549,10 @@ func (provider *XAIProvider) Passthrough(ctx *schemas.BifrostContext, key schema
 	return anthropicmsg.Passthrough(ctx, provider.client, key, req, anthropicmsg.Config{
 		Provider: provider.GetProviderKey(), Endpoint: endpoint,
 		NetworkConfig: provider.networkConfig, CustomProviderConfig: provider.customProviderConfig, Logger: provider.logger,
-		StripAnthropicOnlyFields: true,
 	})
 }
 
+// PassthroughStream forwards the body byte-for-byte as Passthrough does.
 func (provider *XAIProvider) PassthroughStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, req *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if !anthropicmsg.IsMessagesPath(req.Path) {
 		return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
@@ -558,6 +561,5 @@ func (provider *XAIProvider) PassthroughStream(ctx *schemas.BifrostContext, post
 	return anthropicmsg.PassthroughStream(ctx, postHookRunner, postHookSpanFinalizer, provider.streamingClient, key, req, anthropicmsg.Config{
 		Provider: provider.GetProviderKey(), Endpoint: endpoint,
 		NetworkConfig: provider.networkConfig, CustomProviderConfig: provider.customProviderConfig, Logger: provider.logger,
-		StripAnthropicOnlyFields: true,
 	})
 }

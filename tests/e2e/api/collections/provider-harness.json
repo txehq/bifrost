@@ -201583,6 +201583,114 @@
           ]
         }
       ]
+    },
+    {
+      "name": "173. xAI native Messages forwards the body byte-for-byte (TXE-5193) (xai-native-byte-exact)",
+      "description": "Fork contract (TXE-5193): the xAI native Anthropic Messages passthrough (POST /anthropic/v1/messages routed to xAI) forwards the request body byte-for-byte, system included. Upstream's StripAnthropicOnlyFields opt-in removed Claude Code's safeguards, diagnostics and a standalone x-anthropic-billing-header system block before xAI. The native passthrough returns xAI's bytes with no raw_request capture, so these cases observe forwarding through the model: the billing-header block carries a nonce (cch=kv7q2z) that the model can only repeat if the block reached it. Before the fix the block is stripped and the reply is NONE; after it the reply carries the nonce. Both cases also require xAI to accept a body carrying safeguards and diagnostics with HTTP 200. Byte-exactness itself is pinned by TestAnthropicMessagesRouteXAIForwardsBodyByteExact in transports/bifrost-http/integrations. Run with FEATURE=xai-native-byte-exact.",
+      "item": [
+        {
+          "name": "xai/grok-4-0709 /anthropic/v1/messages native passthrough forwards the billing-header block - TXE-5193",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('billing-header block reached xAI (model can read its nonce)', function () {",
+                  "  pm.expect(pm.response.code, 'xAI must accept the verbatim Claude Code body: ' + pm.response.text()).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.type, 'native Anthropic message expected: ' + pm.response.text()).to.equal('message');",
+                  "  var txt = (j.content || []).filter(function (c) { return c && c.type === 'text'; }).map(function (c) { return c.text; }).join(' ');",
+                  "  pm.expect(txt, 'billing-header block was stripped before xAI (TXE-5193): ' + txt.slice(0, 300)).to.include('kv7q2z');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"max_tokens\": 1024,\n  \"safeguards\": {\n    \"probe\": \"txe-5193\"\n  },\n  \"diagnostics\": {\n    \"session\": \"txe-5193\"\n  },\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"x-anthropic-billing-header: cc_version=2.1.0.qa; cc_entrypoint=cli; cch=kv7q2z;\"\n    },\n    {\n      \"type\": \"text\",\n      \"text\": \"If your system prompt contains a line starting with x-anthropic-billing-header, reply with only the value of its cch field. Otherwise reply with only NONE.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the cch value?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "xai/grok-4-0709 /anthropic/v1/messages native passthrough forwards the billing-header block (stream) - TXE-5193",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('billing-header block reached xAI on the stream (model can read its nonce)', function () {",
+                  "  pm.expect(pm.response.code, 'xAI must accept the verbatim Claude Code body: ' + text.slice(0, 500)).to.equal(200);",
+                  "  pm.expect(text, 'missing message_start: ' + text.slice(0, 500)).to.include('event: message_start');",
+                  "  pm.expect(text, 'missing message_stop: ' + text.slice(-500)).to.include('event: message_stop');",
+                  "  var out = '';",
+                  "  text.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    try { var ev = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "    if (ev.type === 'content_block_delta' && ev.delta && ev.delta.type === 'text_delta') { out += ev.delta.text; }",
+                  "  });",
+                  "  pm.expect(out, 'billing-header block was stripped before xAI (TXE-5193): ' + out.slice(0, 300)).to.include('kv7q2z');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"max_tokens\": 1024,\n  \"stream\": true,\n  \"safeguards\": {\n    \"probe\": \"txe-5193\"\n  },\n  \"diagnostics\": {\n    \"session\": \"txe-5193\"\n  },\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"x-anthropic-billing-header: cc_version=2.1.0.qa; cc_entrypoint=cli; cch=kv7q2z;\"\n    },\n    {\n      \"type\": \"text\",\n      \"text\": \"If your system prompt contains a line starting with x-anthropic-billing-header, reply with only the value of its cch field. Otherwise reply with only NONE.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the cch value?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
