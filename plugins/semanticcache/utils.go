@@ -1049,6 +1049,19 @@ func (plugin *Plugin) extractSpeechParametersToMetadata(params *schemas.SpeechPa
 func (plugin *Plugin) extractEmbeddingParametersToMetadata(params *schemas.EmbeddingParameters, metadata map[string]interface{}) {
 	putIfSet(metadata, "encoding_format", params.EncodingFormat)
 	putIfSet(metadata, "dimensions", params.Dimensions)
+	// Each of these changes the vector the provider returns for the same input, so a
+	// request that differs only in one of them must not hit another's cache entry.
+	putIfSet(metadata, "task_type", params.TaskType)
+	putIfSet(metadata, "title", params.Title)
+	putIfSet(metadata, "auto_truncate", params.AutoTruncate)
+	putIfSet(metadata, "instructions", params.Instructions)
+	if len(params.SparseEmbedding) > 0 {
+		if raw, err := schemas.MarshalSorted(params.SparseEmbedding); err != nil {
+			plugin.logger.Warn("Failed to marshal sparse_embedding for metadata: %v", err)
+		} else {
+			metadata["sparse_embedding"] = string(raw)
+		}
+	}
 	if len(params.ExtraParams) > 0 {
 		maps.Copy(metadata, params.ExtraParams)
 	}
