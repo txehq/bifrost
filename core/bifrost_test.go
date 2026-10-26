@@ -17,9 +17,10 @@ import (
 	"time"
 
 	"github.com/capsohq/bifrost/core/internal/memtest"
+	"github.com/capsohq/bifrost/core/keyselectors"
 	mistralprovider "github.com/capsohq/bifrost/core/providers/mistral"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
-	"github.com/capsohq/bifrost/core/schemas"
+	schemas "github.com/capsohq/bifrost/core/schemas"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -1253,12 +1254,13 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	// The request is served by key-a, which binds the session to it.
 	bfCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
 	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
-	bifrost.observeSessionOutcome(bfCtx, route, &route, false, nil)
+	bifrost.observeSessionOutcome(bfCtx, route, &route, false, false, nil)
 	if raw, err := kvStore.Get(kvKey); err != nil || raw != "key-a" {
 		t.Errorf("kvstore after the request served: expected key-a, got %v (err=%v)", raw, err)
 	}
 
-	// Second request: the bound key comes back alone, rotation off, selector not consulted.
+	// Second request: the bound key comes first with the rest of the pool behind it, rotation off,
+	// selector not consulted.
 	keys2, canRotate2, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 	if err != nil {
 		t.Fatalf("second selectKeyFromProviderForModelWithPool: %v", err)
@@ -1266,8 +1268,8 @@ func TestSelectKeyFromProviderForModel_SessionStickiness(t *testing.T) {
 	if canRotate2 {
 		t.Error("second call: canRotate should be false for a session-bound key")
 	}
-	if len(keys2) != 1 || keys2[0].ID != "key-a" {
-		t.Errorf("second call: expected [key-a] (bound), got %v", keys2)
+	if len(keys2) != 2 || keys2[0].ID != "key-a" || keys2[1].ID != "key-b" {
+		t.Errorf("second call: expected [key-a key-b] (bound first), got %v", keys2)
 	}
 	if keySelectorCalls != 0 {
 		t.Errorf("second call: keySelector should not run, got %d calls", keySelectorCalls)
@@ -1361,7 +1363,7 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 	// An earlier request served by key-a bound the session to it.
 	bfCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-a")
 	route := schemas.Route{Provider: schemas.OpenAI, Model: "gpt-4"}
-	bifrost.observeSessionOutcome(bfCtx, route, &route, false, nil)
+	bifrost.observeSessionOutcome(bfCtx, route, &route, false, false, nil)
 
 	config := createTestConfig(3, 0, 0)
 	logger := NewDefaultLogger(schemas.LogLevelError)
@@ -1374,8 +1376,8 @@ func TestSelectKeyFromProviderForModel_SessionStickinessNoRotation(t *testing.T)
 	if canRotate {
 		t.Fatal("expected canRotate=false for session-sticky request")
 	}
-	if len(pool) != 1 || pool[0].ID != "key-a" {
-		t.Fatalf("expected sticky pool=[key-a], got %v", pool)
+	if len(pool) == 0 || pool[0].ID != "key-a" {
+		t.Fatalf("expected sticky pool led by key-a, got %v", pool)
 	}
 
 	fixedKey := pool[0]
@@ -1423,9 +1425,11 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 	}
 	bfCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
+	// Each key that blacklists the model allows every model otherwise: a key with no models list
+	// allows none, which would exclude it whatever its blacklist said.
 	t.Run("all keys blacklist model", func(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
+			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, Models: []string{"*"}, BlacklistedModels: []string{"gpt-4"}},
 		})
 		_, _, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
 		if err == nil {
@@ -1452,7 +1456,7 @@ func TestSelectKeyFromProviderForModel_BlacklistedModels(t *testing.T) {
 
 	t.Run("second key used when first blacklists", func(t *testing.T) {
 		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
-			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, BlacklistedModels: []string{"gpt-4"}},
+			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-1"), Weight: 1, Models: []string{"*"}, BlacklistedModels: []string{"gpt-4"}},
 			{ID: "k2", Name: "K2", Value: *schemas.NewSecretVar("sk-2"), Weight: 1, Models: []string{"*"}},
 		})
 		pool, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(bfCtx, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", schemas.OpenAI)
@@ -1538,6 +1542,116 @@ func TestSelectKeyFromProviderForModel_VLLMAliasResolution(t *testing.T) {
 		}
 		if len(keys) != 1 || keys[0].ID != "vllm-a" {
 			t.Fatalf("got keys %v, want [vllm-a]", keys)
+		}
+	})
+}
+
+// affinityPrefers is a session policy that keeps a session on one key whenever that key is offered.
+type affinityPrefers struct{ id string }
+
+func (affinityPrefers) ResolveRoute(_ *schemas.BifrostContext, _ schemas.Route, chain []schemas.Route) []schemas.Route {
+	return chain
+}
+
+func (a affinityPrefers) ResolveKey(_ *schemas.BifrostContext, _ schemas.ModelProvider, _ string, eligible []schemas.Key) (schemas.Key, bool) {
+	for _, key := range eligible {
+		if key.ID == a.id {
+			return key, true
+		}
+	}
+	return schemas.Key{}, false
+}
+
+func (affinityPrefers) Observe(*schemas.BifrostContext, schemas.Route, schemas.RouteOutcome) {}
+
+func TestSelectKeyForProviderRequestType_AdditionalModels(t *testing.T) {
+	account := NewMockAccount()
+	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError), keySelector: keyselectors.WeightedRandom}
+	newKey := func(id string, models schemas.WhiteList, blacklisted schemas.BlackList) schemas.Key {
+		return schemas.Key{ID: id, Name: id, Value: *schemas.NewSecretVar("sk-" + id), Weight: 1, Models: models, BlacklistedModels: blacklisted}
+	}
+	voiceOnly := newKey("voice-only", schemas.WhiteList{"gpt-live-1"}, nil)
+	both := newKey("both", schemas.WhiteList{"gpt-live-1", "gpt-5.6-luna"}, nil)
+	backendOnly := newKey("backend-only", schemas.WhiteList{"gpt-5.6-luna"}, nil)
+	wildcardBlocked := newKey("wildcard-blocked", schemas.WhiteList{"*"}, schemas.BlackList{"gpt-5.6-luna"})
+
+	t.Run("selects only keys that serve every model", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{voiceOnly, both, backendOnly, wildcardBlocked})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		for range 20 {
+			key, err := bifrost.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, schemas.OpenAI, "gpt-live-1", "gpt-5.6-luna")
+			if err != nil {
+				t.Fatalf("SelectKeyForProviderRequestType: %v", err)
+			}
+			if key.ID != "both" {
+				t.Fatalf("selected %q, want both", key.ID)
+			}
+		}
+	})
+
+	t.Run("errors when no key serves every model", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{voiceOnly, backendOnly, wildcardBlocked})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		_, err := bifrost.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, schemas.OpenAI, "gpt-live-1", "gpt-5.6-luna")
+		if err == nil || !strings.Contains(err.Error(), "gpt-live-1") || !strings.Contains(err.Error(), "gpt-5.6-luna") {
+			t.Fatalf("err = %v, want an error naming both models", err)
+		}
+	})
+
+	t.Run("pinned key must serve every model", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{voiceOnly, both})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "both")
+		if key, err := bifrost.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, schemas.OpenAI, "gpt-live-1", "gpt-5.6-luna"); err != nil || key.ID != "both" {
+			t.Fatalf("pinned both: key=%q err=%v", key.ID, err)
+		}
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "voice-only")
+		if key, err := bifrost.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, schemas.OpenAI, "gpt-live-1", "gpt-5.6-luna"); err == nil {
+			t.Fatalf("pinned voice-only: selected %q, want error", key.ID)
+		}
+	})
+
+	t.Run("session affinity picks among keys that serve every model", func(t *testing.T) {
+		// The session's last key serves only the voice model; another key serves both. Affinity
+		// must choose from the pool narrowed by every model, not rebind to the voice-only key.
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{voiceOnly, both})
+		sticky := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError), keySelector: keyselectors.WeightedRandom, sessionAffinity: affinityPrefers{id: "voice-only"}}
+		key, err := sticky.SelectKeyForProviderRequestType(sessionCtx("live-1"), schemas.LiveRequest, schemas.OpenAI, "gpt-live-1", "gpt-5.6-luna")
+		if err != nil || key.ID != "both" {
+			t.Fatalf("key=%q err=%v, want both", key.ID, err)
+		}
+	})
+
+	t.Run("empty additional model and no additional models keep single-model selection", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{voiceOnly})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		for _, extra := range [][]string{nil, {""}} {
+			key, err := bifrost.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, schemas.OpenAI, "gpt-live-1", extra...)
+			if err != nil || key.ID != "voice-only" {
+				t.Fatalf("additional=%v: key=%q err=%v", extra, key.ID, err)
+			}
+		}
+	})
+
+	t.Run("KeySupportsModel applies the same rules to a pinned session key", func(t *testing.T) {
+		if !bifrost.KeySupportsModel(schemas.OpenAI, both, "gpt-5.6-luna") {
+			t.Fatal("key listing the model should support it")
+		}
+		if bifrost.KeySupportsModel(schemas.OpenAI, voiceOnly, "gpt-5.6-luna") {
+			t.Fatal("key not listing the model should not support it")
+		}
+		if bifrost.KeySupportsModel(schemas.OpenAI, wildcardBlocked, "gpt-5.6-luna") {
+			t.Fatal("deny list must win over a wildcard allow list")
+		}
+	})
+
+	t.Run("direct key bypasses model lists", func(t *testing.T) {
+		account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{voiceOnly})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "direct", Value: *schemas.NewSecretVar("sk-direct")})
+		key, err := bifrost.SelectKeyForProviderRequestType(ctx, schemas.LiveRequest, schemas.OpenAI, "gpt-live-1", "gpt-5.6-luna")
+		if err != nil || key.ID != "direct" {
+			t.Fatalf("key=%q err=%v, want direct", key.ID, err)
 		}
 	})
 }
@@ -3894,7 +4008,7 @@ func TestApplyProviderProxySignal_RewritesPerAttempt(t *testing.T) {
 	}
 }
 
-// https://github.com/maximhq/bifrost/issues/6966: prepareFallbackRequest enumerates sub-request
+// https://github.com/capsohq/bifrost/issues/6966: prepareFallbackRequest enumerates sub-request
 // types by hand, and the shallow copy shares any pointer it does not re-target with the
 // original request. A type it forgets therefore keeps the primary provider and model, so the
 // "fallback" attempt is routed back to the primary while RoutingInfo reports it as a fallback.
@@ -4585,15 +4699,14 @@ func TestSDKFidelityDecisionRequestNullStateReachesProvider(t *testing.T) {
 	resp, bifrostErr := client.DecisionRequest(ctx, &schemas.BifrostDecisionRequest{
 		Provider: schemas.Typesafe,
 		Model:    "jev-1.13.0",
-		State:    nil,
-		Questions: map[string]schemas.DecisionQuestion{
-			"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+		Questions: []schemas.DecisionQuestion{
+			{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("q"), Instructions: schemas.NewDecisionText("Evaluate this state.")},
 		},
 	})
 	if bifrostErr != nil {
 		t.Fatalf("null state must reach the provider, got error: %v", bifrostErr)
 	}
-	if resp == nil || resp.Answers["q"].Value != 0.25 {
+	if resp == nil || len(resp.Answers) != 1 || resp.Answers[0].Probability == nil || *resp.Answers[0].Probability != 0.25 {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 	mu.Lock()
@@ -5499,5 +5612,241 @@ func TestListAllModelsLastKnownModelsRespectTheCallersAccess(t *testing.T) {
 	}
 	if !containsModelID(resp, "groq/llama-3.3-70b-versatile") || !containsModelID(resp, "groq/qwen-qwq-32b") {
 		t.Fatalf("ungoverned caller got %v, want both last-known models", modelIDs(resp))
+	}
+}
+
+// An attempt that already ran a provider-injected MCP tool is not retried: a retry would
+// restart the injected loop from the original request and run the tool's side effects,
+// and bill the finished turns, a second time.
+func TestExecuteRequestWithRetries_StopsAfterInjectedToolRan(t *testing.T) {
+	config := createTestConfig(2, time.Millisecond, 10*time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	callCount := 0
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		ctx.SetValue(schemas.BifrostContextKeyInjectedToolsExecuted, true)
+		return "", createBifrostError("service unavailable", Ptr(503), nil, false)
+	}
+	_, err := executeRequestWithRetries(ctx, config, handler, nil, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4", nil, logger)
+	if err == nil {
+		t.Fatal("expected the 503 to come back")
+	}
+	if callCount != 1 {
+		t.Fatalf("a retryable error after an injected tool ran ends the request: %d attempts", callCount)
+	}
+}
+
+// A key the caller brought (x-bf-direct-key) is the caller's own, so the provider refusing it is
+// the answer whatever max_retries is. Collapsing it into 502 upstream_credentials_exhausted would
+// tell the caller the gateway's keys ran out, and invite a retry with the same bad key. A single
+// configured key, pinned, still collapses within the budget, since that credential is not the
+// caller's.
+func TestExecuteRequestWithRetries_DirectKeyRefusalIsTheCallersError(t *testing.T) {
+	run := func(t *testing.T, retries int, direct bool) (*schemas.BifrostError, int) {
+		t.Helper()
+		ctx := rotationTestContext()
+		if direct {
+			ctx.SetValue(schemas.BifrostContextKeyDirectKey, rotationKeyA)
+		}
+		calls := 0
+		handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+			calls++
+			return "", providerError(401, "invalid_request_error", "invalid_api_key", "Incorrect API key provided")
+		}
+		fixed := func(_, deadKeyIDs map[string]bool) (schemas.Key, error) {
+			if deadKeyIDs[rotationKeyA.ID] {
+				return schemas.Key{}, errAllKeysDead
+			}
+			return rotationKeyA, nil
+		}
+		_, err := executeRequestWithRetries(ctx, createTestConfig(retries, 0, 0), handler, fixed,
+			schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, NewDefaultLogger(schemas.LogLevelError))
+		return err, calls
+	}
+
+	for _, retries := range []int{0, 1, 3} {
+		err, calls := run(t, retries, true)
+		if err == nil || err.StatusCode == nil || *err.StatusCode != 401 || err.ExtraFields.ErrorType == schemas.ErrorTypeProviderCredentialsExhausted {
+			t.Errorf("max_retries %d: want the provider's 401 for the caller's own key, got %v", retries, err)
+		}
+		if calls != 1 {
+			t.Errorf("max_retries %d: %d upstream calls, want 1: there is no other key to reach", retries, calls)
+		}
+	}
+	if err, _ := run(t, 1, false); err == nil || err.StatusCode == nil || *err.StatusCode != 502 || err.ExtraFields.ErrorType != schemas.ErrorTypeProviderCredentialsExhausted {
+		t.Errorf("a pinned configured key within the budget: want 502 upstream_credentials_exhausted, got %v", err)
+	}
+}
+
+// TestExecuteRequestWithRetries_BackoffSkippedOnlyForACredentialSwap pins when a retry waits out
+// its backoff. A key the provider refused outright is swapped for another with no wait: the new
+// credential has nothing to wait for. A rate limit waits even when the key changes, because an
+// account-level limit is shared by every key of the account, and a retry on the same key waits
+// too. The routing trail says which of the two happened.
+//
+// The backoff is an hour, so a retry that waits never runs: the request's deadline ends it during the
+// wait. A retry that skips the wait runs at once and serves. The test reads which of the two
+// happened, not how long anything took, so a slow test worker cannot fail it.
+func TestExecuteRequestWithRetries_BackoffSkippedOnlyForACredentialSwap(t *testing.T) {
+	const backoff = time.Hour
+	rateLimited := func() *schemas.BifrostError {
+		return providerError(429, "rate_limit_error", "rate_limit_exceeded", "Rate limit reached")
+	}
+	refused := func() *schemas.BifrostError {
+		return providerError(401, "invalid_request_error", "invalid_api_key", "Incorrect API key provided")
+	}
+	for _, tc := range []struct {
+		name       string
+		fail       func() *schemas.BifrostError
+		maxRetries int
+		keys       []schemas.Key
+		wantWait   bool
+		wantNote   string
+	}{
+		{"a refused key swapped for another", refused, 0, []schemas.Key{rotationKeyA, rotationKeyB}, false, "rotated key=Key B"},
+		{"a rate-limited key swapped for another", rateLimited, 1, []schemas.Key{rotationKeyA, rotationKeyB}, true, "rotated key=Key B"},
+		{"a rate-limited key retried on itself", rateLimited, 1, []schemas.Key{rotationKeyA}, true, "same key=Key A"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Long enough for an attempt however slow the worker, far too short for the backoff.
+			deadline := 30 * time.Second
+			if tc.wantWait {
+				deadline = time.Second
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(deadline))
+			ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+			calls := 0
+			handler := func(k schemas.Key) (string, *schemas.BifrostError) {
+				calls++
+				if calls == 1 {
+					return "", tc.fail()
+				}
+				return "ok", nil
+			}
+			result, err := executeRequestWithRetries(ctx, createTestConfig(tc.maxRetries, backoff, backoff), handler,
+				poolKeyProvider(tc.keys), schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, NewDefaultLogger(schemas.LogLevelError))
+			message := ""
+			if err != nil && err.Error != nil {
+				message = err.Error.Message
+			}
+			if tc.wantWait && (calls != 1 || !strings.Contains(message, "during retry backoff")) {
+				t.Fatalf("want the retry to wait out its backoff until the deadline ended it, got %d attempt(s), result %q, error %q", calls, result, message)
+			}
+			if !tc.wantWait && (calls != 2 || result != "ok") {
+				t.Fatalf("want the retry to skip the backoff and serve, got %d attempt(s), result %q, error %q", calls, result, message)
+			}
+			found := false
+			for _, entry := range ctx.GetRoutingEngineLogs() {
+				if entry.Engine == schemas.RoutingEngineCore && strings.Contains(entry.Message, tc.wantNote) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("the trail does not record %q: %v", tc.wantNote, ctx.GetRoutingEngineLogs())
+			}
+		})
+	}
+}
+
+// TestKeyPoolFilterSuppressingEveryKeyIs503 pins the answer when the key pool filter admits none of
+// a provider's live keys: 503 no_eligible_keys, which says the keys are held back for now, rather
+// than a credentials error that would blame keys nobody refused. The upstream is never called.
+func TestKeyPoolFilterSuppressingEveryKeyIs503(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, upstream.URL)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "key-a", Name: "Key A", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "key-b", Name: "Key B", Value: *schemas.NewSecretVar("sk-b"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	})
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+		KeyPoolFilter: func(_ *schemas.BifrostContext, _ schemas.ModelProvider, _ string, _ []schemas.Key) ([]schemas.Key, error) {
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	_, bifrostErr := client.ChatCompletionRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	})
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 503 || bifrostErr.Type == nil || *bifrostErr.Type != "no_eligible_keys" {
+		t.Fatalf("want 503 no_eligible_keys, got %+v", bifrostErr)
+	}
+	if n := calls.Load(); n != 0 {
+		t.Fatalf("the upstream was called %d time(s) with every key held back", n)
+	}
+}
+
+// A direct key is the caller's own credential for one provider. Listing every provider would send it
+// to each of them, so the aggregate refuses a request carrying one before any provider is asked,
+// while a listing that names its provider still uses the key there, and only there.
+func TestListAllModelsRefusesADirectKey(t *testing.T) {
+	const directKey = "sk-caller-direct-key"
+	var openAIAuth, groqAuth []string
+	recording := func(seen *[]string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			*seen = append(*seen, r.Header.Get("Authorization"))
+			openAIStyleModelsHandler("model-a")(w, r)
+		}
+	}
+	openAISrv := httptest.NewServer(recording(&openAIAuth))
+	t.Cleanup(openAISrv.Close)
+	groqSrv := httptest.NewServer(recording(&groqAuth))
+	t.Cleanup(groqSrv.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, openAISrv.URL)
+	account.AddProviderWithBaseURL(schemas.Groq, 1, 10, groqSrv.URL)
+	account.SetKeysForProvider(schemas.OpenAI, wildcardKey(schemas.OpenAI))
+	account.SetKeysForProvider(schemas.Groq, wildcardKey(schemas.Groq))
+	tuneProviderForTest(t, account, schemas.OpenAI)
+	tuneProviderForTest(t, account, schemas.Groq)
+	client := newListModelsTestClient(t, account, nil)
+
+	withDirectKey := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "header-provided", Name: "header-provided", Value: *schemas.NewSecretVar(directKey), Weight: 1})
+		return ctx
+	}
+
+	ctx := withDirectKey()
+	defer ctx.Cancel()
+	resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	if bfErr == nil {
+		t.Fatalf("ListAllModels with a direct key returned %v; want a refusal naming the provider requirement (openai saw %v, groq saw %v)", modelIDs(resp), openAIAuth, groqAuth)
+	}
+	if bfErr.StatusCode == nil || *bfErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %v, want 400: %s", bfErr.StatusCode, bfErr.GetErrorString())
+	}
+	if len(openAIAuth) != 0 || len(groqAuth) != 0 {
+		t.Fatalf("the direct key was sent to providers the caller never named: openai=%v groq=%v", openAIAuth, groqAuth)
+	}
+
+	named := withDirectKey()
+	defer named.Cancel()
+	if _, bfErr := client.ListModelsRequest(named, &schemas.BifrostListModelsRequest{Provider: schemas.OpenAI}); bfErr != nil {
+		t.Fatalf("listing a named provider with a direct key failed: %s", bfErr.GetErrorString())
+	}
+	if len(openAIAuth) != 1 || openAIAuth[0] != "Bearer "+directKey {
+		t.Fatalf("openai saw %v; want the direct key once", openAIAuth)
+	}
+	if len(groqAuth) != 0 {
+		t.Fatalf("groq saw %v; a named listing must not reach another provider", groqAuth)
 	}
 }

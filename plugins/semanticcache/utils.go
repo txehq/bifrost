@@ -362,6 +362,8 @@ func isResponsesToolCallItem(t schemas.ResponsesMessageType) bool {
 		schemas.ResponsesMessageTypeCustomToolCall,
 		schemas.ResponsesMessageTypeComputerCall,
 		schemas.ResponsesMessageTypeLocalShellCall,
+		schemas.ResponsesMessageTypeShellCall,
+		schemas.ResponsesMessageTypeApplyPatchCall,
 		schemas.ResponsesMessageTypeMCPCall,
 		schemas.ResponsesMessageTypeMCPApprovalRequest:
 		return true

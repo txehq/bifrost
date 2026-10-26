@@ -57,6 +57,92 @@ func TestValidateConfigSchema_ValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateConfigSchema_AgentOAuthRequiresCompleteConfig(t *testing.T) {
+	validConfig := `{
+		"agents": [{
+			"name": "oauth-agent",
+			"agent_card_url": "https://agent.example/.well-known/agent-card.json",
+			"runtime_auth": {
+				"type": "oauth",
+				"oauth": {
+					"token_url": "https://auth.example/token",
+					"client_id": "client-id",
+					"client_secret": "client-secret"
+				}
+			}
+		}]
+	}`
+	if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+		t.Fatalf("expected complete Agent OAuth config to pass validation: %v", err)
+	}
+
+	invalidConfigs := map[string]string{
+		"missing oauth object": strings.Replace(validConfig, `,
+				"oauth": {
+					"token_url": "https://auth.example/token",
+					"client_id": "client-id",
+					"client_secret": "client-secret"
+				}`, "", 1),
+		"empty oauth object": strings.Replace(validConfig, `"oauth": {
+					"token_url": "https://auth.example/token",
+					"client_id": "client-id",
+					"client_secret": "client-secret"
+				}`, `"oauth": {}`, 1),
+		"missing client ID": strings.Replace(validConfig, `
+					"client_id": "client-id",`, "", 1),
+		"missing client secret": strings.Replace(validConfig, `
+					"client_secret": "client-secret"`, "", 1),
+		"missing OAuth endpoint": strings.Replace(validConfig, `
+					"token_url": "https://auth.example/token",`, "", 1),
+		"environment reference endpoint": strings.Replace(validConfig,
+			"https://auth.example/token", "env.OAUTH_TOKEN_URL", 1),
+		"vault reference endpoint": strings.Replace(validConfig,
+			"https://auth.example/token", "vault.oauth-token-url", 1),
+		"non-HTTP endpoint": strings.Replace(validConfig,
+			"https://auth.example/token", "ftp://auth.example/token", 1),
+		"endpoint with userinfo": strings.Replace(validConfig,
+			"https://auth.example/token", "https://user:pass@auth.example/token", 1),
+		"endpoint without host": strings.Replace(validConfig,
+			"https://auth.example/token", "https:///token", 1),
+		"malformed endpoint": strings.Replace(validConfig,
+			"https://auth.example/token", "not-a-url", 1),
+	}
+	for name, config := range invalidConfigs {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateConfigSchema([]byte(config), loadLocalSchema(t)); err == nil {
+				t.Fatal("expected incomplete Agent OAuth config to fail validation")
+			}
+		})
+	}
+}
+
+func TestValidateConfigSchema_AgentOAuthRejectsUnknownFields(t *testing.T) {
+	validConfig := `{
+		"agents": [{
+			"name": "oauth-agent",
+			"agent_card_url": "https://agent.example/.well-known/agent-card.json",
+			"runtime_auth": {
+				"type": "oauth",
+				"oauth": {
+					"token_url": "https://auth.example/token",
+					"client_id": "client-id",
+					"client_secret": "client-secret",
+					"scopes": ["agent.invoke"],
+					"resource": "https://agent.example"
+				}
+			}
+		}]
+	}`
+	if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+		t.Fatalf("expected documented Agent OAuth fields to pass validation: %v", err)
+	}
+
+	invalidConfig := strings.Replace(validConfig, `"client_secret": "client-secret"`, `"client_secert": "client-secret"`, 1)
+	if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+		t.Fatal("expected an unknown Agent OAuth field to fail validation")
+	}
+}
+
 func TestValidateConfigSchema_EmptyObject(t *testing.T) {
 	// Empty object should be valid (all properties are optional)
 	emptyConfig := `{}`
@@ -3841,6 +3927,74 @@ func TestSchemaCodeModeLimitsValueBytes(t *testing.T) {
 			if (err != nil) != tc.wantErr {
 				t.Errorf("%s %s: err=%v, wantErr=%v", where, tc.limits, err, tc.wantErr)
 			}
+		}
+	}
+}
+
+// TestValidateConfigSchema_InjectedTools pins injected_tools on every provider shape.
+// The provider_with_*_config variants set additionalProperties:false, so a field listed
+// only on the generic provider def is rejected for Bedrock, Azure, Vertex and the rest.
+func TestValidateConfigSchema_InjectedTools(t *testing.T) {
+	schema := loadLocalSchema(t)
+	const injected = `"injected_tools": {"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}`
+	// Each base config must pass on its own. A base that fails for an unrelated reason
+	// fails identically with injected_tools added, which would hide a rejection.
+	keyConfigs := map[string]string{
+		"azure":      `, "azure_key_config": {"endpoint": "https://example.openai.azure.com"}`,
+		"vertex":     `, "vertex_key_config": {"project_id": "p", "region": "us-central1"}`,
+		"ollama":     `, "ollama_key_config": {"url": "http://localhost:11434"}`,
+		"sgl":        `, "sgl_key_config": {"url": "http://localhost:30000"}`,
+		"vllm":       `, "vllm_key_config": {"url": "http://localhost:8000", "model_name": "m"}`,
+		"databricks": `, "databricks_key_config": {"workspace_url": "https://dbc-1234abcd-5678.cloud.databricks.com"}`,
+	}
+	for _, provider := range []string{"openai", "anthropic", "bedrock", "bedrock_mantle", "azure", "vertex", "ollama", "sgl", "vllm", "replicate", "databricks", "deepseek", "fireworks", "github_copilot"} {
+		key := fmt.Sprintf(`{"name": "k", "value": "v", "weight": 1.0%s}`, keyConfigs[provider])
+		base := fmt.Sprintf(`{"providers": {%q: {"keys": [%s]}}}`, provider, key)
+		if err := ValidateConfigSchema([]byte(base), schema); err != nil {
+			t.Errorf("%s: base config must pass before injected_tools is checked: %v", provider, err)
+			continue
+		}
+		with := fmt.Sprintf(`{"providers": {%q: {"keys": [%s], %s}}}`, provider, key, injected)
+		if err := ValidateConfigSchema([]byte(with), schema); err != nil {
+			t.Errorf("%s: injected_tools rejected: %v", provider, err)
+		}
+	}
+
+	// governance.providers is loaded for governance settings only (budget, rate limit), so
+	// an injected_tools block there would be silently ignored. The schema must not
+	// advertise it there.
+	var doc struct {
+		Properties struct {
+			Governance struct {
+				Properties struct {
+					Providers struct {
+						Items struct {
+							Properties map[string]json.RawMessage `json:"properties"`
+						} `json:"items"`
+					} `json:"providers"`
+				} `json:"properties"`
+			} `json:"governance"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &doc); err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+	if _, ok := doc.Properties.Governance.Properties.Providers.Items.Properties["injected_tools"]; ok {
+		t.Error("governance.providers must not declare injected_tools: its loader never reads it")
+	}
+
+	openaiBase := `{"providers": {"openai": {"keys": [{"name": "k", "value": "v", "weight": 1.0}]}}}`
+	if err := ValidateConfigSchema([]byte(openaiBase), schema); err != nil {
+		t.Fatalf("openai base config must pass before the rejection cases mean anything: %v", err)
+	}
+	for name, block := range map[string]string{
+		"missing tool_name": `{"web_search": {"mcp_client_name": "tavily"}}`,
+		"empty client name": `{"web_search": {"mcp_client_name": "", "tool_name": "search"}}`,
+		"unknown slot":      `{"code_exec": {"mcp_client_name": "tavily", "tool_name": "run"}}`,
+	} {
+		config := fmt.Sprintf(`{"providers": {"openai": {"keys": [{"name": "k", "value": "v", "weight": 1.0}], "injected_tools": %s}}}`, block)
+		if err := ValidateConfigSchema([]byte(config), schema); err == nil {
+			t.Errorf("%s: expected injected_tools to fail validation", name)
 		}
 	}
 }

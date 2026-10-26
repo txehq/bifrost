@@ -517,3 +517,89 @@ func TestReservedKey_NonComparableKeyDoesNotPanic(t *testing.T) {
 	// userValues is still nil here; the guard must not panic before that check.
 	ctx.ClearValue([]string{"slice", "key"})
 }
+
+type trustedTestKey struct{}
+
+// TestTrustedValue_HiddenFromUserValues pins the trusted store: nothing a plugin can
+// enumerate or copy exposes it, yet children and plugin scopes of the context see it.
+func TestTrustedValue_HiddenFromUserValues(t *testing.T) {
+	root := NewBifrostContext(context.Background(), NoDeadline)
+	defer root.Cancel()
+	root.SetTrustedValue(trustedTestKey{}, "secret")
+
+	if v := root.Value(trustedTestKey{}); v != nil {
+		t.Fatalf("Value exposed a trusted value: %v", v)
+	}
+	for k := range root.GetUserValues() {
+		if _, ok := k.(trustedTestKey); ok {
+			t.Fatal("GetUserValues exposed a trusted key")
+		}
+	}
+	if v := root.GetParentCtxWithUserValues().Value(trustedTestKey{}); v != nil {
+		t.Fatalf("GetParentCtxWithUserValues copied a trusted value: %v", v)
+	}
+
+	child := NewBifrostContext(root, NoDeadline)
+	defer child.Cancel()
+	if v := child.TrustedValue(trustedTestKey{}); v != "secret" {
+		t.Fatalf("child context lost the trusted value: %v", v)
+	}
+
+	scoped := root.WithPluginScope(new("plugin"))
+	defer scoped.ReleasePluginScope()
+	if v := scoped.TrustedValue(trustedTestKey{}); v != "secret" {
+		t.Fatalf("plugin scope lost the trusted value: %v", v)
+	}
+	scoped.SetTrustedValue(trustedTestKey{}, "rewritten")
+	if v := root.TrustedValue(trustedTestKey{}); v != "rewritten" {
+		t.Fatalf("scoped write did not reach the root: %v", v)
+	}
+}
+
+// lazyCancelledParent is a parent whose Err already reports a cancellation while its Done
+// channel is still open: what a cancelled parent looks like to a child whose
+// watchCancellation goroutine has not run yet.
+type lazyCancelledParent struct {
+	context.Context
+	done chan struct{}
+}
+
+func (p *lazyCancelledParent) Done() <-chan struct{} { return p.done }
+func (p *lazyCancelledParent) Err() error            { return context.Canceled }
+
+// TestBifrostContext_CancelledSeesAParentCancelBeforeTheWatcher pins that Cancelled
+// reports a parent's cancellation synchronously, through any depth of BifrostContexts,
+// and applies it to the context so Done and Err agree afterwards. Err alone waits for
+// the watcher goroutine, which is the lag that let an injected-tool stream open another
+// provider turn after the tool call cancelled the request.
+func TestBifrostContext_CancelledSeesAParentCancelBeforeTheWatcher(t *testing.T) {
+	parent := &lazyCancelledParent{Context: context.Background(), done: make(chan struct{})}
+	child := NewBifrostContext(parent, NoDeadline)
+	grandchild := NewBifrostContext(child, NoDeadline)
+
+	if grandchild.Err() != nil {
+		t.Fatalf("Err() = %v before any watcher could run, want nil: the lag under test is gone", grandchild.Err())
+	}
+	if !grandchild.Cancelled() {
+		t.Fatal("Cancelled() = false with a cancelled parent")
+	}
+	for name, ctx := range map[string]*BifrostContext{"child": child, "grandchild": grandchild} {
+		if ctx.Err() == nil {
+			t.Errorf("%s: Err() = nil after Cancelled(), want the parent's cancellation applied", name)
+		}
+		select {
+		case <-ctx.Done():
+		default:
+			t.Errorf("%s: Done() still open after Cancelled()", name)
+		}
+	}
+
+	live := NewBifrostContext(context.Background(), NoDeadline)
+	if live.Cancelled() {
+		t.Fatal("Cancelled() = true for a context nobody cancelled")
+	}
+	live.Cancel()
+	if !live.Cancelled() {
+		t.Fatal("Cancelled() = false after Cancel()")
+	}
+}

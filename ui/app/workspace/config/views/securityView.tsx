@@ -342,6 +342,7 @@ export default function SecurityView() {
 		authorizedBySetupToken,
 		currentPassword,
 		requiresProofOfControl,
+		authorizedBySetupToken,
 	]);
 
 	return (

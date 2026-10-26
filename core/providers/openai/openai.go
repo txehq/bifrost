@@ -701,6 +701,7 @@ func HandleOpenAITextCompletionStreaming(
 		var finishReason *string
 		var messageID string
 		var created int
+		modelName := request.Model
 		lastChunkTime := startTime
 
 		for {
@@ -805,6 +806,10 @@ func HandleOpenAITextCompletionStreaming(
 				} else {
 					logger.Warn("postResponseConverter returned nil; leaving chunk unmodified")
 				}
+			}
+
+			if response.Model != "" {
+				modelName = response.Model
 			}
 
 			// Only usage observed at or after finish_reason ends a wait_for_usage wait. Some
@@ -916,7 +921,7 @@ func HandleOpenAITextCompletionStreaming(
 			return
 		}
 
-		response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, request.Model, created)
+		response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, modelName, created)
 		if postResponseConverter != nil {
 			response = postResponseConverter(response)
 			if response == nil {
@@ -2095,6 +2100,11 @@ func HandleOpenAIResponsesRequest(
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
+	// Custom tools sent as function tools come back as function calls; restore them.
+	if names := customToolNamesToRestore(ctx, request); names != nil {
+		restoreCustomToolCalls(response.Output, names)
+	}
+
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
@@ -2203,6 +2213,8 @@ func HandleOpenAIResponsesStreaming(
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	// Restores custom tools that were sent as function tools; nil when none were.
+	customToolRestorer := newCustomToolStreamRestorer(customToolNamesToRestore(ctx, request))
 
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
@@ -2377,6 +2389,12 @@ func HandleOpenAIResponsesStreaming(
 				// Per-event decode -> "response-parse" (Serialization) stream phase.
 				parseStart := time.Now()
 				umErr := sonic.UnmarshalString(jsonData, &response)
+				if umErr != nil {
+					// shell_call_output_content.delta sends `delta` as an object, which the
+					// string field rejects; without this fallback the event is dropped.
+					response = schemas.BifrostResponsesStreamResponse{}
+					umErr = schemas.UnmarshalResponsesStreamObjectDelta([]byte(jsonData), &response)
+				}
 				schemas.AddStreamParse(ctx, time.Since(parseStart))
 				if umErr != nil {
 					logger.Warn("Failed to parse stream response: %v", umErr)
@@ -2398,6 +2416,13 @@ func HandleOpenAIResponsesStreaming(
 				if sendBackRawResponse {
 					response.ExtraFields.RawResponse = jsonData
 				}
+			}
+
+			if prefix, drop := customToolRestorer.restore(&response); drop {
+				continue
+			} else if prefix != nil {
+				prefix.ExtraFields.ChunkIndex = prefix.SequenceNumber
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, prefix, nil, nil, nil), responseChan, postHookSpanFinalizer)
 			}
 
 			if response.Type == schemas.ResponsesStreamResponseTypeError {
@@ -4248,9 +4273,32 @@ func (provider *OpenAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	)
 }
 
-// Decision is not supported by the OpenAI provider.
+// Decision answers a decision request on OpenAI's POST /v1/decisions when the
+// model is served there: the datasheet's supports_decisions row decides, and
+// with no row a known decisions family (DefaultSupportsDecisions, such as
+// gpt-6-luna) does. Any other model is reported as unsupported, so core
+// answers the request through emulation on the model's chat API instead.
 func (provider *OpenAIProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
+	capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+	if !schemas.ResolveModelCaps(request.Provider, capModel).SupportsDecisions(schemas.DefaultSupportsDecisions(capModel)) {
+		return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
+	}
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.DecisionRequest); err != nil {
+		return nil, err
+	}
+
+	return HandleOpenAIDecisionRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, openAIDecisionsPath, schemas.DecisionRequest),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.logger,
+	)
 }
 
 // HandleOpenAIRerankRequest handles rerank requests for custom OpenAI-compatible APIs.

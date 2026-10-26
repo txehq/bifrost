@@ -133,37 +133,6 @@ func TestToVertexEmbeddingRequestBatch(t *testing.T) {
 	})
 }
 
-// The converter runs again on a retry or fallback with the same request, so it must not
-// consume the caller's extra params while lifting documentOcr/audioTrackExtraction out.
-func TestToVertexGeminiEmbeddingRequest_LeavesCallerExtraParamsIntact(t *testing.T) {
-	text := "hello"
-	req := &schemas.BifrostEmbeddingRequest{
-		Model: "gemini-embedding-001",
-		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
-		Params: &schemas.EmbeddingParameters{ExtraParams: map[string]interface{}{
-			"documentOcr": true, "audioTrackExtraction": false, "other": "kept",
-		}},
-	}
-	for attempt := 0; attempt < 2; attempt++ {
-		out, err := ToVertexGeminiEmbeddingRequest(req)
-		if err != nil {
-			t.Fatalf("attempt %d: %v", attempt, err)
-		}
-		if out.DocumentOCR == nil || !*out.DocumentOCR || out.AudioTrackExtraction == nil || *out.AudioTrackExtraction {
-			t.Fatalf("attempt %d: native fields not lifted: ocr=%v audio=%v", attempt, out.DocumentOCR, out.AudioTrackExtraction)
-		}
-		if _, ok := out.ExtraParams["documentOcr"]; ok {
-			t.Fatalf("attempt %d: documentOcr also left in the forwarded extra params", attempt)
-		}
-		if out.ExtraParams["other"] != "kept" {
-			t.Fatalf("attempt %d: unrelated extra param lost: %v", attempt, out.ExtraParams)
-		}
-	}
-	if len(req.Params.ExtraParams) != 3 {
-		t.Fatalf("caller's extra params were modified: %v", req.Params.ExtraParams)
-	}
-}
-
 // Go SDK callers still pass task_type, title and autoTruncate through ExtraParams (the
 // documented aliases); the first-class fields win when both are set, and the consumed
 // aliases are not forwarded again as extra params.
@@ -189,4 +158,48 @@ func TestToVertexEmbeddingRequest_HonoursExtraParamAliases(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, first, *out.Instances[0].TaskType, "the first-class field wins over the alias")
 	require.True(t, *out.Parameters.AutoTruncate)
+}
+
+// documentOcr / audioTrackExtraction are only accepted inside embedContentConfig. Top-level
+// keys are not rewritten (Vertex rejects them there), and the caller's params stay intact
+// because retries and fallbacks reuse them.
+func TestToVertexGeminiEmbeddingRequestForwardsEmbedContentConfig(t *testing.T) {
+	text := "alpha"
+	convert := func(extra map[string]interface{}) (*VertexGeminiEmbeddingRequest, []byte, []byte) {
+		t.Helper()
+		req, err := ToVertexGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			Model:  "gemini-embedding-2",
+			Input:  []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+			Params: &schemas.EmbeddingParameters{ExtraParams: extra},
+		})
+		require.NoError(t, err)
+		body, err := providerUtils.MarshalSorted(req)
+		require.NoError(t, err)
+		merged, err := providerUtils.MergeExtraParamsIntoJSON(body, req.ExtraParams)
+		require.NoError(t, err)
+		return req, body, merged
+	}
+
+	t.Run("nested config reaches the wire", func(t *testing.T) {
+		extra := map[string]interface{}{"embedContentConfig": map[string]interface{}{"documentOcr": true, "audioTrackExtraction": true}}
+		_, body, merged := convert(extra)
+		// Without passthrough only the struct is sent; with it the extras are merged on top.
+		for _, wire := range [][]byte{body, merged} {
+			var out map[string]interface{}
+			require.NoError(t, schemas.Unmarshal(wire, &out))
+			cfg, _ := out["embedContentConfig"].(map[string]interface{})
+			require.Equal(t, true, cfg["documentOcr"], string(wire))
+			require.Equal(t, true, cfg["audioTrackExtraction"], string(wire))
+		}
+		_, again, _ := convert(extra)
+		require.Equal(t, string(body), string(again), "a second attempt (retry/fallback) must send the same body")
+	})
+
+	t.Run("top-level keys are not rewritten", func(t *testing.T) {
+		extra := map[string]interface{}{"documentOcr": true}
+		req, body, _ := convert(extra)
+		require.Nil(t, req.EmbedContentConfig)
+		require.NotContains(t, string(body), "documentOcr")
+		require.Contains(t, extra, "documentOcr", "caller's ExtraParams must not be mutated")
+	})
 }

@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"sync"
 	"time"
 
@@ -38,7 +37,7 @@ func (h *HealthHandler) getHealth(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Pinging config store
-	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	reqCtx, cancel := RequestWorkContext(ctx, 10*time.Second)
 	defer cancel()
 	var errors []string
 	var mu sync.Mutex

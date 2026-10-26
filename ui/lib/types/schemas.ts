@@ -834,6 +834,26 @@ export const promptCacheFormSchema = z.object({
 
 export type PromptCacheFormSchema = z.infer<typeof promptCacheFormSchema>;
 
+export const injectedToolsConfigSchema = z.object({
+	web_search: z
+		.object({
+			mcp_client_name: z.string().min(1, "Pick an MCP server"),
+			tool_name: z.string().min(1, "Pick a tool"),
+		})
+		.optional(),
+});
+
+// The web search tab saves one injected tool. Removing it is the Remove button's job, so
+// a form is savable only with a server, its resolved name and a tool: a half-filled form
+// must never reach Save, which would otherwise clear the saved setting.
+export const injectedWebSearchFormSchema = z.object({
+	mcp_client_id: z.string().min(1, "Pick an MCP server"),
+	mcp_client_name: z.string().min(1, "Waiting for the MCP server to load"),
+	tool_name: z.string().min(1, "Pick the tool this MCP server should run as web search"),
+});
+
+export type InjectedWebSearchFormSchema = z.infer<typeof injectedWebSearchFormSchema>;
+
 // Allowed requests schema
 export const allowedRequestsSchema = z.object({
 	text_completion: z.boolean(),
@@ -872,6 +892,7 @@ export const allowedRequestsSchema = z.object({
 	model_retrieve: z.boolean().optional(),
 	websocket_responses: z.boolean(),
 	realtime: z.boolean(),
+	live: z.boolean().optional(),
 });
 
 // Custom provider config schema
@@ -929,6 +950,7 @@ export const modelProviderConfigSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	ignore_provider_cost: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 });
 
@@ -946,6 +968,7 @@ export const formModelProviderConfigSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	ignore_provider_cost: z.boolean().optional(),
 	custom_provider_config: formCustomProviderConfigSchema.optional(),
 });
 
@@ -964,9 +987,11 @@ export const addProviderRequestSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	ignore_provider_cost: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
+	injected_tools: injectedToolsConfigSchema.nullable().optional(),
 });
 
 // Update provider request schema
@@ -978,9 +1003,11 @@ export const updateProviderRequestSchema = z.object({
 	send_back_raw_request: z.boolean().optional(),
 	send_back_raw_response: z.boolean().optional(),
 	store_raw_request_response: z.boolean().optional(),
+	ignore_provider_cost: z.boolean().optional(),
 	custom_provider_config: customProviderConfigSchema.optional(),
 	openai_config: openaiConfigFormSchema.optional(),
 	prompt_cache: promptCacheFormSchema.optional(),
+	injected_tools: injectedToolsConfigSchema.nullable().optional(),
 });
 
 // Cache config schema
@@ -1104,6 +1131,13 @@ export const debuggingFormSchema = z.object({
 });
 
 export type DebuggingFormSchema = z.infer<typeof debuggingFormSchema>;
+
+// Pricing tab (provider-reported cost handling)
+export const pricingFormSchema = z.object({
+	ignore_provider_cost: z.boolean(),
+});
+
+export type PricingFormSchema = z.infer<typeof pricingFormSchema>;
 
 // Beta Headers tab
 export const betaHeadersFormSchema = z.object({

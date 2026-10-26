@@ -33,6 +33,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeySkipBudgetAndRateLimits: {},
 	BifrostContextKeySkipProviderCheck:       {},
 	BifrostContextKeySkipModelCheck:          {},
+	BifrostContextKeyAdmitUngrantedUser:      {},
 	BifrostContextKeyURLPath:                 {},
 	BifrostContextKeyDeferTraceCompletion:    {},
 	BifrostContextKeyAttemptTrail:            {},
@@ -40,6 +41,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyStreamAttemptAbort:      {},
 	BifrostContextKeyMCPHealthCheckRequest:   {},
 	BifrostContextKeyMCPUnattendedExecution:  {},
+	BifrostContextKeyInjectedToolsExecuted:   {},
 	BifrostContextKeyUpstreamLatency:         {},
 	BifrostContextKeyStreamOverhead:          {},
 	BifrostContextKeyRoutingInfo:             {},
@@ -88,6 +90,7 @@ type BifrostContext struct {
 	err                   error
 	errMu                 sync.RWMutex
 	userValues            map[any]any
+	trustedValues         map[any]any // read only by a holder of the key; see SetTrustedValue
 	valuesMu              sync.RWMutex
 	blockRestrictedWrites atomic.Bool
 	grant                 atomic.Pointer[Grant] // what the request has been granted; installed by the transport, root contexts only
@@ -386,6 +389,39 @@ func (bc *BifrostContext) Err() error {
 	return bc.err
 }
 
+// Cancelled reports whether this context, or a context above it, has been cancelled.
+//
+// A parent's cancellation reaches Done and Err through watchCancellation, a goroutine,
+// so for a moment after the parent is cancelled Err still returns nil. A decision that
+// must not outrun that moment, such as opening another provider turn right after a tool
+// call cancelled the request, asks the parents directly. A cancellation found above is
+// applied here at once, so Done and Err agree with it from then on.
+func (bc *BifrostContext) Cancelled() bool {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.Cancelled()
+	}
+	if bc.Err() != nil {
+		return true
+	}
+	parent := bc.parent
+	if parent == nil || isNonCancellingContext(parent) {
+		return false
+	}
+	var err error
+	if pbc, ok := parent.(*BifrostContext); ok {
+		if pbc.Cancelled() {
+			err = pbc.Err()
+		}
+	} else {
+		err = parent.Err()
+	}
+	if err == nil {
+		return false
+	}
+	bc.cancel(err)
+	return true
+}
+
 // Value returns the value associated with the key.
 // For scoped contexts, delegates to the root context via valueDelegate.
 // Otherwise checks the internal userValues map, then delegates to the parent context.
@@ -588,6 +624,42 @@ func (bc *BifrostContext) GetUserValues() map[any]any {
 	bc.valuesMu.RUnlock()
 
 	return result
+}
+
+// SetTrustedValue stores value under key in a store that Value, GetUserValues and
+// GetParentCtxWithUserValues never expose. Only a caller that already holds key can
+// read it back with TrustedValue, so a key of an unexported type is a capability: code
+// that cannot name the type can neither read nor write that slot, nor copy it out.
+// Scoped contexts write through to their root, as SetValue does.
+func (bc *BifrostContext) SetTrustedValue(key, value any) {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.SetTrustedValue(key, value)
+		return
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	if bc.trustedValues == nil {
+		bc.trustedValues = make(map[any]any)
+	}
+	bc.trustedValues[key] = value
+}
+
+// TrustedValue returns the value SetTrustedValue stored under key on this context or a
+// BifrostContext ancestor, or nil. Plain context.Context parents cannot hold one.
+func (bc *BifrostContext) TrustedValue(key any) any {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.TrustedValue(key)
+	}
+	bc.valuesMu.RLock()
+	val, ok := bc.trustedValues[key]
+	bc.valuesMu.RUnlock()
+	if ok {
+		return val
+	}
+	if parent, isBifrost := bc.parent.(*BifrostContext); isBifrost {
+		return parent.TrustedValue(key)
+	}
+	return nil
 }
 
 // GetParentCtxWithUserValues returns a copy of the parent context with all user-set values merged in.

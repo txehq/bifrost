@@ -102,17 +102,26 @@ jobs:
           cd helm-charts
           helm package bifrost
 
+      # A chart version with a hyphen (2.1.46-sync.3) is a prerelease, as the
+      # transport release treats its own versions: the GitHub release is marked
+      # prerelease, so it never becomes the repository's "latest" release, and
+      # Helm clients skip it unless asked for prereleases (--devel). A plain
+      # MAJOR.MINOR.PATCH keeps today's behaviour. The flag decision and the
+      # version/package checks live in the script, which
+      # helm-release-create.test.sh exercises for both paths.
       - name: Create GitHub Release
         if: steps.check-release.outputs.exists == 'false'
-        run: |
-          cd helm-charts
-          gh release create "helm-chart-v${{ steps.chart-version.outputs.version }}" \
-            bifrost-${{ steps.chart-version.outputs.version }}.tgz \
-            --target ${{ github.sha }} \
-            --title "Helm Chart v${{ steps.chart-version.outputs.version }}" \
-            --notes "Helm chart release for Bifrost v${{ steps.chart-version.outputs.version }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.chart-version.outputs.version }}
+        run: |
+          chmod +x .github/workflows/scripts/helm-release-create.sh
+          .github/workflows/scripts/helm-release-create.sh \
+            --chart-name bifrost \
+            --chart-version "$VERSION" \
+            --package "helm-charts/bifrost-$VERSION.tgz" \
+            --target "$GITHUB_SHA" \
+            --repository "$GITHUB_REPOSITORY"
 
       # The release asset is the canonical tarball for this chart version, so the
       # index entry has to carry its digest and URL. A rerun repackages the chart

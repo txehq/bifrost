@@ -441,7 +441,8 @@ export type RequestType =
 	| "container_file_content"
 	| "container_file_delete"
 	| "websocket_responses"
-	| "realtime";
+	| "realtime"
+	| "live";
 
 // AllowedRequests matching Go's schemas.AllowedRequests
 export interface AllowedRequests {
@@ -481,6 +482,7 @@ export interface AllowedRequests {
 	video_remix: boolean;
 	websocket_responses: boolean;
 	realtime: boolean;
+	live?: boolean;
 }
 
 // CustomProviderConfig matching Go's schemas.CustomProviderConfig
@@ -516,6 +518,18 @@ export interface PromptCacheConfig {
 	cache_control_injection_points?: CacheControlInjectionPoint[];
 }
 
+// InjectedToolRef names one MCP tool by client name and its unprefixed tool name.
+export interface InjectedToolRef {
+	mcp_client_name: string;
+	tool_name: string;
+}
+
+// InjectedToolsConfig names MCP tools Bifrost adds to every chat and responses request
+// for the provider and executes server side when the model calls them.
+export interface InjectedToolsConfig {
+	web_search?: InjectedToolRef;
+}
+
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
 	network_config?: NetworkConfig;
@@ -524,9 +538,11 @@ export interface ModelProviderConfig {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	ignore_provider_cost?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	injected_tools?: InjectedToolsConfig | null;
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
@@ -553,9 +569,11 @@ export interface AddProviderRequest {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	ignore_provider_cost?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	injected_tools?: InjectedToolsConfig | null;
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -566,9 +584,11 @@ export interface UpdateProviderRequest {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	ignore_provider_cost?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	injected_tools?: InjectedToolsConfig | null;
 }
 
 export interface CreateProviderKeyRequest extends ModelProviderKey {}
@@ -709,6 +729,10 @@ export interface BifrostConfig {
 	auth_token?: string;
 	metadata?: Record<string, unknown>;
 	env_label?: string;
+	agent_gateway?: {
+		grpc_base_domain: string;
+		grpc_port: number;
+	};
 }
 
 export interface CompatConfig {
@@ -717,6 +741,7 @@ export interface CompatConfig {
 	should_drop_params: boolean;
 	should_convert_params: boolean;
 	azure_deepseek: boolean;
+	force_reasoning_only_models_to_responses: boolean;
 }
 
 // Per-execution code mode limits; an omitted or 0 field uses the server default.
@@ -778,6 +803,7 @@ export interface CoreConfig {
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;
+	a2a_external_client_url?: SecretVar;
 	mcp_server_auth_mode?: "headers" | "both" | "oauth";
 	oauth2_server_config?: {
 		issuer_url?: SecretVar;
@@ -812,6 +838,7 @@ export const DefaultCoreConfig: CoreConfig = {
 		should_drop_params: false,
 		should_convert_params: false,
 		azure_deepseek: false,
+		force_reasoning_only_models_to_responses: true,
 	},
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
