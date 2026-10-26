@@ -1,11 +1,13 @@
 ---
-title: "v2.1.46"
-description: "Helm v2.1.46 changelog - 2026-10-26"
+title: "v2.1.46-sync.3"
+description: "Helm v2.1.46-sync.3 prerelease changelog - 2026-10-26"
 ---
 
-<Update label="Bifrost Helm" description="v2.1.46">
+<Update label="Bifrost Helm" description="v2.1.46-sync.3 (prerelease)">
 
 ## Changelog
+
+Prerelease of the txehq fork for transport v2.3.0-sync.3; the published chart stays 2.1.45 until a stable version supersedes it. Install this one with `helm install --devel` or `--version 2.1.46-sync.3`.
 
 
 - Added `topologySpreadConstraints` (top-level value): pod topology spread constraints rendered into the Bifrost Deployment or StatefulSet pod spec. A constraint without a `labelSelector` defaults to the release's server pod labels.

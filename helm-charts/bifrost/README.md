@@ -4,11 +4,11 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/capsohq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.46
+**Latest Version:** 2.1.45 (prerelease 2.1.46-sync.3 carries the changes below; install it with `--devel`)
 
 ## Changelog
 
-### 2.1.46
+### 2.1.46-sync.3 (prerelease)
 
 Upstream's v2.3.0 development chart changes on top of 2.1.45 (the 2.1.44 entry below is upstream's own list, which already includes the 2.1.45 items):
 

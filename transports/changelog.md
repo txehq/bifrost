@@ -39,5 +39,5 @@ All are additive and idempotent by ID. `backfill_compat_force_reasoning_only_mod
 - fix: an emulated decision is still priced as the text call it made, cache reads and writes included, from the model's chat or responses row; a row that carries upstream's decision rates uses them
 - fix: a Typesafe decision response that is rejected still carries its billed usage and served model on the error, and choice and score answers are still validated against the question's options and levels on upstream's normalized shape
 - fix: Warp's logs links and tools carry upstream's new `agent_names` and `agent_correlation_id` log filters, as the fork requires of every Logs page filter
-- chore: the Helm chart is 2.1.46 (upstream's development chart changes on top of the fork's published 2.1.45)
+- chore: the Helm chart is the prerelease 2.1.46-sync.3 (upstream's development chart changes on top of the fork's published 2.1.45, which stays the stable chart); the Helm workflow now marks hyphenated chart versions as GitHub prereleases
 - note: the `warp` feature flag stays on by default (since v2.3.0-sync.2) and Warp stays inert until an admin configures its chat and embedding models
