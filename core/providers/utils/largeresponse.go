@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -258,7 +259,7 @@ func FinalizeResponseWithLargeDetection(
 			ctx.SetValue(schemas.BifrostContextKeyLargeResponseContentType, ct)
 		}
 		previewLen := min(len(bodyBytes), 1048576)
-		ctx.SetValue(schemas.BifrostContextKeyLargePayloadResponsePreview, string(bodyBytes[:previewLen]))
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadResponsePreview, string(trimIncompleteRune(bodyBytes[:previewLen])))
 		return nil, true, nil
 	}
 
@@ -292,7 +293,7 @@ func FinalizeResponseWithLargeDetection(
 		ctx.SetValue(schemas.BifrostContextKeyLargeResponseContentType, ct)
 	}
 	previewLen := min(n, 1048576)
-	ctx.SetValue(schemas.BifrostContextKeyLargePayloadResponsePreview, string(prefetchBuf[:previewLen]))
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadResponsePreview, string(trimIncompleteRune(prefetchBuf[:previewLen])))
 
 	return nil, true, nil
 }
@@ -405,4 +406,19 @@ func SetupStreamingPassthrough(ctx *schemas.BifrostContext, resp *fasthttp.Respo
 		ctx.SetValue(schemas.BifrostContextKeyLargeResponseContentType, ct)
 	}
 	return true
+}
+
+// trimIncompleteRune drops a trailing partial UTF-8 sequence that a cut by byte
+// count left behind, so a preview of text ends on a character boundary. Bytes
+// that were never valid UTF-8 (binary bodies) are left alone.
+func trimIncompleteRune(b []byte) []byte {
+	for i := len(b) - 1; i >= 0 && i >= len(b)-utf8.UTFMax; i-- {
+		if utf8.RuneStart(b[i]) {
+			if !utf8.FullRune(b[i:]) {
+				return b[:i]
+			}
+			return b
+		}
+	}
+	return b
 }

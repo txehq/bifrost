@@ -4,6 +4,8 @@ set -euo pipefail
 # API integrations test: compiles bifrost-http, runs it against PostgreSQL using
 # tests/config.json (with a runtime config_store/logs_store overlay), then runs
 # the api-management newman collection via tests/e2e/api/runners/run-newman-api-tests.sh.
+# The Warp, routing-wiring and model-catalog-wiring collections follow, each on a
+# server of its own.
 
 if command -v readlink >/dev/null 2>&1 && readlink -f "$0" >/dev/null 2>&1; then
   SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
@@ -278,4 +280,28 @@ if [ "${BIFROST_E2E_RUN_LIVE_WARP:-0}" = "1" ]; then
   "$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-warp-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 8))" $REPORT_ARGS
 else
   echo "⏭️  Skipping the Warp newman collection: it calls a live model; set BIFROST_E2E_RUN_LIVE_WARP=1 to run it"
+fi
+
+# The wiring collections each boot a clean server (no providers, sqlite stores):
+# routing-wiring creates the global standard providers (openai, azure, bedrock,
+# vertex), which the server above already configures from tests/config.json.
+# All three call real providers through the job's keys, and send BIFROST_SETUP_TOKEN
+# on /api calls, since their servers inherit it and have no admin. Like Warp they
+# run only when opted in: the fork's pipeline makes no live provider calls.
+if [ "${BIFROST_E2E_RUN_LIVE_WIRING:-0}" = "1" ]; then
+  echo ""
+  echo "🧪 Running routing-wiring newman collection (live providers, opted in)..."
+  "$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-routing-wiring-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 9))"
+
+  echo ""
+  echo "🧪 Running model-catalog-wiring newman collection (live providers, opted in)..."
+  "$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-model-catalog-wiring-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 10))"
+
+  # The semantic cache suite boots two clean servers of its own, one on the compose
+  # stack's Redis and one on its Weaviate, and runs the collection against both at once.
+  echo ""
+  echo "🧪 Running semantic cache wiring newman collection (Redis and Weaviate, live providers, opted in)..."
+  "$REPO_ROOT/tests/e2e/api/runners/individual/run-newman-semantic-cache-wiring-tests.sh" --binary "$BIFROST_BINARY" --port "$((PORT + 11))" --store both $REPORT_ARGS
+else
+  echo "⏭️  Skipping the routing, model-catalog and semantic cache wiring collections: they call live providers; set BIFROST_E2E_RUN_LIVE_WIRING=1 to run them"
 fi

@@ -39218,7 +39218,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Settings:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update configuration",
-        "description": "Updates the Bifrost configuration. Supports hot-reloading of certain settings\nlike drop_excess_requests. Some settings may require a restart to take effect.\nCreating the very first admin account requires auth_config.setup_token. When an\nadmin account already exists but dashboard authentication is disabled, a request\nthat re-enables it or changes admin_username / admin_password must carry either\nauth_config.current_password (the stored admin password) or a valid\nauth_config.setup_token; otherwise it is refused with 403. A genuinely\nauthenticated session needs neither.\n",
+        "description": "Updates the Bifrost configuration. Supports hot-reloading of certain settings\nlike drop_excess_requests. Some settings may require a restart to take effect.\nCreating the very first admin account requires auth_config.setup_token. When an\nadmin account already exists but dashboard authentication is disabled, a request\nthat re-enables it or changes admin_username / admin_password must carry either\nauth_config.current_password (the stored admin password) or a valid\nauth_config.setup_token; otherwise it is refused with 403. A genuinely\nauthenticated session needs neither. Changing\nclient_config.mcp_oauth_private_allowlist also requires an authenticated\nadmin session and is refused with 403 while dashboard authentication is off.\n",
         "tags": [
           "Configuration"
         ],
@@ -39262,7 +39262,7 @@
             }
           },
           "403": {
-            "description": "auth_config was changed without the required proof: the first admin account needs a valid setup_token, and re-enabling authentication or changing the admin credentials while dashboard authentication is disabled needs current_password or a valid setup_token"
+            "description": "auth_config was changed without the required proof: the first admin account needs a valid setup_token, and re-enabling authentication or changing the admin credentials while dashboard authentication is disabled needs current_password or a valid setup_token; or client_config.mcp_oauth_private_allowlist was changed without an authenticated admin session"
           },
           "500": {
             "description": "Internal server error",
@@ -82074,11 +82074,11 @@
                       "properties": {
                         "provider": {
                           "type": "string",
-                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "model": {
                           "type": "string",
-                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "previous_message_count": {
                           "type": "integer",
@@ -82516,11 +82516,11 @@
                     "properties": {
                       "provider": {
                         "type": "string",
-                        "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                        "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
                       },
                       "model": {
                         "type": "string",
-                        "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                        "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
                       },
                       "previous_message_count": {
                         "type": "integer",
@@ -82935,11 +82935,11 @@
                       "properties": {
                         "provider": {
                           "type": "string",
-                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "model": {
                           "type": "string",
-                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "previous_message_count": {
                           "type": "integer",
@@ -83398,11 +83398,11 @@
                       "properties": {
                         "provider": {
                           "type": "string",
-                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "model": {
                           "type": "string",
-                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "previous_message_count": {
                           "type": "integer",
@@ -84636,11 +84636,11 @@
                       "properties": {
                         "provider": {
                           "type": "string",
-                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "model": {
                           "type": "string",
-                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "previous_message_count": {
                           "type": "integer",
@@ -85079,11 +85079,11 @@
                     "properties": {
                       "provider": {
                         "type": "string",
-                        "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                        "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
                       },
                       "model": {
                         "type": "string",
-                        "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                        "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
                       },
                       "previous_message_count": {
                         "type": "integer",
@@ -85498,11 +85498,11 @@
                       "properties": {
                         "provider": {
                           "type": "string",
-                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "model": {
                           "type": "string",
-                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "previous_message_count": {
                           "type": "integer",
@@ -85962,11 +85962,11 @@
                       "properties": {
                         "provider": {
                           "type": "string",
-                          "description": "Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "model": {
                           "type": "string",
-                          "description": "Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
+                          "description": "Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`."
                         },
                         "previous_message_count": {
                           "type": "integer",
@@ -101812,6 +101812,7 @@
           "sarvam",
           "wafer",
           "databricks",
+          "cloudflare",
           "typesafe"
         ]
       },
@@ -115152,6 +115153,11 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Convert chat completion requests to responses for models whose datasheet sets supports_reasoning_with_tool_calls to false, so reasoning is kept instead of being forced off"
+                  },
+                  "convert_decision_to_responses": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Emulate decision requests through the model's Responses API (a forced function tool) when the provider does not serve the model on a native decisions endpoint. Off by default: without it, such requests fail with unsupported_operation"
                   }
                 },
                 "additionalProperties": false
@@ -115211,6 +115217,13 @@
                 "minimum": 0,
                 "default": 0,
                 "description": "Byte bound on the whole forwarded aggregate across every MCP server the caller can see. This rides on every MCP-bearing request that carries tools, so raising it raises per-request tokens. 0 uses the built-in default of 16384.\n"
+              },
+              "mcp_oauth_private_allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Hostnames, IP addresses, or CIDR ranges (no scheme or port) that the MCP OAuth chain (discovery, dynamic client registration, token requests) may reach when they resolve to a loopback or private address. Applies only to MCP clients registered by an authenticated admin or declared in config.json. Link-local and cloud metadata addresses are always refused and cannot be listed. Omit to keep the current list; send [] to clear it. Changing it requires an authenticated admin session.\n"
               },
               "mcp_code_mode_limits": {
                 "type": "object",
@@ -115578,6 +115591,11 @@
                     "type": "boolean",
                     "default": true,
                     "description": "Convert chat completion requests to responses for models whose datasheet sets supports_reasoning_with_tool_calls to false, so reasoning is kept instead of being forced off"
+                  },
+                  "convert_decision_to_responses": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Emulate decision requests through the model's Responses API (a forced function tool) when the provider does not serve the model on a native decisions endpoint. Off by default: without it, such requests fail with unsupported_operation"
                   }
                 },
                 "additionalProperties": false
@@ -115637,6 +115655,13 @@
                 "minimum": 0,
                 "default": 0,
                 "description": "Byte bound on the whole forwarded aggregate across every MCP server the caller can see. This rides on every MCP-bearing request that carries tools, so raising it raises per-request tokens. 0 uses the built-in default of 16384.\n"
+              },
+              "mcp_oauth_private_allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Hostnames, IP addresses, or CIDR ranges (no scheme or port) that the MCP OAuth chain (discovery, dynamic client registration, token requests) may reach when they resolve to a loopback or private address. Applies only to MCP clients registered by an authenticated admin or declared in config.json. Link-local and cloud metadata addresses are always refused and cannot be listed. Omit to keep the current list; send [] to clear it. Changing it requires an authenticated admin session.\n"
               },
               "mcp_code_mode_limits": {
                 "type": "object",
@@ -116132,29 +116157,32 @@
             }
           },
           "injected_tools": {
-            "type": "object",
-            "description": "MCP tools injected into every chat and responses request served by this provider and executed server side when the model calls them. The client never sees the injected tool call, only the final answer.",
-            "additionalProperties": false,
-            "properties": {
-              "web_search": {
-                "type": "object",
-                "description": "MCP tool used as the provider's web search. Replaces any native web search tool or web_search_options the client sends.",
-                "required": [
-                  "mcp_client_name",
-                  "tool_name"
-                ],
-                "additionalProperties": false,
-                "properties": {
-                  "mcp_client_name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Name of the configured MCP client that provides the tool."
-                  },
-                  "tool_name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Tool name as the MCP server exposes it, without the client prefix."
-                  }
+            "type": "array",
+            "description": "MCP tools injected into every chat and responses request served by this provider and executed server side when the model calls them. The client never sees the injected tool call, only the final answer. Names must be unique within a provider.",
+            "items": {
+              "type": "object",
+              "description": "One MCP tool injected under a name the model sees. The name replaces any client tool with the same name; the name web_search also replaces native web search tools and web_search_options.",
+              "required": [
+                "name",
+                "mcp_client_name",
+                "tool_name"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+                  "description": "Tool name the model sees."
+                },
+                "mcp_client_name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Name of the configured MCP client that provides the tool."
+                },
+                "tool_name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Tool name as the MCP server exposes it, without the client prefix."
                 }
               }
             }
@@ -116403,29 +116431,32 @@
             }
           },
           "injected_tools": {
-            "type": "object",
-            "description": "MCP tools injected into every chat and responses request served by this provider and executed server side when the model calls them. The client never sees the injected tool call, only the final answer.",
-            "additionalProperties": false,
-            "properties": {
-              "web_search": {
-                "type": "object",
-                "description": "MCP tool used as the provider's web search. Replaces any native web search tool or web_search_options the client sends.",
-                "required": [
-                  "mcp_client_name",
-                  "tool_name"
-                ],
-                "additionalProperties": false,
-                "properties": {
-                  "mcp_client_name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Name of the configured MCP client that provides the tool."
-                  },
-                  "tool_name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Tool name as the MCP server exposes it, without the client prefix."
-                  }
+            "type": "array",
+            "description": "MCP tools injected into every chat and responses request served by this provider and executed server side when the model calls them. The client never sees the injected tool call, only the final answer. Names must be unique within a provider.",
+            "items": {
+              "type": "object",
+              "description": "One MCP tool injected under a name the model sees. The name replaces any client tool with the same name; the name web_search also replaces native web search tools and web_search_options.",
+              "required": [
+                "name",
+                "mcp_client_name",
+                "tool_name"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+                  "description": "Tool name the model sees."
+                },
+                "mcp_client_name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Name of the configured MCP client that provides the tool."
+                },
+                "tool_name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Tool name as the MCP server exposes it, without the client prefix."
                 }
               }
             }
@@ -116635,29 +116666,32 @@
             "description": "Send null to remove the provider's injected tools.",
             "oneOf": [
               {
-                "type": "object",
-                "description": "MCP tools injected into every chat and responses request served by this provider and executed server side when the model calls them. The client never sees the injected tool call, only the final answer.",
-                "additionalProperties": false,
-                "properties": {
-                  "web_search": {
-                    "type": "object",
-                    "description": "MCP tool used as the provider's web search. Replaces any native web search tool or web_search_options the client sends.",
-                    "required": [
-                      "mcp_client_name",
-                      "tool_name"
-                    ],
-                    "additionalProperties": false,
-                    "properties": {
-                      "mcp_client_name": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Name of the configured MCP client that provides the tool."
-                      },
-                      "tool_name": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Tool name as the MCP server exposes it, without the client prefix."
-                      }
+                "type": "array",
+                "description": "MCP tools injected into every chat and responses request served by this provider and executed server side when the model calls them. The client never sees the injected tool call, only the final answer. Names must be unique within a provider.",
+                "items": {
+                  "type": "object",
+                  "description": "One MCP tool injected under a name the model sees. The name replaces any client tool with the same name; the name web_search also replaces native web search tools and web_search_options.",
+                  "required": [
+                    "name",
+                    "mcp_client_name",
+                    "tool_name"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+                      "description": "Tool name the model sees."
+                    },
+                    "mcp_client_name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Name of the configured MCP client that provides the tool."
+                    },
+                    "tool_name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Tool name as the MCP server exposes it, without the client prefix."
                     }
                   }
                 }
@@ -117542,6 +117576,47 @@
               "url"
             ]
           },
+          "cloudflare_key_config": {
+            "type": "object",
+            "description": "Cloudflare Workers AI-specific key configuration",
+            "properties": {
+              "account_id": {
+                "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "required": [
+              "account_id"
+            ]
+          },
           "replicate_key_config": {
             "type": "object",
             "description": "Replicate-specific key configuration",
@@ -117551,6 +117626,262 @@
                 "description": "Whether to use the deployments endpoint instead of the models endpoint"
               }
             }
+          },
+          "oauth_key_config": {
+            "type": "object",
+            "description": "OAuth-minted bearer for OpenAI-compatible providers (including custom providers on the openai base). Set this and leave value empty; Bifrost mints, caches and refreshes the access token. A non-empty value always wins. Secrets are redacted in responses.",
+            "required": [
+              "grant_type",
+              "token_url"
+            ],
+            "properties": {
+              "grant_type": {
+                "type": "string",
+                "enum": [
+                  "client_credentials",
+                  "jwt_bearer"
+                ],
+                "description": "client_credentials (RFC 6749 §4.4) or jwt_bearer (RFC 7523, Bifrost signs an assertion with private_key)"
+              },
+              "token_url": {
+                "description": "Token endpoint, absolute https URL (plain http is accepted for loopback hosts only). Must not carry userinfo, a query or a fragment; send extra parameters through extra_params",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "client_id": {
+                "description": "client_credentials client ID (redacted in responses)",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "client_secret": {
+                "description": "client_credentials client secret (redacted in responses)",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "private_key": {
+                "description": "jwt_bearer RSA or EC private key, PEM (redacted in responses)",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                  },
+                  {
+                    "type": "object",
+                    "description": "Resolved form, as returned by GET responses",
+                    "properties": {
+                      "value": {
+                        "type": "string",
+                        "description": "Resolved value (redacted in GET responses for secret fields)"
+                      },
+                      "ref": {
+                        "type": "string",
+                        "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "plain_text",
+                          "env",
+                          "vault"
+                        ],
+                        "description": "Source type of the value"
+                      }
+                    }
+                  }
+                ]
+              },
+              "scopes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Scopes requested, sent space-joined"
+              },
+              "audience": {
+                "type": "string",
+                "description": "jwt_bearer aud claim (required for that grant); client_credentials optional audience form parameter"
+              },
+              "issuer": {
+                "type": "string",
+                "minLength": 1,
+                "description": "jwt_bearer iss claim (required for that grant)"
+              },
+              "subject": {
+                "type": "string",
+                "description": "jwt_bearer sub claim (defaults to issuer)"
+              },
+              "key_id": {
+                "type": "string",
+                "description": "jwt_bearer kid header"
+              },
+              "signing_algorithm": {
+                "type": "string",
+                "enum": [
+                  "RS256",
+                  "RS384",
+                  "RS512",
+                  "PS256",
+                  "PS384",
+                  "PS512",
+                  "ES256",
+                  "ES384",
+                  "ES512"
+                ],
+                "default": "RS256",
+                "description": "jwt_bearer assertion signing algorithm"
+              },
+              "auth_style": {
+                "type": "string",
+                "enum": [
+                  "header",
+                  "body"
+                ],
+                "default": "header",
+                "description": "client_credentials credential placement (HTTP Basic header or form body)"
+              },
+              "extra_params": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Extra form parameters sent on the token request"
+              },
+              "assertion_lifetime_seconds": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3600,
+                "default": 300,
+                "description": "jwt_bearer: seconds from issue until the assertion expires (exp = now + value); 0 or omitted uses the default of 300. iat is backdated by 30 seconds for clock skew, so the assertion's exp - iat span is this value plus 30."
+              }
+            },
+            "additionalProperties": false,
+            "allOf": [
+              {
+                "if": {
+                  "required": [
+                    "grant_type"
+                  ],
+                  "properties": {
+                    "grant_type": {
+                      "const": "client_credentials"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "client_id",
+                    "client_secret"
+                  ],
+                  "description": "client_credentials needs the client ID and secret"
+                }
+              },
+              {
+                "if": {
+                  "required": [
+                    "grant_type"
+                  ],
+                  "properties": {
+                    "grant_type": {
+                      "const": "jwt_bearer"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "private_key",
+                    "issuer",
+                    "audience"
+                  ],
+                  "properties": {
+                    "audience": {
+                      "minLength": 1
+                    }
+                  },
+                  "description": "jwt_bearer needs the signing key plus the non-empty iss and aud claims"
+                }
+              }
+            ]
           },
           "enabled": {
             "type": "boolean",

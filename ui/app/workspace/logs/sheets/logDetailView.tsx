@@ -2703,7 +2703,13 @@ export function LogDetailView({
 								requestType={log.object}
 							/>
 						)}
-						{log.live_session && <LiveSessionView session={log.live_session} mapping={activeOutputRevealMapping} />}
+						{log.live_session && (
+							<LiveSessionView
+								session={log.live_session}
+								mapping={activeOutputRevealMapping}
+								visibleRoles={visibleRoles.size < allRoles.length ? visibleRoles : undefined}
+							/>
+						)}
 
 						{isPassthrough && passthroughRequestBody && (
 							<CollapsibleBox
@@ -3236,9 +3242,13 @@ export function LogDetailView({
 													<td className="py-1.5">
 														{record.fail_reason ? (
 															<span className="text-destructive">{record.fail_reason}</span>
+														) : record.failure_class ? (
+															// An attempt that ended without failing the key, such as a caller's cancellation.
+															<span className="text-muted-foreground">{record.failure_class}</span>
 														) : (
 															<span className="text-chart-success-ink">success</span>
 														)}
+														{record.status_code ? <span className="text-muted-foreground tabular-nums"> · {record.status_code}</span> : null}
 													</td>
 												</tr>
 											))}

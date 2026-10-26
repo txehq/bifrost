@@ -292,21 +292,26 @@ func (provider *AzureProvider) realtimeWebRTCUpstreamError(ctx *schemas.BifrostC
 	return bifrostErr
 }
 
+// azureRealtimeEndpoint returns the key's Azure endpoint without a trailing slash.
+// A realtime session can arrive with a key that carries only a bearer value and no
+// Azure config (an ephemeral token Bifrost has no mapping for), so a missing or
+// empty endpoint is reported as a client error instead of being dereferenced.
+func azureRealtimeEndpoint(key schemas.Key) (string, *schemas.BifrostError) {
+	if key.AzureKeyConfig == nil {
+		return "", newAzureRealtimeError(fasthttp.StatusBadRequest, "invalid_request_error", "azure realtime requires a configured endpoint", nil)
+	}
+	endpoint := strings.TrimRight(strings.TrimSpace(key.AzureKeyConfig.Endpoint.GetValue()), "/")
+	if endpoint == "" {
+		return "", newAzureRealtimeError(fasthttp.StatusBadRequest, "invalid_request_error", "azure realtime requires a configured endpoint", nil)
+	}
+	return endpoint, nil
+}
+
 func isRealtimeTranscriptionSession(session json.RawMessage) bool {
 	var payload struct {
 		Type string `json:"type"`
 	}
 	return json.Unmarshal(session, &payload) == nil && payload.Type == "transcription"
-}
-
-// azureRealtimeEndpoint returns the key's Azure resource endpoint. A key without one, such as
-// an ephemeral client secret Bifrost did not mint (sent upstream as a bare value), names no
-// Azure resource to open a realtime session against, so it is refused instead of dereferenced.
-func azureRealtimeEndpoint(key schemas.Key) (string, *schemas.BifrostError) {
-	if key.AzureKeyConfig == nil || strings.TrimSpace(key.AzureKeyConfig.Endpoint.GetValue()) == "" {
-		return "", newAzureRealtimeError(fasthttp.StatusBadRequest, "invalid_request_error", "azure realtime requires a key with an Azure endpoint; an ephemeral client secret Bifrost did not mint cannot be used with Azure", nil)
-	}
-	return strings.TrimRight(key.AzureKeyConfig.Endpoint.GetValue(), "/"), nil
 }
 
 func newAzureRealtimeError(status int, errorType, message string, err error) *schemas.BifrostError {

@@ -45,7 +45,7 @@ import (
 // default transport. Streamed responses cannot: Response.SetBodyStream resets the
 // body first, and that reset returns fasthttp's pooled request stream to its pool,
 // so the transport parses headers with ResponseHeader.Read and decodes the body
-// itself (chunked via net/http/httputil, Content-Length via io.LimitReader,
+// itself (chunked via net/http/httputil, Content-Length via contentLengthBody,
 // identity until close). The resulting streamBody implements fasthttp's
 // ReadCloserWithError contract that NewIdleTimeoutReader, SetupStreamCancellation,
 // ReleaseStreamingResponse and Response.Body already rely on.
