@@ -5957,9 +5957,50 @@ type listTestGrant struct {
 func (g listTestGrant) Access() schemas.Access     { return g.access }
 func (g listTestGrant) Identity() schemas.Identity { return g.identity }
 
-// The last-known models served for a provider whose live poll failed never pass through
-// the governance post-hook that narrows a live listing, so a key restricted to one model
-// would see every model the catalog remembers. They are narrowed by the same rule.
+// grantNarrowingPlugin narrows a model listing in PostLLMHook by the rule the governance
+// plugin applies: with a resolved access a model is kept only when the access allows it, a
+// request that presented a credential which resolved to no access sees nothing, and a request
+// nothing governs sees every model.
+type grantNarrowingPlugin struct{}
+
+func (grantNarrowingPlugin) GetName() string { return "grant-narrowing" }
+
+func (grantNarrowingPlugin) Cleanup() error { return nil }
+
+func (grantNarrowingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	return nil
+}
+
+func (grantNarrowingPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+
+func (grantNarrowingPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	grant := ctx.Grant()
+	if resp == nil || resp.ListModelsResponse == nil || grant == nil {
+		return resp, bifrostErr, nil
+	}
+	access := grant.Access()
+	if access == nil {
+		if identity := grant.Identity(); identity != nil && (identity.Presented() || identity.User() != nil) {
+			resp.ListModelsResponse.Data = nil
+		}
+		return resp, bifrostErr, nil
+	}
+	kept := make([]schemas.Model, 0, len(resp.ListModelsResponse.Data))
+	for _, m := range resp.ListModelsResponse.Data {
+		if provider, name := schemas.ParseModelString(m.ID, ""); access.IsModelAllowed(string(provider), name) {
+			kept = append(kept, m)
+		}
+	}
+	resp.ListModelsResponse.Data = kept
+	return resp, bifrostErr, nil
+}
+
+// The last-known models served for a provider whose live poll failed reach the plugin
+// post-hooks like a live listing (upstream #8446), so the governance narrowing applies to
+// them: a key restricted to one model does not see every model the catalog remembers
+// (TXE-5177).
 func TestListAllModelsLastKnownModelsRespectTheCallersAccess(t *testing.T) {
 	account := NewMockAccount()
 	account.AddProviderWithBaseURL(schemas.Groq, 1, 10, "http://127.0.0.1:1")
@@ -5968,7 +6009,16 @@ func TestListAllModelsLastKnownModelsRespectTheCallersAccess(t *testing.T) {
 	catalog := &staticListerCatalog{modelsByProvider: map[schemas.ModelProvider][]string{
 		schemas.Groq: {"llama-3.3-70b-versatile", "qwen-qwq-32b"},
 	}}
-	client := newListModelsTestClient(t, account, catalog)
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{
+		Account:      account,
+		Logger:       NewNoOpLogger(),
+		ModelCatalog: catalog,
+		LLMPlugins:   []schemas.LLMPlugin{grantNarrowingPlugin{}},
+	})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
 
 	list := func(grant schemas.Grant) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -7766,17 +7816,22 @@ func TestScenarioCallerPinOnTheFallbacksKeyUnderABoundSession(t *testing.T) {
 	if !info.IsFallback || info.PrimaryProvider == nil || *info.PrimaryProvider != provB || info.Key == "a2" {
 		t.Fatalf("A should serve as B's fallback on a free pick, not the caller's a2; routing info %+v", info)
 	}
-	if !strings.Contains(routingLogs(ctx), "Session stays on prov-b/m") {
-		t.Fatalf("the session should keep B first:\n%s", routingLogs(ctx))
+	// Fork rule (TXE-5086): an explicit key selector holds the request on the provider routing
+	// chose, so B stays first because the caller's selector is honoured there, not because the
+	// session's binding is consulted. B holds no a2, so the attempt ends at key selection.
+	if !strings.Contains(routingLogs(ctx), "Request carries the caller's explicit key id for prov-b, so the session does not move it") {
+		t.Fatalf("the caller's key selector should keep B first:\n%s", routingLogs(ctx))
 	}
 	requireHits(t, u, map[string]int{"sk-b1": 0, "sk-b2": 0, "sk-a2": 0, "sk-" + info.Key: 1})
-	requireSessionState(t, kv, "s", SessionStateKindRoute, "", "m", "prov-a/m")
+	// The session was not consulted for this turn, so its route binding stays on B, which routing
+	// also puts first.
+	requireSessionState(t, kv, "s", SessionStateKindRoute, "", "m", "prov-b/m")
 	requireSessionState(t, kv, "s", SessionStateKindKey, provA, "m", info.Key)
 }
 
-// A session that followed its route binding to A, then sends the caller's key, which A refuses: each
-// turn tries the key on A once, B serves on b1 without the caller's key, the binding the first turn
-// followed is dropped, nothing is bound, and the second turn starts on A again (plan row DK-09).
+// A session bound to A, then sends the caller's key, which A refuses: each turn tries the key on A
+// once, B serves on b1 without the caller's key, B is not bound, and the second turn starts on A
+// again (plan row DK-09, under the fork's direct-key rule).
 func TestScenarioDirectKeyRescuedByTheFallbackDropsTheBinding(t *testing.T) {
 	uA, uB := newScenarioUpstream(t), newScenarioUpstream(t)
 	kv := newMockKVStore()
@@ -7797,7 +7852,13 @@ func TestScenarioDirectKeyRescuedByTheFallbackDropsTheBinding(t *testing.T) {
 		}
 		requireHits(t, uA, map[string]int{"sk-caller": 1, "sk-a1": 0, "sk-a2": 0})
 		requireHits(t, uB, map[string]int{"sk-caller": 0, "sk-b1": 1})
-		requireSessionState(t, kv, "s", SessionStateKindRoute, "", "m", "")
+		// Fork rule (TXE-5086): a direct key holds the request on the provider routing chose
+		// without consulting the session, so the binding this turn never followed stays; it names
+		// the provider routing puts first anyway. The fallback that served is still not bound.
+		requireSessionState(t, kv, "s", SessionStateKindRoute, "", "m", "prov-a/m")
+		if !strings.Contains(routingLogs(ctx), "Request carries the caller's direct key for prov-a, so the session does not move it") {
+			t.Fatalf("turn %d should say the caller's direct key held the route:\n%s", turn, routingLogs(ctx))
+		}
 		if !strings.Contains(routingLogs(ctx), "without the caller's own key") {
 			t.Fatalf("turn %d should say the fallback served without the caller's key:\n%s", turn, routingLogs(ctx))
 		}
