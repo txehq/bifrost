@@ -2194,7 +2194,13 @@ func TestBuildTLSHTTPClientUsesGlobalProxy(t *testing.T) {
 	}, nil))
 	t.Cleanup(func() { network.SetDefaultHTTPClientFactory(nil) })
 
-	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{Name: "proxied"})
+	// A proxied name must resolve on the gateway (TXE-5086), and .test never does in real
+	// DNS, so the name is answered here; the proxy selector is the production global one.
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClientWithProxyAndResolver(
+		&schemas.MCPClientConfig{Name: "proxied"},
+		network.DefaultProxyFunc(network.ClientPurposeAPI),
+		stubResolver{ips: []net.IP{net.ParseIP("93.184.216.34")}},
+	)
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
