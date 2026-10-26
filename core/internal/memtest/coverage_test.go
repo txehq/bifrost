@@ -156,6 +156,14 @@ var reviewedSites = map[string]siteReview{
 		status: bounded,
 		reason: "loops over cfg.ExcludeFields, which is provider config and does not grow with the request payload",
 	},
+	"logstore.moveErrorRawBodiesToObject": {
+		status: bounded,
+		reason: "loops over the fixed errorRawBodyPaths list, deleting each path from one log row's error_details",
+	},
+	"xai.ToProviderRealtimeEvent": {
+		status: bounded,
+		reason: "loops over the 4-element literal of server-owned session.* paths it deletes from one session.update event",
+	},
 	"anthropic.AddMissingBetaHeadersToContextFromRawBody": {
 		status: bounded,
 		reason: "loops over the 2-element literal {messages, tools} it trims before the probe decode",
