@@ -3026,7 +3026,26 @@ func (h *proxyRequestHandler) messageEnvelope(requestType schemas.A2ARequestType
 		envelope.BifrostA2ASendMessageRequest.ContextID = string(req.Message.ContextID)
 		envelope.BifrostA2ASendMessageRequest.TaskID = string(req.Message.TaskID)
 	}
-	return setA2ARequestBody(envelope, req)
+	return setA2ARequestBody(envelope, loggableSendMessageRequest(req))
+}
+
+// loggableSendMessageRequest is the plugin- and log-facing projection of a
+// send: the client's request as submitted, except that an embedded push
+// configuration carries the client's callback token and credentials, which are
+// write-only downstream secrets exactly as on CreateTaskPushConfig
+// (redactedPushConfigRequest). The envelope is built before
+// rewriteEmbeddedPushConfig replaces that block with Bifrost's ingress, so
+// without this the content log kept the client's secrets verbatim. The
+// snapshot is an owned copy; the request itself is left for the rewrite.
+func loggableSendMessageRequest(req *a2a.SendMessageRequest) *a2a.SendMessageRequest {
+	if req == nil || req.Config == nil || req.Config.PushConfig == nil {
+		return req
+	}
+	snapshot := *req
+	config := *req.Config
+	config.PushConfig = redactedPushConfigRequest(req.Config.PushConfig)
+	snapshot.Config = &config
+	return &snapshot
 }
 
 // describeSendMessageResult projects the upstream send result onto the

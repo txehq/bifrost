@@ -756,6 +756,7 @@ func TestStreamingEmbeddedPushConfigKeepsInternalIngressOutOfPluginEnvelope(t *t
 			ID:    "stream-config",
 			URL:   "https://client.example/callback",
 			Token: "client-token",
+			Auth:  &a2a.PushAuthInfo{Scheme: "Bearer", Credentials: "client-credential"},
 		}},
 	})
 	for _, err := range stream {
@@ -770,6 +771,11 @@ func TestStreamingEmbeddedPushConfigKeepsInternalIngressOutOfPluginEnvelope(t *t
 	require.NotEmpty(t, upstreamSaw.Token)
 	require.NotContains(t, *recorder.request.RequestBody, upstreamSaw.URL)
 	require.NotContains(t, *recorder.request.RequestBody, upstreamSaw.Token)
+	// The client's own callback secrets are write-only too: the envelope keeps
+	// the callback and the auth scheme, never the token or the credentials.
+	require.Contains(t, *recorder.request.RequestBody, `"scheme":"Bearer"`)
+	require.NotContains(t, *recorder.request.RequestBody, "client-token")
+	require.NotContains(t, *recorder.request.RequestBody, "client-credential")
 }
 
 func TestStreamingEmbeddedPushConfigIsLazyAndCleansUpBeforeUpstreamCall(t *testing.T) {
@@ -811,7 +817,10 @@ func TestStreamingEmbeddedPushConfigIsLazyAndCleansUpBeforeUpstreamCall(t *testi
 }
 
 func TestSendMessageRewritesEmbeddedPushConfigAndStoresCallback(t *testing.T) {
-	_, handler, store, upstream := pushGateway(t)
+	m, handler, store, upstream := pushGateway(t)
+	var order []string
+	recorder := &recordingA2APlugin{name: "recorder", order: &order}
+	m.SetPluginPipeline(func() PluginPipeline { return &fakePipeline{plugins: []*recordingA2APlugin{recorder}} }, func(PluginPipeline) {})
 	var upstreamSaw *a2a.PushConfig
 	upstream.send = func(_ context.Context, req *a2a.SendMessageRequest) (a2a.SendMessageResult, error) {
 		copied := *req.Config.PushConfig
@@ -855,6 +864,18 @@ func TestSendMessageRewritesEmbeddedPushConfigAndStoresCallback(t *testing.T) {
 	require.Equal(t, hashPushIngressToken(upstreamSaw.Token), stored.IngressTokenHash)
 	require.Equal(t, "client-token", stored.Token.GetValue())
 	require.Equal(t, "client-credential", stored.AuthCredentials.GetValue())
+
+	// Plugins and the content log see the client's request with its callback
+	// and auth scheme, but neither the client's secrets (write-only, exactly as
+	// on CreateTaskPushConfig) nor Bifrost's minted ingress.
+	require.NotNil(t, recorder.request)
+	require.NotNil(t, recorder.request.RequestBody)
+	require.Contains(t, *recorder.request.RequestBody, "http://client.example/embedded")
+	require.Contains(t, *recorder.request.RequestBody, `"scheme":"Bearer"`)
+	require.NotContains(t, *recorder.request.RequestBody, "client-token")
+	require.NotContains(t, *recorder.request.RequestBody, "client-credential")
+	require.NotContains(t, *recorder.request.RequestBody, upstreamSaw.Token)
+	require.NotContains(t, *recorder.request.RequestBody, upstreamSaw.URL)
 
 	// An invalid embedded callback is refused before any upstream hop.
 	_, err = handler.SendMessage(context.Background(), &a2a.SendMessageRequest{
