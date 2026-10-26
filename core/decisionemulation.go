@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/capsohq/bifrost/core/providers/cohere"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
 )
@@ -14,12 +15,6 @@ import (
 // errDecisionNoContent is returned when an emulating response carries neither the
 // emit_decision function call nor a JSON-object message body.
 var errDecisionNoContent = errors.New("model returned no decision function call or structured output")
-
-// isUnsupportedOperation reports whether an error is a provider's
-// "operation not supported" signal (set by NewUnsupportedOperationError).
-func isUnsupportedOperation(err *schemas.BifrostError) bool {
-	return err != nil && err.Error != nil && err.Error.Code != nil && *err.Error.Code == "unsupported_operation"
-}
 
 // decisionSystemPrompt frames the judgment task for an emulating LLM.
 const decisionSystemPrompt = "You are a judgment engine. Read the given state and answer every question by " +
@@ -96,7 +91,7 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 		Params: &schemas.ResponsesParameters{
 			Instructions: &instructions,
 			Tools:        []schemas.ResponsesTool{*tool},
-			ToolChoice:   &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &toolChoice},
+			ToolChoice:   toolChoice,
 		},
 	}
 
@@ -168,12 +163,26 @@ func decisionAnswerError(cause error, resp *schemas.BifrostResponsesResponse) *s
 // OpenAI-compatible surface is the exception: it accepts only "auto" for gpt-oss
 // ("Supported options: [auto]"), so the call there rests on the system prompt,
 // and extraction already accepts a lone call or a JSON text body.
-func decisionToolChoice(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) string {
+//
+// A model that rejects tool_choice outright (supports_tool_choice=false on its
+// datasheet record, or a Cohere reasoning model when there is no record) gets
+// nil, so the field is omitted and the call rests on the system prompt the same
+// way.
+func decisionToolChoice(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) *schemas.ResponsesToolChoice {
+	canonicalModel := schemas.ResolveCanonicalModel(ctx, model)
+	fallback := true
+	if provider == schemas.Cohere {
+		fallback = cohere.DefaultSupportsToolChoice(canonicalModel)
+	}
+	if !schemas.ResolveModelCaps(provider, canonicalModel).SupportsToolChoice(fallback) {
+		return nil
+	}
+	choice := string(schemas.ResponsesToolChoiceTypeRequired)
 	// A custom provider wrapping Bedrock Mantle gets Mantle's default.
 	if schemas.ResolveBaseProvider(ctx, provider) == schemas.BedrockMantle && !schemas.IsAnthropicModelFamily(ctx, model) {
-		return string(schemas.ResponsesToolChoiceTypeAuto)
+		choice = string(schemas.ResponsesToolChoiceTypeAuto)
 	}
-	return string(schemas.ResponsesToolChoiceTypeRequired)
+	return &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &choice}
 }
 
 // decisionStateText renders the input into a message body: text verbatim,

@@ -106,7 +106,7 @@ test.describe("Agent Gateway", () => {
     await agentGatewayPage.setCardHeader(0, FIXTURE_CARD_HEADER, CARD_SECRET);
     await agentGatewayPage.fetchCard();
     await expect(agentGatewayPage.inspection).toContainText("e2e-fixture-agent");
-    await expect(agentGatewayPage.inspection).toContainText("Ready");
+    await expect(agentGatewayPage.inspection).toContainText("Fetched");
     expect(fixture.cardHeaderValues(FIXTURE_CARD_HEADER).at(-1)).toBe(CARD_SECRET);
 
     // The card advertises an apiKey header; the form asks for exactly that header.
@@ -169,6 +169,10 @@ test.describe("Agent Gateway", () => {
 
     await agentGatewayPage.goto();
     await agentGatewayPage.openEditSheet(agentName);
+    // The previous test allowed every key; with that on the sheet hides the grant
+    // list and disables adding, so switch it back off first.
+    await agentGatewayPage.allowByDefaultSwitch.click();
+    await expect(agentGatewayPage.allowByDefaultSwitch).toHaveAttribute("data-state", "unchecked");
     await expect(agentGatewayPage.virtualKeysList).toContainText(virtualKeys[0].name);
     await agentGatewayPage.grantVirtualKey(second.name);
     await agentGatewayPage.save();

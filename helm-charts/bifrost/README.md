@@ -4,13 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/capsohq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.45 (prerelease 2.1.46-sync.3 carries the changes below; install it with `--devel`)
+**Latest Version:** 2.1.46
 
 ## Changelog
 
-### 2.1.46-sync.3 (prerelease)
+### 2.1.46
 
-Upstream's v2.3.0 development chart changes on top of 2.1.45 (the 2.1.44 entry below is upstream's own list, which already includes the 2.1.45 items):
+Upstream's v2.3.0 chart changes on top of 2.1.45 (the 2.1.44 entry below is upstream's own list, which already includes the 2.1.45 items); 2.1.46-sync.3 was the prerelease of the first part:
 
 - Added `topologySpreadConstraints` (top-level value): pod topology spread constraints rendered into the Bifrost Deployment or StatefulSet pod spec. A constraint without a `labelSelector` defaults to the release's server pod labels.
 - Added `extraContainers` (top-level value): sidecar containers appended to the Bifrost pod after the Bifrost container; native sidecars (`initContainers` entries with `restartPolicy: Always`) are refused on clusters older than Kubernetes 1.29.
@@ -22,6 +22,11 @@ Upstream's v2.3.0 development chart changes on top of 2.1.45 (the 2.1.44 entry b
 - Added `storage.configStore.statementTimeout` / `.idleInTransactionSessionTimeout` and the same pair on `storage.logsStore` (default `120s`).
 - Added `bifrost.client.deleteExpiredVirtualKeys` and per-key `delete_after_expire`, `disable_content_logging` and `business_unit_id` on `bifrost.governance.virtualKeys[]`.
 - Added `bifrost.client.oauth2ServerConfig.allowedRedirectUris`, `bifrost.mcp.clientConfigs[].requirePublicTarget`, MCP client `oauth`/`tls`/`headers`/`upstreamAuth` settings, `cache_tool_call_responses` on the semantic cache plugin, the object form of `bifrost.governance.routingRules[].fallbacks` (`{ provider, model, provider_key_name }`) and `displayName` on the generic OIDC `bifrost.scim.config`.
+- Added the `cloudflare` provider (Cloudflare Workers AI) to `bifrost.providers`; every key needs `cloudflare_key_config.account_id`, and keys on `openai` or an OpenAI-based custom provider can carry `oauth_key_config` to mint their bearer.
+- Added `bifrost.client.compat.convertDecisionToResponses` (`client.compat.convert_decision_to_responses`, default `false`): decision emulation through the Responses API is opt-in.
+- Added `bifrost.mcp.toolManagerConfig.oauthPrivateAllowlist` (`mcp.tool_manager_config.oauth_private_allowlist`): hosts, IPs or CIDRs the MCP OAuth chain may reach on loopback or private addresses; an explicit `[]` clears a stored list.
+- Added `disable_identity_scoping` to the semantic cache plugin config, and `injected_tools` is now a list of `{ name, mcp_client_name, tool_name }` entries.
+- `appVersion` is now `2.3.0`, the transport this chart ships with; it sets only the `app.kubernetes.io/version` label, and `image.tag` stays required.
 
 ### 2.1.44
 
@@ -33,7 +38,8 @@ Upstream's v2.3.0 development chart changes on top of 2.1.45 (the 2.1.44 entry b
 - Added `bifrost.server.a2aGrpcBaseDomain` (`a2a_grpc_base_domain`) and `bifrost.server.a2aGrpcPort` (`a2a_grpc_port`) — enable the shared A2A gRPC listener; per-agent hostnames are advertised as `<agent-name>.<base-domain>:<port>`. gRPC stays disabled while either is unset.
 - Added `bifrost.server.a2aAllowPrivatePushCallbacks` (`a2a_allow_private_push_callbacks`) — lets A2A push delivery reach loopback and private network callback targets. Off by default; intended only for controlled development and test environments.
 - Added `storage.logsStore.clickhouse.maxQuerySize` (renders into `logs_store.config.max_query_size`), the ClickHouse `max_query_size` setting in bytes. Defaults to 16 MiB so team-scoped log reads with thousands of member and virtual key ids no longer fail against the 256 KiB server default.
-- Added `bifrost.governance.complexityAnalyzerConfig.decision` (renders into `complexity_analyzer_config.decision`): a decision-model classifier for the complexity router. `provider` and `model` select any decision model (default `typesafe`/`jev-latest`). Laya, Nimble (by Bespoke), and Cloudflare Clef work too when served by a custom provider with `base_provider_type: typesafe`; requests go through Bifrost's `/v1/decisions` to that provider's System One endpoint (`/v1/systemone`, or the full-URL `decisions` override for Clef). `criteria` holds per-tier overrides of the shipped `definition`, `signals`, and `examples`, keyed by `SIMPLE`, `MEDIUM`, or `COMPLEX` (exact case). Any tier or field left out sends the shipped default; a definition is at most 500 characters, and each list at most 12 items of 300 characters.
+- Added `bifrost.governance.complexityAnalyzerConfig.decision` (renders into `complexity_analyzer_config.decision`): a decision-model classifier for the complexity router. `provider` and `model` select the decision model (default `typesafe`/`jev-latest`). Supported providers are Typesafe (Jev), OpenAI (`gpt-6-luna`, also on a custom provider with `base_provider_type: openai`), OpenRouter (the decision models it serves, such as `~typesafe/jev-latest`), Cloudflare (Clef: `@cf/cloudflare/clef`, `@cf/cloudflare/clef-flash`), Perplexity (`pplx-decider-*`), and Ollama (locally pulled System One models: `nimble`, `tev1`, `clef`, `clef-flash`, `laya`). Laya and Nimble (by Bespoke) can also be served by a custom provider with `base_provider_type: typesafe`. Requests go through Bifrost's `/v1/decisions` to the selected provider's native decisions endpoint, using that provider's own credentials. `criteria` holds per-tier overrides of the shipped `definition`, `signals`, and `examples`, keyed by `SIMPLE`, `MEDIUM`, or `COMPLEX` (exact case). Any tier or field left out sends the shipped default; a definition is at most 500 characters, and each list at most 12 items of 300 characters.
+- Added the `cloudflare` provider (Cloudflare Workers AI) to `bifrost.providers`. Every key needs `cloudflare_key_config.account_id` (supports `env.`); the base URL defaults to `https://api.cloudflare.com/client/v4`. It serves chat completions, Responses, embeddings, model listing, and Clef decisions (`@cf/cloudflare/clef`, `@cf/cloudflare/clef-flash`). 
 - Added `bifrost.mcp.toolManagerConfig.maxInstructionsPerClient` and `.maxInstructionsTotal` (`max_instructions_per_client` / `max_instructions_total`) to bound forwarded MCP server instructions in bytes; 0 keeps the built-in defaults.
 - Added `access_profile` to `bifrost.governance.customers[]`, `.teams[]`, and `.businessUnits[]` (renders into `governance.{customers,teams,business_units}[].access_profile`), the enterprise access profile the entity holds in place of its own budgets and rate limit.
 - `bifrost.governance.roles[].dac` and `.entity_dac` now accept `business-unit-data` and `customer-data` (`governance.roles[].dac` / `entity_dac`).
@@ -1009,6 +1015,7 @@ bifrost:
 | `bifrost.mcp.toolManagerConfig.maxAgentDepth`              | Maximum agent depth                                                                                                                                                                                            | `10`     |
 | `bifrost.mcp.toolManagerConfig.codeModeBindingLevel`       | Code mode binding level (`server` or `tool`)                                                                                                                                                                   | `server` |
 | `bifrost.mcp.toolManagerConfig.disableAutoToolInject`      | Disable automatic MCP tool injection                                                                                                                                                                           | `false`  |
+| `bifrost.mcp.toolManagerConfig.oauthPrivateAllowlist`      | **[Upcoming]** Hosts, IPs, or CIDRs the MCP OAuth chain may reach on loopback or private addresses, for MCP servers added by an authenticated admin or declared in config. Link-local and metadata are always refused. | `[]`     |
 | `bifrost.mcp.toolSyncInterval`                             | Global MCP tool sync interval. Prefer a Go duration string (for example, `10m`); legacy numeric nanoseconds are still supported for backward compatibility, but string format is recommended.                  | `10m`    |
 | `bifrost.mcp.clientConfigs[].tlsConfig.insecureSkipVerify` | **[Upcoming]** Disable TLS certificate verification for HTTP/SSE MCP connections. Takes priority over `caCertPem`. For development/testing only — not recommended for production.                              | `false`  |
 | `bifrost.mcp.clientConfigs[].tlsConfig.caCertPem`          | **[Upcoming]** PEM-encoded CA certificate to trust for HTTP/SSE MCP server connections. Accepts a literal PEM string or an `env.VAR_NAME` reference. Use when the MCP server uses a self-signed or private CA. | `""`     |

@@ -8,8 +8,10 @@ import (
 	"io"
 	"net"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -655,7 +657,8 @@ func TestContextTransport_TruncatedChunkedStreamReadsAsEOFAndDiscardsConn(t *tes
 // an upstream that closes early must surface as io.ErrUnexpectedEOF rather than
 // a clean EOF. Otherwise a large JSON response advertised at 256 KiB that stops
 // after 96 KiB reaches the client as a shortened body with no error. Both framings
-// are covered, and the Content-Length framing keeps the EOF contract for SSE.
+// are covered. Only a chunked event stream keeps the EOF contract: an event stream
+// with a Content-Length that stops short is truncated however its last event reads.
 func TestContextTransport_TruncatedNonEventStreamBodiesReportUnexpectedEOF(t *testing.T) {
 	cases := []struct {
 		name, head, body string
@@ -663,7 +666,7 @@ func TestContextTransport_TruncatedNonEventStreamBodiesReportUnexpectedEOF(t *te
 	}{
 		{"content-length json", "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n", `{"partial":`, io.ErrUnexpectedEOF},
 		{"chunked json", "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n", "b\r\n{\"partial\":\r\n", io.ErrUnexpectedEOF},
-		{"content-length event stream", "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 100\r\n\r\n", "data: a\n\n", nil},
+		{"content-length event stream", "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 100\r\n\r\n", "data: a\n\n", io.ErrUnexpectedEOF},
 		{"chunked json missing the trailer CRLF", "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n", "2\r\n{}\r\n0\r\n", io.ErrUnexpectedEOF},
 		{"chunked event stream missing the trailer CRLF", "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n", "9\r\ndata: a\n\n\r\n0\r\n", nil},
 	}
@@ -1217,4 +1220,98 @@ func TestContextTransport_AbandonedConnectionCloseAcquisitionIsClosed(t *testing
 	fasthttp.ReleaseResponse(resp)
 	fasthttp.ReleaseRequest(busyReq)
 	fasthttp.ReleaseResponse(busyResp)
+}
+
+func TestContextTransport_TruncatedContentLengthStreamReportsUnexpectedEOFAndDiscardsConn(t *testing.T) {
+	for _, payload := range []string{"", "{}"} {
+		t.Run(fmt.Sprintf("received_%d_bytes", len(payload)), func(t *testing.T) {
+			var requests atomic.Int32
+			srv := newScriptedServer(t, func(conn net.Conn, br *bufio.Reader) {
+				if !readRequest(br) {
+					return
+				}
+				if requests.Add(1) == 1 {
+					writeAll(t, conn, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n"+payload)
+					return // Close before the declared body length, without Connection: close.
+				}
+				writeAll(t, conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+			})
+			client := BuildStreamingClient(srv.client(5 * time.Second))
+			t.Cleanup(client.CloseIdleConnections)
+
+			req, resp := streamGet(t, client, "GET")
+			defer fasthttp.ReleaseRequest(req)
+			defer fasthttp.ReleaseResponse(resp)
+			stream := resp.BodyStream().(*streamBody)
+			body, err := io.ReadAll(stream)
+			t.Logf("body = %q, err = %v, fullyRead = %v", body, err, stream.fullyRead)
+			if string(body) != payload {
+				t.Errorf("body = %q, want %q", body, payload)
+			}
+			if !errors.Is(err, io.ErrUnexpectedEOF) {
+				t.Errorf("read error = %v, want io.ErrUnexpectedEOF", err)
+			}
+			if stream.fullyRead {
+				t.Error("truncated fixed-length body was marked fully read")
+			}
+			if err := resp.CloseBodyStream(); err != nil {
+				t.Fatalf("CloseBodyStream: %v", err)
+			}
+
+			// POST must succeed on a new socket; a stale pooled socket cannot be
+			// hidden by fasthttp's automatic retry of idempotent requests.
+			req2, resp2 := streamGet(t, client, "POST")
+			defer fasthttp.ReleaseRequest(req2)
+			defer fasthttp.ReleaseResponse(resp2)
+			body, err = io.ReadAll(resp2.BodyStream())
+			if err != nil || string(body) != "ok" {
+				t.Fatalf("subsequent POST body = %q, err = %v", body, err)
+			}
+			if got := srv.accepted.Load(); got != 2 {
+				t.Errorf("connections accepted = %d, want 2 (truncated connection must be discarded)", got)
+			}
+		})
+	}
+}
+
+func TestStreamBodyReader_ContentLengthBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		length  int
+		body    string
+		tail    string
+		wantErr error
+	}{
+		{name: "empty", length: 0, tail: "next response"},
+		{name: "exact", length: 5, body: "hello"},
+		{name: "preserves_next_response", length: 5, body: "hello", tail: "next response"},
+		{name: "missing_body", length: 100, wantErr: io.ErrUnexpectedEOF},
+		{name: "short_valid_json", length: 100, body: "{}", wantErr: io.ErrUnexpectedEOF},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseResponse(resp)
+			resp.Header.SetContentLength(tc.length)
+			// DataErrReader also exercises a final read returning bytes and EOF
+			// together, rather than returning EOF on a separate read.
+			br := bufio.NewReaderSize(iotest.DataErrReader(strings.NewReader(tc.body+tc.tail)), 16)
+			reader := newStreamBodyReader(resp, br)
+			body, err := io.ReadAll(reader)
+			if string(body) != tc.body || !errors.Is(err, tc.wantErr) {
+				t.Errorf("body = %q, err = %v, want body = %q, err = %v", body, err, tc.body, tc.wantErr)
+			}
+			_, err = reader.Read(make([]byte, 1))
+			wantErr := tc.wantErr
+			if wantErr == nil {
+				wantErr = io.EOF
+			}
+			if !errors.Is(err, wantErr) {
+				t.Errorf("subsequent read error = %v, want %v", err, wantErr)
+			}
+			tail, err := io.ReadAll(br)
+			if err != nil || string(tail) != tc.tail {
+				t.Errorf("remaining bytes = %q, err = %v, want %q", tail, err, tc.tail)
+			}
+		})
+	}
 }

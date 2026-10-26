@@ -45,7 +45,7 @@ import (
 // default transport. Streamed responses cannot: Response.SetBodyStream resets the
 // body first, and that reset returns fasthttp's pooled request stream to its pool,
 // so the transport parses headers with ResponseHeader.Read and decodes the body
-// itself (chunked via net/http/httputil, Content-Length via io.LimitReader,
+// itself (chunked via net/http/httputil, Content-Length via contentLengthBody,
 // identity until close). The resulting streamBody implements fasthttp's
 // ReadCloserWithError contract that NewIdleTimeoutReader, SetupStreamCancellation,
 // ReleaseStreamingResponse and Response.Body already rely on.
@@ -262,7 +262,7 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	closeConn := resetConnection || req.ConnectionClose() || resp.ConnectionClose()
 	body := &streamBody{
 		reader:               newStreamBodyReader(resp, br),
-		truncationReadsAsEOF: isEventStream(resp),
+		truncationReadsAsEOF: isEventStream(resp) && resp.Header.ContentLength() < 0,
 		conn:                 conn,
 		release: func(discard bool) {
 			hc.ReleaseReader(br)
@@ -493,9 +493,9 @@ func (c *chunkedBody) Read(p []byte) (int, error) {
 // fasthttp's closeBodyStreamReader would call both.
 type streamBody struct {
 	reader io.Reader
-	// truncationReadsAsEOF keeps fasthttp's contract for event streams: a peer
-	// that closes early reads as io.EOF (see Read). Every other body reports it
-	// as io.ErrUnexpectedEOF.
+	// truncationReadsAsEOF keeps fasthttp's contract for chunked event streams: a
+	// peer that closes early reads as io.EOF (see Read). Every other body, a
+	// fixed-length event stream included, reports it as io.ErrUnexpectedEOF.
 	truncationReadsAsEOF bool
 	conn                 net.Conn
 	release              func(discard bool)
@@ -524,12 +524,14 @@ func (s *streamBody) Read(p []byte) (int, error) {
 		// an EOF without a terminal marker becomes the retryable 502 truncation
 		// error, while any other read error is a generic stream failure. The
 		// standard-library chunked reader says io.ErrUnexpectedEOF for the same
-		// close, so restore the contract here, for event streams only: an SSE read
-		// loop judges completeness by its terminal marker, but any other body (a
-		// large JSON response, say) has no such check and would pass a shortened
-		// body off as complete, so it keeps io.ErrUnexpectedEOF. fullyRead stays
-		// false either way: the half-read connection is closed on release, never
-		// returned to the pool.
+		// close, so restore the contract here, for chunked event streams only: an
+		// SSE read loop judges completeness by its terminal marker, but any other
+		// body (a large JSON response, say) has no such check and would pass a
+		// shortened body off as complete, so it keeps io.ErrUnexpectedEOF. So does
+		// an event stream with a Content-Length: the shortfall proves truncation,
+		// and a terminal marker it did carry, such as a finish_reason, cannot
+		// (upstream #8286). fullyRead stays false either way: the half-read
+		// connection is closed on release, never returned to the pool.
 		err = io.EOF
 	}
 	return n, err

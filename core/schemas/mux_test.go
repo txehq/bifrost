@@ -1640,6 +1640,100 @@ func TestToBifrostChatResponse_LeavesFinishReasonUnsetForNonTerminalState(t *tes
 	}
 }
 
+// The served tier/speed/geo drive billing and are echoed to the client, so a
+// chat request bridged to Responses (or a Responses request bridged to chat)
+// must carry them across; pre-fix service_tier "fast" came back null.
+func TestResponsesChatBridgeCarriesServedTier(t *testing.T) {
+	tier := BifrostServiceTierFast
+	speed, geo := "fast", "us"
+
+	chat := (&BifrostResponsesResponse{
+		Status:       Ptr(ResponsesResponseStatusCompleted),
+		Output:       responsesTextOutput("ok"),
+		ServiceTier:  &tier,
+		Speed:        &speed,
+		InferenceGeo: &geo,
+	}).ToBifrostChatResponse()
+	if chat.ServiceTier == nil || *chat.ServiceTier != tier {
+		t.Fatalf("responses->chat dropped service_tier: %v", chat.ServiceTier)
+	}
+	if chat.Speed == nil || *chat.Speed != speed || chat.InferenceGeo == nil || *chat.InferenceGeo != geo {
+		t.Fatalf("responses->chat dropped speed/inference_geo: %v %v", chat.Speed, chat.InferenceGeo)
+	}
+
+	back := (&BifrostChatResponse{ServiceTier: &tier, Speed: &speed, InferenceGeo: &geo}).ToBifrostResponsesResponse()
+	if back.ServiceTier == nil || *back.ServiceTier != tier {
+		t.Fatalf("chat->responses dropped service_tier: %v", back.ServiceTier)
+	}
+	if back.Speed == nil || *back.Speed != speed || back.InferenceGeo == nil || *back.InferenceGeo != geo {
+		t.Fatalf("chat->responses dropped speed/inference_geo: %v %v", back.Speed, back.InferenceGeo)
+	}
+
+	chunk := (&BifrostResponsesStreamResponse{
+		Type:     ResponsesStreamResponseTypeCompleted,
+		Response: &BifrostResponsesResponse{Status: Ptr(ResponsesResponseStatusCompleted), ServiceTier: &tier, Speed: &speed, InferenceGeo: &geo},
+	}).ToBifrostChatResponse()
+	if chunk.ServiceTier == nil || *chunk.ServiceTier != tier {
+		t.Fatalf("responses stream->chat chunk dropped service_tier: %v", chunk.ServiceTier)
+	}
+	if chunk.Speed == nil || *chunk.Speed != speed || chunk.InferenceGeo == nil || *chunk.InferenceGeo != geo {
+		t.Fatalf("responses stream->chat chunk dropped speed/inference_geo: %v %v", chunk.Speed, chunk.InferenceGeo)
+	}
+}
+
+// A chat stream served to a Responses client must carry the served tier/speed/geo onto
+// the terminal response even when, as with OpenAI, they ride an earlier chunk and the
+// finish chunk omits them; and a pooled state must not leak them into the next stream.
+func TestChatStreamToResponsesStreamCarriesServedTier(t *testing.T) {
+	tier := BifrostServiceTierFast
+	speed, geo := "fast", "us"
+	role := string(ChatMessageRoleAssistant)
+	text := "ok"
+	stop := string(BifrostFinishReasonStop)
+	chunk := func(delta *ChatStreamResponseChoiceDelta, finish *string, served bool) *BifrostChatResponse {
+		cr := &BifrostChatResponse{
+			ID:    "chatcmpl-tier",
+			Model: "gpt-6-astra",
+			Choices: []BifrostResponseChoice{{
+				FinishReason:             finish,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: delta},
+			}},
+		}
+		if served {
+			cr.ServiceTier, cr.Speed, cr.InferenceGeo = &tier, &speed, &geo
+		}
+		return cr
+	}
+	terminal := func(served bool) *BifrostResponsesResponse {
+		state := AcquireChatToResponsesStreamState()
+		defer ReleaseChatToResponsesStreamState(state)
+		var events []*BifrostResponsesStreamResponse
+		events = append(events, chunk(&ChatStreamResponseChoiceDelta{Role: &role}, nil, served).ToBifrostResponsesStreamResponse(state)...)
+		events = append(events, chunk(&ChatStreamResponseChoiceDelta{Content: &text}, nil, served).ToBifrostResponsesStreamResponse(state)...)
+		events = append(events, chunk(&ChatStreamResponseChoiceDelta{}, &stop, false).ToBifrostResponsesStreamResponse(state)...)
+		for _, evt := range events {
+			if evt != nil && evt.Type == ResponsesStreamResponseTypeCompleted {
+				return evt.Response
+			}
+		}
+		t.Fatal("no response.completed event")
+		return nil
+	}
+
+	served := terminal(true)
+	if served.ServiceTier == nil || *served.ServiceTier != tier {
+		t.Fatalf("chat stream->responses completed dropped service_tier: %v", served.ServiceTier)
+	}
+	if served.Speed == nil || *served.Speed != speed || served.InferenceGeo == nil || *served.InferenceGeo != geo {
+		t.Fatalf("chat stream->responses completed dropped speed/inference_geo: %v %v", served.Speed, served.InferenceGeo)
+	}
+
+	plain := terminal(false)
+	if plain.ServiceTier != nil || plain.Speed != nil || plain.InferenceGeo != nil {
+		t.Fatalf("pooled stream state leaked served metadata into the next stream: %v %v %v", plain.ServiceTier, plain.Speed, plain.InferenceGeo)
+	}
+}
+
 func TestResponsesStreamToBifrostChatResponse_MapsIncompleteContentFilter(t *testing.T) {
 	chunk := &BifrostResponsesStreamResponse{
 		Type: ResponsesStreamResponseTypeIncomplete,
@@ -2065,5 +2159,46 @@ func TestReasoningSummarySurvivesChatResponsesConversion(t *testing.T) {
 			*back.Params.Reasoning.Summary != want {
 			t.Fatalf("%s: responses->chat dropped reasoning.summary: %+v", body, back.Params)
 		}
+	}
+}
+
+// TestToChatMessages_DropsToolChangeBlocks: Responses-to-Chat is the fallback that
+// OpenAI-compatible providers (Groq, Nebius, ...) take. Chat has no tool_addition /
+// tool_removal content part, so the blocks are dropped: text siblings stay, a system message
+// left with nothing is skipped rather than sent as an empty content array.
+func TestToChatMessages_DropsToolChangeBlocks(t *testing.T) {
+	removal := &ResponsesToolChangeTarget{Type: ResponsesToolChangeTargetTypeToolReference, Name: Ptr("get_weather")}
+	chat := ToChatMessages([]ResponsesMessage{
+		{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("What's the weather in Paris?")}},
+		{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+			{Type: ResponsesInputMessageContentBlockTypeToolRemoval, ToolChange: removal},
+			{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("Weather lookups are disabled.")},
+		}}},
+		{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+			{Type: ResponsesInputMessageContentBlockTypeToolRemoval, ToolChange: removal},
+		}}},
+	})
+	if len(chat) != 2 {
+		t.Fatalf("chat messages = %d, want 2 (the tool-change-only system message must be dropped): %+v", len(chat), chat)
+	}
+	sys := chat[1]
+	if sys.Role != ChatMessageRoleSystem || sys.Content == nil {
+		t.Fatalf("chat[1] = %+v, want the system message with content", sys)
+	}
+	var blocks []ChatContentBlock
+	if sys.Content.ContentBlocks != nil {
+		blocks = sys.Content.ContentBlocks
+	}
+	for _, b := range blocks {
+		if string(b.Type) == string(ResponsesInputMessageContentBlockTypeToolRemoval) || string(b.Type) == string(ResponsesInputMessageContentBlockTypeToolAddition) {
+			t.Fatalf("tool-change block forwarded as an unknown chat content part: %+v", blocks)
+		}
+	}
+	if sys.Content.ContentStr != nil {
+		if *sys.Content.ContentStr != "Weather lookups are disabled." {
+			t.Errorf("system text = %q, want the text sibling", *sys.Content.ContentStr)
+		}
+	} else if len(blocks) != 1 || blocks[0].Text == nil || *blocks[0].Text != "Weather lookups are disabled." {
+		t.Errorf("system content = %+v, want only the text sibling", blocks)
 	}
 }

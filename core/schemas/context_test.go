@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"testing"
 	"time"
@@ -184,6 +185,37 @@ func TestNewBifrostContext_GoroutineStartsWithCancellableParent(t *testing.T) {
 
 	if ctx.Err() != context.Canceled {
 		t.Errorf("Context Err() should be context.Canceled, got %v", ctx.Err())
+	}
+}
+
+// Err must report a parent cancellation on the very next call, as context.WithCancel
+// children do, not only once the watcher goroutine has run. A loop that cancels the
+// request and then checks ctx.Err() (the injected-tool turn loop) otherwise opens
+// one more upstream turn after the caller is gone.
+func TestNewBifrostContext_ErrSeesParentCancelSynchronously(t *testing.T) {
+	for i := 0; i < 1000; i++ {
+		parent, parentCancel := context.WithCancel(context.Background())
+		ctx := NewBifrostContext(parent, NoDeadline)
+		parentCancel()
+		if err := ctx.Err(); err != context.Canceled {
+			t.Fatalf("iteration %d: Err() right after the parent cancel = %v, want context.Canceled", i, err)
+		}
+		select {
+		case <-ctx.Done():
+		default:
+			t.Fatalf("iteration %d: Done() still open after Err() reported the cancel", i)
+		}
+	}
+}
+
+func BenchmarkBifrostContextErr(b *testing.B) {
+	parent, parentCancel := context.WithCancel(context.Background())
+	defer parentCancel()
+	ctx := NewBifrostContext(parent, NoDeadline)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ctx.Err()
 	}
 }
 
@@ -569,16 +601,17 @@ func (p *lazyCancelledParent) Err() error            { return context.Canceled }
 
 // TestBifrostContext_CancelledSeesAParentCancelBeforeTheWatcher pins that Cancelled
 // reports a parent's cancellation synchronously, through any depth of BifrostContexts,
-// and applies it to the context so Done and Err agree afterwards. Err alone waits for
-// the watcher goroutine, which is the lag that let an injected-tool stream open another
-// provider turn after the tool call cancelled the request.
+// and applies it to the context so Done and Err agree afterwards. Err used to wait for
+// the watcher goroutine, the lag that let an injected-tool stream open another provider
+// turn after the tool call cancelled the request; upstream now reads the parent in Err
+// too, so both must see the cancel before any watcher has run.
 func TestBifrostContext_CancelledSeesAParentCancelBeforeTheWatcher(t *testing.T) {
 	parent := &lazyCancelledParent{Context: context.Background(), done: make(chan struct{})}
 	child := NewBifrostContext(parent, NoDeadline)
 	grandchild := NewBifrostContext(child, NoDeadline)
 
-	if grandchild.Err() != nil {
-		t.Fatalf("Err() = %v before any watcher could run, want nil: the lag under test is gone", grandchild.Err())
+	if !errors.Is(NewBifrostContext(NewBifrostContext(parent, NoDeadline), NoDeadline).Err(), context.Canceled) {
+		t.Fatal("Err() = nil with a cancelled parent before any watcher ran")
 	}
 	if !grandchild.Cancelled() {
 		t.Fatal("Cancelled() = false with a cancelled parent")

@@ -177,7 +177,7 @@ export class LogsPage extends BasePage {
     await waitForNetworkIdle(this.page)
   }
 
-  async filterByStatus(status: 'success' | 'error' | 'pending'): Promise<void> {
+  async filterByStatus(status: 'success' | 'error' | 'processing'): Promise<void> {
     await this.dismissToasts()
     await this.ensureFiltersSidebarExpanded()
     const statusToggle = this.page.getByTestId('status-filter-toggle')

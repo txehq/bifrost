@@ -166,10 +166,15 @@ NOT_DIALLED_HOSTS = {
     "harness-endpoint-guard.example.invalid": "reserved .invalid TLD; the endpoint-guard row asserts the key endpoint change is refused",
     "unlisted.example": "reserved .example TLD; a redirect_uri value in the OAuth registration redirect-check row, never fetched",
     "harness.example": "reserved .example TLD; an OAuth redirect_uri value in the 114 raw-path-auth rows, which do not follow redirects",
+    "dbx-fixture-workspace.invalid": "reserved .invalid TLD; the Databricks OAuth row asserts the token request fails",
+    "harness-credential-guard.example.invalid": "reserved .invalid TLD; a token_url inside the credential-guard row's refused external_account body",
+    "harness-plugin-guard.example.invalid": "reserved .invalid TLD; the plugin-guard row asserts the refused collector_url is never stored",
+    "idp.example": "reserved .example TLD; oauth_key_config token_url in the OAuth-minted key rows, never resolves",
     # Documentation links inside descriptions and comments.
     "anthropic.com": "doc link in a folder description",
     "www.anthropic.com": "doc link in a folder description",
     "platform.claude.com": "doc link in a folder description",
+    "code.claude.com": "doc link in a folder description",
     "developers.openai.com": "doc link in a folder description",
     "docs.aws.amazon.com": "doc link in a folder description",
     "docs.x.ai": "doc link in a folder description",
@@ -179,6 +184,7 @@ NOT_DIALLED_HOSTS = {
     # Identifiers that merely look like endpoints.
     "s3.amazonaws.com": "XML namespace URI in a ListBucketResult document; namespaces are names, not fetches",
     "www.googleapis.com": "the cloud-platform OAuth SCOPE string; the token exchange itself goes to oauth2.googleapis.com",
+    "www.ietf.org": "an RTP header-extension URI in a WebRTC SDP offer; extmap URIs are identifiers, not fetches",
 }
 
 HOST_RE = re.compile(r"https?://([A-Za-z0-9._-]+\.[A-Za-z]{2,})")

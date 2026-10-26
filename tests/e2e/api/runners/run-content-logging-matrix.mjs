@@ -40,7 +40,8 @@ const { readLogsDbUrl } = require("../lib/logs-db-url.js");
 
 const baseURL = (process.env.BIFROST_E2E_BASE_URL || process.env.BIFROST_BASE_URL || "http://localhost:8080").replace(/\/+$/, "");
 const adminAuthHeader = process.env.BIFROST_E2E_AUTH_HEADER || "";
-// OSS setup lock: while dashboard auth is not active, /api needs the setup token.
+// OSS setup lock: while dashboard auth is not active, /api needs the setup token. The matrix runs
+// after the runner turns auth back off, so every management call it makes depends on this.
 const setupToken = (process.env.BIFROST_E2E_SETUP_TOKEN || process.env.BIFROST_SETUP_TOKEN || "bifrost-e2e-setup-token").trim();
 const runTag = `clmx${process.pid}${Date.now().toString(36)}`;
 const providerName = `clmx-provider-${runTag}`;

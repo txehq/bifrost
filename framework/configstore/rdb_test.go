@@ -2655,6 +2655,39 @@ func TestUpdateClientConfig_VKRotationCooldownRoundTrip(t *testing.T) {
 	assert.Equal(t, 5*time.Minute, result.VKRotationCooldown.D())
 }
 
+func TestUpdateClientConfig_EnforceVKObjectOwnershipRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	// config.json without the field enforces ownership.
+	var fromJSON ClientConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"initial_pool_size":100}`), &fromJSON))
+	assert.True(t, fromJSON.EnforceVKObjectOwnership, "an omitted field keeps ownership enforced")
+	require.NoError(t, json.Unmarshal([]byte(`{"enforce_vk_object_ownership":false}`), &fromJSON))
+	assert.False(t, fromJSON.EnforceVKObjectOwnership, "an explicit false turns it off")
+
+	on := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &on))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.EnforceVKObjectOwnership)
+
+	// The column defaults to true, so the write must force an explicit false through.
+	off := on
+	off.EnforceVKObjectOwnership = false
+	require.NoError(t, store.UpdateClientConfig(ctx, &off))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.EnforceVKObjectOwnership, "an explicit false survives the delete-and-create write")
+
+	// Only the opt-out is hashed, so configs written before the field existed keep their hash.
+	onHash, err := on.GenerateClientConfigHash()
+	require.NoError(t, err)
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, onHash, offHash)
+}
+
 func TestUpdateClientConfig_MCPCodeModeLimitsRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -6681,8 +6714,9 @@ func TestUpsertModelPricesBatch_Above100kColumns_SurviveResync(t *testing.T) {
 func TestProviderInjectedToolsRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
-	webSearch := &schemas.InjectedToolsConfig{
-		WebSearch: &schemas.InjectedToolRef{MCPClientName: "tavily", ToolName: "search"},
+	webSearch := []schemas.InjectedTool{
+		{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
+		{Name: "read_page", MCPClientName: "fetcher", ToolName: "fetch"},
 	}
 
 	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
@@ -6701,4 +6735,166 @@ func TestProviderInjectedToolsRoundTrip(t *testing.T) {
 	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
 	require.NoError(t, err)
 	assert.Nil(t, got.InjectedTools, "updating with a nil block must clear the stored column")
+
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{InjectedTools: webSearch}))
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{InjectedTools: []schemas.InjectedTool{}}))
+	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Empty(t, got.InjectedTools, "an empty list clears the stored column too")
+}
+
+func TestUpdateClientConfig_CompatConvertDecisionToResponsesRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := func(enabled bool) *ClientConfig {
+		return &ClientConfig{
+			EnableLogging:        new(true),
+			InitialPoolSize:      100,
+			LogRetentionDays:     30,
+			MaxRequestBodySizeMB: 50,
+			Compat:               CompatConfig{ConvertDecisionToResponses: enabled},
+		}
+	}
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(true)))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.Compat.ConvertDecisionToResponses, "enabling the toggle must persist")
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(false)))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.Compat.ConvertDecisionToResponses, "disabling the toggle must persist")
+}
+
+func TestGenerateClientConfigHash_CompatConvertDecisionToResponses(t *testing.T) {
+	on := &ClientConfig{InitialPoolSize: 100, Compat: CompatConfig{ConvertDecisionToResponses: true}}
+	off := &ClientConfig{InitialPoolSize: 100}
+	onHash, err := on.GenerateClientConfigHash()
+	require.NoError(t, err)
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, onHash, offHash, "toggling convert_decision_to_responses must change the hash")
+}
+
+// TestClientConfigUnmarshal_CompatConvertDecisionToResponsesDefaultsOff pins that,
+// unlike the other compat toggles, decision emulation stays off when config.json
+// omits it - both when compat is absent and when it is present without the field.
+func TestClientConfigUnmarshal_CompatConvertDecisionToResponsesDefaultsOff(t *testing.T) {
+	for name, raw := range map[string]string{
+		"compat absent":      `{}`,
+		"field absent":       `{"compat": {"convert_text_to_chat": true}}`,
+		"explicitly enabled": `{"compat": {"convert_decision_to_responses": true}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var c ClientConfig
+			require.NoError(t, json.Unmarshal([]byte(raw), &c))
+			assert.Equal(t, name == "explicitly enabled", c.Compat.ConvertDecisionToResponses)
+		})
+	}
+}
+
+// TestA2ARawCaptureConfigRoundTrip verifies persistence and hash parity for raw capture.
+func TestA2ARawCaptureConfigRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	config := &ClientConfig{}
+	require.NoError(t, store.UpdateClientConfig(ctx, config))
+	config, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	config.A2AStoreRawRequestResponse = true
+	require.NoError(t, store.UpdateClientConfig(ctx, config))
+	found, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.True(t, found.A2AStoreRawRequestResponse)
+	want, err := config.GenerateClientConfigHash()
+	require.NoError(t, err)
+	got, err := found.GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+	config.A2AStoreRawRequestResponse = false
+	other, err := config.GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.NotEqual(t, want, other)
+}
+
+// TestInListLimitProviderObjectsAndJobsByIDs pins that the ownership lookups a
+// file, batch or video list page runs accept id lists larger than the
+// bind-parameter limit: a 10,000-item page fanned out across every provider
+// name that shares the provider's API reaches it. Only the real rows inside the
+// list come back.
+func TestInListLimitProviderObjectsAndJobsByIDs(t *testing.T) {
+	for _, ns := range inListLimitStores(t) {
+		t.Run(ns.name, func(t *testing.T) {
+			ctx := context.Background()
+			objectID := tables.ProviderObjectID(tables.ProviderObjectKindFile, "openai", "file-real")
+			require.NoError(t, ns.store.UpsertProviderObject(ctx, &tables.TableProviderObject{
+				ID: objectID, Kind: tables.ProviderObjectKindFile, Provider: "openai", ObjectID: "file-real", VirtualKeyID: "vk-a",
+			}))
+			out := "file-out"
+			jobID := tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", "batch-real")
+			require.NoError(t, ns.store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+				ID: jobID, Provider: "openai", JobID: "batch-real", InputFileID: "file-in", OutputFileID: &out,
+				AccountingStatus: tables.ProviderJobAccountingStatusPending,
+			}))
+
+			t.Run("GetProviderObjectsByIDs", func(t *testing.T) {
+				objects, err := ns.store.GetProviderObjectsByIDs(ctx, append(inListSyntheticIDs("file:openai:missing", inListOverLimit), objectID))
+				require.NoError(t, err)
+				require.Len(t, objects, 1)
+				require.Equal(t, objectID, objects[0].ID)
+			})
+			t.Run("GetProviderJobsByIDs", func(t *testing.T) {
+				jobs, err := ns.store.GetProviderJobsByIDs(ctx, append(inListSyntheticIDs("batch:openai:missing", inListOverLimit), jobID))
+				require.NoError(t, err)
+				require.Len(t, jobs, 1)
+				require.Equal(t, jobID, jobs[0].ID)
+			})
+			// Three columns share one id list, so a third of the limit is already too many.
+			t.Run("GetProviderJobsByFileIDs", func(t *testing.T) {
+				jobs, err := ns.store.GetProviderJobsByFileIDs(ctx, "openai", append(inListSyntheticIDs("file-missing", inListOverLimit/3), out))
+				require.NoError(t, err)
+				require.Len(t, jobs, 1)
+				require.Equal(t, jobID, jobs[0].ID)
+			})
+		})
+	}
+}
+
+// TestInListLimitProviderObjectsAndJobsBySuffixes pins that the short-id lookups a
+// Vertex list page runs accept more suffixes than one statement can hold: every
+// suffix is its own LIKE term, and SQLite caps both the bound parameters and the
+// depth of the OR chain they form. Only the full names ending in a listed suffix
+// come back.
+func TestInListLimitProviderObjectsAndJobsBySuffixes(t *testing.T) {
+	const suffixCount = 10000
+	for _, ns := range inListLimitStores(t) {
+		t.Run(ns.name, func(t *testing.T) {
+			ctx := context.Background()
+			fullName := "projects/p/locations/l/batchPredictionJobs/real"
+			require.NoError(t, ns.store.UpsertProviderObject(ctx, &tables.TableProviderObject{
+				ID: tables.ProviderObjectID(tables.ProviderObjectKindBatch, "vertex", fullName), Kind: tables.ProviderObjectKindBatch,
+				Provider: "vertex", ObjectID: fullName, VirtualKeyID: "vk-a",
+			}))
+			require.NoError(t, ns.store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+				ID: tables.ProviderJobID(tables.ProviderJobKindBatch, "vertex", fullName), Kind: tables.ProviderJobKindBatch,
+				Provider: "vertex", JobID: fullName, AccountingStatus: tables.ProviderJobAccountingStatusPending,
+			}))
+			suffixes := append(inListSyntheticIDs("missing", suffixCount), "real")
+
+			t.Run("GetProviderObjectsByObjectIDSuffixes", func(t *testing.T) {
+				objects, err := ns.store.GetProviderObjectsByObjectIDSuffixes(ctx, tables.ProviderObjectKindBatch, "vertex", suffixes)
+				require.NoError(t, err)
+				require.Len(t, objects, 1)
+				require.Equal(t, fullName, objects[0].ObjectID)
+			})
+			t.Run("GetProviderJobsByJobIDSuffixes", func(t *testing.T) {
+				jobs, err := ns.store.GetProviderJobsByJobIDSuffixes(ctx, tables.ProviderJobKindBatch, "vertex", suffixes)
+				require.NoError(t, err)
+				require.Len(t, jobs, 1)
+				require.Equal(t, fullName, jobs[0].JobID)
+			})
+		})
+	}
 }

@@ -1,6 +1,10 @@
 package cohere
 
-import "github.com/capsohq/bifrost/core/schemas"
+import (
+	"strings"
+
+	"github.com/capsohq/bifrost/core/schemas"
+)
 
 var (
 	// Maps provider-specific finish reasons to Bifrost format
@@ -314,4 +318,12 @@ func convertCohereResponseFormatToBifrost(cohereFormat *CohereResponseFormat) *i
 
 	var resultInterface interface{} = result
 	return &resultInterface
+}
+
+// DefaultSupportsToolChoice is the name-based fallback for ModelCaps.SupportsToolChoice
+// on Cohere. The reasoning models (command-a-reasoning-*) reject any tool_choice
+// with "tool_choice is not supported for this model"; every other chat model
+// accepts it.
+func DefaultSupportsToolChoice(model string) bool {
+	return !strings.Contains(strings.ToLower(model), "-reasoning")
 }
