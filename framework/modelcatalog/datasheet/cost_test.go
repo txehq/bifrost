@@ -6264,14 +6264,16 @@ func TestDecisionPricing_NegativeRateIsUnpriced(t *testing.T) {
 	assert.Equal(t, 0.0, s.CalculateCost(resp, nil))
 }
 
-// TestDecisionPricing_ResponsesOnlyRowStaysUnpriced pins the known gap: a model
-// with only a responses row is not priced for decisions.
-func TestDecisionPricing_ResponsesOnlyRowStaysUnpriced(t *testing.T) {
+// TestDecisionPricing_ResponsesOnlyRowIsPriced: upstream leaves a model with only a
+// responses row unpriced for decisions. The txehq fork prices an emulated decision from
+// the model's responses row too, since the emulation is one Responses call, and a row
+// that carries decision rates uses them (TestCalculateCost_EmulatedDecisionBilledAsTextCall).
+func TestDecisionPricing_ResponsesOnlyRowIsPriced(t *testing.T) {
 	row := lunaChatRow(true)
 	row.Mode = "responses"
 	s := lunaStore(row)
 
-	assert.Equal(t, 0.0, lunaDecisionCost(s, 1000, 50))
+	assert.InDelta(t, 1000*lunaDecisionInput+50*lunaDecisionOutput, lunaDecisionCost(s, 1000, 50), decisionTestEpsilon)
 }
 
 // TestDecisionPricing_ProviderFallbacksReachChatRow pins that the Bedrock vendor

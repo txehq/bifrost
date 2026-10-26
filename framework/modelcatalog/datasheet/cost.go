@@ -1304,12 +1304,6 @@ func computeDecisionCost(pricing *configstoreTables.TableModelPricing, usage *sc
 	if usage == nil {
 		return nil
 	}
-	// A chat or responses row without decision rates answered the decision by emulation,
-	// the text call it made, so it is priced as that call, cache reads and writes included.
-	if pricing.InputCostPerTokenDecisions == nil && pricing.OutputCostPerTokenDecisions == nil &&
-		pricing.Mode != "" && pricing.Mode != normalizeRequestType(schemas.DecisionRequest) {
-		return computeTextCost(pricing, usage, tier)
-	}
 	tierTokens := usage.PromptTokens
 	inputRate := tieredInputRate(pricing, tierTokens, tier)
 	if pricing.InputCostPerTokenDecisions != nil {
@@ -1321,6 +1315,12 @@ func computeDecisionCost(pricing *configstoreTables.TableModelPricing, usage *sc
 	}
 	if inputRate < 0 || outputRate < 0 {
 		return nil
+	}
+	// A chat or responses row without decision rates answered the decision by emulation,
+	// the text call it made, so it is priced as that call, cache reads and writes included.
+	if pricing.InputCostPerTokenDecisions == nil && pricing.OutputCostPerTokenDecisions == nil &&
+		pricing.Mode != "" && pricing.Mode != normalizeRequestType(schemas.DecisionRequest) {
+		return computeTextCost(pricing, usage, tier)
 	}
 	inputCost := float64(usage.PromptTokens) * inputRate
 	outputCost := float64(usage.CompletionTokens) * outputRate
