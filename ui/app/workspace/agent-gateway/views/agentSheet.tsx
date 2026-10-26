@@ -137,7 +137,15 @@ function requirementGap(result: InspectAgentCardResponse, index: number): string
 	return "The gateway does not support this query, cookie, or HTTP credential.";
 }
 
-function TLSFields({ value, onChange }: { value: AgentTLSConfig; onChange: (next: AgentTLSConfig) => void }) {
+function TLSFields({
+	value,
+	onChange,
+	testIdPrefix,
+}: {
+	value: AgentTLSConfig;
+	onChange: (next: AgentTLSConfig) => void;
+	testIdPrefix: string;
+}) {
 	return (
 		<>
 			<div className="flex items-center justify-between gap-4">
@@ -150,6 +158,7 @@ function TLSFields({ value, onChange }: { value: AgentTLSConfig; onChange: (next
 				<Switch
 					checked={value.insecure_skip_verify ?? false}
 					onCheckedChange={(insecure_skip_verify) => onChange({ ...value, insecure_skip_verify })}
+					data-testid={`${testIdPrefix}-skip-verify-switch`}
 				/>
 			</div>
 			<div className="space-y-1">
@@ -163,6 +172,7 @@ function TLSFields({ value, onChange }: { value: AgentTLSConfig; onChange: (next
 					placeholder="-----BEGIN CERTIFICATE-----"
 					value={value.ca_cert_pem}
 					onChange={(ca_cert_pem) => onChange({ ...value, ca_cert_pem })}
+					data-testid={`${testIdPrefix}-ca-cert-input`}
 				/>
 			</div>
 			<div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -174,6 +184,7 @@ function TLSFields({ value, onChange }: { value: AgentTLSConfig; onChange: (next
 						placeholder="-----BEGIN CERTIFICATE-----"
 						value={value.client_cert_pem}
 						onChange={(client_cert_pem) => onChange({ ...value, client_cert_pem })}
+						data-testid={`${testIdPrefix}-client-cert-input`}
 					/>
 				</div>
 				<div className="space-y-1">
@@ -184,6 +195,7 @@ function TLSFields({ value, onChange }: { value: AgentTLSConfig; onChange: (next
 						placeholder="-----BEGIN PRIVATE KEY-----"
 						value={value.client_key_pem}
 						onChange={(client_key_pem) => onChange({ ...value, client_key_pem })}
+						data-testid={`${testIdPrefix}-client-key-input`}
 					/>
 				</div>
 			</div>
@@ -264,12 +276,14 @@ function AuthFields({
 	readOnlyAuth = false,
 	disabled = false,
 	requiredHeaderKeys = [],
+	testIdPrefix,
 }: {
 	value: AgentUpstreamAuth;
 	onChange: (next: AgentUpstreamAuth) => void;
 	readOnlyAuth?: boolean;
 	disabled?: boolean;
 	requiredHeaderKeys?: string[];
+	testIdPrefix: string;
 }) {
 	const changeKind = (type: AgentAuthType) =>
 		onChange({
@@ -281,11 +295,11 @@ function AuthFields({
 		});
 
 	return (
-		<fieldset disabled={disabled} className="space-y-4 disabled:opacity-70">
+		<fieldset disabled={disabled} className="space-y-4 disabled:opacity-70" data-testid={testIdPrefix}>
 			<div className="space-y-2">
 				<Label>Authentication type</Label>
 				<Select value={value.type} onValueChange={changeKind} disabled={readOnlyAuth}>
-					<SelectTrigger className="w-full">
+					<SelectTrigger className="w-full" data-testid={`${testIdPrefix}-type-select`}>
 						<SelectValue placeholder="Select authentication type" />
 					</SelectTrigger>
 					<SelectContent>
@@ -298,28 +312,32 @@ function AuthFields({
 			{value.type === "headers" && (
 				<div className="space-y-4">
 					{requiredHeaderKeys.length > 0 && (
-						<HeadersTable
-							value={value.headers ?? {}}
-							onChange={(headers) => onChange({ ...value, headers })}
-							fixedKeys={requiredHeaderKeys}
-							useSecretVarInput
-							label="Advertised credential headers"
-						/>
+						<div data-testid={`${testIdPrefix}-required-headers`}>
+							<HeadersTable
+								value={value.headers ?? {}}
+								onChange={(headers) => onChange({ ...value, headers })}
+								fixedKeys={requiredHeaderKeys}
+								useSecretVarInput
+								label="Advertised credential headers"
+							/>
+						</div>
 					)}
-					<HeadersTable
-						value={Object.fromEntries(Object.entries(value.headers ?? {}).filter(([name]) => !requiredHeaderKeys.includes(name)))}
-						onChange={(headers) =>
-							onChange({
-								...value,
-								headers: {
-									...Object.fromEntries(Object.entries(value.headers ?? {}).filter(([name]) => requiredHeaderKeys.includes(name))),
-									...headers,
-								},
-							})
-						}
-						useSecretVarInput
-						label="Extra headers"
-					/>
+					<div data-testid={`${testIdPrefix}-extra-headers`}>
+						<HeadersTable
+							value={Object.fromEntries(Object.entries(value.headers ?? {}).filter(([name]) => !requiredHeaderKeys.includes(name)))}
+							onChange={(headers) =>
+								onChange({
+									...value,
+									headers: {
+										...Object.fromEntries(Object.entries(value.headers ?? {}).filter(([name]) => requiredHeaderKeys.includes(name))),
+										...headers,
+									},
+								})
+							}
+							useSecretVarInput
+							label="Extra headers"
+						/>
+					</div>
 				</div>
 			)}
 			{value.type === "oauth" && (
@@ -480,6 +498,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 				className="flex w-full flex-col gap-4 overflow-x-hidden p-0 pt-4 sm:max-w-[40rem]"
 				onInteractOutside={(event) => event.preventDefault()}
 				onEscapeKeyDown={onClose}
+				data-testid="agent-sheet"
 			>
 				<SheetHeader className="w-full flex-col items-start gap-1 p-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle className="font-medium">{name.trim() || "New Agent"}</SheetTitle>
@@ -496,6 +515,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 								value={name}
 								placeholder="accounting-agent"
 								disabled={isEditing}
+								data-testid="agent-name-input"
 								onChange={(event) => {
 									setName(event.target.value);
 									setNameError(event.target.value ? validateAgentName(event.target.value) : null);
@@ -518,6 +538,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 								<Input
 									value={agentCardUrl}
 									placeholder="https://agent.example.com/.well-known/agent-card.json"
+									data-testid="agent-card-url-input"
 									onChange={(event) => {
 										setAgentCardUrl(event.target.value);
 										setAgentCardUrlError(null);
@@ -531,6 +552,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 									onClick={() => void handleInspect()}
 									isLoading={isInspecting}
 									disabled={!agentCardUrl.trim()}
+									data-testid="agent-fetch-card-btn"
 								>
 									<RefreshCw className="h-4 w-4" />
 									Fetch agent card
@@ -550,10 +572,14 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 								setCardAuth(next);
 								setInspection(null);
 							}}
+							testIdPrefix="agent-card-auth"
 						/>
 					</div>
 					<Collapsible open={cardTLSOpen} onOpenChange={setCardTLSOpen}>
-						<CollapsibleTrigger className="flex w-full items-center justify-between gap-3 py-1 text-left">
+						<CollapsibleTrigger
+							className="flex w-full items-center justify-between gap-3 py-1 text-left"
+							data-testid="agent-card-tls-trigger"
+						>
 							<div>
 								<p className="text-sm font-medium">Agent card TLS / Certificate</p>
 								<p className="text-muted-foreground text-sm">Custom certificate verification for HTTPS card discovery.</p>
@@ -568,12 +594,18 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 										setCardAuth({ ...cardAuth, tls });
 										setInspection(null);
 									}}
+									testIdPrefix="agent-card-tls"
 								/>
 							</div>
 						</CollapsibleContent>
 					</Collapsible>
 					{inspectionError && (
-						<div className="border-destructive/40 bg-destructive/5 text-destructive rounded-md border p-3 text-sm">{inspectionError}</div>
+						<div
+							className="border-destructive/40 bg-destructive/5 text-destructive rounded-md border p-3 text-sm"
+							data-testid="agent-inspection-error"
+						>
+							{inspectionError}
+						</div>
 					)}
 					{!inspection && !inspectionError && (
 						<div className="text-muted-foreground rounded-md border border-dashed p-5 text-center text-sm">
@@ -583,7 +615,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 						</div>
 					)}
 					{inspection && (
-						<div className="space-y-4 rounded-md border p-4">
+						<div className="space-y-4 rounded-md border p-4" data-testid="agent-card-inspection">
 							<div className="flex items-start justify-between gap-3">
 								<div className="min-w-0 space-y-1">
 									<div className="flex flex-wrap items-center gap-2">
@@ -797,6 +829,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 								readOnlyAuth={!manualMode}
 								disabled={isEditing && !inspection && !manualMode}
 								requiredHeaderKeys={manualMode ? [] : requiredHeaderKeys}
+								testIdPrefix="agent-runtime-auth"
 							/>
 						)}
 						<div className="rounded-md border">
@@ -838,7 +871,10 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 						)}
 					</div>
 					<Collapsible open={runtimeTLSOpen} onOpenChange={setRuntimeTLSOpen}>
-						<CollapsibleTrigger className="flex w-full items-center justify-between gap-3 py-1 text-left">
+						<CollapsibleTrigger
+							className="flex w-full items-center justify-between gap-3 py-1 text-left"
+							data-testid="agent-runtime-tls-trigger"
+						>
 							<div>
 								<p className="text-sm font-medium">Runtime TLS / Certificate</p>
 								<p className="text-muted-foreground text-sm">Custom certificate verification for agent requests.</p>
@@ -847,7 +883,11 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 						</CollapsibleTrigger>
 						<CollapsibleContent className="pt-4">
 							<div className="space-y-4 rounded-md border p-4">
-								<TLSFields value={runtimeAuth.tls ?? {}} onChange={(tls) => setRuntimeAuth({ ...runtimeAuth, tls })} />
+								<TLSFields
+									value={runtimeAuth.tls ?? {}}
+									onChange={(tls) => setRuntimeAuth({ ...runtimeAuth, tls })}
+									testIdPrefix="agent-runtime-tls"
+								/>
 							</div>
 						</CollapsibleContent>
 					</Collapsible>
@@ -867,7 +907,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 										</Tooltip>
 									</TooltipProvider>
 								</div>
-								<Switch checked={allowByDefault} onCheckedChange={setAllowByDefault} />
+								<Switch checked={allowByDefault} onCheckedChange={setAllowByDefault} data-testid="agent-allow-by-default-switch" />
 							</div>
 						</div>
 					</div>
@@ -881,7 +921,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 									excludeIds={virtualKeyIds}
 									onSelect={(option) => setVirtualKeyIds((current) => [...current, option.value])}
 									trigger={
-										<Button type="button" variant="outline" size="sm">
+										<Button type="button" variant="outline" size="sm" data-testid="agent-add-virtual-key-btn">
 											<Plus className="h-4 w-4" />
 											Add Virtual Key
 										</Button>
@@ -890,11 +930,14 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 							}
 						/>
 						{virtualKeyIds.length === 0 ? (
-							<div className="text-muted-foreground rounded-md border border-dashed p-5 text-center text-sm">
+							<div
+								className="text-muted-foreground rounded-md border border-dashed p-5 text-center text-sm"
+								data-testid="agent-virtual-keys-empty"
+							>
 								{allowByDefault ? "Every valid virtual key can reach this agent." : "No virtual keys granted yet."}
 							</div>
 						) : (
-							<div className="divide-y rounded-md border">
+							<div className="divide-y rounded-md border" data-testid="agent-virtual-keys-list">
 								{virtualKeyIds.map((id) => (
 									<VirtualKeyListItem
 										key={id}
@@ -903,6 +946,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 										fallbackLabel={id}
 										onRemove={() => setVirtualKeyIds((current) => current.filter((value) => value !== id))}
 										removeAriaLabel="Revoke virtual key grant"
+										data-testid={`agent-revoke-virtual-key-${id}`}
 									/>
 								))}
 							</div>
@@ -910,7 +954,10 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 					</div>
 					<DottedSeparator />
 					<Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-						<CollapsibleTrigger className="flex w-full items-center justify-between gap-3 py-1 text-left">
+						<CollapsibleTrigger
+							className="flex w-full items-center justify-between gap-3 py-1 text-left"
+							data-testid="agent-advanced-trigger"
+						>
 							<p className="text-sm font-medium">Advanced settings</p>
 							{advancedOpen ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
 						</CollapsibleTrigger>
@@ -923,6 +970,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 									</p>
 								</div>
 								<Switch
+									data-testid="agent-manual-auth-switch"
 									checked={manualMode}
 									onCheckedChange={(checked) => {
 										setManualMode(checked);
@@ -979,7 +1027,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 					)}
 				</div>
 				<div className="bg-card sticky bottom-0 flex justify-end gap-2 border-t px-4 py-4 md:px-8">
-					<Button type="button" variant="outline" onClick={onClose}>
+					<Button type="button" variant="outline" onClick={onClose} data-testid="agent-cancel-btn">
 						Cancel
 					</Button>
 					<Button
@@ -987,6 +1035,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 						onClick={() => void handleSave()}
 						disabled={isCreating || isUpdating || !canSave || !!nameError || !name || !agentCardUrl}
 						isLoading={isCreating || isUpdating}
+						data-testid="agent-save-btn"
 					>
 						{agent ? "Save Changes" : "Create"}
 					</Button>

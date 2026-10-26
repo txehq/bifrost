@@ -29,6 +29,7 @@ make run-e2e FLOW=routing-rules
 make run-e2e FLOW=observability
 make run-e2e FLOW=config
 make run-e2e FLOW=plugins
+make run-e2e FLOW=agent-gateway
 
 # Run tests in headed mode (visible browser)
 make run-e2e-headed
@@ -47,6 +48,7 @@ npm run test:routing-rules
 npm run test:observability
 npm run test:config
 npm run test:plugins
+npm run test:agent-gateway
 
 # View test report
 npm run report
@@ -76,6 +78,7 @@ tests/e2e/
     ├── routing-rules/            # Routing rules tests
     ├── plugins/                  # Plugins tests
     ├── observability/            # Observability connectors tests
+    ├── agent-gateway/            # Agent Gateway registration tests
     └── config/                   # Config settings tests
 ```
 

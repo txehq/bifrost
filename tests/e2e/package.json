@@ -18,6 +18,7 @@
     "test:observability": "playwright test features/observability",
     "test:config": "playwright test features/config",
     "test:plugins": "playwright test features/plugins",
+    "test:agent-gateway": "playwright test features/agent-gateway",
     "test:a11y": "playwright test --config=playwright.a11y.config.ts",
     "report": "playwright show-report",
     "codegen": "playwright codegen http://localhost:3000"
