@@ -12,6 +12,7 @@ import (
 	"time"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
@@ -204,7 +205,7 @@ func SyncMCPLibrary(ctx context.Context, url string, store configstore.ConfigSto
 // and ForceReloadPricing. It delegates to the stateless SyncMCPLibrary function
 // using the catalog's configured URL and config store.
 func (mc *ModelCatalog) syncMCPLibrary(ctx context.Context) error {
-	if mc.shouldSyncGate != nil && !mc.shouldSyncGate(ctx) {
+	if !mc.syncGateAllows(ctx) {
 		mc.logger.Debug("MCP library sync cancelled by custom gate")
 		return nil
 	}
@@ -215,7 +216,7 @@ func (mc *ModelCatalog) syncMCPLibrary(ctx context.Context) error {
 // ForceReloadMCPLibrary triggers an immediate MCP library sync from the current
 // configured source and advances the MCP library sync timer on success.
 func (mc *ModelCatalog) ForceReloadMCPLibrary(ctx context.Context) (int, error) {
-	if mc.shouldSyncGate != nil && !mc.shouldSyncGate(ctx) {
+	if !mc.syncGateAllows(ctx) {
 		mc.logger.Debug("MCP library sync cancelled by custom gate")
 		return 0, nil
 	}
@@ -277,7 +278,7 @@ func fetchMCPLibrary(ctx context.Context, rawURL string) ([]MCPLibraryEntry, err
 		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
 			return nil, fmt.Errorf("MCP library URL validation failed: %w", err)
 		}
-		client := &http.Client{Timeout: DefaultMCPLibraryTimeout}
+		client := network.NewPrivateNetworkHTTPClient(DefaultMCPLibraryTimeout)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)

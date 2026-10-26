@@ -2,9 +2,12 @@ package semanticcache
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -87,6 +90,16 @@ func hashMap(m map[string]interface{}) (string, error) {
 	return fmt.Sprintf("%x", xxhash.Sum64(jsonData)), nil
 }
 
+// putExtraParams records provider extra params under their own key. Merged into
+// metadata directly, an extra param named like a first-class one ("task_type",
+// "temperature") would overwrite it and two requests differing in the
+// first-class value would share a cache entry.
+func putExtraParams(metadata map[string]interface{}, extra map[string]interface{}) {
+	if len(extra) > 0 {
+		metadata["extra_params"] = maps.Clone(extra)
+	}
+}
+
 // sortedStringSet returns a sorted copy of a string slice that is semantically
 // a set (e.g. modalities, stop sequences, include flags). Sorting in place
 // would mutate the caller's parameters, so a copy is returned.
@@ -157,6 +170,39 @@ func int8ToFloat32Embedding(values []int8) []float32 {
 // int32ToFloat32Embedding promotes a uint8/ubinary-style int32 embedding to
 // float32 for the same reason as int8ToFloat32Embedding.
 func int32ToFloat32Embedding(values []int32) []float32 {
+	if len(values) == 0 {
+		return nil
+	}
+	embedding := make([]float32, len(values))
+	for i, value := range values {
+		embedding[i] = float32(value)
+	}
+	return embedding
+}
+
+// decodeBase64Embedding decodes a base64-encoded embedding of raw IEEE 754 float32 bytes (little-endian).
+func decodeBase64Embedding(s string) ([]float32, error) {
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		b, err = base64.URLEncoding.DecodeString(s)
+		if err != nil {
+			return nil, fmt.Errorf("base64 decode failed: %w", err)
+		}
+	}
+	if len(b)%4 != 0 {
+		return nil, fmt.Errorf("base64 embedding byte length %d is not a multiple of 4", len(b))
+	}
+	vals := make([]float32, len(b)/4)
+	for i := range vals {
+		bits := binary.LittleEndian.Uint32(b[i*4 : i*4+4])
+		vals[i] = math.Float32frombits(bits)
+	}
+	return vals, nil
+}
+
+// uint8ToFloat32Embedding promotes a uint8/ubinary embedding to float32 for
+// cosine-similarity search in the semantic cache.
+func uint8ToFloat32Embedding(values []uint8) []float32 {
 	if len(values) == 0 {
 		return nil
 	}
@@ -266,6 +312,61 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 	}
 
 	return metadata, nil
+}
+
+// responseHasToolCalls reports whether a response (or stream chunk) carries a
+// tool call the client would execute: chat tool_calls on a message or delta,
+// or a Responses API output item of a tool-call type. Server-side tool items
+// (web search, file search, code interpreter, image generation) are not
+// client-executed and do not count.
+func responseHasToolCalls(res *schemas.BifrostResponse) bool {
+	if res == nil {
+		return false
+	}
+	switch {
+	case res.ChatResponse != nil:
+		for _, choice := range res.ChatResponse.Choices {
+			if choice.ChatNonStreamResponseChoice != nil && choice.Message != nil &&
+				choice.Message.ChatAssistantMessage != nil && len(choice.Message.ToolCalls) > 0 {
+				return true
+			}
+			if choice.ChatStreamResponseChoice != nil && choice.Delta != nil && len(choice.Delta.ToolCalls) > 0 {
+				return true
+			}
+		}
+	case res.ResponsesResponse != nil:
+		return responsesOutputHasToolCalls(res.ResponsesResponse.Output)
+	case res.ResponsesStreamResponse != nil:
+		if item := res.ResponsesStreamResponse.Item; item != nil && item.Type != nil && isResponsesToolCallItem(*item.Type) {
+			return true
+		}
+		if full := res.ResponsesStreamResponse.Response; full != nil {
+			return responsesOutputHasToolCalls(full.Output)
+		}
+	}
+	return false
+}
+
+func responsesOutputHasToolCalls(output []schemas.ResponsesMessage) bool {
+	for _, item := range output {
+		if item.Type != nil && isResponsesToolCallItem(*item.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func isResponsesToolCallItem(t schemas.ResponsesMessageType) bool {
+	switch t {
+	case schemas.ResponsesMessageTypeFunctionCall,
+		schemas.ResponsesMessageTypeCustomToolCall,
+		schemas.ResponsesMessageTypeComputerCall,
+		schemas.ResponsesMessageTypeLocalShellCall,
+		schemas.ResponsesMessageTypeMCPCall,
+		schemas.ResponsesMessageTypeMCPApprovalRequest:
+		return true
+	}
+	return false
 }
 
 // extractAttachmentsForCaching collects image/file URLs referenced by the
@@ -698,25 +799,28 @@ func (plugin *Plugin) getNormalizedInputForCaching(req *schemas.BifrostRequest) 
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		return normalizeText(req.SpeechRequest.Input.Input)
 	case schemas.EmbeddingRequest:
-		input := req.EmbeddingRequest.Input
-		out := schemas.EmbeddingInput{}
-		if input.Text != nil {
-			ns := normalizeText(*input.Text)
-			out.Text = &ns
-		} else if len(input.Texts) > 0 {
-			arr := make([]string, len(input.Texts))
-			for i, t := range input.Texts {
-				arr[i] = normalizeText(t)
+		// Deep copy contents and normalize text parts; non-text parts are
+		// copied as-is so multimodal inputs participate in cache hashing.
+		src := req.EmbeddingRequest.Input
+		copiedItems := make([]embeddingItemHashInput, len(src))
+		for i, item := range src {
+			copiedContent := make(schemas.EmbeddingContent, len(item.Content))
+			for j, part := range item.Content {
+				copied := part
+				if part.Type == schemas.EmbeddingContentPartTypeText && part.Text != nil {
+					normalized := normalizeText(*part.Text)
+					copied.Text = &normalized
+				}
+				copiedContent[j] = copied
 			}
-			out.Texts = arr
-		} else if input.Embedding != nil {
-			// Numeric embeddings aren't text-normalizable but must still appear
-			// in the hash payload, so copy the slice to avoid aliasing.
-			out.Embedding = append([]int(nil), input.Embedding...)
-		} else if input.Embeddings != nil {
-			out.Embeddings = append([][]int(nil), input.Embeddings...)
+			// Per-item params change the vector, so they belong in the hash.
+			// ExtraParams is json:"-" on the schema, so it is carried explicitly.
+			copiedItems[i] = embeddingItemHashInput{Content: copiedContent, Params: item.Params}
+			if item.Params != nil && len(item.Params.ExtraParams) > 0 {
+				copiedItems[i].ExtraParams = item.Params.ExtraParams
+			}
 		}
-		return out
+		return copiedItems
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		return req.TranscriptionRequest.Input
 	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
@@ -729,6 +833,13 @@ func (plugin *Plugin) getNormalizedInputForCaching(req *schemas.BifrostRequest) 
 	default:
 		return nil
 	}
+}
+
+// embeddingItemHashInput is the hashed form of one embedding input item.
+type embeddingItemHashInput struct {
+	Content     schemas.EmbeddingContent     `json:"content"`
+	Params      *schemas.EmbeddingParameters `json:"params,omitempty"`
+	ExtraParams map[string]interface{}       `json:"extra_params,omitempty"`
 }
 
 // normalizeChatMessage returns a shallow copy of msg with its Content
@@ -820,9 +931,7 @@ func (plugin *Plugin) extractChatParametersToMetadata(params *schemas.ChatParame
 	putIfSet(metadata, "store", params.Store)
 	putIfSet(metadata, "top_logprobs", params.TopLogProbs)
 	putIfSet(metadata, "verbosity", params.Verbosity)
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	putExtraParams(metadata, params.ExtraParams)
 	if len(params.Tools) > 0 {
 		// Tools are an order-insensitive set; producer-side ordering (notably
 		// MCP's randomized map iteration) must not perturb the request hash.
@@ -881,9 +990,7 @@ func (plugin *Plugin) extractResponsesParametersToMetadata(params *schemas.Respo
 	}
 	putIfSet(metadata, "top_logprobs", params.TopLogProbs)
 	putIfSet(metadata, "truncation", params.Truncation)
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	putExtraParams(metadata, params.ExtraParams)
 	if len(params.Tools) > 0 {
 		// Tools are an order-insensitive set; producer-side ordering (notably
 		// MCP's randomized map iteration) must not perturb the request hash.
@@ -916,9 +1023,7 @@ func (plugin *Plugin) extractTextCompletionParametersToMetadata(params *schemas.
 	putIfSet(metadata, "n", params.N)
 	putIfSet(metadata, "seed", params.Seed)
 	putIfSet(metadata, "suffix", params.Suffix)
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	putExtraParams(metadata, params.ExtraParams)
 }
 
 // extractSpeechParametersToMetadata extracts Speech parameters into metadata map.
@@ -950,18 +1055,27 @@ func (plugin *Plugin) extractSpeechParametersToMetadata(params *schemas.SpeechPa
 			metadata["pronunciation_dictionary_locators_hash"] = hash
 		}
 	}
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	putExtraParams(metadata, params.ExtraParams)
 }
 
 // extractEmbeddingParametersToMetadata extracts Embedding parameters into metadata map.
 func (plugin *Plugin) extractEmbeddingParametersToMetadata(params *schemas.EmbeddingParameters, metadata map[string]interface{}) {
 	putIfSet(metadata, "encoding_format", params.EncodingFormat)
 	putIfSet(metadata, "dimensions", params.Dimensions)
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
+	// Each of these changes the vector the provider returns for the same input, so a
+	// request that differs only in one of them must not hit another's cache entry.
+	putIfSet(metadata, "task_type", params.TaskType)
+	putIfSet(metadata, "title", params.Title)
+	putIfSet(metadata, "auto_truncate", params.AutoTruncate)
+	putIfSet(metadata, "instructions", params.Instructions)
+	if len(params.SparseEmbedding) > 0 {
+		if raw, err := schemas.MarshalSorted(params.SparseEmbedding); err != nil {
+			plugin.logger.Warn("Failed to marshal sparse_embedding for metadata: %v", err)
+		} else {
+			metadata["sparse_embedding"] = string(raw)
+		}
 	}
+	putExtraParams(metadata, params.ExtraParams)
 }
 
 // extractTranscriptionParametersToMetadata extracts Transcription parameters into metadata map.
@@ -981,9 +1095,7 @@ func (plugin *Plugin) extractTranscriptionParametersToMetadata(params *schemas.T
 			metadata["additional_formats_hash"] = hash
 		}
 	}
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	putExtraParams(metadata, params.ExtraParams)
 }
 
 // extractImageGenerationParametersToMetadata extracts Image Generation parameters into metadata map.
@@ -1008,9 +1120,7 @@ func (plugin *Plugin) extractImageGenerationParametersToMetadata(params *schemas
 	if len(params.InputImages) > 0 {
 		metadata["input_images"] = params.InputImages
 	}
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	putExtraParams(metadata, params.ExtraParams)
 }
 
 // isConversationHistoryThresholdExceeded returns true when the request's

@@ -3313,6 +3313,55 @@ func TestStripUnsupportedFieldsFromRawBody_ScopeTokenWithoutCacheControlScope(t 
 	}
 }
 
+// A kept output_config.effort snaps onto the model's ladder: Opus 4.5 takes
+// low/medium/high, Opus/Sonnet 4.6 add max, Opus 4.7+ add xhigh. Claude Code
+// defaults to xhigh, which a retargeted request carries onto older models.
+func TestStripUnsupportedFields_EffortLevelClamp(t *testing.T) {
+	tests := []struct {
+		model, effort, want string
+	}{
+		{"claude-opus-4-5", "xhigh", "high"},
+		{"claude-opus-4-5", "max", "high"},
+		{"claude-opus-4-5-20251101", "medium", "medium"},
+		{"claude-opus-4-6", "xhigh", "max"},
+		{"claude-sonnet-4-6", "max", "max"},
+		{"claude-opus-4-7", "xhigh", "xhigh"},
+		{"claude-opus-5-5", "max", "max"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model+"/"+tt.effort+"/raw", func(t *testing.T) {
+			body := []byte(`{"model":"` + tt.model + `","output_config":{"effort":"` + tt.effort + `"}}`)
+			out, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, tt.model)
+			if err != nil {
+				t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+			}
+			if got := providerUtils.GetJSONField(out, "output_config.effort").String(); got != tt.want {
+				t.Errorf("output_config.effort = %q, want %q; body=%s", got, tt.want, out)
+			}
+		})
+		t.Run(tt.model+"/"+tt.effort+"/typed", func(t *testing.T) {
+			req := &AnthropicMessageRequest{Model: tt.model, OutputConfig: &AnthropicOutputConfig{Effort: new(tt.effort)}}
+			stripUnsupportedAnthropicFields(req, schemas.Anthropic, tt.model)
+			if req.OutputConfig == nil || req.OutputConfig.Effort == nil || *req.OutputConfig.Effort != tt.want {
+				t.Errorf("OutputConfig = %+v, want effort %q", req.OutputConfig, tt.want)
+			}
+		})
+	}
+
+	t.Run("datasheet_ladder_wins", func(t *testing.T) {
+		model := "claude-opus-4-5-ladder-override"
+		setOverride(t, model, schemas.ModelCapabilities{ReasoningEffortLevels: []string{"low", "medium", "high", "xhigh"}})
+		body := []byte(`{"model":"` + model + `","output_config":{"effort":"xhigh"}}`)
+		out, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, model)
+		if err != nil {
+			t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+		}
+		if got := providerUtils.GetJSONField(out, "output_config.effort").String(); got != "xhigh" {
+			t.Errorf("output_config.effort = %q, want \"xhigh\" from the row's ladder; body=%s", got, out)
+		}
+	})
+}
+
 func TestAddMissingBetaHeadersToContext_TaskBudgets(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -4250,7 +4299,7 @@ func betaHeaderCorpus() map[string]string {
 		"per-message output_config.effort on an effort-only system message":   `{"model":"claude-opus-5-5","output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"},{"role":"system","content":[],"output_config":{"effort":"low"}}]}`,
 		"per-message output_config.effort on a string-content system message": `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":"be brief","output_config":{"effort":"low"}}]}`,
 		"per-message output_config without effort (must NOT trigger)":         `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":[],"output_config":{"effort":null}}]}`,
-		"no messages field at all":                                            `{"model":"` + model + `","max_tokens":64}`,
+		"no messages field at all": `{"model":"` + model + `","max_tokens":64}`,
 
 		// --- scope found elsewhere; the messages branch must not double-add or mask it ---
 		"scoped cache_control in system": `{"model":"` + model + `","system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral","scope":"organization"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
@@ -4423,6 +4472,12 @@ func TestAccumulateResponsesUsage_BillsWebSearch(t *testing.T) {
 	if got := *billed.CompletionTokensDetails.NumSearchQueries; got != 2 {
 		t.Fatalf("billed usage NumSearchQueries = %d, want 2", got)
 	}
+	if got := usage.ToolUsage.WebSearch.NumRequests; got != 2 {
+		t.Fatalf("response usage ToolUsage web search = %d, want 2", got)
+	}
+	if got := billed.ToolUsage.WebSearch.NumRequests; got != 2 {
+		t.Fatalf("billed usage ToolUsage web search = %d, want 2", got)
+	}
 }
 
 // TestToBifrostChatResponse_ForwardsWebSearchAndInferenceGeo verifies the chat
@@ -4459,6 +4514,9 @@ func TestToBifrostChatResponse_ForwardsWebSearchAndInferenceGeo(t *testing.T) {
 	}
 	if got := *result.Usage.CompletionTokensDetails.NumSearchQueries; got != 3 {
 		t.Fatalf("chat usage NumSearchQueries = %d, want 3", got)
+	}
+	if result.Usage.ToolUsage == nil || result.Usage.ToolUsage.WebSearch == nil || result.Usage.ToolUsage.WebSearch.NumRequests != 3 {
+		t.Fatalf("chat usage ToolUsage = %+v, want web_search.num_requests 3", result.Usage.ToolUsage)
 	}
 	if result.InferenceGeo == nil || *result.InferenceGeo != "us" {
 		t.Fatalf("inference_geo not forwarded; got %v", result.InferenceGeo)
@@ -5469,5 +5527,101 @@ func TestDefaultSupportsMidConversationSystem_ModelList(t *testing.T) {
 	}
 	if !DefaultSupportsMidConversationOutputConfig(schemas.Anthropic, "claude-sonnet-5-5") {
 		t.Error("Sonnet 5.5 must report per-message effort support")
+	}
+}
+
+// TestHandleAnthropicResponsesRequest_KeepsBedrockInvokeGuardrailOutcome: Bedrock's native
+// InvokeModel reports the guardrail outcome as top-level amazon-bedrock-* fields that
+// AnthropicMessageResponse has no member for; the handler must keep them on the response.
+func TestHandleAnthropicResponsesRequest_KeepsBedrockInvokeGuardrailOutcome(t *testing.T) {
+	const trace = `{"guardrail":{"input":{"gr-1":[{"topicPolicy":{"topics":[{"name":"x","action":"BLOCKED"}]}}]},"outputs":[]}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"amazon-bedrock-guardrailAction":"INTERVENED","amazon-bedrock-trace":` + trace + `}`))
+	}))
+	defer server.Close()
+
+	run := func(provider schemas.ModelProvider) *schemas.BifrostResponsesResponse {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		request := &schemas.BifrostResponsesRequest{Provider: provider, Model: "claude-sonnet-4-6", Input: makeSimpleInput("Hello!")}
+		resp, bifrostErr := HandleAnthropicResponsesRequest(ctx, &fasthttp.Client{}, server.URL+"/model/m/invoke", request,
+			AnthropicRequestBuildConfig{Provider: provider, Model: "claude-sonnet-4-6"},
+			map[string]string{}, nil, nil, truncationTestLogger{})
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %s", bifrostErr.Error.Message)
+		}
+		return resp
+	}
+
+	resp := run(schemas.Bedrock)
+	if got := resp.ProviderExtraFields[BedrockInvokeGuardrailActionKey]; got != "INTERVENED" {
+		t.Errorf("guardrail action = %v, want INTERVENED", got)
+	}
+	raw, _ := resp.ProviderExtraFields[BedrockInvokeGuardrailTraceKey].(json.RawMessage)
+	if string(raw) != trace {
+		t.Errorf("guardrail trace = %s, want %s", raw, trace)
+	}
+
+	if extra := run(schemas.Anthropic).ProviderExtraFields; len(extra) != 0 {
+		t.Errorf("a non-Bedrock response must not grow guardrail fields: %v", extra)
+	}
+}
+
+// TestHandleAnthropicResponsesStream_KeepsBedrockInvokeGuardrailOutcome: on a native
+// InvokeModelWithResponseStream the guardrail outcome arrives as top-level amazon-bedrock-*
+// fields of the final event, which AnthropicStreamEvent has no member for; the terminal
+// response chunk must carry them, verbatim.
+func TestHandleAnthropicResponsesStream_KeepsBedrockInvokeGuardrailOutcome(t *testing.T) {
+	const trace = `{"guardrail":{"input":{"gr-1":[{"topicPolicy":{"topics":[{"name":"x","action":"BLOCKED"}]}}]},"outputs":[]}}`
+	body := anthropicMessageStart + anthropicTextDelta +
+		"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: message_delta\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}` + "\n\n" +
+		"event: message_stop\n" + `data: {"type":"message_stop","amazon-bedrock-invocationMetrics":{"inputTokenCount":5},"amazon-bedrock-guardrailAction":"INTERVENED","amazon-bedrock-trace":` + trace + `}` + "\n\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	run := func(plain string) []*schemas.BifrostStreamChunk {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		request := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "claude-sonnet-4-6", Input: makeSimpleInput("Hello!")}
+		jsonData, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{Provider: schemas.Bedrock, Model: "claude-sonnet-4-6", IsStreaming: true})
+		if bifrostErr != nil {
+			t.Fatalf("build: %s", bifrostErr.Error.Message)
+		}
+		stream, bifrostErr := HandleAnthropicResponsesStream(ctx, &fasthttp.Client{}, server.URL+"/model/m/invoke-with-response-stream"+plain, jsonData,
+			map[string]string{}, nil, 30, nil, false, false, schemas.Bedrock,
+			truncationPassthroughPostHook, nil, nil, truncationTestLogger{}, nil)
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %s", bifrostErr.Error.Message)
+		}
+		return collectTruncationChunks(t, stream)
+	}
+
+	chunks := run("")
+	var carrying int
+	for _, chunk := range chunks {
+		if chunk.BifrostResponsesStreamResponse == nil || chunk.BifrostResponsesStreamResponse.Response == nil {
+			continue
+		}
+		extra := chunk.BifrostResponsesStreamResponse.Response.ProviderExtraFields
+		if extra[BedrockInvokeGuardrailActionKey] == nil && extra[BedrockInvokeGuardrailTraceKey] == nil {
+			continue
+		}
+		carrying++
+		if chunk.BifrostResponsesStreamResponse.Type != schemas.ResponsesStreamResponseTypeCompleted {
+			t.Errorf("guardrail outcome rode on %s, want the terminal completed chunk", chunk.BifrostResponsesStreamResponse.Type)
+		}
+		if got := extra[BedrockInvokeGuardrailActionKey]; got != "INTERVENED" {
+			t.Errorf("guardrail action = %v, want INTERVENED", got)
+		}
+		raw, _ := extra[BedrockInvokeGuardrailTraceKey].(json.RawMessage)
+		if string(raw) != trace {
+			t.Errorf("guardrail trace = %s, want %s", raw, trace)
+		}
+	}
+	if carrying != 1 {
+		t.Fatalf("%d chunks carried the guardrail outcome, want exactly 1", carrying)
 	}
 }

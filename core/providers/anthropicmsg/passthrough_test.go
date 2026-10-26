@@ -283,3 +283,30 @@ func TestPassthroughKeepsAnthropicOnlyFieldsUnlessAsked(t *testing.T) {
 		t.Fatalf("Anthropic body changed:\n got: %s\nwant: %s", got, body)
 	}
 }
+
+// A caller-supplied path that is not rooted on the endpoint would turn the configured host
+// into userinfo or a scheme-relative authority and send the key to another host. Both the
+// buffered and the streaming path refuse it with 400 before dialing anything.
+func TestPassthroughRefusesPathsThatLeaveTheEndpointHost(t *testing.T) {
+	var hits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	for _, path := range []string{"@evil.example/v1/messages", "//evil.example/v1/messages", "v1/messages"} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: path, Body: []byte(`{}`)}
+		cfg := Config{Provider: schemas.XAI, Endpoint: server.URL}
+		if _, bifrostErr := Passthrough(ctx, &fasthttp.Client{}, testKey("xai-secret"), req, cfg); bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+			t.Fatalf("Passthrough(%q) = %+v, want a 400", path, bifrostErr)
+		}
+		if _, bifrostErr := PassthroughStream(ctx, nil, nil, &fasthttp.Client{}, testKey("xai-secret"), req, cfg); bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+			t.Fatalf("PassthroughStream(%q) = %+v, want a 400", path, bifrostErr)
+		}
+	}
+	if hits != 0 {
+		t.Fatalf("the endpoint was dialed %d times for refused paths", hits)
+	}
+}

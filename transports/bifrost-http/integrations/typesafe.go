@@ -66,8 +66,9 @@ func CreateTypesafeRouteConfigs(pathPrefix string) []RouteConfig {
 			}
 			// The raw and native provider bodies were kept before post-hooks ran; relay one
 			// only while it still carries the answers the processed response does, so a
-			// post-hook's change reaches the client.
-			if resp.ExtraFields.Provider == schemas.Typesafe {
+			// post-hook's change reaches the client. Custom providers report their own
+			// name, so match on the base provider type that served the attempt.
+			if schemas.ResolveBaseProvider(ctx, resp.ExtraFields.Provider) == schemas.Typesafe {
 				if resp.ExtraFields.RawResponse != nil && typesafeRawAnswersMatch(resp.ExtraFields.RawResponse, native) {
 					return resp.ExtraFields.RawResponse, nil
 				}

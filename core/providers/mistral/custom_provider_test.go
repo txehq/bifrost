@@ -148,8 +148,8 @@ func TestMistralProvider_CustomAliasEmbeddingReportsAliasMetadata(t *testing.T) 
 	request := &schemas.BifrostEmbeddingRequest{
 		Provider: customMistralProviderName,
 		Model:    "codestral-embed",
-		Input: &schemas.EmbeddingInput{
-			Texts: []string{"hello"},
+		Input: []schemas.EmbeddingInputItem{
+			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("hello")}}},
 		},
 	}
 

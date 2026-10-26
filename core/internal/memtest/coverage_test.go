@@ -144,6 +144,10 @@ var reviewedSites = map[string]siteReview{
 		reason: "writes accumulate into small local values (a single schema branch, an enum array), " +
 			"never the request body; the quadratic term is in enum cardinality, which is schema-bounded",
 	},
+	"mistral.normalizeMistralStreamContent": {
+		status: elementSized,
+		reason: "rewrites each choice-sized delta once, then replaces the choices array outside the loop",
+	},
 	"anthropic.BuildAnthropicChatRequestBody": {
 		status: bounded,
 		reason: "loops over cfg.ExcludeFields, which is provider config and does not grow with the request payload",
@@ -167,6 +171,11 @@ var reviewedSites = map[string]siteReview{
 	"vertex.stripVertexCountTokensUnsupportedFields": {
 		status: bounded,
 		reason: "loops over the fixed vertexCountTokensUnsupportedFields package var",
+	},
+	"configstore.migrationMovePricingOverrideSearchContextToWebSearch": {
+		status: elementSized,
+		reason: "one-time startup migration; each iteration rewrites that row's own small pricing_patch_json, " +
+			"never a request body",
 	},
 }
 

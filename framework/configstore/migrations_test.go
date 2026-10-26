@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/capsohq/bifrost/framework/migrator"
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -734,6 +737,54 @@ func setupVKTestDBWithoutRotationColumns(t *testing.T) *gorm.DB {
 	require.NoError(t, err, "Failed to create migrations table")
 
 	return db
+}
+
+func TestMigrationMovePricingOverrideSearchContextToWebSearch(t *testing.T) {
+	db := setupRDBTestStore(t).DB()
+	ctx := context.Background()
+	table := tables.TablePricingOverride{}.TableName()
+	now := time.Now()
+	for id, patch := range map[string]string{
+		"legacy":   `{"input_cost_per_token":0.001,"search_context_cost_per_query":0.02}`,
+		"explicit": `{"search_context_cost_per_query":0.02,"web_search_cost_per_request":0.05}`,
+		"none":     `{"input_cost_per_token":0.001}`,
+	} {
+		require.NoError(t, db.Table(table).Create(map[string]any{
+			"id": id, "name": id, "scope_kind": "global", "match_type": "exact", "pattern": "gpt-4o",
+			"request_types_json": "[]", "pricing_patch_json": patch, "created_at": now, "updated_at": now,
+		}).Error)
+	}
+
+	require.NoError(t, migrationMovePricingOverrideSearchContextToWebSearch(ctx, db, testMigrationLogger))
+
+	patchOf := func(id string) string {
+		var patch string
+		require.NoError(t, db.Table(table).Select("pricing_patch_json").Where("id = ?", id).Scan(&patch).Error)
+		return patch
+	}
+	assert.JSONEq(t, `{"input_cost_per_token":0.001,"web_search_cost_per_request":0.02}`, patchOf("legacy"))
+	assert.JSONEq(t, `{"web_search_cost_per_request":0.05}`, patchOf("explicit"))
+	assert.JSONEq(t, `{"input_cost_per_token":0.001}`, patchOf("none"))
+}
+
+func TestMigrationAddWebSearchCostPerRequestColumn_BackfillsFromSearchContext(t *testing.T) {
+	db := setupRDBTestStore(t).DB()
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableModelPricing{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableModelPricing{}, "web_search_cost_per_request"))
+
+	table := tables.TableModelPricing{}.TableName()
+	require.NoError(t, db.Table(table).Create(map[string]any{"model": "claude-haiku-4-5", "provider": "anthropic", "mode": "chat", "search_context_cost_per_query": 0.01}).Error)
+	require.NoError(t, db.Table(table).Create(map[string]any{"model": "gpt-4o", "provider": "openai", "mode": "chat"}).Error)
+
+	require.NoError(t, migrationAddWebSearchCostPerRequestColumn(ctx, db, testMigrationLogger))
+
+	var got []tables.TableModelPricing
+	require.NoError(t, db.Order("model").Find(&got).Error)
+	require.Len(t, got, 2)
+	require.NotNil(t, got[0].WebSearchCostPerRequest)
+	assert.InDelta(t, 0.01, *got[0].WebSearchCostPerRequest, 1e-12)
+	assert.Nil(t, got[1].WebSearchCostPerRequest)
 }
 
 func TestMigrationAddVKRotationCooldownColumns_CreatesIndex(t *testing.T) {
@@ -2285,6 +2336,27 @@ func TestMigrationAddCompatAzureDeepseekColumn(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.True(t, rows[0].CompatAzureDeepseek, "existing rows must keep the conversion enabled")
+}
+
+func TestMigrationAddMCPCodeModeLimitsClientColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+
+	// Simulate the pre-migration schema
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "mcp_code_mode_limits_json"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "mcp_code_mode_limits_json"))
+
+	require.NoError(t, migrationAddMCPCodeModeLimitsClientColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "mcp_code_mode_limits_json"))
+
+	// Idempotent: a second run on an already-migrated schema is a no-op.
+	require.NoError(t, migrationAddMCPCodeModeLimitsClientColumn(ctx, db, testMigrationLogger))
 }
 
 // setupCalendarAlignedPreMigrationDB creates a SQLite DB with governance_virtual_keys,
@@ -4520,4 +4592,697 @@ func TestMigrationAddVirtualKeyDeleteAfterExpireColumn(t *testing.T) {
 	// Idempotent: a re-run with the column already present must not fail.
 	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_delete_after_expire_column").Error)
 	require.NoError(t, migrationAddVirtualKeyDeleteAfterExpireColumn(ctx, db, testMigrationLogger))
+}
+
+// oauthFlowStateMigrationID is the id the state-uniqueness migration records.
+const oauthFlowStateMigrationID = "make_mcp_oauth_flows_state_unique"
+
+// createUpgradedOauthFlowsTable creates the mcp_oauth_flows shape an upgraded
+// database has: the state column carries the NON-unique idx_mcp_oauth_flows_state
+// the old struct tag built, which made the later CREATE UNIQUE INDEX IF NOT EXISTS
+// a no-op.
+func createUpgradedOauthFlowsTable(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	require.NoError(t, db.Exec(`CREATE TABLE mcp_oauth_flows (
+		id VARCHAR(255) PRIMARY KEY, state VARCHAR(255) NOT NULL, status VARCHAR(50) NOT NULL,
+		expires_at TIMESTAMP NOT NULL)`).Error)
+	require.NoError(t, db.Exec(`CREATE INDEX idx_mcp_oauth_flows_state ON mcp_oauth_flows (state)`).Error)
+}
+
+// insertOauthFlow inserts one flow row with the given state, status and expiry.
+func insertOauthFlow(t *testing.T, db *gorm.DB, id, state, status string, expiresAt time.Time) {
+	t.Helper()
+	require.NoError(t, db.Exec("INSERT INTO mcp_oauth_flows (id, state, status, expires_at) VALUES (?, ?, ?, ?)",
+		id, state, status, expiresAt).Error)
+}
+
+// oauthFlowIDs returns every flow id, sorted.
+func oauthFlowIDs(t *testing.T, db *gorm.DB) []string {
+	t.Helper()
+	var ids []string
+	require.NoError(t, db.Raw("SELECT id FROM mcp_oauth_flows ORDER BY id").Scan(&ids).Error)
+	return ids
+}
+
+// runOauthFlowStateMigration runs migrationMakeMCPOauthFlowsStateUnique once.
+func runOauthFlowStateMigration(ctx context.Context, db *gorm.DB) error {
+	return migrationMakeMCPOauthFlowsStateUnique(ctx, db, testMigrationLogger)
+}
+
+// TestFollowupsOauthFlowStateTagIsUnique pins that a fresh install, which builds
+// mcp_oauth_flows from struct tags, gets a UNIQUE idx_mcp_oauth_flows_state.
+func TestFollowupsOauthFlowStateTagIsUnique(t *testing.T) {
+	db := freshSQLiteDB(t)
+	require.NoError(t, db.Migrator().CreateTable(&tables.TableMCPOauthFlow{}))
+	require.True(t, indexIsUnique(t, db, "mcp_oauth_flows", "idx_mcp_oauth_flows_state"))
+	require.Equal(t, []string{"state"}, indexColumns(t, db, "idx_mcp_oauth_flows_state"))
+}
+
+// TestFollowupsOauthFlowStateUniqueAfterAllMigrations pins that the full
+// migration chain leaves state UNIQUE on both dialects.
+func TestFollowupsOauthFlowStateUniqueAfterAllMigrations(t *testing.T) {
+	for _, ns := range inListLimitStores(t) {
+		t.Run(ns.name, func(t *testing.T) {
+			require.True(t, indexIsUnique(t, ns.db, "mcp_oauth_flows", "idx_mcp_oauth_flows_state"))
+			require.False(t, indexExists(t, ns.db, "mcp_oauth_flows", "idx_mcp_oauth_flows_state_unique"))
+		})
+	}
+}
+
+// TestFollowupsOauthFlowStateConvertsToUnique pins the upgrade path: a
+// non-unique idx_mcp_oauth_flows_state becomes UNIQUE under the same name. An
+// expired pending or claiming copy of a duplicated state, which the expiry sweep
+// would delete anyway, is removed first; every other row, including an expired
+// row whose state is not duplicated, is kept. Re-running is a no-op.
+func TestFollowupsOauthFlowStateConvertsToUnique(t *testing.T) {
+	for _, ndb := range indexMigrationDBs(t) {
+		t.Run(ndb.name, func(t *testing.T) {
+			db := ndb.db
+			createUpgradedOauthFlowsTable(t, db)
+			past := time.Now().Add(-time.Hour)
+			future := time.Now().Add(time.Hour)
+			insertOauthFlow(t, db, "f1", "s1", "pending", future)
+			insertOauthFlow(t, db, "f2", "s1", "pending", past)  // expired dup: swept
+			insertOauthFlow(t, db, "f3", "s2", "claiming", past) // expired dup: swept
+			insertOauthFlow(t, db, "f4", "s2", "authorized", past)
+			insertOauthFlow(t, db, "f5", "s3", "pending", past) // expired, not a dup: kept
+			require.False(t, indexIsUnique(t, db, "mcp_oauth_flows", "idx_mcp_oauth_flows_state"))
+
+			require.NoError(t, runOauthFlowStateMigration(context.Background(), db))
+			require.True(t, indexIsUnique(t, db, "mcp_oauth_flows", "idx_mcp_oauth_flows_state"))
+			require.False(t, indexExists(t, db, "mcp_oauth_flows", "idx_mcp_oauth_flows_state_unique"))
+			require.Equal(t, []string{"f1", "f4", "f5"}, oauthFlowIDs(t, db))
+			require.Error(t, db.Exec("INSERT INTO mcp_oauth_flows (id, state, status, expires_at) VALUES ('f6', 's1', 'pending', ?)", future).Error)
+
+			require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", oauthFlowStateMigrationID).Error)
+			require.NoError(t, runOauthFlowStateMigration(context.Background(), db))
+			require.True(t, indexIsUnique(t, db, "mcp_oauth_flows", "idx_mcp_oauth_flows_state"))
+		})
+	}
+}
+
+// TestFollowupsOauthFlowStateKeepsNonUniqueOnLiveDuplicates pins the safety
+// path: duplicated states the sweep would not delete make UNIQUE impossible, so
+// the migration keeps the non-unique index, deletes nothing, and still succeeds.
+func TestFollowupsOauthFlowStateKeepsNonUniqueOnLiveDuplicates(t *testing.T) {
+	for _, ndb := range indexMigrationDBs(t) {
+		t.Run(ndb.name, func(t *testing.T) {
+			db := ndb.db
+			createUpgradedOauthFlowsTable(t, db)
+			future := time.Now().Add(time.Hour)
+			insertOauthFlow(t, db, "f1", "dup", "pending", future)
+			insertOauthFlow(t, db, "f2", "dup", "authorized", future)
+			insertOauthFlow(t, db, "f3", "s3", "pending", future)
+
+			require.NoError(t, runOauthFlowStateMigration(context.Background(), db))
+			require.True(t, indexExists(t, db, "mcp_oauth_flows", "idx_mcp_oauth_flows_state"))
+			require.False(t, indexIsUnique(t, db, "mcp_oauth_flows", "idx_mcp_oauth_flows_state"))
+			require.False(t, indexExists(t, db, "mcp_oauth_flows", "idx_mcp_oauth_flows_state_unique"))
+			require.Equal(t, []string{"f1", "f2", "f3"}, oauthFlowIDs(t, db))
+
+			// The recovery the fallback warning describes: remove the duplicate,
+			// delete the migration's ledger row, and the next run enforces uniqueness.
+			require.NoError(t, db.Exec("DELETE FROM mcp_oauth_flows WHERE id = ?", "f2").Error)
+			require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", oauthFlowStateMigrationID).Error)
+			require.NoError(t, runOauthFlowStateMigration(context.Background(), db))
+			require.True(t, indexIsUnique(t, db, "mcp_oauth_flows", "idx_mcp_oauth_flows_state"), "the retried migration must make state unique")
+		})
+	}
+}
+
+// TestFollowupsOauthFlowStateResumesAfterInterruptedSwap pins that a run which
+// stopped after dropping the old index but before the rename finishes the swap
+// on the next start instead of rebuilding.
+func TestFollowupsOauthFlowStateResumesAfterInterruptedSwap(t *testing.T) {
+	for _, ndb := range indexMigrationDBs(t) {
+		t.Run(ndb.name, func(t *testing.T) {
+			db := ndb.db
+			require.NoError(t, db.Exec(`CREATE TABLE mcp_oauth_flows (
+				id VARCHAR(255) PRIMARY KEY, state VARCHAR(255) NOT NULL, status VARCHAR(50) NOT NULL,
+				expires_at TIMESTAMP NOT NULL)`).Error)
+			require.NoError(t, db.Exec(`CREATE UNIQUE INDEX idx_mcp_oauth_flows_state_unique ON mcp_oauth_flows (state)`).Error)
+
+			require.NoError(t, runOauthFlowStateMigration(context.Background(), db))
+			require.True(t, indexIsUnique(t, db, "mcp_oauth_flows", "idx_mcp_oauth_flows_state"))
+			require.False(t, indexExists(t, db, "mcp_oauth_flows", "idx_mcp_oauth_flows_state_unique"))
+		})
+	}
+}
+
+// TestFollowupsOauthFlowStateRollbackRefuses pins that rolling back the state
+// uniqueness migration fails instead of reporting success: the migration deletes
+// expired duplicate flows and swaps in a UNIQUE index, neither of which can be
+// undone, and a nil rollback would let the runner drop the migration record.
+func TestFollowupsOauthFlowStateRollbackRefuses(t *testing.T) {
+	m := mcpOauthFlowsStateUniqueMigration(context.Background(), oauthFlowStateMigrationID, testMigrationLogger)
+	err := m.Rollback(nil)
+	require.Error(t, err, "an irreversible migration must refuse to roll back")
+	require.Contains(t, err.Error(), "non-rollbackable")
+}
+
+// indexIsUnique reports whether the named index on table is a UNIQUE index, on either dialect.
+func indexIsUnique(t *testing.T, db *gorm.DB, table, name string) bool {
+	t.Helper()
+	if db.Dialector.Name() == "postgres" {
+		var unique bool
+		require.NoError(t, db.Raw(`
+			SELECT COALESCE(bool_and(pi.indisunique), false)
+			FROM pg_class pc
+			JOIN pg_index pi ON pi.indrelid = pc.oid
+			JOIN pg_class ic ON ic.oid = pi.indexrelid
+			WHERE pc.relname = ? AND ic.relname = ? AND pg_catalog.pg_table_is_visible(pc.oid)
+		`, table, name).Scan(&unique).Error)
+		return unique
+	}
+	type indexRow struct {
+		Name   string
+		Unique int
+	}
+	var rows []indexRow
+	require.NoError(t, db.Raw(fmt.Sprintf("PRAGMA index_list(%s)", table)).Scan(&rows).Error)
+	for _, r := range rows {
+		if r.Name == name {
+			return r.Unique == 1
+		}
+	}
+	return false
+}
+
+// indexColumns returns the ordered column list of a SQLite index.
+func indexColumns(t *testing.T, db *gorm.DB, name string) []string {
+	t.Helper()
+	type colRow struct {
+		Seqno int
+		Name  string
+	}
+	var rows []colRow
+	require.NoError(t, db.Raw(fmt.Sprintf("PRAGMA index_info(%s)", name)).Scan(&rows).Error)
+	cols := make([]string, 0, len(rows))
+	for _, r := range rows {
+		cols = append(cols, r.Name)
+	}
+	return cols
+}
+
+// sqliteIndexSQL returns the CREATE INDEX statement SQLite stored for an index.
+func sqliteIndexSQL(t *testing.T, db *gorm.DB, name string) string {
+	t.Helper()
+	var sql string
+	require.NoError(t, db.Raw("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?", name).Scan(&sql).Error)
+	return sql
+}
+
+// freshSQLiteDB opens an empty file-backed SQLite database for tag tests.
+func freshSQLiteDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "fresh.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	return db
+}
+
+// createHashTables creates minimal pre-tag versions of governance_virtual_keys and
+// sessions, the shape an upgraded database has after migrationAddEncryptionColumns
+// added the hash columns without their indexes.
+func createHashTables(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	require.NoError(t, db.Exec(`CREATE TABLE governance_virtual_keys (id VARCHAR(255) PRIMARY KEY, value_hash VARCHAR(64))`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE sessions (id INTEGER PRIMARY KEY, token_hash VARCHAR(64))`).Error)
+}
+
+// runHashIndexMigration runs migrationAddValueHashAndTokenHashIndexes once.
+func runHashIndexMigration(ctx context.Context, db *gorm.DB) error {
+	return migrationAddValueHashAndTokenHashIndexes(ctx, db, testMigrationLogger)
+}
+
+// TestHighFixHashIndexesBuildUnique pins H1: an upgraded database without the tag
+// indexes gets UNIQUE idx_virtual_key_value_hash and idx_session_token_hash. Many
+// NULL and empty-string hashes must not block the unique build, and the migration re-runs cleanly.
+func TestHighFixHashIndexesBuildUnique(t *testing.T) {
+	for _, ndb := range indexMigrationDBs(t) {
+		t.Run(ndb.name, func(t *testing.T) {
+			db := ndb.db
+			createHashTables(t, db)
+			require.NoError(t, db.Exec(`INSERT INTO governance_virtual_keys (id, value_hash) VALUES
+				('vk-1', 'h1'), ('vk-2', 'h2'), ('vk-3', NULL), ('vk-4', NULL), ('vk-5', ''), ('vk-6', '')`).Error)
+			require.NoError(t, db.Exec(`INSERT INTO sessions (id, token_hash) VALUES
+				(1, 't1'), (2, 't2'), (3, NULL), (4, ''), (5, '')`).Error)
+
+			runIndexMigrationTwice(t, db, "add_value_hash_and_token_hash_indexes", runHashIndexMigration,
+				"governance_virtual_keys", "idx_virtual_key_value_hash")
+			require.True(t, indexIsUnique(t, db, "governance_virtual_keys", "idx_virtual_key_value_hash"))
+			require.True(t, indexExists(t, db, "sessions", "idx_session_token_hash"))
+			require.True(t, indexIsUnique(t, db, "sessions", "idx_session_token_hash"))
+			require.False(t, indexExists(t, db, "governance_virtual_keys", "idx_virtual_key_value_hash_nonunique"))
+
+			// '' hashes are normalized to NULL, the value the encryption migration uses.
+			var empties int64
+			require.NoError(t, db.Raw("SELECT COUNT(*) FROM governance_virtual_keys WHERE value_hash = ''").Scan(&empties).Error)
+			require.Zero(t, empties)
+			require.NoError(t, db.Raw("SELECT COUNT(*) FROM sessions WHERE token_hash = ''").Scan(&empties).Error)
+			require.Zero(t, empties)
+		})
+	}
+}
+
+// TestHighFixHashIndexesFallBackOnDuplicates pins H1's safety path: duplicate
+// hashes make a unique build impossible, so the migration builds a non-unique
+// index under a separate name instead of failing startup.
+func TestHighFixHashIndexesFallBackOnDuplicates(t *testing.T) {
+	for _, ndb := range indexMigrationDBs(t) {
+		t.Run(ndb.name, func(t *testing.T) {
+			db := ndb.db
+			createHashTables(t, db)
+			require.NoError(t, db.Exec(`INSERT INTO governance_virtual_keys (id, value_hash) VALUES
+				('vk-1', 'dup'), ('vk-2', 'dup'), ('vk-3', 'h3')`).Error)
+			require.NoError(t, db.Exec(`INSERT INTO sessions (id, token_hash) VALUES (1, 'td'), (2, 'td'), (3, 'td'), (4, 't4')`).Error)
+
+			require.NoError(t, runHashIndexMigration(context.Background(), db))
+			require.False(t, indexExists(t, db, "governance_virtual_keys", "idx_virtual_key_value_hash"))
+			require.True(t, indexExists(t, db, "governance_virtual_keys", "idx_virtual_key_value_hash_nonunique"))
+			require.False(t, indexIsUnique(t, db, "governance_virtual_keys", "idx_virtual_key_value_hash_nonunique"))
+			require.False(t, indexExists(t, db, "sessions", "idx_session_token_hash"))
+			require.True(t, indexExists(t, db, "sessions", "idx_session_token_hash_nonunique"))
+
+			// Re-running is safe.
+			require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_value_hash_and_token_hash_indexes").Error)
+			require.NoError(t, runHashIndexMigration(context.Background(), db))
+			require.True(t, indexExists(t, db, "governance_virtual_keys", "idx_virtual_key_value_hash_nonunique"))
+		})
+	}
+}
+
+// TestHighFixSetBasedIndexMigrations pins H13, H14 and H27: upgraded databases get
+// the lookup indexes that the new struct tags build on fresh installs.
+func TestHighFixSetBasedIndexMigrations(t *testing.T) {
+	for _, ndb := range indexMigrationDBs(t) {
+		t.Run(ndb.name, func(t *testing.T) {
+			db := ndb.db
+			require.NoError(t, db.Exec(`CREATE TABLE governance_virtual_key_mcp_configs (
+				id INTEGER PRIMARY KEY, virtual_key_id VARCHAR(255) NOT NULL, mcp_client_id INTEGER NOT NULL)`).Error)
+			require.NoError(t, db.Exec(`CREATE TABLE governance_virtual_key_provider_configs (
+				id INTEGER PRIMARY KEY, virtual_key_id VARCHAR(255) NOT NULL, provider VARCHAR(50) NOT NULL)`).Error)
+			require.NoError(t, db.Exec(`CREATE TABLE governance_virtual_key_provider_config_keys (
+				table_virtual_key_provider_config_id INTEGER NOT NULL, table_key_id INTEGER NOT NULL,
+				PRIMARY KEY (table_virtual_key_provider_config_id, table_key_id))`).Error)
+			require.NoError(t, db.Exec(`CREATE TABLE governance_virtual_keys (
+				id VARCHAR(255) PRIMARY KEY, created_at TIMESTAMP NOT NULL)`).Error)
+
+			runIndexMigrationTwice(t, db, "add_vk_mcp_configs_mcp_client_id_index",
+				func(ctx context.Context, db *gorm.DB) error {
+					return migrationAddVKMCPConfigsMCPClientIDIndex(ctx, db, testMigrationLogger)
+				},
+				"governance_virtual_key_mcp_configs", "idx_vk_mcp_configs_mcp_client_id")
+			runIndexMigrationTwice(t, db, "add_vk_provider_config_provider_and_key_indexes",
+				func(ctx context.Context, db *gorm.DB) error {
+					return migrationAddVKProviderConfigProviderAndKeyIndexes(ctx, db, testMigrationLogger)
+				},
+				"governance_virtual_key_provider_configs", "idx_vk_provider_configs_provider")
+			require.True(t, indexExists(t, db, "governance_virtual_key_provider_config_keys", "idx_vkpc_keys_table_key_id"))
+			runIndexMigrationTwice(t, db, "add_virtual_keys_created_at_id_index",
+				func(ctx context.Context, db *gorm.DB) error {
+					return migrationAddVirtualKeysCreatedAtIDIndex(ctx, db, testMigrationLogger)
+				},
+				"governance_virtual_keys", "idx_virtual_keys_created_at_id")
+		})
+	}
+}
+
+// TestHighFixBatchJobsDueMigration pins H28's upgrade path: terminal rows keep no
+// next_check_at (backfilled in primary-key batches), non-terminal rows are
+// untouched, and the partial due index exists.
+func TestHighFixBatchJobsDueMigration(t *testing.T) {
+	prev := batchJobsDueBackfillBatchSize
+	batchJobsDueBackfillBatchSize = 3
+	t.Cleanup(func() { batchJobsDueBackfillBatchSize = prev })
+
+	for _, ndb := range indexMigrationDBs(t) {
+		t.Run(ndb.name, func(t *testing.T) {
+			db := ndb.db
+			require.NoError(t, db.Exec(`CREATE TABLE batch_jobs (
+				id VARCHAR(512) PRIMARY KEY, kind VARCHAR(50) NOT NULL DEFAULT 'batch', provider VARCHAR(255) NOT NULL,
+				accounting_status VARCHAR(50) NOT NULL, next_check_at TIMESTAMP)`).Error)
+			due := time.Now().UTC().Add(-time.Hour)
+			statuses := []string{
+				tables.ProviderJobAccountingStatusAccounted, tables.ProviderJobAccountingStatusUnpriceable,
+				tables.ProviderJobAccountingStatusPending, tables.ProviderJobAccountingStatusError,
+				tables.ProviderJobAccountingStatusProcessing,
+			}
+			for i := 0; i < 20; i++ {
+				status := statuses[i%len(statuses)]
+				require.NoError(t, db.Exec("INSERT INTO batch_jobs (id, kind, provider, accounting_status, next_check_at) VALUES (?, 'batch', 'openai', ?, ?)",
+					fmt.Sprintf("job-%02d", i), status, due).Error)
+			}
+
+			runIndexMigrationTwice(t, db, "add_batch_jobs_due_index",
+				func(ctx context.Context, db *gorm.DB) error {
+					return migrationAddBatchJobsDueIndex(ctx, db, testMigrationLogger)
+				},
+				"batch_jobs", "idx_batch_jobs_due")
+
+			var terminalWithNext, nonTerminalWithNext int64
+			require.NoError(t, db.Raw("SELECT COUNT(*) FROM batch_jobs WHERE accounting_status IN ('accounted','unpriceable') AND next_check_at IS NOT NULL").Scan(&terminalWithNext).Error)
+			require.NoError(t, db.Raw("SELECT COUNT(*) FROM batch_jobs WHERE accounting_status NOT IN ('accounted','unpriceable') AND next_check_at IS NOT NULL").Scan(&nonTerminalWithNext).Error)
+			require.Zero(t, terminalWithNext)
+			require.EqualValues(t, 12, nonTerminalWithNext)
+
+			if db.Dialector.Name() == "postgres" {
+				var def string
+				require.NoError(t, db.Raw("SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_batch_jobs_due' AND schemaname = current_schema()").Scan(&def).Error)
+				require.Contains(t, def, "WHERE (next_check_at IS NOT NULL)")
+			} else {
+				require.Contains(t, sqliteIndexSQL(t, db, "idx_batch_jobs_due"), "WHERE next_check_at IS NOT NULL")
+			}
+		})
+	}
+}
+
+// TestHighFixTagsBuildIndexes pins that fresh installs, which build tables from
+// struct tags through CreateTable, get the same indexes the upgrade migrations add.
+func TestHighFixTagsBuildIndexes(t *testing.T) {
+	db := freshSQLiteDB(t)
+	mg := db.Migrator()
+	require.NoError(t, mg.CreateTable(&tables.TableVirtualKey{}))
+	require.NoError(t, mg.CreateTable(&tables.SessionsTable{}))
+	require.NoError(t, mg.CreateTable(&tables.TableVirtualKeyMCPConfig{}))
+	require.NoError(t, mg.CreateTable(&tables.TableVirtualKeyProviderConfig{}))
+	require.NoError(t, mg.CreateTable(&tables.TableVirtualKeyProviderConfigKey{}))
+	require.NoError(t, mg.CreateTable(&tables.TableProviderJob{}))
+
+	require.True(t, indexIsUnique(t, db, "governance_virtual_keys", "idx_virtual_key_value_hash"))
+	require.True(t, indexIsUnique(t, db, "sessions", "idx_session_token_hash"))
+
+	require.Equal(t, []string{"mcp_client_id"}, indexColumns(t, db, "idx_vk_mcp_configs_mcp_client_id"))
+	require.Equal(t, []string{"virtual_key_id", "mcp_client_id"}, indexColumns(t, db, "idx_vk_mcpclient"))
+	require.True(t, indexIsUnique(t, db, "governance_virtual_key_mcp_configs", "idx_vk_mcpclient"))
+
+	require.Equal(t, []string{"provider"}, indexColumns(t, db, "idx_vk_provider_configs_provider"))
+	require.Equal(t, []string{"table_key_id"}, indexColumns(t, db, "idx_vkpc_keys_table_key_id"))
+
+	require.Equal(t, []string{"created_at", "id"}, indexColumns(t, db, "idx_virtual_keys_created_at_id"))
+	require.True(t, mg.HasIndex(&tables.TableVirtualKey{}, "idx_governance_virtual_keys_created_at"), "the single-column created_at index must stay")
+
+	require.Equal(t, []string{"kind", "next_check_at"}, indexColumns(t, db, "idx_batch_jobs_due"))
+	require.True(t, strings.Contains(sqliteIndexSQL(t, db, "idx_batch_jobs_due"), "WHERE next_check_at IS NOT NULL"))
+}
+
+// TestHighFixHashNormalizationIsBatched pins that normalizing empty hashes to
+// NULL runs in bounded, separately committed batches rather than one UPDATE over
+// the whole table, which would hold row locks on every matching row at once on
+// a large sessions table. Five empty hashes with a batch size of two need at
+// least three statements per table, and none may be left afterwards.
+func TestHighFixHashNormalizationIsBatched(t *testing.T) {
+	restore := hashNormalizeBatchSize
+	hashNormalizeBatchSize = 2
+	t.Cleanup(func() { hashNormalizeBatchSize = restore })
+	for _, ndb := range indexMigrationDBs(t) {
+		t.Run(ndb.name, func(t *testing.T) {
+			db := ndb.db
+			createHashTables(t, db)
+			require.NoError(t, db.Exec(`INSERT INTO governance_virtual_keys (id, value_hash) VALUES
+				('vk-1', ''), ('vk-2', ''), ('vk-3', 'h3'), ('vk-4', ''), ('vk-5', ''), ('vk-6', '')`).Error)
+			require.NoError(t, db.Exec(`INSERT INTO sessions (id, token_hash) VALUES
+				(1, ''), (2, ''), (3, 't3'), (4, ''), (5, ''), (6, '')`).Error)
+
+			updates := map[string]int{}
+			name := "test:count-hash-normalize:" + t.Name()
+			require.NoError(t, db.Callback().Raw().After("gorm:raw").Register(name, func(tx *gorm.DB) {
+				sql := tx.Statement.SQL.String()
+				for _, col := range []string{"value_hash", "token_hash"} {
+					if strings.HasPrefix(sql, "UPDATE") && strings.Contains(sql, "SET "+col+" = NULL") {
+						updates[col]++
+					}
+				}
+			}))
+			t.Cleanup(func() { _ = db.Callback().Raw().Remove(name) })
+
+			require.NoError(t, runHashIndexMigration(context.Background(), db))
+			require.GreaterOrEqual(t, updates["value_hash"], 3, "empty value hashes must be normalized in bounded batches")
+			require.GreaterOrEqual(t, updates["token_hash"], 3, "empty token hashes must be normalized in bounded batches")
+			var empties int64
+			require.NoError(t, db.Raw("SELECT COUNT(*) FROM governance_virtual_keys WHERE value_hash = ''").Scan(&empties).Error)
+			require.Zero(t, empties)
+			require.NoError(t, db.Raw("SELECT COUNT(*) FROM sessions WHERE token_hash = ''").Scan(&empties).Error)
+			require.Zero(t, empties)
+			require.True(t, indexIsUnique(t, db, "governance_virtual_keys", "idx_virtual_key_value_hash"))
+		})
+	}
+}
+
+// TestHighFixHashIndexRollbackRefuses pins that rolling back the hash-index
+// migration fails instead of dropping the unique lookup indexes: on a fresh
+// install the struct tags built them before this migration ran, and the ledger
+// cannot tell whether the migration or the tags created them.
+func TestHighFixHashIndexRollbackRefuses(t *testing.T) {
+	db := freshSQLiteDB(t)
+	require.NoError(t, db.Migrator().CreateTable(&tables.TableVirtualKey{}, &tables.SessionsTable{}))
+	require.True(t, indexExists(t, db, "governance_virtual_keys", "idx_virtual_key_value_hash"))
+
+	err := valueHashAndTokenHashIndexesMigration(context.Background(), "add_value_hash_and_token_hash_indexes", testMigrationLogger).Rollback(db)
+	require.Error(t, err, "the hash-index migration must refuse to roll back")
+	require.Contains(t, err.Error(), "non-rollbackable")
+	require.True(t, indexExists(t, db, "governance_virtual_keys", "idx_virtual_key_value_hash"), "a refused rollback must keep the index")
+}
+
+// TestHighFixBatchJobsDueRollbackRefuses pins that rolling back the batch-jobs
+// migration fails: it cleared next_check_at on finished jobs, which dropping the
+// index cannot restore.
+func TestHighFixBatchJobsDueRollbackRefuses(t *testing.T) {
+	err := batchJobsDueIndexMigration(context.Background(), "add_batch_jobs_due_index").Rollback(freshSQLiteDB(t))
+	require.Error(t, err, "the batch-jobs migration must refuse to roll back")
+	require.Contains(t, err.Error(), "non-rollbackable")
+}
+
+// indexMigrationPGSchema isolates the index migration tests from the other
+// Postgres-backed tests in this package, which drop and recreate shared tables.
+const indexMigrationPGSchema = "configstore_idxmig_test"
+
+// indexMigrationDBs returns a fresh SQLite database and, when the local test
+// Postgres is reachable, a Postgres connection in a dedicated schema. Both start
+// empty so each test creates exactly the tables it needs.
+func indexMigrationDBs(t *testing.T) []namedDB {
+	t.Helper()
+	sqliteDB, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "idx.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	dbs := []namedDB{{name: "sqlite", db: sqliteDB}}
+
+	dsn := strings.Replace(postgresDSN, "search_path="+pgTestSchema, "search_path="+indexMigrationPGSchema, 1)
+	pgDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		return dbs
+	}
+	sqlDB, err := pgDB.DB()
+	if err != nil || sqlDB.Ping() != nil {
+		return dbs
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	require.NoError(t, pgDB.Exec("DROP SCHEMA IF EXISTS "+indexMigrationPGSchema+" CASCADE").Error)
+	require.NoError(t, pgDB.Exec("CREATE SCHEMA "+indexMigrationPGSchema).Error)
+	return append(dbs, namedDB{name: "postgres", db: pgDB})
+}
+
+// indexExists reports whether index name exists on table, on either dialect.
+func indexExists(t *testing.T, db *gorm.DB, table, name string) bool {
+	t.Helper()
+	if db.Dialector.Name() == "postgres" {
+		valid, err := postgresIndexIsValid(db, table, name)
+		require.NoError(t, err)
+		return valid
+	}
+	return db.Migrator().HasIndex(table, name)
+}
+
+// runIndexMigrationTwice runs an index migration, asserts the index exists, then
+// clears the migration record and runs it again to prove the migration is idempotent.
+func runIndexMigrationTwice(t *testing.T, db *gorm.DB, id string, run func(context.Context, *gorm.DB) error, table, index string) {
+	t.Helper()
+	ctx := context.Background()
+	require.False(t, indexExists(t, db, table, index), "index %s must not exist before the migration", index)
+	require.NoError(t, run(ctx, db))
+	require.True(t, indexExists(t, db, table, index), "index %s must exist after the migration", index)
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", id).Error)
+	require.NoError(t, run(ctx, db))
+	require.True(t, indexExists(t, db, table, index))
+}
+
+// TestMigrationAddVKProviderConfigVirtualKeyIDIndex pins that upgraded databases,
+// whose provider-config table was created before the struct tag existed, get the
+// virtual_key_id index, that the migration is safe to re-run, and that its
+// rollback drops the index (concurrently on Postgres) and is safe to re-run.
+func TestMigrationAddVKProviderConfigVirtualKeyIDIndex(t *testing.T) {
+	for _, ndb := range indexMigrationDBs(t) {
+		t.Run(ndb.name, func(t *testing.T) {
+			require.NoError(t, ndb.db.Exec(`CREATE TABLE governance_virtual_key_provider_configs (
+				id INTEGER PRIMARY KEY, virtual_key_id VARCHAR(255) NOT NULL, provider VARCHAR(50) NOT NULL)`).Error)
+			runIndexMigrationTwice(t, ndb.db, "add_vk_provider_config_virtual_key_id_index",
+				func(ctx context.Context, db *gorm.DB) error {
+					return migrationAddVKProviderConfigVirtualKeyIDIndex(ctx, db, testMigrationLogger)
+				},
+				"governance_virtual_key_provider_configs", "idx_vk_provider_configs_virtual_key_id")
+
+			rollback := vkProviderConfigVirtualKeyIDIndexMigration(context.Background(), "add_vk_provider_config_virtual_key_id_index").Rollback
+			require.NoError(t, rollback(ndb.db))
+			require.False(t, indexExists(t, ndb.db, "governance_virtual_key_provider_configs", "idx_vk_provider_configs_virtual_key_id"),
+				"index must not exist after the rollback")
+			require.NoError(t, rollback(ndb.db))
+		})
+	}
+}
+
+// TestVKProviderConfigTagsBuildVirtualKeyIDIndex pins that a fresh install, which
+// creates the table from struct tags, gets the same index the upgrade migration adds.
+func TestVKProviderConfigTagsBuildVirtualKeyIDIndex(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "fresh.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Migrator().CreateTable(&tables.TableVirtualKeyProviderConfig{}))
+	require.True(t, db.Migrator().HasIndex(&tables.TableVirtualKeyProviderConfig{}, "idx_vk_provider_configs_virtual_key_id"))
+}
+
+// TestIndexHelpersNeverDropAnotherTablesIndex pins that the concurrent index
+// helpers only ever drop the index on their own table. With the search path set
+// to the test schema and then another schema, and only the other schema holding
+// an index of the same name, neither building the index on the test schema's
+// table nor rolling the migration back may drop the other schema's index: an
+// unqualified DROP INDEX resolves through search_path and would find it.
+func TestIndexHelpersNeverDropAnotherTablesIndex(t *testing.T) {
+	const otherSchema = "configstore_idxmig_other"
+	const table = "governance_virtual_key_provider_configs"
+	const index = "idx_vk_provider_configs_virtual_key_id"
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name != "postgres" {
+			continue
+		}
+		t.Run(ndb.name, func(t *testing.T) {
+			ctx := context.Background()
+			sqlDB, err := ndb.db.DB()
+			require.NoError(t, err)
+			// One connection, so the search_path set below applies to every statement.
+			sqlDB.SetMaxOpenConns(1)
+			db := ndb.db
+			require.NoError(t, db.Exec("DROP SCHEMA IF EXISTS "+otherSchema+" CASCADE").Error)
+			t.Cleanup(func() { _ = db.Exec("DROP SCHEMA IF EXISTS " + otherSchema + " CASCADE").Error })
+			require.NoError(t, db.Exec("CREATE SCHEMA "+otherSchema).Error)
+			require.NoError(t, db.Exec("CREATE TABLE "+otherSchema+"."+table+" (id INTEGER PRIMARY KEY, virtual_key_id VARCHAR(255))").Error)
+			require.NoError(t, db.Exec("CREATE INDEX "+index+" ON "+otherSchema+"."+table+" (virtual_key_id)").Error)
+			require.NoError(t, db.Exec(`CREATE TABLE `+table+` (
+				id INTEGER PRIMARY KEY, virtual_key_id VARCHAR(255) NOT NULL, provider VARCHAR(50) NOT NULL)`).Error)
+			require.NoError(t, db.Exec("SET search_path TO "+indexMigrationPGSchema+", "+otherSchema).Error)
+
+			otherIndexExists := func() bool {
+				var n int64
+				require.NoError(t, db.Raw(`SELECT COUNT(*) FROM pg_indexes WHERE schemaname = ? AND indexname = ?`, otherSchema, index).Scan(&n).Error)
+				return n == 1
+			}
+
+			require.NoError(t, ensureIndexConcurrently(db, table, index, "virtual_key_id", false))
+			require.True(t, otherIndexExists(), "building the index on this schema's table dropped another schema's index")
+			require.True(t, indexExists(t, db, table, index), "the index must be built on this schema's table")
+
+			require.NoError(t, db.Exec("DROP INDEX "+indexMigrationPGSchema+"."+index).Error)
+			require.NoError(t, vkProviderConfigVirtualKeyIDIndexMigration(ctx, "add_vk_provider_config_virtual_key_id_index").Rollback(db))
+			require.True(t, otherIndexExists(), "rolling back with no index on this table dropped another schema's index")
+		})
+	}
+}
+
+// newRunStepsTestDB opens a file-backed SQLite database so every pooled connection sees the same migrations table.
+func newRunStepsTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "steps.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	return db
+}
+
+// countingStep returns a step that records one gormigrate row per ID and bumps calls[id] each time it is invoked.
+func countingStep(calls map[string]int, ids ...string) migrationStep {
+	return migrationStep{
+		IDs: ids,
+		run: func(ctx context.Context, db *gorm.DB, _ schemas.Logger) error {
+			for _, id := range ids {
+				calls[id]++
+				m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+					ID:      id,
+					Migrate: func(*gorm.DB) error { return nil },
+				}})
+				if err := m.Migrate(); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+}
+
+// TestRunMigrationSteps_FreshDBRunsEveryStep verifies an empty migrations table makes every step run.
+func TestRunMigrationSteps_FreshDBRunsEveryStep(t *testing.T) {
+	db := newRunStepsTestDB(t)
+	calls := map[string]int{}
+	steps := []migrationStep{countingStep(calls, "a"), countingStep(calls, "b"), countingStep(calls, "c")}
+
+	require.NoError(t, runMigrationSteps(context.Background(), db, newMockLogger(), steps))
+
+	assert.Equal(t, map[string]int{"a": 1, "b": 1, "c": 1}, calls)
+}
+
+// TestRunMigrationSteps_SkipsAppliedStepsAndRunsPending verifies applied steps are not invoked when a new step is added.
+func TestRunMigrationSteps_SkipsAppliedStepsAndRunsPending(t *testing.T) {
+	db := newRunStepsTestDB(t)
+	calls := map[string]int{}
+	steps := []migrationStep{countingStep(calls, "a"), countingStep(calls, "b"), countingStep(calls, "c")}
+	require.NoError(t, runMigrationSteps(context.Background(), db, newMockLogger(), steps))
+
+	steps = append(steps, countingStep(calls, "d"))
+	require.NoError(t, runMigrationSteps(context.Background(), db, newMockLogger(), steps))
+
+	assert.Equal(t, map[string]int{"a": 1, "b": 1, "c": 1, "d": 1}, calls)
+}
+
+// TestRunMigrationSteps_AllAppliedRunsNothing verifies a fully applied list invokes no step.
+func TestRunMigrationSteps_AllAppliedRunsNothing(t *testing.T) {
+	db := newRunStepsTestDB(t)
+	calls := map[string]int{}
+	steps := []migrationStep{countingStep(calls, "a"), countingStep(calls, "b")}
+	require.NoError(t, runMigrationSteps(context.Background(), db, newMockLogger(), steps))
+	require.NoError(t, runMigrationSteps(context.Background(), db, newMockLogger(), steps))
+
+	assert.Equal(t, map[string]int{"a": 1, "b": 1}, calls)
+}
+
+// TestRunMigrationSteps_GroupedStepRunsWhenOneIDPending verifies a multi-ID step runs if any of its IDs is missing.
+func TestRunMigrationSteps_GroupedStepRunsWhenOneIDPending(t *testing.T) {
+	db := newRunStepsTestDB(t)
+	calls := map[string]int{}
+	require.NoError(t, runMigrationSteps(context.Background(), db, newMockLogger(), []migrationStep{countingStep(calls, "g1")}))
+	calls["g1"] = 0
+
+	grouped := countingStep(calls, "g1", "g2")
+	require.NoError(t, runMigrationSteps(context.Background(), db, newMockLogger(), []migrationStep{grouped}))
+
+	assert.Equal(t, 1, calls["g2"])
+	pending, err := pendingMigrationStepIDs(context.Background(), db, []migrationStep{grouped})
+	require.NoError(t, err)
+	assert.Empty(t, pending)
+}
+
+// TestRunMigrationSteps_PreflightErrorRunsEveryStep verifies a failing pending read falls back to running all steps.
+func TestRunMigrationSteps_PreflightErrorRunsEveryStep(t *testing.T) {
+	db := newRunStepsTestDB(t)
+	// A migrations table without the id column passes the column checks in PendingIDs, then fails the read.
+	require.NoError(t, db.Exec("CREATE TABLE migrations (sequence INTEGER, applied_at DATETIME, status TEXT)").Error)
+	calls := map[string]int{}
+	steps := []migrationStep{countingStep(calls, "a"), countingStep(calls, "b")}
+
+	_, err := pendingMigrationStepIDs(context.Background(), db, steps)
+	require.Error(t, err)
+
+	// The steps themselves cannot use this broken table, so they only record that they were called.
+	stub := func(id string) migrationStep {
+		return migrationStep{IDs: []string{id}, run: func(context.Context, *gorm.DB, schemas.Logger) error {
+			calls[id]++
+			return nil
+		}}
+	}
+	calls = map[string]int{}
+	require.NoError(t, runMigrationSteps(context.Background(), db, newMockLogger(), []migrationStep{stub("a"), stub("b")}))
+
+	assert.Equal(t, map[string]int{"a": 1, "b": 1}, calls)
 }

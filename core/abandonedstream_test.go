@@ -139,7 +139,7 @@ func (c *terminalHookCounter) PostLLMHook(_ *schemas.BifrostContext, resp *schem
 // both a ready send (cap-1 channel, drained on acquire) and a ready ctx.Done(); Go
 // picks uniformly among ready cases, so n iterations expose that with probability
 // 1 - 2^-n.
-func runAbandonedRequests(t *testing.T, n int, fail bool) *terminalHookCounter {
+func runAbandonedRequests(t *testing.T, n int, fail bool, tracerOverride ...schemas.Tracer) *terminalHookCounter {
 	t.Helper()
 
 	counter := &terminalHookCounter{}
@@ -181,7 +181,13 @@ func runAbandonedRequests(t *testing.T, n int, fail bool) *terminalHookCounter {
 	for i := 0; i < n; i++ {
 		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 		// tryRequest stamps the tracer before enqueue; the retry loop refuses a context without one.
-		ctx.SetValue(schemas.BifrostContextKeyTracer, client.getTracer())
+		tracer := client.getTracer()
+		if len(tracerOverride) > 0 && tracerOverride[0] != nil {
+			tracer = tracerOverride[0]
+		}
+		ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+		// A real request always carries one, and trace completion needs it.
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, tracer.CreateTrace(""))
 		msg := client.getChannelMessage(schemas.BifrostRequest{
 			RequestType: schemas.ChatCompletionRequest,
 			ChatRequest: &schemas.BifrostChatRequest{
@@ -381,7 +387,7 @@ func runClaimedDeliveriesWithDeadCaller(t *testing.T, n int, fail bool) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("iteration %d: worker never reached the provider", i)
 		}
-		cancel()                      // the caller's context ends...
+		cancel()                       // the caller's context ends...
 		upstream.release <- struct{}{} // ...and the upstream completes at that same instant
 
 		// The caller has NOT abandoned: this models tryRequest losing the CAS race.
@@ -466,6 +472,65 @@ func TestChannelMessageHandoffIsExclusive(t *testing.T) {
 	}
 }
 
+// handoffProbeTracer records the message's handoff state each time abandonDelivery
+// installs or drops the trace deferral.
+type handoffProbeTracer struct {
+	*recordingTracer
+	msg           *ChannelMessage
+	stateAtDefer  []int32
+	stateAtCancel []int32
+}
+
+func (p *handoffProbeTracer) DeferTraceCompletion(id string) {
+	p.stateAtDefer = append(p.stateAtDefer, p.msg.handoff.Load())
+	p.recordingTracer.DeferTraceCompletion(id)
+}
+
+func (p *handoffProbeTracer) ClearTraceCompletionDeferral(id string) {
+	p.stateAtCancel = append(p.stateAtCancel, p.msg.handoff.Load())
+	p.recordingTracer.ClearTraceCompletionDeferral(id)
+}
+
+// TestAbandonDeliveryDefersTraceBeforePublishing: once the abandon CAS lands the worker
+// may bill and release the message, so the deferral must already be in place (and
+// m.Context read) while the handoff is still open. When the worker claimed first, the
+// caller receives the value and the deferral is dropped again.
+func TestAbandonDeliveryDefersTraceBeforePublishing(t *testing.T) {
+	t.Parallel()
+	newMsg := func(probe *handoffProbeTracer) *ChannelMessage {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTracer, probe)
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-handoff")
+		msg := &ChannelMessage{Context: ctx}
+		probe.msg = msg
+		return msg
+	}
+
+	probe := &handoffProbeTracer{recordingTracer: newRecordingTracer()}
+	msg := newMsg(probe)
+	if !msg.abandonDelivery() {
+		t.Fatal("abandon of an open handoff must win")
+	}
+	if len(probe.stateAtDefer) != 1 || probe.stateAtDefer[0] != handoffOpen {
+		t.Fatalf("deferral installed in handoff states %v, want once while still open", probe.stateAtDefer)
+	}
+	if probe.cleared.Load() != 0 {
+		t.Fatal("a won abandon must keep the deferral for the worker")
+	}
+
+	probe = &handoffProbeTracer{recordingTracer: newRecordingTracer()}
+	msg = newMsg(probe)
+	if !msg.claimDelivery() {
+		t.Fatal("claim of an open handoff must win")
+	}
+	if msg.abandonDelivery() {
+		t.Fatal("abandon after a claim must lose")
+	}
+	if probe.deferred.Load() != 1 || probe.cleared.Load() != 1 {
+		t.Fatalf("deferred %d / cleared %d after a lost abandon, want the deferral dropped again", probe.deferred.Load(), probe.cleared.Load())
+	}
+}
+
 // TestRequestWorkerBillsAbandonedKeySelectionError covers the errors the worker
 // produces before any provider call (here: no key serves the model). They are
 // sent on the same channel as terminal errors and must obey the same ownership
@@ -536,5 +601,24 @@ func TestRequestWorkerBillsAbandonedKeySelectionError(t *testing.T) {
 		if !strings.Contains(msg, "no keys found that support model: gpt-4o-mini") {
 			t.Fatalf("billed error %d is %q, want the key-selection error", i, msg)
 		}
+	}
+}
+
+// A caller that disconnects leaves its worker still writing the response attributes and
+// plugin logs, so the transport defers completion and the worker must complete the trace
+// itself. Without this every abandoned request exports a trace missing its cost and model.
+func TestRequestWorkerCompletesEveryAbandonedTrace(t *testing.T) {
+	const n = 64
+	tracer := newRecordingTracer()
+	runAbandonedRequests(t, n, false, tracer)
+
+	if got := tracer.deferred.Load(); got != n {
+		t.Errorf("completion deferred for %d of %d abandoned requests; the transport would flush an incomplete trace for the rest", got, n)
+	}
+	if got := tracer.completed.Load(); got != n {
+		t.Errorf("worker completed %d of %d abandoned traces; the rest are never exported", got, n)
+	}
+	if got := tracer.cleared.Load(); got != n {
+		t.Errorf("deferral marker cleared %d of %d times; leftovers would strand later traces", got, n)
 	}
 }

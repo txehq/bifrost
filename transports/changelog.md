@@ -1,39 +1,38 @@
 ## ✨ Features
 
-- **Bifrost CLI Management and Inference Commands** - The `bifrost` CLI gains an authenticated gateway transport, named contexts, SSO login in the interactive launcher, OpenAPI-driven management commands with structured output, and inference commands (#7279, #7280, #7281, #7282, #7283, #7284)
-- **MCP Connection Recovery** - A failed make-before-break re-dial keeps the live connection, a dead session triggers a reconnect instead of a re-probe of the same session, and tool calls recover from dead sessions. Clients in `pending_verification` keep that state through enable and health checks (#6921, #6922, #6923, #6924, #6926)
-- **MCP Tool Refresh and Client Re-registration** - `POST /api/mcp/client/{id}/refresh-tools` rediscovers a client's tools on demand, and `POST /api/mcp/client/{id}/reregister` re-registers an OAuth client whose dynamic registration the provider evicted. The dashboard has matching actions (#6927, #6928, #7228, #7229)
-- **Business-Unit Owned Virtual Keys** - A virtual key can be owned by a business unit (`business_unit_id`), alongside a team or a customer. Access profiles can be held by teams, business units and customers (#7251, #7253, #7255)
-- **Virtual Key Content Logging Control** - `disable_content_logging` on a virtual key turns off content logging and strips exported content for that key's requests (#7476, #7477, #7478, #7479, #7480, #7481)
-- **Virtual Key Auto-Deletion After Expiry** - `client.delete_expired_virtual_keys` and a per-key `delete_after_expire` let a daily job delete expired keys (#7525, #7526)
-- **Connector Exports** - Observability connectors receive a typed LLM span payload, the cost breakdown, the app, raw payloads (opt-in) and `x-bf-dim-*` metric dimensions. Trace data is only produced when a connector reads it (#7367, #7368, #7371, #7389, #7390, #7391)
-- **Pinned Keys on Routing Fallbacks** - A routing-rule fallback can pin a provider key (`key_id`, or `provider_key_name` in config.json). Unpinned fallbacks keep the legacy `provider/model` string (#7379, #7380, #7381)
-- **Per-Attempt TTFT Cutoff** - A stream attempt that sends no first token within the cutoff is abandoned and handed to the next fallback. Routing rules take `ttft_timeout_ms` (#7503, #7504, #7505, #7506)
-- **Failure Classes and Retry Hints** - Provider failures are classified so the key pool skips keys that failed permanently, at any `max_retries`, and provider retry hints reach callers as `retry_after_ms` (#7211, #7212)
-- **Session-Grouped Logs** - The logs view can collapse sessions to their earliest chain root with per-session rollups (`roots_only`, `group_sessions`) (#7298, #7299, #7300)
-- **Typesafe SDK Fidelity** - The native `/typesafe` routes accept SDK-valid `state: null`, forward native request extensions such as `images`, relay native success and error bodies, forward upstream response headers and serve the endpoint's live model catalog (#7652)
-- **Warp (off by default)** - Warp, the natural-language assistant over logs, ships behind the `warp` feature flag, which stays off unless an operator enables it (#6212-#6221, #6847-#6852, #7418)
-- **Model and Provider Selectors** - Unified provider and model selectors replace the ad-hoc selects across the dashboard; deprecated models sink below live ones in search (#7247, #7258, #7259, #7408, #7410)
+- **Jev Complexity Routing** - The complexity router's primary classifier is the Typesafe Jev classifier, with the semantic classifier as fallback, decision cost tracking and per-tier criteria overrides in the dashboard (#7485, #7605, #7690)
+- **MCP Server Instructions** - Upstream MCP servers' `instructions` are captured, forwarded on the MCP gateway and injected into LLM requests, with global and per-client length caps (#7516, #7517, #7518, #7519, #7766)
+- **Multimodal Embeddings** - Embedding inputs are lists of content parts (text, image, audio, video, file, tokens) with optional per-item params, for Cohere, Gemini, Vertex, Bedrock Titan and Nova, and Parasail. Logs record the embedding input (#2559, #7001, #7002, #7096, #7459, #7550)
+- **Model Retrieve** - `GET /v1/models/{model}` retrieves one model's metadata from providers that support it (#7419, #7716)
+- **Web Search Pricing** - `tool_usage.web_search.num_requests` is priced by `web_search_cost_per_request`, which replaces `search_context_cost_per_query` (#7624, #7687)
+- **Connector Raw Payload Export and Attribute Denylist** - Connectors can export raw payloads and drop attributes per connector (#7753, #7754)
+- **Global Proxy and HTTP Client Factory** - One proxy configuration (with SCIM, inference and API toggles, also in config.json) routes provider, MCP, OAuth, webhook, catalog sync, plugin download and OpenTelemetry egress; `https://` proxies are reached over TLS and IPv6 proxies dial (#7567-#7576, #7799)
+- **Vertex AWS Workload Identity** - Vertex keys can authenticate through AWS workload identity federation (#7705-#7709)
+- **Typesafe Custom Providers** - `typesafe` is accepted as a custom provider base type (#7948, #7949)
+- **Requested Route Headers** - `routing_info` and response headers report the provider and model the caller asked for before routing (#7683)
+- **OpenTelemetry semconv 1.44** (#7810)
 
 ## 🐞 Fixed
 
-- **OAuth Client Columns Widened** - `state`, `scope` and `client_name` on OAuth2 client rows are `text`, so long provider values no longer fail to save (#7405)
-- **Temp-Token 401 Codes** - A rejected temp token now answers `401` with `temp_token_auth_disabled` or `temp_token_rejected`. Scope is still checked against the raw request path (#7664)
-- **Gemini and Vertex** - `n` maps to `candidateCount`, signed inline images survive Responses streams, and `$ref` tool schemas are accepted (#7394, #7357, #7713)
-- **Bedrock** - Extended-thinking token counts and Anthropic extra params survive conversion, and cache-control blocks are no longer dropped (#7653, #7395, #7646)
-- **Provider Key Partial Updates** - A partial PUT keeps the fields it omits (#7679)
-- **Semantic Cache Families** - Cache entries are isolated by request family (#7561)
+- **Security Hardening** - Bounded request decompression (oversized zstd windows answer 413), passthrough paths validated and kept on the provider host, provider endpoint changes require authentication and are validated, OAuth discovery and MCP OAuth2 server settings validated, semantic cache entries scoped per virtual key, batch lookups bound to the creating key, MCP OAuth grants revoked on key rotation, code-mode tool discovery scoped to the request's grant, secret references in MCP client fields and private-network webhooks require an admin session, unlisted browser origins refused on the management API while auth is disabled, and code execution resources bounded (#5767-#5782, #7847-#7857, #7886-#7893, #7958-#7962)
+- **Postgres at Scale** - Index and query fixes for large log, user and virtual key tables; transient errors retried in chunks; only pending migration steps run on startup (#7606, #7607, #7608, #7882, #7994)
+- **Error Statuses** - Error metrics, spans and stream errors carry the effective HTTP status instead of "unknown" (#7451, #7611)
+- **Providers** - Anthropic error types normalized and stop sequences preserved, Mistral streamed text arrays kept, Gemini schemaless function tools kept and tool results ordered by call id, Bedrock incomplete Converse streams error out, and a dead provider no longer blocks the aggregate model list (#7916, #7921, #7939, #7927, #7797, #6614)
+- **Model Catalog** - Falls back to stored pricing when the datasheet URL hangs (#7737)
 
 ## 🗄️ Database Migrations
 
-All are additive, idempotent by ID and safe for a rolling deploy; none rewrites rows except where noted.
+All are additive and idempotent by ID. `move_pricing_override_search_context_to_web_search` rewrites pricing-override rows that use the old key; `make_mcp_oauth_flows_state_unique` adds a unique index on OAuth flow state.
 
-- Config store: `add_virtual_key_delete_after_expire_column`, `add_client_config_delete_expired_virtual_keys_column`, `widen_oauth2_client_controlled_columns` (varchar to text on three OAuth2 client columns), `add_virtual_key_business_unit_column`, `add_warp_config_table`, `add_warp_api_key_id_column`, `add_warp_history_retention_days_column`, `add_warp_log_embedding_columns` (backfills NULL Warp strings to ''), `add_warp_temperature_reasoning_columns`, `add_virtual_key_disable_content_logging_column`, `add_ttft_timeout_ms_column_to_routing_targets`
-- Logs store: `logs_add_warp_conversation_tables`, `logs_add_warp_conversations_updated_at_index`, `logs_add_warp_message_outcome_columns`
+- Config store: `add_vertex_aws_workload_identity_column`, `add_mcp_discovered_instructions_column`, `add_mcp_instruction_cap_columns`, `add_mcp_client_max_instructions_length_column`, `add_mcp_client_require_public_target_column`, `add_web_search_cost_per_request_column`, `move_pricing_override_search_context_to_web_search`, `add_warp_additional_models_column`, `add_vk_provider_config_virtual_key_id_index`, `add_value_hash_and_token_hash_indexes`, `add_vk_mcp_configs_mcp_client_id_index`, `add_vk_provider_config_provider_and_key_indexes`, `add_virtual_keys_created_at_id_index`, `add_batch_jobs_due_index`, `make_mcp_oauth_flows_state_unique`, `add_mcp_code_mode_limits_client_column`
+- Logs store: `logs_add_embedding_input_column`, `logs_add_owner_timestamp_indexes`, `logs_add_ranking_name_timestamp_indexes`
 
 ## 🍴 Fork changes (txehq/bifrost)
 
-- chore: v2.3.0-sync.1 is a prerelease: the fork's v2.2.6 merged with upstream's v2.3.0 development line up to `ec081ef5b` (the first 173 first-parent commits after v2.2.6's base), not a release of upstream v2.3.0. Upstream v2.2.4 to v2.2.6 fixes, the fork's module paths, custom providers, native Anthropic and xAI APIs, streaming and unary clients, release guards and every TXE fix through v2.2.6 are kept. It is not tagged `latest`
+- chore: v2.3.0-sync.2 is a prerelease: v2.3.0-sync.1 merged with upstream's v2.3.0 development line up to `caf84c288` (168 more first-parent commits after `ec081ef5b`), not a release of upstream v2.3.0. The fork's module paths, custom providers, native Anthropic and xAI APIs, streaming and unary clients, release guards and every TXE fix through v2.3.0-sync.1 are kept. It is not tagged `latest`
 - breaking (unchanged from v2.2.6): with a config store and dashboard auth off or no admin yet, every non-public `/api` call needs the setup token in `X-Bifrost-Setup-Token`, and `enforce_auth_on_inference` defaults to `true` for a fresh deployment unless set explicitly
-- fix: the Typesafe systemone route relays the raw or native provider body only while its answers match the processed response, so a post-hook's change still reaches the client
-- fix: test-only corrections of three upstream tests that fail or race on `ec081ef5b` (realtime retry-hint status, schema sync for the response-only `business_unit`, the Warp handler tests' fake job store)
+- feat: the flat multimodal embedding list (`[{"type":"text",...},{"type":"image_url",...}]`) is still accepted, as one input item; Volcengine/ModelArk multimodal embeddings, `instructions` and `sparse_embedding` keep working on the new input shape
+- fix: a proxied MCP hostname the gateway cannot resolve is still refused for every client (TXE-5086), including on upstream's new per-request proxy transport
+- fix: native Anthropic and xAI Messages passthrough validate the path against the provider host like the other providers
+- chore: GLM, Qwen, MiniMax, Moonshot and Volcengine/ModelArk report model retrieve as unsupported
+- note: the `warp` feature flag now defaults to on (upstream #7757; it was off in v2.3.0-sync.1). Warp stays inert until an admin configures its chat and embedding models: no provider calls and no log indexing before that. Turn the flag off to hide it

@@ -67,7 +67,7 @@ define EXPOSE_ENV
 	fi
 endef
 
-.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-e2e-ui run-e2e-headed run-e2e-api run-mcp-codemode-test run-warp-test format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
+.PHONY: test-memory all help dev dev-pulse build-ui build build-cli run run-cli install-air install-pulse clean test test-cli install-ui setup-workspace work-init work-clean docs docker-image docker-run cleanup-enterprise mod-tidy test-integrations test-integrations-py test-integrations-ts install-playwright run-e2e run-a11y-audit run-e2e-ui run-e2e-headed run-e2e-api run-mcp-codemode-test run-warp-test format ui install-newman run-provider-harness-test smoke-provider-harness-test run-cli-harness-test cli-harness-report test-harness-runner-lib run-video-costing-test list-video-costing-cases test-semantic-cache test-semantic-cache-complete _test-semantic-cache-complete-inner helm-index install-microsocks socks5-proxy install-tinyproxy http-proxy
 
 all: help
 
@@ -1761,6 +1761,12 @@ run-e2e: install-playwright ## Run E2E tests (Usage: make run-e2e [FLOW=provider
 	@$(ECHO) "$(GREEN)E2E tests complete$(NC)"
 	@$(ECHO) "$(CYAN)View HTML report: cd tests/e2e && npx playwright show-report$(NC)"
 
+run-a11y-audit: install-playwright ## Scan every UI route with axe-core and report accessibility coverage (Usage: make run-a11y-audit [ROUTES=logs,providers] [MIN_SCORE=80])
+	@$(ECHO) "$(GREEN)Running accessibility audit...$(NC)"
+	@cd tests/e2e && A11Y_ROUTES="$(ROUTES)" A11Y_MIN_SCORE="$(MIN_SCORE)" npx playwright test --config=playwright.a11y.config.ts
+	@$(ECHO) "$(CYAN)Report: tests/e2e/a11y-report/summary.md$(NC)"
+	@$(ECHO) "$(CYAN)Static JSX checks: cd ui && npm run lint:a11y$(NC)"
+
 run-e2e-ui: install-playwright ## Run E2E tests in interactive UI mode
 	@$(EXPOSE_ENV); \
 	$(ECHO) "$(GREEN)Opening Playwright UI...$(NC)"; \
@@ -2067,7 +2073,7 @@ NEWMAN_HTMLEXTRA_VERSION ?= 1.23.1
 # Every provider fork the harness knows how to run. Also the provider set the
 # status table lists, including the deferred cache-parity pass, so it lives in
 # one place rather than being restated per newman invocation.
-HARNESS_PROVIDERS := openai anthropic bedrock bedrock_mantle gemini vertex azure passthrough openrouter huggingface
+HARNESS_PROVIDERS := openai anthropic bedrock bedrock_mantle gemini vertex azure passthrough openrouter huggingface groq xai mistral cohere deepseek
 
 # Second parallelism axis. Each provider fork is sharded again by modality class so the run is not
 # bound by one provider's whole sequential item list: openai alone is ~1264 requests, and its

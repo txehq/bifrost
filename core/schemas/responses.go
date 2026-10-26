@@ -260,8 +260,9 @@ type BifrostResponsesResponse struct {
 	Container            *ResponsesResponseContainer         `json:"container,omitempty"`         // Code-execution sandbox container (Anthropic surfaces it on the response / final streaming message_delta). The neutral per-call id also lives on ResponsesCodeInterpreterToolCall.ContainerID.
 	Status               *string                             `json:"status,omitempty"`            // completed, failed, in_progress, cancelled, queued, or incomplete
 	StreamOptions        *ResponsesStreamOptions             `json:"stream_options,omitempty"`
-	StopReason           *string                             `json:"stop_reason,omitempty"`  // Not in OpenAI's spec, but sent by other providers
-	StopDetails          *ResponsesStopDetails               `json:"stop_details,omitempty"` // Anthropic refusal detail; null unless stop_reason is "refusal"
+	StopReason           *string                             `json:"stop_reason,omitempty"`   // Not in OpenAI's spec, but sent by other providers
+	StopDetails          *ResponsesStopDetails               `json:"stop_details,omitempty"`  // Anthropic refusal detail; null unless stop_reason is "refusal"
+	StopSequence         *string                             `json:"stop_sequence,omitempty"` // Anthropic: the custom stop sequence that ended generation (StopReason is "stop")
 	Store                *bool                               `json:"store,omitempty"`
 	Temperature          *float64                            `json:"temperature,omitempty"`
 	Text                 *ResponsesTextConfig                `json:"text,omitempty"`
@@ -271,6 +272,7 @@ type BifrostResponsesResponse struct {
 	Tools                []ResponsesTool                     `json:"tools"`                 // Tools to use
 	Truncation           *string                             `json:"truncation,omitempty"`
 	Usage                *ResponsesResponseUsage             `json:"usage"`
+	ToolUsage            *ToolUsage                          `json:"tool_usage,omitempty"` // Top-level like OpenAI; Usage.ToolUsage mirrors it for pricing and logging
 	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields"`
 	ProviderExtraFields  map[string]interface{}              `json:"provider_extra_fields,omitempty"`
 
@@ -296,7 +298,8 @@ type CacheMissReason struct {
 	CacheMissedInputTokens *int   `json:"cache_missed_input_tokens,omitempty"`
 }
 
-// UnmarshalJSON handles providers that return created_at/completed_at as floats (e.g. Bedrock mantle).
+// UnmarshalJSON handles providers that return created_at/completed_at as floats (e.g. Bedrock mantle),
+// and mirrors the top-level tool_usage onto usage, where pricing and logging read it.
 func (r *BifrostResponsesResponse) UnmarshalJSON(data []byte) error {
 	type Alias BifrostResponsesResponse
 	aux := &struct {
@@ -314,7 +317,25 @@ func (r *BifrostResponsesResponse) UnmarshalJSON(data []byte) error {
 		v := int(*aux.CompletedAt)
 		r.CompletedAt = &v
 	}
+	if r.ToolUsage != nil && r.Usage != nil && r.Usage.ToolUsage == nil {
+		r.Usage.ToolUsage = r.ToolUsage
+	}
 	return nil
+}
+
+// MarshalJSON sends tool_usage top-level only, as OpenAI's Responses API does. r is a copy, so
+// clearing usage's copy leaves the caller's response intact.
+func (r BifrostResponsesResponse) MarshalJSON() ([]byte, error) {
+	type alias BifrostResponsesResponse
+	if r.Usage != nil && r.Usage.ToolUsage != nil {
+		if r.ToolUsage == nil {
+			r.ToolUsage = r.Usage.ToolUsage
+		}
+		usage := *r.Usage
+		usage.ToolUsage = nil
+		r.Usage = &usage
+	}
+	return Marshal(alias(r))
 }
 
 // BackfillParams populates response fields from the request that are needed
@@ -1319,6 +1340,7 @@ type ResponsesResponseUsage struct {
 	AudioSeconds        *float64                       `json:"audio_seconds,omitempty"` // Duration-based audio usage when tokens are unavailable
 	Cost                *BifrostCost                   `json:"cost,omitempty"`          // Only for the providers which support cost calculation
 	Iterations          []ResponsesResponseUsage       `json:"iterations,omitempty"`    // iterations field is sent by anthropic
+	ToolUsage           *ToolUsage                     `json:"tool_usage,omitempty"`    // Server-side tool call counts; moved to the response's top-level tool_usage on the wire
 
 	// xAI-specific usage fields
 	NumSourcesUsed             *int                                 `json:"num_sources_used,omitempty"`
@@ -1431,7 +1453,8 @@ type ResponsesResponseOutputTokens struct {
 	ReasoningTokens          int  `json:"reasoning_tokens"` // Required for few OpenAI models
 	RejectedPredictionTokens int  `json:"rejected_prediction_tokens,omitempty"`
 	CitationTokens           *int `json:"citation_tokens,omitempty"`
-	NumSearchQueries         *int `json:"num_search_queries,omitempty"`
+	// Deprecated: use ResponsesResponseUsage.ToolUsage.WebSearch. Populated, will be removed in 3.0.0.
+	NumSearchQueries *int `json:"num_search_queries,omitempty"`
 }
 
 // =============================================================================
@@ -1927,6 +1950,19 @@ type ResponsesMessageContentBlock struct {
 
 	// PromptCacheBreakpoint marks an explicit prompt-cache breakpoint on this block (OpenAI gpt-5.6+).
 	PromptCacheBreakpoint *PromptCacheBreakpoint `json:"prompt_cache_breakpoint,omitempty"`
+
+	// GuardContent marks this text block for selective guardrail evaluation (Bedrock).
+	GuardContent *GuardContent `json:"guard_content,omitempty"`
+}
+
+// GuardContent scopes a guardrail to the text block it annotates. Bedrock Converse renders
+// the block as a guardContent entry and InvokeModel as an inline
+// <amazon-bedrock-guardrails-guardContent_{suffix}> span; once any block in a request is
+// marked, AWS evaluates only the marked blocks. Qualifiers are the AWS content qualifiers
+// ("grounding_source", "query") and are forwarded verbatim. Providers with no equivalent
+// never read the marker, so the block degrades to plain text on a cross-provider fallback.
+type GuardContent struct {
+	Qualifiers []string `json:"qualifiers,omitempty"`
 }
 
 type ResponsesOutputMessageContentCompaction struct {
