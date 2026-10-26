@@ -1,6 +1,7 @@
 package vllm
 
 import (
+	"github.com/capsohq/bifrost/core/providers/typesafe"
 	schemas "github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -16,4 +17,9 @@ type vLLMTranscriptionStreamChunk struct {
 		StopReason   *string `json:"stop_reason,omitempty"`
 	} `json:"choices"`
 	Usage *schemas.TranscriptionUsage `json:"usage,omitempty"`
+}
+
+type VLLMDecisionRequest struct {
+	*typesafe.TypesafeDecisionRequest
+	Images []string `json:"images,omitempty"` // data or http(s) URLs, shared by every question
 }
