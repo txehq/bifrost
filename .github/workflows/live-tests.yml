@@ -42,10 +42,14 @@ jobs:
 
       # The suite's OpenAI Python SDK leg runs `uv run pytest` from tests/live/python.
       - name: Install uv
-        uses: step-security/setup-uv@ccf0a26ce9117d9e99292b0ce953ea5d9ffe778e # v7.3.0
+        # astral-sh's action, as the fork's other uv steps: StepSecurity's setup-uv needs a
+        # subscription this organisation does not have and fails the job (TXE-5256).
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
         with:
           version: "0.11.0"
           python-version: "3.12"
+          # Skip the post-step cache save when the SDK leg never created the cache dir.
+          ignore-nothing-to-cache: true
 
       - name: Run GPT Live e2e tests
         run: |
