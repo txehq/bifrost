@@ -1,6 +1,7 @@
 package bifrost
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 
@@ -507,6 +508,24 @@ func (bifrost *Bifrost) injectedToolsForAttempt(ctx *schemas.BifrostContext, con
 		return nil
 	}
 	return resolveInjectedTools(bifrost.MCPManager, config, requestType, bifrost.logger)
+}
+
+// injectedToolsForStream is injectedToolsForAttempt for a streaming attempt. A streamed
+// chat request that asks for more than one choice is served without injected tools: the
+// injected chat stream keeps one choice's state and emits every chunk at index 0, so
+// injecting would fold the alternatives into choice 0 or drop them (TXE-5209). The client
+// gets its choices as the provider streams them instead; the non-streaming loop handles
+// other choices itself (stripInjectedCallsFromOtherChoices).
+func (bifrost *Bifrost) injectedToolsForStream(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, req *schemas.BifrostRequest) *injectedToolSet {
+	set := bifrost.injectedToolsForAttempt(ctx, config, req.RequestType)
+	if set == nil {
+		return nil
+	}
+	if req.ChatRequest != nil && req.ChatRequest.Params != nil && req.ChatRequest.Params.N != nil && *req.ChatRequest.Params.N > 1 {
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Provider-injected tools are not offered on a streamed chat request with n=%d: the injected stream carries one choice, so the request is served as sent", *req.ChatRequest.Params.N))
+		return nil
+	}
+	return set
 }
 
 // runInjectedTools serves one non-streaming attempt whose provider injects tools. Every
