@@ -188,10 +188,16 @@ func newClickHouseLogStore(ctx context.Context, config *ClickHouseConfig, retent
 	}
 
 	logger.Info("logstore: opening clickhouse connection (if this step hangs, the database host/port is likely unreachable)")
-	db, err := gorm.Open(clickhousedriver.Open(dsn), &gorm.Config{
+	pool, err := openClickHousePool(dsn)
+	if err != nil {
+		logger.Error("logstore: failed to open clickhouse connection: %v", err)
+		return nil, err
+	}
+	db, err := gorm.Open(clickhousedriver.New(clickhousedriver.Config{DSN: dsn, Conn: pool}), &gorm.Config{
 		Logger: newGormLogger(logger),
 	})
 	if err != nil {
+		_ = pool.Close()
 		logger.Error("logstore: failed to open clickhouse connection: %v", err)
 		return nil, err
 	}
