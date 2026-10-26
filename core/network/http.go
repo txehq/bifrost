@@ -829,11 +829,56 @@ func (f *HTTPClientFactory) createHTTPClient(key httpClientKey) *http.Client {
 			transport.ProxyConnectHeader = nil
 			transport.DialContext = policyProxyDial(policy, proxyURL, f.proxyConfig, f.proxyConfig.proxyTLS())
 		}
+		if f.proxyConfig != nil && f.proxyConfig.SkipTLSVerify {
+			// skip_tls_verify exists for a proxy that intercepts TLS. A policy transport
+			// carries untrusted-URL fetches (plugin downloads among them), so a connection
+			// that does not go through the proxy (no_proxy, local targets, or the proxy off
+			// for this purpose) keeps certificate verification.
+			verified := transport.TLSClientConfig.Clone()
+			verified.InsecureSkipVerify = key.tls != nil && key.tls.InsecureSkipVerify
+			proxyCfg := f.proxyConfig
+			tunneled := func(host string) bool { return proxyURL != nil && !connectDirect(host, proxyCfg) }
+			transport.DialTLSContext = scopedSkipVerifyDialTLS(transport.DialContext, verified, tunneled, transport.TLSHandshakeTimeout)
+		}
 	}
 
 	return &http.Client{
 		Transport: roundTripper,
 		Timeout:   timeout,
+	}
+}
+
+// scopedSkipVerifyDialTLS dials with dial and completes the TLS handshake itself, skipping
+// certificate verification only for a connection tunneled through the proxy. base is the
+// TLS config with verification as the caller wants it for every other connection.
+func scopedSkipVerifyDialTLS(dial func(ctx context.Context, netw, addr string) (net.Conn, error), base *tls.Config, tunneled func(host string) bool, handshakeTimeout time.Duration) func(ctx context.Context, netw, addr string) (net.Conn, error) {
+	return func(ctx context.Context, netw, addr string) (net.Conn, error) {
+		host, _, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := dial(ctx, netw, addr)
+		if err != nil {
+			return nil, err
+		}
+		cfg := base.Clone()
+		if cfg.ServerName == "" {
+			cfg.ServerName = host
+		}
+		if tunneled(host) {
+			cfg.InsecureSkipVerify = true
+		}
+		if handshakeTimeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, handshakeTimeout)
+			defer cancel()
+		}
+		conn := tls.Client(raw, cfg)
+		if err := conn.HandshakeContext(ctx); err != nil {
+			raw.Close()
+			return nil, err
+		}
+		return conn, nil
 	}
 }
 

@@ -1291,3 +1291,39 @@ func TestDefaultHTTPClientFactoryGetter(t *testing.T) {
 		t.Fatal("want the registered factory")
 	}
 }
+
+// skip_tls_verify is for a TLS-intercepting proxy. On a policy transport (untrusted-URL
+// fetches such as plugin downloads) a target reached directly, here a no_proxy host,
+// must still have its certificate verified, while a tunneled one may skip it.
+func TestPolicyTransport_SkipTLSVerifyOnlyForProxiedConnections(t *testing.T) {
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	allowAll := func(ctx context.Context, host string) ([]net.IP, error) {
+		return net.DefaultResolver.LookupIP(ctx, "ip", host)
+	}
+	policy := NewDialPolicy((&net.Dialer{Timeout: 3 * time.Second}).DialContext, allowAll)
+
+	factory := NewHTTPClientFactory(&GlobalProxyConfig{
+		Enabled:       true,
+		Type:          GlobalProxyTypeHTTP,
+		URL:           "http://127.0.0.1:1",
+		EnableForAPI:  true,
+		SkipTLSVerify: true,
+		NoProxy:       "127.0.0.1",
+	}, noopTestLogger{})
+	client := &http.Client{Transport: factory.PolicyTransport(ClientPurposeAPI, policy), Timeout: 5 * time.Second}
+	_, err := client.Get(target.URL)
+	if err == nil || !strings.Contains(err.Error(), "certificate") {
+		t.Fatalf("a direct (no_proxy) target with an untrusted certificate must be refused, got %v", err)
+	}
+
+	verified := scopedSkipVerifyDialTLS((&net.Dialer{Timeout: 3 * time.Second}).DialContext,
+		&tls.Config{MinVersion: tls.VersionTLS12}, func(string) bool { return true }, 3*time.Second)
+	conn, err := verified(t.Context(), "tcp", target.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("a tunneled connection may skip verification: %v", err)
+	}
+	conn.Close()
+}
