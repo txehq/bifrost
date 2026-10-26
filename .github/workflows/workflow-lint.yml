@@ -61,6 +61,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: ./.github/workflows/scripts/migration-local-binaries.test.sh
 
+      # Fake docker/pg_isready only: the wait must outlast the postgres image's init-time socket.
+      - name: Check migration tests wait for the real Postgres server
+        if: ${{ !cancelled() }}
+        run: ./.github/workflows/scripts/migration-postgres-ready.test.sh
+
       # Release image publication guards. Fake curl/docker only: nothing reaches a registry.
       # They run even when an earlier guard failed, so their own results are always reported.
       - name: Check GHCR tag probe fails closed

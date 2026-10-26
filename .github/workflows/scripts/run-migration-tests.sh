@@ -392,12 +392,14 @@ ensure_postgres_running() {
   log_info "Ensuring docker-compose PostgreSQL is running..."
   docker compose -f "$compose_file" up -d postgres
 
-  # Wait for postgres to be ready via docker exec
+  # Wait for postgres to be ready via docker exec. Check over TCP: on first start the
+  # image runs a temporary socket-only server for initialisation and then restarts, so
+  # a socket check can pass just before the socket disappears (TXE-5184).
   log_info "Waiting for PostgreSQL to be ready..."
   local max_wait=30
   local elapsed=0
   while [ $elapsed -lt $max_wait ]; do
-    if docker compose -f "$compose_file" exec -T postgres pg_isready -U "$POSTGRES_USER" >/dev/null 2>&1; then
+    if docker compose -f "$compose_file" exec -T postgres pg_isready -h 127.0.0.1 -U "$POSTGRES_USER" >/dev/null 2>&1; then
       log_info "PostgreSQL container is ready"
       break
     fi
