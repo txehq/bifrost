@@ -17,8 +17,9 @@ set -euo pipefail
 # The version is validated before it reaches gh: the same shape the release
 # pipeline's version guard accepts (MAJOR.MINOR.PATCH with an optional -suffix,
 # never an empty one), and the package must be the chart it names, read from
-# the Chart.yaml inside the tarball. Nothing here touches the published index
-# or a registry; helm-publish-index.sh and helm-publish-oci.sh keep their own
+# the Chart.yaml inside the tarball (via `helm show chart`, top-level keys only,
+# the convention helm-publish-index.sh and helm-publish-oci.sh share). Nothing
+# here touches the published index or a registry; those scripts keep their own
 # rules.
 #
 # Usage:
@@ -76,12 +77,17 @@ if [ "$(basename "$PACKAGE")" != "$CHART_NAME-$CHART_VERSION.tgz" ]; then
   die "package $PACKAGE is not named $CHART_NAME-$CHART_VERSION.tgz"
 fi
 
-# chart_meta KEY -> the top-level Chart.yaml scalar inside the package.
+# chart_meta KEY -> the top-level Chart.yaml scalar inside the package, read
+# the same way helm-publish-index.sh and helm-publish-oci.sh read it (TXE-4830).
+# Top-level keys only: helm sorts the output, so a nested key with the same
+# name (a maintainer's `name:`) comes first and must not be taken for it.
+# helm is on PATH here because the workflow installs it before this step.
 chart_meta() {
-  tar -xzOf "$PACKAGE" "$CHART_NAME/Chart.yaml" 2>/dev/null | awk -v key="$1" '$1 == key ":" { print $2; exit }'
+  helm show chart "$PACKAGE" | awk -v k="$1" '$0 ~ "^" k ": " { v = substr($0, length(k) + 3); gsub(/^"|"$/, "", v); print v; exit }'
 }
-pkg_name="$(chart_meta name)"
-pkg_version="$(chart_meta version)"
+command -v helm >/dev/null 2>&1 || die "helm is required to read the package's Chart.yaml"
+pkg_name="$(chart_meta name)" || die "cannot read chart metadata from $PACKAGE"
+pkg_version="$(chart_meta version)" || die "cannot read chart metadata from $PACKAGE"
 if [ "$pkg_name" != "$CHART_NAME" ] || [ "$pkg_version" != "$CHART_VERSION" ]; then
   die "package $PACKAGE is chart '$pkg_name' version '$pkg_version', not $CHART_NAME $CHART_VERSION"
 fi
