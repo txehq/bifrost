@@ -271,10 +271,6 @@ func TestWarpLogsPageParamsMatchTheLogsPage(t *testing.T) {
 	for _, match := range regexp.MustCompile(`(?m)^\t\t\t([a-z_]+): parseAs`).FindAllSubmatch(block[1], -1) {
 		onPage[string(match[1])] = struct{}{}
 	}
-	// TODO: Warp does not support the agent filters from #7777 yet; remove
-	// these deletes once logsPageParams lists them.
-	delete(onPage, "agent_names")
-	delete(onPage, "agent_correlation_id")
 	require.NotEmpty(t, onPage)
 	require.Equal(t, onPage, logsPageParams)
 }
