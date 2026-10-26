@@ -724,3 +724,38 @@ func TestGetAuthTokenSource_AWSFederationUsesAuthHTTPClient(t *testing.T) {
 		})
 	}
 }
+
+// A key's external_account JSON arrives over the management API, so its token_url and
+// impersonation URL must not send the gateway-signed AWS subject token or the federated
+// Google token anywhere but Google.
+func TestNewAWSFederatedTokenSourceFromJSON_RefusesNonGoogleEndpoints(t *testing.T) {
+	build := func(tokenURL, impersonationURL string) []byte {
+		extra := ""
+		if impersonationURL != "" {
+			extra = fmt.Sprintf(`"service_account_impersonation_url": %q,`, impersonationURL)
+		}
+		return []byte(fmt.Sprintf(`{
+			"type": "external_account",
+			"audience": %q,
+			"token_url": %q,
+			%s
+			"credential_source": {"environment_id": "aws1"}
+		}`, testWIFAudience, tokenURL, extra))
+	}
+	for _, tc := range []struct{ name, token, imp string }{
+		{"attacker token_url", "https://attacker.example/v1/token", ""},
+		{"http googleapis token_url", "http://sts.googleapis.com/v1/token", ""},
+		{"googleapis lookalike", "https://sts.googleapis.com.attacker.example/v1/token", ""},
+		{"explicit port", "https://sts.googleapis.com:8443/v1/token", ""},
+		{"attacker impersonation url", "https://sts.googleapis.com/v1/token", "https://attacker.example/v1/projects/-/serviceAccounts/x:generateAccessToken"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := newAWSFederatedTokenSourceFromJSON(context.Background(), build(tc.token, tc.imp))
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "must be a Google endpoint")
+		})
+	}
+	require.NoError(t, checkGoogleFederationEndpoint("token_url", "https://sts.googleapis.com/v1/token", gcpSTSTokenURL))
+	require.NoError(t, checkGoogleFederationEndpoint("service_account_impersonation_url",
+		"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/a@b.iam.gserviceaccount.com:generateAccessToken", gcpIAMCredentialsBaseURL))
+}

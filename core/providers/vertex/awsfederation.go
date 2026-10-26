@@ -306,11 +306,40 @@ func newAWSFederatedTokenSourceFromJSON(ctx context.Context, jsonData []byte) (o
 	if conf.TokenURL == "" {
 		conf.TokenURL = gcpSTSTokenURL
 	}
+	// The exchange posts a subject token signed with the gateway's own AWS identity, and the
+	// impersonation call carries the Google-issued federated token, so both URLs must be
+	// Google's: a key's credentials JSON can come in over the management API.
+	if err := checkGoogleFederationEndpoint("token_url", conf.TokenURL, gcpSTSTokenURL); err != nil {
+		return nil, err
+	}
+	if err := checkGoogleFederationEndpoint("service_account_impersonation_url", conf.ServiceAccountImpersonationURL, gcpIAMCredentialsBaseURL); err != nil {
+		return nil, err
+	}
 	ts, err := externalaccount.NewTokenSource(ctx, conf)
 	if err != nil {
 		return nil, fmt.Errorf("vertex aws federation: gcp token exchange setup: %w", err)
 	}
 	return ts, nil
+}
+
+// checkGoogleFederationEndpoint accepts an empty URL, the trusted endpoint itself (its scheme
+// and host), or an https URL on a *.googleapis.com host with no explicit port; anything else is
+// refused before a token is sent to it.
+func checkGoogleFederationEndpoint(field, raw, trusted string) error {
+	if raw == "" {
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("vertex aws federation: %s is not a valid URL", field)
+	}
+	if t, err := url.Parse(trusted); err == nil && u.Scheme == t.Scheme && u.Host == t.Host {
+		return nil
+	}
+	if u.Scheme == "https" && u.Port() == "" && strings.HasSuffix(strings.ToLower(u.Hostname()), ".googleapis.com") {
+		return nil
+	}
+	return fmt.Errorf("vertex aws federation: %s must be a Google endpoint (https://*.googleapis.com), got host %q", field, u.Host)
 }
 
 // awsFederatedTokenSourceFromADCFile checks whether GOOGLE_APPLICATION_CREDENTIALS points at an AWS
