@@ -77,8 +77,19 @@ if [ "$(basename "$PACKAGE")" != "$CHART_NAME-$CHART_VERSION.tgz" ]; then
 fi
 
 # chart_meta KEY -> the top-level Chart.yaml scalar inside the package.
+# `helm package` re-marshals Chart.yaml with its keys sorted, so a nested key
+# such as maintainers[].name ("  name: Bifrost Team") lands before the
+# top-level name; only a line that starts in column 0 is the chart's own key.
+# The whole value is taken, with surrounding quotes removed.
 chart_meta() {
-  tar -xzOf "$PACKAGE" "$CHART_NAME/Chart.yaml" 2>/dev/null | awk -v key="$1" '$1 == key ":" { print $2; exit }'
+  tar -xzOf "$PACKAGE" "$CHART_NAME/Chart.yaml" 2>/dev/null | awk -v key="$1" '
+    /^[^[:space:]#]/ && $1 == key ":" {
+      sub(/^[^:]*:[[:space:]]*/, "")
+      sub(/[[:space:]]+$/, "")
+      gsub(/^["'"'"']|["'"'"']$/, "")
+      print
+      exit
+    }'
 }
 pkg_name="$(chart_meta name)"
 pkg_version="$(chart_meta version)"
