@@ -71,3 +71,41 @@ func TestGenerateRequestHash_IncludesPerItemEmbeddingExtraParams(t *testing.T) {
 		t.Fatal("identical requests hash differently")
 	}
 }
+
+// An extra param named like a first-class one must not erase the first-class value from the
+// params hash: providers give the first-class field precedence, so the vectors (or completions)
+// differ even when the alias is the same.
+func TestParamsHash_ExtraParamAliasDoesNotHideFirstClassValue(t *testing.T) {
+	plugin := newTestPlugin(t, newObservableStore())
+	hash := func(extract func(map[string]interface{})) string {
+		m := map[string]interface{}{}
+		extract(m)
+		h, err := hashMap(m)
+		if err != nil {
+			t.Fatalf("hashMap: %v", err)
+		}
+		return h
+	}
+	alias := map[string]interface{}{"task_type": "RETRIEVAL_DOCUMENT"}
+	query, doc := "RETRIEVAL_QUERY", "SEMANTIC_SIMILARITY"
+	a := hash(func(m map[string]interface{}) {
+		plugin.extractEmbeddingParametersToMetadata(&schemas.EmbeddingParameters{TaskType: &query, ExtraParams: alias}, m)
+	})
+	b := hash(func(m map[string]interface{}) {
+		plugin.extractEmbeddingParametersToMetadata(&schemas.EmbeddingParameters{TaskType: &doc, ExtraParams: alias}, m)
+	})
+	if a == b {
+		t.Fatal("embedding requests differing in task_type share a params hash when ExtraParams carries the same alias")
+	}
+
+	same := map[string]interface{}{"temperature": 0.5}
+	c := hash(func(m map[string]interface{}) {
+		plugin.extractChatParametersToMetadata(&schemas.ChatParameters{Temperature: schemas.Ptr(0.1), ExtraParams: same}, m)
+	})
+	d := hash(func(m map[string]interface{}) {
+		plugin.extractChatParametersToMetadata(&schemas.ChatParameters{Temperature: schemas.Ptr(0.9), ExtraParams: same}, m)
+	})
+	if c == d {
+		t.Fatal("chat requests differing in temperature share a params hash when ExtraParams carries the same key")
+	}
+}
