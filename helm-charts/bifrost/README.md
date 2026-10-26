@@ -4,13 +4,13 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/capsohq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.45 (prerelease 2.1.46-sync.3 carries the changes below; install it with `--devel`)
+**Latest Version:** 2.1.46
 
 ## Changelog
 
-### 2.1.46-sync.3 (prerelease)
+### 2.1.46
 
-Upstream's v2.3.0 development chart changes on top of 2.1.45 (the 2.1.44 entry below is upstream's own list, which already includes the 2.1.45 items):
+Upstream's v2.3.0 chart changes on top of 2.1.45 (the 2.1.44 entry below is upstream's own list, which already includes the 2.1.45 items); 2.1.46-sync.3 was the prerelease of the first part:
 
 - Added `topologySpreadConstraints` (top-level value): pod topology spread constraints rendered into the Bifrost Deployment or StatefulSet pod spec. A constraint without a `labelSelector` defaults to the release's server pod labels.
 - Added `extraContainers` (top-level value): sidecar containers appended to the Bifrost pod after the Bifrost container; native sidecars (`initContainers` entries with `restartPolicy: Always`) are refused on clusters older than Kubernetes 1.29.
@@ -22,6 +22,11 @@ Upstream's v2.3.0 development chart changes on top of 2.1.45 (the 2.1.44 entry b
 - Added `storage.configStore.statementTimeout` / `.idleInTransactionSessionTimeout` and the same pair on `storage.logsStore` (default `120s`).
 - Added `bifrost.client.deleteExpiredVirtualKeys` and per-key `delete_after_expire`, `disable_content_logging` and `business_unit_id` on `bifrost.governance.virtualKeys[]`.
 - Added `bifrost.client.oauth2ServerConfig.allowedRedirectUris`, `bifrost.mcp.clientConfigs[].requirePublicTarget`, MCP client `oauth`/`tls`/`headers`/`upstreamAuth` settings, `cache_tool_call_responses` on the semantic cache plugin, the object form of `bifrost.governance.routingRules[].fallbacks` (`{ provider, model, provider_key_name }`) and `displayName` on the generic OIDC `bifrost.scim.config`.
+- Added the `cloudflare` provider (Cloudflare Workers AI) to `bifrost.providers`; every key needs `cloudflare_key_config.account_id`, and keys on `openai` or an OpenAI-based custom provider can carry `oauth_key_config` to mint their bearer.
+- Added `bifrost.client.compat.convertDecisionToResponses` (`client.compat.convert_decision_to_responses`, default `false`): decision emulation through the Responses API is opt-in.
+- Added `bifrost.mcp.toolManagerConfig.oauthPrivateAllowlist` (`mcp.tool_manager_config.oauth_private_allowlist`): hosts, IPs or CIDRs the MCP OAuth chain may reach on loopback or private addresses; an explicit `[]` clears a stored list.
+- Added `disable_identity_scoping` to the semantic cache plugin config, and `injected_tools` is now a list of `{ name, mcp_client_name, tool_name }` entries.
+- `appVersion` is now `2.3.0`, the transport this chart ships with; it sets only the `app.kubernetes.io/version` label, and `image.tag` stays required.
 
 ### 2.1.44
 
