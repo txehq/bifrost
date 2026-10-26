@@ -17,17 +17,27 @@ set -uo pipefail
 # refused the genuine chart (TXE-5227). The last check pins the workflow to the
 # script, so an inlined `gh release create` cannot come back.
 #
-# Nothing is created anywhere: gh is a shim on PATH and the chart packages are
-# plain tarballs built here with tar.
+# Nothing is created anywhere: gh is a shim on PATH. The fixture charts are
+# tarballs built here with tar; the repository's own chart is packaged with the
+# real helm, as the workflow does, so the Chart.yaml the script reads is the one
+# helm writes.
 #
 # Usage: ./helm-release-create.test.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET="${SCRIPT_DIR}/helm-release-create.sh"
 WORKFLOW="${SCRIPT_DIR}/../helm-release.yml"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
 if [ ! -x "$TARGET" ]; then
   echo "FAIL: $TARGET is missing or not executable" >&2
+  exit 1
+fi
+# The script reads the package through `helm show chart`, as the index and OCI
+# scripts do, so the real helm is required (the lint job installs the same
+# version the release job pins).
+if ! command -v helm >/dev/null 2>&1; then
+  echo "FAIL: helm is required on PATH (the script reads Chart.yaml with helm show chart)" >&2
   exit 1
 fi
 
@@ -153,6 +163,24 @@ check "the stable package is accepted too" [ "$RC" -eq 0 ]
 check "and gets no --prerelease" not gh_arg --prerelease
 run 2.1.47 "$PACKAGED_STABLE"
 check "a packaged chart naming another version is still refused" [ "$RC" -ne 0 ]
+check "gh is not called for it" not gh_called
+
+echo "the repository's own chart, packaged by helm"
+REAL_VERSION="$(awk '/^version:/ { print $2; exit }' "$REPO_ROOT/helm-charts/bifrost/Chart.yaml")"
+mkdir -p "$ROOT/real"
+helm package "$REPO_ROOT/helm-charts/bifrost" -d "$ROOT/real" >/dev/null 2>&1
+REAL="$ROOT/real/bifrost-$REAL_VERSION.tgz"
+check "helm packaged helm-charts/bifrost as version $REAL_VERSION" [ -f "$REAL" ]
+run "$REAL_VERSION" "$REAL"
+check "the real package is accepted" [ "$RC" -eq 0 ]
+check "the tag is helm-chart-v$REAL_VERSION" gh_arg "helm-chart-v$REAL_VERSION"
+check "the real package is the release asset" gh_arg "$REAL"
+case "$REAL_VERSION" in
+  *-*) check "the real version is a prerelease, so --prerelease" gh_arg --prerelease ;;
+  *) check "the real version is stable, so no --prerelease" not gh_arg --prerelease ;;
+esac
+run "${REAL_VERSION}x" "$REAL"
+check "the real package under another version is refused" [ "$RC" -ne 0 ]
 check "gh is not called for it" not gh_called
 
 echo "a prerelease with a build suffix is still a prerelease"
