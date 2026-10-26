@@ -358,6 +358,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 				className="flex w-full flex-col gap-0 overflow-x-hidden p-0 pt-4 sm:max-w-[40rem]"
 				onInteractOutside={(event) => event.preventDefault()}
 				onEscapeKeyDown={onClose}
+				data-testid="agent-sheet"
 			>
 				<SheetHeader className="w-full flex-col items-start gap-1 p-0 py-4" headerClassName="mb-0 bg-card sticky -top-4 z-10 px-4 md:px-8">
 					<SheetTitle className="font-medium">{agent ? name.trim() : "New agent"}</SheetTitle>
@@ -414,6 +415,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 							testId="agent-card-options-toggle"
 						>
 							<AuthFields
+								testIdPrefix="agent-card-auth"
 								value={cardAuth}
 								onChange={(next) => {
 									setCardAuth(next);
@@ -423,6 +425,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 							<div className="flex flex-col gap-2 border-t pt-4">
 								<Label>TLS</Label>
 								<TLSFields
+									testIdPrefix="agent-card-tls"
 									value={cardAuth.tls ?? {}}
 									onChange={(tls) => {
 										setCardAuth({ ...cardAuth, tls });
@@ -439,7 +442,11 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 							</Alert>
 						)}
 						{inspection ? (
-							<AgentCardPreview card={inspection.card ? { ...mapAgentCard(inspection.card), warnings: inspection.warnings } : inspection} />
+							<div data-testid="agent-card-inspection">
+								<AgentCardPreview
+									card={inspection.card ? { ...mapAgentCard(inspection.card), warnings: inspection.warnings } : inspection}
+								/>
+							</div>
 						) : (
 							!inspectionError && (
 								<div className="text-muted-foreground flex flex-col items-center gap-2 rounded-sm border border-dashed p-6 text-center text-sm">
@@ -505,6 +512,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 						)}
 						{(selectedAuth || manualMode || isEditing) && (
 							<AuthFields
+								testIdPrefix="agent-runtime-auth"
 								value={runtimeAuth}
 								onChange={setRuntimeAuth}
 								readOnlyAuth={!manualMode}
@@ -519,7 +527,11 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 							onOpenChange={setRuntimeTLSOpen}
 							testId="agent-runtime-tls-toggle"
 						>
-							<TLSFields value={runtimeAuth.tls ?? {}} onChange={(tls) => setRuntimeAuth({ ...runtimeAuth, tls })} />
+							<TLSFields
+								testIdPrefix="agent-runtime-tls"
+								value={runtimeAuth.tls ?? {}}
+								onChange={(tls) => setRuntimeAuth({ ...runtimeAuth, tls })}
+							/>
 						</OptionGroup>
 						<SettingRow
 							label="Forward Bifrost authentication"
@@ -606,14 +618,18 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 							testId="agent-allow-by-default-switch"
 						/>
 						{allowByDefault || virtualKeyIds.length === 0 ? (
-							<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
+							<div
+								className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm"
+								data-testid="agent-virtual-keys-empty"
+							>
 								{allowByDefault ? "Any valid key can reach this agent." : "No keys granted yet."}
 							</div>
 						) : (
-							<div className="divide-y rounded-sm border">
+							<div className="divide-y rounded-sm border" data-testid="agent-virtual-keys-list">
 								{virtualKeyIds.map((id) => (
 									<VirtualKeyListItem
 										key={id}
+										data-testid={`agent-revoke-virtual-key-${id}`}
 										name={vkById.get(id)?.name}
 										secret={vkById.get(id)?.value}
 										fallbackLabel={id}
@@ -682,7 +698,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 				<div className="bg-card sticky bottom-0 flex items-center justify-between gap-3 border-t px-4 py-4 md:px-8">
 					<p className="text-muted-foreground text-xs">{isBlocked && !unsupportedRequirement ? "Fetch the agent card to continue." : ""}</p>
 					<div className="flex gap-2">
-						<Button type="button" variant="outline" onClick={onClose}>
+						<Button type="button" variant="outline" onClick={onClose} data-testid="agent-cancel-button">
 							Cancel
 						</Button>
 						<Button

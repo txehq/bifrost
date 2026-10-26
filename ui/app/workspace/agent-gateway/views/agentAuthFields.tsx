@@ -49,9 +49,17 @@ export function authSummary(auth: AgentUpstreamAuth): string {
 	return parts.join(" · ");
 }
 
-export function TLSFields({ value, onChange }: { value: AgentTLSConfig; onChange: (next: AgentTLSConfig) => void }) {
+export function TLSFields({
+	value,
+	onChange,
+	testIdPrefix,
+}: {
+	value: AgentTLSConfig;
+	onChange: (next: AgentTLSConfig) => void;
+	testIdPrefix?: string;
+}) {
 	return (
-		<div className="space-y-4">
+		<div className="space-y-4" data-testid={testIdPrefix}>
 			<div className="flex items-center justify-between gap-4">
 				<div className="space-y-0.5">
 					<Label>Skip TLS verification</Label>
@@ -60,6 +68,7 @@ export function TLSFields({ value, onChange }: { value: AgentTLSConfig; onChange
 				<Switch
 					checked={value.insecure_skip_verify ?? false}
 					onCheckedChange={(insecure_skip_verify) => onChange({ ...value, insecure_skip_verify })}
+					data-testid={testIdPrefix && `${testIdPrefix}-skip-verify-switch`}
 				/>
 			</div>
 			<div className="flex flex-col gap-2">
@@ -70,6 +79,7 @@ export function TLSFields({ value, onChange }: { value: AgentTLSConfig; onChange
 					placeholder="-----BEGIN CERTIFICATE-----"
 					value={value.ca_cert_pem}
 					onChange={(ca_cert_pem) => onChange({ ...value, ca_cert_pem })}
+					data-testid={testIdPrefix && `${testIdPrefix}-ca-cert-input`}
 				/>
 			</div>
 			<div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -81,6 +91,7 @@ export function TLSFields({ value, onChange }: { value: AgentTLSConfig; onChange
 						placeholder="-----BEGIN CERTIFICATE-----"
 						value={value.client_cert_pem}
 						onChange={(client_cert_pem) => onChange({ ...value, client_cert_pem })}
+						data-testid={testIdPrefix && `${testIdPrefix}-client-cert-input`}
 					/>
 				</div>
 				<div className="flex flex-col gap-2">
@@ -91,6 +102,7 @@ export function TLSFields({ value, onChange }: { value: AgentTLSConfig; onChange
 						placeholder="-----BEGIN PRIVATE KEY-----"
 						value={value.client_key_pem}
 						onChange={(client_key_pem) => onChange({ ...value, client_key_pem })}
+						data-testid={testIdPrefix && `${testIdPrefix}-client-key-input`}
 					/>
 				</div>
 			</div>
@@ -173,12 +185,14 @@ export function AuthFields({
 	readOnlyAuth = false,
 	disabled = false,
 	requiredHeaderKeys = [],
+	testIdPrefix,
 }: {
 	value: AgentUpstreamAuth;
 	onChange: (next: AgentUpstreamAuth) => void;
 	readOnlyAuth?: boolean;
 	disabled?: boolean;
 	requiredHeaderKeys?: string[];
+	testIdPrefix?: string;
 }) {
 	const changeKind = (type: AgentAuthType) =>
 		onChange({
@@ -190,11 +204,11 @@ export function AuthFields({
 		});
 
 	return (
-		<fieldset disabled={disabled} className="space-y-4 disabled:opacity-70">
+		<fieldset disabled={disabled} className="space-y-4 disabled:opacity-70" data-testid={testIdPrefix}>
 			<div className="flex flex-col gap-2">
 				<Label>Type</Label>
 				<Select value={value.type} onValueChange={changeKind} disabled={readOnlyAuth}>
-					<SelectTrigger className="w-full">
+					<SelectTrigger className="w-full" data-testid={testIdPrefix && `${testIdPrefix}-type-select`}>
 						<SelectValue placeholder="Select authentication type" />
 					</SelectTrigger>
 					<SelectContent>
@@ -207,28 +221,32 @@ export function AuthFields({
 			{value.type === "headers" && (
 				<div className="space-y-4">
 					{requiredHeaderKeys.length > 0 && (
-						<HeadersTable
-							value={value.headers ?? {}}
-							onChange={(headers) => onChange({ ...value, headers })}
-							fixedKeys={requiredHeaderKeys}
-							useSecretVarInput
-							label="Required by the card"
-						/>
+						<div data-testid={testIdPrefix && `${testIdPrefix}-required-headers`}>
+							<HeadersTable
+								value={value.headers ?? {}}
+								onChange={(headers) => onChange({ ...value, headers })}
+								fixedKeys={requiredHeaderKeys}
+								useSecretVarInput
+								label="Required by the card"
+							/>
+						</div>
 					)}
-					<HeadersTable
-						value={Object.fromEntries(Object.entries(value.headers ?? {}).filter(([name]) => !requiredHeaderKeys.includes(name)))}
-						onChange={(headers) =>
-							onChange({
-								...value,
-								headers: {
-									...Object.fromEntries(Object.entries(value.headers ?? {}).filter(([name]) => requiredHeaderKeys.includes(name))),
-									...headers,
-								},
-							})
-						}
-						useSecretVarInput
-						label="Extra headers"
-					/>
+					<div data-testid={testIdPrefix && `${testIdPrefix}-extra-headers`}>
+						<HeadersTable
+							value={Object.fromEntries(Object.entries(value.headers ?? {}).filter(([name]) => !requiredHeaderKeys.includes(name)))}
+							onChange={(headers) =>
+								onChange({
+									...value,
+									headers: {
+										...Object.fromEntries(Object.entries(value.headers ?? {}).filter(([name]) => requiredHeaderKeys.includes(name))),
+										...headers,
+									},
+								})
+							}
+							useSecretVarInput
+							label="Extra headers"
+						/>
+					</div>
 				</div>
 			)}
 			{value.type === "oauth" && (
