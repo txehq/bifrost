@@ -192,11 +192,15 @@ func (r *cutOffSafeRows) Next(dest []driver.Value) error {
 	return err
 }
 
+// Close checks the context after the underlying Close too: clickhouse-go drains
+// the remaining blocks inside Close, so the context can end mid-drain, and
+// database/sql only returns the connection to the pool after this returns.
 func (r *cutOffSafeRows) Close() error {
+	err := r.rows.Close()
 	if ctxEnded(r.ctx) {
 		r.conn.cutOff.Store(true)
 	}
-	return r.rows.Close()
+	return err
 }
 
 func (r *cutOffSafeRows) HasNextResultSet() bool {

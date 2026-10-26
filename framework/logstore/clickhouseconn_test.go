@@ -30,13 +30,26 @@ func (fakeCHConn) QueryContext(ctx context.Context, query string, _ []driver.Nam
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if query == "DRAIN" {
+		// Close drains until the query's context ends, as a cancellation that
+		// lands while clickhouse-go's Close reads the remaining blocks.
+		return &fakeCHRows{left: 3, drainUntil: ctx.Done()}, nil
+	}
 	return &fakeCHRows{left: 3}, nil
 }
 
-type fakeCHRows struct{ left int }
+type fakeCHRows struct {
+	left       int
+	drainUntil <-chan struct{}
+}
 
 func (r *fakeCHRows) Columns() []string { return []string{"v"} }
-func (r *fakeCHRows) Close() error      { return nil }
+func (r *fakeCHRows) Close() error {
+	if r.drainUntil != nil {
+		<-r.drainUntil
+	}
+	return nil
+}
 func (r *fakeCHRows) Next(dest []driver.Value) error {
 	if r.left == 0 {
 		return io.EOF
@@ -108,6 +121,17 @@ func TestCutOffSafeConnRetiresOnlyCutOffConnections(t *testing.T) {
 		rows := query(c, ctx)
 		require.NoError(t, rows.Next(make([]driver.Value, 1)))
 		cancel()
+		require.NoError(t, rows.Close())
+		requireValid(c, false)
+	})
+
+	t.Run("context ended while Close drained the rest", func(t *testing.T) {
+		c := &cutOffSafeConn{conn: fakeCHConn{}}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		rows, err := c.QueryContext(ctx, "DRAIN", nil)
+		require.NoError(t, err)
+		require.NoError(t, rows.Next(make([]driver.Value, 1)))
 		require.NoError(t, rows.Close())
 		requireValid(c, false)
 	})
