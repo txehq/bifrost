@@ -262221,6 +262221,127 @@
           }
         }
       ]
+    },
+    {
+      "name": "229. A virtual key edited between requests still counts every request (vk-edit-usage) [SERIAL]",
+      "description": "TXE-5272. Editing a virtual key reloads it into the governance store, and the reload kept the key's rate-limit usage by loading the live counters, copying them into the reloaded config and storing it. A request charged in between (usage is charged after the response, off the request path) was overwritten, so a key edited under traffic undercounted and let requests past its limit. The prerequest creates a run-scoped key limited to 4 requests an hour, spends all 4 on openai/gpt-4o-mini (3 tokens each) and edits the key after each one; the row reads the key back and its test script sends the fifth request, which must be refused with the key's own request limit at 4/4. Red before the fix whenever an edit overwrote a charge (intermittent, since it depends on that interleaving); green after. The key is deleted at the end. Spends four gpt-4o-mini calls of 3 tokens. Run with FEATURE=vk-edit-usage.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini a virtual key edited after each request still refuses the request past its limit - vk-edit-usage",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{vkeuId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{vkeuId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Create a run-scoped virtual key limited to 4 requests an hour, then spend all 4,",
+                  "// editing the key right after each request: every edit reloads the key into the",
+                  "// governance store while that request's usage is still being charged off the request path.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var LIMIT = 4;",
+                  "var token = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "function call(method, path, body, cb) {",
+                  "  var h = { 'Content-Type': 'application/json' };",
+                  "  if (token) { h.Authorization = 'Bearer ' + token; }",
+                  "  var req = { url: BASE + path, method: method, header: h };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(err, res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, err, res) {",
+                  "  pm.test(label, function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200);",
+                  "  });",
+                  "  return !err && !!res && res.code === 200;",
+                  "}",
+                  "pm.collectionVariables.set('vkeuVk', 'missing');",
+                  "pm.collectionVariables.unset('vkeuId');",
+                  "var run = 'harness-vk-edit-usage-run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "call('POST', '/api/governance/virtual-keys', { name: run, provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }], rate_limit: { request_max_limit: LIMIT, request_reset_duration: '1h' } }, function (err, res, j) {",
+                  "  if (!expectOk('vk-edit-usage setup: created the virtual key', err, res)) { return; }",
+                  "  var vk = (j || {}).virtual_key || {};",
+                  "  var value = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "  pm.collectionVariables.set('vkeuId', vk.id);",
+                  "  var round = 0;",
+                  "  (function next() {",
+                  "    if (round >= LIMIT) {",
+                  "      pm.collectionVariables.set('vkeuVk', value);",
+                  "      // Let the last request's usage land before the request under test.",
+                  "      return setTimeout(function () {}, 1500);",
+                  "    }",
+                  "    round++;",
+                  "    pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json', 'x-bf-vk': value }, body: { mode: 'raw', raw: JSON.stringify({ model: 'openai/gpt-4o-mini', messages: [{ role: 'user', content: 'Reply with the single word: ok' }], max_tokens: 3 }) } }, function (err2, res2) {",
+                  "      if (!expectOk('vk-edit-usage setup: request ' + round + ' of ' + LIMIT + ' is served', err2, res2)) { return; }",
+                  "      call('PUT', '/api/governance/virtual-keys/' + vk.id, { description: 'edited after request ' + round }, function (err3, res3) {",
+                  "        if (!expectOk('vk-edit-usage setup: edit after request ' + round + ' is saved', err3, res3)) { return; }",
+                  "        next();",
+                  "      });",
+                  "    });",
+                  "  })();",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The row itself reads the key back (200); the fifth inference request runs here, so the",
+                  "// harness's 429 retry pass never mistakes this row's intended refusal for a provider quota hit.",
+                  "pm.test('vk-edit-usage: the edited virtual key reads back', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var id = pm.collectionVariables.get('vkeuId');",
+                  "var token = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "function cleanup() {",
+                  "  if (!id) { return; }",
+                  "  var h = {};",
+                  "  if (token) { h.Authorization = 'Bearer ' + token; }",
+                  "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE', header: h }, function (err, res) {",
+                  "    pm.test('vk-edit-usage cleanup: the virtual key is deleted', function () {",
+                  "      pm.expect(err, String(err)).to.equal(null);",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(200);",
+                  "    });",
+                  "    pm.collectionVariables.unset('vkeuId');",
+                  "  });",
+                  "}",
+                  "pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json', 'x-bf-vk': pm.collectionVariables.get('vkeuVk') }, body: { mode: 'raw', raw: JSON.stringify({ model: 'openai/gpt-4o-mini', messages: [{ role: 'user', content: 'Reply with the single word: ok' }], max_tokens: 3 }) } }, function (err, res) {",
+                  "  pm.test('vk-edit-usage: the fifth request is refused with 429 once all four counted', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res && res.code, 'expected 429, got: ' + (res ? res.text() : 'no response')).to.eql(429);",
+                  "  });",
+                  "  pm.test('vk-edit-usage: the refusal is the key\\'s own request limit at 4/4', function () {",
+                  "    pm.expect(res ? res.text() : '', res ? res.text() : 'no response').to.include('request limit exceeded (4/4');",
+                  "  });",
+                  "  cleanup();",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
