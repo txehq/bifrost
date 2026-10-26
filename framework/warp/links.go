@@ -67,6 +67,7 @@ var logsPageParams = map[string]struct{}{
 	"tool_call_names": {}, "objects": {}, "selected_key_ids": {}, "virtual_key_ids": {}, "routing_rule_ids": {},
 	"routing_engine_used": {}, "apps": {}, "user_agents": {}, "complexity_tiers": {}, "complexity_mechanisms": {},
 	"session_id": {}, "user_ids": {}, "team_ids": {}, "customer_ids": {}, "business_unit_ids": {}, "project_ids": {},
+	"agent_names": {}, "agent_correlation_id": {},
 	"content_search": {}, "request_id": {}, "min_latency": {}, "max_latency": {}, "min_cost": {}, "max_cost": {},
 	"min_tokens": {}, "max_tokens": {},
 	"start_time": {}, "end_time": {}, "limit": {}, "offset": {}, "sort_by": {}, "order": {}, "polling": {},
@@ -340,6 +341,7 @@ func logsViewLink(filters *logstore.SearchFilters) string {
 		{"apps", filters.Apps},
 		{"user_agents", filters.UserAgents},
 		{"cache_hit_types", filters.CacheHitTypes},
+		{"agent_names", filters.AgentNames},
 	}
 	for _, list := range lists {
 		if len(list.values) > 0 {
@@ -354,6 +356,7 @@ func logsViewLink(filters *logstore.SearchFilters) string {
 		{"request_id", filters.RequestID},
 		{"parent_request_id", filters.ParentRequestID},
 		{"session_id", filters.SessionID},
+		{"agent_correlation_id", filters.AgentCorrelationID},
 	}
 	for _, text := range texts {
 		if strings.TrimSpace(text.value) != "" {

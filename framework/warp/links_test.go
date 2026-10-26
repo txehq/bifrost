@@ -551,6 +551,8 @@ func TestWarpLogsLinkPerFilterArgument(t *testing.T) {
 		"business_unit_ids":     {arg: []any{"bu-1"}, want: "bu-1"},
 		"project_ids":           {arg: []any{"proj-1"}, want: "proj-1"},
 		"apps":                  {arg: []any{"support-widget"}, want: "support-widget"},
+		"agent_names":           {arg: []any{"support-agent"}, want: "support-agent"},
+		"agent_correlation_id":  {arg: "corr-1", want: "corr-1"},
 		"min_latency":           {arg: float64(400), want: "400"},
 		"max_latency":           {arg: 1500.5, want: "1500.5"},
 		"min_tokens":            {arg: float64(10), want: "10"},
