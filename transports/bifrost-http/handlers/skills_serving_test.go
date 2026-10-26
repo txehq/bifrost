@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -569,4 +570,52 @@ func TestFetchURLSafeGoesThroughGlobalProxy(t *testing.T) {
 		t.Fatalf("expected a private target to be refused, got %v", err)
 	}
 	proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
+}
+
+// TestSkillsGitRepoCacheIsBoundedAcrossKeys: the cache key includes a caller-chosen
+// forwarded host, so distinct keys must not each retain an export forever. The cache
+// holds at most skillsGitRepoCacheMaxEntries, evicting (and deleting) the oldest, and an
+// expired entry is dropped on the next acquire of any key.
+func TestSkillsGitRepoCacheIsBoundedAcrossKeys(t *testing.T) {
+	cache := newSkillsGitRepoCache()
+	var dirs []string
+	build := func() (string, error) {
+		dir := t.TempDir()
+		dirs = append(dirs, dir)
+		return dir, nil
+	}
+	for i := 0; i < skillsGitRepoCacheMaxEntries+8; i++ {
+		_, release, err := cache.acquire(fmt.Sprintf("host-%d", i), "v1", build)
+		if err != nil {
+			t.Fatalf("acquire %d: %v", i, err)
+		}
+		release()
+	}
+	if got := len(cache.entries); got > skillsGitRepoCacheMaxEntries {
+		t.Fatalf("cache holds %d entries, want at most %d", got, skillsGitRepoCacheMaxEntries)
+	}
+	if _, err := os.Stat(dirs[0]); !os.IsNotExist(err) {
+		t.Fatalf("the oldest evicted export must be removed from disk, stat err=%v", err)
+	}
+	if _, err := os.Stat(dirs[len(dirs)-1]); err != nil {
+		t.Fatalf("the newest export must stay: %v", err)
+	}
+
+	// Age every entry past the TTL: one acquire of an unrelated key drops them all.
+	cache.mu.Lock()
+	for _, entry := range cache.entries {
+		entry.builtAt = time.Now().Add(-2 * skillsGitRepoCacheTTL)
+	}
+	cache.mu.Unlock()
+	_, release, err := cache.acquire("another-host", "v1", build)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	release()
+	if got := len(cache.entries); got != 1 {
+		t.Fatalf("expired entries were kept: %d entries, want only the new one", got)
+	}
+	if _, err := os.Stat(dirs[len(dirs)-2]); !os.IsNotExist(err) {
+		t.Fatalf("an expired export must be removed from disk, stat err=%v", err)
+	}
 }

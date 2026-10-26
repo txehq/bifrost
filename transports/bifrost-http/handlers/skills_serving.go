@@ -711,6 +711,12 @@ func acquireSkillsCorpusServeSlot(ctx *fasthttp.RequestCtx) (release func(), ok 
 // through the store; the TTL is the safety net for anything it does not.
 const skillsGitRepoCacheTTL = time.Minute
 
+// skillsGitRepoCacheMaxEntries bounds how many exported repositories the cache keeps.
+// The key includes the request's forwarded host, which a caller chooses, so without a
+// cap every distinct value would retain another export on disk until that same key
+// was requested again.
+const skillsGitRepoCacheMaxEntries = 32
+
 // exportBareRepo is the export step serveGitRepo runs on a cache miss; tests
 // swap it to count exports.
 var exportBareRepo = exportToTempBareRepo
@@ -719,8 +725,10 @@ var exportBareRepo = exportToTempBareRepo
 // against, keyed by repository, so repeated fetches of an unchanged corpus
 // reuse one export instead of rebuilding the object graph and a temp directory
 // per request. All entries share one fingerprint (the corpus version); when it
-// changes every entry is dropped. A dropped entry's directory is removed once
-// no in-flight request is still serving from it.
+// changes every entry is dropped. Expired entries are dropped on every acquire,
+// whatever their key, and a miss evicts the oldest built entries once
+// skillsGitRepoCacheMaxEntries are held. A dropped entry's directory is removed
+// once no in-flight request is still serving from it.
 type skillsGitRepoCache struct {
 	mu      sync.Mutex
 	version string
@@ -758,12 +766,10 @@ func (c *skillsGitRepoCache) acquire(key, version string, build func() (string, 
 		}
 		c.version = version
 	}
+	c.dropExpiredLocked()
 	entry := c.entries[key]
-	if entry != nil && entry.isBuilt() && time.Since(entry.builtAt) >= skillsGitRepoCacheTTL {
-		c.dropLocked(key, entry)
-		entry = nil
-	}
 	if entry == nil {
+		c.evictForMissLocked()
 		entry = &skillsGitRepoCacheEntry{ready: make(chan struct{})}
 		c.entries[key] = entry
 		c.mu.Unlock()
@@ -854,6 +860,35 @@ func (c *skillsGitRepoCache) dropLocked(key string, entry *skillsGitRepoCacheEnt
 	entry.dropped = true
 	if entry.isBuilt() && entry.err == nil && entry.refs == 0 && entry.waiters == 0 {
 		os.RemoveAll(entry.dir)
+	}
+}
+
+// dropExpiredLocked drops every built entry older than skillsGitRepoCacheTTL, so an
+// entry whose key is never requested again does not keep its directory.
+func (c *skillsGitRepoCache) dropExpiredLocked() {
+	for key, entry := range c.entries {
+		if entry.isBuilt() && time.Since(entry.builtAt) >= skillsGitRepoCacheTTL {
+			c.dropLocked(key, entry)
+		}
+	}
+}
+
+// evictForMissLocked makes room for one more entry by dropping the oldest built
+// entries once skillsGitRepoCacheMaxEntries are held. Entries still building are
+// left alone; a dropped entry that is being read is removed by its last reader.
+func (c *skillsGitRepoCache) evictForMissLocked() {
+	for len(c.entries) >= skillsGitRepoCacheMaxEntries {
+		var oldestKey string
+		var oldest *skillsGitRepoCacheEntry
+		for key, entry := range c.entries {
+			if entry.isBuilt() && (oldest == nil || entry.builtAt.Before(oldest.builtAt)) {
+				oldestKey, oldest = key, entry
+			}
+		}
+		if oldest == nil {
+			return
+		}
+		c.dropLocked(oldestKey, oldest)
 	}
 }
 
