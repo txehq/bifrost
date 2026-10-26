@@ -18,6 +18,11 @@
 // completion with a usage block (TXE-5026). A streaming request, and every other
 // request, gets a 404.
 //
+// The vk-object-ownership collection uploads, reads, lists and deletes files
+// through openai to check that Bifrost keeps each file to the virtual key that
+// created it (TXE-5254). Bifrost enforces that; the stub only has to be a files
+// API, so /openai/v1/files keeps uploads in memory in OpenAI's shapes.
+//
 // Usage: node list-models-stub.js <port>
 
 const http = require("http");
@@ -58,6 +63,104 @@ function notFound(res, req, path) {
   res.end(JSON.stringify({ error: { message: `list-models stub: no route for ${req.method} ${path}` } }));
 }
 
+// files holds the uploads of /openai/v1/files: id -> { meta, content }.
+const files = new Map();
+let fileSeq = 0;
+
+function readBody(req, done) {
+  const chunks = [];
+  req.on("data", (chunk) => chunks.push(chunk));
+  req.on("end", () => done(Buffer.concat(chunks)));
+}
+
+// multipartFields splits a multipart/form-data body into its named parts.
+function multipartFields(req, body) {
+  const m = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(req.headers["content-type"] || "");
+  const fields = {};
+  if (!m) {
+    return fields;
+  }
+  const boundary = Buffer.from(`--${m[1] || m[2]}`);
+  let start = body.indexOf(boundary);
+  while (start !== -1) {
+    const next = body.indexOf(boundary, start + boundary.length);
+    if (next === -1) {
+      break;
+    }
+    const part = body.subarray(start + boundary.length + 2, next - 2);
+    const split = part.indexOf("\r\n\r\n");
+    if (split !== -1) {
+      const head = part.subarray(0, split).toString("utf8");
+      const name = /name="([^"]*)"/i.exec(head);
+      const filename = /filename="([^"]*)"/i.exec(head);
+      if (name) {
+        fields[name[1]] = { value: part.subarray(split + 4), filename: filename ? filename[1] : undefined };
+      }
+    }
+    start = next;
+  }
+  return fields;
+}
+
+function filesAPI(req, res, path) {
+  const one = /^\/openai\/v1\/files\/([^/]+)(\/content)?\/?$/.exec(path);
+  if (/^\/openai\/v1\/files\/?$/.test(path)) {
+    if (req.method === "POST") {
+      readBody(req, (body) => {
+        const fields = multipartFields(req, body);
+        if (!fields.file) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: { message: "list-models stub: upload has no file part" } }));
+          return;
+        }
+        fileSeq += 1;
+        const meta = {
+          id: `file-stub-${fileSeq}`,
+          object: "file",
+          bytes: fields.file.value.length,
+          created_at: Math.floor(Date.now() / 1000),
+          filename: fields.file.filename || "upload",
+          purpose: fields.purpose ? fields.purpose.value.toString("utf8") : "user_data",
+          status: "processed",
+        };
+        files.set(meta.id, { meta, content: Buffer.from(fields.file.value) });
+        res.end(JSON.stringify(meta));
+      });
+      return true;
+    }
+    if (req.method === "GET") {
+      const data = [...files.values()].map((f) => f.meta).reverse();
+      res.end(JSON.stringify({ object: "list", data, has_more: false, first_id: data[0]?.id, last_id: data[data.length - 1]?.id }));
+      return true;
+    }
+    return false;
+  }
+  if (!one) {
+    return false;
+  }
+  const entry = files.get(decodeURIComponent(one[1]));
+  if (!entry) {
+    res.statusCode = 404;
+    res.end(JSON.stringify({ error: { message: `No such File object: ${one[1]}`, type: "invalid_request_error", code: null } }));
+    return true;
+  }
+  if (one[2] && req.method === "GET") {
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.end(entry.content);
+    return true;
+  }
+  if (!one[2] && req.method === "GET") {
+    res.end(JSON.stringify(entry.meta));
+    return true;
+  }
+  if (!one[2] && req.method === "DELETE") {
+    files.delete(entry.meta.id);
+    res.end(JSON.stringify({ id: entry.meta.id, object: "file", deleted: true }));
+    return true;
+  }
+  return false;
+}
+
 function chatCompletion(req, res, path) {
   let raw = "";
   req.setEncoding("utf8");
@@ -93,6 +196,9 @@ function chatCompletion(req, res, path) {
 const server = http.createServer((req, res) => {
   const path = (req.url || "").split("?")[0];
   res.setHeader("Content-Type", "application/json");
+  if (path.startsWith("/openai/v1/files") && filesAPI(req, res, path)) {
+    return;
+  }
   const chat = /^\/([a-z0-9-]+)\/v1\/chat\/completions\/?$/.exec(path);
   if (chat && req.method === "POST" && MODELS[chat[1]]) {
     chatCompletion(req, res, path);
