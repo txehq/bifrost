@@ -695,6 +695,9 @@ func chatCompletionJSON(content string, finish string, toolCall string) string {
 type injectedToolsAccount struct {
 	provider schemas.ModelProvider
 	baseURL  string
+	// withoutInjectedTools configures the provider with no injected tools, for the
+	// paths the injected-tool rules must leave alone.
+	withoutInjectedTools bool
 }
 
 func (a *injectedToolsAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
@@ -709,13 +712,16 @@ func (a *injectedToolsAccount) GetConfigForProvider(provider schemas.ModelProvid
 	network := schemas.DefaultNetworkConfig
 	network.BaseURL = a.baseURL
 	network.MaxRetries = 0
-	return &schemas.ProviderConfig{
+	config := &schemas.ProviderConfig{
 		NetworkConfig:            network,
 		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
-		InjectedTools: &schemas.InjectedToolsConfig{
+	}
+	if !a.withoutInjectedTools {
+		config.InjectedTools = &schemas.InjectedToolsConfig{
 			WebSearch: &schemas.InjectedToolRef{MCPClientName: "bifrostInternal", ToolName: "web_search"},
-		},
-	}, nil
+		}
+	}
+	return config, nil
 }
 
 func setupInjectedToolsBifrost(t *testing.T, fake *fakeOpenAI, searches *[]string) *bifrost.Bifrost {
@@ -841,18 +847,12 @@ func sseChat(id string, chunks ...string) string {
 // TestInjectedWebSearch_ChatStreamEndToEnd streams a chat request across two upstream
 // turns. The client must get one stream: the first turn's text live, no injected tool
 // call deltas, the answer, and a single final chunk carrying both turns' usage.
-// A streamed chat request that asks for several choices is served without the injected
-// tool: the injected stream keeps one choice's state, so injecting would fold the
-// alternatives into choice 0 (TXE-5209). The provider sees the request as sent and every
-// choice reaches the client with its own index.
-func TestInjectedWebSearch_ChatStreamWithSeveralChoicesIsServedAsSent(t *testing.T) {
-	fake := &fakeOpenAI{replies: []string{
-		sseChat("turn-1",
-			`"choices":[{"index":0,"delta":{"role":"assistant","content":"first"},"finish_reason":null},{"index":1,"delta":{"role":"assistant","content":"second"},"finish_reason":null}]`,
-			`"choices":[{"index":0,"delta":{},"finish_reason":"stop"},{"index":1,"delta":{},"finish_reason":"stop"}]`,
-			`"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}`,
-		),
-	}}
+// A streamed chat request that asks for several choices cannot be served with injected
+// tools: the injected stream keeps one choice's state, and leaving the operator's tool out
+// would answer without the retrieval it configured. The combination is refused before the
+// provider is called, as a 400 the caller sees (TXE-5209).
+func TestInjectedWebSearch_ChatStreamWithSeveralChoicesIsRefused(t *testing.T) {
+	fake := &fakeOpenAI{replies: []string{injectedSearchTurnSSE()}}
 	var searches []string
 	b := setupInjectedToolsBifrost(t, fake, &searches)
 
@@ -863,8 +863,53 @@ func TestInjectedWebSearch_ChatStreamWithSeveralChoicesIsServedAsSent(t *testing
 		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Weather in Paris?")}}},
 		Params:   &schemas.ChatParameters{N: schemas.Ptr(2)},
 	})
-	require.Nil(t, bifrostErr, "%v", bifrostErr)
+	if stream != nil {
+		drainStream(stream)
+	}
+	require.NotNil(t, bifrostErr, "the combination is refused")
+	require.NotNil(t, bifrostErr.StatusCode)
+	assert.Equal(t, 400, *bifrostErr.StatusCode)
+	require.NotNil(t, bifrostErr.Error)
+	assert.Contains(t, bifrostErr.Error.Message, "n > 1")
+	assert.Contains(t, bifrostErr.Error.Message, "injected tools")
+	assert.Empty(t, fake.requests(), "the provider is never called")
+	assert.Empty(t, searches, "no injected search ran")
+	logged := false
+	for _, entry := range ctx.GetRoutingEngineLogs() {
+		if entry.Engine == schemas.RoutingEngineCore && strings.Contains(entry.Message, "n=2") {
+			logged = true
+		}
+	}
+	assert.True(t, logged, "the trail records the refusal: %v", ctx.GetRoutingEngineLogs())
+}
 
+// The refusal is specific to injected tools: a provider without them streams n > 1 as
+// it always did, every choice under its own index.
+func TestChatStreamWithSeveralChoicesWithoutInjectedToolsIsServed(t *testing.T) {
+	fake := &fakeOpenAI{replies: []string{
+		sseChat("turn-1",
+			`"choices":[{"index":0,"delta":{"role":"assistant","content":"first"},"finish_reason":null},{"index":1,"delta":{"role":"assistant","content":"second"},"finish_reason":null}]`,
+			`"choices":[{"index":0,"delta":{},"finish_reason":"stop"},{"index":1,"delta":{},"finish_reason":"stop"}]`,
+			`"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}`,
+		),
+	}}
+	server := httptest.NewServer(fake)
+	t.Cleanup(server.Close)
+	b, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account:   &injectedToolsAccount{provider: schemas.OpenAI, baseURL: server.URL, withoutInjectedTools: true},
+		Logger:    bifrost.NewDefaultLogger(schemas.LogLevelError),
+		MCPConfig: &schemas.MCPConfig{ToolManagerConfig: &schemas.MCPToolManagerConfig{DisableAutoToolInject: true}},
+	})
+	require.NoError(t, err)
+	t.Cleanup(b.Shutdown)
+
+	stream, bifrostErr := b.ChatCompletionStreamRequest(createTestContext(), &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Weather in Paris?")}}},
+		Params:   &schemas.ChatParameters{N: schemas.Ptr(2)},
+	})
+	require.Nil(t, bifrostErr, "%v", bifrostErr)
 	content := map[int]string{}
 	for chunk := range stream {
 		require.Nil(t, chunk.BifrostError, "%v", chunk.BifrostError)
@@ -876,19 +921,9 @@ func TestInjectedWebSearch_ChatStreamWithSeveralChoicesIsServedAsSent(t *testing
 		}
 	}
 	assert.Equal(t, map[int]string{0: "first", 1: "second"}, content, "every choice reaches the client under its own index")
-	assert.Empty(t, searches, "no injected search ran")
-
 	requests := fake.requests()
-	require.Len(t, requests, 1, "one upstream turn, as sent")
+	require.Len(t, requests, 1)
 	assert.EqualValues(t, 2, requests[0]["n"], "n reaches the provider")
-	assert.NotContains(t, fake.toolNames(0), injectedSearchTool, "the injected tool is not offered")
-	logged := false
-	for _, entry := range ctx.GetRoutingEngineLogs() {
-		if entry.Engine == schemas.RoutingEngineCore && strings.Contains(entry.Message, "n=2") {
-			logged = true
-		}
-	}
-	assert.True(t, logged, "the trail says why the tool was not offered: %v", ctx.GetRoutingEngineLogs())
 }
 
 func TestInjectedWebSearch_ChatStreamEndToEnd(t *testing.T) {

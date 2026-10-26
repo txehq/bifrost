@@ -8,6 +8,7 @@ import (
 	"github.com/capsohq/bifrost/core/internal/injectedauth"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/google/uuid"
+	"github.com/valyala/fasthttp"
 )
 
 // Provider-injected tools (ProviderConfig.InjectedTools) are MCP tools Bifrost adds to
@@ -511,21 +512,34 @@ func (bifrost *Bifrost) injectedToolsForAttempt(ctx *schemas.BifrostContext, con
 }
 
 // injectedToolsForStream is injectedToolsForAttempt for a streaming attempt. A streamed
-// chat request that asks for more than one choice is served without injected tools: the
-// injected chat stream keeps one choice's state and emits every chunk at index 0, so
-// injecting would fold the alternatives into choice 0 or drop them (TXE-5209). The client
-// gets its choices as the provider streams them instead; the non-streaming loop handles
-// other choices itself (stripInjectedCallsFromOtherChoices).
-func (bifrost *Bifrost) injectedToolsForStream(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, req *schemas.BifrostRequest) *injectedToolSet {
+// chat request that asks for more than one choice cannot be served with injected tools:
+// the injected chat stream keeps one choice's state and emits every chunk at index 0, so
+// injecting would fold the alternatives into choice 0 or drop them, and leaving the
+// provider's tool out would answer without the retrieval the operator configured. The
+// combination is refused before the provider is called, as a 400 the caller sees, with
+// no fallback: another provider would serve it without the tool just as silently. The
+// non-streaming loop handles other choices itself (stripInjectedCallsFromOtherChoices);
+// per-choice stream state is TXE-5209.
+func (bifrost *Bifrost) injectedToolsForStream(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, req *schemas.BifrostRequest) (*injectedToolSet, *schemas.BifrostError) {
 	set := bifrost.injectedToolsForAttempt(ctx, config, req.RequestType)
 	if set == nil {
-		return nil
+		return nil, nil
 	}
 	if req.ChatRequest != nil && req.ChatRequest.Params != nil && req.ChatRequest.Params.N != nil && *req.ChatRequest.Params.N > 1 {
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Provider-injected tools are not offered on a streamed chat request with n=%d: the injected stream carries one choice, so the request is served as sent", *req.ChatRequest.Params.N))
-		return nil
+		message := fmt.Sprintf("provider-injected tools cannot serve a streamed chat request with n > 1 (n=%d): the injected stream carries one choice; send n=1, or a non-streaming request, to keep the provider's injected tools", *req.ChatRequest.Params.N)
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, "Refused before the provider call: "+message)
+		sc := fasthttp.StatusBadRequest
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			StatusCode:     &sc,
+			AllowFallbacks: schemas.Ptr(false),
+			Error: &schemas.ErrorField{
+				Type:    new("invalid_request_error"),
+				Message: message,
+			},
+		}
 	}
-	return set
+	return set, nil
 }
 
 // runInjectedTools serves one non-streaming attempt whose provider injects tools. Every

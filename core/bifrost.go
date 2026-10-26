@@ -8019,7 +8019,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
 				// Disable it too when this attempt's provider has no native structured outputs.
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
-				injectedTools := bifrost.injectedToolsForStream(req.Context, config, &req.BifrostRequest)
+				injectedTools, injectedErr := bifrost.injectedToolsForStream(req.Context, config, &req.BifrostRequest)
+				if injectedErr != nil {
+					return nil, injectedErr
+				}
 				injectedTools = clearAnthropicPassthroughForInjectedTools(req.Context, injectedTools, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
 				applyProviderProxySignal(req.Context, config)
