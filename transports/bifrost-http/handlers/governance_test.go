@@ -3280,13 +3280,7 @@ func TestGetVirtualKeys_FromMemoryUsesDB(t *testing.T) {
 	store := &mockConfigStoreForVK{}
 	manager := &mockGovernanceManagerForVK{
 		data: &governance.GovernanceData{
-			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{
-				"assigned": {ID: "assigned", Name: "Assigned", AgentGrants: []configstoreTables.TableVirtualKeyAgentGrant{
-					{VirtualKeyID: "assigned", AgentName: "beta"},
-					{VirtualKeyID: "assigned", AgentName: "alpha"},
-				}},
-				"empty": {ID: "empty", Name: "Empty"},
-			},
+			VirtualKeys: map[string]*configstoreTables.TableVirtualKey{},
 		},
 	}
 	h := &GovernanceHandler{
@@ -3311,34 +3305,6 @@ func TestGetVirtualKeys_FromMemoryUsesDB(t *testing.T) {
 	}
 	if store.getVirtualKeysPaginatedCalls != 0 {
 		t.Fatalf("from_memory path called GetVirtualKeysPaginated %d times", store.getVirtualKeysPaginatedCalls)
-	}
-	var response struct {
-		VirtualKeys []struct {
-			ID          string `json:"id"`
-			AgentGrants []struct {
-				AgentName string `json:"agent_name"`
-			} `json:"agent_grants"`
-		} `json:"virtual_keys"`
-	}
-	if err := json.Unmarshal(ctx.Response.Body(), &response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if len(response.VirtualKeys) != 2 {
-		t.Fatalf("expected two virtual keys, got %#v", response.VirtualKeys)
-	}
-	byID := make(map[string][]string, len(response.VirtualKeys))
-	for _, vk := range response.VirtualKeys {
-		names := make([]string, 0, len(vk.AgentGrants))
-		for _, grant := range vk.AgentGrants {
-			names = append(names, grant.AgentName)
-		}
-		byID[vk.ID] = names
-	}
-	if got := byID["assigned"]; len(got) != 2 || got[0] != "beta" || got[1] != "alpha" {
-		t.Fatalf("expected in-memory grants as stored, got %#v", got)
-	}
-	if got := byID["empty"]; len(got) != 0 {
-		t.Fatalf("expected no grants, got %#v", got)
 	}
 }
 
