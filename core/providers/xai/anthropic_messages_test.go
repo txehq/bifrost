@@ -68,15 +68,14 @@ func TestXAIAnthropicMessagesAttachmentDoesNotChangeOpenAIEndpoints(t *testing.T
 }
 
 // Claude Code sends Anthropic-only fields and a per-request billing line on every
-// request. Upstream strips them for every non-Anthropic provider on its converted
-// path; xAI's native Messages passthrough must strip them too, on both transports,
-// or they reach xAI and the changing billing line defeats its prompt cache.
-func TestXAIMessagesPassthroughStripsAnthropicOnlyFields(t *testing.T) {
+// request. Upstream strips them before xAI's native Messages passthrough; this fork
+// forwards the body byte-for-byte on both transports, system included (TXE-5193).
+func TestXAIMessagesPassthroughForwardsAnthropicOnlyFields(t *testing.T) {
 	const billing = "x-anthropic-billing-header: cc_version=2.1.80.a1b; cc_entrypoint=cli; cch=0f3c2;"
 	body := `{"model":"grok-4.5","safeguards":{"mode":"auto"},"diagnostics":{"previous_message_id":"msg_1"},` +
 		`"system":[{"type":"text","text":"` + billing + `"},{"type":"text","text":"You are helpful.","cache_control":{"type":"ephemeral"}}],` +
 		`"messages":[{"role":"user","content":"hi"}]}`
-	want := `{"model":"grok-4.5","system":[{"type":"text","text":"You are helpful.","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":"hi"}]}`
+	want := body
 
 	bodies := make(chan string, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
