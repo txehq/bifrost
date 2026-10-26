@@ -1,0 +1,243 @@
+package integrations
+
+import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
+	"github.com/valyala/fasthttp"
+)
+
+// TXE-5193: the xAI native Messages passthrough forwards the caller's body to xAI
+// byte-for-byte, system included. The only rewrite allowed is the provider prefix on
+// the top-level model value, which routing needs.
+
+const (
+	xaiByteExactCallerModel   = "xai/grok-4.5"
+	xaiByteExactUpstreamModel = "grok-4.5"
+)
+
+// xaiByteExactBody builds a Claude Code shaped body with what a re-encode or a strip
+// would change: Anthropic-only fields, a billing-header system block beside a cached
+// one, thinking and tool blocks, unknown fields, odd whitespace and unicode escapes.
+// padding adds that many bytes to a user message, for the large-payload path.
+func xaiByteExactBody(stream bool, padding int) []byte {
+	streamField := ""
+	if stream {
+		streamField = "\"stream\" :true,\n"
+	}
+	return []byte("{\"model\":\"" + xaiByteExactCallerModel + "\",\n" +
+		"  \"max_tokens\":\t1024 ,\n" + streamField +
+		"  \"safeguards\":{\"cyber\":{\"level\":\"strict\"},\"flags\":[1,2.50,true,null]},\n" +
+		"  \"diagnostics\" : {\"session\":\"s-1\",\"trace\":\"\\u00e9\\u2028\\/x\"},\n" +
+		"  \"system\":[{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=2.1.0.abc; cc_entrypoint=cli; cch=00000;\"},\n" +
+		"    {\"type\":\"text\",\"text\":\"You are Claude Code.\\nCaf\\u00e9 \\ud83d\\ude00\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"1h\"}}],\n" +
+		"  \"thinking\":{\"type\":\"enabled\",\"budget_tokens\":512},\n" +
+		"  \"tools\":[{\"name\":\"lookup\",\"description\":\"find\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}}},\"cache_control\":{\"type\":\"ephemeral\"}}],\n" +
+		"  \"messages\":[\n" +
+		"    {\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"look it up" + strings.Repeat("x", padding) + "\"}]},\n" +
+		"    {\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"plan\",\"signature\":\"c2lnbmF0dXJl\"},{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"lookup\",\"input\":{\"q\":\"native\"}}]},\n" +
+		"    {\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"ok\",\"cache_control\":{\"type\":\"ephemeral\",\"ttl\":\"5m\"}}]}\n" +
+		"  ],\n" +
+		"  \"metadata\":{\"user_id\":\"u-1\"},\"zz_unknown\":{\"b\":1,\"a\":[]}  }")
+}
+
+// xaiByteExactWant is the body xAI must receive: the caller's bytes with only the
+// provider prefix taken off the model value.
+func xaiByteExactWant(t *testing.T, body []byte) []byte {
+	t.Helper()
+	from := []byte(`"model":"` + xaiByteExactCallerModel + `"`)
+	if bytes.Count(body, from) != 1 {
+		t.Fatalf("fixture must carry the model value exactly once")
+	}
+	return bytes.Replace(body, from, []byte(`"model":"`+xaiByteExactUpstreamModel+`"`), 1)
+}
+
+const xaiByteExactResponse = `{"id":"msg_xai","type":"message","role":"assistant","model":"grok-4.5","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":128,"cache_read_input_tokens":4736,"cache_creation_input_tokens":64,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":64},"output_tokens":12}}`
+
+const xaiByteExactSSE = "event: message_start\n" +
+	"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_xai\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"grok-4.5\",\"content\":[],\"usage\":{\"input_tokens\":128,\"cache_read_input_tokens\":4736,\"cache_creation_input_tokens\":64,\"output_tokens\":1}}}\n\n" +
+	"event: ping\n" +
+	"data: {\"type\":\"ping\"}\n\n" +
+	"event: content_block_start\n" +
+	"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+	"event: content_block_delta\n" +
+	"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Caf\\u00e9\"}}\n\n" +
+	"event: content_block_stop\n" +
+	"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+	"event: message_delta\n" +
+	"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":12}}\n\n" +
+	"event: message_stop\n" +
+	"data: {\"type\":\"message_stop\"}\n\n"
+
+// passthroughUsagePlugin records the passthrough usage that reaches PostLLMHook.
+type passthroughUsagePlugin struct {
+	mu    sync.Mutex
+	usage []*schemas.BifrostPassthroughUsage
+}
+
+func (p *passthroughUsagePlugin) GetName() string { return "txe-5193-usage" }
+func (p *passthroughUsagePlugin) Cleanup() error  { return nil }
+func (p *passthroughUsagePlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *passthroughUsagePlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *passthroughUsagePlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if resp != nil && resp.PassthroughResponse != nil && resp.PassthroughResponse.PassthroughUsage != nil {
+		p.mu.Lock()
+		p.usage = append(p.usage, resp.PassthroughResponse.PassthroughUsage)
+		p.mu.Unlock()
+	}
+	return resp, bifrostErr, nil
+}
+
+func (p *passthroughUsagePlugin) assertCacheUsage(t *testing.T) {
+	t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.usage) == 0 || p.usage[len(p.usage)-1].LLMUsage == nil {
+		t.Fatal("no passthrough usage reached PostLLMHook")
+	}
+	usage := p.usage[len(p.usage)-1].LLMUsage
+	if usage.PromptTokensDetails == nil {
+		t.Fatalf("cache usage lost: %+v", usage)
+	}
+	if read, write := usage.PromptTokensDetails.CachedReadTokens, usage.PromptTokensDetails.CachedWriteTokens; read != 4736 || write != 64 || usage.CompletionTokens != 12 {
+		t.Fatalf("usage = cache_read %d, cache_creation %d, completion %d; want 4736, 64, 12", read, write, usage.CompletionTokens)
+	}
+}
+
+func TestAnthropicMessagesRouteXAIForwardsBodyByteExact(t *testing.T) {
+	cases := []struct {
+		name         string
+		stream       bool
+		largePayload bool
+	}{
+		{name: "unary"},
+		{name: "stream", stream: true},
+		{name: "large_payload_unary", largePayload: true},
+		{name: "large_payload_stream", stream: true, largePayload: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			padding := 0
+			if tc.largePayload {
+				// Past the 256KB prefix the large-payload model rewrite scans.
+				padding = 300 * 1024
+			}
+			requestBody := xaiByteExactBody(tc.stream, padding)
+			want := xaiByteExactWant(t, requestBody)
+			contentType, responseBody := "application/json", []byte(xaiByteExactResponse)
+			if tc.stream {
+				contentType, responseBody = "text/event-stream", []byte(xaiByteExactSSE)
+			}
+
+			var mu sync.Mutex
+			var upstreamBody []byte
+			upstreamCalls := 0
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read upstream body: %v", err)
+				}
+				mu.Lock()
+				upstreamBody, upstreamCalls = body, upstreamCalls+1
+				mu.Unlock()
+				if r.URL.Path != "/v1/messages" {
+					t.Errorf("upstream path = %q", r.URL.Path)
+				}
+				if got := r.Header.Get("x-api-key"); got != "xai-secret" {
+					t.Errorf("x-api-key = %q", got)
+				}
+				w.Header().Set("Content-Type", contentType)
+				_, _ = w.Write(responseBody)
+			}))
+			defer upstream.Close()
+
+			plugin := &passthroughUsagePlugin{}
+			account := &nativeMessagesTestAccount{
+				configs: map[schemas.ModelProvider]*schemas.ProviderConfig{
+					schemas.XAI: {NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true}},
+				},
+				keys: map[schemas.ModelProvider][]schemas.Key{
+					schemas.XAI: {{ID: "xai-shared", Value: schemas.SecretVar{Val: "xai-secret"}, Models: schemas.WhiteList{"*"}, Weight: 1}},
+				},
+			}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account: account, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1,
+				LLMPlugins: []schemas.LLMPlugin{plugin},
+			})
+			if err != nil {
+				t.Fatalf("init Bifrost: %v", err)
+			}
+			defer client.Shutdown()
+
+			router := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+			if tc.largePayload {
+				router.SetLargePayloadHook(func(_ *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, _ RouteConfigType) (bool, error) {
+					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadReader, io.Reader(bytes.NewReader(requestBody)))
+					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(requestBody))
+					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, "application/json")
+					bifrostCtx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{
+						Model: xaiByteExactCallerModel, StreamRequested: schemas.Ptr(tc.stream),
+					})
+					return true, nil
+				})
+			}
+			handler := router.createHandler(createAnthropicMessagesRouteConfig("/anthropic", bifrost.NewNoOpLogger())[0])
+			httpCtx := &fasthttp.RequestCtx{}
+			httpCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+			httpCtx.Request.SetRequestURI("/anthropic/v1/messages")
+			httpCtx.Request.Header.SetContentType("application/json")
+			httpCtx.Request.Header.Set("anthropic-version", "2023-06-01")
+			httpCtx.Request.SetBody(requestBody)
+			handler(httpCtx)
+
+			if httpCtx.Response.StatusCode() != fasthttp.StatusOK {
+				t.Fatalf("status = %d, body = %s", httpCtx.Response.StatusCode(), httpCtx.Response.Body())
+			}
+			clientBody := httpCtx.Response.Body()
+			if tc.stream && httpCtx.Response.IsBodyStream() {
+				clientBody, err = io.ReadAll(httpCtx.Response.BodyStream())
+				if err != nil {
+					t.Fatalf("read client stream: %v", err)
+				}
+			}
+			if !bytes.Equal(clientBody, responseBody) {
+				t.Fatalf("client bytes changed:\n got: %q\nwant: %q", clientBody, responseBody)
+			}
+
+			mu.Lock()
+			got, calls := upstreamBody, upstreamCalls
+			mu.Unlock()
+			if calls != 1 {
+				t.Fatalf("upstream calls = %d, want 1", calls)
+			}
+			if model := gjson.GetBytes(got, "model").Str; model != xaiByteExactUpstreamModel {
+				t.Fatalf("upstream model = %q, want %q", model, xaiByteExactUpstreamModel)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("upstream body is not byte-exact (got %d bytes, want %d):\n got: %s\nwant: %s", len(got), len(want), truncateForLog(got), truncateForLog(want))
+			}
+			plugin.assertCacheUsage(t)
+		})
+	}
+}
+
+func truncateForLog(body []byte) []byte {
+	if len(body) <= 4096 {
+		return body
+	}
+	return append(append([]byte(nil), body[:4096]...), "…"...)
+}
