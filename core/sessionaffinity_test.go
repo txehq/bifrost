@@ -1443,9 +1443,11 @@ func TestResolveSessionRouteMovesKeyPinsWithTheirRoutes(t *testing.T) {
 		})
 	}
 
-	// A pin on a key the head provider does not hold says nothing about the head, and the session
-	// may well be moving the request to the provider that holds it. A direct key names no provider
-	// at all, so it leaves the session to decide too.
+	// txehq fork (TXE-5086): a credential the caller chose stays on the provider routing chose for
+	// it, whether or not that provider holds the key. Upstream lets the session move a request whose
+	// pin is not on the head provider; here the pin was already promoted to its provider by
+	// resolveCallerKeyPin when one holds it, and a direct key or an unknown key must never be sent
+	// to a provider the session picked.
 	for _, tc := range []struct {
 		name string
 		pin  func(ctx *schemas.BifrostContext)
@@ -1463,22 +1465,22 @@ func TestResolveSessionRouteMovesKeyPinsWithTheirRoutes(t *testing.T) {
 			ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "header-provided", Value: *schemas.NewSecretVar("sk-caller")})
 		}},
 	} {
-		t.Run(tc.name+" leaves the session to decide", func(t *testing.T) {
+		t.Run(tc.name+" keeps the chain where routing put it", func(t *testing.T) {
 			client := setup(t, reverse)
 			withCallerKeys(t, client)
 			ctx := sessionCtx("s")
 			tc.pin(ctx)
 			req := newRequest("")
 			client.resolveSessionRoute(ctx, routeOf("", "claude-opus-5"), req)
-			if provider, _, _ := req.GetRequestFields(); provider != schemas.Anthropic {
-				t.Fatalf("primary = %s, want anthropic: the session must still move a request whose pin is not on the head provider", provider)
+			if provider, _, _ := req.GetRequestFields(); provider != schemas.Vertex {
+				t.Fatalf("primary = %s, want vertex: the session must not move a request carrying the caller's credential off the provider routing chose", provider)
 			}
-			want := []schemas.Fallback{{Provider: schemas.Vertex, Model: "claude-opus-5"}}
+			want := []schemas.Fallback{{Provider: schemas.Anthropic, Model: "claude-opus-5"}}
 			if got := fallbacksOf(req); !slices.Equal(got, want) {
-				t.Fatalf("fallbacks = %+v, want %+v", got, want)
+				t.Fatalf("fallbacks = %+v, want %+v untouched", got, want)
 			}
-			if trailMentions(ctx, "caller") {
-				t.Fatalf("the trail claims the caller pinned the head provider: %v", ctx.GetRoutingEngineLogs())
+			if !trailMentions(ctx, "caller") {
+				t.Fatalf("the trail does not say why the session left the chain alone: %v", ctx.GetRoutingEngineLogs())
 			}
 		})
 	}

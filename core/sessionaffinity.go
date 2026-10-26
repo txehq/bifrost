@@ -294,13 +294,19 @@ func RouteStateValue(route schemas.Route) string {
 // the routing-rule pin core committed into the same context value.
 func callerKeySelection(ctx *schemas.BifrostContext) string {
 	if _, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key); ok {
-		return "a direct key"
+		return "the caller's direct key"
+	}
+	// A routing rule's pin takes the primary attempt over: RunPreRequestHooks commits it into
+	// the api-key-id key selection reads before any name, so with a rule pin present the
+	// caller's selectors say nothing about the primary and the pin moves with its route.
+	if routingKeyPinFromContext(ctx) != "" {
+		return ""
 	}
 	if name, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string); strings.TrimSpace(name) != "" {
-		return "an explicit key name"
+		return "the caller's explicit key name"
 	}
-	if id, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); strings.TrimSpace(id) != "" && strings.TrimSpace(id) != routingKeyPinFromContext(ctx) {
-		return "an explicit key id"
+	if id, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); strings.TrimSpace(id) != "" {
+		return "the caller's explicit key id"
 	}
 	return ""
 }
