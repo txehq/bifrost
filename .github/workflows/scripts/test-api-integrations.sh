@@ -61,6 +61,8 @@ fi
 # Pin collection assertion behavior and provider/secret-field coverage before
 # spending time building the gateway or starting backing services.
 node "$REPO_ROOT/tests/e2e/api/collections/collection-scripts.test.mjs"
+# The request-guard runner's newman exit hook (TXE-5180): never an early or false success.
+node "$REPO_ROOT/tests/e2e/api/runners/newman-exit-when-done.test.mjs"
 
 source "$SCRIPT_DIR/setup-go-workspace.sh"
 
