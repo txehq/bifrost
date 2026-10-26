@@ -58,6 +58,11 @@ echo "=================================================================="
 # GOWORK=off so the tool's deps (golang.org/x/tools) resolve against its
 # own go.mod, not the repo's go.work. At runtime the tool itself sets
 # GOWORK=<repo-root>/go.work when loading bifrost packages.
+#
+# Its unit tests run first: the module is outside go.work, so nothing else
+# compiles or tests it, and they pin the checker's deliberate exemptions
+# (main_test.go) that this gate would otherwise silently depend on.
+(cd "$TOOL_DIR" && GOWORK=off go test ./...)
 (cd "$TOOL_DIR" && GOWORK=off go build -o /tmp/schemasync .)
 /tmp/schemasync \
   --schema "$REPO_ROOT/transports/config.schema.json" \

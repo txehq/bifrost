@@ -127,6 +127,10 @@ var ignoreGoFields = map[string]string{
 	// provider_key_id is the internal DB column resolved from provider_key_name at config load time;
 	// schema documents only the human-readable provider_key_name alias.
 	"/properties/governance/properties/pricing_overrides/items|provider_key_id": "internal DB column; config uses provider_key_name alias instead",
+	// governance.providers decodes into TableProvider for budget and rate-limit wiring only;
+	// injected_tools is read from providers.<name>, so the schema must not advertise it here
+	// (TestValidateConfigSchema_InjectedTools pins that).
+	"/properties/governance/properties/providers/items|injected_tools": "gorm:\"-\" field never read from governance.providers; configured under providers.<name>.injected_tools",
 	// oauth_client_id / oauth_client_secret are response-only fields on MCPClientConfig:
 	// populated on GET from the oauth_configs table, never accepted as config.json input.
 	"/properties/mcp/properties/client_configs/items|oauth_client_id":     "response-only; populated on GET from oauth_configs, not user-configurable via config.json",
@@ -216,20 +220,6 @@ var narrowedEnumPaths = map[string]struct {
 	"/properties/agents/items/properties/runtime_auth/properties/type": {
 		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange"},
 		reason:   "UpstreamAuth reuses MCPAuthType; Agent Gateway accepts only none, headers, and oauth (agent.validateUpstreamAuth)",
-	},
-}
-
-// narrowedEnumPaths are schema paths whose enum intentionally omits some of the Go
-// type's consts, because the Go type is shared with a feature that accepts more values
-// than this config path does. Only the listed consts are excused; any new Go const
-// still surfaces as enum drift.
-var narrowedEnumPaths = map[string]struct {
-	excluded []string
-	reason   string
-}{
-	"/properties/proxy_config/properties/type": {
-		excluded: []string{"socks5", "tcp"},
-		reason:   "global proxy rejects socks5/tcp at load (lib/configproxy.go) and on the API; only http is supported today",
 	},
 }
 
