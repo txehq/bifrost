@@ -14,9 +14,11 @@ import { useMemo } from "react";
 export type AgentSelectorProps = EntitySelectorCommonProps & EntitySelectorModeProps;
 
 export function AgentSelector(props: AgentSelectorProps) {
-	const { open, setOpen, setSearch, debouncedSearch } = useEntitySelectorSearch();
+	const { open, setOpen, setSearch, debouncedSearch, skip } = useEntitySelectorSearch();
 
-	const { data, isFetching, isError } = useGetAgentsQuery();
+	// Nothing is fetched until the picker opens: a virtual-key editor that never
+	// opens the agent picker must not load the registration list.
+	const { data, isFetching, isError } = useGetAgentsQuery(undefined, { skip });
 
 	const options = useMemo(() => {
 		const needle = debouncedSearch.trim().toLowerCase();
