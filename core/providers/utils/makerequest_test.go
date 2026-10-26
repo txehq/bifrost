@@ -657,7 +657,8 @@ func TestContextTransport_TruncatedChunkedStreamReadsAsEOFAndDiscardsConn(t *tes
 // an upstream that closes early must surface as io.ErrUnexpectedEOF rather than
 // a clean EOF. Otherwise a large JSON response advertised at 256 KiB that stops
 // after 96 KiB reaches the client as a shortened body with no error. Both framings
-// are covered, and the Content-Length framing keeps the EOF contract for SSE.
+// are covered. Only a chunked event stream keeps the EOF contract: an event stream
+// with a Content-Length that stops short is truncated however its last event reads.
 func TestContextTransport_TruncatedNonEventStreamBodiesReportUnexpectedEOF(t *testing.T) {
 	cases := []struct {
 		name, head, body string
@@ -665,7 +666,7 @@ func TestContextTransport_TruncatedNonEventStreamBodiesReportUnexpectedEOF(t *te
 	}{
 		{"content-length json", "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n", `{"partial":`, io.ErrUnexpectedEOF},
 		{"chunked json", "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n", "b\r\n{\"partial\":\r\n", io.ErrUnexpectedEOF},
-		{"content-length event stream", "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 100\r\n\r\n", "data: a\n\n", nil},
+		{"content-length event stream", "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 100\r\n\r\n", "data: a\n\n", io.ErrUnexpectedEOF},
 		{"chunked json missing the trailer CRLF", "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n", "2\r\n{}\r\n0\r\n", io.ErrUnexpectedEOF},
 		{"chunked event stream missing the trailer CRLF", "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n", "9\r\ndata: a\n\n\r\n0\r\n", nil},
 	}
