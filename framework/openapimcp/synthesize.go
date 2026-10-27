@@ -19,6 +19,7 @@ func Synthesize(doc *Document, opts SynthesizeOptions) (*Synthesis, error) {
 		return nil, fmt.Errorf("client name %q is too long for OpenAPI tool names: \"<client>-<tool>\" must fit %d characters, which leaves fewer than %d for the tool; use a name of at most %d characters", opts.ClientName, MaxToolNameLen, minToolNameBudget, MaxToolNameLen-1-minToolNameBudget)
 	}
 	syn := &Synthesis{Document: doc, Warnings: append([]string(nil), doc.Warnings...)}
+	retained := 0
 
 	for _, op := range doc.Operations {
 		unsupported := func(reason string) {
@@ -50,6 +51,18 @@ func Synthesize(doc *Document, opts SynthesizeOptions) (*Synthesis, error) {
 		if w := securityWarning(op, doc); w != "" {
 			tool.Warnings = append(tool.Warnings, w)
 		}
+		// Each tool retains its own text; cap every warning and bound the
+		// document's total so per-tool copies cannot grow with the tool count.
+		for i := range tool.Warnings {
+			tool.Warnings[i] = capDescription(tool.Warnings[i])
+		}
+		retained += len(tool.Name) + len(tool.Description)
+		for _, w := range tool.Warnings {
+			retained += len(w)
+		}
+		if retained > maxSynthesizedTextBytes {
+			return nil, fmt.Errorf("synthesized tool text exceeds %d bytes across the document", maxSynthesizedTextBytes)
+		}
 		syn.Tools = append(syn.Tools, tool)
 	}
 
@@ -77,7 +90,10 @@ func securityWarning(op Operation, doc *Document) string {
 	if len(reqs) == 0 {
 		return ""
 	}
+	// The warning names each unsupported scheme, and every tool keeps its own
+	// copy, so names are shortened and the list stops at maxDescriptionLen.
 	var unsupported []string
+	size := 0
 	for _, req := range reqs {
 		if len(req) == 0 {
 			return "" // an empty requirement means the operation may be called without credentials
@@ -87,16 +103,29 @@ func securityWarning(op Operation, doc *Document) string {
 			scheme, ok := doc.SecuritySchemes[name]
 			if !ok || !scheme.Supported {
 				satisfiable = false
-				if ok {
-					unsupported = append(unsupported, fmt.Sprintf("%s (%s)", name, scheme.Type))
-				} else {
-					unsupported = append(unsupported, name+" (undeclared)")
+				if size > maxDescriptionLen {
+					continue
 				}
+				entry := capSchemeName(name) + " (undeclared)"
+				if ok {
+					entry = fmt.Sprintf("%s (%s)", capSchemeName(name), capSchemeName(scheme.Type))
+				}
+				unsupported = append(unsupported, entry)
+				size += len(entry) + 2
 			}
 		}
 		if satisfiable {
 			return ""
 		}
 	}
-	return fmt.Sprintf("requires security scheme %s which is not supported; calls are sent with static headers only", strings.Join(unsupported, ", "))
+	return capDescription(fmt.Sprintf("requires security scheme %s which is not supported; calls are sent with static headers only", strings.Join(unsupported, ", ")))
+}
+
+// capSchemeName shortens a security scheme name (or type) quoted in a warning.
+func capSchemeName(name string) string {
+	const maxSchemeNameLen = 128
+	if len(name) <= maxSchemeNameLen {
+		return name
+	}
+	return name[:maxSchemeNameLen] + "…"
 }

@@ -187,4 +187,3 @@ func TestSynthesize_SecurityWarningIsBoundedPerTool(t *testing.T) {
 	}
 	assert.Less(t, total, 100*(maxDescriptionLen+8)*2)
 }
-

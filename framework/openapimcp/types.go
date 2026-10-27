@@ -47,6 +47,9 @@ const (
 	// repeats a variable with a large default multiplies on expansion.
 	maxServerURLBytes         = 8 << 10
 	maxDocumentServerURLBytes = 1 << 20
+	// maxSynthesizedTextBytes bounds the names, descriptions and warnings all
+	// tools of one document retain together.
+	maxSynthesizedTextBytes = 16 << 20
 )
 
 // Parameter locations. The OpenAPI values plus 3.2's querystring.
