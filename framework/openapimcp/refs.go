@@ -21,14 +21,25 @@ type resolver struct {
 	warnings      []string
 	siblingsApply bool // 3.1+: keywords beside a $ref apply alongside the target
 	nodes         int  // nodes produced by the current resolve call
-	total         int  // nodes produced by every resolve call on this document
+	total         int  // entries copied by every resolve call on this document
 }
 
 // exhausted reports whether the document-wide expansion budget has been spent.
 // Parse refuses such a document whole: the operations resolved after that point
 // were cut off by the budget, not by anything wrong with them.
 func (r *resolver) exhausted() bool {
-	return r.total > maxDocumentResolvedNodes
+	return r.total > maxDocumentResolvedEntries
+}
+
+// charge accounts for entries about to be copied, before the copy is made. The
+// document budget counts entries rather than containers: one map holding many
+// scalar keys is one node but as many copied entries at every use.
+func (r *resolver) charge(entries int) error {
+	r.total += entries
+	if r.exhausted() {
+		return fmt.Errorf("schemas expand to more than %d entries across the document through shared $refs", maxDocumentResolvedEntries)
+	}
+	return nil
 }
 
 func (r *resolver) warn(format string, args ...any) {
@@ -46,12 +57,17 @@ func (r *resolver) resolve(node any) (any, error) {
 }
 
 func (r *resolver) resolveAt(node any, stack []string, depth int) (any, error) {
-	switch node.(type) {
-	case map[string]any, []any:
+	entries := -1
+	switch c := node.(type) {
+	case map[string]any:
+		entries = len(c)
+	case []any:
+		entries = len(c)
+	}
+	if entries >= 0 {
 		r.nodes++
-		r.total++
-		if r.exhausted() {
-			return nil, fmt.Errorf("schemas expand to more than %d nodes across the document through shared $refs", maxDocumentResolvedNodes)
+		if err := r.charge(1 + entries); err != nil {
+			return nil, err
 		}
 		if r.nodes > maxResolvedNodes {
 			return nil, fmt.Errorf("schema expands to more than %d nodes through shared $refs", maxResolvedNodes)
@@ -98,6 +114,9 @@ func (r *resolver) resolveAt(node any, stack []string, depth int) (any, error) {
 				// Keys here are property names (one may be "$ref"); each value is
 				// a schema, so resolve the values, never the map itself.
 				if props, ok := val.(map[string]any); ok {
+					if err := r.charge(len(props)); err != nil {
+						return nil, err
+					}
 					resolvedProps := make(map[string]any, len(props))
 					for name, prop := range props {
 						rp, err := r.resolveAt(prop, stack, depth)
@@ -137,6 +156,9 @@ func (r *resolver) resolveAt(node any, stack []string, depth int) (any, error) {
 // the target's and any other keyword overrides it. Before 3.1 siblings are
 // ignored except summary and description, which override the target's.
 func (r *resolver) mergeRefSiblings(target, ref map[string]any, stack []string, depth int) (any, error) {
+	if err := r.charge(len(target) + len(ref)); err != nil {
+		return nil, err
+	}
 	out := make(map[string]any, len(target)+len(ref))
 	for k, val := range target {
 		out[k] = val
@@ -151,6 +173,9 @@ func (r *resolver) mergeRefSiblings(target, ref map[string]any, stack []string, 
 		}
 		switch k {
 		case "properties":
+			if err := r.charge(len(asMap(out["properties"])) + len(asMap(val))); err != nil {
+				return nil, err
+			}
 			merged := map[string]any{}
 			for name, prop := range asMap(out["properties"]) {
 				merged[name] = prop

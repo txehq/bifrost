@@ -327,7 +327,8 @@ func TestParse_RefExpansionIsBoundedAcrossOperations(t *testing.T) {
 		fmt.Fprintf(&props, `"p%d":{"type":"string"}`, i)
 	}
 	var paths strings.Builder
-	const operations = maxDocumentResolvedNodes/1000 + 100
+	// Each use copies about 2,000 entries (1,000 property maps of one key each).
+	const operations = maxDocumentResolvedEntries/2000 + 100
 	for i := 0; i < operations; i++ {
 		if i > 0 {
 			paths.WriteByte(',')
@@ -353,6 +354,28 @@ func TestParse_RefExpansionIsBoundedAcrossOperations(t *testing.T) {
 	doc, err := Parse([]byte(small), ParseOptions{})
 	require.NoError(t, err)
 	assert.Len(t, doc.Operations, 2)
+
+	// The budget counts copied entries, not containers: a schema holding 20,000
+	// scalar keywords is a single node, yet every use copies all of them.
+	var wide strings.Builder
+	for i := 0; i < 20000; i++ {
+		fmt.Fprintf(&wide, `"k%d":"v",`, i)
+	}
+	var widePaths strings.Builder
+	const wideOperations = maxDocumentResolvedEntries/20000 + 10
+	for i := 0; i < wideOperations; i++ {
+		if i > 0 {
+			widePaths.WriteByte(',')
+		}
+		fmt.Fprintf(&widePaths, `"/w%d":{"post":{"operationId":"w%d","requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Wide"}}}},"responses":{"200":{"description":"ok"}}}}`, i, i)
+	}
+	wideSpec := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{` + widePaths.String() + `},
+"components":{"schemas":{"Wide":{` + wide.String() + `"type":"object"}}}}`
+	require.Less(t, len(wideSpec), MaxSpecBytes)
+	_, err = Parse([]byte(wideSpec), ParseOptions{})
+	require.Error(t, err, "a schema of many scalar keywords reused past the entry budget must be refused")
+	assert.Contains(t, err.Error(), "across the document")
 }
 
 // TestParse_RefSiblingsApplyIn31: from 3.1 on, keywords beside a $ref apply

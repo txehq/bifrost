@@ -31,11 +31,12 @@ const (
 	// maxResolvedNodes caps the nodes one resolve call may produce, so shared
 	// $refs cannot expand a small spec exponentially.
 	maxResolvedNodes = 50000
-	// maxDocumentResolvedNodes caps the nodes all resolve calls on one document
-	// may produce together. Every use of a shared schema is a fresh copy, so a
-	// large component referenced by many operations stays under the per-call cap
-	// each time while the copies the parser holds grow without bound.
-	maxDocumentResolvedNodes = 500000
+	// maxDocumentResolvedEntries caps the map and slice entries all resolve
+	// calls on one document may copy together. Every use of a shared schema is a
+	// fresh copy, so a large component referenced by many operations stays under
+	// the per-call cap each time while the copies the parser holds grow without
+	// bound. Entries, not containers: a map with many scalar keys is one node.
+	maxDocumentResolvedEntries = 1000000
 )
 
 // Parameter locations. The OpenAPI values plus 3.2's querystring.
