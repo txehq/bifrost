@@ -6,10 +6,12 @@ set -uo pipefail
 # The same faker file is applied to config.db and to logs.db, so "no such table" is
 # expected for the counterpart store's tables. It must be accepted for those only: a
 # statement reading a table that is in neither store dropped its rows just as silently
-# as a bad column does. A non-zero sqlite3 exit that prints no error line must fail too.
+# as a bad column does. An exit status other than 0, or 1 with an error line, and any
+# output that is neither an error line nor its SQL excerpt, must fail too, even beside an
+# expected counterpart error.
 #
 # This runs the script's own apply_sqlite_faker_sql against throwaway databases in a
-# temp directory; the silent-exit case uses a fake sqlite3 on PATH.
+# temp directory; the exit-status and diagnostic cases use a fake sqlite3 on PATH.
 #
 # Usage: ./migration-sqlite-faker.test.sh
 #        RUN_MIGRATION_TESTS=/path/to/other/run-migration-tests.sh ./migration-sqlite-faker.test.sh
@@ -71,21 +73,35 @@ expect fail "an unknown column fails" "$CONFIG_DB" "$LOGS_DB" \
 expect fail "a constraint violation fails" "$CONFIG_DB" "$LOGS_DB" \
   "INSERT INTO governance_teams (id, name) VALUES ('team-1', 'Duplicate');"
 
-# A fake sqlite3 that fails without printing anything. sqlite_has_table also calls
-# sqlite3, so the fake answers its query the way a real store without the table would.
+# A fake sqlite3 in front of the real one. Queries given as arguments (the fixtures,
+# sqlite_has_table) go to the real CLI. A script on stdin runs through the real CLI too,
+# then FAKE_EXTRA is appended to its stderr and FAKE_STATUS, when set, replaces its exit
+# status: the output of a CLI that crashed, or printed something it should not.
+REAL_SQLITE3="$(command -v sqlite3)"
 mkdir -p "$WORK/bin"
-cat > "$WORK/bin/sqlite3" <<'EOF'
+cat > "$WORK/bin/sqlite3" <<FAKE
 #!/usr/bin/env bash
-[ $# -ge 2 ] && { echo 0; exit 0; }
-cat > /dev/null
-exit 1
-EOF
+[ \$# -ge 2 ] && exec "$REAL_SQLITE3" "\$@"
+"$REAL_SQLITE3" "\$@"; status=\$?
+[ -n "\${FAKE_EXTRA:-}" ] && printf '%s\n' "\$FAKE_EXTRA" >&2
+exit "\${FAKE_STATUS:-\$status}"
+FAKE
 chmod +x "$WORK/bin/sqlite3"
-PATH="$WORK/bin:$PATH" expect fail "a non-zero sqlite3 exit with no error line fails" "$CONFIG_DB" "$LOGS_DB" \
+
+COUNTERPART_SQL="INSERT INTO logs (id) VALUES ('log-3');"
+PATH="$WORK/bin:$PATH" expect pass "the fake CLI passes an expected counterpart error through unchanged" "$CONFIG_DB" "$LOGS_DB" \
+  "$COUNTERPART_SQL"
+PATH="$WORK/bin:$PATH" FAKE_STATUS=1 expect fail "a non-zero sqlite3 exit with no error line fails" "$CONFIG_DB" "$LOGS_DB" \
   "INSERT INTO governance_teams (id, name) VALUES ('team-4', 'Team');"
+PATH="$WORK/bin:$PATH" FAKE_STATUS=139 expect fail "an expected counterpart error does not excuse an abnormal exit" "$CONFIG_DB" "$LOGS_DB" \
+  "$COUNTERPART_SQL"
+PATH="$WORK/bin:$PATH" FAKE_EXTRA="Segmentation fault" expect fail "an expected counterpart error does not excuse an unclassified diagnostic" "$CONFIG_DB" "$LOGS_DB" \
+  "$COUNTERPART_SQL"
+PATH="$WORK/bin:$PATH" FAKE_STATUS=2 expect fail "exit status 2 fails even with no error line" "$CONFIG_DB" "$LOGS_DB" \
+  "INSERT INTO governance_teams (id, name) VALUES ('team-5', 'Team');"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures check(s) failed" >&2
   exit 1
 fi
-echo "OK: SQLite faker SQL fails closed on unknown missing tables, bad columns, constraints and silent exits"
+echo "OK: SQLite faker SQL fails closed on unknown missing tables, bad columns, constraints, abnormal exits and stray diagnostics"

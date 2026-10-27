@@ -311,33 +311,43 @@ start_previous_bifrost() {
 }
 
 # Wait for bifrost to start
-# bifrost_owns_port succeeds when the process listening on BIFROST_PORT is BIFROST_PID or
-# one of its descendants (npx runs the server as a child). Without it a server another run
-# left on the port would answer every request, and the run would seed and read through it.
+# bifrost_owns_port succeeds when every process listening on BIFROST_PORT is BIFROST_PID
+# or one of its descendants (npx runs the server as a child) and is still running. One
+# lsof snapshot is judged, and at least one listener must be checked: without this a
+# server another run left on the port would answer every request, and the run would
+# seed and read through it.
 bifrost_owns_port() {
-  local listener="" p attempt
+  local listeners="" listener p owned attempt checked=0
   if ! command -v lsof >/dev/null 2>&1; then
     log_error "lsof is required to check that port $BIFROST_PORT is served by this run's bifrost"
     return 1
   fi
   for attempt in 1 2 3 4 5; do
-    listener=$(lsof -nP -t -iTCP:"$BIFROST_PORT" -sTCP:LISTEN 2>/dev/null | head -1)
-    [ -n "$listener" ] && break
+    listeners=$(lsof -nP -t -iTCP:"$BIFROST_PORT" -sTCP:LISTEN 2>/dev/null) && [ -n "$listeners" ] && break
+    listeners=""
     sleep 1
   done
-  if [ -z "$listener" ]; then
+  for listener in $listeners; do
+    owned=""
+    p=$listener
+    while [ -n "$p" ] && [ "$p" -gt 1 ] 2>/dev/null; do
+      if [ "$p" = "${BIFROST_PID:-}" ]; then owned=1; break; fi
+      p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+    done
+    if [ -z "$owned" ]; then
+      log_error "Port $BIFROST_PORT is served by process $listener ($(ps -o comm= -p "$listener" 2>/dev/null)), not by the bifrost this run started"
+      return 1
+    fi
+    if ! kill -0 "$listener" 2>/dev/null; then
+      log_error "The process listening on port $BIFROST_PORT ($listener) exited while it was checked"
+      return 1
+    fi
+    checked=$((checked + 1))
+  done
+  if [ "$checked" -eq 0 ]; then
     log_error "No process listens on port $BIFROST_PORT although bifrost reported it started"
     return 1
   fi
-  for listener in $(lsof -nP -t -iTCP:"$BIFROST_PORT" -sTCP:LISTEN 2>/dev/null); do
-    p=$listener
-    while [ -n "$p" ] && [ "$p" -gt 1 ]; do
-      [ "$p" = "${BIFROST_PID:-}" ] && continue 2
-      p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
-    done
-    log_error "Port $BIFROST_PORT is served by process $listener ($(ps -o comm= -p "$listener" 2>/dev/null)), not by the bifrost this run started"
-    return 1
-  done
   log_info "Port $BIFROST_PORT is served by the bifrost this run started (PID $BIFROST_PID)"
 }
 
@@ -630,35 +640,43 @@ run_sqlite_sql_file() {
 
 # Apply the shared faker SQL to one SQLite store. The same file is run against both
 # config.db and logs.db, so "no such table" is expected for a table of the counterpart
-# store, and only for one: the table must exist in counterpart_db and not in db_path. Any
-# other error (a missing table that is in neither store, unknown column, constraint,
-# syntax), or a non-zero exit the CLI explains with no error line, means the faker SQL
-# no longer matches the schema and its rows were silently dropped.
+# store, and only for one: the table must exist in counterpart_db and not in db_path.
+# The CLI exits 1 when a statement failed and 0 when none did; any other status, any
+# error other than an expected counterpart table (a missing table that is in neither
+# store, unknown column, constraint, syntax), any output that is neither an error line
+# nor its indented SQL excerpt, or a non-zero exit with no error line, means the faker
+# SQL no longer matches the schema and its rows were silently dropped.
 apply_sqlite_faker_sql() {
   local db_path="$1"
   local sql_file="$2"
   local counterpart_db="${3:-}"
 
-  local output status=0 errors line table unexpected=""
+  local output status=0 line table errors=0 unexpected=""
   output=$(sqlite3 "$db_path" < "$sql_file" 2>&1 >/dev/null) || status=$?
-  # The CLI may follow an error line with an SQL excerpt and an "error here" marker,
-  # so decide on the header lines only and print the full output for context
-  errors=$(printf '%s\n' "$output" | grep -E '^(Parse error|Runtime error|Error)' || true)
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    table=$(printf '%s\n' "$line" | sed -n 's/.*no such table: \([A-Za-z_][A-Za-z0-9_]*\)$/\1/p')
-    if [ -n "$table" ] && [ -n "$counterpart_db" ] \
-      && sqlite_has_table "$counterpart_db" "$table" && ! sqlite_has_table "$db_path" "$table"; then
-      continue
-    fi
+    case "$line" in
+      "Parse error"*|"Runtime error"*|"Error"*)
+        errors=$((errors + 1))
+        table=$(printf '%s\n' "$line" | sed -n 's/.*no such table: \([A-Za-z_][A-Za-z0-9_]*\)$/\1/p')
+        if [ -n "$table" ] && [ -n "$counterpart_db" ] \
+          && sqlite_has_table "$counterpart_db" "$table" && ! sqlite_has_table "$db_path" "$table"; then
+          continue
+        fi
+        ;;
+      # The CLI follows an error line with an indented SQL excerpt and an "error here" marker.
+      [[:space:]]*) continue ;;
+    esac
     unexpected="${unexpected}${line}"$'\n'
-  done <<< "$errors"
-  if [ -z "$errors" ] && [ "$status" -ne 0 ]; then
-    unexpected="sqlite3 exited $status with no error line"
-  fi
+  done <<< "$output"
+  case "$status" in
+    0) ;;
+    1) [ "$errors" -gt 0 ] || unexpected="${unexpected}sqlite3 exited 1 with no error line"$'\n' ;;
+    *) unexpected="${unexpected}sqlite3 exited $status"$'\n' ;;
+  esac
   if [ -n "$unexpected" ]; then
     log_error "Faker SQL errors in $(basename "$db_path"):"
-    printf '%s\n' "$unexpected" >&2
+    printf '%s' "$unexpected" >&2
     echo "$output" >&2
     return 1
   fi
