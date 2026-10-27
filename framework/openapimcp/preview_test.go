@@ -2,6 +2,7 @@ package openapimcp
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -133,4 +134,30 @@ func TestPreview_OperationServersIgnoresOverride(t *testing.T) {
 	assert.Empty(t, result.BaseURL)
 	assert.False(t, result.OperationServers)
 	assert.Contains(t, strings.Join(result.Warnings, "\n"), "base_url", "the preview asks for a base URL")
+}
+
+// TestPreview_ReusedPathItemTextIsCappedPerTool: a path item reused by many
+// paths hands its summary and operationId to every tool. The preview response
+// carries each per tool, so both are capped like the description, and the
+// serialized preview stays bounded rather than growing with the reuse.
+func TestPreview_ReusedPathItemTextIsCappedPerTool(t *testing.T) {
+	var paths strings.Builder
+	for i := 0; i < 100; i++ {
+		if i > 0 {
+			paths.WriteByte(',')
+		}
+		paths.WriteString(`"/p` + strconv.Itoa(i) + `":{"$ref":"#/components/pathItems/Shared"}`)
+	}
+	spec := []byte(`{"openapi":"3.1.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],"paths":{` + paths.String() + `},
+"components":{"pathItems":{"Shared":{"get":{"operationId":"` + strings.Repeat("o", 256<<10) + `","summary":"` + strings.Repeat("s", 256<<10) + `","responses":{"200":{"description":"ok"}}}}}}}`)
+	result, _, err := Preview(spec, ParseOptions{}, SynthesizeOptions{ClientName: "t"}, nil)
+	require.NoError(t, err)
+	require.Len(t, result.Tools, 100)
+	for _, tool := range result.Tools {
+		assert.LessOrEqual(t, len(tool.Summary), maxDescriptionLen+8)
+		assert.LessOrEqual(t, len(tool.OperationID), maxDescriptionLen+8)
+	}
+	encoded, err := json.Marshal(result)
+	require.NoError(t, err)
+	assert.Less(t, len(encoded), 2<<20, "100 tools must not each carry the 256 KiB summary and operationId")
 }
