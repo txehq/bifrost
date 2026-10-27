@@ -173,6 +173,9 @@ func parseV3(tree map[string]any, version Version, res *resolver, doc *Document,
 
 	paths := asMap(tree["paths"])
 	for _, p := range sortedKeys(paths) {
+		if len(p) > maxPathLen {
+			return fmt.Errorf("a path key is longer than %d bytes", maxPathLen)
+		}
 		// Only the path item's own $ref is followed here; parameters and bodies
 		// are resolved per operation so one unsupported reference costs one
 		// operation, not the whole path.
@@ -199,15 +202,37 @@ func parseV3(tree map[string]any, version Version, res *resolver, doc *Document,
 			if !ok {
 				continue
 			}
-			doc.Operations = append(doc.Operations, buildOperationV3(strings.ToUpper(method), p, asMap(opRaw), pathParams, pathParamErr, pathServers, version, res, doc, opts))
+			if err := appendOperation(doc, buildOperationV3(strings.ToUpper(method), p, asMap(opRaw), pathParams, pathParamErr, pathServers, version, res, doc, opts)); err != nil {
+				return err
+			}
 		}
 		if version.HasAdditionalOperations() {
 			additional := asMap(item["additionalOperations"])
 			for _, method := range sortedKeys(additional) {
-				doc.Operations = append(doc.Operations, buildOperationV3(strings.ToUpper(method), p, asMap(additional[method]), pathParams, pathParamErr, pathServers, version, res, doc, opts))
+				if len(method) > maxMethodLen {
+					return fmt.Errorf("path %s: an additional operation's method name is longer than %d bytes", p, maxMethodLen)
+				}
+				if err := appendOperation(doc, buildOperationV3(strings.ToUpper(method), p, asMap(additional[method]), pathParams, pathParamErr, pathServers, version, res, doc, opts)); err != nil {
+					return err
+				}
 			}
 		}
 	}
+	return nil
+}
+
+// appendOperation adds op to the document, refusing the document once it
+// declares more than maxOperations operations or an operationId longer than
+// maxOperationIDLen: every operation becomes a tool or a preview entry that
+// copies its identifiers, and identifiers are never truncated.
+func appendOperation(doc *Document, op Operation) error {
+	if len(doc.Operations) >= maxOperations {
+		return fmt.Errorf("the spec declares more than %d operations", maxOperations)
+	}
+	if len(op.ID) > maxOperationIDLen {
+		return fmt.Errorf("%s %s: operationId is longer than %d bytes", op.Method, op.Path, maxOperationIDLen)
+	}
+	doc.Operations = append(doc.Operations, op)
 	return nil
 }
 

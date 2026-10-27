@@ -23,6 +23,7 @@ type resolver struct {
 	nodes         int  // nodes produced by the current resolve call
 	total         int  // entries copied by every resolve call on this document
 	bytes         int  // string bytes every resolve call on this document handed out
+	warned        map[string]bool
 }
 
 // exhausted reports whether the document-wide expansion budget has been spent.
@@ -163,8 +164,29 @@ func (r *resolver) chargeReuse(raw, resolved any) error {
 	return nil
 }
 
+// warn records a warning once: a shared schema is resolved for every operation
+// that uses it, and would otherwise repeat the same warning per use.
 func (r *resolver) warn(format string, args ...any) {
-	r.warnings = append(r.warnings, fmt.Sprintf(format, args...))
+	msg := fmt.Sprintf(format, args...)
+	if r.warned == nil {
+		r.warned = map[string]bool{}
+	}
+	if r.warned[msg] {
+		return
+	}
+	r.warned[msg] = true
+	r.warnings = append(r.warnings, msg)
+}
+
+// shortRef shortens a $ref string (or one of its segments) quoted in a message:
+// a reason or warning is kept per operation, and the reference comes from the
+// document.
+func shortRef(ref string) string {
+	const maxRefText = 256
+	if len(ref) <= maxRefText {
+		return ref
+	}
+	return ref[:maxRefText] + "…"
 }
 
 // resolve returns a deep copy of node with every local $ref expanded. A cycle
@@ -205,16 +227,16 @@ func (r *resolver) resolveAt(node any, stack []string, depth int) (any, error) {
 		if refRaw, ok := v["$ref"]; ok {
 			ref, _ := refRaw.(string)
 			if !strings.HasPrefix(ref, "#") {
-				return nil, fmt.Errorf("%w: %q", errExternalRef, ref)
+				return nil, fmt.Errorf("%w: %q", errExternalRef, shortRef(ref))
 			}
 			for _, seen := range stack {
 				if seen == ref {
-					r.warn("recursive $ref %s cut at its point of re-entry", ref)
+					r.warn("recursive $ref %s cut at its point of re-entry", shortRef(ref))
 					return map[string]any{"type": "object", "description": "recursive reference to " + ref}, nil
 				}
 			}
 			if depth >= maxRefDepth {
-				return nil, fmt.Errorf("$ref chain deeper than %d at %s", maxRefDepth, ref)
+				return nil, fmt.Errorf("$ref chain deeper than %d at %s", maxRefDepth, shortRef(ref))
 			}
 			target, err := r.lookup(ref)
 			if err != nil {
@@ -360,10 +382,10 @@ func (r *resolver) resolveShallow(node any) (any, error) {
 		}
 		ref, _ := refRaw.(string)
 		if !strings.HasPrefix(ref, "#") {
-			return nil, fmt.Errorf("%w: %q", errExternalRef, ref)
+			return nil, fmt.Errorf("%w: %q", errExternalRef, shortRef(ref))
 		}
 		if depth >= maxRefDepth {
-			return nil, fmt.Errorf("$ref chain deeper than %d at %s", maxRefDepth, ref)
+			return nil, fmt.Errorf("$ref chain deeper than %d at %s", maxRefDepth, shortRef(ref))
 		}
 		target, err := r.lookup(ref)
 		if err != nil {
@@ -380,7 +402,7 @@ func (r *resolver) lookup(ref string) (any, error) {
 		return r.root, nil
 	}
 	if !strings.HasPrefix(pointer, "/") {
-		return nil, fmt.Errorf("unsupported $ref %q (expected a JSON pointer)", ref)
+		return nil, fmt.Errorf("unsupported $ref %q (expected a JSON pointer)", shortRef(ref))
 	}
 	var cur any = r.root
 	for _, seg := range strings.Split(pointer[1:], "/") {
@@ -392,17 +414,17 @@ func (r *resolver) lookup(ref string) (any, error) {
 		case map[string]any:
 			next, ok := c[seg]
 			if !ok {
-				return nil, fmt.Errorf("$ref %q does not resolve: missing %q", ref, seg)
+				return nil, fmt.Errorf("$ref %q does not resolve: missing %q", shortRef(ref), shortRef(seg))
 			}
 			cur = next
 		case []any:
 			idx, err := strconv.Atoi(seg)
 			if err != nil || idx < 0 || idx >= len(c) {
-				return nil, fmt.Errorf("$ref %q does not resolve: bad index %q", ref, seg)
+				return nil, fmt.Errorf("$ref %q does not resolve: bad index %q", shortRef(ref), shortRef(seg))
 			}
 			cur = c[idx]
 		default:
-			return nil, fmt.Errorf("$ref %q does not resolve: %q is not a container", ref, seg)
+			return nil, fmt.Errorf("$ref %q does not resolve: %q is not a container", shortRef(ref), shortRef(seg))
 		}
 	}
 	return cur, nil

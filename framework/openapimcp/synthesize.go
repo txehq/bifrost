@@ -23,6 +23,9 @@ func Synthesize(doc *Document, opts SynthesizeOptions) (*Synthesis, error) {
 
 	for _, op := range doc.Operations {
 		unsupported := func(reason string) {
+			// The reason can quote document text; each entry keeps its own copy.
+			reason = capDescription(reason)
+			retained += len(reason)
 			syn.Unsupported = append(syn.Unsupported, UnsupportedOperation{OperationID: op.ID, Method: op.Method, Path: op.Path, Reason: reason})
 		}
 		if op.Unsupported != "" {
@@ -56,7 +59,7 @@ func Synthesize(doc *Document, opts SynthesizeOptions) (*Synthesis, error) {
 		for i := range tool.Warnings {
 			tool.Warnings[i] = capDescription(tool.Warnings[i])
 		}
-		retained += len(tool.Name) + len(tool.Description)
+		retained += len(tool.Name) + len(tool.Description) + len(tool.InputSchema)
 		for _, w := range tool.Warnings {
 			retained += len(w)
 		}
@@ -66,6 +69,9 @@ func Synthesize(doc *Document, opts SynthesizeOptions) (*Synthesis, error) {
 		syn.Tools = append(syn.Tools, tool)
 	}
 
+	if retained > maxSynthesizedTextBytes {
+		return nil, fmt.Errorf("synthesized tool text exceeds %d bytes across the document", maxSynthesizedTextBytes)
+	}
 	if len(syn.Tools) > MaxToolCount {
 		return nil, fmt.Errorf("spec yields %d tools, above the limit of %d", len(syn.Tools), MaxToolCount)
 	}

@@ -47,9 +47,11 @@ const (
 	// repeats a variable with a large default multiplies on expansion.
 	maxServerURLBytes         = 8 << 10
 	maxDocumentServerURLBytes = 1 << 20
-	// maxSynthesizedTextBytes bounds the names, descriptions and warnings all
-	// tools of one document retain together.
-	maxSynthesizedTextBytes = 16 << 20
+	// maxSynthesizedTextBytes bounds what all tools of one document retain
+	// together: names, descriptions, warnings, input schemas and the reasons of
+	// unsupported operations. The input schemas are already bounded by the
+	// resolver's budgets; this is the total kept after synthesis.
+	maxSynthesizedTextBytes = 96 << 20
 	// maxPathLen, maxMethodLen and maxOperationIDLen bound the identifiers each
 	// operation copies into its tool and preview entries, and maxOperations the
 	// operations (tools and unsupported ones) a document may declare. Over any of

@@ -38,6 +38,11 @@ func parseSwagger2(tree map[string]any, res *resolver, doc *Document, opts Parse
 	if scheme == "" {
 		scheme = "https"
 	}
+	// host and basePath are copied into the document's server and into every
+	// operation that overrides the scheme, so they count as server URLs.
+	if len(host)+len(basePath) > maxServerURLBytes {
+		return fmt.Errorf("host and basePath are longer than %d bytes together", maxServerURLBytes)
+	}
 	switch {
 	case host != "":
 		doc.Servers = []string{scheme + "://" + host + strings.TrimSuffix(basePath, "/")}
@@ -60,6 +65,9 @@ func parseSwagger2(tree map[string]any, res *resolver, doc *Document, opts Parse
 
 	paths := asMap(tree["paths"])
 	for _, p := range sortedKeys(paths) {
+		if len(p) > maxPathLen {
+			return fmt.Errorf("a path key is longer than %d bytes", maxPathLen)
+		}
 		itemRaw, err := res.resolveShallow(paths[p])
 		if err != nil {
 			doc.Warnings = append(doc.Warnings, fmt.Sprintf("path %s skipped: %v", p, err))
@@ -79,9 +87,17 @@ func parseSwagger2(tree map[string]any, res *resolver, doc *Document, opts Parse
 			// An operation's own schemes override the document's, on the same host
 			// and base path.
 			if opScheme := swagger2PickScheme(asStringSlice(asMap(opRaw)["schemes"])); opScheme != "" && opScheme != scheme && host != "" {
-				operation.Servers = []string{opScheme + "://" + host + strings.TrimSuffix(basePath, "/")}
+				server := opScheme + "://" + host + strings.TrimSuffix(basePath, "/")
+				doc.serverURLBytes += len(server)
+				if doc.serverURLBytes > maxDocumentServerURLBytes {
+					doc.serverURLOverflow = true
+				} else {
+					operation.Servers = []string{server}
+				}
 			}
-			doc.Operations = append(doc.Operations, operation)
+			if err := appendOperation(doc, operation); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

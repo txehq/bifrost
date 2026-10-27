@@ -137,27 +137,32 @@ func TestPreview_OperationServersIgnoresOverride(t *testing.T) {
 }
 
 // TestPreview_ReusedPathItemTextIsCappedPerTool: a path item reused by many
-// paths hands its summary and operationId to every tool. The preview response
-// carries each per tool, so both are capped like the description, and the
-// serialized preview stays bounded rather than growing with the reuse.
+// paths hands its summary to every tool, and the preview response carries it
+// per tool, so the summary is capped like the description. Its operationId is an
+// identifier: an oversized one refuses the document rather than being truncated.
 func TestPreview_ReusedPathItemTextIsCappedPerTool(t *testing.T) {
-	var paths strings.Builder
-	for i := 0; i < 100; i++ {
-		if i > 0 {
-			paths.WriteByte(',')
+	spec := func(operationID string) []byte {
+		var paths strings.Builder
+		for i := 0; i < 100; i++ {
+			if i > 0 {
+				paths.WriteByte(',')
+			}
+			paths.WriteString(`"/p` + strconv.Itoa(i) + `":{"$ref":"#/components/pathItems/Shared"}`)
 		}
-		paths.WriteString(`"/p` + strconv.Itoa(i) + `":{"$ref":"#/components/pathItems/Shared"}`)
+		return []byte(`{"openapi":"3.1.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],"paths":{` + paths.String() + `},
+"components":{"pathItems":{"Shared":{"get":{"operationId":"` + operationID + `","summary":"` + strings.Repeat("s", 256<<10) + `","responses":{"200":{"description":"ok"}}}}}}}`)
 	}
-	spec := []byte(`{"openapi":"3.1.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],"paths":{` + paths.String() + `},
-"components":{"pathItems":{"Shared":{"get":{"operationId":"` + strings.Repeat("o", 256<<10) + `","summary":"` + strings.Repeat("s", 256<<10) + `","responses":{"200":{"description":"ok"}}}}}}}`)
-	result, _, err := Preview(spec, ParseOptions{}, SynthesizeOptions{ClientName: "t"}, nil)
+	result, _, err := Preview(spec("listThings"), ParseOptions{}, SynthesizeOptions{ClientName: "t"}, nil)
 	require.NoError(t, err)
 	require.Len(t, result.Tools, 100)
 	for _, tool := range result.Tools {
 		assert.LessOrEqual(t, len(tool.Summary), maxDescriptionLen+8)
-		assert.LessOrEqual(t, len(tool.OperationID), maxDescriptionLen+8)
+		assert.Equal(t, "listThings", tool.OperationID, "identifiers are passed through unchanged")
 	}
 	encoded, err := json.Marshal(result)
 	require.NoError(t, err)
-	assert.Less(t, len(encoded), 2<<20, "100 tools must not each carry the 256 KiB summary and operationId")
+	assert.Less(t, len(encoded), 2<<20, "100 tools must not each carry the 256 KiB summary")
+
+	_, _, err = Preview(spec(strings.Repeat("o", 256<<10)), ParseOptions{}, SynthesizeOptions{ClientName: "t"}, nil)
+	require.ErrorContains(t, err, "operationId")
 }

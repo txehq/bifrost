@@ -83,16 +83,16 @@ func Preview(data []byte, parseOpts ParseOptions, synthOpts SynthesizeOptions, b
 		result.SecuritySchemes = append(result.SecuritySchemes, doc.SecuritySchemes[name])
 	}
 	// A path item reused by many paths hands the same text to every operation,
-	// and the response carries a copy per entry, so per-operation text is capped
-	// here as BuildDescription caps the description.
+	// and the response carries a copy per entry, so the summary is capped here as
+	// BuildDescription caps the description. Identifiers (operationId, path,
+	// method) are bounded at parse instead, never truncated.
 	for _, u := range syn.Unsupported {
-		u.OperationID = capDescription(u.OperationID)
 		result.Unsupported = append(result.Unsupported, u)
 	}
 	for _, t := range syn.Tools {
 		result.Tools = append(result.Tools, ToolSummary{
 			Name:        t.Name,
-			OperationID: capDescription(t.Operation.ID),
+			OperationID: t.Operation.ID,
 			Method:      t.Operation.Method,
 			Path:        t.Operation.Path,
 			Summary:     capDescription(t.Operation.Summary),
