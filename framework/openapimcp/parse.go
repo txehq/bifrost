@@ -19,20 +19,27 @@ var methodsV3 = []string{"get", "put", "post", "delete", "patch", "head", "optio
 
 // Parse decodes a JSON or YAML spec into the version-independent Document.
 func Parse(data []byte, opts ParseOptions) (*Document, error) {
+	doc, _, err := parse(data, opts)
+	return doc, err
+}
+
+// parse is Parse, also returning the resolver once one exists: its counters
+// record the expansion work the document cost, refused or not.
+func parse(data []byte, opts ParseOptions) (*Document, *resolver, error) {
 	limit := opts.MaxBytes
 	if limit <= 0 {
 		limit = MaxSpecBytes
 	}
 	if len(data) > limit {
-		return nil, ErrSpecTooLarge
+		return nil, nil, ErrSpecTooLarge
 	}
 	tree, err := decodeTree(data)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	version, warnings, err := DetectVersion(tree)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	doc := &Document{
 		OpenAPIVersion:  version.Raw,
@@ -51,19 +58,19 @@ func Parse(data []byte, opts ParseOptions) (*Document, error) {
 		err = parseV3(tree, version, res, doc, opts)
 	}
 	if err != nil {
-		return nil, err
+		return nil, res, err
 	}
 	if doc.serverURLOverflow {
-		return nil, fmt.Errorf("a server URL expands past %d bytes, or the document's server URLs past %d bytes in total, through server variables", maxServerURLBytes, maxDocumentServerURLBytes)
+		return nil, res, fmt.Errorf("a server URL expands past %d bytes, or the document's server URLs past %d bytes in total, through server variables", maxServerURLBytes, maxDocumentServerURLBytes)
 	}
 	if res.exhausted() {
-		return nil, fmt.Errorf("spec schemas expand past the document budget (%d entries, %d bytes) across the document through shared $refs; split the spec or reduce the operations that reuse large schemas", maxDocumentResolvedEntries, maxDocumentResolvedBytes)
+		return nil, res, fmt.Errorf("spec schemas expand past the document budget (%d entries, %d bytes) across the document through shared $refs; split the spec or reduce the operations that reuse large schemas", maxDocumentResolvedEntries, maxDocumentResolvedBytes)
 	}
 	doc.Warnings = append(doc.Warnings, res.warnings...)
 	if len(doc.Operations) == 0 {
-		return nil, errors.New("spec declares no operations under paths")
+		return nil, res, errors.New("spec declares no operations under paths")
 	}
-	return doc, nil
+	return doc, res, nil
 }
 
 // decodeTree turns JSON or YAML bytes into a string-keyed tree. JSON numbers are
