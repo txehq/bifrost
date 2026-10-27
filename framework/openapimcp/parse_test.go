@@ -525,6 +525,39 @@ func TestParse_ServerVariableExpansionIsBounded(t *testing.T) {
 	assert.Equal(t, []string{"https://api.example.com/v1"}, doc.Servers)
 }
 
+// TestParse_ReusedPathItemIsChargedPerUse: a path item reached through $ref is
+// parsed again for every path that references it (its security requirements,
+// summaries and servers are copied per operation outside the schema resolver),
+// so each use is charged against the document budgets before it is parsed.
+func TestParse_ReusedPathItemIsChargedPerUse(t *testing.T) {
+	alts := make([]string, 0, 10000)
+	for i := 0; i < 10000; i++ {
+		alts = append(alts, fmt.Sprintf(`{"s%d":[]}`, i))
+	}
+	var paths strings.Builder
+	for i := 0; i < 100; i++ {
+		if i > 0 {
+			paths.WriteByte(',')
+		}
+		fmt.Fprintf(&paths, `"/p%d":{"$ref":"#/components/pathItems/Shared"}`, i)
+	}
+	spec := `{"openapi":"3.1.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],"paths":{` + paths.String() + `},
+"components":{"pathItems":{"Shared":{"get":{"operationId":"g","security":[` + strings.Join(alts, ",") + `],"responses":{"200":{"description":"ok"}}}}}}}`
+	start := time.Now()
+	_, err := Parse([]byte(spec), ParseOptions{})
+	require.Error(t, err, "100 uses of a path item with 10,000 security alternatives exceed the document budget")
+	assert.Contains(t, err.Error(), "across the document")
+	assert.Less(t, time.Since(start), 5*time.Second)
+
+	// A path item reused a few times is fine.
+	small := `{"openapi":"3.1.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{"/a":{"$ref":"#/components/pathItems/Shared"},"/b":{"$ref":"#/components/pathItems/Shared"}},
+"components":{"pathItems":{"Shared":{"get":{"security":[{"k":[]}],"responses":{"200":{"description":"ok"}}}}}}}`
+	doc, err := Parse([]byte(small), ParseOptions{})
+	require.NoError(t, err)
+	assert.Len(t, doc.Operations, 2)
+}
+
 // TestParse_RefSiblingsApplyIn31: from 3.1 on, keywords beside a $ref apply
 // alongside the target, so a body extending a base schema keeps both.
 func TestParse_RefSiblingsApplyIn31(t *testing.T) {
