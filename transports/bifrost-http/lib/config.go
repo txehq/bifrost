@@ -2168,7 +2168,8 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 // spec_file is read now (relative to the config directory) so the persisted
 // row carries the document and never depends on the file staying in place, and
 // the server-computed metadata is filled from a parse so the stored row matches
-// an API-created one. A spec_url is left to be fetched at connect time.
+// an API-created one, never taken from the file. A spec_url is left to be
+// fetched at connect time.
 func prepareOpenAPIClientFromFile(c *schemas.MCPClientConfig, configDir string) error {
 	if c.OpenAPIConfig == nil {
 		return fmt.Errorf("connection_type 'openapi' requires openapi_config")
@@ -2179,6 +2180,10 @@ func prepareOpenAPIClientFromFile(c *schemas.MCPClientConfig, configDir string) 
 		return fmt.Errorf("auth_type %q is not supported for connection_type 'openapi' (use none, headers or per_user_headers)", c.AuthType)
 	}
 	oc := c.OpenAPIConfig
+	// The metadata is server-computed, not a config.json input (the schema has
+	// no such keys): drop whatever the file carries, so a spec_url-only entry,
+	// which nothing parses until connect, cannot pin a title or count either.
+	oc.SpecSize, oc.SpecHash, oc.SpecTitle, oc.OpenAPIVersion, oc.OperationCount = 0, "", "", "", 0
 	if strings.TrimSpace(oc.Spec) == "" && oc.SpecFile != nil && strings.TrimSpace(*oc.SpecFile) != "" {
 		data, err := openapimcp.LoadFile(*oc.SpecFile, configDir)
 		if err != nil {

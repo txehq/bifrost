@@ -178,6 +178,14 @@ var ignoreGoFields = map[string]string{
 	// business_unit is a non-persisted (gorm:"-") display object the governance read paths fill
 	// from the enterprise resolver; config.json links a key to a unit through business_unit_id.
 	"/properties/governance/properties/virtual_keys/items|business_unit": "response-only; resolved on read from business_unit_id (TableVirtualKey.BusinessUnit), not user-configurable via config.json",
+	// An OpenAPI MCP client's openapi_config carries metadata the server computes from the
+	// document (openapimcp.ApplyMetadata, run on every config load and save); config.json
+	// supplies the document, never these values.
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|spec_size":       "server-computed from the document by openapimcp.ApplyMetadata on load; not authored in config.json",
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|spec_hash":       "server-computed from the document by openapimcp.ApplyMetadata on load; not authored in config.json",
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|spec_title":      "server-computed from the document by openapimcp.ApplyMetadata on load; not authored in config.json",
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|openapi_version": "server-computed from the document by openapimcp.ApplyMetadata on load; not authored in config.json",
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|operation_count": "server-computed from the document by openapimcp.ApplyMetadata on load; not authored in config.json",
 }
 
 // ignoreGoFieldNames are field names (regardless of parent path) that are
