@@ -1,0 +1,15 @@
+---
+title: "v2.1.47-sync.2"
+description: "Helm v2.1.47-sync.2 prerelease changelog - 2026-10-27"
+---
+
+<Update label="Bifrost Helm" description="v2.1.47-sync.2 (prerelease)">
+
+## Changelog
+
+Prerelease of the txehq fork for transport v2.3.1-sync.2; the published chart stays 2.1.46 until a stable version supersedes it. Install this one with `helm install --devel` or `--version 2.1.47-sync.2`.
+
+- `bifrost.client.oauth2ServerConfig.allowedRedirectUris` accepts a bare `"*"`, which allows any remote https callback; the values schema rejects partial wildcards, which Bifrost refuses at startup (upstream #8480).
+- `appVersion` is now `2.3.1-sync.2`, the transport prerelease this chart ships with; it sets only the `app.kubernetes.io/version` label, and `image.tag` stays required.
+
+</Update>

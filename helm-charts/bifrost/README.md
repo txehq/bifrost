@@ -4,9 +4,16 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/capsohq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.46 (prerelease 2.1.47-sync.1 carries the change below; install it with `--devel`)
+**Latest Version:** 2.1.46 (prereleases 2.1.47-sync.1 and 2.1.47-sync.2 carry the changes below; install them with `--devel`)
 
 ## Changelog
+
+### 2.1.47-sync.2 (prerelease)
+
+The prerelease chart for transport v2.3.1-sync.2:
+
+- `bifrost.client.oauth2ServerConfig.allowedRedirectUris` accepts a bare `"*"`, which allows any remote https callback; the values schema rejects partial wildcards such as `https://*.example.com/cb`, `https://app.example.com/*` or `**`, which Bifrost refuses at startup (upstream #8480).
+- `appVersion` is now `2.3.1-sync.2`, the transport prerelease this chart ships with; it sets only the `app.kubernetes.io/version` label, and `image.tag` stays required.
 
 ### 2.1.47-sync.1 (prerelease)
 

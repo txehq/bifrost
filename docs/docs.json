@@ -2376,6 +2376,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.47-sync.2",
               "changelogs/helm-v2.1.47-sync.1",
               "changelogs/helm-v2.1.46",
               "changelogs/helm-v2.1.46-sync.3",
