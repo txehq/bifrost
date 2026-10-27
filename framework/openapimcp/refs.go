@@ -21,6 +21,14 @@ type resolver struct {
 	warnings      []string
 	siblingsApply bool // 3.1+: keywords beside a $ref apply alongside the target
 	nodes         int  // nodes produced by the current resolve call
+	total         int  // nodes produced by every resolve call on this document
+}
+
+// exhausted reports whether the document-wide expansion budget has been spent.
+// Parse refuses such a document whole: the operations resolved after that point
+// were cut off by the budget, not by anything wrong with them.
+func (r *resolver) exhausted() bool {
+	return r.total > maxDocumentResolvedNodes
 }
 
 func (r *resolver) warn(format string, args ...any) {
@@ -41,6 +49,10 @@ func (r *resolver) resolveAt(node any, stack []string, depth int) (any, error) {
 	switch node.(type) {
 	case map[string]any, []any:
 		r.nodes++
+		r.total++
+		if r.exhausted() {
+			return nil, fmt.Errorf("schemas expand to more than %d nodes across the document through shared $refs", maxDocumentResolvedNodes)
+		}
 		if r.nodes > maxResolvedNodes {
 			return nil, fmt.Errorf("schema expands to more than %d nodes through shared $refs", maxResolvedNodes)
 		}

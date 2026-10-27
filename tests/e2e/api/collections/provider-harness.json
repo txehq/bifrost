@@ -262665,6 +262665,66 @@
           }
         },
         {
+          "name": "[EXPECT-400] openai mcp-openapi-spec preview of a spec whose shared $refs expand past the document budget is refused",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// One 1,000-property schema reused by 600 operations: every use stays under the per-operation",
+                  "// expansion budget, but the copies together exceed the document budget, so the preview must refuse",
+                  "// the document instead of holding 600 expanded copies in memory. Built here to keep the collection small.",
+                  "var props = [];",
+                  "for (var i = 0; i < 1000; i++) { props.push('\"p' + i + '\":{\"type\":\"string\"}'); }",
+                  "var paths = [];",
+                  "for (var j = 0; j < 600; j++) { paths.push('\"/op' + j + '\":{\"post\":{\"operationId\":\"op' + j + '\",\"requestBody\":{\"content\":{\"application/json\":{\"schema\":{\"$ref\":\"#/components/schemas/Big\"}}}},\"responses\":{\"200\":{\"description\":\"ok\"}}}}'); }",
+                  "var spec = '{\"openapi\":\"3.0.0\",\"info\":{\"title\":\"Harness expansion budget\",\"version\":\"1\"},\"servers\":[{\"url\":\"https://petstore3.swagger.io/api/v3\"}],\"paths\":{' + paths.join(',') + '},\"components\":{\"schemas\":{\"Big\":{\"type\":\"object\",\"properties\":{' + props.join(',') + '}}}}}';",
+                  "pm.variables.set('openapiExpansionPreviewBody', JSON.stringify({ spec: spec }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a spec whose shared $refs expand past the document budget is a 400', function () {",
+                  "  var txt = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'pre-fix the preview answered 200 with every operation expanded: ' + txt.slice(0, 300)).to.eql(400);",
+                  "  pm.expect(txt, txt.slice(0, 300)).to.include('across the document');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{openapiExpansionPreviewBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            }
+          }
+        },
+        {
           "name": "openai mcp-openapi-spec create registers a client synthesized from the document",
           "event": [
             {

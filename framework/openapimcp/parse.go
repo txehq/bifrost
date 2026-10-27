@@ -53,6 +53,9 @@ func Parse(data []byte, opts ParseOptions) (*Document, error) {
 	if err != nil {
 		return nil, err
 	}
+	if res.exhausted() {
+		return nil, fmt.Errorf("spec schemas expand to more than %d nodes across the document through shared $refs; split the spec or reduce the operations that reuse large schemas", maxDocumentResolvedNodes)
+	}
 	doc.Warnings = append(doc.Warnings, res.warnings...)
 	if len(doc.Operations) == 0 {
 		return nil, errors.New("spec declares no operations under paths")

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -266,6 +267,28 @@ func TestPreviewOpenAPISpec_Errors(t *testing.T) {
 
 	status, _ = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, `not json`, "", false)
 	assert.Equal(t, fasthttp.StatusBadRequest, status)
+
+	// One 1,000-property schema reused by 600 operations: each use is under the
+	// per-operation budget, the copies together are not, and the preview refuses
+	// the document instead of holding every copy in memory.
+	var props, paths strings.Builder
+	for i := 0; i < 1000; i++ {
+		if i > 0 {
+			props.WriteByte(',')
+		}
+		props.WriteString(`"p` + strconv.Itoa(i) + `":{"type":"string"}`)
+	}
+	for i := 0; i < 600; i++ {
+		if i > 0 {
+			paths.WriteByte(',')
+		}
+		paths.WriteString(`"/op` + strconv.Itoa(i) + `":{"post":{"operationId":"op` + strconv.Itoa(i) + `","requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Big"}}}},"responses":{"200":{"description":"ok"}}}}`)
+	}
+	expanding, _ := json.Marshal(MCPOpenAPIPreviewRequest{Spec: `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a.example.com"}],"paths":{` +
+		paths.String() + `},"components":{"schemas":{"Big":{"type":"object","properties":{` + props.String() + `}}}}}`})
+	status, body = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(expanding), "", false)
+	assert.Equal(t, fasthttp.StatusBadRequest, status, body)
+	assert.Contains(t, body, "across the document")
 }
 
 func TestAddMCPClient_OpenAPI_CreatesClientFromSpec(t *testing.T) {

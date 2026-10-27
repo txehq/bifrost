@@ -314,6 +314,47 @@ func TestParse_RefExpansionIsBounded(t *testing.T) {
 	assert.Empty(t, findOp(t, doc, http.MethodGet, "/ok").Unsupported, "other operations are unaffected")
 }
 
+// TestParse_RefExpansionIsBoundedAcrossOperations: one large schema referenced by
+// many operations stays under the per-call budget each time, but every use is a
+// fresh copy, so the copies a document may produce in total are bounded too and a
+// spec over that bound is refused as a whole.
+func TestParse_RefExpansionIsBoundedAcrossOperations(t *testing.T) {
+	var props strings.Builder
+	for i := 0; i < 1000; i++ {
+		if i > 0 {
+			props.WriteByte(',')
+		}
+		fmt.Fprintf(&props, `"p%d":{"type":"string"}`, i)
+	}
+	var paths strings.Builder
+	const operations = maxDocumentResolvedNodes/1000 + 100
+	for i := 0; i < operations; i++ {
+		if i > 0 {
+			paths.WriteByte(',')
+		}
+		fmt.Fprintf(&paths, `"/op%d":{"post":{"operationId":"op%d","requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Big"}}}},"responses":{"200":{"description":"ok"}}}}`, i, i)
+	}
+	spec := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{` + paths.String() + `},
+"components":{"schemas":{"Big":{"type":"object","properties":{` + props.String() + `}}}}}`
+	require.Less(t, len(spec), MaxSpecBytes)
+
+	start := time.Now()
+	_, err := Parse([]byte(spec), ParseOptions{})
+	require.Error(t, err, "a document whose shared $refs expand past the document budget must be refused")
+	assert.Contains(t, err.Error(), "across the document")
+	assert.Less(t, time.Since(start), 5*time.Second, "expansion must stop at the budget")
+
+	// The same schema used by a handful of operations is well inside the budget.
+	small := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{"/a":{"post":{"operationId":"a","requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Big"}}}},"responses":{"200":{"description":"ok"}}}},
+"/b":{"post":{"operationId":"b","requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Big"}}}},"responses":{"200":{"description":"ok"}}}}},
+"components":{"schemas":{"Big":{"type":"object","properties":{` + props.String() + `}}}}}`
+	doc, err := Parse([]byte(small), ParseOptions{})
+	require.NoError(t, err)
+	assert.Len(t, doc.Operations, 2)
+}
+
 // TestParse_RefSiblingsApplyIn31: from 3.1 on, keywords beside a $ref apply
 // alongside the target, so a body extending a base schema keeps both.
 func TestParse_RefSiblingsApplyIn31(t *testing.T) {
