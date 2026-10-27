@@ -1622,6 +1622,31 @@ finish_reason|'stop'
 total_tokens|42
 cost|0.00042
 V230_ROW
+
+  # An OpenAPI MCP client (v2.3.1-sync.2): a stored inline spec and its config, so the
+  # migration carries real OpenAPI data, not only the column. Startup synthesizes its
+  # tools in-process from the spec and calls nothing; base_url pins every operation to
+  # a closed local port. No encryption key is configured here, so both columns are
+  # stored as plain text, as a baseline without one writes them.
+  v200_insert config_mcp_clients openapi_spec <<V230_ROW
+client_id|'mcp-migration-openapi-001'
+name|'migration-test-openapi'
+is_code_mode_client|false
+connection_type|'openapi'
+connection_string|''
+stdio_config_json|NULL
+tools_to_execute_json|'["*"]'
+tools_to_auto_execute_json|'[]'
+headers_json|'{}'
+is_ping_available|false
+config_hash|'mcp-openapi-hash-001'
+encryption_status|'plain_text'
+endpoint_slug|'migration-test-openapi'
+openapi_spec|'{"openapi":"3.0.3","info":{"title":"Migration Fixture API","version":"1.0.0"},"servers":[{"url":"http://127.0.0.1:9/v1"}],"paths":{"/items":{"get":{"operationId":"listItems","summary":"List items","responses":{"200":{"description":"ok"}}}}}}'
+openapi_config_json|'{"base_url":"http://127.0.0.1:9/v1","max_response_bytes":4096}'
+created_at|$now
+updated_at|$now
+V230_ROW
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (PostgreSQL)
@@ -4989,6 +5014,7 @@ config_agent_registrations|tenant|name = 'migration-test-agent' AND tenant = 'mi
 config_agent_registrations|extension_uris|name = 'migration-test-agent' AND extension_uris LIKE '%https://a2a.example.com/extensions/migration-test%'
 config_agent_push_configs|tenant|config_id = 'push-config-migration-001' AND agent_name = 'migration-test-agent' AND tenant = 'migration-tenant'
 governance_virtual_key_agent_grants|agent_name|virtual_key_id = 'vk-migration-test-1' AND agent_name = 'migration-test-agent'
+config_mcp_clients|openapi_spec|client_id = 'mcp-migration-openapi-001' AND connection_type = 'openapi' AND openapi_spec LIKE '%"operationId":"listItems"%' AND openapi_spec LIKE '%"title":"Migration Fixture API"%' AND openapi_config_json LIKE '%"base_url":"http://127.0.0.1:9/v1"%'
 SEEDED_ROWS
 )"
 
