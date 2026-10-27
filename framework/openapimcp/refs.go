@@ -58,17 +58,48 @@ func (r *resolver) checkBudget() error {
 	return nil
 }
 
-// dataBytes approximates the bytes a value adds when encoded: string lengths
-// plus a few bytes per other scalar and per map key. The walk stops once it has
-// counted past limit, so a huge value costs at most the budget to measure.
+// jsonLen is the length of s once JSON-encoded the way encoding/json writes it,
+// counted without building the encoding: quotes, two-byte escapes for quote,
+// backslash, \n, \r and \t, six-byte \u escapes for other control bytes, for
+// "<", ">" and "&" (HTML-safe encoding) and for U+2028 and U+2029.
+func jsonLen(s string) int {
+	n := 2
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '"' || c == '\\' || c == '\n' || c == '\r' || c == '\t':
+			n += 2
+		case c < 0x20 || c == '<' || c == '>' || c == '&':
+			n += 6
+		case c == 0xE2 && i+2 < len(s) && s[i+1] == 0x80 && (s[i+2] == 0xA8 || s[i+2] == 0xA9):
+			n += 6
+			i += 2
+		default:
+			n++
+		}
+	}
+	return n
+}
+
+// keyBytes is the encoded size of a map's keys, each with its colon.
+func keyBytes[V any](m map[string]V) int {
+	n := 0
+	for k := range m {
+		n += jsonLen(k) + 1
+	}
+	return n
+}
+
+// dataBytes is the encoded size of a value: strings and keys as jsonLen counts
+// them, a few bytes per other scalar. The walk stops once it has counted past
+// limit, so a huge value costs at most the budget to measure.
 func dataBytes(v any, limit int) int {
 	switch t := v.(type) {
 	case string:
-		return len(t)
+		return jsonLen(t)
 	case map[string]any:
 		n := 0
 		for k, val := range t {
-			n += len(k) + dataBytes(val, limit-n)
+			n += jsonLen(k) + 1 + dataBytes(val, limit-n)
 			if n > limit {
 				return n
 			}
@@ -115,6 +146,12 @@ func (r *resolver) resolveAt(node any, stack []string, depth int) (any, error) {
 		if err := r.charge(1 + entries); err != nil {
 			return nil, err
 		}
+		// Keys are copied into every use too, so they are paid for in bytes.
+		if m, ok := node.(map[string]any); ok {
+			if err := r.chargeBytes(keyBytes(m)); err != nil {
+				return nil, err
+			}
+		}
 		if r.nodes > maxResolvedNodes {
 			return nil, fmt.Errorf("schema expands to more than %d nodes through shared $refs", maxResolvedNodes)
 		}
@@ -154,7 +191,7 @@ func (r *resolver) resolveAt(node any, stack []string, depth int) (any, error) {
 			case isInstanceDataKey(k):
 				// Example and default data, enums and extensions are values, not
 				// schema: a $ref key inside them is data and is left as it is.
-				if err := r.chargeBytes(len(k) + dataBytes(val, maxDocumentResolvedBytes-r.bytes)); err != nil {
+				if err := r.chargeBytes(dataBytes(val, maxDocumentResolvedBytes-r.bytes)); err != nil {
 					return nil, err
 				}
 				out[k] = val
@@ -164,6 +201,9 @@ func (r *resolver) resolveAt(node any, stack []string, depth int) (any, error) {
 				// a schema, so resolve the values, never the map itself.
 				if props, ok := val.(map[string]any); ok {
 					if err := r.charge(len(props)); err != nil {
+						return nil, err
+					}
+					if err := r.chargeBytes(keyBytes(props)); err != nil {
 						return nil, err
 					}
 					resolvedProps := make(map[string]any, len(props))
@@ -197,7 +237,7 @@ func (r *resolver) resolveAt(node any, stack []string, depth int) (any, error) {
 		return out, nil
 	default:
 		if str, ok := v.(string); ok {
-			if err := r.chargeBytes(len(str)); err != nil {
+			if err := r.chargeBytes(jsonLen(str)); err != nil {
 				return nil, err
 			}
 		}
@@ -211,6 +251,9 @@ func (r *resolver) resolveAt(node any, stack []string, depth int) (any, error) {
 // ignored except summary and description, which override the target's.
 func (r *resolver) mergeRefSiblings(target, ref map[string]any, stack []string, depth int) (any, error) {
 	if err := r.charge(len(target) + len(ref)); err != nil {
+		return nil, err
+	}
+	if err := r.chargeBytes(keyBytes(target) + keyBytes(ref)); err != nil {
 		return nil, err
 	}
 	out := make(map[string]any, len(target)+len(ref))
@@ -228,6 +271,9 @@ func (r *resolver) mergeRefSiblings(target, ref map[string]any, stack []string, 
 		switch k {
 		case "properties":
 			if err := r.charge(len(asMap(out["properties"])) + len(asMap(val))); err != nil {
+				return nil, err
+			}
+			if err := r.chargeBytes(keyBytes(asMap(out["properties"])) + keyBytes(asMap(val))); err != nil {
 				return nil, err
 			}
 			merged := map[string]any{}

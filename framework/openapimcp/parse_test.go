@@ -412,6 +412,81 @@ func TestParse_RefExpansionBytesAreBoundedAcrossTheDocument(t *testing.T) {
 	require.NoError(t, err)
 	_, err = Synthesize(doc, SynthesizeOptions{ClientName: "t"})
 	require.NoError(t, err)
+
+	// The budget counts bytes as they will be encoded: "<" is written as \u003c,
+	// six bytes per byte of input, so a default that is small as raw text still
+	// multiplies past the budget across operations.
+	escaped := strings.Repeat("<", 200<<10)
+	var escPaths strings.Builder
+	for i := 0; i < 60; i++ {
+		if i > 0 {
+			escPaths.WriteByte(',')
+		}
+		fmt.Fprintf(&escPaths, `"/e%d":{"get":{"operationId":"e%d","parameters":[{"name":"q","in":"query","schema":{"$ref":"#/components/schemas/Esc"}}],"responses":{"200":{"description":"ok"}}}}`, i, i)
+	}
+	escSpec := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{` + escPaths.String() + `},
+"components":{"schemas":{"Esc":{"type":"string","default":"` + escaped + `"}}}}`
+	_, err = Parse([]byte(escSpec), ParseOptions{})
+	require.Error(t, err, "60 x 200 KiB of escaped text encodes to about 72 MiB")
+	assert.Contains(t, err.Error(), "across the document")
+
+	// A large shared enum is instance data too.
+	values := make([]string, 0, 40000)
+	for i := 0; i < 40000; i++ {
+		values = append(values, fmt.Sprintf(`"value-%05d"`, i))
+	}
+	var enumPaths strings.Builder
+	for i := 0; i < 160; i++ {
+		if i > 0 {
+			enumPaths.WriteByte(',')
+		}
+		fmt.Fprintf(&enumPaths, `"/n%d":{"get":{"operationId":"n%d","parameters":[{"name":"q","in":"query","schema":{"$ref":"#/components/schemas/Enum"}}],"responses":{"200":{"description":"ok"}}}}`, i, i)
+	}
+	enumSpec := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{` + enumPaths.String() + `},
+"components":{"schemas":{"Enum":{"type":"string","enum":[` + strings.Join(values, ",") + `]}}}}`
+	require.Less(t, len(enumSpec), MaxSpecBytes)
+	_, err = Parse([]byte(enumSpec), ParseOptions{})
+	require.Error(t, err, "a 40,000-value enum shared by 160 operations encodes past the budget")
+	assert.Contains(t, err.Error(), "across the document")
+}
+
+// TestJSONLenMatchesEncoding: the byte budget counts strings as encoding/json
+// writes them, without encoding them first.
+func TestJSONLenMatchesEncoding(t *testing.T) {
+	for _, s := range []string{"", "plain", `quote " and \\ backslash`, "tab\tnew\nline\r", "ctl\x01\x1f", "<script>&amp;</script>", "line\u2028para\u2029", "ünïcödé 日本語", strings.Repeat("<", 1000)} {
+		encoded, err := json.Marshal(s)
+		require.NoError(t, err)
+		assert.Equal(t, len(encoded), jsonLen(s), "%q", s)
+	}
+}
+
+// TestParse_RefExpansionChargesKeyBytes: property names and other keys are
+// copied into every use of a shared schema, so long names reused by many
+// operations reach the byte budget even when their values are tiny.
+func TestParse_RefExpansionChargesKeyBytes(t *testing.T) {
+	var props strings.Builder
+	for i := 0; i < 1000; i++ {
+		if i > 0 {
+			props.WriteByte(',')
+		}
+		fmt.Fprintf(&props, `"%s%04d":{"type":"string"}`, strings.Repeat("k", 1020), i)
+	}
+	var paths strings.Builder
+	for i := 0; i < 70; i++ {
+		if i > 0 {
+			paths.WriteByte(',')
+		}
+		fmt.Fprintf(&paths, `"/k%d":{"post":{"operationId":"k%d","requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Wide"}}}},"responses":{"200":{"description":"ok"}}}}`, i, i)
+	}
+	spec := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{` + paths.String() + `},
+"components":{"schemas":{"Wide":{"type":"object","properties":{` + props.String() + `}}}}}`
+	require.Less(t, len(spec), MaxSpecBytes)
+	_, err := Parse([]byte(spec), ParseOptions{})
+	require.Error(t, err, "1,000 property names of 1 KiB reused by 70 operations copy about 70 MiB of keys")
+	assert.Contains(t, err.Error(), "across the document")
 }
 
 // TestParse_RefSiblingsApplyIn31: from 3.1 on, keywords beside a $ref apply

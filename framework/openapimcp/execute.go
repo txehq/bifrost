@@ -368,21 +368,23 @@ func (e *Executor) encodeBody(tool *Tool, args map[string]any) (io.Reader, strin
 	}
 }
 
-// clientFor returns the client to send req with. No request follows a redirect
-// to another host: with credentials, Go strips only Authorization and Cookie
-// there, so an API-key header or a query credential would reach the new host;
-// without them, the gateway's dialer may still reach private networks, so the
-// upstream could point the call at an internal service (TXE-5296). Nor may a
-// request follow a redirect from https to plain http on the same host, which
-// would send its credentials unencrypted. Such a redirect is returned to the
-// model as the 3xx instead. Any CheckRedirect already on the client still runs
-// for same-host redirects.
+// clientFor returns the client to send req with. A redirect is followed only
+// to the request's own origin (scheme, case-folded host, effective port), so
+// no request follows one to another host, port or scheme: with credentials, Go
+// strips only Authorization and Cookie there, so an API-key header or a query
+// credential would reach the new origin, and a downgrade to plain http would
+// send them unencrypted; without them, the gateway's dialer may still reach
+// private networks, so the upstream could point the call at an internal service
+// (TXE-5296). Such a redirect is returned to the model as the 3xx, before the
+// target is requested. Any CheckRedirect already on the client still runs for
+// same-origin redirects.
 func (e *Executor) clientFor(req *http.Request) *http.Client {
 	c := *e.client
 	inner := e.client.CheckRedirect
-	origin, secure := req.URL.Host, req.URL.Scheme == "https"
+	origin, ok := urlOrigin(req.URL.String())
 	c.CheckRedirect = func(next *http.Request, via []*http.Request) error {
-		if !strings.EqualFold(next.URL.Host, origin) || (secure && next.URL.Scheme != "https") {
+		nextOrigin, nextOK := urlOrigin(next.URL.String())
+		if !ok || !nextOK || nextOrigin != origin {
 			return http.ErrUseLastResponse
 		}
 		if inner != nil {

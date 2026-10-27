@@ -468,6 +468,49 @@ func TestExecute_CrossHostRedirectIsNeverFollowed(t *testing.T) {
 	}
 }
 
+// TestExecute_RedirectsStayWithinTheOrigin: a redirect is followed only to the
+// same origin (scheme, case-folded host, effective port) as the request it
+// answers. A port or scheme change, an upgrade to https included, is another
+// origin and is returned to the model as the 3xx without being requested.
+func TestExecute_RedirectsStayWithinTheOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name, base, location string
+		follow               bool
+	}{
+		{"same origin, other path", "http://api.example.com/v1", "http://api.example.com/v1/moved", true},
+		{"explicit default port is the same origin", "http://api.example.com/v1", "http://API.example.com:80/v1/moved", true},
+		{"same host, other port", "http://api.example.com/v1", "http://api.example.com:8080/v1/moved", false},
+		{"http to https", "http://api.example.com/v1", "https://api.example.com/v1/moved", false},
+		{"https to http", "https://api.example.com/v1", "http://api.example.com/v1/moved", false},
+		{"other host", "https://api.example.com/v1", "https://internal.example.net/v1/moved", false},
+		{"userinfo-shaped host", "https://api.example.com/v1", "https://api.example.com@internal.example.net/v1/moved", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requested []string
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				requested = append(requested, r.URL.String())
+				if len(requested) == 1 {
+					return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {tc.location}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"ok":true}`)), Request: r}, nil
+			})}
+			syn, err := Synthesize(parseFixture(t, "petstore-3.0.yaml"), SynthesizeOptions{ClientName: "petstore"})
+			require.NoError(t, err)
+			exec, err := NewExecutor(ServerOptions{Synthesis: syn, BaseURL: tc.base, BaseURLExplicit: true, HTTPClient: client})
+			require.NoError(t, err)
+			res, err := exec.Execute(context.Background(), findTool(t, syn, "listPets"), map[string]any{})
+			require.NoError(t, err)
+			if tc.follow {
+				assert.Len(t, requested, 2, "a same-origin redirect is followed: %v", requested)
+				assert.False(t, res.IsError)
+				return
+			}
+			assert.Len(t, requested, 1, "the redirect target must not be requested: %v", requested)
+			assert.True(t, res.IsError, "the model sees the 3xx")
+		})
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
