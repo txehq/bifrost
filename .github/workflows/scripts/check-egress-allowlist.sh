@@ -159,6 +159,7 @@ NOT_DIALLED_HOSTS = {
     "replace-me.search.windows.net": "Azure AI Search placeholder collection variable; never resolved",
     "does-not-exist-h150.invalid": "OpenAI Responses MCP tool server_url; OpenAI dials it, and .invalid never resolves",
     "en.wikipedia.org": "googleSearch excludeDomains filter value, not a URL anyone fetches",
+    "petstore3.swagger.io": "servers/base_url inside the inline specs of the 229 mcp-openapi-spec rows; no tool is called, and the rows carry the setup token, so the auth-bypassed public-target DNS check never runs",
     "placeholder.search.windows.net": "Azure AI Search placeholder in a request body; never resolved",
     # Deliberately unresolvable - negative tests assert the failure path.
     "bifrost.invalid": "reserved .invalid TLD; negative-path tests assert it fails to resolve",

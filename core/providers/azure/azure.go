@@ -21,6 +21,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/providers/anthropic"
 	"github.com/capsohq/bifrost/core/providers/openai"
+	"github.com/capsohq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
 
@@ -747,9 +748,37 @@ func (provider *AzureProvider) Rerank(ctx *schemas.BifrostContext, key schemas.K
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
-// Decision is not supported by the Azure provider.
+// azureDecisionPath is where a Foundry resource serves Microsoft's decision models
+// (Microsoft-Decision-1). It takes no api-version.
+const azureDecisionPath = "/providers/microsoft/v1/systemone"
+
+// Decision runs a decision on a Microsoft decision model deployment. The body and
+// response are Typesafe's systemone shapes, so Typesafe's handler is reused; the
+// model is the deployment name, sent as is, and a deployment that does not serve
+// decisions is rejected by Azure with its own error.
 func (provider *AzureProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
+	endpoint := resolveAzureEndpoint(ctx, key)
+	if endpoint == "" {
+		return nil, providerUtils.NewConfigurationError("endpoint not set")
+	}
+	authHeaders, bifrostErr := provider.getAzureAuthHeaders(ctx, key, false)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	return typesafe.HandleTypesafeDecisionRequest(
+		ctx,
+		provider.client,
+		endpoint+providerUtils.GetPathFromContext(ctx, azureDecisionPath),
+		request,
+		typesafe.ToTypesafeDecisionRequest,
+		authHeaders,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		openai.ParseOpenAIError,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		false,
+	)
 }
 
 // OCR is not supported by the Azure provider.
