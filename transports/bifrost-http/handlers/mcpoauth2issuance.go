@@ -21,7 +21,7 @@ import (
 	"github.com/capsohq/bifrost/framework/configstore"
 	configtables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/temptoken"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/fasthttp/router"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"

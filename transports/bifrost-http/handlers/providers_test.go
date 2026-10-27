@@ -18,7 +18,7 @@ import (
 	"github.com/capsohq/bifrost/framework/modelcatalog"
 	"github.com/capsohq/bifrost/framework/modelcatalog/datasheet"
 	governanceplugin "github.com/capsohq/bifrost/plugins/governance"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 

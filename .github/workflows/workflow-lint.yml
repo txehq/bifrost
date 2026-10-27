@@ -8,6 +8,8 @@ on:
   pull_request:
     paths:
       - ".github/workflows/**"
+      - "**/go.mod"
+      - "**/version"
 
 permissions:
   contents: read
@@ -84,6 +86,11 @@ jobs:
       - name: Check release binaries build through the workspace
         if: ${{ !cancelled() }}
         run: ./.github/workflows/scripts/build-executables.test.sh
+
+      # Go only resolves a vN tag (N >= 2) for a module path ending in /vN.
+      - name: Check module path major versions
+        if: ${{ !cancelled() }}
+        run: ./.github/workflows/scripts/module-major.test.sh
 
   release-no-main-push:
     name: Release scripts leave main to reviewed PRs

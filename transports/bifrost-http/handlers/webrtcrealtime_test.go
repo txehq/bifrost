@@ -15,8 +15,8 @@ import (
 	"github.com/capsohq/bifrost/framework/grant"
 	"github.com/capsohq/bifrost/framework/kvstore"
 	"github.com/capsohq/bifrost/framework/logstore"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
-	bfws "github.com/capsohq/bifrost/transports/bifrost-http/websocket"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
+	bfws "github.com/capsohq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/pion/webrtc/v4"
 	"github.com/valyala/fasthttp"
 )

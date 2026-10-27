@@ -15,7 +15,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/capsohq/bifrost/core/agent"
 	"github.com/capsohq/bifrost/framework/configstore"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/fasthttp/router"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"

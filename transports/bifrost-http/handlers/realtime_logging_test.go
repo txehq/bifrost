@@ -7,7 +7,7 @@ import (
 
 	"github.com/capsohq/bifrost/core/providers/openai"
 	"github.com/capsohq/bifrost/core/schemas"
-	bfws "github.com/capsohq/bifrost/transports/bifrost-http/websocket"
+	bfws "github.com/capsohq/bifrost/transports/v2/bifrost-http/websocket"
 )
 
 func TestRealtimeTurnFinalEventUsesTranscriptionCompletionOnlyForTranscriptionSessions(t *testing.T) {

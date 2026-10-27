@@ -17,7 +17,7 @@ import (
 	"github.com/capsohq/bifrost/framework/vectorstore"
 	"github.com/capsohq/bifrost/framework/warp"
 	"github.com/capsohq/bifrost/plugins/logging"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	"github.com/valyala/fasthttp"

@@ -17,7 +17,7 @@ import (
 	"github.com/capsohq/bifrost/framework/configstore"
 	configtables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/oauth2"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"

@@ -29,7 +29,7 @@ import (
 	"github.com/capsohq/bifrost/framework/modelcatalog"
 	"github.com/capsohq/bifrost/plugins/compat"
 	"github.com/capsohq/bifrost/plugins/governance"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 )
 
 type inferenceSetupAccount struct {
