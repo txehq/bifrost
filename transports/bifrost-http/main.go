@@ -64,10 +64,10 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	schemas "github.com/capsohq/bifrost/core/schemas"
-	"github.com/capsohq/bifrost/transports/bifrost-http/handlers"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
-	"github.com/capsohq/bifrost/transports/bifrost-http/profiling"
-	bifrostServer "github.com/capsohq/bifrost/transports/bifrost-http/server"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/handlers"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/profiling"
+	bifrostServer "github.com/capsohq/bifrost/transports/v2/bifrost-http/server"
 )
 
 //go:embed all:ui

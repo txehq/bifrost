@@ -17,8 +17,8 @@ import (
 	"github.com/capsohq/bifrost/plugins/routing"
 	"github.com/capsohq/bifrost/plugins/semanticcache"
 	"github.com/capsohq/bifrost/plugins/telemetry"
-	"github.com/capsohq/bifrost/transports/bifrost-http/handlers"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/handlers"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 )
 
 // InferPluginTypes determines which interface types a plugin implements

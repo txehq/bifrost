@@ -13,7 +13,7 @@ import (
 	"context"
 
 	bifrost "github.com/capsohq/bifrost/core"
-	bfws "github.com/capsohq/bifrost/transports/bifrost-http/websocket"
+	bfws "github.com/capsohq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/fasthttp/router"
 	ws "github.com/fasthttp/websocket"
 	"github.com/valyala/fasthttp"

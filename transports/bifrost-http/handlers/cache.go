@@ -4,7 +4,7 @@ import (
 	"net/url"
 
 	"github.com/capsohq/bifrost/core/schemas"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 
 	"github.com/fasthttp/router"
 	"github.com/valyala/fasthttp"

@@ -7,7 +7,7 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 	configtables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/grant"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"

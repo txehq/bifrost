@@ -27,7 +27,7 @@ import (
 	"github.com/capsohq/bifrost/framework/encrypt"
 	"github.com/capsohq/bifrost/framework/temptoken"
 	"github.com/capsohq/bifrost/framework/tracing"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/fasthttp/router"
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"

@@ -11,8 +11,8 @@ import (
 
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
-	bfws "github.com/capsohq/bifrost/transports/bifrost-http/websocket"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
+	bfws "github.com/capsohq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/fasthttp/router"
 	ws "github.com/fasthttp/websocket"
 	"github.com/stretchr/testify/assert"

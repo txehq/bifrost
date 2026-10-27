@@ -1,4 +1,4 @@
-module github.com/capsohq/bifrost/transports
+module github.com/capsohq/bifrost/transports/v2
 
 go 1.27.0
 

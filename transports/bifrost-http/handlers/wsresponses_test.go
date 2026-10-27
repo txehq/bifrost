@@ -3,7 +3,7 @@ package handlers
 import (
 	"errors"
 	bifrost "github.com/capsohq/bifrost/core"
-	bfws "github.com/capsohq/bifrost/transports/bifrost-http/websocket"
+	bfws "github.com/capsohq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/fasthttp/websocket"
 	"net"
 	"net/http"
@@ -19,7 +19,7 @@ import (
 	"github.com/capsohq/bifrost/framework/kvstore"
 	"github.com/capsohq/bifrost/framework/logstore"
 	"github.com/capsohq/bifrost/plugins/governance"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"

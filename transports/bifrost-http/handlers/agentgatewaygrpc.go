@@ -25,7 +25,7 @@ import (
 	"github.com/capsohq/bifrost/core/agent"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/plugins/governance"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

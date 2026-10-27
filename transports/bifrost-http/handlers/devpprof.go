@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/capsohq/bifrost/core/schemas"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/fasthttp/router"
 	"github.com/google/pprof/profile"
 	"github.com/valyala/fasthttp"

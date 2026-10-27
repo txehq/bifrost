@@ -15,7 +15,7 @@ import (
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/plugins"
 	"github.com/capsohq/bifrost/framework/vectorstore"
-	"github.com/capsohq/bifrost/transports/bifrost-http/lib"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/fasthttp/router"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
