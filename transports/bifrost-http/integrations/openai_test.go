@@ -287,8 +287,9 @@ func TestOpenAIDecisionsRouteRegisteredOnEveryPath(t *testing.T) {
 // TestOpenAIDecisionsRouteConvertsRequest pins the route's request handling:
 // an SDK body becomes the normalized request, questions keep their order and
 // an unnamed question stays unnamed, a model without a prefix is OpenAI's, an
-// unknown future field is marked to reach the provider wire, and fallbacks are
-// kept for routing. The payload is synthetic.
+// unknown future field is marked to reach the provider wire, the prompt-cache
+// key is a typed field rather than an extension, and fallbacks are kept for
+// routing. The payload is synthetic.
 func TestOpenAIDecisionsRouteConvertsRequest(t *testing.T) {
 	route := findOpenAIRoute("/openai", "/openai/v1/decisions")
 	if route == nil {
@@ -304,6 +305,7 @@ func TestOpenAIDecisionsRouteConvertsRequest(t *testing.T) {
 			{"type": "score", "instructions": "How severe is the damage?", "levels": [{"label": "Cosmetic"}, {"label": "Blocked"}]}
 		],
 		"fallbacks": ["typesafe/jev-1.13.0"],
+		"prompt_cache_key": "tenant-1",
 		"future_option": {"mode": "strict"}
 	}`)
 	if err := parseJSONRequestBody(body, incoming); err != nil {
@@ -333,6 +335,9 @@ func TestOpenAIDecisionsRouteConvertsRequest(t *testing.T) {
 	}
 	if passthrough, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !passthrough {
 		t.Error("unknown fields present but passthrough not requested; they would be dropped on the wire")
+	}
+	if _, ok := decision.ExtraParams["prompt_cache_key"]; ok || decision.PromptCacheKey == nil || *decision.PromptCacheKey != "tenant-1" {
+		t.Errorf("prompt_cache_key must be a typed field, got %v and extra params %v", decision.PromptCacheKey, decision.ExtraParams)
 	}
 
 	router := &GenericRouter{}
