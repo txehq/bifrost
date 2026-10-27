@@ -115,3 +115,58 @@ type Provider struct {
 		}
 	})
 }
+
+// TestWalkTypeExemptsOpenAPIConfigServerComputedMetadata pins the ignoreGoFields
+// entries for an OpenAPI MCP client's openapi_config metadata (spec_size,
+// spec_hash, spec_title, openapi_version, operation_count): the server computes
+// them from the document on every load and save (openapimcp.ApplyMetadata), so
+// the schema does not advertise them as config.json input. Without the entries
+// the release gate failed on main 14907f01c (TXE-5318). The exemption is scoped:
+// another missing field at the same path is still an error, and the same struct
+// walked at another path still reports the metadata fields.
+func TestWalkTypeExemptsOpenAPIConfigServerComputedMetadata(t *testing.T) {
+	const src = `package fixture
+
+type OpenAPIConfig struct {
+	Spec           string ` + "`json:\"spec,omitempty\"`" + `
+	SpecSize       int    ` + "`json:\"spec_size,omitempty\"`" + `
+	SpecHash       string ` + "`json:\"spec_hash,omitempty\"`" + `
+	SpecTitle      string ` + "`json:\"spec_title,omitempty\"`" + `
+	OpenAPIVersion string ` + "`json:\"openapi_version,omitempty\"`" + `
+	OperationCount int    ` + "`json:\"operation_count,omitempty\"`" + `
+	Surprise       string ` + "`json:\"surprise\"`" + `
+}
+`
+	cfg := fixtureStruct(t, src, "OpenAPIConfig")
+	node := map[string]any{"type": "object", "properties": map[string]any{"spec": map[string]any{"type": "string"}}}
+	schema := map[string]any{
+		"properties": map[string]any{
+			"mcp": map[string]any{"properties": map[string]any{"client_configs": map[string]any{"type": "array", "items": map[string]any{
+				"type": "object", "properties": map[string]any{"openapi_config": node},
+			}}}},
+			"elsewhere": node,
+		},
+	}
+	metadata := []string{"spec_size", "spec_hash", "spec_title", "openapi_version", "operation_count"}
+
+	c := newTestChecker(schema)
+	c.walkType(cfg, "/properties/mcp/properties/client_configs/items/properties/openapi_config", "fixture.OpenAPIConfig")
+	missing := missingInSchema(c.findings)
+	for _, name := range metadata {
+		if _, reported := missing[name]; reported {
+			t.Errorf("%s must be exempt at mcp.client_configs[].openapi_config: %+v", name, missing[name])
+		}
+	}
+	if _, reported := missing["surprise"]; !reported || len(missing) != 1 {
+		t.Errorf("only the unrelated field must be reported at openapi_config, got %+v", missing)
+	}
+
+	c = newTestChecker(schema)
+	c.walkType(cfg, "/properties/elsewhere", "fixture.OpenAPIConfig")
+	missing = missingInSchema(c.findings)
+	for _, name := range metadata {
+		if _, reported := missing[name]; !reported {
+			t.Errorf("the exemption is scoped to openapi_config; %s must be reported elsewhere, got %+v", name, missing)
+		}
+	}
+}
