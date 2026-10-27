@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -83,6 +84,7 @@ func (e *Executor) BuildRequest(ctx context.Context, tool *Tool, args map[string
 	op := tool.Operation
 
 	base := e.baseURL
+	fromOperation := false
 	if !e.baseURLExplicit && len(op.Servers) > 0 {
 		// The operation names its own server. A relative one that could not be
 		// resolved (no spec_url or $self) is refused rather than replaced by
@@ -91,6 +93,7 @@ func (e *Executor) BuildRequest(ctx context.Context, tool *Tool, args map[string
 			return nil, fmt.Errorf("operation server %q is relative and could not be resolved; set openapi_config.spec_url or base_url", op.Servers[0])
 		}
 		base = strings.TrimSuffix(op.Servers[0], "/")
+		fromOperation = true
 	}
 
 	path := op.Path
@@ -115,6 +118,11 @@ func (e *Executor) BuildRequest(ctx context.Context, tool *Tool, args map[string
 	credQuery := url.Values{}
 	var credCookies []*http.Cookie
 	InjectCredentials(credHeaders, credQuery, &credCookies, schemes, e.creds)
+	if fromOperation {
+		if err := e.checkOperationOrigin(base, resolved, credHeaders.Header, credQuery, credCookies); err != nil {
+			return nil, err
+		}
+	}
 	configured := configuredParameters(resolved, credHeaders.Header, credCookies)
 	// Query names the base URL or a query credential sets are configured too:
 	// their values replace the model's below.
@@ -427,6 +435,69 @@ func (e *Executor) Execute(ctx context.Context, tool *Tool, args map[string]any)
 		body = body[:e.maxBytes]
 	}
 	return formatResponse(resp, body, truncated, e.maxBytes), nil
+}
+
+// checkOperationOrigin refuses a call whose destination is an operation-level
+// server from the document at another origin than the base URL, when the call
+// would carry anything the administrator configured: a resolver header (static
+// config headers, the credential store, per-user or forwarded extras), a
+// spec-mapped credential, or URL userinfo. The document is untrusted input, and
+// the preview shows the base URL, not every operation's server, so an imported
+// spec must not be able to point a credentialed call elsewhere. The call is
+// refused rather than sent without its credentials. An explicit base_url pins
+// every operation and never reaches this check.
+func (e *Executor) checkOperationOrigin(dest string, resolved, credHeaders http.Header, credQuery url.Values, credCookies []*http.Cookie) error {
+	carries := len(credHeaders) > 0 || len(credQuery) > 0 || len(credCookies) > 0 ||
+		urlHasUserinfo(e.baseURL) || urlHasUserinfo(dest)
+	for _, values := range resolved {
+		if len(values) > 0 {
+			carries = true
+			break
+		}
+	}
+	if !carries {
+		return nil
+	}
+	destOrigin, ok := urlOrigin(dest)
+	if !ok {
+		return fmt.Errorf("operation server is not a usable URL")
+	}
+	if baseOrigin, ok := urlOrigin(e.baseURL); ok && baseOrigin == destOrigin {
+		return nil
+	}
+	approved := "none"
+	if baseOrigin, ok := urlOrigin(e.baseURL); ok {
+		approved = baseOrigin
+	}
+	return fmt.Errorf("operation server %s is a different origin from the base URL (%s); configured credentials are sent only to the base URL's origin, so set openapi_config.base_url to the server this operation should use", destOrigin, approved)
+}
+
+// urlOrigin returns scheme://host:port with the scheme and host lowercased and
+// the scheme's default port made explicit. Userinfo, path and query are not
+// part of an origin.
+func urlOrigin(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "", false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	port := u.Port()
+	if port == "" {
+		switch scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return "", false
+		}
+	}
+	return scheme + "://" + net.JoinHostPort(strings.ToLower(u.Hostname()), port), true
+}
+
+func urlHasUserinfo(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.User != nil
 }
 
 // sanitizeURLError strips the userinfo and the query string from url.Error

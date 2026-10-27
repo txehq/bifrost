@@ -263302,6 +263302,138 @@
               ]
             }
           }
+        },
+        {
+          "name": "openai mcp-openapi-spec create a headers client whose operation names another origin than the document server",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Run-unique identity. The document server and the operation server are both .invalid, so no call can resolve either.",
+                  "var run = Date.now() + '_' + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('openapiCrossOriginId', 'harness-openapi-xorigin-' + run.replace('_', '-'));",
+                  "pm.collectionVariables.set('openapiCrossOriginName', 'harness_openapi_xorigin_' + run);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi headers client with a cross-origin operation server is created', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_id\": \"{{openapiCrossOriginId}}\",\n  \"name\": \"{{openapiCrossOriginName}}\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"headers\",\n  \"headers\": {\n    \"X-Harness-Token\": \"harness-static-secret\"\n  },\n  \"tools_to_execute\": [\n    \"listPets\"\n  ],\n  \"openapi_config\": {\n    \"spec\": \"{\\n  \\\"openapi\\\": \\\"3.0.3\\\",\\n  \\\"info\\\": {\\n    \\\"title\\\": \\\"Harness cross-origin operation server\\\",\\n    \\\"version\\\": \\\"1.0.0\\\"\\n  },\\n  \\\"servers\\\": [\\n    {\\n      \\\"url\\\": \\\"https://bifrost.invalid/v1\\\"\\n    }\\n  ],\\n  \\\"paths\\\": {\\n    \\\"/pets\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"listPets\\\",\\n        \\\"summary\\\": \\\"List pets\\\",\\n        \\\"servers\\\": [\\n          {\\n            \\\"url\\\": \\\"https://does-not-resolve.invalid/alt\\\"\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    }\\n  }\\n}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "openai mcp-openapi-spec a credentialed call to a cross-origin operation server is refused before any request",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('the call is refused as a tool error naming the origins', function () {",
+                  "  pm.expect(pm.response.code, txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(pm.response.json().is_error, txt.slice(0, 400)).to.equal(true);",
+                  "  pm.expect(txt, 'pre-fix the operation server received the configured header: ' + txt.slice(0, 400)).to.include('different origin');",
+                  "});",
+                  "pm.test('no request was attempted and no credential is echoed', function () {",
+                  "  pm.expect(txt, 'a transport attempt means the request was built and sent toward the foreign origin: ' + txt.slice(0, 400)).to.not.include('request to upstream failed');",
+                  "  pm.expect(txt, txt.slice(0, 400)).to.not.include('harness-static-secret');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"openapi-cross-origin-refusal\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"{{openapiCrossOriginName}}-listPets\",\n    \"arguments\": \"{}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "openai mcp-openapi-spec cleanup deletes the cross-origin client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi cross-origin client is deleted', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{openapiCrossOriginId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{openapiCrossOriginId}}"
+              ]
+            }
+          }
         }
       ]
     },

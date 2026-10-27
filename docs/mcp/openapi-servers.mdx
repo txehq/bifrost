@@ -47,6 +47,8 @@ Security schemes of type `oauth2`, `openIdConnect` and `mutualTLS` cannot be sat
 
 The upstream defaults to the first `servers` entry of the document (server variables take their default value; relative URLs are resolved against the document's URL or 3.2 `$self`). Pick another server or type a custom base URL in the preview. A document with no absolute top-level server needs one, unless every operation (or its path) declares an absolute server of its own; each call then goes to its operation's server.
 
+An operation's own server is used only while it shares the base URL's origin (scheme, host and port) or the call carries no credentials. A call that would carry static or per-user headers, a security-scheme credential or URL userinfo to an operation server at another origin is refused with an error instead: the document is untrusted input, and the preview shows the base URL, not every operation's server. To call such an API with credentials, set a custom base URL; an explicit base URL sends every operation to it.
+
 ## Authentication
 
 Two layers reach the API on every call:

@@ -923,3 +923,115 @@ func TestSanitizeURLError_RemovesUserinfoAndQuery(t *testing.T) {
 	assert.Contains(t, fmt.Sprint(res.Content), "request to upstream failed")
 	assert.NotContains(t, fmt.Sprint(res.Content), "secret-api-token", "a userinfo token never reaches the model through error text")
 }
+
+// TestBuildRequest_CrossOriginOperationServerRefusesCredentials pins that an
+// operation-level server from the document cannot receive the credentials an
+// administrator configured for the base URL. Without an explicit base_url, a call
+// whose operation names another origin is refused before any request is built
+// when it would carry a configured header, a spec-mapped credential or URL
+// userinfo. Nothing is stripped and sent unauthenticated, and nothing reaches the
+// foreign server. Same-origin operation servers, an explicit base_url and
+// credential-free calls keep working.
+func TestBuildRequest_CrossOriginOperationServerRefusesCredentials(t *testing.T) {
+	var foreignHits int
+	var mu sync.Mutex
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		foreignHits++
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(foreign.Close)
+	base, baseCap := newCaptureServer(t, nil)
+
+	withServer := func(server string, all bool) *Synthesis {
+		doc := parseFixture(t, "petstore-3.0.yaml")
+		for i := range doc.Operations {
+			if all || doc.Operations[i].ID == "listPets" {
+				doc.Operations[i].Servers = []string{server}
+			}
+		}
+		syn, err := Synthesize(doc, SynthesizeOptions{ClientName: "petstore"})
+		require.NoError(t, err)
+		return syn
+	}
+	staticHeader := func(context.Context) (http.Header, error) {
+		return http.Header{"X-Tenant-Token": {"static-secret"}}, nil
+	}
+	apiKey := map[string]schemas.MCPOpenAPICredential{"ApiKeyAuth": {Value: schemas.NewSecretVar("spec-secret")}}
+	baseUserinfo, err := url.Parse(base.URL + "/v1")
+	require.NoError(t, err)
+	baseUserinfo.User = url.User("userinfo-secret")
+
+	refused := []struct {
+		name string
+		opts ServerOptions
+	}{
+		{"static or per-user header", ServerOptions{Synthesis: withServer(foreign.URL+"/alt", false), BaseURL: base.URL + "/v1", HTTPClient: &http.Client{}, Headers: staticHeader}},
+		{"spec-mapped credential", ServerOptions{Synthesis: withServer(foreign.URL+"/alt", false), BaseURL: base.URL + "/v1", HTTPClient: &http.Client{}, Credentials: apiKey}},
+		{"base URL userinfo", ServerOptions{Synthesis: withServer(foreign.URL+"/alt", false), BaseURL: baseUserinfo.String(), HTTPClient: &http.Client{}}},
+		{"operation server userinfo", ServerOptions{Synthesis: withServer(strings.Replace(foreign.URL, "http://", "http://spec-user:spec-pass@", 1)+"/alt", false), BaseURL: base.URL + "/v1", HTTPClient: &http.Client{}}},
+		{"userinfo-shaped host is another origin", ServerOptions{Synthesis: withServer(strings.Replace(foreign.URL, "http://", "http://"+strings.TrimPrefix(base.URL, "http://")+"@", 1)+"/alt", false), BaseURL: base.URL + "/v1", HTTPClient: &http.Client{}, Headers: staticHeader}},
+		{"no base URL at all", ServerOptions{Synthesis: withServer(foreign.URL+"/alt", true), HTTPClient: &http.Client{}, Headers: staticHeader}},
+	}
+	for _, tc := range refused {
+		t.Run("refused: "+tc.name, func(t *testing.T) {
+			exec, err := NewExecutor(tc.opts)
+			require.NoError(t, err)
+			_, err = exec.Execute(context.Background(), findTool(t, tc.opts.Synthesis, "listPets"), nil)
+			require.Error(t, err, "a credentialed call to a cross-origin operation server must be refused")
+			assert.Contains(t, err.Error(), "different origin")
+			for _, secret := range []string{"static-secret", "spec-secret", "userinfo-secret", "spec-pass"} {
+				assert.NotContains(t, err.Error(), secret)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			assert.Zero(t, foreignHits, "no request may reach the foreign server")
+		})
+	}
+
+	t.Run("same origin operation server keeps its credentials", func(t *testing.T) {
+		syn := withServer(base.URL+"/alt", false)
+		exec, err := NewExecutor(ServerOptions{Synthesis: syn, BaseURL: base.URL + "/v1", HTTPClient: &http.Client{}, Headers: staticHeader, Credentials: apiKey})
+		require.NoError(t, err)
+		_, err = exec.Execute(context.Background(), findTool(t, syn, "listPets"), nil)
+		require.NoError(t, err)
+		assert.Equal(t, "/alt/pets", baseCap.path)
+		assert.Equal(t, "static-secret", baseCap.headers.Get("X-Tenant-Token"))
+		assert.Equal(t, "spec-secret", baseCap.headers.Get("X-API-Key"))
+	})
+	t.Run("explicit base_url pins the call and keeps its credentials", func(t *testing.T) {
+		syn := withServer(foreign.URL+"/alt", false)
+		exec, err := NewExecutor(ServerOptions{Synthesis: syn, BaseURL: base.URL + "/v1", BaseURLExplicit: true, HTTPClient: &http.Client{}, Headers: staticHeader})
+		require.NoError(t, err)
+		_, err = exec.Execute(context.Background(), findTool(t, syn, "listPets"), nil)
+		require.NoError(t, err)
+		assert.Equal(t, "/v1/pets", baseCap.path)
+		assert.Equal(t, "static-secret", baseCap.headers.Get("X-Tenant-Token"))
+	})
+	t.Run("credential-free cross-origin call is unchanged", func(t *testing.T) {
+		syn := withServer(foreign.URL+"/alt", false)
+		exec, err := NewExecutor(ServerOptions{Synthesis: syn, BaseURL: base.URL + "/v1", HTTPClient: &http.Client{}})
+		require.NoError(t, err)
+		_, err = exec.Execute(context.Background(), findTool(t, syn, "listPets"), nil)
+		require.NoError(t, err)
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Equal(t, 1, foreignHits)
+	})
+	t.Run("origin compares scheme, host case and the effective port", func(t *testing.T) {
+		syn := withServer("https://API.Example.com:443/alt", false)
+		exec, err := NewExecutor(ServerOptions{Synthesis: syn, BaseURL: "https://api.example.com/v1", HTTPClient: &http.Client{}, Headers: staticHeader})
+		require.NoError(t, err)
+		req, err := exec.BuildRequest(context.Background(), findTool(t, syn, "listPets"), nil)
+		require.NoError(t, err, "the default port and host case do not make another origin")
+		assert.Equal(t, "static-secret", req.Header.Get("X-Tenant-Token"))
+		for _, other := range []string{"http://api.example.com/alt", "https://api.example.com:8443/alt", "https://api.example.com.evil.test/alt"} {
+			syn := withServer(other, false)
+			exec, err := NewExecutor(ServerOptions{Synthesis: syn, BaseURL: "https://api.example.com/v1", HTTPClient: &http.Client{}, Headers: staticHeader})
+			require.NoError(t, err)
+			_, err = exec.BuildRequest(context.Background(), findTool(t, syn, "listPets"), nil)
+			require.ErrorContains(t, err, "different origin", other)
+		}
+	})
+}
