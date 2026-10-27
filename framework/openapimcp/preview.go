@@ -68,7 +68,7 @@ func Preview(data []byte, parseOpts ParseOptions, synthOpts SynthesizeOptions, b
 		Servers:         append([]string{}, doc.Servers...),
 		SecuritySchemes: make([]SecurityScheme, 0, len(doc.SecuritySchemes)),
 		Tools:           make([]ToolSummary, 0, len(syn.Tools)),
-		Unsupported:     append([]UnsupportedOperation{}, syn.Unsupported...),
+		Unsupported:     make([]UnsupportedOperation, 0, len(syn.Unsupported)),
 		Warnings:        append([]string{}, syn.Warnings...),
 		ToolCount:       len(syn.Tools),
 		SpecSize:        len(data),
@@ -82,13 +82,20 @@ func Preview(data []byte, parseOpts ParseOptions, synthOpts SynthesizeOptions, b
 	for _, name := range sortedSchemeNames(doc.SecuritySchemes) {
 		result.SecuritySchemes = append(result.SecuritySchemes, doc.SecuritySchemes[name])
 	}
+	// A path item reused by many paths hands the same text to every operation,
+	// and the response carries a copy per entry, so per-operation text is capped
+	// here as BuildDescription caps the description.
+	for _, u := range syn.Unsupported {
+		u.OperationID = capDescription(u.OperationID)
+		result.Unsupported = append(result.Unsupported, u)
+	}
 	for _, t := range syn.Tools {
 		result.Tools = append(result.Tools, ToolSummary{
 			Name:        t.Name,
-			OperationID: t.Operation.ID,
+			OperationID: capDescription(t.Operation.ID),
 			Method:      t.Operation.Method,
 			Path:        t.Operation.Path,
-			Summary:     t.Operation.Summary,
+			Summary:     capDescription(t.Operation.Summary),
 			Description: t.Description,
 			Deprecated:  t.Operation.Deprecated,
 			InputSchema: t.InputSchema,

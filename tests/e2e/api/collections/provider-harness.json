@@ -262840,7 +262840,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec preview of a reused path item with a large summary caps every tool description",
+          "name": "openai mcp-openapi-spec preview of a reused path item with a large summary caps every tool description and summary",
           "event": [
             {
               "listen": "prerequest",
@@ -262866,10 +262866,10 @@
                   "pm.test('the preview succeeds', function () {",
                   "  pm.expect(pm.response.code, txt.slice(0, 300)).to.eql(200);",
                   "});",
-                  "pm.test('every tool description is capped', function () {",
+                  "pm.test('every tool description, summary and operation id is capped', function () {",
                   "  var tools = (pm.response.json() || {}).tools || [];",
                   "  pm.expect(tools.length, txt.slice(0, 300)).to.eql(50);",
-                  "  var over = tools.filter(function (t) { return (t.description || '').length > 1100; });",
+                  "  var over = tools.filter(function (t) { return (t.description || '').length > 1100 || (t.summary || '').length > 1100 || (t.operation_id || '').length > 1100; });",
                   "  pm.expect(over.length, 'pre-fix every tool carried the full 1 MiB summary').to.eql(0);",
                   "});"
                 ]
