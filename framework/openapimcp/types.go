@@ -50,6 +50,14 @@ const (
 	// maxSynthesizedTextBytes bounds the names, descriptions and warnings all
 	// tools of one document retain together.
 	maxSynthesizedTextBytes = 16 << 20
+	// maxPathLen, maxMethodLen and maxOperationIDLen bound the identifiers each
+	// operation copies into its tool and preview entries, and maxOperations the
+	// operations (tools and unsupported ones) a document may declare. Over any of
+	// them the document is refused: identifiers are never truncated.
+	maxPathLen        = 2048
+	maxMethodLen      = 64
+	maxOperationIDLen = 1024
+	maxOperations     = 5000
 )
 
 // Parameter locations. The OpenAPI values plus 3.2's querystring.

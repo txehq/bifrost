@@ -85,30 +85,36 @@ func TestBuildDescription(t *testing.T) {
 	assert.Less(t, len(longSummary), maxDescriptionLen+20)
 }
 
-// TestSynthesize_ReusedPathItemSummaryIsBounded: one components.pathItems entry
-// with a 1 MiB summary referenced by 200 paths must not leave 200 MiB of tool
-// descriptions behind; each copy is capped.
+// TestSynthesize_ReusedPathItemSummaryIsBounded: a path item reused by many
+// paths hands its summary to every tool. Past the document budget the reuse is
+// refused at parse; within it, each tool's copy is capped.
 func TestSynthesize_ReusedPathItemSummaryIsBounded(t *testing.T) {
-	var paths strings.Builder
-	for i := 0; i < 200; i++ {
-		if i > 0 {
-			paths.WriteByte(',')
+	spec := func(uses, size int) string {
+		var paths strings.Builder
+		for i := 0; i < uses; i++ {
+			if i > 0 {
+				paths.WriteByte(',')
+			}
+			paths.WriteString(`"/p` + strconv.Itoa(i) + `":{"$ref":"#/components/pathItems/Shared"}`)
 		}
-		paths.WriteString(`"/p` + strconv.Itoa(i) + `":{"$ref":"#/components/pathItems/Shared"}`)
+		return `{"openapi":"3.1.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],"paths":{` + paths.String() + `},
+"components":{"pathItems":{"Shared":{"get":{"summary":"` + strings.Repeat("s", size) + `","responses":{"200":{"description":"ok"}}}}}}}`
 	}
-	spec := `{"openapi":"3.1.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],"paths":{` + paths.String() + `},
-"components":{"pathItems":{"Shared":{"get":{"summary":"` + strings.Repeat("s", 1<<20) + `","responses":{"200":{"description":"ok"}}}}}}}`
-	doc, err := Parse([]byte(spec), ParseOptions{})
+	_, err := Parse([]byte(spec(200, 1<<20)), ParseOptions{})
+	require.Error(t, err, "200 uses of a 1 MiB summary exceed the document budget")
+	assert.Contains(t, err.Error(), "across the document")
+
+	doc, err := Parse([]byte(spec(50, 256<<10)), ParseOptions{})
 	require.NoError(t, err)
 	syn, err := Synthesize(doc, SynthesizeOptions{ClientName: "t"})
 	require.NoError(t, err)
-	require.Len(t, syn.Tools, 200)
+	require.Len(t, syn.Tools, 50)
 	total := 0
 	for _, tool := range syn.Tools {
 		assert.LessOrEqual(t, len(tool.Description), maxDescriptionLen+64, tool.Name)
 		total += len(tool.Description)
 	}
-	assert.Less(t, total, 200*(maxDescriptionLen+64))
+	assert.Less(t, total, 50*(maxDescriptionLen+64))
 }
 
 func TestAnnotationsFor(t *testing.T) {

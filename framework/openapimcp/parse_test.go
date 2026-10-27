@@ -558,6 +558,77 @@ func TestParse_ReusedPathItemIsChargedPerUse(t *testing.T) {
 	assert.Len(t, doc.Operations, 2)
 }
 
+// TestParse_OperationIdentifiersAreBounded: path keys, method names and
+// operationIds are identifiers copied into every operation, tool and preview
+// entry. Oversized ones, or more operations than a document may declare, refuse
+// the document instead of being truncated into different identifiers.
+func TestParse_OperationIdentifiersAreBounded(t *testing.T) {
+	one := func(path, method, id string, version string) string {
+		return `{"openapi":"` + version + `","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{"` + path + `":{"` + method + `":{"operationId":"` + id + `","responses":{"200":{"description":"ok"}}}}}}`
+	}
+	_, err := Parse([]byte(one("/"+strings.Repeat("p", maxPathLen), "get", "a", "3.0.3")), ParseOptions{})
+	require.ErrorContains(t, err, "path")
+	_, err = Parse([]byte(one("/a", "get", strings.Repeat("o", maxOperationIDLen+1), "3.0.3")), ParseOptions{})
+	require.ErrorContains(t, err, "operationId")
+	custom := `{"openapi":"3.2.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{"/a":{"additionalOperations":{"` + strings.Repeat("M", maxMethodLen+1) + `":{"responses":{"200":{"description":"ok"}}}}}}}`
+	_, err = Parse([]byte(custom), ParseOptions{})
+	require.ErrorContains(t, err, "method")
+
+	var ops strings.Builder
+	for i := 0; i <= maxOperations; i++ {
+		if i > 0 {
+			ops.WriteByte(',')
+		}
+		fmt.Fprintf(&ops, `"M%d":{"responses":{}}`, i)
+	}
+	many := `{"openapi":"3.2.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{"/a":{"additionalOperations":{` + ops.String() + `}}}}`
+	_, err = Parse([]byte(many), ParseOptions{})
+	require.ErrorContains(t, err, "operations")
+
+	doc, err := Parse([]byte(one("/a/{id}", "get", "getA", "3.0.3")), ParseOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, "getA", doc.Operations[0].ID, "ordinary identifiers are untouched")
+}
+
+// TestParse_RefTextInMessagesIsBounded: a shared component that holds a huge
+// external $ref string, or recurses through one, is reported per operation. The
+// reference is shortened in every reason and warning, and repeated warnings are
+// recorded once, so the messages cannot multiply the string.
+func TestParse_RefTextInMessagesIsBounded(t *testing.T) {
+	hugeRef := "other.yaml#/" + strings.Repeat("r", 256<<10)
+	var paths strings.Builder
+	for i := 0; i < 50; i++ {
+		if i > 0 {
+			paths.WriteByte(',')
+		}
+		fmt.Fprintf(&paths, `"/p%d":{"get":{"operationId":"g%d","parameters":[{"$ref":"#/components/parameters/Ext"}],"responses":{"200":{"description":"ok"}}},
+"post":{"operationId":"r%d","requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Loop"}}}},"responses":{"200":{"description":"ok"}}}}`, i, i, i)
+	}
+	loopName := "Loop"
+	spec := `{"openapi":"3.0.3","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],"paths":{` + paths.String() + `},
+"components":{"parameters":{"Ext":{"$ref":"` + hugeRef + `"}},
+"schemas":{"` + loopName + `":{"type":"object","properties":{"next":{"$ref":"#/components/schemas/` + loopName + `"}}}}}}`
+	doc, err := Parse([]byte(spec), ParseOptions{})
+	require.NoError(t, err)
+	syn, err := Synthesize(doc, SynthesizeOptions{ClientName: "t"})
+	require.NoError(t, err)
+	reasons := 0
+	for _, u := range syn.Unsupported {
+		assert.LessOrEqual(t, len(u.Reason), maxDescriptionLen+8)
+		reasons += len(u.Reason)
+	}
+	assert.NotEmpty(t, syn.Unsupported, "the external reference is still reported")
+	assert.Less(t, reasons, 50*(maxDescriptionLen+8))
+	warnings := 0
+	for _, w := range doc.Warnings {
+		warnings += len(w)
+	}
+	assert.Less(t, warnings, 64<<10, "recursion warnings are recorded once, not per use")
+}
+
 // TestParse_RefSiblingsApplyIn31: from 3.1 on, keywords beside a $ref apply
 // alongside the target, so a body extending a base schema keeps both.
 func TestParse_RefSiblingsApplyIn31(t *testing.T) {
