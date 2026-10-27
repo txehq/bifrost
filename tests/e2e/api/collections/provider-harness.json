@@ -263171,6 +263171,137 @@
               ]
             }
           }
+        },
+        {
+          "name": "openai mcp-openapi-spec create a client whose base_url carries a token as its userinfo",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Run-unique identity, as for the petstore client above. bifrost.invalid never resolves, so the tool call below fails in transport.",
+                  "var run = Date.now() + '_' + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('openapiUserinfoId', 'harness-openapi-userinfo-' + run.replace('_', '-'));",
+                  "pm.collectionVariables.set('openapiUserinfoName', 'harness_openapi_userinfo_' + run);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi client with a userinfo base_url is created', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_id\": \"{{openapiUserinfoId}}\",\n  \"name\": \"{{openapiUserinfoName}}\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"none\",\n  \"tools_to_execute\": [\n    \"listPets\"\n  ],\n  \"openapi_config\": {\n    \"spec\": \"{\\n  \\\"openapi\\\": \\\"3.0.3\\\",\\n  \\\"info\\\": {\\n    \\\"title\\\": \\\"Harness userinfo redaction\\\",\\n    \\\"version\\\": \\\"1.0.0\\\"\\n  },\\n  \\\"paths\\\": {\\n    \\\"/pets\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"listPets\\\",\\n        \\\"summary\\\": \\\"List pets\\\",\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    }\\n  }\\n}\",\n    \"base_url\": \"https://harness-userinfo-token@bifrost.invalid/v1\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "openai mcp-openapi-spec a transport failure does not hand the base_url userinfo token to the model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('the tool call fails in transport and reports it as a tool error', function () {",
+                  "  pm.expect(pm.response.code, txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(pm.response.json().is_error, txt.slice(0, 400)).to.equal(true);",
+                  "  pm.expect(txt, txt.slice(0, 400)).to.include('request to upstream failed');",
+                  "});",
+                  "pm.test('the error text carries no userinfo token', function () {",
+                  "  pm.expect(txt, 'pre-fix Go kept the URL username in the transport error and the tool result handed it to the model: ' + txt.slice(0, 400)).to.not.include('harness-userinfo-token');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"openapi-userinfo-redaction\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"{{openapiUserinfoName}}-listPets\",\n    \"arguments\": \"{}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "openai mcp-openapi-spec cleanup deletes the userinfo client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi userinfo client is deleted', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{openapiUserinfoId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{openapiUserinfoId}}"
+              ]
+            }
+          }
         }
       ]
     },

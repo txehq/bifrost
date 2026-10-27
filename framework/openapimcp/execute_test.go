@@ -884,3 +884,42 @@ func TestBuildRequest_OptionalQuerystringRequiresItsFieldsWhenSent(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, "x", req.URL.Query().Get("q"))
 }
+
+// TestSanitizeURLError_RemovesUserinfoAndQuery: a transport error reaches the model
+// (as the tool result) and the logs. Go masks a URL's password there but keeps its
+// username, which is the whole credential when a token is the userinfo, so both
+// the userinfo and the query string are removed.
+func TestSanitizeURLError_RemovesUserinfoAndQuery(t *testing.T) {
+	for _, raw := range []string{
+		"https://secret-api-token@api.example.com/v1/pets?api_key=secret-key",
+		"https://svc:secret-password@api.example.com/v1/pets",
+		"https://api.example.com/v1/pets?token=secret-query",
+	} {
+		err := sanitizeURLError(&url.Error{Op: "Get", URL: raw, Err: io.ErrUnexpectedEOF})
+		msg := err.Error()
+		for _, secret := range []string{"secret-api-token", "secret-key", "svc", "secret-password", "secret-query"} {
+			assert.NotContains(t, msg, secret, "from %s", raw)
+		}
+		assert.Contains(t, msg, "api.example.com/v1/pets")
+		assert.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	}
+	plain := &url.Error{Op: "Get", URL: "https://api.example.com/v1", Err: io.EOF}
+	assert.Same(t, error(plain), sanitizeURLError(plain), "an error with nothing to remove is returned as is")
+
+	// Through Execute: a tool call to a dead upstream whose base URL carries a token
+	// as its userinfo returns an error result that names the failure, not the token.
+	dead := httptest.NewServer(http.NotFoundHandler())
+	deadURL, perr := url.Parse(dead.URL)
+	require.NoError(t, perr)
+	dead.Close()
+	deadURL.User = url.User("secret-api-token")
+	exec, syn := petstoreExecutor(t, dead, func(o *ServerOptions) {
+		o.BaseURL = deadURL.String() + "/v1"
+		o.HTTPClient = &http.Client{}
+	})
+	res, err := exec.Execute(context.Background(), findTool(t, syn, "listPets"), nil)
+	require.NoError(t, err)
+	assert.True(t, res.IsError)
+	assert.Contains(t, fmt.Sprint(res.Content), "request to upstream failed")
+	assert.NotContains(t, fmt.Sprint(res.Content), "secret-api-token", "a userinfo token never reaches the model through error text")
+}

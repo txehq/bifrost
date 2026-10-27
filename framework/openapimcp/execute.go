@@ -429,13 +429,16 @@ func (e *Executor) Execute(ctx context.Context, tool *Tool, args map[string]any)
 	return formatResponse(resp, body, truncated, e.maxBytes), nil
 }
 
-// sanitizeURLError strips the query string from url.Error messages so a
-// credential carried as a query parameter never reaches logs or the model.
+// sanitizeURLError strips the userinfo and the query string from url.Error
+// messages so a credential carried in either never reaches logs or the model. Go
+// masks a URL's password in these messages but keeps its username, which is the
+// whole credential when a token is the userinfo.
 func sanitizeURLError(err error) error {
 	var uerr *url.Error
 	if errors.As(err, &uerr) {
-		if u, perr := url.Parse(uerr.URL); perr == nil && u.RawQuery != "" {
+		if u, perr := url.Parse(uerr.URL); perr == nil && (u.RawQuery != "" || u.User != nil) {
 			u.RawQuery = ""
+			u.User = nil
 			return &url.Error{Op: uerr.Op, URL: u.String(), Err: uerr.Err}
 		}
 	}
