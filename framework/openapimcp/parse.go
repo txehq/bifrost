@@ -184,6 +184,9 @@ func parseV3(tree map[string]any, version Version, res *resolver, doc *Document,
 			}
 			return fmt.Errorf("path %s: %w", p, err)
 		}
+		if err := res.chargeReuse(paths[p], itemRaw); err != nil {
+			return fmt.Errorf("path %s: %w", p, err)
+		}
 		item := asMap(itemRaw)
 		pathParams, pathParamErr := parseParametersV3(asSlice(item["parameters"]), res)
 		pathServers := parseServers(item["servers"], doc, opts)

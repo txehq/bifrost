@@ -119,6 +119,50 @@ func dataBytes(v any, limit int) int {
 	}
 }
 
+// chargeNode charges a whole node, every container's entries and every key and
+// string's encoded bytes, against the document budgets, stopping at the first
+// budget it exceeds. It is for nodes reached through $ref that the parser copies
+// outside resolve, such as a path item parsed again for each path using it.
+func (r *resolver) chargeNode(v any) error {
+	switch t := v.(type) {
+	case map[string]any:
+		if err := r.charge(1 + len(t)); err != nil {
+			return err
+		}
+		if err := r.chargeBytes(keyBytes(t)); err != nil {
+			return err
+		}
+		for _, val := range t {
+			if err := r.chargeNode(val); err != nil {
+				return err
+			}
+		}
+	case []any:
+		if err := r.charge(1 + len(t)); err != nil {
+			return err
+		}
+		for _, val := range t {
+			if err := r.chargeNode(val); err != nil {
+				return err
+			}
+		}
+	case string:
+		return r.chargeBytes(jsonLen(t))
+	}
+	return nil
+}
+
+// chargeReuse charges a path item's parsing against the document budgets when it
+// was reached through $ref: every path that references it parses it again.
+func (r *resolver) chargeReuse(raw, resolved any) error {
+	if m, ok := raw.(map[string]any); ok {
+		if _, isRef := m["$ref"]; isRef {
+			return r.chargeNode(resolved)
+		}
+	}
+	return nil
+}
+
 func (r *resolver) warn(format string, args ...any) {
 	r.warnings = append(r.warnings, fmt.Sprintf(format, args...))
 }

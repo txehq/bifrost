@@ -65,6 +65,9 @@ func parseSwagger2(tree map[string]any, res *resolver, doc *Document, opts Parse
 			doc.Warnings = append(doc.Warnings, fmt.Sprintf("path %s skipped: %v", p, err))
 			continue
 		}
+		if err := res.chargeReuse(paths[p], itemRaw); err != nil {
+			return fmt.Errorf("path %s: %w", p, err)
+		}
 		item := asMap(itemRaw)
 		pathParamsRaw := asSlice(item["parameters"])
 		for _, method := range methodsV2 {
