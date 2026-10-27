@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -291,6 +292,35 @@ func TestResolverRefLookupEscapes(t *testing.T) {
 	require.ErrorContains(t, err, "expected a JSON pointer")
 }
 
+// parseHangGuard turns a runaway expansion into a test failure rather than the
+// package timeout. It is not a speed check: race and coverage builds on a loaded
+// CI runner are tens of times slower than a plain build, so the budget tests
+// assert the work the parser did (resolver counters, heap allocated), never
+// elapsed time.
+const parseHangGuard = 2 * time.Minute
+
+// parseWithin runs parse under parseHangGuard and returns the resolver too.
+func parseWithin(t *testing.T, spec string) (*Document, *resolver, error) {
+	t.Helper()
+	type result struct {
+		doc *Document
+		res *resolver
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		doc, res, err := parse([]byte(spec), ParseOptions{})
+		done <- result{doc, res, err}
+	}()
+	select {
+	case got := <-done:
+		return got.doc, got.res, got.err
+	case <-time.After(parseHangGuard):
+		t.Fatalf("parse did not finish within %s: expansion is not bounded", parseHangGuard)
+		return nil, nil, nil
+	}
+}
+
 // TestParse_RefExpansionIsBounded: every level references the next twice, so a
 // spec of a few KB expands to 2^depth copies. Expansion must stop at a budget
 // and report the operation unsupported instead of consuming CPU and memory.
@@ -305,10 +335,14 @@ func TestParse_RefExpansionIsBounded(t *testing.T) {
 "paths":{"/boom":{"post":{"operationId":"boom","requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/L0"}}}},"responses":{"200":{"description":"ok"}}}},
 "/ok":{"get":{"operationId":"ok","responses":{"200":{"description":"ok"}}}}},
 "components":{"schemas":{` + schemas.String() + `}}}`
-	start := time.Now()
-	doc, err := Parse([]byte(spec), ParseOptions{})
+	doc, res, err := parseWithin(t, spec)
 	require.NoError(t, err)
-	assert.Less(t, time.Since(start), 2*time.Second, "expansion must be cut off early")
+	// Each level is a $ref map and an object map (two nodes) copying seven
+	// entries, so stopping at the per-call node cap copies at most four entries
+	// a node; the full expansion would copy that for 2^depth levels.
+	t.Logf("entries copied %d (node cap %d, full expansion over %d levels)", res.total, maxResolvedNodes, 1<<depth)
+	assert.LessOrEqual(t, res.total, 4*(maxResolvedNodes+1), "expansion must be cut off at the node cap")
+	assert.Less(t, res.total, 1<<depth, "expansion must stop well short of the full tree")
 	boom := findOp(t, doc, http.MethodPost, "/boom")
 	assert.Contains(t, boom.Unsupported, "expands to more than", "the exploding operation is reported unsupported")
 	assert.Empty(t, findOp(t, doc, http.MethodGet, "/ok").Unsupported, "other operations are unaffected")
@@ -340,20 +374,25 @@ func TestParse_RefExpansionIsBoundedAcrossOperations(t *testing.T) {
 "components":{"schemas":{"Big":{"type":"object","properties":{` + props.String() + `}}}}}`
 	require.Less(t, len(spec), MaxSpecBytes)
 
-	start := time.Now()
-	_, err := Parse([]byte(spec), ParseOptions{})
+	_, res, err := parseWithin(t, spec)
 	require.Error(t, err, "a document whose shared $refs expand past the document budget must be refused")
 	assert.Contains(t, err.Error(), "across the document")
-	assert.Less(t, time.Since(start), 5*time.Second, "expansion must stop at the budget")
 
 	// The same schema used by a handful of operations is well inside the budget.
 	small := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
 "paths":{"/a":{"post":{"operationId":"a","requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Big"}}}},"responses":{"200":{"description":"ok"}}}},
 "/b":{"post":{"operationId":"b","requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Big"}}}},"responses":{"200":{"description":"ok"}}}}},
 "components":{"schemas":{"Big":{"type":"object","properties":{` + props.String() + `}}}}}`
-	doc, err := Parse([]byte(small), ParseOptions{})
+	doc, smallRes, err := parseWithin(t, small)
 	require.NoError(t, err)
 	assert.Len(t, doc.Operations, 2)
+
+	// Copying stops within one use of the budget; every operation after it is
+	// refused at its first charge. Without the budget all uses would be copied.
+	perUse := smallRes.total / 2
+	t.Logf("entries copied %d (budget %d, per use %d, all %d uses %d)", res.total, maxDocumentResolvedEntries, perUse, operations, operations*perUse)
+	assert.LessOrEqual(t, res.total, maxDocumentResolvedEntries+2*perUse, "copying must stop at the document budget")
+	assert.Less(t, res.total, operations*perUse, "copying must stop well short of every use")
 
 	// The budget counts copied entries, not containers: a schema holding 20,000
 	// scalar keywords is a single node, yet every use copies all of them.
@@ -373,9 +412,11 @@ func TestParse_RefExpansionIsBoundedAcrossOperations(t *testing.T) {
 "paths":{` + widePaths.String() + `},
 "components":{"schemas":{"Wide":{` + wide.String() + `"type":"object"}}}}`
 	require.Less(t, len(wideSpec), MaxSpecBytes)
-	_, err = Parse([]byte(wideSpec), ParseOptions{})
+	_, res, err = parseWithin(t, wideSpec)
 	require.Error(t, err, "a schema of many scalar keywords reused past the entry budget must be refused")
 	assert.Contains(t, err.Error(), "across the document")
+	t.Logf("wide: entries copied %d (budget %d, all %d uses about %d)", res.total, maxDocumentResolvedEntries, wideOperations, wideOperations*20000)
+	assert.LessOrEqual(t, res.total, maxDocumentResolvedEntries+2*20002, "copying must stop at the document budget")
 }
 
 // TestParse_RefExpansionBytesAreBoundedAcrossTheDocument: instance data such as
@@ -398,18 +439,22 @@ func TestParse_RefExpansionBytesAreBoundedAcrossTheDocument(t *testing.T) {
 "components":{"schemas":{"Big":{"type":"string","default":"` + big + `"}}}}`
 	require.Less(t, len(spec), MaxSpecBytes)
 
-	start := time.Now()
-	_, err := Parse([]byte(spec), ParseOptions{})
+	_, res, err := parseWithin(t, spec)
 	require.Error(t, err, "a document whose shared $refs hand out more bytes than the budget must be refused")
 	assert.Contains(t, err.Error(), "across the document")
-	assert.Less(t, time.Since(start), 5*time.Second)
 
 	// A few uses of the same large default are well inside the budget.
 	small := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
 "paths":{"/a":{"get":{"operationId":"a","parameters":[{"name":"q","in":"query","schema":{"$ref":"#/components/schemas/Big"}}],"responses":{"200":{"description":"ok"}}}}},
 "components":{"schemas":{"Big":{"type":"string","default":"` + big + `"}}}}`
-	doc, err := Parse([]byte(small), ParseOptions{})
+	doc, smallRes, err := parseWithin(t, small)
 	require.NoError(t, err)
+
+	// Bytes stop within one use of the budget; without it every use is paid for.
+	perUse := smallRes.bytes
+	t.Logf("bytes handed out %d (budget %d, per use %d, all %d uses %d)", res.bytes, maxDocumentResolvedBytes, perUse, operations, operations*perUse)
+	assert.LessOrEqual(t, res.bytes, maxDocumentResolvedBytes+2*perUse, "bytes must stop at the document budget")
+	assert.Less(t, res.bytes, operations*perUse, "bytes must stop well short of every use")
 	_, err = Synthesize(doc, SynthesizeOptions{ClientName: "t"})
 	require.NoError(t, err)
 
@@ -498,11 +543,17 @@ func TestParse_ServerVariableExpansionIsBounded(t *testing.T) {
 	repeated := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},
 "servers":[{"url":"https://h/` + strings.Repeat("{x}", 1000) + `","variables":{"x":{"default":"` + def + `"}}}],
 "paths":{"/a":{"get":{"operationId":"a","responses":{"200":{"description":"ok"}}}}}}`
-	start := time.Now()
-	_, err := Parse([]byte(repeated), ParseOptions{})
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, _, err := parseWithin(t, repeated)
+	runtime.ReadMemStats(&after)
 	require.Error(t, err, "1,000 copies of a 10 KiB default would build a 10 MiB URL")
 	assert.Contains(t, err.Error(), "server URL")
-	assert.Less(t, time.Since(start), 2*time.Second)
+	// The size is checked before the URL is built, so the refusal allocates a
+	// small multiple of the 13 KiB spec, never the 10 MiB URL.
+	allocated := after.TotalAlloc - before.TotalAlloc
+	t.Logf("allocated %d bytes refusing a %d-byte spec", allocated, len(repeated))
+	assert.Less(t, allocated, uint64(2<<20), "the expanded URL must not be built")
 
 	// Each URL under the per-URL bound, but many of them over the document's.
 	var paths strings.Builder
@@ -543,11 +594,20 @@ func TestParse_ReusedPathItemIsChargedPerUse(t *testing.T) {
 	}
 	spec := `{"openapi":"3.1.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],"paths":{` + paths.String() + `},
 "components":{"pathItems":{"Shared":{"get":{"operationId":"g","security":[` + strings.Join(alts, ",") + `],"responses":{"200":{"description":"ok"}}}}}}}`
-	start := time.Now()
-	_, err := Parse([]byte(spec), ParseOptions{})
+	_, res, err := parseWithin(t, spec)
 	require.Error(t, err, "100 uses of a path item with 10,000 security alternatives exceed the document budget")
 	assert.Contains(t, err.Error(), "across the document")
-	assert.Less(t, time.Since(start), 5*time.Second)
+
+	// One use of the shared item, to bound the work: charging stops within one
+	// use of the budget instead of parsing all 100.
+	one := `{"openapi":"3.1.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],"paths":{"/p0":{"$ref":"#/components/pathItems/Shared"}},
+"components":{"pathItems":{"Shared":{"get":{"operationId":"g","security":[` + strings.Join(alts, ",") + `],"responses":{"200":{"description":"ok"}}}}}}}`
+	_, oneRes, err := parseWithin(t, one)
+	require.NoError(t, err)
+	perUse := oneRes.total
+	t.Logf("entries charged %d (budget %d, per use %d, all 100 uses %d)", res.total, maxDocumentResolvedEntries, perUse, 100*perUse)
+	assert.LessOrEqual(t, res.total, maxDocumentResolvedEntries+2*perUse, "charging must stop at the document budget")
+	assert.Less(t, res.total, 100*perUse, "charging must stop well short of every use")
 
 	// A path item reused a few times is fine.
 	small := `{"openapi":"3.1.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
