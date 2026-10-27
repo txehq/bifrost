@@ -3,6 +3,7 @@ package configstore
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,15 +36,51 @@ import (
 // functions directly.
 var testMigrationLogger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
-// pgTestSchema is this package's dedicated Postgres schema. Test packages
-// (configstore, configstore/tables, logstore) run in parallel against the same
-// database, so each one works in its own schema to avoid clobbering the
-// others' tables and rows.
+// pgTestSchema is this package's dedicated Postgres schema inside its own test
+// database (pgTestDatabase). Tests that need a clean slate drop and recreate
+// objects in it, and other packages run in parallel in their own databases.
 const pgTestSchema = "configstore_test"
 
+// pgTestDatabase is this package's own database on the postgres service in
+// tests/docker-compose.yml. A schema is not enough: CREATE INDEX CONCURRENTLY
+// waits on every older transaction in the database, and the materialized-view
+// refresh lock that migrations pause on (logstore.PauseMatViewsForMigrations) is
+// an advisory lock scoped to the database. CI runs the framework packages in
+// parallel, so the logstore and queue tests' refreshes and long readers in a
+// shared database stalled this package's migration and upgrade tests.
+const pgTestDatabase = "bifrost_configstore_test"
+
 // postgresDSN matches the postgres service in tests/docker-compose.yml and
-// framework/docker-compose.yml.
-const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable search_path=" + pgTestSchema
+// framework/docker-compose.yml, on this package's own database.
+const postgresDSN = "host=localhost user=bifrost password=bifrost_password dbname=" + pgTestDatabase + " port=5432 sslmode=disable search_path=" + pgTestSchema
+
+// pgAdminDSN reaches the service's default database, where pgTestDatabase is created.
+const pgAdminDSN = "host=localhost user=bifrost password=bifrost_password dbname=bifrost port=5432 sslmode=disable"
+
+// TestMain creates pgTestDatabase before any test opens postgresDSN. When Postgres
+// is unreachable nothing is created and the Postgres tests skip as before.
+func TestMain(m *testing.M) {
+	_ = ensurePostgresTestDatabase()
+	os.Exit(m.Run())
+}
+
+// ensurePostgresTestDatabase creates pgTestDatabase if it does not exist.
+func ensurePostgresTestDatabase() error {
+	admin, err := sql.Open("pgx", pgAdminDSN)
+	if err != nil {
+		return err
+	}
+	defer admin.Close()
+	var exists bool
+	if err := admin.QueryRow("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = $1)", pgTestDatabase).Scan(&exists); err != nil || exists {
+		return err
+	}
+	// Another test process may create it between the check and here (SQLSTATE 42P04).
+	if _, err := admin.Exec("CREATE DATABASE " + pgTestDatabase); err != nil && !strings.Contains(err.Error(), "42P04") {
+		return err
+	}
+	return nil
+}
 
 // namedDB pairs a backend name with its GORM connection for use in subtests.
 type namedDB struct {
