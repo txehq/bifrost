@@ -311,6 +311,36 @@ start_previous_bifrost() {
 }
 
 # Wait for bifrost to start
+# bifrost_owns_port succeeds when the process listening on BIFROST_PORT is BIFROST_PID or
+# one of its descendants (npx runs the server as a child). Without it a server another run
+# left on the port would answer every request, and the run would seed and read through it.
+bifrost_owns_port() {
+  local listener="" p attempt
+  if ! command -v lsof >/dev/null 2>&1; then
+    log_error "lsof is required to check that port $BIFROST_PORT is served by this run's bifrost"
+    return 1
+  fi
+  for attempt in 1 2 3 4 5; do
+    listener=$(lsof -nP -t -iTCP:"$BIFROST_PORT" -sTCP:LISTEN 2>/dev/null | head -1)
+    [ -n "$listener" ] && break
+    sleep 1
+  done
+  if [ -z "$listener" ]; then
+    log_error "No process listens on port $BIFROST_PORT although bifrost reported it started"
+    return 1
+  fi
+  for listener in $(lsof -nP -t -iTCP:"$BIFROST_PORT" -sTCP:LISTEN 2>/dev/null); do
+    p=$listener
+    while [ -n "$p" ] && [ "$p" -gt 1 ]; do
+      [ "$p" = "${BIFROST_PID:-}" ] && continue 2
+      p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
+    done
+    log_error "Port $BIFROST_PORT is served by process $listener ($(ps -o comm= -p "$listener" 2>/dev/null)), not by the bifrost this run started"
+    return 1
+  done
+  log_info "Port $BIFROST_PORT is served by the bifrost this run started (PID $BIFROST_PID)"
+}
+
 wait_for_bifrost() {
   local log_file="$1"
   local max_wait="${2:-60}"
@@ -318,7 +348,8 @@ wait_for_bifrost() {
 
   while [ $elapsed -lt $max_wait ]; do
     if grep -q "successfully started bifrost" "$log_file" 2>/dev/null; then
-      return 0
+      bifrost_owns_port
+      return
     fi
 
     # Check if process is still running
@@ -598,24 +629,46 @@ run_sqlite_sql_file() {
 }
 
 # Apply the shared faker SQL to one SQLite store. The same file is run against both
-# config.db and logs.db, so "no such table" for the other store's tables is expected;
-# any other error (unknown column, constraint, syntax) means the faker SQL no longer
-# matches the schema and its rows were silently dropped.
+# config.db and logs.db, so "no such table" is expected for a table of the counterpart
+# store, and only for one: the table must exist in counterpart_db and not in db_path. Any
+# other error (a missing table that is in neither store, unknown column, constraint,
+# syntax), or a non-zero exit the CLI explains with no error line, means the faker SQL
+# no longer matches the schema and its rows were silently dropped.
 apply_sqlite_faker_sql() {
   local db_path="$1"
   local sql_file="$2"
+  local counterpart_db="${3:-}"
 
-  local output errors
-  output=$(sqlite3 "$db_path" < "$sql_file" 2>&1 >/dev/null || true)
+  local output status=0 errors line table unexpected=""
+  output=$(sqlite3 "$db_path" < "$sql_file" 2>&1 >/dev/null) || status=$?
   # The CLI may follow an error line with an SQL excerpt and an "error here" marker,
   # so decide on the header lines only and print the full output for context
-  errors=$(printf '%s\n' "$output" | grep -E '^(Parse error|Runtime error|Error)' | grep -v "no such table: " || true)
-  if [ -n "$errors" ]; then
+  errors=$(printf '%s\n' "$output" | grep -E '^(Parse error|Runtime error|Error)' || true)
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    table=$(printf '%s\n' "$line" | sed -n 's/.*no such table: \([A-Za-z_][A-Za-z0-9_]*\)$/\1/p')
+    if [ -n "$table" ] && [ -n "$counterpart_db" ] \
+      && sqlite_has_table "$counterpart_db" "$table" && ! sqlite_has_table "$db_path" "$table"; then
+      continue
+    fi
+    unexpected="${unexpected}${line}"$'\n'
+  done <<< "$errors"
+  if [ -z "$errors" ] && [ "$status" -ne 0 ]; then
+    unexpected="sqlite3 exited $status with no error line"
+  fi
+  if [ -n "$unexpected" ]; then
     log_error "Faker SQL errors in $(basename "$db_path"):"
+    printf '%s\n' "$unexpected" >&2
     echo "$output" >&2
     return 1
   fi
   return 0
+}
+
+# sqlite_has_table <db> <table>: succeeds when <db> is a readable SQLite file with that table.
+sqlite_has_table() {
+  [ -f "$1" ] || return 1
+  [ "$(sqlite3 "$1" "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '$2';" 2>/dev/null)" = "1" ]
 }
 
 get_sqlite_table_count() {
@@ -7027,11 +7080,11 @@ EOF
 
     # Insert faker data into config store
     log_info "Inserting faker data..."
-    if [ -f "$config_db" ] && ! apply_sqlite_faker_sql "$config_db" "$version_faker_sql"; then
+    if [ -f "$config_db" ] && ! apply_sqlite_faker_sql "$config_db" "$version_faker_sql" "$logs_db"; then
       log_error "Faker data insert into config store failed for $version"
       return 1
     fi
-    if [ -f "$logs_db" ] && ! apply_sqlite_faker_sql "$logs_db" "$version_faker_sql"; then
+    if [ -f "$logs_db" ] && ! apply_sqlite_faker_sql "$logs_db" "$version_faker_sql" "$config_db"; then
       log_error "Faker data insert into logs store failed for $version"
       return 1
     fi
