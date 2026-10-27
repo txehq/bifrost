@@ -68,6 +68,18 @@ jobs:
         if: ${{ !cancelled() }}
         run: ./.github/workflows/scripts/migration-postgres-ready.test.sh
 
+      # Throwaway SQLite files only, with the runner image's sqlite3 (no apt here): the faker
+      # step must fail on any missing table that is not the counterpart store's.
+      - name: Check SQLite faker SQL fails closed
+        if: ${{ !cancelled() }}
+        run: ./.github/workflows/scripts/migration-sqlite-faker.test.sh
+
+      # Loopback Python listeners only: the migration tests must refuse a port that the
+      # bifrost they started does not serve.
+      - name: Check migration tests use only their own server
+        if: ${{ !cancelled() }}
+        run: ./.github/workflows/scripts/migration-port-owner.test.sh
+
       # Release image publication guards. Fake curl/docker only: nothing reaches a registry.
       # They run even when an earlier guard failed, so their own results are always reported.
       - name: Check GHCR tag probe fails closed
