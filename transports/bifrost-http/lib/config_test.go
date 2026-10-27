@@ -26843,8 +26843,9 @@ func TestReconcileProviderKeys_LegacyAliasHashKeepsStoredEdits(t *testing.T) {
 
 // TestPrepareOpenAPIClientFromFile covers how an openapi client declared in
 // config.json is normalized at load: spec_file is read relative to the config
-// directory and inlined, the server-computed metadata is filled from a parse,
-// a spec_url-only entry is left for connect time, and the auth types the
+// directory and inlined, the server-computed metadata is filled from a parse
+// and never taken from the file, a spec_url-only entry is left for connect
+// time, and the auth types the
 // synthesized server cannot honor are refused.
 func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 	dir := t.TempDir()
@@ -26864,6 +26865,27 @@ func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 	urlOnly := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeHeaders, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecURL: str("https://api.example.com/openapi.json")}}
 	require.NoError(t, prepareOpenAPIClientFromFile(urlOnly, dir))
 	assert.Empty(t, urlOnly.OpenAPIConfig.Spec, "a spec_url is fetched at connect time, not at load")
+
+	// The metadata is the server's, never config.json's: values a file supplies
+	// are dropped, whether a parse replaces them or (spec_url only) nothing does.
+	authored := func(oc *schemas.MCPOpenAPIConfig) *schemas.MCPOpenAPIConfig {
+		oc.SpecSize, oc.SpecHash, oc.SpecTitle, oc.OpenAPIVersion, oc.OperationCount = 999, "authored", "Authored", "9.9.9", 999
+		return oc
+	}
+	urlAuthored := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: authored(&schemas.MCPOpenAPIConfig{SpecURL: str("https://api.example.com/openapi.json")})}
+	require.NoError(t, prepareOpenAPIClientFromFile(urlAuthored, dir))
+	assert.Zero(t, urlAuthored.OpenAPIConfig.SpecSize)
+	assert.Empty(t, urlAuthored.OpenAPIConfig.SpecHash)
+	assert.Empty(t, urlAuthored.OpenAPIConfig.SpecTitle)
+	assert.Empty(t, urlAuthored.OpenAPIConfig.OpenAPIVersion)
+	assert.Zero(t, urlAuthored.OpenAPIConfig.OperationCount)
+	inlineAuthored := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: authored(&schemas.MCPOpenAPIConfig{Spec: spec})}
+	require.NoError(t, prepareOpenAPIClientFromFile(inlineAuthored, dir))
+	assert.Equal(t, len(spec), inlineAuthored.OpenAPIConfig.SpecSize)
+	assert.Equal(t, "Petstore", inlineAuthored.OpenAPIConfig.SpecTitle)
+	assert.Equal(t, "3.0.3", inlineAuthored.OpenAPIConfig.OpenAPIVersion)
+	assert.Equal(t, 1, inlineAuthored.OpenAPIConfig.OperationCount)
+	assert.NotEqual(t, "authored", inlineAuthored.OpenAPIConfig.SpecHash)
 
 	for name, cfg := range map[string]*schemas.MCPClientConfig{
 		"missing block":  {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI},
