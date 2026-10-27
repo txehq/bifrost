@@ -4519,6 +4519,63 @@ func TestMigrationAddVirtualKeyDisableContentLoggingColumn(t *testing.T) {
 	assert.Equal(t, storedOff.ConfigHash, recomputed, "the stored hash must match what synchronization recomputes")
 }
 
+// TestMigrationAddVirtualKeyMetadataColumn pins the metadata column: the migration adds it and is
+// idempotent, a key without metadata reads back with none, and the config hash only moves when the
+// key has metadata, so every pre-existing key keeps the hash synchronization already stored for it.
+func TestMigrationAddVirtualKeyMetadataColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableVirtualKey{}, "metadata"), "metadata column must not exist before migration")
+	require.NoError(t, migrationAddVirtualKeyMetadataColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "metadata"))
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_metadata_column").Error)
+	require.NoError(t, migrationAddVirtualKeyMetadataColumn(ctx, db, testMigrationLogger))
+
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}))
+	plain := tables.TableVirtualKey{ID: "vk-md-none", Name: "vk-md-none", Value: *schemas.NewSecretVar("sk-bf-vk-md-none")}
+	tagged := tables.TableVirtualKey{ID: "vk-md-tagged", Name: "vk-md-tagged", Value: *schemas.NewSecretVar("sk-bf-vk-md-tagged"), Metadata: map[string]string{"cost_center": "cc-42", "env": "prod"}}
+	for _, vk := range []*tables.TableVirtualKey{&plain, &tagged} {
+		hash, err := GenerateVirtualKeyHash(*vk)
+		require.NoError(t, err)
+		vk.ConfigHash = hash
+		require.NoError(t, db.Create(vk).Error)
+	}
+	read := func(id string) tables.TableVirtualKey {
+		var stored tables.TableVirtualKey
+		require.NoError(t, db.First(&stored, "id = ?", id).Error)
+		return stored
+	}
+	assert.Nil(t, read(plain.ID).Metadata)
+	storedTagged := read(tagged.ID)
+	assert.Equal(t, map[string]string{"cost_center": "cc-42", "env": "prod"}, storedTagged.Metadata)
+	recomputed, err := GenerateVirtualKeyHash(storedTagged)
+	require.NoError(t, err)
+	assert.Equal(t, storedTagged.ConfigHash, recomputed, "the stored hash must match what synchronization recomputes")
+
+	// Hash stability: nil and empty metadata hash like a key from before the column existed, any
+	// metadata moves the hash, and a value change moves it again.
+	same := tables.TableVirtualKey{ID: plain.ID, Name: plain.Name, Value: *schemas.NewSecretVar("sk-bf-vk-md-none")}
+	hashWith := func(md map[string]string) string {
+		same.Metadata = md
+		hash, err := GenerateVirtualKeyHash(same)
+		require.NoError(t, err)
+		return hash
+	}
+	assert.Equal(t, plain.ConfigHash, hashWith(nil), "no metadata must hash exactly like a key from before the column existed")
+	assert.Equal(t, plain.ConfigHash, hashWith(map[string]string{}), "empty metadata must hash like no metadata")
+	withMD := hashWith(map[string]string{"cost_center": "cc-42"})
+	assert.NotEqual(t, plain.ConfigHash, withMD, "adding metadata must change the hash")
+	assert.NotEqual(t, withMD, hashWith(map[string]string{"cost_center": "cc-43"}), "changing a value must change the hash")
+	assert.NotEqual(t, hashWith(map[string]string{"a": "bc"}), hashWith(map[string]string{"ab": "c"}), "key/value boundaries must not be ambiguous")
+	for range 20 {
+		assert.Equal(t, hashWith(map[string]string{"a": "1", "b": "2", "c": "3"}), hashWith(map[string]string{"c": "3", "b": "2", "a": "1"}), "map order must not move the hash")
+	}
+}
+
 // TestMigrationAddVirtualKeyDisableContentLoggingColumn_NonRollbackable pins that rolling the
 // column back is refused rather than performed. The column is the only home for a key's own
 // content-logging decision, and a nil reads as "inherit": dropping it would not merely lose
@@ -5215,6 +5272,16 @@ func indexMigrationDBs(t *testing.T) []namedDB {
 	return append(dbs, namedDB{name: "postgres", db: pgDB})
 }
 
+// forceConcurrentIndexBuilds makes every table read as large for the rest of the
+// test, so ensureIndexConcurrently takes the CREATE INDEX CONCURRENTLY path that
+// the race tests below exercise rather than the small-table plain build.
+func forceConcurrentIndexBuilds(t *testing.T) {
+	t.Helper()
+	prevBytes, prevRows := smallTableIndexMaxBytes, smallTableIndexMaxRows
+	smallTableIndexMaxBytes, smallTableIndexMaxRows = 0, 0
+	t.Cleanup(func() { smallTableIndexMaxBytes, smallTableIndexMaxRows = prevBytes, prevRows })
+}
+
 // indexExists reports whether index name exists on table, on either dialect.
 func indexExists(t *testing.T, db *gorm.DB, table, name string) bool {
 	t.Helper()
@@ -5801,6 +5868,7 @@ type parkedIndexBuild struct {
 // state the next pod finds after a pod is killed mid-migration.
 func parkIndexBuild(t *testing.T) parkedIndexBuild {
 	t.Helper()
+	forceConcurrentIndexBuilds(t)
 	var pod1 *gorm.DB
 	for _, ndb := range indexMigrationDBs(t) {
 		if ndb.name == "postgres" {
@@ -5892,4 +5960,167 @@ func TestEnsureIndexConcurrentlyRebuildsAfterPeerBuildFails(t *testing.T) {
 	build.release()
 	require.NoError(t, <-pod2Done)
 	require.True(t, indexExists(t, build.pod2, "race_rows", "idx_race_rows_v"))
+}
+
+// TestEnsureIndexSmallTableDoesNotWaitOnOldSnapshots reproduces the 2.3.0 upgrade
+// stall: an older replica's long transaction (a materialized-view refresh over a
+// large logs table in the same database) held a snapshot, and every CREATE INDEX
+// CONCURRENTLY in the startup migrations, even on a tiny config table, waited for
+// it. A small table must now be indexed with a plain build that only needs its
+// own table lock, so it finishes while the unrelated snapshot is still open.
+func TestEnsureIndexSmallTableDoesNotWaitOnOldSnapshots(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec(`CREATE TABLE small_cfg (id INTEGER PRIMARY KEY, vk VARCHAR(64) NOT NULL)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE big_logs (id INTEGER PRIMARY KEY)`).Error)
+	require.NoError(t, db.Exec(`INSERT INTO small_cfg SELECT g, 'vk' || g FROM generate_series(1, 50) g`).Error)
+
+	// The "old replica": a REPEATABLE READ transaction that has taken its snapshot
+	// and touched only an unrelated table, standing in for a long REFRESH.
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	blocker, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	_, err = blocker.ExecContext(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ")
+	require.NoError(t, err)
+	_, err = blocker.ExecContext(ctx, "SELECT count(*) FROM big_logs")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = blocker.ExecContext(ctx, "COMMIT")
+		_ = blocker.Close()
+	})
+
+	done := make(chan error, 1)
+	go func() { done <- ensureIndexConcurrently(db, "small_cfg", "idx_small_cfg_vk", "vk", false) }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("small-table index build waited on an unrelated old snapshot")
+	}
+	require.True(t, indexExists(t, db, "small_cfg", "idx_small_cfg_vk"))
+
+	// Idempotent: a second run is a no-op on the now-valid index.
+	require.NoError(t, ensureIndexConcurrently(db, "small_cfg", "idx_small_cfg_vk", "vk", false))
+}
+
+// TestEnsureIndexSmallTableRetriesLockTimeout pins that the plain small-table
+// build waits out a writer holding a conflicting lock in bounded slices instead
+// of queueing behind it indefinitely or failing on the first lock timeout.
+func TestEnsureIndexSmallTableRetriesLockTimeout(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec(`CREATE TABLE small_locked (id INTEGER PRIMARY KEY, v VARCHAR(64))`).Error)
+
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	writer, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	_, err = writer.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	// ROW EXCLUSIVE conflicts with the SHARE lock CREATE INDEX needs.
+	_, err = writer.ExecContext(ctx, "INSERT INTO small_locked VALUES (1, 'a')")
+	require.NoError(t, err)
+	go func() {
+		time.Sleep(7 * time.Second) // longer than one 5s lock_timeout attempt
+		_, _ = writer.ExecContext(ctx, "COMMIT")
+		_ = writer.Close()
+	}()
+
+	start := time.Now()
+	require.NoError(t, ensureIndexConcurrently(db, "small_locked", "idx_small_locked_v", "v", false))
+	require.GreaterOrEqual(t, time.Since(start), 5*time.Second, "the build should have hit at least one lock timeout")
+	require.True(t, indexExists(t, db, "small_locked", "idx_small_locked_v"))
+}
+
+// TestMigrationSkillsExternalClientURL copies the current MCP client URL without overwriting explicit skills configuration.
+func TestMigrationSkillsExternalClientURL(t *testing.T) {
+	t.Setenv("BIFROST_URL", "https://bifrost.example.com")
+	for _, legacy := range []bool{true, false} {
+		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
+			db := setupTestDB(t)
+			ctx := context.Background()
+			require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY)").Error)
+			require.NoError(t, migrationAddSkillsExternalClientURLColumn(ctx, db, testMigrationLogger))
+			require.True(t, db.Migrator().HasColumn("config_client", "skills_external_client_url"))
+			if legacy {
+				require.NoError(t, db.Exec("ALTER TABLE config_client ADD COLUMN mcp_external_client_url VARCHAR(512)").Error)
+				require.NoError(t, db.Exec("INSERT INTO config_client (id, mcp_external_client_url, skills_external_client_url) VALUES (1, ?, NULL), (2, ?, ?), (3, '', NULL)", "env.BIFROST_URL", "https://mcp.example", "https://skills.example").Error)
+			} else {
+				require.NoError(t, db.Exec("INSERT INTO config_client (id) VALUES (1)").Error)
+			}
+			require.NoError(t, migrationAddSkillsExternalClientURLColumn(ctx, db, testMigrationLogger))
+			require.NoError(t, migrationBackfillSkillsExternalClientURL(ctx, db, testMigrationLogger))
+			require.NoError(t, migrationBackfillSkillsExternalClientURL(ctx, db, testMigrationLogger))
+			var rows []struct {
+				ID                      int
+				SkillsExternalClientURL string
+			}
+			require.NoError(t, db.Table("config_client").Order("id").Find(&rows).Error)
+			if legacy {
+				require.Equal(t, "env.BIFROST_URL", rows[0].SkillsExternalClientURL)
+				require.Equal(t, "https://skills.example", rows[1].SkillsExternalClientURL)
+				require.Empty(t, rows[2].SkillsExternalClientURL)
+				var mcpURL string
+				require.NoError(t, db.Table("config_client").Select("mcp_external_client_url").Where("id = 1").Scan(&mcpURL).Error)
+				require.Equal(t, "env.BIFROST_URL", mcpURL)
+			} else {
+				require.Empty(t, rows[0].SkillsExternalClientURL)
+			}
+		})
+	}
+}
+
+// TestMigrationSkillsURLSkipsPrivateComponents preserves MCP credentials without publishing them as marketplace URLs.
+func TestMigrationSkillsURLSkipsPrivateComponents(t *testing.T) {
+	t.Setenv("BIFROST_UNSAFE_MCP_URL", "https://user:password@example.com")
+	db := setupTestDB(t)
+	require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY, mcp_external_client_url TEXT, skills_external_client_url TEXT)").Error)
+	for i, value := range []string{"https://user:password@example.com", "https://example.com?token=private", "https://example.com?", "env.BIFROST_UNSAFE_MCP_URL", "https://safe.example/path"} {
+		require.NoError(t, db.Exec("INSERT INTO config_client (id, mcp_external_client_url) VALUES (?, ?)", i+1, value).Error)
+	}
+	require.NoError(t, migrationBackfillSkillsExternalClientURL(context.Background(), db, testMigrationLogger))
+	var rows []struct {
+		ID                      int
+		SkillsExternalClientURL string
+	}
+	require.NoError(t, db.Table("config_client").Order("id").Find(&rows).Error)
+	for _, row := range rows[:4] {
+		require.Empty(t, row.SkillsExternalClientURL)
+	}
+	require.Equal(t, "https://safe.example/path", rows[4].SkillsExternalClientURL)
+}
+
+// TestMigrationAddAgentDestinationPolicyColumns preserves registrations when upgrading the old table.
+func TestMigrationAddAgentDestinationPolicyColumns(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.Exec("CREATE TABLE config_agent_registrations (name TEXT PRIMARY KEY, agent_card_url TEXT NOT NULL)").Error)
+	require.NoError(t, db.Exec("INSERT INTO config_agent_registrations (name, agent_card_url) VALUES (?, ?)", "existing", "https://cards.example.com").Error)
+	require.NoError(t, migrationAddAgentDestinationPolicyColumns(context.Background(), db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableAgentRegistration{}, "credential_origins"))
+	require.True(t, db.Migrator().HasColumn(&tables.TableAgentRegistration{}, "require_public_target"))
+	var row struct {
+		Name                string
+		RequirePublicTarget bool
+	}
+	require.NoError(t, db.Table("config_agent_registrations").Select("name, require_public_target").First(&row).Error)
+	require.Equal(t, "existing", row.Name)
+	require.False(t, row.RequirePublicTarget)
+	require.NoError(t, migrationAddAgentDestinationPolicyColumns(context.Background(), db, testMigrationLogger))
 }

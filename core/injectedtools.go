@@ -7,6 +7,7 @@ import (
 
 	"github.com/capsohq/bifrost/core/internal/injectedauth"
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/core/toolsearch"
 	"github.com/google/uuid"
 	"github.com/valyala/fasthttp"
 )
@@ -32,6 +33,7 @@ type injectedToolSet struct {
 	mcpNames      map[string]string         // prefixed MCP name -> model-facing name, so MCP auto-injection never declares one twice
 	webSearchName string                    // model-facing name of the tool replacing native web search, "" when none
 	maxDepth      int                       // model turns the tool loop may run before it stops executing
+	search        *toolsearch.Session       // gateway-run search over the caller's deferred tools, nil when none
 }
 
 // injectedTarget is the MCP tool behind one model-facing injected tool name.
@@ -43,6 +45,9 @@ type injectedTarget struct {
 func (s *injectedToolSet) isInjected(name string) bool {
 	if s == nil {
 		return false
+	}
+	if s.search != nil && name == toolsearch.ToolName {
+		return true
 	}
 	_, ok := s.targets[name]
 	return ok
@@ -366,6 +371,13 @@ func applyInjectedToolsResponses(r *schemas.BifrostResponsesRequest, set *inject
 		if tool.Name != nil && set.duplicates(*tool.Name) {
 			continue
 		}
+		// A deferred tool stays out until the gateway search loads it.
+		if set.search != nil {
+			var keep bool
+			if tool, keep = set.search.FilterTool(tool); !keep {
+				continue
+			}
+		}
 		tools = append(tools, tool)
 	}
 	// A name a retained tool still carries points at that tool, not the removed one.
@@ -508,8 +520,9 @@ func runInjectedResponsesLoop(
 		}
 		usage = schemas.MergeBifrostLLMUsage(usage, resp.Usage.ToBifrostLLMUsage())
 
+		results := executeInjectedCalls(injected, exec)
 		next := *turn
-		next.Params = relaxForcedResponsesChoice(turn.Params)
+		next.Params = relaxForcedResponsesChoice(nextResponsesTools(original, turn, set).Params)
 		next.Input = make([]schemas.ResponsesMessage, 0, len(turn.Input)+len(resp.Output)+len(injected))
 		next.Input = append(next.Input, turn.Input...)
 		for _, item := range resp.Output {
@@ -522,11 +535,21 @@ func runInjectedResponsesLoop(
 				priorItems = append(priorItems, item)
 			}
 		}
-		for _, result := range executeInjectedCalls(injected, exec) {
+		for _, result := range results {
 			next.Input = append(next.Input, result.ToResponsesMessages()...)
 		}
 		turn = &next
 	}
+}
+
+// nextResponsesTools returns the request whose tools the next turn sends. The tool set
+// only changes when the gateway search loaded tools during the turn, so the request is
+// rebuilt from the caller's original only then.
+func nextResponsesTools(original, turn *schemas.BifrostResponsesRequest, set *injectedToolSet) *schemas.BifrostResponsesRequest {
+	if set.search == nil {
+		return turn
+	}
+	return applyInjectedToolsResponses(original, set)
 }
 
 // executeInjectedCalls runs the calls in parallel and returns their results in call
@@ -706,12 +729,34 @@ func prependChatText(resp *schemas.BifrostChatResponse, prior []string) {
 	resp.Choices[0].Message = &merged
 }
 
-// injectedToolsForAttempt resolves the provider's injected tools for one attempt.
-func (bifrost *Bifrost) injectedToolsForAttempt(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, requestType schemas.RequestType) *injectedToolSet {
-	if bifrost.MCPManager == nil {
-		return nil
+// injectedToolsForAttempt resolves the tools Bifrost injects into one attempt: the
+// provider's configured MCP tools, and the gateway tool search when the request defers
+// tools on a provider with no tool search of its own (baseProvider and model are this
+// attempt's).
+func (bifrost *Bifrost) injectedToolsForAttempt(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, req *schemas.BifrostRequest, baseProvider schemas.ModelProvider, model string) *injectedToolSet {
+	var set *injectedToolSet
+	if bifrost.MCPManager != nil {
+		set = resolveInjectedTools(bifrost.MCPManager, config, req.RequestType, bifrost.logger)
 	}
-	return resolveInjectedTools(bifrost.MCPManager, config, requestType, bifrost.logger)
+	return withGatewayToolSearch(set, req, baseProvider, schemas.ResolveCanonicalModel(ctx, model))
+}
+
+// withGatewayToolSearch adds the gateway tool search to set when the attempt needs it.
+// The check costs one pass over the request's tools and allocates nothing when no
+// tool is deferred.
+func withGatewayToolSearch(set *injectedToolSet, req *schemas.BifrostRequest, baseProvider schemas.ModelProvider, model string) *injectedToolSet {
+	if (req.RequestType != schemas.ResponsesRequest && req.RequestType != schemas.ResponsesStreamRequest) ||
+		!toolsearch.Candidate(req.ResponsesRequest) ||
+		toolsearch.NativeSupport(baseProvider, model) {
+		return set
+	}
+	session := toolsearch.NewSession(req.ResponsesRequest)
+	if set == nil {
+		set = &injectedToolSet{maxDepth: toolsearch.MaxTurns}
+	}
+	set.search = session
+	set.tools = append(set.tools, session.Tool())
+	return set
 }
 
 // injectedToolsForStream is injectedToolsForAttempt for a streaming attempt. A streamed
@@ -723,8 +768,8 @@ func (bifrost *Bifrost) injectedToolsForAttempt(ctx *schemas.BifrostContext, con
 // no fallback: another provider would serve it without the tool just as silently. The
 // non-streaming loop handles other choices itself (stripInjectedCallsFromOtherChoices);
 // per-choice stream state is TXE-5209.
-func (bifrost *Bifrost) injectedToolsForStream(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, req *schemas.BifrostRequest) (*injectedToolSet, *schemas.BifrostError) {
-	set := bifrost.injectedToolsForAttempt(ctx, config, req.RequestType)
+func (bifrost *Bifrost) injectedToolsForStream(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, req *schemas.BifrostRequest, baseProvider schemas.ModelProvider, model string) (*injectedToolSet, *schemas.BifrostError) {
+	set := bifrost.injectedToolsForAttempt(ctx, config, req, baseProvider, model)
 	if set == nil {
 		return nil, nil
 	}
@@ -786,6 +831,9 @@ func (bifrost *Bifrost) executeInjectedCall(ctx *schemas.BifrostContext, set *in
 	// From here the attempt has side effects a retry would repeat, and its response is
 	// assembled from several turns (see BifrostContextKeyInjectedToolsExecuted).
 	ctx.SetValue(schemas.BifrostContextKeyInjectedToolsExecuted, true)
+	if set.search != nil && call.Function.Name != nil && *call.Function.Name == toolsearch.ToolName {
+		return set.search.Execute(call)
+	}
 	toolCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	toolCtx.SetValue(schemas.BifrostContextKeyMCPLogID, uuid.New().String())
 	call, target := mcpInjectedCall(set, call)

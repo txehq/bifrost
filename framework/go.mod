@@ -1,6 +1,6 @@
 module github.com/capsohq/bifrost/framework
 
-go 1.27.0
+go 1.27.2
 
 require (
 	cloud.google.com/go/storage v1.62.1
@@ -16,6 +16,7 @@ require (
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/capsohq/bifrost/core v1.11.2
 	github.com/mark3labs/mcp-go v0.43.2
+	github.com/parquet-go/parquet-go v0.32.0
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/pinecone-io/go-pinecone/v5 v5.3.0
 	github.com/qdrant/go-client v1.16.2
@@ -26,6 +27,7 @@ require (
 	github.com/valyala/fasthttp v1.74.0
 	github.com/weaviate/weaviate v1.38.0
 	github.com/weaviate/weaviate-go-client/v5 v5.7.1
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.55.0
 	golang.org/x/sync v0.22.0
 	google.golang.org/api v0.282.0
@@ -35,7 +37,6 @@ require (
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.1
-	go.yaml.in/yaml/v3 v3.0.5
 )
 
 require (
@@ -131,6 +132,8 @@ require (
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/oapi-codegen/runtime v1.1.1 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
+	github.com/parquet-go/bitpack v1.0.0 // indirect
+	github.com/parquet-go/jsonlite v1.0.0 // indirect
 	github.com/paulmach/orb v0.11.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
@@ -146,6 +149,7 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
+	github.com/twpayne/go-geom v1.6.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
@@ -159,8 +163,6 @@ require (
 	go.opentelemetry.io/otel/sdk v1.45.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	go.starlark.net v0.0.0-20260102030733-3fee463870c9 // indirect
 	golang.org/x/arch v0.23.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect

@@ -1330,7 +1330,7 @@ func TestHighFixesPGLongJobsLiftPoolStatementTimeout(t *testing.T) {
 		"a refresh over 300k rows must exceed the pool timeout, or this test proves nothing")
 
 	resetTestMatViewRefreshGate()
-	require.NoError(t, refreshMatViews(ctx, tight), "refreshMatViews must lift the pool timeout on its connection")
+	require.NoError(t, refreshMatViews(ctx, tight, 0), "refreshMatViews must lift the pool timeout on its connection")
 
 	require.NoError(t, db.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_hourly CASCADE").Error)
 	require.NoError(t, ensureMatViews(ctx, tight), "ensureMatViews must lift the pool timeout on its connection")
@@ -1842,4 +1842,58 @@ func TestPgDropIndexConcurrentlyRebuildsAfterPeerBuildFails(t *testing.T) {
 	valid, err := pgIndexValid(ctx, build.pod2, "race_logs", "idx_race_logs_v")
 	require.NoError(t, err)
 	require.True(t, valid)
+}
+
+// dropMatViewsForColumnDDL drops the materialized views, which select every logs column and so block
+// a DROP COLUMN; setupPerfTestDB recreates them for the next test.
+func dropMatViewsForColumnDDL(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	for _, view := range append(allMatViewNames(), legacyMatViewNames...) {
+		require.NoError(t, db.Exec("DROP MATERIALIZED VIEW IF EXISTS "+view+" CASCADE").Error)
+	}
+}
+
+// TestIsPassthroughMigrationBoundsLockWait pins that adding is_passthrough cannot park at the head of
+// the logs lock queue behind a long-running read (where every later query would wait on it): with a
+// read holding the table, the migration fails fast on its own lock timeout, and succeeds once the
+// read ends.
+func TestIsPassthroughMigrationBoundsLockWait(t *testing.T) {
+	_, db := setupPerfTestDB(t)
+	dropMatViewsForColumnDDL(t, db)
+	require.NoError(t, db.Exec("ALTER TABLE logs DROP COLUMN IF EXISTS is_passthrough").Error)
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "logs_add_is_passthrough_column").Error)
+
+	holder := db.Begin()
+	require.NoError(t, holder.Error)
+	require.NoError(t, holder.Exec("SELECT 1 FROM logs LIMIT 1").Error)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	started := time.Now()
+	err := migrationAddIsPassthroughColumn(ctx, db, testLogger{})
+	elapsed := time.Since(started)
+	require.NoError(t, holder.Rollback().Error)
+
+	require.Error(t, err, "the migration must not wait out a held table lock")
+	require.Contains(t, err.Error(), "lock timeout", "it must fail on its own lock_timeout, not the caller's deadline")
+	require.Less(t, elapsed, 15*time.Second)
+
+	require.NoError(t, migrationAddIsPassthroughColumn(context.Background(), db, testLogger{}))
+	require.True(t, db.Migrator().HasColumn(&Log{}, "is_passthrough"))
+}
+
+// TestIsPassthroughMigrationRollbackKeepsMarker pins that rolling the migration back does not drop
+// is_passthrough: it is the only thing that tells a passthrough row stored under its inferred type
+// apart from a typed request, so dropping it would silently erase that history.
+func TestIsPassthroughMigrationRollbackKeepsMarker(t *testing.T) {
+	_, db := setupPerfTestDB(t)
+	require.NoError(t, db.Create(&Log{ID: "typed-passthrough", Timestamp: time.Now(), Object: "chat_completion", IsPassthrough: true, Provider: "openai", Status: "success"}).Error)
+	dropMatViewsForColumnDDL(t, db)
+
+	require.NoError(t, isPassthroughColumnMigration(context.Background(), testLogger{}).Rollback(db))
+
+	require.True(t, db.Migrator().HasColumn(&Log{}, "is_passthrough"))
+	var row Log
+	require.NoError(t, db.First(&row, "id = ?", "typed-passthrough").Error)
+	require.True(t, row.IsPassthrough)
 }

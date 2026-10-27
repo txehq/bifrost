@@ -36,7 +36,7 @@ fi
 
 VERSION="$1"
 # The Go the release jobs set up; the go directive is held to it.
-GO_DIRECTIVE="1.27.0"
+GO_DIRECTIVE="1.27.2"
 MODULE_ROOT="$(go mod edit -json core/go.mod | jq -r '.Module.Path | sub("/core$"; "")')"
 
 assert_tested_checkout
