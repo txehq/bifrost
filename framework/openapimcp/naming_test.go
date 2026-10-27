@@ -155,3 +155,36 @@ func TestSynthesize_ToolNamesFitWithLongClientNames(t *testing.T) {
 		assert.LessOrEqual(t, len(client)+1+len(name), MaxToolNameLen, name)
 	}
 }
+
+// TestSynthesize_SecurityWarningIsBoundedPerTool: an unsupported scheme with a
+// huge name, required by the root security of many operations, is named in a
+// warning on every tool. Each warning is capped where it is composed, so the
+// tools do not each retain a copy of the name.
+func TestSynthesize_SecurityWarningIsBoundedPerTool(t *testing.T) {
+	name := strings.Repeat("n", 1<<20)
+	var paths strings.Builder
+	for i := 0; i < 100; i++ {
+		if i > 0 {
+			paths.WriteByte(',')
+		}
+		paths.WriteString(`"/p` + strconv.Itoa(i) + `":{"get":{"operationId":"g` + strconv.Itoa(i) + `","responses":{"200":{"description":"ok"}}}}`)
+	}
+	spec := `{"openapi":"3.0.3","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],"security":[{"` + name + `":[]}],
+"components":{"securitySchemes":{"` + name + `":{"type":"oauth2","flows":{"clientCredentials":{"tokenUrl":"https://a/t","scopes":{}}}}}},
+"paths":{` + paths.String() + `}}`
+	doc, err := Parse([]byte(spec), ParseOptions{})
+	require.NoError(t, err)
+	syn, err := Synthesize(doc, SynthesizeOptions{ClientName: "t"})
+	require.NoError(t, err)
+	require.Len(t, syn.Tools, 100)
+	total := 0
+	for _, tool := range syn.Tools {
+		require.NotEmpty(t, tool.Warnings, "the unsupported scheme is still reported")
+		for _, w := range tool.Warnings {
+			assert.LessOrEqual(t, len(w), maxDescriptionLen+8)
+			total += len(w)
+		}
+	}
+	assert.Less(t, total, 100*(maxDescriptionLen+8)*2)
+}
+
