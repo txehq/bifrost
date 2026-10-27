@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -5717,4 +5718,178 @@ func TestProviderObjectsTableRollbackRefuses(t *testing.T) {
 	require.Error(t, err, "the provider_objects migration must refuse to roll back")
 	require.Contains(t, err.Error(), "non-rollbackable")
 	require.True(t, db.Migrator().HasTable(&tables.TableProviderObject{}), "a refused rollback must keep the table")
+}
+
+// TestMigrationAddMCPClientOpenAPIColumns_RollbackRefuses: the openapi columns
+// hold the only stored copy of a client's spec and its encrypted credentials,
+// so both rollbacks refuse rather than drop them and report success.
+func TestMigrationAddMCPClientOpenAPIColumns_RollbackRefuses(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec(`CREATE TABLE config_mcp_clients (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id VARCHAR(255) NOT NULL UNIQUE)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	ctx := context.Background()
+	require.NoError(t, migrationAddMCPClientOpenAPISpecColumn(ctx, db, testMigrationLogger))
+	require.NoError(t, migrationAddMCPClientOpenAPIConfigJSONColumn(ctx, db, testMigrationLogger))
+
+	for column, rollback := range map[string]func(*gorm.DB) error{
+		"openapi_spec":        rollbackMCPClientOpenAPISpecColumn,
+		"openapi_config_json": rollbackMCPClientOpenAPIConfigJSONColumn,
+	} {
+		err := rollback(db)
+		require.Error(t, err, "rollback of %s must refuse", column)
+		assert.Contains(t, err.Error(), "non-rollbackable")
+		assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, column), "a refused rollback must leave %s intact", column)
+	}
+}
+
+// TestMigrationAddMCPClientOpenAPIColumns_Idempotent runs both openapi column
+// migrations against a config_mcp_clients table created without them and again
+// once they exist: both passes succeed, both columns are present, and existing
+// rows are untouched.
+func TestMigrationAddMCPClientOpenAPIColumns_Idempotent(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec(`
+		CREATE TABLE config_mcp_clients (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			client_id VARCHAR(255) NOT NULL UNIQUE,
+			name VARCHAR(255) NOT NULL UNIQUE,
+			connection_type VARCHAR(20) NOT NULL,
+			tools_to_execute_json TEXT,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			encryption_status VARCHAR(20) DEFAULT 'plain_text'
+		)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	now := time.Now()
+	require.NoError(t, db.Exec(`INSERT INTO config_mcp_clients (client_id, name, connection_type, tools_to_execute_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`, "pre-existing", "pre_existing", "http", `["*"]`, now, now).Error)
+
+	ctx := context.Background()
+	for pass := 1; pass <= 2; pass++ {
+		require.NoError(t, migrationAddMCPClientOpenAPISpecColumn(ctx, db, testMigrationLogger), "spec column pass %d", pass)
+		require.NoError(t, migrationAddMCPClientOpenAPIConfigJSONColumn(ctx, db, testMigrationLogger), "config json column pass %d", pass)
+	}
+	assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, "openapi_spec"))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, "openapi_config_json"))
+
+	var row struct {
+		Name              string
+		OpenAPISpec       *string
+		OpenAPIConfigJSON *string
+	}
+	require.NoError(t, db.Table("config_mcp_clients").Select("name, openapi_spec, openapi_config_json").Where("client_id = ?", "pre-existing").Scan(&row).Error)
+	assert.Equal(t, "pre_existing", row.Name)
+	assert.True(t, row.OpenAPISpec == nil || *row.OpenAPISpec == "")
+	assert.Nil(t, row.OpenAPIConfigJSON)
+}
+
+// parkedIndexBuild is an ensureIndexConcurrently that pod 1 started and that is
+// still running, as the build of a killed pod keeps running in Postgres.
+type parkedIndexBuild struct {
+	pod2    *gorm.DB   // a second connection pool, standing in for the next pod
+	done    chan error // pod 1's ensureIndexConcurrently result
+	pid     int64      // backend running pod 1's build
+	oid     uint32     // pg_class oid of the index pod 1 is building
+	release func()     // commits the transaction the build is waiting on
+}
+
+// parkIndexBuild starts pod 1's build of idx_race_rows_v behind an open
+// REPEATABLE READ transaction (an old pod serving traffic), so the build parks in
+// "waiting for old snapshots" with its index already in pg_index as INVALID: the
+// state the next pod finds after a pod is killed mid-migration.
+func parkIndexBuild(t *testing.T) parkedIndexBuild {
+	t.Helper()
+	var pod1 *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			pod1 = ndb.db
+		}
+	}
+	if pod1 == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	dsn := strings.Replace(postgresDSN, "search_path="+pgTestSchema, "search_path="+indexMigrationPGSchema, 1)
+	pod2, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	pod2SQL, err := pod2.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pod2SQL.Close() })
+	require.NoError(t, pod1.Exec(`CREATE TABLE race_rows (id INTEGER PRIMARY KEY, v VARCHAR(255) NOT NULL)`).Error)
+	require.NoError(t, pod1.Exec(`INSERT INTO race_rows SELECT g, 'v' || g FROM generate_series(1, 5000) g`).Error)
+
+	ctx := context.Background()
+	pod1SQL, err := pod1.DB()
+	require.NoError(t, err)
+	blocker, err := pod1SQL.Conn(ctx)
+	require.NoError(t, err)
+	_, err = blocker.ExecContext(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ")
+	require.NoError(t, err)
+	_, err = blocker.ExecContext(ctx, "SELECT 1")
+	require.NoError(t, err)
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			_, _ = blocker.ExecContext(ctx, "COMMIT")
+			_ = blocker.Close()
+		})
+	}
+	t.Cleanup(release)
+
+	build := parkedIndexBuild{pod2: pod2, done: make(chan error, 1), release: release}
+	go func() { build.done <- ensureIndexConcurrently(pod1, "race_rows", "idx_race_rows_v", "v", false) }()
+	require.Eventually(t, func() bool {
+		return pod1.Raw(`SELECT COALESCE((SELECT pid FROM pg_stat_progress_create_index
+			WHERE relid = to_regclass('race_rows') AND phase = 'waiting for old snapshots'), 0)`).Scan(&build.pid).Error == nil && build.pid != 0
+	}, 20*time.Second, 50*time.Millisecond, "pod 1's build must park in 'waiting for old snapshots'")
+	require.NoError(t, pod1.Raw(`SELECT to_regclass('idx_race_rows_v')::oid`).Scan(&build.oid).Error)
+	valid, err := postgresIndexIsValid(pod1, "race_rows", "idx_race_rows_v")
+	require.NoError(t, err)
+	require.False(t, valid, "a build still in progress must read as INVALID in pg_index")
+	return build
+}
+
+// TestEnsureIndexConcurrentlyWaitsForLiveBuild pins that the next pod waits for a
+// concurrent build another backend is still running instead of dropping it. A
+// killed pod's idle advisory-lock session ends at once but its busy build keeps
+// running, so the next pod holds the migration lock while that build is alive.
+// Dropping it blocked behind the build and then failed one side with
+// "tuple concurrently updated".
+func TestEnsureIndexConcurrentlyWaitsForLiveBuild(t *testing.T) {
+	build := parkIndexBuild(t)
+	pod2Done := make(chan error, 1)
+	go func() { pod2Done <- ensureIndexConcurrently(build.pod2, "race_rows", "idx_race_rows_v", "v", false) }()
+
+	var drops int64
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline) && drops == 0; time.Sleep(20 * time.Millisecond) {
+		require.NoError(t, build.pod2.Raw(`SELECT COUNT(*) FROM pg_stat_activity
+			WHERE query ILIKE 'DROP INDEX CONCURRENTLY%idx_race_rows_v%'`).Scan(&drops).Error)
+	}
+	build.release()
+	pod1Err, pod2Err := <-build.done, <-pod2Done
+
+	require.Zero(t, drops, "pod 2 issued DROP INDEX CONCURRENTLY against a build another backend was still running")
+	require.NoError(t, pod1Err)
+	require.NoError(t, pod2Err)
+	require.True(t, indexExists(t, build.pod2, "race_rows", "idx_race_rows_v"))
+	var finalOID uint32
+	require.NoError(t, build.pod2.Raw(`SELECT to_regclass('idx_race_rows_v')::oid`).Scan(&finalOID).Error)
+	require.Equal(t, build.oid, finalOID, "pod 1's finished build must be the index that remains, not a second rebuild")
+}
+
+// TestEnsureIndexConcurrentlyRebuildsAfterPeerBuildFails pins that waiting never
+// keeps a broken index: when the build pod 2 waits on dies (cancelled here, as a
+// terminated orphan would be), pod 2 drops the INVALID leftover and rebuilds.
+func TestEnsureIndexConcurrentlyRebuildsAfterPeerBuildFails(t *testing.T) {
+	build := parkIndexBuild(t)
+	pod2Done := make(chan error, 1)
+	go func() { pod2Done <- ensureIndexConcurrently(build.pod2, "race_rows", "idx_race_rows_v", "v", false) }()
+	time.Sleep(500 * time.Millisecond)
+	require.NoError(t, build.pod2.Exec("SELECT pg_cancel_backend(?)", build.pid).Error)
+	require.Error(t, <-build.done, "the cancelled build must fail and leave an INVALID index")
+
+	build.release()
+	require.NoError(t, <-pod2Done)
+	require.True(t, indexExists(t, build.pod2, "race_rows", "idx_race_rows_v"))
 }
