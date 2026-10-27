@@ -95,10 +95,11 @@ type TableMCPClient struct {
 	PendingOAuthConfigJSON *string `gorm:"column:pending_oauth_config_json;type:text" json:"-"`
 
 	// OpenAPI-backed clients (connection_type='openapi'). The spec document is
-	// large and carries no secrets, so it has its own plaintext column; the
-	// rest of openapi_config (base URL, security credentials, options and the
-	// server-computed metadata) is one JSON column, encrypted at rest because
-	// the credentials live in it. Both NULL/empty for other connection types.
+	// large, so it has its own column; the rest of openapi_config (base URL,
+	// security credentials, options and the server-computed metadata) is one
+	// JSON column. Both are encrypted at rest: the credentials live in the JSON,
+	// and a document can carry one of its own, such as a token in a server URL.
+	// Both NULL/empty for other connection types.
 	OpenAPISpec       string  `gorm:"column:openapi_spec;type:text" json:"-"`
 	OpenAPIConfigJSON *string `gorm:"column:openapi_config_json;type:text" json:"-"` // JSON serialized schemas.MCPOpenAPIConfig minus Spec
 
@@ -374,6 +375,14 @@ func (c *TableMCPClient) BeforeSave(tx *gorm.DB) error {
 			}
 			c.OpenAPIConfigJSON = &enc
 		}
+		// The document can carry a credential of its own (a server URL token).
+		if c.OpenAPISpec != "" {
+			enc, err := encrypt.Encrypt(c.OpenAPISpec)
+			if err != nil {
+				return fmt.Errorf("failed to encrypt mcp openapi spec: %w", err)
+			}
+			c.OpenAPISpec = enc
+		}
 		c.EncryptionStatus = EncryptionStatusEncrypted
 	}
 
@@ -418,6 +427,13 @@ func (c *TableMCPClient) AfterFind(tx *gorm.DB) error {
 				return fmt.Errorf("failed to decrypt mcp openapi config: %w", err)
 			}
 			c.OpenAPIConfigJSON = &decrypted
+		}
+		if c.OpenAPISpec != "" {
+			decrypted, err := encrypt.Decrypt(c.OpenAPISpec)
+			if err != nil {
+				return fmt.Errorf("failed to decrypt mcp openapi spec: %w", err)
+			}
+			c.OpenAPISpec = decrypted
 		}
 	}
 	if c.StdioConfigJSON != nil {

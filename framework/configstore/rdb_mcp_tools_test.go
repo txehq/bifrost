@@ -116,6 +116,10 @@ func TestMCPClientConfig_OpenAPIConfigRoundTripsThroughStore(t *testing.T) {
 		},
 	}))
 
+	var createdSpec string
+	require.NoError(t, s.DB().Raw("SELECT openapi_spec FROM config_mcp_clients WHERE client_id = ?", "openapi-store-1").Scan(&createdSpec).Error)
+	assert.NotContains(t, createdSpec, "Petstore", "the document is encrypted at rest")
+
 	byID, err := s.GetMCPClientByID(ctx, "openapi-store-1")
 	require.NoError(t, err)
 	require.NotNil(t, byID.OpenAPIConfig)
@@ -159,6 +163,11 @@ func TestMCPClientConfig_OpenAPIConfigRoundTripsThroughStore(t *testing.T) {
 	afterReplace, err := s.GetMCPClientByID(ctx, "openapi-store-1")
 	require.NoError(t, err)
 	assert.Equal(t, spec+"# v2\n", afterReplace.OpenAPIConfig.Spec)
+	// The update path writes the columns directly, so it encrypts the document
+	// itself, as BeforeSave does on create.
+	var storedSpec string
+	require.NoError(t, s.DB().Raw("SELECT openapi_spec FROM config_mcp_clients WHERE client_id = ?", "openapi-store-1").Scan(&storedSpec).Error)
+	assert.NotContains(t, storedSpec, "Petstore", "the replaced document is encrypted at rest")
 	assert.Equal(t, newBase, *afterReplace.OpenAPIConfig.BaseURL)
 	assert.Equal(t, "k-2", afterReplace.OpenAPIConfig.SecurityCredentials["ApiKeyAuth"].Value.GetValue())
 	assert.Equal(t, 4, afterReplace.OpenAPIConfig.OperationCount)

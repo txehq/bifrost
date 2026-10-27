@@ -2525,6 +2525,14 @@ func marshalOpenAPIConfigColumns(cfg *schemas.MCPOpenAPIConfig) (string, *string
 		}
 		configJSON = &encrypted
 	}
+	// Mirror BeforeSave: the document is encrypted at rest too.
+	if spec != "" && encrypt.IsEnabled() {
+		encrypted, err := encrypt.Encrypt(spec)
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to encrypt mcp openapi spec: %w", err)
+		}
+		spec = encrypted
+	}
 	return spec, configJSON, nil
 }
 

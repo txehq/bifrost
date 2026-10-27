@@ -18,7 +18,9 @@ func TestTableMCPClient_OpenAPIConfigRoundTripsEncrypted(t *testing.T) {
 	t.Setenv("PETSTORE_KEY", "env-key-value")
 	db := setupTestDB(t)
 
-	spec := "openapi: 3.0.3\ninfo: {title: Petstore, version: 1.0.0}\npaths: {}\n"
+	// A document can carry a credential of its own, here a query token in a
+	// server URL, so it is encrypted at rest like the credential columns.
+	spec := "openapi: 3.0.3\ninfo: {title: Petstore, version: 1.0.0}\nservers: [{url: 'https://petstore.example.com/v1?token=spec-embedded-token'}]\npaths: {}\n"
 	base := "https://petstore.example.com/v1"
 	row := &TableMCPClient{
 		ClientID:       "openapi-1",
@@ -44,7 +46,10 @@ func TestTableMCPClient_OpenAPIConfigRoundTripsEncrypted(t *testing.T) {
 	require.NoError(t, db.Create(row).Error)
 
 	raw := rawRow(t, db, "config_mcp_clients", row.ID)
-	assert.Equal(t, spec, raw["openapi_spec"], "the spec is stored as plaintext in its own column")
+	storedSpec, _ := raw["openapi_spec"].(string)
+	require.NotEmpty(t, storedSpec)
+	assert.NotContains(t, storedSpec, "spec-embedded-token", "the document is encrypted at rest")
+	assert.NotContains(t, storedSpec, "Petstore", "the whole document is ciphertext")
 	stored, _ := raw["openapi_config_json"].(string)
 	require.NotEmpty(t, stored)
 	assert.NotContains(t, stored, "literal-secret", "credentials are encrypted at rest")
