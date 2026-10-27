@@ -112,12 +112,14 @@ func TestClaudeMarketplaceGitRepoContainsMarketplaceAndCloneablePlugin(t *testin
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
+	// Point the marketplace at the listener before serving: requests read the URL under
+	// the config lock, so changing it after Serve starts is a data race.
+	baseURL := "http://" + ln.Addr().String()
+	handler.config.ClientConfig.SkillsExternalClientURL = schemas.NewSecretVar(baseURL)
 	go server.Serve(ln) //nolint:errcheck
 	defer server.Shutdown()
 	defer ln.Close()
 
-	baseURL := "http://" + ln.Addr().String()
-	handler.config.ClientConfig.SkillsExternalClientURL = schemas.NewSecretVar(baseURL)
 	marketplaceURL := baseURL + "/api/skills/serve/claude-code.git"
 	cloneDir := filepath.Join(t.TempDir(), "marketplace")
 	cloneGitRepo(t, marketplaceURL, cloneDir)
