@@ -768,3 +768,56 @@ func TestClientToolResultToolReferenceSurvivesRoundTrip(t *testing.T) {
 			`{"type":"tool_reference","tool_name":"`+tsDiscoveredTool+`"}]}]`,
 		string(wire.Messages[2].Content))
 }
+
+// The neutral route (/v1/responses, model anthropic/...) carries custom tool search as a
+// function_call_output whose output array holds a tool_reference block. The reference must
+// reach Anthropic as a tool_reference inside the tool_result, and defer_loading on the
+// function tool must survive, since that is what makes the gateway add the tool-search beta
+// a client on this route cannot send.
+func TestNeutralFunctionCallOutputToolReferenceReachesAnthropic(t *testing.T) {
+	var input []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"role":"user","content":"What is the weather in Tokyo?"},
+		{"type":"function_call","call_id":"call_find_1","name":"find_tools","arguments":"{\"query\":\"weather\"}"},
+		{"type":"function_call_output","call_id":"call_find_1","output":[
+			{"type":"input_text","text":"Found 1 tool"},
+			{"type":"tool_reference","tool_name":"`+tsDiscoveredTool+`"}
+		]}
+	]`), &input))
+	var tools []schemas.ResponsesTool
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type":"function","name":"find_tools","parameters":{"type":"object","properties":{"query":{"type":"string"}}}},
+		{"type":"function","name":"`+tsDiscoveredTool+`","defer_loading":true,"parameters":{"type":"object","properties":{"city":{"type":"string"}}}}
+	]`), &tools))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	out, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input:    input,
+		Params:   &schemas.ResponsesParameters{Tools: tools, MaxOutputTokens: schemas.Ptr(512)},
+	})
+	require.NoError(t, err)
+	body, err := schemas.MarshalSorted(out)
+	require.NoError(t, err)
+
+	var wire struct {
+		Tools []struct {
+			Name         string `json:"name"`
+			DeferLoading *bool  `json:"defer_loading"`
+		} `json:"tools"`
+		Messages []struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	require.NoError(t, sonic.Unmarshal(body, &wire))
+	require.Len(t, wire.Messages, 3, "body=%s", body)
+	assert.JSONEq(t,
+		`[{"type":"tool_result","tool_use_id":"call_find_1","content":[`+
+			`{"type":"text","text":"Found 1 tool"},`+
+			`{"type":"tool_reference","tool_name":"`+tsDiscoveredTool+`"}]}]`,
+		string(wire.Messages[2].Content))
+	require.Len(t, wire.Tools, 2, "body=%s", body)
+	require.NotNil(t, wire.Tools[1].DeferLoading, "body=%s", body)
+	assert.True(t, *wire.Tools[1].DeferLoading)
+}

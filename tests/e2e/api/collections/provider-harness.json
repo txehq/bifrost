@@ -263485,6 +263485,390 @@
           }
         }
       ]
+    },
+    {
+      "name": "231. Client tool_result tool_reference reaches the provider on every inbound route (client-tool-reference) (#7813)",
+      "description": "Custom (client-side) tool search: a client tool returns tool_reference blocks inside its tool_result, and Anthropic loads the referenced deferred tools (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool#custom-tool-search-implementation). Upstream #7813: the Responses converters kept only text, image and document inside a client tool_result, so the reference was dropped, the request still returned 200 and the deferred tool never loaded. Each case replays the same conversation (find_tools called, its tool_result holding a text part and a tool_reference to the deferred get_weather) and pins the provider egress through x-bf-send-back-raw-request. Routes that reach Anthropic's converters: the Anthropic SDK surface on Anthropic, Vertex and Bedrock (Bedrock sends defer_loading requests through InvokeModel), and the neutral /v1/responses surface, where the reference arrives as a tool_reference block in function_call_output and the client cannot send anthropic-beta, so the gateway must derive the tool-search beta from defer_loading. The Anthropic-format request routed to OpenAI must lose the Anthropic-only block before function_call_output is flattened. Not covered: Azure (Foundry Claude) has no deployment in the harness profile; Bedrock Mantle is not a tool-search route here. Whether the model then calls get_weather cannot be forced, so the raw_request assertions are the pass condition.",
+      "item": [
+        {
+          "name": "anthropic/claude-sonnet-4-6 /anthropic/v1/messages client tool_result tool_reference reaches the provider - client-tool-reference - #7813",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('anthropic claude-sonnet-4-6 /anthropic/v1/messages tool_reference: request accepted (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the tool_reference reached Anthropic malformed or defer_loading was stripped, any other status is a real failure: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic claude-sonnet-4-6 /anthropic/v1/messages tool_reference: the tool_result reaches the provider with its tool_reference block', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+                  "  var results = [];",
+                  "  msgs.forEach(function (m) { (Array.isArray(m && m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { results.push(b); } }); });",
+                  "  pm.expect(results.length, 'exactly one tool_result must reach the provider: ' + wire.slice(0, 900)).to.eql(1);",
+                  "  var inner = Array.isArray(results[0].content) ? results[0].content : [];",
+                  "  var refs = inner.filter(function (b) { return b && b.type === 'tool_reference'; });",
+                  "  pm.expect(refs.length, 'tool_reference dropped from the client tool_result before the provider (pre-#7813: the Responses converters kept only text, image and document): ' + JSON.stringify(results[0])).to.eql(1);",
+                  "  pm.expect(refs[0].tool_name, 'tool_reference.tool_name: ' + JSON.stringify(refs[0])).to.eql('get_weather');",
+                  "  var texts = inner.filter(function (b) { return b && b.type === 'text'; });",
+                  "  pm.expect(texts.length && texts[0].text, 'the text part of the tool_result must survive beside the reference: ' + JSON.stringify(results[0])).to.eql('Found 1 tool');",
+                  "  var tools = Array.isArray(rr.tools) ? rr.tools : [];",
+                  "  var deferred = tools.filter(function (t) { return t && t.name === 'get_weather'; });",
+                  "  pm.expect(deferred.length === 1 && deferred[0].defer_loading, 'the referenced tool must reach the provider with defer_loading kept: ' + wire.slice(0, 900)).to.eql(true);",
+                  "});",
+                  "pm.test('anthropic claude-sonnet-4-6 /anthropic/v1/messages tool_reference: the response completes and calls only offered tools', function () {",
+                  "  var content = Array.isArray(body.content) ? body.content : [];",
+                  "  var output = Array.isArray(body.output) ? body.output : [];",
+                  "  var calls = content.filter(function (b) { return b && b.type === 'tool_use'; }).map(function (b) { return b.name; })",
+                  "    .concat(output.filter(function (o) { return o && o.type === 'function_call'; }).map(function (o) { return o.name; }));",
+                  "  var bad = calls.filter(function (n) { return n !== 'find_tools' && n !== 'get_weather'; });",
+                  "  pm.expect(bad, 'tool call for a tool that was never offered: ' + txt.slice(0, 600)).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "tool-search-tool-2025-10-19"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 512,\n  \"tools\": [\n    {\n      \"name\": \"find_tools\",\n      \"description\": \"Search the tool catalog and return references to the matching tools.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in Tokyo?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_find_1\",\n          \"name\": \"find_tools\",\n          \"input\": {\n            \"query\": \"weather\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_find_1\",\n          \"content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"Found 1 tool\"\n            },\n            {\n              \"type\": \"tool_reference\",\n              \"tool_name\": \"get_weather\"\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /v1/responses function_call_output tool_reference reaches the provider without a client beta header - client-tool-reference - #7813",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('anthropic claude-sonnet-4-6 /v1/responses tool_reference: request accepted (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the tool_reference reached Anthropic malformed or defer_loading was stripped, or the gateway did not derive the tool-search beta from defer_loading (no anthropic-beta header is sent on this route), any other status is a real failure: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('anthropic claude-sonnet-4-6 /v1/responses tool_reference: the tool_result reaches the provider with its tool_reference block', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+                  "  var results = [];",
+                  "  msgs.forEach(function (m) { (Array.isArray(m && m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { results.push(b); } }); });",
+                  "  pm.expect(results.length, 'exactly one tool_result must reach the provider: ' + wire.slice(0, 900)).to.eql(1);",
+                  "  var inner = Array.isArray(results[0].content) ? results[0].content : [];",
+                  "  var refs = inner.filter(function (b) { return b && b.type === 'tool_reference'; });",
+                  "  pm.expect(refs.length, 'tool_reference dropped from the client tool_result before the provider (pre-#7813: the Responses converters kept only text, image and document): ' + JSON.stringify(results[0])).to.eql(1);",
+                  "  pm.expect(refs[0].tool_name, 'tool_reference.tool_name: ' + JSON.stringify(refs[0])).to.eql('get_weather');",
+                  "  var texts = inner.filter(function (b) { return b && b.type === 'text'; });",
+                  "  pm.expect(texts.length && texts[0].text, 'the text part of the tool_result must survive beside the reference: ' + JSON.stringify(results[0])).to.eql('Found 1 tool');",
+                  "  var tools = Array.isArray(rr.tools) ? rr.tools : [];",
+                  "  var deferred = tools.filter(function (t) { return t && t.name === 'get_weather'; });",
+                  "  pm.expect(deferred.length === 1 && deferred[0].defer_loading, 'the referenced tool must reach the provider with defer_loading kept: ' + wire.slice(0, 900)).to.eql(true);",
+                  "});",
+                  "pm.test('anthropic claude-sonnet-4-6 /v1/responses tool_reference: the response completes and calls only offered tools', function () {",
+                  "  var content = Array.isArray(body.content) ? body.content : [];",
+                  "  var output = Array.isArray(body.output) ? body.output : [];",
+                  "  var calls = content.filter(function (b) { return b && b.type === 'tool_use'; }).map(function (b) { return b.name; })",
+                  "    .concat(output.filter(function (o) { return o && o.type === 'function_call'; }).map(function (o) { return o.name; }));",
+                  "  var bad = calls.filter(function (n) { return n !== 'find_tools' && n !== 'get_weather'; });",
+                  "  pm.expect(bad, 'tool call for a tool that was never offered: ' + txt.slice(0, 600)).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_output_tokens\": 512,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"find_tools\",\n      \"description\": \"Search the tool catalog and return references to the matching tools.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in Tokyo?\"\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"toolu_find_1\",\n      \"name\": \"find_tools\",\n      \"arguments\": \"{\\\"query\\\":\\\"weather\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"toolu_find_1\",\n      \"output\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Found 1 tool\"\n        },\n        {\n          \"type\": \"tool_reference\",\n          \"tool_name\": \"get_weather\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-4-6 /anthropic/v1/messages client tool_result tool_reference reaches the provider - client-tool-reference - #7813",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('vertex claude-sonnet-4-6 /anthropic/v1/messages tool_reference: request accepted (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the tool_reference reached Anthropic malformed or defer_loading was stripped, any other status is a real failure: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('vertex claude-sonnet-4-6 /anthropic/v1/messages tool_reference: the tool_result reaches the provider with its tool_reference block', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+                  "  var results = [];",
+                  "  msgs.forEach(function (m) { (Array.isArray(m && m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { results.push(b); } }); });",
+                  "  pm.expect(results.length, 'exactly one tool_result must reach the provider: ' + wire.slice(0, 900)).to.eql(1);",
+                  "  var inner = Array.isArray(results[0].content) ? results[0].content : [];",
+                  "  var refs = inner.filter(function (b) { return b && b.type === 'tool_reference'; });",
+                  "  pm.expect(refs.length, 'tool_reference dropped from the client tool_result before the provider (pre-#7813: the Responses converters kept only text, image and document): ' + JSON.stringify(results[0])).to.eql(1);",
+                  "  pm.expect(refs[0].tool_name, 'tool_reference.tool_name: ' + JSON.stringify(refs[0])).to.eql('get_weather');",
+                  "  var texts = inner.filter(function (b) { return b && b.type === 'text'; });",
+                  "  pm.expect(texts.length && texts[0].text, 'the text part of the tool_result must survive beside the reference: ' + JSON.stringify(results[0])).to.eql('Found 1 tool');",
+                  "  var tools = Array.isArray(rr.tools) ? rr.tools : [];",
+                  "  var deferred = tools.filter(function (t) { return t && t.name === 'get_weather'; });",
+                  "  pm.expect(deferred.length === 1 && deferred[0].defer_loading, 'the referenced tool must reach the provider with defer_loading kept: ' + wire.slice(0, 900)).to.eql(true);",
+                  "});",
+                  "pm.test('vertex claude-sonnet-4-6 /anthropic/v1/messages tool_reference: the response completes and calls only offered tools', function () {",
+                  "  var content = Array.isArray(body.content) ? body.content : [];",
+                  "  var output = Array.isArray(body.output) ? body.output : [];",
+                  "  var calls = content.filter(function (b) { return b && b.type === 'tool_use'; }).map(function (b) { return b.name; })",
+                  "    .concat(output.filter(function (o) { return o && o.type === 'function_call'; }).map(function (o) { return o.name; }));",
+                  "  var bad = calls.filter(function (n) { return n !== 'find_tools' && n !== 'get_weather'; });",
+                  "  pm.expect(bad, 'tool call for a tool that was never offered: ' + txt.slice(0, 600)).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_tokens\": 512,\n  \"tools\": [\n    {\n      \"name\": \"find_tools\",\n      \"description\": \"Search the tool catalog and return references to the matching tools.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in Tokyo?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_find_1\",\n          \"name\": \"find_tools\",\n          \"input\": {\n            \"query\": \"weather\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_find_1\",\n          \"content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"Found 1 tool\"\n            },\n            {\n              \"type\": \"tool_reference\",\n              \"tool_name\": \"get_weather\"\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /anthropic/v1/messages client tool_result tool_reference reaches InvokeModel - client-tool-reference - #7813",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('bedrock claude-sonnet-4-6 /anthropic/v1/messages tool_reference: request accepted (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the tool_reference reached Anthropic malformed or defer_loading was stripped, any other status is a real failure: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('bedrock claude-sonnet-4-6 /anthropic/v1/messages tool_reference: the tool_result reaches the provider with its tool_reference block', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+                  "  var results = [];",
+                  "  msgs.forEach(function (m) { (Array.isArray(m && m.content) ? m.content : []).forEach(function (b) { if (b && b.type === 'tool_result') { results.push(b); } }); });",
+                  "  pm.expect(results.length, 'exactly one tool_result must reach the provider: ' + wire.slice(0, 900)).to.eql(1);",
+                  "  var inner = Array.isArray(results[0].content) ? results[0].content : [];",
+                  "  var refs = inner.filter(function (b) { return b && b.type === 'tool_reference'; });",
+                  "  pm.expect(refs.length, 'tool_reference dropped from the client tool_result before the provider (pre-#7813: the Responses converters kept only text, image and document): ' + JSON.stringify(results[0])).to.eql(1);",
+                  "  pm.expect(refs[0].tool_name, 'tool_reference.tool_name: ' + JSON.stringify(refs[0])).to.eql('get_weather');",
+                  "  var texts = inner.filter(function (b) { return b && b.type === 'text'; });",
+                  "  pm.expect(texts.length && texts[0].text, 'the text part of the tool_result must survive beside the reference: ' + JSON.stringify(results[0])).to.eql('Found 1 tool');",
+                  "  var tools = Array.isArray(rr.tools) ? rr.tools : [];",
+                  "  var deferred = tools.filter(function (t) { return t && t.name === 'get_weather'; });",
+                  "  pm.expect(deferred.length === 1 && deferred[0].defer_loading, 'the referenced tool must reach the provider with defer_loading kept: ' + wire.slice(0, 900)).to.eql(true);",
+                  "});",
+                  "pm.test('bedrock claude-sonnet-4-6 /anthropic/v1/messages tool_reference: the response completes and calls only offered tools', function () {",
+                  "  var content = Array.isArray(body.content) ? body.content : [];",
+                  "  var output = Array.isArray(body.output) ? body.output : [];",
+                  "  var calls = content.filter(function (b) { return b && b.type === 'tool_use'; }).map(function (b) { return b.name; })",
+                  "    .concat(output.filter(function (o) { return o && o.type === 'function_call'; }).map(function (o) { return o.name; }));",
+                  "  var bad = calls.filter(function (n) { return n !== 'find_tools' && n !== 'get_weather'; });",
+                  "  pm.expect(bad, 'tool call for a tool that was never offered: ' + txt.slice(0, 600)).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 512,\n  \"tools\": [\n    {\n      \"name\": \"find_tools\",\n      \"description\": \"Search the tool catalog and return references to the matching tools.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in Tokyo?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_find_1\",\n          \"name\": \"find_tools\",\n          \"input\": {\n            \"query\": \"weather\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_find_1\",\n          \"content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"Found 1 tool\"\n            },\n            {\n              \"type\": \"tool_reference\",\n              \"tool_name\": \"get_weather\"\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5 /anthropic/v1/messages client tool_result tool_reference is dropped before OpenAI - client-tool-reference - #7813",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('openai gpt-5 /anthropic/v1/messages tool_reference: request accepted (200)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means a tool_reference block (Anthropic-only) reached OpenAI, any other status is a real failure: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('openai gpt-5 /anthropic/v1/messages tool_reference: the tool output reaches OpenAI without the Anthropic-only tool_reference', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(wire, 'tool_reference reached OpenAI (pre-#7813 it was dropped earlier, now it must be removed before function_call_output is flattened): ' + wire.slice(0, 900)).to.not.include('tool_reference');",
+                  "  pm.expect(wire, 'the text part of the tool output must still reach OpenAI: ' + wire.slice(0, 900)).to.include('Found 1 tool');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5\",\n  \"max_tokens\": 512,\n  \"tools\": [\n    {\n      \"name\": \"find_tools\",\n      \"description\": \"Search the tool catalog and return references to the matching tools.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What's the weather in Tokyo?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_find_1\",\n          \"name\": \"find_tools\",\n          \"input\": {\n            \"query\": \"weather\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_find_1\",\n          \"content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"Found 1 tool\"\n            },\n            {\n              \"type\": \"tool_reference\",\n              \"tool_name\": \"get_weather\"\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
