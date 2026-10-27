@@ -1,6 +1,7 @@
 package openapimcp
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -76,6 +77,38 @@ func TestBuildDescription(t *testing.T) {
 	long := BuildDescription(Operation{Method: "GET", Path: "/x", Description: strings.Repeat("d", maxDescriptionLen+50)})
 	require.Contains(t, long, "…")
 	assert.Less(t, len(long), maxDescriptionLen+20)
+
+	// The summary is capped too: every tool built from a reused path item gets
+	// its own copy of the description.
+	longSummary := BuildDescription(Operation{Method: "GET", Path: "/x", Summary: strings.Repeat("s", maxDescriptionLen+50)})
+	require.Contains(t, longSummary, "…")
+	assert.Less(t, len(longSummary), maxDescriptionLen+20)
+}
+
+// TestSynthesize_ReusedPathItemSummaryIsBounded: one components.pathItems entry
+// with a 1 MiB summary referenced by 200 paths must not leave 200 MiB of tool
+// descriptions behind; each copy is capped.
+func TestSynthesize_ReusedPathItemSummaryIsBounded(t *testing.T) {
+	var paths strings.Builder
+	for i := 0; i < 200; i++ {
+		if i > 0 {
+			paths.WriteByte(',')
+		}
+		paths.WriteString(`"/p` + strconv.Itoa(i) + `":{"$ref":"#/components/pathItems/Shared"}`)
+	}
+	spec := `{"openapi":"3.1.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],"paths":{` + paths.String() + `},
+"components":{"pathItems":{"Shared":{"get":{"summary":"` + strings.Repeat("s", 1<<20) + `","responses":{"200":{"description":"ok"}}}}}}}`
+	doc, err := Parse([]byte(spec), ParseOptions{})
+	require.NoError(t, err)
+	syn, err := Synthesize(doc, SynthesizeOptions{ClientName: "t"})
+	require.NoError(t, err)
+	require.Len(t, syn.Tools, 200)
+	total := 0
+	for _, tool := range syn.Tools {
+		assert.LessOrEqual(t, len(tool.Description), maxDescriptionLen+64, tool.Name)
+		total += len(tool.Description)
+	}
+	assert.Less(t, total, 200*(maxDescriptionLen+64))
 }
 
 func TestAnnotationsFor(t *testing.T) {
