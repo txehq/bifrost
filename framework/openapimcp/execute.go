@@ -368,25 +368,16 @@ func (e *Executor) encodeBody(tool *Tool, args map[string]any) (io.Reader, strin
 	}
 }
 
-// clientFor returns the client to send req with. A request carrying more than
-// the default headers (spec-mapped credentials, resolver headers, declared
-// header parameters) or any query must not follow a redirect to another host:
-// Go strips only Authorization and Cookie there, so an API-key header would
-// reach the new host. Nor may it follow one from https to plain http on the
-// same host, which would send every credential unencrypted. Such a redirect
-// is returned to the model as the 3xx instead. Any CheckRedirect already on the client still runs for same-host
-// redirects.
+// clientFor returns the client to send req with. No request follows a redirect
+// to another host: with credentials, Go strips only Authorization and Cookie
+// there, so an API-key header or a query credential would reach the new host;
+// without them, the gateway's dialer may still reach private networks, so the
+// upstream could point the call at an internal service (TXE-5296). Nor may a
+// request follow a redirect from https to plain http on the same host, which
+// would send its credentials unencrypted. Such a redirect is returned to the
+// model as the 3xx instead. Any CheckRedirect already on the client still runs
+// for same-host redirects.
 func (e *Executor) clientFor(req *http.Request) *http.Client {
-	carries := req.URL.RawQuery != ""
-	for name := range req.Header {
-		if name != "Accept" && name != "Content-Type" {
-			carries = true
-			break
-		}
-	}
-	if !carries {
-		return e.client
-	}
 	c := *e.client
 	inner := e.client.CheckRedirect
 	origin, secure := req.URL.Host, req.URL.Scheme == "https"

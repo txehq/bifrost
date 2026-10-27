@@ -289,6 +289,21 @@ func TestPreviewOpenAPISpec_Errors(t *testing.T) {
 	status, body = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(expanding), "", false)
 	assert.Equal(t, fasthttp.StatusBadRequest, status, body)
 	assert.Contains(t, body, "across the document")
+
+	// A 1 MiB default shared by 70 operations: few entries, but every tool's
+	// input schema would carry its own copy, past the document's byte budget.
+	var heavy strings.Builder
+	for i := 0; i < 70; i++ {
+		if i > 0 {
+			heavy.WriteByte(',')
+		}
+		heavy.WriteString(`"/h` + strconv.Itoa(i) + `":{"get":{"operationId":"h` + strconv.Itoa(i) + `","parameters":[{"name":"q","in":"query","schema":{"$ref":"#/components/schemas/Big"}}],"responses":{"200":{"description":"ok"}}}}`)
+	}
+	heavyDoc, _ := json.Marshal(MCPOpenAPIPreviewRequest{Spec: `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a.example.com"}],"paths":{` +
+		heavy.String() + `},"components":{"schemas":{"Big":{"type":"string","default":"` + strings.Repeat("x", 1<<20) + `"}}}}`})
+	status, body = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(heavyDoc), "", false)
+	assert.Equal(t, fasthttp.StatusBadRequest, status, body[:min(len(body), 300)])
+	assert.Contains(t, body, "bytes")
 }
 
 func TestAddMCPClient_OpenAPI_CreatesClientFromSpec(t *testing.T) {

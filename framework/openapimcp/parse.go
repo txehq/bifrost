@@ -54,7 +54,7 @@ func Parse(data []byte, opts ParseOptions) (*Document, error) {
 		return nil, err
 	}
 	if res.exhausted() {
-		return nil, fmt.Errorf("spec schemas expand to more than %d entries across the document through shared $refs; split the spec or reduce the operations that reuse large schemas", maxDocumentResolvedEntries)
+		return nil, fmt.Errorf("spec schemas expand past the document budget (%d entries, %d bytes) across the document through shared $refs; split the spec or reduce the operations that reuse large schemas", maxDocumentResolvedEntries, maxDocumentResolvedBytes)
 	}
 	doc.Warnings = append(doc.Warnings, res.warnings...)
 	if len(doc.Operations) == 0 {

@@ -37,6 +37,11 @@ const (
 	// the per-call cap each time while the copies the parser holds grow without
 	// bound. Entries, not containers: a map with many scalar keys is one node.
 	maxDocumentResolvedEntries = 1000000
+	// maxDocumentResolvedBytes caps the string bytes all resolve calls on one
+	// document hand out together. Values are shared by reference while resolving,
+	// but synthesis marshals a copy into every tool's input schema, so a large
+	// default or enum reused by many operations multiplies there.
+	maxDocumentResolvedBytes = 64 << 20
 )
 
 // Parameter locations. The OpenAPI values plus 3.2's querystring.

@@ -443,6 +443,31 @@ func TestExecute_CrossHostRedirectKeepsCredentials(t *testing.T) {
 	assert.True(t, res.IsError, "the model sees the 3xx")
 }
 
+// TestExecute_CrossHostRedirectIsNeverFollowed: a call that carries nothing
+// beyond the default headers is pinned too. The product client may dial private
+// networks, so following an upstream's redirect to another host would let it
+// point a tool at an internal service (and a 307/308 would replay the method and
+// body there). The model sees the 3xx instead (TXE-5296).
+func TestExecute_CrossHostRedirectIsNeverFollowed(t *testing.T) {
+	for _, code := range []int{http.StatusFound, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		other, otherCap := newCaptureServer(t, nil)
+		ts, _ := newCaptureServer(t, func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, other.URL+"/internal", code)
+		})
+		exec, syn := petstoreExecutor(t, ts, nil)
+		req, err := exec.BuildRequest(context.Background(), findTool(t, syn, "listPets"), map[string]any{})
+		require.NoError(t, err)
+		require.Empty(t, req.URL.RawQuery, "the call carries no query")
+		res, err := exec.Execute(context.Background(), findTool(t, syn, "listPets"), map[string]any{})
+		require.NoError(t, err)
+		otherCap.mu.Lock()
+		reached := otherCap.path
+		otherCap.mu.Unlock()
+		assert.Empty(t, reached, "a %d to another host must not be followed", code)
+		assert.True(t, res.IsError, "the model sees the %d", code)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

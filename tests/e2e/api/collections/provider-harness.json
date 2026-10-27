@@ -262725,6 +262725,64 @@
           }
         },
         {
+          "name": "[EXPECT-400] openai mcp-openapi-spec preview of a spec whose shared large default would be copied into every tool is refused",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A 1 MiB string default shared by 70 operations: few entries, but every tool's input schema would carry",
+                  "// its own copy, past the document's byte budget (64 MiB). Built here to keep the collection small.",
+                  "var big = new Array((1 << 20) + 1).join('x');",
+                  "var paths = [];",
+                  "for (var j = 0; j < 70; j++) { paths.push('\"/h' + j + '\":{\"get\":{\"operationId\":\"h' + j + '\",\"parameters\":[{\"name\":\"q\",\"in\":\"query\",\"schema\":{\"$ref\":\"#/components/schemas/Big\"}}],\"responses\":{\"200\":{\"description\":\"ok\"}}}}'); }",
+                  "var spec = '{\"openapi\":\"3.0.0\",\"info\":{\"title\":\"Harness byte budget\",\"version\":\"1\"},\"servers\":[{\"url\":\"https://petstore3.swagger.io/api/v3\"}],\"paths\":{' + paths.join(',') + '},\"components\":{\"schemas\":{\"Big\":{\"type\":\"string\",\"default\":\"' + big + '\"}}}}';",
+                  "pm.variables.set('openapiBytesPreviewBody', JSON.stringify({ spec: spec }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a spec whose shared large default exceeds the byte budget is a 400', function () {",
+                  "  var txt = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'pre-fix the preview answered 200 with 70 copies of the default: ' + txt.slice(0, 300)).to.eql(400);",
+                  "  pm.expect(txt, txt.slice(0, 300)).to.include('bytes');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{openapiBytesPreviewBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            }
+          }
+        },
+        {
           "name": "openai mcp-openapi-spec create registers a client synthesized from the document",
           "event": [
             {

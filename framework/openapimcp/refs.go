@@ -22,13 +22,14 @@ type resolver struct {
 	siblingsApply bool // 3.1+: keywords beside a $ref apply alongside the target
 	nodes         int  // nodes produced by the current resolve call
 	total         int  // entries copied by every resolve call on this document
+	bytes         int  // string bytes every resolve call on this document handed out
 }
 
 // exhausted reports whether the document-wide expansion budget has been spent.
 // Parse refuses such a document whole: the operations resolved after that point
 // were cut off by the budget, not by anything wrong with them.
 func (r *resolver) exhausted() bool {
-	return r.total > maxDocumentResolvedEntries
+	return r.total > maxDocumentResolvedEntries || r.bytes > maxDocumentResolvedBytes
 }
 
 // charge accounts for entries about to be copied, before the copy is made. The
@@ -36,10 +37,55 @@ func (r *resolver) exhausted() bool {
 // scalar keys is one node but as many copied entries at every use.
 func (r *resolver) charge(entries int) error {
 	r.total += entries
-	if r.exhausted() {
+	return r.checkBudget()
+}
+
+// chargeBytes accounts for string bytes handed out with a resolved node. They
+// are shared, not copied, while resolving, but synthesis marshals every tool's
+// input schema separately, so each use of a shared value is paid for in bytes.
+func (r *resolver) chargeBytes(n int) error {
+	r.bytes += n
+	return r.checkBudget()
+}
+
+func (r *resolver) checkBudget() error {
+	if r.total > maxDocumentResolvedEntries {
 		return fmt.Errorf("schemas expand to more than %d entries across the document through shared $refs", maxDocumentResolvedEntries)
 	}
+	if r.bytes > maxDocumentResolvedBytes {
+		return fmt.Errorf("schemas expand to more than %d bytes across the document through shared $refs", maxDocumentResolvedBytes)
+	}
 	return nil
+}
+
+// dataBytes approximates the bytes a value adds when encoded: string lengths
+// plus a few bytes per other scalar and per map key. The walk stops once it has
+// counted past limit, so a huge value costs at most the budget to measure.
+func dataBytes(v any, limit int) int {
+	switch t := v.(type) {
+	case string:
+		return len(t)
+	case map[string]any:
+		n := 0
+		for k, val := range t {
+			n += len(k) + dataBytes(val, limit-n)
+			if n > limit {
+				return n
+			}
+		}
+		return n
+	case []any:
+		n := 0
+		for _, val := range t {
+			n += dataBytes(val, limit-n)
+			if n > limit {
+				return n
+			}
+		}
+		return n
+	default:
+		return 8
+	}
 }
 
 func (r *resolver) warn(format string, args ...any) {
@@ -108,6 +154,9 @@ func (r *resolver) resolveAt(node any, stack []string, depth int) (any, error) {
 			case isInstanceDataKey(k):
 				// Example and default data, enums and extensions are values, not
 				// schema: a $ref key inside them is data and is left as it is.
+				if err := r.chargeBytes(len(k) + dataBytes(val, maxDocumentResolvedBytes-r.bytes)); err != nil {
+					return nil, err
+				}
 				out[k] = val
 				continue
 			case k == "properties" || k == "patternProperties":
@@ -147,6 +196,11 @@ func (r *resolver) resolveAt(node any, stack []string, depth int) (any, error) {
 		}
 		return out, nil
 	default:
+		if str, ok := v.(string); ok {
+			if err := r.chargeBytes(len(str)); err != nil {
+				return nil, err
+			}
+		}
 		return v, nil
 	}
 }

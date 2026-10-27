@@ -378,6 +378,42 @@ func TestParse_RefExpansionIsBoundedAcrossOperations(t *testing.T) {
 	assert.Contains(t, err.Error(), "across the document")
 }
 
+// TestParse_RefExpansionBytesAreBoundedAcrossTheDocument: instance data such as
+// a default or an enum is shared by reference while resolving, so a large one
+// reused by many operations costs few entries, but synthesis marshals a copy
+// into every tool's input schema. The bytes the document's references hand out
+// are bounded too, and a spec over that bound is refused as a whole.
+func TestParse_RefExpansionBytesAreBoundedAcrossTheDocument(t *testing.T) {
+	big := strings.Repeat("x", 1<<20)
+	var paths strings.Builder
+	const operations = maxDocumentResolvedBytes/(1<<20) + 6
+	for i := 0; i < operations; i++ {
+		if i > 0 {
+			paths.WriteByte(',')
+		}
+		fmt.Fprintf(&paths, `"/op%d":{"get":{"operationId":"op%d","parameters":[{"name":"q","in":"query","schema":{"$ref":"#/components/schemas/Big"}}],"responses":{"200":{"description":"ok"}}}}`, i, i)
+	}
+	spec := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{` + paths.String() + `},
+"components":{"schemas":{"Big":{"type":"string","default":"` + big + `"}}}}`
+	require.Less(t, len(spec), MaxSpecBytes)
+
+	start := time.Now()
+	_, err := Parse([]byte(spec), ParseOptions{})
+	require.Error(t, err, "a document whose shared $refs hand out more bytes than the budget must be refused")
+	assert.Contains(t, err.Error(), "across the document")
+	assert.Less(t, time.Since(start), 5*time.Second)
+
+	// A few uses of the same large default are well inside the budget.
+	small := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{"/a":{"get":{"operationId":"a","parameters":[{"name":"q","in":"query","schema":{"$ref":"#/components/schemas/Big"}}],"responses":{"200":{"description":"ok"}}}}},
+"components":{"schemas":{"Big":{"type":"string","default":"` + big + `"}}}}`
+	doc, err := Parse([]byte(small), ParseOptions{})
+	require.NoError(t, err)
+	_, err = Synthesize(doc, SynthesizeOptions{ClientName: "t"})
+	require.NoError(t, err)
+}
+
 // TestParse_RefSiblingsApplyIn31: from 3.1 on, keywords beside a $ref apply
 // alongside the target, so a body extending a base schema keeps both.
 func TestParse_RefSiblingsApplyIn31(t *testing.T) {
