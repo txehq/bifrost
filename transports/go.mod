@@ -7,6 +7,18 @@ require (
 	github.com/andybalholm/brotli v1.2.2
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
+	github.com/capsohq/bifrost/core v1.11.2
+	github.com/capsohq/bifrost/framework v1.9.0
+	github.com/capsohq/bifrost/plugins/compat v0.4.0
+	github.com/capsohq/bifrost/plugins/governance v1.9.0
+	github.com/capsohq/bifrost/plugins/logging v1.9.0
+	github.com/capsohq/bifrost/plugins/maxim v1.7.10
+	github.com/capsohq/bifrost/plugins/modelcatalogresolver v1.1.10
+	github.com/capsohq/bifrost/plugins/otel v1.6.0
+	github.com/capsohq/bifrost/plugins/prompts v1.1.10
+	github.com/capsohq/bifrost/plugins/routing v1.2.0
+	github.com/capsohq/bifrost/plugins/semanticcache v1.7.0
+	github.com/capsohq/bifrost/plugins/telemetry v1.9.0
 	github.com/fasthttp/router v1.5.4
 	github.com/fasthttp/websocket v1.5.12
 	github.com/go-git/go-billy/v5 v5.9.0
@@ -16,18 +28,6 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.20.0
 	github.com/mark3labs/mcp-go v0.43.2
-	github.com/capsohq/bifrost/core v1.11.2
-	github.com/capsohq/bifrost/framework v1.8.1
-	github.com/capsohq/bifrost/plugins/compat v0.3.6
-	github.com/capsohq/bifrost/plugins/governance v1.8.6
-	github.com/capsohq/bifrost/plugins/logging v1.8.6
-	github.com/capsohq/bifrost/plugins/maxim v1.7.9
-	github.com/capsohq/bifrost/plugins/modelcatalogresolver v1.1.9
-	github.com/capsohq/bifrost/plugins/otel v1.5.9
-	github.com/capsohq/bifrost/plugins/prompts v1.1.9
-	github.com/capsohq/bifrost/plugins/routing v1.1.6
-	github.com/capsohq/bifrost/plugins/semanticcache v1.6.9
-	github.com/capsohq/bifrost/plugins/telemetry v1.8.5
 	github.com/pion/ice/v4 v4.4.4
 	github.com/pion/logging v0.2.4
 	github.com/pion/rtcp v1.2.18
@@ -97,6 +97,7 @@ require (
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic/loader v0.5.2 // indirect
 	github.com/canonical/starlark v0.0.0-20260428155828-9a81051fac39 // indirect
+	github.com/capsohq/bifrost/plugins/mocker v1.6.10 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
@@ -160,7 +161,6 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/capsohq/bifrost/plugins/mocker v1.6.9 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
