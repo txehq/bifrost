@@ -42,6 +42,11 @@ const (
 	// but synthesis marshals a copy into every tool's input schema, so a large
 	// default or enum reused by many operations multiplies there.
 	maxDocumentResolvedBytes = 64 << 20
+	// maxServerURLBytes caps one server URL after its variables are expanded,
+	// and maxDocumentServerURLBytes all of a document's together: a URL that
+	// repeats a variable with a large default multiplies on expansion.
+	maxServerURLBytes         = 8 << 10
+	maxDocumentServerURLBytes = 1 << 20
 )
 
 // Parameter locations. The OpenAPI values plus 3.2's querystring.
@@ -72,6 +77,12 @@ type Document struct {
 	GlobalSecurity  []SecurityRequirement
 	Operations      []Operation
 	Warnings        []string
+
+	// serverURLBytes counts the expanded server URLs; serverURLOverflow marks a
+	// document whose server variables expand past maxServerURLBytes or
+	// maxDocumentServerURLBytes, which Parse refuses.
+	serverURLBytes    int
+	serverURLOverflow bool
 }
 
 // SecurityScheme is one components.securitySchemes (or securityDefinitions) entry.

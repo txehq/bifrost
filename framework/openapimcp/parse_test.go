@@ -489,6 +489,42 @@ func TestParse_RefExpansionChargesKeyBytes(t *testing.T) {
 	assert.Contains(t, err.Error(), "across the document")
 }
 
+// TestParse_ServerVariableExpansionIsBounded: a server URL that repeats a
+// variable with a large default multiplies on expansion, so the expanded size is
+// checked before the URL is built, per URL and across the document, and a spec
+// over either bound is refused.
+func TestParse_ServerVariableExpansionIsBounded(t *testing.T) {
+	def := strings.Repeat("a", 10<<10)
+	repeated := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},
+"servers":[{"url":"https://h/` + strings.Repeat("{x}", 1000) + `","variables":{"x":{"default":"` + def + `"}}}],
+"paths":{"/a":{"get":{"operationId":"a","responses":{"200":{"description":"ok"}}}}}}`
+	start := time.Now()
+	_, err := Parse([]byte(repeated), ParseOptions{})
+	require.Error(t, err, "1,000 copies of a 10 KiB default would build a 10 MiB URL")
+	assert.Contains(t, err.Error(), "server URL")
+	assert.Less(t, time.Since(start), 2*time.Second)
+
+	// Each URL under the per-URL bound, but many of them over the document's.
+	var paths strings.Builder
+	for i := 0; i < 200; i++ {
+		if i > 0 {
+			paths.WriteByte(',')
+		}
+		fmt.Fprintf(&paths, `"/p%d":{"servers":[{"url":"https://h/{v}","variables":{"v":{"default":"%s"}}}],"get":{"operationId":"p%d","responses":{"200":{"description":"ok"}}}}`, i, strings.Repeat("b", 6<<10), i)
+	}
+	many := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://h"}],"paths":{` + paths.String() + `}}`
+	_, err = Parse([]byte(many), ParseOptions{})
+	require.Error(t, err, "200 server URLs of 6 KiB exceed the document's total")
+	assert.Contains(t, err.Error(), "server URL")
+
+	ok := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},
+"servers":[{"url":"https://{host}/{base}","variables":{"host":{"default":"api.example.com"},"base":{"default":"v1"}}}],
+"paths":{"/a":{"get":{"operationId":"a","responses":{"200":{"description":"ok"}}}}}}`
+	doc, err := Parse([]byte(ok), ParseOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"https://api.example.com/v1"}, doc.Servers)
+}
+
 // TestParse_RefSiblingsApplyIn31: from 3.1 on, keywords beside a $ref apply
 // alongside the target, so a body extending a base schema keeps both.
 func TestParse_RefSiblingsApplyIn31(t *testing.T) {

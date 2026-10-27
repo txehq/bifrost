@@ -262783,6 +262783,63 @@
           }
         },
         {
+          "name": "[EXPECT-400] openai mcp-openapi-spec preview of a spec whose server variables expand an oversized URL is refused",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A server URL repeating {x} 1,000 times with a 10 KiB default would expand to 10 MiB; the parser refuses it",
+                  "// before building the URL. Built here to keep the collection small.",
+                  "var def = new Array((10 << 10) + 1).join('a');",
+                  "var url = 'https://petstore3.swagger.io/' + new Array(1001).join('{x}');",
+                  "var spec = JSON.stringify({ openapi: '3.0.0', info: { title: 'Harness server variables', version: '1' }, servers: [{ url: url, variables: { x: { default: def } } }], paths: { '/a': { get: { operationId: 'a', responses: { '200': { description: 'ok' } } } } } });",
+                  "pm.variables.set('openapiServerVarsPreviewBody', JSON.stringify({ spec: spec }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a spec whose server variables expand an oversized URL is a 400', function () {",
+                  "  var txt = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'pre-fix the preview built the 10 MiB URL: ' + txt.slice(0, 300)).to.eql(400);",
+                  "  pm.expect(txt, txt.slice(0, 300)).to.include('server URL');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{openapiServerVarsPreviewBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            }
+          }
+        },
+        {
           "name": "openai mcp-openapi-spec create registers a client synthesized from the document",
           "event": [
             {

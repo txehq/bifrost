@@ -304,6 +304,14 @@ func TestPreviewOpenAPISpec_Errors(t *testing.T) {
 	status, body = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(heavyDoc), "", false)
 	assert.Equal(t, fasthttp.StatusBadRequest, status, body[:min(len(body), 300)])
 	assert.Contains(t, body, "bytes")
+
+	// A server URL repeating a variable with a large default would expand to
+	// 10 MiB; the preview refuses it without building the URL.
+	serverVars, _ := json.Marshal(MCPOpenAPIPreviewRequest{Spec: `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://h/` +
+		strings.Repeat("{x}", 1000) + `","variables":{"x":{"default":"` + strings.Repeat("a", 10<<10) + `"}}}],"paths":{"/a":{"get":{"operationId":"a","responses":{"200":{"description":"ok"}}}}}}`})
+	status, body = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(serverVars), "", false)
+	assert.Equal(t, fasthttp.StatusBadRequest, status, body[:min(len(body), 300)])
+	assert.Contains(t, body, "server URL")
 }
 
 func TestAddMCPClient_OpenAPI_CreatesClientFromSpec(t *testing.T) {

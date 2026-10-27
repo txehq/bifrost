@@ -53,6 +53,9 @@ func Parse(data []byte, opts ParseOptions) (*Document, error) {
 	if err != nil {
 		return nil, err
 	}
+	if doc.serverURLOverflow {
+		return nil, fmt.Errorf("a server URL expands past %d bytes, or the document's server URLs past %d bytes in total, through server variables", maxServerURLBytes, maxDocumentServerURLBytes)
+	}
 	if res.exhausted() {
 		return nil, fmt.Errorf("spec schemas expand past the document budget (%d entries, %d bytes) across the document through shared $refs; split the spec or reduce the operations that reuse large schemas", maxDocumentResolvedEntries, maxDocumentResolvedBytes)
 	}
@@ -517,7 +520,27 @@ func parseServers(raw any, doc *Document, opts ParseOptions) []string {
 					def = enum[0]
 				}
 			}
-			u = strings.ReplaceAll(u, "{"+name+"}", def)
+			placeholder := "{" + name + "}"
+			n := strings.Count(u, placeholder)
+			if n == 0 {
+				continue
+			}
+			// The expanded size is known before the URL is built, so an
+			// oversized one is never allocated.
+			if len(u)+n*(len(def)-len(placeholder)) > maxServerURLBytes {
+				doc.serverURLOverflow = true
+				u = ""
+				break
+			}
+			u = strings.ReplaceAll(u, placeholder, def)
+		}
+		if u == "" {
+			continue
+		}
+		doc.serverURLBytes += len(u)
+		if doc.serverURLBytes > maxDocumentServerURLBytes {
+			doc.serverURLOverflow = true
+			continue
 		}
 		u = resolveRelativeURL(u, doc.Self, opts.SpecURL)
 		if !isAbsoluteHTTPURL(u) {
