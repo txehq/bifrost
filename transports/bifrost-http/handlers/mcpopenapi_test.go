@@ -561,10 +561,12 @@ func TestUpdateMCPClient_OpenAPI_ToolOnlyEditLeavesLiveConfigAlone(t *testing.T)
 	assert.Empty(t, mgr.refreshed)
 }
 
-// TestAddMCPClient_OpenAPI_OperationServersNeedNoBaseURL: a spec whose every
-// operation declares an absolute server is served without a base URL; for an
-// unauthenticated caller each of those servers passes the public-target gate.
-func TestAddMCPClient_OpenAPI_OperationServersNeedNoBaseURL(t *testing.T) {
+// TestAddMCPClient_OpenAPI_OperationServersNeedABaseURL: operation-level
+// servers never stand in for a base URL, since the executor uses them only at
+// its origin (TXE-5296). A spec whose servers are all on its operations is
+// refused with 400 until openapi_config.base_url is set; with one it is created,
+// and for an unauthenticated caller that base URL passes the public-target gate.
+func TestAddMCPClient_OpenAPI_OperationServersNeedABaseURL(t *testing.T) {
 	spec := func(server string) string {
 		return `{"openapi":"3.0.0","info":{"title":"ops","version":"1"},"paths":{"/a":{"servers":[{"url":"` + server + `"}],"get":{"operationId":"getA","responses":{"200":{"description":"ok"}}}}}}`
 	}
@@ -575,13 +577,23 @@ func TestAddMCPClient_OpenAPI_OperationServersNeedNoBaseURL(t *testing.T) {
 		"openapi_config":   map[string]any{"spec": spec("https://a.example.com/svc")},
 	})
 	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+	assert.Contains(t, respBody, "base_url")
+	require.Empty(t, mgr.added)
+
+	body, _ = json.Marshal(map[string]any{
+		"name": "opservers", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute": []string{"getA"},
+		"openapi_config":   map[string]any{"spec": spec("https://a.example.com/svc"), "base_url": "https://a.example.com/svc"},
+	})
+	status, respBody = doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
 	require.Len(t, mgr.added, 1)
 
 	private, _ := json.Marshal(map[string]any{
 		"name": "opservers_private", "connection_type": "openapi", "auth_type": "none",
 		"tools_to_execute": []string{"getA"},
-		"openapi_config":   map[string]any{"spec": spec("http://127.0.0.1:9/svc")},
+		"openapi_config":   map[string]any{"spec": spec("http://127.0.0.1:9/svc"), "base_url": "http://127.0.0.1:9/svc"},
 	})
 	status, respBody = doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(private), "", true)
 	assert.Equal(t, fasthttp.StatusForbidden, status, respBody)

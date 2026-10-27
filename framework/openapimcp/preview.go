@@ -35,31 +35,12 @@ func ResolveBaseURL(doc *Document, override *string, specURL string) (base strin
 	return "", false, errors.New("the spec declares no absolute server URL; set openapi_config.base_url")
 }
 
-// ResolveServingBaseURL is ResolveBaseURL for a spec about to be served. When
-// no document-level base resolves but every synthesized tool's operation
-// declares its own absolute server, it returns an empty base and no error: the
-// executor sends each call to its operation's server.
-func ResolveServingBaseURL(doc *Document, syn *Synthesis, override *string, specURL string) (base string, explicit bool, err error) {
-	base, explicit, err = ResolveBaseURL(doc, override, specURL)
-	hasOverride := override != nil && strings.TrimSpace(*override) != ""
-	if err != nil && !hasOverride && operationServersCover(syn) {
-		return "", false, nil
-	}
-	return base, explicit, err
-}
-
-// operationServersCover reports whether every tool's operation has an absolute
-// server of its own (the one the executor uses).
-func operationServersCover(syn *Synthesis) bool {
-	if syn == nil || len(syn.Tools) == 0 {
-		return false
-	}
-	for _, t := range syn.Tools {
-		if len(t.Operation.Servers) == 0 || !isAbsoluteHTTPURL(t.Operation.Servers[0]) {
-			return false
-		}
-	}
-	return true
+// ResolveServingBaseURL is ResolveBaseURL for a spec about to be served.
+// Operation-level servers never stand in for a missing base URL: the executor
+// uses them only at the base URL's origin, so a spec that declares servers only
+// on its operations needs an explicit openapi_config.base_url.
+func ResolveServingBaseURL(doc *Document, _ *Synthesis, override *string, specURL string) (base string, explicit bool, err error) {
+	return ResolveBaseURL(doc, override, specURL)
 }
 
 // SpecHash is the stable identity of a spec's bytes.
@@ -95,9 +76,6 @@ func Preview(data []byte, parseOpts ParseOptions, synthOpts SynthesizeOptions, b
 	}
 	if base, _, err := ResolveServingBaseURL(doc, syn, baseURLOverride, parseOpts.SpecURL); err == nil {
 		result.BaseURL = base
-		// Whether every operation declares its own server, independent of an
-		// override: it tells the form a base URL is optional.
-		result.OperationServers = operationServersCover(syn)
 	} else {
 		result.Warnings = append(result.Warnings, err.Error())
 	}

@@ -262405,7 +262405,7 @@
           }
         },
         {
-          "name": "openai mcp-openapi-spec preview of a spec with only operation-level servers needs no base url",
+          "name": "openai mcp-openapi-spec preview of a spec with only operation-level servers asks for a base url (TXE-5296)",
           "event": [
             {
               "listen": "test",
@@ -262416,17 +262416,17 @@
                   "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
                   "});",
                   "var body = pm.response.json();",
-                  "pm.test('every operation carries its own server, so no base url is required', function () {",
-                  "  pm.expect(body.operation_servers, pm.response.text()).to.eql(true);",
+                  "pm.test('operation servers never stand in for a base url, so none is resolved', function () {",
+                  "  pm.expect(body.operation_servers || false, 'pre-TXE-5296 every operation server made the base url optional: ' + pm.response.text()).to.eql(false);",
                   "  pm.expect(body.base_url || '', pm.response.text()).to.eql('');",
                   "});",
                   "pm.test('the operation still becomes a tool', function () {",
                   "  var names = (body.tools || []).map(function (t) { return t.name; });",
                   "  pm.expect(names, pm.response.text()).to.eql(['listPets']);",
                   "});",
-                  "pm.test('no base-url warning is raised', function () {",
+                  "pm.test('the preview asks for a base url', function () {",
                   "  var warned = (body.warnings || []).some(function (w) { return w.indexOf('base_url') !== -1; });",
-                  "  pm.expect(warned, pm.response.text()).to.eql(false);",
+                  "  pm.expect(warned, pm.response.text()).to.eql(true);",
                   "});"
                 ]
               }
@@ -263431,6 +263431,135 @@
                 "mcp",
                 "client",
                 "{{openapiCrossOriginId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai mcp-openapi-spec create a credential-free client whose operation names a private origin",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Run-unique identity. The operation server is a private address the document points at, never dialled: the call is refused first.",
+                  "var run = Date.now() + '_' + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('openapiPrivateOpId', 'harness-openapi-privop-' + run.replace('_', '-'));",
+                  "pm.collectionVariables.set('openapiPrivateOpName', 'harness_openapi_privop_' + run);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi credential-free client with a private operation server is created', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_id\": \"{{openapiPrivateOpId}}\",\n  \"name\": \"{{openapiPrivateOpName}}\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"none\",\n  \"tools_to_execute\": [\n    \"listPets\"\n  ],\n  \"openapi_config\": {\n    \"spec\": \"{\\n  \\\"openapi\\\": \\\"3.0.3\\\",\\n  \\\"info\\\": {\\n    \\\"title\\\": \\\"Harness credential-free cross-origin operation server\\\",\\n    \\\"version\\\": \\\"1.0.0\\\"\\n  },\\n  \\\"servers\\\": [\\n    {\\n      \\\"url\\\": \\\"https://bifrost.invalid/v1\\\"\\n    }\\n  ],\\n  \\\"paths\\\": {\\n    \\\"/pets\\\": {\\n      \\\"get\\\": {\\n        \\\"operationId\\\": \\\"listPets\\\",\\n        \\\"summary\\\": \\\"List pets\\\",\\n        \\\"servers\\\": [\\n          {\\n            \\\"url\\\": \\\"http://10.0.0.1/internal\\\"\\n          }\\n        ],\\n        \\\"responses\\\": {\\n          \\\"200\\\": {\\n            \\\"description\\\": \\\"ok\\\"\\n          }\\n        }\\n      }\\n    }\\n  }\\n}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "openai mcp-openapi-spec a credential-free call to a cross-origin operation server is refused before any request",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('the call is refused as a tool error naming the origins', function () {",
+                  "  pm.expect(pm.response.code, txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(pm.response.json().is_error, txt.slice(0, 400)).to.equal(true);",
+                  "  pm.expect(txt, 'pre-TXE-5296 a credential-free call went to the operation server, whatever the dialer could reach: ' + txt.slice(0, 400)).to.include('different origin');",
+                  "  pm.expect(txt, 'a transport attempt means the request was sent toward the private origin: ' + txt.slice(0, 400)).to.not.include('request to upstream failed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"openapi-private-operation-refusal\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"{{openapiPrivateOpName}}-listPets\",\n    \"arguments\": \"{}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "openai mcp-openapi-spec cleanup deletes the credential-free cross-origin client",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi credential-free cross-origin client is deleted', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{openapiPrivateOpId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{openapiPrivateOpId}}"
               ]
             }
           }

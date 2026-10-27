@@ -210,7 +210,7 @@ type PreviewResult struct {
 	Description      string                 `json:"description,omitempty"`
 	Servers          []string               `json:"servers"`
 	BaseURL          string                 `json:"base_url,omitempty"`
-	OperationServers bool                   `json:"operation_servers,omitempty"` // no base URL needed: every tool's operation declares its own server
+	OperationServers bool                   `json:"operation_servers,omitempty"` // never set: operation servers no longer stand in for a base URL (kept for API compatibility)
 	SecuritySchemes  []SecurityScheme       `json:"security_schemes"`
 	Tools            []ToolSummary          `json:"tools"`
 	Unsupported      []UnsupportedOperation `json:"unsupported"`

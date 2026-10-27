@@ -2,6 +2,7 @@ package openapimcp
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -106,9 +107,14 @@ func TestResolveServingBaseURL_InvalidOverrideIsAnError(t *testing.T) {
 	require.NoError(t, err)
 	_, _, err = ResolveServingBaseURL(doc, syn, str("ftp://example.com"), "")
 	require.ErrorContains(t, err, "base_url")
-	base, _, err := ResolveServingBaseURL(doc, syn, nil, "")
+	// Operation servers never stand in for a missing base URL (TXE-5296): they
+	// are used only at its origin, so such a spec needs an explicit one.
+	_, _, err = ResolveServingBaseURL(doc, syn, nil, "")
+	require.ErrorContains(t, err, "base_url")
+	base, explicit, err := ResolveServingBaseURL(doc, syn, str("https://a.example"), "")
 	require.NoError(t, err)
-	assert.Empty(t, base)
+	assert.Equal(t, "https://a.example", base)
+	assert.True(t, explicit)
 }
 
 // TestPreview_OperationServersIgnoresOverride: operation_servers says whether
@@ -120,5 +126,11 @@ func TestPreview_OperationServersIgnoresOverride(t *testing.T) {
 	result, _, err := Preview(spec, ParseOptions{}, SynthesizeOptions{ClientName: "ops"}, &override)
 	require.NoError(t, err)
 	assert.Equal(t, "https://gw.example.com", result.BaseURL)
-	assert.True(t, result.OperationServers)
+	assert.False(t, result.OperationServers, "operation servers never make a base URL optional (TXE-5296)")
+
+	result, _, err = Preview(spec, ParseOptions{}, SynthesizeOptions{ClientName: "ops"}, nil)
+	require.NoError(t, err)
+	assert.Empty(t, result.BaseURL)
+	assert.False(t, result.OperationServers)
+	assert.Contains(t, strings.Join(result.Warnings, "\n"), "base_url", "the preview asks for a base URL")
 }

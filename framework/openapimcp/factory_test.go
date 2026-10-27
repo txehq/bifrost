@@ -171,14 +171,20 @@ func TestFactory_SpecURLConfigErrorsArePermanent(t *testing.T) {
 	}
 }
 
-// TestFactory_OperationLevelServersSuffice: a spec without top-level servers
-// whose every operation declares an absolute server can be served; each call
-// goes to its operation's server.
-func TestFactory_OperationLevelServersSuffice(t *testing.T) {
+// TestFactory_OperationLevelServersNeedAnExplicitBaseURL: a spec without
+// top-level servers is not served from its operations' servers alone, which the
+// executor uses only at the base URL's origin (TXE-5296); with an explicit
+// base_url it is served and every call goes there.
+func TestFactory_OperationLevelServersNeedAnExplicitBaseURL(t *testing.T) {
 	ts, cap := newCaptureServer(t, nil)
 	spec := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},
 "paths":{"/a":{"servers":[{"url":"` + ts.URL + `/svc"}],"get":{"operationId":"getA","responses":{"200":{"description":"ok"}}}}}}`
-	cfg := &schemas.MCPClientConfig{Name: "opsrv", OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: spec}}
+	_, err := Factory()(context.Background(), &schemas.MCPClientConfig{Name: "opsrv", OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: spec}}, schemas.InProcessServerDeps{HTTPClient: ts.Client()})
+	require.ErrorIs(t, err, schemas.ErrMCPOpenAPIConfigInvalid)
+	assert.Contains(t, err.Error(), "base_url")
+
+	base := ts.URL + "/svc"
+	cfg := &schemas.MCPClientConfig{Name: "opsrv", OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: spec, BaseURL: &base}}
 	srv, err := Factory()(context.Background(), cfg, schemas.InProcessServerDeps{HTTPClient: ts.Client()})
 	require.NoError(t, err)
 	c, err := client.NewInProcessClient(srv)
