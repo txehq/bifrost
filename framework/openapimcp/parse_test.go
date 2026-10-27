@@ -341,10 +341,11 @@ func TestParse_RefExpansionIsBounded(t *testing.T) {
 	// entries, so stopping at the per-call node cap copies at most four entries
 	// a node; the full expansion would copy that for 2^depth levels.
 	t.Logf("entries copied %d (node cap %d, full expansion over %d levels)", res.total, maxResolvedNodes, 1<<depth)
+	assert.Greater(t, res.total, maxResolvedNodes, "expansion must have run up to the node cap")
 	assert.LessOrEqual(t, res.total, 4*(maxResolvedNodes+1), "expansion must be cut off at the node cap")
 	assert.Less(t, res.total, 1<<depth, "expansion must stop well short of the full tree")
 	boom := findOp(t, doc, http.MethodPost, "/boom")
-	assert.Contains(t, boom.Unsupported, "expands to more than", "the exploding operation is reported unsupported")
+	assert.Contains(t, boom.Unsupported, fmt.Sprintf("schema expands to more than %d nodes", maxResolvedNodes), "the exploding operation is reported unsupported at the node cap")
 	assert.Empty(t, findOp(t, doc, http.MethodGet, "/ok").Unsupported, "other operations are unaffected")
 }
 
@@ -376,7 +377,7 @@ func TestParse_RefExpansionIsBoundedAcrossOperations(t *testing.T) {
 
 	_, res, err := parseWithin(t, spec)
 	require.Error(t, err, "a document whose shared $refs expand past the document budget must be refused")
-	assert.Contains(t, err.Error(), "across the document")
+	assert.Contains(t, err.Error(), "spec schemas expand past the document budget")
 
 	// The same schema used by a handful of operations is well inside the budget.
 	small := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
@@ -391,6 +392,8 @@ func TestParse_RefExpansionIsBoundedAcrossOperations(t *testing.T) {
 	// refused at its first charge. Without the budget all uses would be copied.
 	perUse := smallRes.total / 2
 	t.Logf("entries copied %d (budget %d, per use %d, all %d uses %d)", res.total, maxDocumentResolvedEntries, perUse, operations, operations*perUse)
+	assert.Greater(t, res.total, maxDocumentResolvedEntries, "the entry budget is what refused the document")
+	assert.LessOrEqual(t, res.bytes, maxDocumentResolvedBytes, "the byte budget is not")
 	assert.LessOrEqual(t, res.total, maxDocumentResolvedEntries+2*perUse, "copying must stop at the document budget")
 	assert.Less(t, res.total, operations*perUse, "copying must stop well short of every use")
 
@@ -414,8 +417,9 @@ func TestParse_RefExpansionIsBoundedAcrossOperations(t *testing.T) {
 	require.Less(t, len(wideSpec), MaxSpecBytes)
 	_, res, err = parseWithin(t, wideSpec)
 	require.Error(t, err, "a schema of many scalar keywords reused past the entry budget must be refused")
-	assert.Contains(t, err.Error(), "across the document")
+	assert.Contains(t, err.Error(), "spec schemas expand past the document budget")
 	t.Logf("wide: entries copied %d (budget %d, all %d uses about %d)", res.total, maxDocumentResolvedEntries, wideOperations, wideOperations*20000)
+	assert.Greater(t, res.total, maxDocumentResolvedEntries, "the entry budget is what refused the document")
 	assert.LessOrEqual(t, res.total, maxDocumentResolvedEntries+2*20002, "copying must stop at the document budget")
 }
 
@@ -441,7 +445,7 @@ func TestParse_RefExpansionBytesAreBoundedAcrossTheDocument(t *testing.T) {
 
 	_, res, err := parseWithin(t, spec)
 	require.Error(t, err, "a document whose shared $refs hand out more bytes than the budget must be refused")
-	assert.Contains(t, err.Error(), "across the document")
+	assert.Contains(t, err.Error(), "spec schemas expand past the document budget")
 
 	// A few uses of the same large default are well inside the budget.
 	small := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
@@ -453,6 +457,8 @@ func TestParse_RefExpansionBytesAreBoundedAcrossTheDocument(t *testing.T) {
 	// Bytes stop within one use of the budget; without it every use is paid for.
 	perUse := smallRes.bytes
 	t.Logf("bytes handed out %d (budget %d, per use %d, all %d uses %d)", res.bytes, maxDocumentResolvedBytes, perUse, operations, operations*perUse)
+	assert.Greater(t, res.bytes, maxDocumentResolvedBytes, "the byte budget is what refused the document")
+	assert.LessOrEqual(t, res.total, maxDocumentResolvedEntries, "the entry budget is not")
 	assert.LessOrEqual(t, res.bytes, maxDocumentResolvedBytes+2*perUse, "bytes must stop at the document budget")
 	assert.Less(t, res.bytes, operations*perUse, "bytes must stop well short of every use")
 	_, err = Synthesize(doc, SynthesizeOptions{ClientName: "t"})
@@ -548,7 +554,7 @@ func TestParse_ServerVariableExpansionIsBounded(t *testing.T) {
 	_, _, err := parseWithin(t, repeated)
 	runtime.ReadMemStats(&after)
 	require.Error(t, err, "1,000 copies of a 10 KiB default would build a 10 MiB URL")
-	assert.Contains(t, err.Error(), "server URL")
+	assert.Contains(t, err.Error(), "a server URL expands past")
 	// The size is checked before the URL is built, so the refusal allocates a
 	// small multiple of the 13 KiB spec, never the 10 MiB URL.
 	allocated := after.TotalAlloc - before.TotalAlloc
@@ -596,7 +602,7 @@ func TestParse_ReusedPathItemIsChargedPerUse(t *testing.T) {
 "components":{"pathItems":{"Shared":{"get":{"operationId":"g","security":[` + strings.Join(alts, ",") + `],"responses":{"200":{"description":"ok"}}}}}}}`
 	_, res, err := parseWithin(t, spec)
 	require.Error(t, err, "100 uses of a path item with 10,000 security alternatives exceed the document budget")
-	assert.Contains(t, err.Error(), "across the document")
+	assert.Contains(t, err.Error(), fmt.Sprintf("more than %d entries across the document", maxDocumentResolvedEntries))
 
 	// One use of the shared item, to bound the work: charging stops within one
 	// use of the budget instead of parsing all 100.
@@ -606,6 +612,7 @@ func TestParse_ReusedPathItemIsChargedPerUse(t *testing.T) {
 	require.NoError(t, err)
 	perUse := oneRes.total
 	t.Logf("entries charged %d (budget %d, per use %d, all 100 uses %d)", res.total, maxDocumentResolvedEntries, perUse, 100*perUse)
+	assert.Greater(t, res.total, maxDocumentResolvedEntries, "the entry budget is what refused the document")
 	assert.LessOrEqual(t, res.total, maxDocumentResolvedEntries+2*perUse, "charging must stop at the document budget")
 	assert.Less(t, res.total, 100*perUse, "charging must stop well short of every use")
 
