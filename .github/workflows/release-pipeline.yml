@@ -1696,7 +1696,9 @@ jobs:
             api.parasail.io:443
             api.tokenfactory.nebius.com:443
             auth.docker.io:443
+            azure.archive.ubuntu.com:80
             downloads.getmaxim.ai:443
+            esm.ubuntu.com:443
             generativelanguage.googleapis.com:443
             getbifrost.ai:443
             github.com:443
@@ -1704,6 +1706,7 @@ jobs:
             pkg-containers.githubusercontent.com:443
             nodejs.org:443
             openrouter.ai:443
+            packages.microsoft.com:443
             production.cloudflare.docker.com:443
             production.cloudfront.docker.com:443
             proxy.golang.org:443
@@ -1753,7 +1756,14 @@ jobs:
       - name: Make bifrost-http executable
         run: chmod +x tmp/bifrost-http
 
-      - name: Run migration tests
+      # The SQLite migration tests seed and read the stores through the sqlite3 CLI.
+      - name: Install sqlite3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sqlite3
+          sqlite3 --version
+
+      - name: Run migration tests (PostgreSQL)
         env:
           SKIP_GATEWAY_BUILD: "1"
           # A previous version the fork published as an image (a fork-only release such
@@ -1763,6 +1773,14 @@ jobs:
         run: |
           chmod +x ./.github/workflows/scripts/run-migration-tests.sh
           ./.github/workflows/scripts/run-migration-tests.sh postgres
+
+      - name: Run migration tests (SQLite)
+        if: ${{ !cancelled() }}
+        env:
+          SKIP_GATEWAY_BUILD: "1"
+          MIGRATION_FORK_IMAGES: ${{ github.repository_owner }}/bifrost
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./.github/workflows/scripts/run-migration-tests.sh sqlite
 
   # Agent Gateway lifecycle e2e - runs the prebuilt gateway on SQLite with
   # private push callbacks enabled and exercises tests/agentgateway.
