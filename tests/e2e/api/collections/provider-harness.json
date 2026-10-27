@@ -262840,6 +262840,69 @@
           }
         },
         {
+          "name": "openai mcp-openapi-spec preview of a reused path item with a large summary caps every tool description",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// One components.pathItems entry with a 1 MiB summary, referenced by 50 paths: each tool gets a capped copy,",
+                  "// not the whole summary. Built here to keep the collection small.",
+                  "var summary = new Array((1 << 20) + 1).join('s');",
+                  "var paths = {};",
+                  "for (var j = 0; j < 50; j++) { paths['/p' + j] = { '$ref': '#/components/pathItems/Shared' }; }",
+                  "var spec = JSON.stringify({ openapi: '3.1.0', info: { title: 'Harness reused summary', version: '1' }, servers: [{ url: 'https://petstore3.swagger.io/api/v3' }], paths: paths, components: { pathItems: { Shared: { get: { summary: summary, responses: { '200': { description: 'ok' } } } } } } });",
+                  "pm.variables.set('openapiSummaryPreviewBody', JSON.stringify({ spec: spec }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('the preview succeeds', function () {",
+                  "  pm.expect(pm.response.code, txt.slice(0, 300)).to.eql(200);",
+                  "});",
+                  "pm.test('every tool description is capped', function () {",
+                  "  var tools = (pm.response.json() || {}).tools || [];",
+                  "  pm.expect(tools.length, txt.slice(0, 300)).to.eql(50);",
+                  "  var over = tools.filter(function (t) { return (t.description || '').length > 1100; });",
+                  "  pm.expect(over.length, 'pre-fix every tool carried the full 1 MiB summary').to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{{openapiSummaryPreviewBody}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            }
+          }
+        },
+        {
           "name": "openai mcp-openapi-spec create registers a client synthesized from the document",
           "event": [
             {

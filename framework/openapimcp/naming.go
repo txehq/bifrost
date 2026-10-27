@@ -125,15 +125,13 @@ func DedupeToolNames(tools []Tool, maxLen int) []string {
 // and path even when the spec carries no prose.
 func BuildDescription(op Operation) string {
 	var parts []string
+	// Summary and description are both capped: a path item reused by many paths
+	// hands the same text to every tool, and each tool keeps its own copy.
 	if op.Summary != "" {
-		parts = append(parts, op.Summary)
+		parts = append(parts, capDescription(op.Summary))
 	}
 	if op.Description != "" && op.Description != op.Summary {
-		desc := op.Description
-		if len(desc) > maxDescriptionLen {
-			desc = strings.TrimSpace(desc[:maxDescriptionLen]) + "…"
-		}
-		parts = append(parts, desc)
+		parts = append(parts, capDescription(op.Description))
 	}
 	shape := op.Method + " " + op.Path
 	if op.Deprecated {
@@ -141,6 +139,14 @@ func BuildDescription(op Operation) string {
 	}
 	parts = append(parts, shape)
 	return strings.Join(parts, "\n\n")
+}
+
+// capDescription truncates s to maxDescriptionLen bytes, marking the cut.
+func capDescription(s string) string {
+	if len(s) <= maxDescriptionLen {
+		return s
+	}
+	return strings.TrimSpace(s[:maxDescriptionLen]) + "…"
 }
 
 // annotationsFor derives MCP tool annotations from the HTTP method, which is
