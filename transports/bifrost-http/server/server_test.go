@@ -311,10 +311,13 @@ func (agentGatewayRouteLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.
 
 func TestAgentGatewayRoutesRegisteredAfterStartupInitialization(t *testing.T) {
 	store := &agentGatewayRouteStore{}
+	// Protocol endpoints answer only with an explicit public URL (upstream #8526); without
+	// one every protocol route is a 503, so the 404 below would not prove the route reached
+	// the handler.
 	s := &BifrostHTTPServer{
 		Config: &lib.Config{
 			ConfigStore:  store,
-			ClientConfig: &configstore.ClientConfig{},
+			ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("https://agents.example.com")},
 		},
 		Router: router.New(),
 	}

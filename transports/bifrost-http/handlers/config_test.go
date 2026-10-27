@@ -1355,6 +1355,8 @@ func TestUpdateConfig_CompatReloadFailureReportsFailedRestore(t *testing.T) {
 
 // TestGetConfigSkillsMarketplaceURL exposes the live resolved URL used by marketplace serving.
 func TestGetConfigSkillsMarketplaceURL(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
 	t.Setenv("BIFROST_TEST_SKILLS_URL", "https://skills.example/prefix/")
 	for _, value := range []string{"", "http://127.0.0.1:8080", "env.BIFROST_TEST_SKILLS_URL"} {
 		t.Run(value, func(t *testing.T) {
