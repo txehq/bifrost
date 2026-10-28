@@ -167,6 +167,9 @@ require (
 	github.com/oapi-codegen/runtime v1.1.1 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
 	github.com/onsi/gomega v1.38.2 // indirect
+	github.com/parquet-go/bitpack v1.0.0 // indirect
+	github.com/parquet-go/jsonlite v1.0.0 // indirect
+	github.com/parquet-go/parquet-go v0.32.0 // indirect
 	github.com/paulmach/orb v0.11.1 // indirect
 	github.com/philippgille/chromem-go v0.7.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
@@ -202,6 +205,7 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
+	github.com/twpayne/go-geom v1.6.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/weaviate/weaviate v1.38.0 // indirect
 	github.com/weaviate/weaviate-go-client/v5 v5.7.1 // indirect
