@@ -277981,6 +277981,240 @@
           }
         }
       ]
+    },
+    {
+      "name": "262. Cost histogram bucket_size and one extra_fields per Responses body (v2.3.1 stable)",
+      "description": "Pins two wire-visible changes upstream v2.3.1 brought after its cut. (1) GET /api/logs/histogram/cost accepts an explicit bucket_size in seconds (upstream #8727): over period=24h it answers with bucket_size_seconds 7200 instead of the derived 3600, and a size that does not divide an hour is a 400 naming bucket_size. Red before the change: the parameter is ignored, so the first case reads 3600 and the second answers 200. Neither case calls a provider. (2) In the default body placement, BifrostResponsesResponse.ExtraFields is omitzero (upstream #8734), so a Responses lifecycle event that wraps the response carries one top-level extra_fields and none on the nested response, and a unary Responses body carries exactly one. Red before the change: response.created, response.in_progress and response.completed carried a second, empty extra_fields on the nested response. Run with FEATURE=\"cost-bucket-size\" or FEATURE=\"responses-one-extra-fields\".",
+      "item": [
+        {
+          "name": "cost-bucket-size: histogram honours bucket_size=7200 over period=24h",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cost-bucket-size: cost histogram answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('cost-bucket-size: the explicit bucket width is used', function () {",
+                  "  // 3600 is what a 24h window derives without the override, which means bucket_size was ignored.",
+                  "  pm.expect(body.bucket_size_seconds, 'bucket_size_seconds: ' + pm.response.text()).to.equal(7200);",
+                  "});",
+                  "pm.test('cost-bucket-size: buckets are laid out on the 7200s grid', function () {",
+                  "  pm.expect(body.buckets, pm.response.text()).to.be.an('array');",
+                  "  pm.expect(body.buckets.length, pm.response.text()).to.be.within(12, 14);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/histogram/cost?period=24h&bucket_size=7200",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "cost"
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "24h"
+                },
+                {
+                  "key": "bucket_size",
+                  "value": "7200"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] cost-bucket-size: histogram rejects a bucket_size that does not divide an hour",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cost-bucket-size: an uneven bucket_size is rejected, not ignored', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('cost-bucket-size: the error names bucket_size', function () {",
+                  "  pm.expect(pm.response.text()).to.include('bucket_size');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/histogram/cost?period=24h&bucket_size=90",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "cost"
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "24h"
+                },
+                {
+                  "key": "bucket_size",
+                  "value": "90"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai responses-one-extra-fields /v1/responses unary - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses-one-extra-fields: unary responses request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('responses-one-extra-fields: the response output is intact', function () {",
+                  "  pm.expect(pm.response.json().output, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('responses-one-extra-fields: the body carries exactly one extra_fields, naming the provider', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(t.split('\"extra_fields\"').length - 1, t).to.equal(1);",
+                  "  pm.expect(pm.response.json().extra_fields.provider, t).to.eql('openai');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Say ok.\",\n  \"max_output_tokens\": 16\n}"
+            }
+          }
+        },
+        {
+          "name": "openai responses-one-extra-fields /v1/responses stream - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses-one-extra-fields: streamed responses request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var events = pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return l.slice(6); });",
+                  "pm.test('responses-one-extra-fields: the stream delivered lifecycle events', function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.include('response.created');",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.include('response.completed');",
+                  "});",
+                  "pm.test('responses-one-extra-fields: no event carries more than one extra_fields', function () {",
+                  "  events.forEach(function (e) { pm.expect(e.split('\"extra_fields\"').length - 1, 'event: ' + e).to.be.at.most(1); });",
+                  "});",
+                  "pm.test('responses-one-extra-fields: lifecycle events keep extra_fields only at the top level', function () {",
+                  "  var lifecycle = events.map(function (e) { return JSON.parse(e); }).filter(function (j) { return j.response; });",
+                  "  pm.expect(lifecycle.length, pm.response.text()).to.be.above(0);",
+                  "  lifecycle.forEach(function (j) {",
+                  "    pm.expect(j.response.extra_fields, 'nested extra_fields on ' + j.type + ': ' + JSON.stringify(j)).to.be.undefined;",
+                  "    pm.expect(j.extra_fields, 'top-level extra_fields on ' + j.type + ': ' + JSON.stringify(j)).to.be.an('object');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Say ok.\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }
