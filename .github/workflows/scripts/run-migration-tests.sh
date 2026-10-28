@@ -1405,6 +1405,7 @@ config_client|mcp_oauth_private_allowlist_json|NULL|id = 1
 config_client|skills_external_client_url|NULL|id = 1
 config_client|a2a_private_allowlist_json|NULL|id = 1
 config_keys|vertex_aws_workload_identity_json|NULL|name = 'migration-test-key-anthropic'
+config_keys|vertex_use_session_routing|false|name = 'migration-test-key-anthropic'
 config_keys|oauth_token_url|NULL|name = 'migration-test-key-anthropic'
 config_keys|oauth_client_id|NULL|name = 'migration-test-key-anthropic'
 config_keys|oauth_client_secret|NULL|name = 'migration-test-key-anthropic'
@@ -1665,6 +1666,22 @@ last_status|'success'
 last_error|NULL
 last_duration_ms|1200
 last_node|'migration-node-001'
+V230_ROW
+
+  # A custom news feed (v2.3.1-sync.4). The builtin catalog is seeded by migration and
+  # upserted by slug, so a custom slug it never writes is left exactly as seeded. Disabled,
+  # so nothing fetches its URL.
+  v200_insert rss_feeds slug <<V230_ROW
+id|900
+slug|'migration-custom-feed'
+name|'Migration Custom Feed'
+url|'https://news.example.com/migration-feed.xml'
+icon|''
+icon_url|'https://news.example.com/migration-logo.png'
+source|'custom'
+enabled|false
+created_at|$now
+updated_at|$now
 V230_ROW
 }
 
@@ -5035,6 +5052,7 @@ config_agent_push_configs|tenant|config_id = 'push-config-migration-001' AND age
 governance_virtual_key_agent_grants|agent_name|virtual_key_id = 'vk-migration-test-1' AND agent_name = 'migration-test-agent'
 config_agent_registrations|credential_origins|name = 'migration-test-agent' AND credential_origins LIKE '%https://client.example.com%'
 governance_virtual_keys|metadata|id = 'vk-migration-test-1' AND metadata LIKE '%"cost_center":"migration-cc-001"%'
+rss_feeds|slug|slug = 'migration-custom-feed' AND source = 'custom' AND icon_url = 'https://news.example.com/migration-logo.png'
 config_mcp_clients|openapi_spec|client_id = 'mcp-migration-openapi-001' AND connection_type = 'openapi' AND openapi_spec LIKE '%"operationId":"listItems"%' AND openapi_spec LIKE '%"title":"Migration Fixture API"%' AND openapi_config_json LIKE '%"base_url":"http://127.0.0.1:9/v1"%'
 SEEDED_ROWS
 )"
