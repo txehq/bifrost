@@ -6528,10 +6528,12 @@ func TestDropAgentRegistrationOptionsWithoutLegacyColumns(t *testing.T) {
 // priorReleaseAgentRegistration is the part of config_agent_registrations that
 // v2.3.1-sync.3 maps, including the two options this release stops mapping.
 type priorReleaseAgentRegistration struct {
-	Name          string   `gorm:"primaryKey;type:varchar(255)"`
-	AgentCardURL  string   `gorm:"type:text;not null"`
-	Tenant        string   `gorm:"type:varchar(255)"`
-	ExtensionURIs []string `gorm:"serializer:json;type:text"`
+	Name          string    `gorm:"primaryKey;type:varchar(255)"`
+	AgentCardURL  string    `gorm:"type:text;not null"`
+	Tenant        string    `gorm:"type:varchar(255)"`
+	ExtensionURIs []string  `gorm:"serializer:json;type:text"`
+	CreatedAt     time.Time `gorm:"index;not null"`
+	UpdatedAt     time.Time `gorm:"index;not null"`
 }
 
 func (priorReleaseAgentRegistration) TableName() string { return "config_agent_registrations" }
