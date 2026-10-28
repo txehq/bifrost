@@ -62,7 +62,7 @@ func TestSearchLogsMatViewCountMatchesRawRange(t *testing.T) {
 	store.matViewsReady.Store(true) // force the matview count path
 
 	filters := SearchFilters{StartTime: &start, EndTime: &end}
-	require.True(t, store.canUseMatViewForFreshAggregate(filters), "window must take the matview count path")
+	require.True(t, store.canUseMatViewForFreshAggregate(context.Background(), filters), "window must take the matview count path")
 
 	result, err := store.SearchLogs(ctx, filters, PaginationOptions{Limit: 50})
 	require.NoError(t, err)
@@ -75,7 +75,7 @@ func TestSearchLogsMatViewCountMatchesRawRange(t *testing.T) {
 	// log exactly at end stays included.
 	alignedEnd := day.Add(35 * time.Hour) // next day 11:00
 	filters = SearchFilters{StartTime: &start, EndTime: &alignedEnd}
-	require.True(t, store.canUseMatViewForFreshAggregate(filters))
+	require.True(t, store.canUseMatViewForFreshAggregate(context.Background(), filters))
 
 	result, err = store.SearchLogs(ctx, filters, PaginationOptions{Limit: 50})
 	require.NoError(t, err)
@@ -86,7 +86,7 @@ func TestSearchLogsMatViewCountMatchesRawRange(t *testing.T) {
 	// the 10:15 log that the mid-hour start above excluded.
 	alignedStart := day.Add(10 * time.Hour) // 10:00
 	filters = SearchFilters{StartTime: &alignedStart, EndTime: &end}
-	require.True(t, store.canUseMatViewForFreshAggregate(filters))
+	require.True(t, store.canUseMatViewForFreshAggregate(context.Background(), filters))
 
 	result, err = store.SearchLogs(ctx, filters, PaginationOptions{Limit: 50})
 	require.NoError(t, err)
@@ -120,7 +120,7 @@ func TestSearchLogsMatViewCountCanonicalModelFilter(t *testing.T) {
 	store.matViewsReady.Store(true)
 
 	filters := SearchFilters{StartTime: &start, EndTime: &end, Models: []string{canonical}}
-	require.True(t, store.canUseMatViewForFreshAggregate(filters), "Models filter must stay matview-eligible")
+	require.True(t, store.canUseMatViewForFreshAggregate(context.Background(), filters), "Models filter must stay matview-eligible")
 
 	result, err := store.SearchLogs(ctx, filters, PaginationOptions{Limit: 50})
 	require.NoError(t, err)
@@ -156,7 +156,7 @@ func TestSearchLogsParentRequestIDForcesRawPath(t *testing.T) {
 	store.matViewsReady.Store(true)
 
 	filters := SearchFilters{StartTime: &start, EndTime: &end, ParentRequestID: parentID}
-	require.False(t, store.canUseMatViewForFreshAggregate(filters),
+	require.False(t, store.canUseMatViewForFreshAggregate(context.Background(), filters),
 		"parent_request_id has no matview dimension; the count must take the raw path")
 
 	result, err := store.SearchLogs(ctx, filters, PaginationOptions{Limit: 50})
@@ -190,7 +190,7 @@ func TestGetStatsMatViewMatchesPaginationTotal(t *testing.T) {
 	store.matViewsReady.Store(true)
 
 	filters := SearchFilters{StartTime: &start, EndTime: &end}
-	require.True(t, store.canUseMatViewForFreshAggregate(filters), "window must take the matview stats path")
+	require.True(t, store.canUseMatViewForFreshAggregate(context.Background(), filters), "window must take the matview stats path")
 
 	stats, err := store.GetStats(ctx, filters)
 	require.NoError(t, err)
@@ -232,7 +232,7 @@ func TestGetHistogramMatViewTrimsBoundaryBuckets(t *testing.T) {
 	store.matViewsReady.Store(true)
 
 	filters := SearchFilters{StartTime: &start, EndTime: &end}
-	require.True(t, store.canUseMatView(filters), "filters must take the matview histogram path")
+	require.True(t, store.canUseMatView(context.Background(), filters), "filters must take the matview histogram path")
 
 	hist, err := store.GetHistogram(ctx, filters, 3600)
 	require.NoError(t, err)
@@ -306,7 +306,7 @@ func TestGetStatsMatViewCacheHitsHybrid(t *testing.T) {
 	store.matViewsReady.Store(true)
 
 	filters := SearchFilters{StartTime: &start, EndTime: &end}
-	require.True(t, store.canUseMatViewForFreshAggregate(filters))
+	require.True(t, store.canUseMatViewForFreshAggregate(context.Background(), filters))
 	stats, err := store.GetStats(ctx, filters)
 	require.NoError(t, err)
 	require.NotNil(t, stats.DirectCacheHits)
@@ -327,7 +327,7 @@ func TestGetStatsMatViewCacheHitsHybrid(t *testing.T) {
 	// Nil contract: no valid cache_debug rows in the window -> fields omitted
 	// on both paths.
 	filters = SearchFilters{StartTime: &nilStart, EndTime: &nilEnd}
-	require.True(t, store.canUseMatViewForFreshAggregate(filters))
+	require.True(t, store.canUseMatViewForFreshAggregate(context.Background(), filters))
 	stats, err = store.GetStats(ctx, filters)
 	require.NoError(t, err)
 	assert.Nil(t, stats.DirectCacheHits, "no cache rows -> nil, matching the raw path contract")
@@ -336,7 +336,7 @@ func TestGetStatsMatViewCacheHitsHybrid(t *testing.T) {
 	// Zero contract: cache rows exist but none direct/semantic -> explicit
 	// zeros on both paths.
 	filters = SearchFilters{StartTime: &zeroStart, EndTime: &zeroEnd}
-	require.True(t, store.canUseMatViewForFreshAggregate(filters))
+	require.True(t, store.canUseMatViewForFreshAggregate(context.Background(), filters))
 	stats, err = store.GetStats(ctx, filters)
 	require.NoError(t, err)
 	require.NotNil(t, stats.DirectCacheHits, "cache rows present -> explicit zeros, not omission")

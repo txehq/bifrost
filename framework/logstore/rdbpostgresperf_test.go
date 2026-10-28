@@ -674,7 +674,7 @@ func TestGetUserSpendMatViewPath(t *testing.T) {
 	insertSpendLog(t, db, "late", "carol", end.Add(-time.Hour), 9) // only in the raw table
 
 	filters := SearchFilters{StartTime: &start, EndTime: &end}
-	require.True(t, store.canUseMatViewForFreshAggregate(filters))
+	require.True(t, store.canUseMatViewForFreshAggregate(context.Background(), filters))
 	got, err := store.GetUserSpend(ctx, filters)
 	require.NoError(t, err)
 	assert.Equal(t, []UserSpendEntry{{UserID: "alice", TotalCost: 5}, {UserID: "bob", TotalCost: 7}}, sortedSpend(got))
@@ -700,7 +700,7 @@ func TestGetUserSpendMatViewTrimsBoundaryHours(t *testing.T) {
 	store.matViewsReady.Store(true)
 
 	filters := SearchFilters{StartTime: &start, EndTime: &end}
-	require.True(t, store.canUseMatViewForFreshAggregate(filters))
+	require.True(t, store.canUseMatViewForFreshAggregate(context.Background(), filters))
 	got, err := store.GetUserSpend(ctx, filters)
 	require.NoError(t, err)
 	assert.Equal(t, []UserSpendEntry{{UserID: "alice", TotalCost: 3}, {UserID: "bob", TotalCost: 4}}, sortedSpend(got))

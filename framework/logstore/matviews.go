@@ -1141,8 +1141,8 @@ func isTerminalLogStatus(status string) bool {
 // This prevents queries from hitting non-existent views during the startup
 // window between migration (which drops old views) and ensureMatViews (which
 // recreates them asynchronously).
-func (s *RDBLogStore) canUseMatView(f SearchFilters) bool {
-	return s.matViewsReady.Load() && canUseMatViewFilters(f)
+func (s *RDBLogStore) canUseMatView(ctx context.Context, f SearchFilters) bool {
+	return s.matViewsReady.Load() && canUseMatViewFilters(f) && !hidesPassthroughTypes(ctx)
 }
 
 // freshAggregateMatViewMinWindow is the minimum time-range size that justifies
@@ -1163,8 +1163,8 @@ const freshAggregateMatViewMinWindow = 24 * time.Hour
 // Used by /api/logs/stats (full metric payload), /api/logs (pagination total
 // count), and the model/user/dimension ranking readers so all those surfaces
 // stay consistent on the same window.
-func (s *RDBLogStore) canUseMatViewForFreshAggregate(f SearchFilters) bool {
-	if !s.canUseMatView(f) {
+func (s *RDBLogStore) canUseMatViewForFreshAggregate(ctx context.Context, f SearchFilters) bool {
+	if !s.canUseMatView(ctx, f) {
 		return false
 	}
 	if f.StartTime == nil && f.EndTime == nil {
