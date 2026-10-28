@@ -6,8 +6,10 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -35,7 +37,9 @@ import (
 	a2apb "github.com/a2aproject/a2a-go/v2/a2apb/v1"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/net/dns/dnsmessage"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -47,7 +51,7 @@ const agentCardPath = "/custom/cards/fixture.json"
 // gatewayCard is a test convenience wrapping gatewayCardWithExtensions with no
 // allowed extensions and no gRPC URL.
 func gatewayCard(upstream *a2a.AgentCard, externalURL, id string, policy schemas.AgentGatewayAuthPolicy, pushSupported bool) *a2a.AgentCard {
-	card, _ := gatewayCardWithExtensions(upstream, externalURL, id, policy, pushSupported, nil, "")
+	card, _ := gatewayCardWithExtensions(upstream, externalURL, id, policy, pushSupported, "")
 	return card
 }
 
@@ -2587,10 +2591,10 @@ func taskUpstreamGateway(t *testing.T) (*taskUpstream, *a2aclient.Client) {
 // taskUpstreamGatewayManager is the same fixture, additionally exposing the
 // manager so a test can reach the gateway's other protocol binding.
 func taskUpstreamGatewayManager(t *testing.T) (*taskUpstream, *a2aclient.Client, *Manager) {
-	return extensionGatewayManager(t, nil, nil)
+	return extensionGatewayManager(t, nil)
 }
 
-func extensionGatewayManager(t *testing.T, extensions []a2a.AgentExtension, allowed []string) (*taskUpstream, *a2aclient.Client, *Manager) {
+func extensionGatewayManager(t *testing.T, extensions []a2a.AgentExtension) (*taskUpstream, *a2aclient.Client, *Manager) {
 	t.Helper()
 	upstreamHandler := &taskUpstream{}
 	mux := http.NewServeMux()
@@ -2603,7 +2607,7 @@ func extensionGatewayManager(t *testing.T, extensions []a2a.AgentExtension, allo
 	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	t.Cleanup(m.Close)
-	_, err = m.Create(context.Background(), CreateRequest{Name: "tasks", AgentCardURL: upstream.URL + agentCardPath, ExtensionURIs: allowed})
+	_, err = m.Create(context.Background(), CreateRequest{Name: "tasks", AgentCardURL: upstream.URL + agentCardPath})
 	require.NoError(t, err)
 	protocol, ok := m.ProtocolHandler("tasks")
 	require.True(t, ok)
@@ -2643,7 +2647,7 @@ func TestExtensionPassthroughAndValidationAcrossBindings(t *testing.T) {
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			upstream, jsonClient, manager := extensionGatewayManager(t, []a2a.AgentExtension{extension}, []string{extensionURI})
+			upstream, jsonClient, manager := extensionGatewayManager(t, []a2a.AgentExtension{extension})
 			client := test.client(t, manager, jsonClient)
 			ctx := a2aclient.AttachServiceParams(context.Background(), a2aclient.ServiceParams{a2a.SvcParamExtensions: {extensionURI}})
 			request := &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi")), Metadata: map[string]any{extensionURI: map[string]any{"trace_id": "abc"}}}
@@ -2658,7 +2662,7 @@ func TestExtensionPassthroughAndValidationAcrossBindings(t *testing.T) {
 	}
 
 	t.Run("unknown requested extension is rejected before upstream", func(t *testing.T) {
-		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{extension}, []string{extensionURI})
+		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{extension})
 		ctx := a2aclient.AttachServiceParams(context.Background(), a2aclient.ServiceParams{a2a.SvcParamExtensions: {"https://example.com/extensions/unknown"}})
 		_, err := client.SendMessage(ctx, &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi"))})
 		require.Error(t, err)
@@ -2666,14 +2670,14 @@ func TestExtensionPassthroughAndValidationAcrossBindings(t *testing.T) {
 	})
 
 	t.Run("required extension is rejected for extension-unaware client", func(t *testing.T) {
-		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{{URI: extensionURI, Required: true}}, []string{extensionURI})
+		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{{URI: extensionURI, Required: true}})
 		_, err := client.SendMessage(context.Background(), &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi"))})
 		require.ErrorIs(t, err, a2a.ErrExtensionSupportRequired)
 		require.Empty(t, upstream.calls())
 	})
 
 	t.Run("oversized extension metadata is rejected before upstream", func(t *testing.T) {
-		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{extension}, []string{extensionURI})
+		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{extension})
 		ctx := a2aclient.AttachServiceParams(context.Background(), a2aclient.ServiceParams{a2a.SvcParamExtensions: {extensionURI}})
 		request := &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi")), Metadata: map[string]any{extensionURI: strings.Repeat("x", maxExtensionPayloadSize)}}
 		_, err := client.SendMessage(ctx, request)
@@ -2689,16 +2693,16 @@ func TestGatewayCardAdvertisesOnlySafeExtensions(t *testing.T) {
 		{URI: "https://example.com/extensions/denied"},
 	}}}
 
-	card, err := gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, []string{allowedURI}, "")
+	card, err := gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, "")
 	require.NoError(t, err)
-	require.Equal(t, []a2a.AgentExtension{{URI: allowedURI, Params: map[string]any{"limit": 10}}}, card.Capabilities.Extensions)
+	require.Equal(t, upstream.Capabilities.Extensions, card.Capabilities.Extensions)
 
 	upstream.Capabilities.Extensions[1].Required = true
-	_, err = gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, []string{allowedURI}, "")
-	require.ErrorContains(t, err, "requires denied extension")
+	_, err = gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, "")
+	require.NoError(t, err)
 
 	upstream.Capabilities.Extensions = []a2a.AgentExtension{{URI: allowedURI, Required: true, Params: map[string]any{"payload": strings.Repeat("x", maxExtensionPayloadSize)}}}
-	_, err = gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, []string{allowedURI}, "")
+	_, err = gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, "")
 	require.ErrorContains(t, err, "requires untranslatable extension")
 }
 
@@ -2709,23 +2713,23 @@ func TestGatewayCardAdvertisesGRPCInterfaceWhenConfigured(t *testing.T) {
 	require.Empty(t, m.grpcInterfaceURL(strings.Repeat("a", MaxGRPCAgentNameLength+1)))
 	require.Empty(t, (&Manager{}).grpcInterfaceURL("agent-1"))
 
-	card, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "http://gateway", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, nil, m.grpcInterfaceURL("agent-1"))
+	card, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "http://gateway", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, m.grpcInterfaceURL("agent-1"))
 	require.NoError(t, err)
 	require.Len(t, card.SupportedInterfaces, 3)
 	require.Equal(t, a2a.TransportProtocolGRPC, card.SupportedInterfaces[2].ProtocolBinding)
 	require.Equal(t, "agent-1.a2a.bifrost.example:9090", card.SupportedInterfaces[2].URL)
 
-	unconfigured, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "http://gateway", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, nil, "")
+	unconfigured, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "http://gateway", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, "")
 	require.NoError(t, err)
 	require.Len(t, unconfigured.SupportedInterfaces, 2)
 }
 
 func TestGatewayCardOmitsRelativeHTTPInterfacesWithoutOrigin(t *testing.T) {
-	card, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, nil, "")
+	card, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, "")
 	require.NoError(t, err)
 	require.Empty(t, card.SupportedInterfaces)
 
-	card, err = gatewayCardWithExtensions(&a2a.AgentCard{}, "", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, nil, "agent-1.a2a.bifrost.example:9090")
+	card, err = gatewayCardWithExtensions(&a2a.AgentCard{}, "", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, "agent-1.a2a.bifrost.example:9090")
 	require.NoError(t, err)
 	require.Equal(t, []*a2a.AgentInterface{a2a.NewAgentInterface("agent-1.a2a.bifrost.example:9090", a2a.TransportProtocolGRPC)}, card.SupportedInterfaces)
 }
@@ -3108,4 +3112,491 @@ func TestProxyRequestHandlerDeferredAndClosedOperations(t *testing.T) {
 	_, err = handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{})
 	require.ErrorIs(t, err, a2a.ErrPushNotificationNotSupported)
 	require.ErrorIs(t, handler.DeleteTaskPushConfig(context.Background(), &a2a.DeleteTaskPushConfigRequest{}), a2a.ErrPushNotificationNotSupported)
+}
+
+// TestAgentOAuthInspectionCacheRetention bounds ad hoc inspection credentials
+// without requiring durable registrations, including unsuccessful token fetches.
+func TestAgentOAuthInspectionCacheRetention(t *testing.T) {
+	const inspections = maxOAuthCacheEntries + 32
+	for _, success := range []bool{true, false} {
+		t.Run(fmt.Sprintf("success=%t", success), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if !success {
+					http.Error(w, "invalid credentials", http.StatusUnauthorized)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"access_token":"inspection-token","expires_in":3600}`))
+			}))
+			defer server.Close()
+			m := &Manager{
+				privateAllowlistFn: func() []string { return []string{"127.0.0.1"} },
+				httpClient:         server.Client(),
+			}
+			auth := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
+				TokenURL: server.URL, ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
+			}}
+			for i := range inspections {
+				// Inspect derives this key from the submitted card URL, not a registration.
+				id := upstreamCredentialID(fmt.Sprintf("https://agent.example/card?inspection=%d", i), "discovery")
+				_, err := m.oauthAccessToken(context.Background(), id, auth)
+				if success {
+					require.NoError(t, err)
+				} else {
+					require.Error(t, err)
+				}
+			}
+			m.oauthMu.Lock()
+			tokens, fingerprints := len(m.oauthTokens), len(m.oauthFingerprints)
+			m.oauthMu.Unlock()
+			t.Logf("%d unique inspections retained %d tokens and %d fingerprints", inspections, tokens, fingerprints)
+			if success {
+				require.Equal(t, maxOAuthCacheEntries, fingerprints)
+				require.Equal(t, maxOAuthCacheEntries, tokens)
+			} else {
+				require.Zero(t, fingerprints)
+				require.Zero(t, tokens)
+			}
+		})
+	}
+}
+
+// TestAgentOAuthCachePrefersExpiredEntries checks that cache pressure preserves
+// live tokens when expired entries can release the required space.
+func TestAgentOAuthCachePrefersExpiredEntries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"new-token","expires_in":3600}`))
+	}))
+	defer server.Close()
+	m := &Manager{
+		privateAllowlistFn: func() []string { return []string{"127.0.0.1"} },
+		httpClient:         server.Client(), oauthTokens: make(map[string]oauthToken),
+		oauthFingerprints: make(map[string][sha256.Size]byte),
+	}
+	for i := range maxOAuthCacheEntries {
+		id := fmt.Sprintf("expired-%d", i)
+		m.oauthTokens[id] = oauthToken{expiresAt: time.Now().Add(-time.Minute)}
+		m.oauthFingerprints[id] = [sha256.Size]byte{}
+	}
+	m.oauthTokens["expired-0"] = oauthToken{accessToken: "live-token", expiresAt: time.Now().Add(time.Hour)}
+	auth := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
+		TokenURL: server.URL, ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
+	}}
+	token, err := m.oauthAccessToken(context.Background(), "new", auth)
+	require.NoError(t, err)
+	require.Equal(t, "new-token", token)
+	require.Len(t, m.oauthTokens, 2)
+	require.Len(t, m.oauthFingerprints, 2)
+	require.Equal(t, "live-token", m.oauthTokens["expired-0"].accessToken)
+}
+
+// TestAgentOAuthOldConfigPreservesNewToken ensures a late result cannot remove
+// or replace a token published by a newer credential configuration.
+func TestAgentOAuthOldConfigPreservesNewToken(t *testing.T) {
+	for _, oldSucceeds := range []bool{true, false} {
+		t.Run(fmt.Sprintf("oldSucceeds=%t", oldSucceeds), func(t *testing.T) {
+			started, release := make(chan struct{}), make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := r.ParseForm(); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				if r.Form.Get("client_id") == "old" {
+					close(started)
+					<-release
+					if oldSucceeds {
+						_, _ = w.Write([]byte(`{"access_token":"old-token","expires_in":3600}`))
+					} else {
+						http.Error(w, "invalid credentials", http.StatusUnauthorized)
+					}
+					return
+				}
+				_, _ = w.Write([]byte(`{"access_token":"new-token","expires_in":3600}`))
+			}))
+			defer server.Close()
+			defer func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			}()
+			m := &Manager{privateAllowlistFn: func() []string { return []string{"127.0.0.1"} }, httpClient: server.Client()}
+			auth := func(id string) *schemas.UpstreamAuth {
+				return &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
+					TokenURL: server.URL, ClientID: schemas.NewSecretVar(id), ClientSecret: schemas.NewSecretVar("secret"),
+				}}
+			}
+			oldDone := make(chan error, 1)
+			go func() { _, err := m.oauthAccessToken(context.Background(), "credential", auth("old")); oldDone <- err }()
+			<-started
+			_, err := m.oauthAccessToken(context.Background(), "credential", auth("new"))
+			require.NoError(t, err)
+			close(release)
+			if oldSucceeds {
+				require.NoError(t, <-oldDone)
+			} else {
+				require.Error(t, <-oldDone)
+			}
+			m.oauthMu.Lock()
+			cached, exists := m.oauthTokens["credential"]
+			_, fingerprintExists := m.oauthFingerprints["credential"]
+			m.oauthMu.Unlock()
+			require.True(t, exists)
+			require.True(t, fingerprintExists)
+			require.Equal(t, "new-token", cached.accessToken)
+		})
+	}
+}
+
+// BenchmarkAgentOAuthCacheHit measures the request-path cost of reusing a token.
+func BenchmarkAgentOAuthCacheHit(b *testing.B) {
+	m := &Manager{}
+	auth := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
+		TokenURL: "https://agent.example/token", ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
+	}}
+	fingerprint := oauthConfigFingerprint(auth.OAuth)
+	policy, err := m.outboundPolicy(context.Background())
+	require.NoError(b, err)
+	fingerprint = sha256.Sum256(append(fingerprint[:], policy.fingerprint[:]...))
+	m.oauthTokens = map[string]oauthToken{"credential": {
+		accessToken: "cached-token", expiresAt: time.Now().Add(time.Hour), fingerprint: fingerprint,
+	}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		token, err := m.oauthAccessToken(context.Background(), "credential", auth)
+		if err != nil || token != "cached-token" {
+			b.Fatalf("unexpected cached token %q: %v", token, err)
+		}
+	}
+}
+
+// BenchmarkAgentOAuthCacheNewCredentialAtCapacity measures the request-path cost
+// of a new credential ID when the cache is full of live tokens: the expiry scan
+// over every entry plus one eviction. The new ID's token is pre-placed so no
+// fetch runs and only the cache work is timed.
+func BenchmarkAgentOAuthCacheNewCredentialAtCapacity(b *testing.B) {
+	m := &Manager{}
+	auth := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
+		TokenURL: "https://agent.example/token", ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
+	}}
+	fingerprint := oauthConfigFingerprint(auth.OAuth)
+	policy, err := m.outboundPolicy(context.Background())
+	require.NoError(b, err)
+	fingerprint = sha256.Sum256(append(fingerprint[:], policy.fingerprint[:]...))
+	live := oauthToken{accessToken: "cached-token", expiresAt: time.Now().Add(time.Hour), fingerprint: fingerprint}
+	m.oauthTokens = make(map[string]oauthToken, maxOAuthCacheEntries+1)
+	m.oauthFingerprints = make(map[string][sha256.Size]byte, maxOAuthCacheEntries+1)
+	for i := range maxOAuthCacheEntries {
+		id := fmt.Sprintf("live-%d", i)
+		m.oauthTokens[id] = live
+		m.oauthFingerprints[id] = fingerprint
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	i := 0
+	for b.Loop() {
+		id := fmt.Sprintf("new-%d", i)
+		i++
+		m.oauthMu.Lock()
+		m.oauthTokens[id] = live
+		m.oauthMu.Unlock()
+		token, err := m.oauthAccessToken(context.Background(), id, auth)
+		if err != nil || token != "cached-token" {
+			b.Fatalf("unexpected cached token %q: %v", token, err)
+		}
+	}
+}
+
+// TestAgentOAuthSecurityBoundaries exercises the two CodeQL-flagged requests with real local HTTP servers.
+func TestAgentOAuthSecurityBoundaries(t *testing.T) {
+	for _, proxied := range []bool{false, true} {
+		mode := "direct"
+		if proxied {
+			mode = "proxy"
+		}
+		for _, tc := range []struct {
+			name        string
+			allow       []string
+			directToken bool
+			metadata    bool
+			sameOrigin  bool
+			wantError   string
+			discovery   int32
+			token       int32
+		}{
+			{name: "private discovery denied", wantError: "blocked connection"},
+			{name: "private direct token denied", directToken: true, wantError: "blocked connection"},
+			{name: "allowed discovery cannot authorize token host", allow: []string{"localhost"}, discovery: 1, wantError: "must use the discovery document origin"},
+			{name: "even allowed hosts cannot override discovery origin", allow: []string{"localhost", "127.0.0.1"}, discovery: 1, wantError: "must use the discovery document origin"},
+			{name: "same origin explicitly allowed", allow: []string{"localhost"}, sameOrigin: true, discovery: 1, token: 1},
+			{name: "direct token explicitly allowed", allow: []string{"127.0.0.1"}, directToken: true, token: 1},
+			{name: "metadata direct token denied", directToken: true, metadata: true, wantError: "link-local"},
+			{name: "metadata allowlist rejected", allow: []string{"169.254.169.254"}, directToken: true, metadata: true, wantError: "invalid Agent Gateway private network allowlist"},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				var discoveryCalls, tokenCalls, tunnels atomic.Int32
+				token := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					tokenCalls.Add(1)
+					assert.Equal(t, "secret", r.FormValue("client_secret"))
+					_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "fixture-token", "expires_in": 3600})
+				}))
+				defer token.Close()
+				tokenURL := token.URL
+				if tc.metadata {
+					tokenURL = "http://169.254.169.254/token"
+				}
+				var discovery *httptest.Server
+				discovery = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/token" {
+						tokenCalls.Add(1)
+						assert.Equal(t, "secret", r.FormValue("client_secret"))
+						_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "fixture-token", "expires_in": 3600})
+						return
+					}
+					discoveryCalls.Add(1)
+					advertisedToken := tokenURL
+					if tc.sameOrigin {
+						advertisedToken = strings.Replace(discovery.URL, "127.0.0.1", "localhost", 1) + "/token"
+					}
+					_ = json.NewEncoder(w).Encode(map[string]string{"token_endpoint": advertisedToken})
+				}))
+				defer discovery.Close()
+				transport := http.DefaultTransport.(*http.Transport).Clone()
+				transport.Proxy = nil
+				if proxied {
+					proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						tunnels.Add(1)
+						assert.Equal(t, http.MethodConnect, r.Method)
+						host, _, err := net.SplitHostPort(r.Host)
+						if !assert.NoError(t, err) || !assert.NotNil(t, net.ParseIP(host), "proxy must receive a validated IP") {
+							http.Error(w, "invalid CONNECT", http.StatusBadRequest)
+							return
+						}
+						upstream, err := net.DialTimeout("tcp", r.Host, time.Second)
+						if err != nil {
+							http.Error(w, "dial failed", http.StatusBadGateway)
+							return
+						}
+						downstream, _, err := w.(http.Hijacker).Hijack()
+						if err != nil {
+							_ = upstream.Close()
+							return
+						}
+						defer downstream.Close()
+						defer upstream.Close()
+						_, _ = downstream.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+						done := make(chan struct{})
+						go func() { _, _ = io.Copy(upstream, downstream); _ = upstream.Close(); close(done) }()
+						_, _ = io.Copy(downstream, upstream)
+						_ = downstream.Close()
+						<-done
+					}))
+					defer proxy.Close()
+					proxyURL, err := url.Parse(proxy.URL)
+					require.NoError(t, err)
+					transport.Proxy = http.ProxyURL(proxyURL)
+				}
+				manager := &Manager{
+					httpClient:         &http.Client{Transport: transport, Timeout: 3 * time.Second},
+					privateAllowlistFn: func() []string { return tc.allow },
+				}
+				auth := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
+					DiscoveryURL: strings.Replace(discovery.URL, "127.0.0.1", "localhost", 1),
+					ClientID:     schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
+				}}
+				if tc.directToken {
+					auth.OAuth.TokenURL = tokenURL
+				}
+				value, _, err := manager.fetchOAuthAccessToken(t.Context(), auth)
+				if tc.wantError == "" {
+					require.NoError(t, err)
+					require.Equal(t, "fixture-token", value)
+				} else {
+					require.ErrorContains(t, err, tc.wantError)
+				}
+				require.Equal(t, tc.discovery, discoveryCalls.Load())
+				require.Equal(t, tc.token, tokenCalls.Load())
+				if proxied {
+					require.Zero(t, tunnels.Load(), "loopback must bypass the configured proxy without bypassing destination checks")
+				}
+			})
+		}
+	}
+}
+
+// TestAgentOAuthSecurityRedirects verifies discovery and token redirects cannot forward requests to another service.
+func TestAgentOAuthSecurityRedirects(t *testing.T) {
+	for _, discoveryRedirect := range []bool{true, false} {
+		name := "token"
+		if discoveryRedirect {
+			name = "discovery"
+		}
+		t.Run(name, func(t *testing.T) {
+			var targetCalls atomic.Int32
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				targetCalls.Add(1)
+			}))
+			defer target.Close()
+			redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+			}))
+			defer redirect.Close()
+			transport := http.DefaultTransport.(*http.Transport).Clone()
+			transport.Proxy = nil
+			manager := &Manager{httpClient: &http.Client{Transport: transport}, privateAllowlistFn: func() []string { return []string{"127.0.0.1"} }}
+			oauth := &schemas.UpstreamOAuthConfig{ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret")}
+			if discoveryRedirect {
+				oauth.DiscoveryURL = redirect.URL
+			} else {
+				oauth.TokenURL = redirect.URL
+			}
+			_, _, err := manager.fetchOAuthAccessToken(context.Background(), &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: oauth})
+			require.ErrorContains(t, err, "307")
+			require.Zero(t, targetCalls.Load(), "redirect destination must receive no request or client secret")
+		})
+	}
+}
+
+// TestAgentOAuthSecurityProxyDNS uses the real OAuth client with controlled DNS and a local CONNECT proxy.
+// It is deliberately not parallel because the production dial policy uses net.DefaultResolver.
+func TestAgentOAuthSecurityProxyDNS(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		private   bool
+		rebind    bool
+		discovery int32
+		token     int32
+	}{
+		{name: "public discovery and token succeed", discovery: 1, token: 1},
+		{name: "private discovery never reaches proxy", private: true},
+		{name: "token DNS rebinding blocked before second tunnel", rebind: true, discovery: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var private atomic.Bool
+			private.Store(tc.private)
+			originalResolver := net.DefaultResolver
+			net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(context.Context, string, string) (net.Conn, error) {
+				client, server := net.Pipe()
+				go func() {
+					defer server.Close()
+					var length [2]byte
+					if _, err := io.ReadFull(server, length[:]); err != nil {
+						return
+					}
+					body := make([]byte, binary.BigEndian.Uint16(length[:]))
+					if _, err := io.ReadFull(server, body); err != nil {
+						return
+					}
+					var query dnsmessage.Message
+					if !assert.NoError(t, query.Unpack(body)) {
+						return
+					}
+					response := dnsmessage.Message{Header: dnsmessage.Header{ID: query.ID, Response: true, Authoritative: true, RecursionAvailable: true}, Questions: query.Questions}
+					for _, question := range query.Questions {
+						if question.Type == dnsmessage.TypeA {
+							address := [4]byte{203, 0, 113, 10}
+							if private.Load() {
+								address = [4]byte{127, 0, 0, 1}
+							}
+							response.Answers = append(response.Answers, dnsmessage.Resource{Header: dnsmessage.ResourceHeader{Name: question.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET}, Body: &dnsmessage.AResource{A: address}})
+						}
+					}
+					packet, err := response.Pack()
+					if !assert.NoError(t, err) {
+						return
+					}
+					binary.BigEndian.PutUint16(length[:], uint16(len(packet)))
+					_, _ = server.Write(append(length[:], packet...))
+				}()
+				return client, nil
+			}}
+			t.Cleanup(func() { net.DefaultResolver = originalResolver })
+			var discoveryCalls, tokenCalls, tunnels atomic.Int32
+			var origin string
+			service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/discover" {
+					discoveryCalls.Add(1)
+					if tc.rebind {
+						private.Store(true)
+					}
+					_ = json.NewEncoder(w).Encode(map[string]string{"token_endpoint": origin + "/token"})
+					return
+				}
+				tokenCalls.Add(1)
+				assert.Equal(t, "secret", r.FormValue("client_secret"))
+				_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "fixture-token", "expires_in": 3600})
+			}))
+			defer service.Close()
+			origin = strings.Replace(service.URL, "127.0.0.1", "oauth.example.test", 1)
+			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				tunnels.Add(1)
+				assert.Equal(t, http.MethodConnect, r.Method)
+				host, _, err := net.SplitHostPort(r.Host)
+				if !assert.NoError(t, err) || !assert.Equal(t, "203.0.113.10", host) {
+					http.Error(w, "unexpected destination", http.StatusBadRequest)
+					return
+				}
+				// The mock proxy represents the public IP with a local service; no external connection is made.
+				upstream, err := net.DialTimeout("tcp", strings.TrimPrefix(service.URL, "http://"), time.Second)
+				if err != nil {
+					http.Error(w, "dial failed", http.StatusBadGateway)
+					return
+				}
+				downstream, _, err := w.(http.Hijacker).Hijack()
+				if err != nil {
+					_ = upstream.Close()
+					return
+				}
+				defer downstream.Close()
+				defer upstream.Close()
+				_, _ = downstream.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+				done := make(chan struct{})
+				go func() { _, _ = io.Copy(upstream, downstream); _ = upstream.Close(); close(done) }()
+				_, _ = io.Copy(downstream, upstream)
+				_ = downstream.Close()
+				<-done
+			}))
+			defer proxy.Close()
+			proxyURL, err := url.Parse(proxy.URL)
+			require.NoError(t, err)
+			transport := http.DefaultTransport.(*http.Transport).Clone()
+			transport.Proxy = http.ProxyURL(proxyURL)
+			manager := &Manager{httpClient: &http.Client{Transport: transport, Timeout: 3 * time.Second}}
+			auth := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
+				DiscoveryURL: origin + "/discover", ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
+			}}
+			value, _, err := manager.fetchOAuthAccessToken(t.Context(), auth)
+			if tc.private || tc.rebind {
+				require.ErrorContains(t, err, "blocked connection")
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, "fixture-token", value)
+			}
+			require.Equal(t, tc.discovery, discoveryCalls.Load())
+			require.Equal(t, tc.token, tokenCalls.Load())
+			require.Equal(t, tc.discovery+tc.token, tunnels.Load(), "DNS policy must run before opening CONNECT")
+		})
+	}
+}
+
+// BenchmarkA2AEventObservation measures metadata extraction and the duplicate
+// JSON encoding performed before stream events reach observational consumers.
+func BenchmarkA2AEventObservation(b *testing.B) {
+	for _, size := range []int{1024, 64 << 10, 1 << 20} {
+		b.Run(fmt.Sprintf("payload_%d", size), func(b *testing.B) {
+			event := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart(strings.Repeat("x", size)))
+			envelope := &schemas.BifrostA2ARequest{RequestType: schemas.A2ARequestTypeSendStreamingMessage, AgentName: "fixture"}
+			b.ReportAllocs()
+			b.SetBytes(int64(size))
+			b.ResetTimer()
+			for b.Loop() {
+				observed := describeA2AEvent(envelope, 1, event)
+				if observed.Body == nil || len(*observed.Body) < size {
+					b.Fatal("missing observed event body")
+				}
+			}
+		})
+	}
 }

@@ -165,6 +165,7 @@ NOT_DIALLED_HOSTS = {
     "bifrost.invalid": "reserved .invalid TLD; negative-path tests assert it fails to resolve",
     "does-not-resolve.invalid": "reserved .invalid TLD; the unresolvable MCP client probe asserts the connect fails",
     "harness-endpoint-guard.example.invalid": "reserved .invalid TLD; the endpoint-guard row asserts the key endpoint change is refused",
+    "harness-lib-installed.invalid": "reserved .invalid TLD; connection_url of the MCP library entry in the 248 installed-flag rows, stored only - the client those rows install is an inline-spec OpenAPI client",
     "unlisted.example": "reserved .example TLD; a redirect_uri value in the OAuth registration redirect-check row, never fetched",
     "harness.example": "reserved .example TLD; an OAuth redirect_uri value in the 114 raw-path-auth rows, which do not follow redirects",
     "dbx-fixture-workspace.invalid": "reserved .invalid TLD; the Databricks OAuth row asserts the token request fails",

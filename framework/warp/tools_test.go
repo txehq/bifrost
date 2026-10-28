@@ -2316,6 +2316,28 @@ func TestWarpResultsFilteredByErrorFieldsCarryNoLogsLink(t *testing.T) {
 	require.Contains(t, result.(map[string]any), "logs_link")
 }
 
+// guardrail_outcomes reaches the store as asked, an outcome outside the store's
+// vocabulary is refused rather than answered with zero, and a result narrowed by
+// it gets no logs link because the Logs page cannot reproduce the filter.
+func TestWarpGuardrailOutcomesFilter(t *testing.T) {
+	now := time.Now()
+	filters, err := parseFilters(map[string]any{"guardrail_outcomes": []any{"blocked", "detected"}}, now)
+	require.NoError(t, err)
+	require.Equal(t, []string{logstore.GuardrailOutcomeBlocked, logstore.GuardrailOutcomeDetected}, filters.GuardrailOutcomes)
+
+	_, err = parseFilters(map[string]any{"guardrail_outcomes": []any{"flagged"}}, now)
+	require.Error(t, err)
+	_, err = parseFilters(map[string]any{"guardrail_outcomes": []any{}}, now)
+	require.Error(t, err)
+
+	result, err := runTool(t, "count_logs", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{
+		"filters": map[string]any{"start_time": "-7d", "guardrail_outcomes": []any{"blocked"}},
+	})
+	require.NoError(t, err)
+	require.NotContains(t, result.(map[string]any), "logs_link")
+	require.NotContains(t, result.(map[string]any), "failures_link")
+}
+
 func TestWarpGuidesFromAnErrorRankingToItsRows(t *testing.T) {
 	content := systemInstructions(&schemas.WarpConfig{}, true)
 	require.Contains(t, content, "query_logs with error_types")

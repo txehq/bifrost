@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -2145,6 +2146,34 @@ func TestExtractPassthroughProviderResponseHeaders_StripsSensitiveCustomHeaders(
 	}
 }
 
+// TestExtractPassthroughProviderResponseHeaders_OmitsMissingContentType verifies that an upstream
+// response without content-type yields no content-type, so the stream handler applies its
+// text/event-stream fallback instead of fasthttp's text/plain default.
+func TestExtractPassthroughProviderResponseHeaders_OmitsMissingContentType(t *testing.T) {
+	resp := &fasthttp.Response{}
+	raw := "HTTP/1.1 200 OK\r\nX-Request-Id: req-789\r\nContent-Length: 0\r\n\r\n"
+	if err := resp.Read(bufio.NewReader(strings.NewReader(raw))); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+
+	headers := ExtractPassthroughProviderResponseHeaders(resp)
+	if v, ok := lookupHeaderFold(headers, "content-type"); ok {
+		t.Fatalf("missing upstream content-type was reported as %q", v)
+	}
+	if v, ok := lookupHeaderFold(headers, "x-request-id"); !ok || v != "req-789" {
+		t.Fatalf("benign header x-request-id was dropped: %v", headers)
+	}
+
+	sent := &fasthttp.Response{}
+	raw = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 0\r\n\r\n"
+	if err := sent.Read(bufio.NewReader(strings.NewReader(raw))); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if v, ok := lookupHeaderFold(ExtractPassthroughProviderResponseHeaders(sent), "content-type"); !ok || v != "text/plain; charset=utf-8" {
+		t.Fatalf("explicit upstream content-type was not preserved: got %q ok=%v", v, ok)
+	}
+}
+
 // TestExtractProviderResponseHeadersFromHTTP_StripsSensitiveCustomHeaders verifies the same for
 // the net/http extractor used by providers such as Bedrock, which shares the identical filter.
 func TestExtractProviderResponseHeadersFromHTTP_StripsSensitiveCustomHeaders(t *testing.T) {
@@ -4098,7 +4127,7 @@ func decisionUserMessage(parts ...schemas.DecisionInputPart) schemas.DecisionInp
 }
 
 func decisionTextPart(text string) schemas.DecisionInputPart {
-	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr(text)}
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText(text)}
 }
 
 func decisionImagePart(url string, detail *string) schemas.DecisionInputPart {
@@ -4191,5 +4220,38 @@ func TestExtractDecisionImages_ForwardsURLsForTheProviderToJudge(t *testing.T) {
 		if _, ok := AsBifrostBadRequestError(err); !ok {
 			t.Errorf("%s: err = %v, want a 400 invalid-request error", name, err)
 		}
+	}
+}
+
+// BenchmarkSetExtraHeaders measures the per-request copy of a provider's configured
+// extra headers onto the outbound request, now that the values are SecretVars. The
+// headers come from decoding a network config, so the same benchmark builds against
+// the string-valued map the previous release used and records a true before/after.
+// "none" is the common case (no extra headers configured) and must not allocate.
+func BenchmarkSetExtraHeaders(b *testing.B) {
+	b.Setenv("BF_BENCH_EXTRA_HEADER", "from-env")
+	cases := []struct {
+		name string
+		json string
+	}{
+		{"none", `{}`},
+		{"three_literals", `{"extra_headers":{"X-Team":"platform","X-Project":"gateway","X-Trace-Tier":"gold"}}`},
+		{"env_reference", `{"extra_headers":{"X-Team":"platform","X-Env":"env.BF_BENCH_EXTRA_HEADER"}}`},
+	}
+	for _, c := range cases {
+		var nc schemas.NetworkConfig
+		if err := sonic.Unmarshal([]byte(c.json), &nc); err != nil {
+			b.Fatal(err)
+		}
+		b.Run(c.name, func(b *testing.B) {
+			ctx := context.Background()
+			req := fasthttp.AcquireRequest()
+			defer fasthttp.ReleaseRequest(req)
+			b.ReportAllocs()
+			for b.Loop() {
+				req.Header.Reset()
+				SetExtraHeaders(ctx, req, nc.ExtraHeaders, nil)
+			}
+		})
 	}
 }

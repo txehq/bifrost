@@ -1402,6 +1402,8 @@ config_client|compat_force_reasoning_only_models_to_responses|false|id = 1
 config_client|compat_convert_decision_to_responses|false|id = 1
 config_client|mcp_code_mode_limits_json|NULL|id = 1
 config_client|mcp_oauth_private_allowlist_json|NULL|id = 1
+config_client|skills_external_client_url|NULL|id = 1
+config_client|a2a_private_allowlist_json|NULL|id = 1
 config_keys|vertex_aws_workload_identity_json|NULL|name = 'migration-test-key-anthropic'
 config_keys|oauth_token_url|NULL|name = 'migration-test-key-anthropic'
 config_keys|oauth_client_id|NULL|name = 'migration-test-key-anthropic'
@@ -1426,9 +1428,11 @@ governance_model_pricing|web_search_cost_per_request|NULL|id = 1
 governance_virtual_keys|delete_after_expire|false|id = 'vk-migration-test-1'
 governance_virtual_keys|business_unit_id|NULL|id = 'vk-migration-test-1'
 governance_virtual_keys|disable_content_logging|true|id = 'vk-migration-test-1'
+governance_virtual_keys|metadata|'{"cost_center":"migration-cc-001"}'|id = 'vk-migration-test-1'
 logs|agent_correlation_id|'agent-corr-migration-001'|id = 'log-migration-test-001'
 logs|embedding_input|''|id = 'log-migration-test-001'
 logs|live_session|''|id = 'log-migration-test-001'
+logs|is_passthrough|false|id = 'log-migration-test-001'
 mcp_tool_logs|session_id|'migration-session'|id = 'mcp-log-migration-001'
 mcp_tool_logs|agent_correlation_id|'agent-corr-migration-001'|id = 'mcp-log-migration-001'
 routing_targets|ttft_timeout_ms|5000|rule_id = 'rule-migration-test-1'
@@ -1447,6 +1451,8 @@ forward_accepted_credential_overrides_auth|false
 discovery_auth|'{"type":"none"}'
 extension_uris|'["https://a2a.example.com/extensions/migration-test"]'
 runtime_auth|'{"type":"headers","headers":{"X-Agent-Key":"migration-agent-key"}}'
+credential_origins|'["https://client.example.com"]'
+require_public_target|false
 encryption_status|'plain_text'
 config_hash|NULL
 created_at|$now
@@ -1646,6 +1652,19 @@ openapi_spec|'{"openapi":"3.0.3","info":{"title":"Migration Fixture API","versio
 openapi_config_json|'{"base_url":"http://127.0.0.1:9/v1","max_response_bytes":4096}'
 created_at|$now
 updated_at|$now
+V230_ROW
+
+  # The materialized-view refresh record (v2.3.1-sync.3, Postgres only). Every write the
+  # refresher makes is keyed by a view it owns, so a row for a name it never refreshes is
+  # left exactly as seeded and the before/after comparison can hold it.
+  v200_insert matview_refresh_state view_name <<V230_ROW
+view_name|'mv_migration_fixture'
+last_started_at|$now
+last_success_at|$now
+last_status|'success'
+last_error|NULL
+last_duration_ms|1200
+last_node|'migration-node-001'
 V230_ROW
 }
 
@@ -5014,6 +5033,8 @@ config_agent_registrations|tenant|name = 'migration-test-agent' AND tenant = 'mi
 config_agent_registrations|extension_uris|name = 'migration-test-agent' AND extension_uris LIKE '%https://a2a.example.com/extensions/migration-test%'
 config_agent_push_configs|tenant|config_id = 'push-config-migration-001' AND agent_name = 'migration-test-agent' AND tenant = 'migration-tenant'
 governance_virtual_key_agent_grants|agent_name|virtual_key_id = 'vk-migration-test-1' AND agent_name = 'migration-test-agent'
+config_agent_registrations|credential_origins|name = 'migration-test-agent' AND credential_origins LIKE '%https://client.example.com%'
+governance_virtual_keys|metadata|id = 'vk-migration-test-1' AND metadata LIKE '%"cost_center":"migration-cc-001"%'
 config_mcp_clients|openapi_spec|client_id = 'mcp-migration-openapi-001' AND connection_type = 'openapi' AND openapi_spec LIKE '%"operationId":"listItems"%' AND openapi_spec LIKE '%"title":"Migration Fixture API"%' AND openapi_config_json LIKE '%"base_url":"http://127.0.0.1:9/v1"%'
 SEEDED_ROWS
 )"

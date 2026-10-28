@@ -50,16 +50,20 @@ type ResponsesFeatureSupport struct {
 	// WebSearchContentTypes reports whether the backend accepts search_content_types
 	// on web_search tools.
 	WebSearchContentTypes bool
+	// ConfigurationUpdateItem reports whether the backend accepts
+	// `configuration_update` input items; when false they are dropped.
+	ConfigurationUpdateItem bool
 }
 
 // ProviderFeatures maps each OpenAI-compatible provider to its supported
 // Responses wire extensions. Only providers with a known deviation are listed.
 var ProviderFeatures = map[schemas.ModelProvider]ResponsesFeatureSupport{
-	schemas.OpenAI: {AdditionalToolsItem: true, ContextManagement: true, WebSearchContentTypes: true},
+	schemas.OpenAI: {AdditionalToolsItem: true, ContextManagement: true, WebSearchContentTypes: true, ConfigurationUpdateItem: true},
 	// Bedrock Mantle validates `input` against the standard union and rejects
 	// additional_tools with "Invalid 'input': value did not match any expected
 	// variant", but accepts the same tools at the top level. It also rejects
-	// context_management outright as an unknown parameter.
+	// context_management outright as an unknown parameter, and configuration_update
+	// items with "The 'configuration_update' item type is not supported with this model."
 	schemas.Bedrock:       {AdditionalToolsItem: false, ContextManagement: false},
 	schemas.BedrockMantle: {AdditionalToolsItem: false, ContextManagement: false},
 }
@@ -206,6 +210,17 @@ func supportsAdditionalToolsItem(provider schemas.ModelProvider) bool {
 		return true
 	}
 	return features.AdditionalToolsItem
+}
+
+// supportsConfigurationUpdateItem reports whether provider accepts OpenAI's
+// `configuration_update` input item. The base provider is consulted so a custom
+// provider wrapping Bedrock drops the item too; unlisted providers keep it.
+func supportsConfigurationUpdateItem(ctx *schemas.BifrostContext, provider schemas.ModelProvider) bool {
+	features, ok := ProviderFeatures[schemas.ResolveBaseProvider(ctx, provider)]
+	if !ok {
+		return true
+	}
+	return features.ConfigurationUpdateItem
 }
 
 // supportsWebSearchContentTypes reports whether a model accepts
@@ -629,6 +644,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// the same rewrite; the item's tools live in raw bytes that are not rewritten in place.
 	customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
 	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider) && !customToolsAsFunctions
+	keepConfigurationUpdate := supportsConfigurationUpdateItem(ctx, bifrostReq.Provider)
 	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
 	replayComputerActions := bifrostReq.Params != nil && slices.ContainsFunc(bifrostReq.Params.Tools, func(t schemas.ResponsesTool) bool {
 		return t.Type == schemas.ResponsesToolTypeComputer
@@ -637,6 +653,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		if !keepAdditionalTools && message.Type != nil &&
 			*message.Type == schemas.ResponsesMessageTypeAdditionalTools {
 			hoistedTools = append(hoistedTools, hoistAdditionalTools(message)...)
+			continue
+		}
+		if !keepConfigurationUpdate && message.Type != nil &&
+			*message.Type == schemas.ResponsesMessageTypeConfigurationUpdate {
 			continue
 		}
 		// Anthropic's per-message effort override (a system item with empty content and
@@ -1055,7 +1075,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			if req.ResponsesParameters.Reasoning.Effort != nil {
 				// Native field is provided, use it (and clear max_tokens)
 				effort := *req.ResponsesParameters.Reasoning.Effort
-				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(effort, defaultEffortControl(capModel)))
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(normalizeReasoningEffort(req.Provider, caps, effort))
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			} else if req.ResponsesParameters.Reasoning.MaxTokens != nil {
@@ -1073,7 +1093,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			// A model that always reasons rejects "none"; "minimal" normalizes to its lowest level.
 			if e := req.ResponsesParameters.Reasoning.Effort; e != nil && *e == schemas.ReasoningEffortNone &&
 				!caps.CanDisableReasoning(defaultCanDisableReasoning(capModel)) {
-				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(capModel)))
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(req.Provider, capModel)))
 			}
 
 			// summary:"none" is Anthropic-specific (maps to display:"omitted"); strip it for OpenAI.

@@ -501,6 +501,9 @@ false
 {{- if .Values.bifrost.server.readBufferSize }}
 {{- $_ := set $server "read_buffer_size" .Values.bifrost.server.readBufferSize }}
 {{- end }}
+{{- if not (kindIs "invalid" .Values.bifrost.server.bodyBufferPoolLimitBytes) }}
+{{- $_ := set $server "body_buffer_pool_limit_bytes" .Values.bifrost.server.bodyBufferPoolLimitBytes }}
+{{- end }}
 {{- if .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
 {{- $_ := set $server "plugin_download_private_allowlist" .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
 {{- end }}
@@ -693,6 +696,7 @@ false
 {{- if .expires_at }}{{- $_ := set $vk "expires_at" .expires_at }}{{- end }}
 {{- if hasKey . "delete_after_expire" }}{{- $_ := set $vk "delete_after_expire" .delete_after_expire }}{{- end }}
 {{- if hasKey . "disable_content_logging" }}{{- $_ := set $vk "disable_content_logging" .disable_content_logging }}{{- end }}
+{{- if hasKey . "metadata" }}{{- $_ := set $vk "metadata" .metadata }}{{- end }}
 {{- if .team_id }}{{- $_ := set $vk "team_id" .team_id }}{{- end }}
 {{- if .customer_id }}{{- $_ := set $vk "customer_id" .customer_id }}{{- end }}
 {{- if .business_unit_id }}{{- $_ := set $vk "business_unit_id" .business_unit_id }}{{- end }}
@@ -947,6 +951,7 @@ false
 {{- if hasKey . "max_turns_to_send" }}{{- $_ := set $rule "max_turns_to_send" .max_turns_to_send }}{{- end }}
 {{- if .evaluation_mode }}{{- $_ := set $rule "evaluation_mode" .evaluation_mode }}{{- end }}
 {{- if hasKey . "stream_replay_event_interval_ms" }}{{- $_ := set $rule "stream_replay_event_interval_ms" .stream_replay_event_interval_ms }}{{- end }}
+{{- if .output_mode }}{{- $_ := set $rule "output_mode" .output_mode }}{{- end }}
 {{- if .provider_config_ids }}{{- $_ := set $rule "provider_config_ids" .provider_config_ids }}{{- end }}
 {{- $rules = append $rules $rule }}
 {{- end }}
@@ -1051,6 +1056,7 @@ false
 {{- end }}
 {{- with .Values.storage.configStore.statementTimeout }}{{- $_ := set $pgConfig "statement_timeout" (toString .) }}{{- end }}
 {{- with .Values.storage.configStore.idleInTransactionSessionTimeout }}{{- $_ := set $pgConfig "idle_in_transaction_session_timeout" (toString .) }}{{- end }}
+{{- with .Values.storage.configStore.migrationLockRetryBudget }}{{- $_ := set $pgConfig "migration_lock_retry_budget" (toString .) }}{{- end }}
 {{- $configStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- $_ := set $config "config_store" $configStore }}
 {{- else }}
@@ -1150,6 +1156,7 @@ false
 {{- end }}
 {{- with .Values.storage.logsStore.statementTimeout }}{{- $_ := set $pgConfig "statement_timeout" (toString .) }}{{- end }}
 {{- with .Values.storage.logsStore.idleInTransactionSessionTimeout }}{{- $_ := set $pgConfig "idle_in_transaction_session_timeout" (toString .) }}{{- end }}
+{{- with .Values.storage.logsStore.migrationLockRetryBudget }}{{- $_ := set $pgConfig "migration_lock_retry_budget" (toString .) }}{{- end }}
 {{- $logsStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- if .Values.storage.logsStore.writer }}
 {{- $writer := dict }}
@@ -1870,6 +1877,12 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "enable_llm_obs" }}
 {{- $_ := set $datadogConfig "enable_llm_obs" $inputConfig.enable_llm_obs }}
+{{- end }}
+{{- if $inputConfig.otel_llmobs_conversion }}
+{{- $_ := set $datadogConfig "otel_llmobs_conversion" $inputConfig.otel_llmobs_conversion }}
+{{- end }}
+{{- if hasKey $inputConfig "llmobs_gateway_mode" }}
+{{- $_ := set $datadogConfig "llmobs_gateway_mode" $inputConfig.llmobs_gateway_mode }}
 {{- end }}
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $datadogConfig "disable_content_logging" $inputConfig.disable_content_logging }}

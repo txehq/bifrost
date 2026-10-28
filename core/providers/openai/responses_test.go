@@ -2779,6 +2779,32 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 			origMutable: true,
 		},
 		{
+			// An assistant message with an id is a ResponseOutputMessageParam, where id and
+			// status are both required. Keeping the id while dropping the status leaves an
+			// item that matches neither input shape, which strict validators reject (#8593).
+			name: "status kept on assistant output message with id",
+			input: schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &assistant,
+				ID:     schemas.Ptr("msg_replayed"),
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("hello")},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if string(item["id"]) != `"msg_replayed"` {
+					t.Errorf("id: got %s, want \"msg_replayed\"", item["id"])
+				}
+				if string(item["status"]) != `"completed"` {
+					t.Errorf("status: got %s, want \"completed\" (id without status is not a valid input item)", item["status"])
+				}
+			},
+			origMutable: true,
+		},
+		{
 			name: "status stripped from reasoning",
 			input: schemas.ResponsesMessage{
 				Type:   &reasoningType,

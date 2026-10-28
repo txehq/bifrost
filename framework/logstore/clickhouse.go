@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/storehooks"
 	clickhousedriver "gorm.io/driver/clickhouse"
 	"gorm.io/gorm"
 )
@@ -201,6 +202,7 @@ func newClickHouseLogStore(ctx context.Context, config *ClickHouseConfig, retent
 		logger.Error("logstore: failed to open clickhouse connection: %v", err)
 		return nil, err
 	}
+	storehooks.PoolOpened(storehooks.RoleLogs, db)
 
 	// Release the pool on any startup failure past this point; ownership
 	// transfers to the returned store only on success.
