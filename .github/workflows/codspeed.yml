@@ -77,7 +77,7 @@ jobs:
       # StepSecurity agent installed for this policy to be enforced. The action
       # configures an existing agent; it does not install one on self-hosted VMs.
       - name: Harden Runner
-        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
         with:
           egress-policy: block
           # Infrastructure only: Go toolchain/modules, GitHub release assets,
