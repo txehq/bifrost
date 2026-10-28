@@ -92,12 +92,13 @@ func pushHostedToolSearch(ctx *schemas.BifrostContext, state *anthropicToRespons
 			state.hostedToolSearches = 0
 			continue
 		}
-		defer q.mu.Unlock()
 		if len(q.pending) >= maxPendingHostedToolSearches {
+			q.mu.Unlock()
 			return hostedToolSearchQueueFull
 		}
 		q.pending = append(q.pending, hostedToolSearchCall{toolUseID: cloneStringPtr(call.toolUseID), callID: cloneStringPtr(call.callID)})
 		q.touched = time.Now().UnixNano()
+		q.mu.Unlock()
 		return hostedToolSearchQueued
 	}
 }
