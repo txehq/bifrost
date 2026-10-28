@@ -3,8 +3,11 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/capsohq/bifrost/core/schemas"
@@ -1240,4 +1243,205 @@ func TestToolSearch_AnthropicResponseRendersResultContent(t *testing.T) {
 	assert.Equal(t, AnthropicContentBlockTypeServerToolUse, resp.Content[0].Type)
 	assert.Equal(t, AnthropicContentBlockTypeToolSearchToolResult, resp.Content[1].Type)
 	assertNestedToolSearchResult(t, &resp.Content[1], []string{tsDiscoveredTool})
+}
+
+// hostedToolSearchPair returns a hosted tool_search_call and its output with ids
+// derived from n, so several streams' calls are told apart.
+func hostedToolSearchPair(t *testing.T, n string) (call, out schemas.ResponsesMessage) {
+	t.Helper()
+	call = decodeResponsesItem(t, strings.Replace(openAIHostedToolSearchCall, `"id":"tsc_2"`, `"id":"tsc_`+n+`"`, 1))
+	out = decodeResponsesItem(t, strings.Replace(openAIHostedToolSearchOut, `"id":"tso_2"`, `"id":"tso_`+n+`"`, 1))
+	return call, out
+}
+
+// hostedToolSearchFrame wraps one item in its output_item.done frame.
+func hostedToolSearchFrame(item *schemas.ResponsesMessage, index int) *schemas.BifrostResponsesStreamResponse {
+	return &schemas.BifrostResponsesStreamResponse{
+		Type:        schemas.ResponsesStreamResponseTypeOutputItemDone,
+		OutputIndex: schemas.Ptr(index),
+		Item:        item,
+		ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI},
+	}
+}
+
+// pendingHostedToolSearchCount reads the stream's queue from the manager; -1 when
+// the stream holds no queue.
+func pendingHostedToolSearchCount(ctx *schemas.BifrostContext) int {
+	state, ok := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState)
+	if !ok || state.hostedToolSearches == 0 {
+		return -1
+	}
+	v, ok := hostedToolSearchQueues.Load(state.hostedToolSearches)
+	if !ok {
+		return -1
+	}
+	q := v.(*hostedToolSearchQueue)
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.pending)
+}
+
+func hostedToolSearchQueueLive(id uint64) bool {
+	_, ok := hostedToolSearchQueues.Load(id)
+	return ok
+}
+
+// The calls waiting for their outputs live in the manager, not on the context: the
+// stream state holds only a handle, the queue empties as outputs pair, and the end of
+// the stream releases it.
+func TestToolSearch_HostedQueueLivesInManagerAndIsReleasedAtEnd(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	call, out := hostedToolSearchPair(t, "life")
+
+	ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 0))
+	state := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState)
+	id := state.hostedToolSearches
+	require.NotZero(t, id, "the first hosted call opens a queue")
+	assert.Equal(t, 1, pendingHostedToolSearchCount(ctx))
+
+	events := ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&out, 1))
+	require.NotEmpty(t, events)
+	require.NotNil(t, events[0].ContentBlock)
+	assert.Equal(t, "tsc_life", *events[0].ContentBlock.ToolUseID, "the output pairs with the queued call")
+	assert.Equal(t, 0, pendingHostedToolSearchCount(ctx))
+
+	ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCompleted, Response: &schemas.BifrostResponsesResponse{},
+		ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI},
+	})
+	assert.False(t, hostedToolSearchQueueLive(id), "response.completed releases the queue")
+	assert.Zero(t, state.hostedToolSearches)
+}
+
+// A stream that ends in failure, or whose context is cancelled before any terminal
+// event, does not leave its queue behind; nor does one abandoned past the TTL.
+func TestToolSearch_HostedQueueReleasedOnFailureCancelAndTTL(t *testing.T) {
+	t.Parallel()
+	t.Run("failed", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		call, _ := hostedToolSearchPair(t, "fail")
+		ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 0))
+		id := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState).hostedToolSearches
+		require.True(t, hostedToolSearchQueueLive(id))
+		ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeFailed, Message: schemas.Ptr("upstream failed"),
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI},
+		})
+		assert.False(t, hostedToolSearchQueueLive(id))
+	})
+	t.Run("cancelled", func(t *testing.T) {
+		parent, cancel := context.WithCancel(context.Background())
+		ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+		call, _ := hostedToolSearchPair(t, "cancel")
+		ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 0))
+		id := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState).hostedToolSearches
+		require.True(t, hostedToolSearchQueueLive(id))
+		cancel()
+		require.Eventually(t, func() bool { return !hostedToolSearchQueueLive(id) }, 5*time.Second, 5*time.Millisecond,
+			"cancelling the request releases the queue")
+	})
+	t.Run("ttl", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		call, _ := hostedToolSearchPair(t, "ttl")
+		ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 0))
+		id := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState).hostedToolSearches
+		sweepHostedToolSearchQueues(time.Now().Add(hostedToolSearchQueueTTL - time.Minute))
+		assert.True(t, hostedToolSearchQueueLive(id), "a queue inside its TTL is kept")
+		sweepHostedToolSearchQueues(time.Now().Add(hostedToolSearchQueueTTL + time.Minute))
+		assert.False(t, hostedToolSearchQueueLive(id), "a queue past its TTL is swept")
+	})
+}
+
+// Concurrent streams each pair their own calls: the queues are keyed per stream, so
+// one stream's output never takes another stream's waiting call.
+func TestToolSearch_HostedQueuesDoNotCrossStreams(t *testing.T) {
+	t.Parallel()
+	const streams, perStream = 16, 8
+	var wg sync.WaitGroup
+	errs := make(chan string, streams*perStream)
+	type pair struct{ call, out schemas.ResponsesMessage }
+	pairs := make([][]pair, streams)
+	for s := range pairs {
+		for i := 0; i < perStream; i++ {
+			call, out := hostedToolSearchPair(t, fmt.Sprintf("s%d_%d", s, i))
+			pairs[s] = append(pairs[s], pair{call, out})
+		}
+	}
+	for s := 0; s < streams; s++ {
+		wg.Add(1)
+		go func(s int) {
+			defer wg.Done()
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			for i := 0; i < perStream; i++ {
+				n := fmt.Sprintf("s%d_%d", s, i)
+				call, out := pairs[s][i].call, pairs[s][i].out
+				ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 2*i))
+				events := ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&out, 2*i+1))
+				if len(events) == 0 || events[0].ContentBlock == nil || events[0].ContentBlock.ToolUseID == nil {
+					errs <- n + ": no paired result"
+					continue
+				}
+				if got := *events[0].ContentBlock.ToolUseID; got != "tsc_"+n {
+					errs <- n + ": paired with " + got
+				}
+			}
+			ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeCompleted, Response: &schemas.BifrostResponsesResponse{},
+				ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI},
+			})
+		}(s)
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Error(e)
+	}
+}
+
+// An upstream that leaves more calls waiting than the bound ends the stream with an
+// error event; it never drops a pairing silently.
+func TestToolSearch_HostedQueueOverflowEndsStreamWithError(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for i := 0; i < maxPendingHostedToolSearches; i++ {
+		call, _ := hostedToolSearchPair(t, fmt.Sprintf("o%d", i))
+		events := ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, i))
+		require.NotEmpty(t, events)
+		require.NotEqual(t, AnthropicStreamEventTypeError, events[0].Type, "call %d is within the bound", i)
+	}
+	assert.Equal(t, maxPendingHostedToolSearches, pendingHostedToolSearchCount(ctx))
+	id := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState).hostedToolSearches
+
+	call, _ := hostedToolSearchPair(t, "over")
+	events := ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, maxPendingHostedToolSearches))
+	require.Len(t, events, 1)
+	assert.Equal(t, AnthropicStreamEventTypeError, events[0].Type)
+	require.NotNil(t, events[0].Error)
+	assert.Contains(t, events[0].Error.Message, "tool searches without results")
+	assert.False(t, hostedToolSearchQueueLive(id), "the failed stream releases its queue")
+}
+
+// The queue costs nothing on a stream without hosted searches (a zero handle) and
+// one queue allocation plus amortized slice growth on one that has them.
+func BenchmarkHostedToolSearchQueue(b *testing.B) {
+	b.Run("no_hosted_search", func(b *testing.B) {
+		state := &anthropicToResponsesStreamState{}
+		b.ReportAllocs()
+		for b.Loop() {
+			_, _ = popHostedToolSearch(state, nil)
+			releaseHostedToolSearches(state)
+		}
+	})
+	b.Run("push_pop", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		state := &anthropicToResponsesStreamState{}
+		call := hostedToolSearchCall{toolUseID: schemas.Ptr("srvtoolu_bench")}
+		b.ReportAllocs()
+		for b.Loop() {
+			pushHostedToolSearch(ctx, state, call)
+			_, _ = popHostedToolSearch(state, nil)
+		}
+		releaseHostedToolSearches(state)
+	})
 }

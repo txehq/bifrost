@@ -218,8 +218,8 @@ type anthropicToResponsesStreamState struct {
 	// converter-built, so consuming the index would skip a number.
 	passthrough bool
 
-	pendingHostedToolSearches []hostedToolSearchCall // hosted tool_search_calls awaiting their outputs, oldest first
-	emittedToolUse            bool                   // a tool_use block went out, so an unspecified stop reason is tool_use
+	hostedToolSearches uint64 // handle of this stream's queue in hostedToolSearchQueues; 0 when none
+	emittedToolUse     bool   // a tool_use block went out, so an unspecified stop reason is tool_use
 
 	// codeExecToolNameByItem remembers each code_interpreter_call's Anthropic
 	// sub-tool name (captured at output_item.added) so the code block's input can be
@@ -2979,6 +2979,11 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 // and a tool call opened as thinking both reached clients and aborted their turns.
 func ToAnthropicResponsesStreamResponse(ctx *schemas.BifrostContext, bifrostResp *schemas.BifrostResponsesStreamResponse) []*AnthropicStreamEvent {
 	events := toAnthropicResponsesStreamEvents(ctx, bifrostResp)
+	if ctx != nil && bifrostResp != nil && isTerminalResponsesStreamEvent(bifrostResp.Type) {
+		if state, ok := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState); ok {
+			releaseHostedToolSearches(state)
+		}
+	}
 	// Restore safeguard_results (Claude Code auto-mode classifier) captured from
 	// the upstream event onto the first re-rendered frame, so re-rendering does
 	// not strip it.
@@ -8800,7 +8805,15 @@ func openAIToolSearchItemStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			return nil
 		}
 		toolUseID := providerUtils.SanitizeAnthropicToolUseIDPtr(id)
-		state.pendingHostedToolSearches = append(state.pendingHostedToolSearches, hostedToolSearchCall{toolUseID: toolUseID, callID: callID})
+		if !pushHostedToolSearch(ctx, state, hostedToolSearchCall{toolUseID: toolUseID, callID: callID}) {
+			// More calls waiting than any real turn makes: end the stream loudly rather
+			// than emit a server_tool_use whose result could never be paired.
+			releaseHostedToolSearches(state)
+			return []*AnthropicStreamEvent{{
+				Type:  AnthropicStreamEventTypeError,
+				Error: &AnthropicStreamError{Type: "api_error", Message: fmt.Sprintf("upstream left more than %d tool searches without results", maxPendingHostedToolSearches)},
+			}}
+		}
 		block = AnthropicContentBlock{
 			Type:  AnthropicContentBlockTypeServerToolUse,
 			ID:    toolUseID,
@@ -8808,22 +8821,15 @@ func openAIToolSearchItemStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			Input: input,
 		}
 	default:
-		if item.IsClientToolSearchItem() || len(state.pendingHostedToolSearches) == 0 {
+		if item.IsClientToolSearchItem() {
 			return nil
 		}
 		// Same pairing as the non-streaming path: the oldest waiting call, unless the
 		// output names its own call_id.
-		pick := 0
-		if callID != nil {
-			for i, pending := range state.pendingHostedToolSearches {
-				if pending.callID != nil && *pending.callID == *callID {
-					pick = i
-					break
-				}
-			}
+		toolUseID, ok := popHostedToolSearch(state, callID)
+		if !ok {
+			return nil
 		}
-		toolUseID := state.pendingHostedToolSearches[pick].toolUseID
-		state.pendingHostedToolSearches = slices.Delete(state.pendingHostedToolSearches, pick, pick+1)
 		var refs []AnthropicContentBlock
 		for _, name := range item.ToolSearchOutputToolNames() {
 			refs = append(refs, AnthropicContentBlock{Type: AnthropicContentBlockTypeToolReference, ToolName: schemas.Ptr(name)})
