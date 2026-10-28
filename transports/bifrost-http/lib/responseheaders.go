@@ -165,14 +165,25 @@ func StripExtraFieldsIfInHeaders(ctx *fasthttp.RequestCtx, body []byte) []byte {
 	return StripExtraFields(body)
 }
 
-// StripExtraFields removes the top-level extra_fields key from a marshaled JSON object.
+// StripExtraFields removes extra_fields from a marshaled JSON object: the top-level key, and
+// the one on the nested response object a Responses stream event (response.created,
+// response.completed, ...) carries, which serializes its own extra_fields.
 func StripExtraFields(body []byte) []byte {
 	stripped, err := providerUtils.DeleteJSONField(body, extraFieldsKey)
 	if err != nil {
 		return body
 	}
+	if providerUtils.JSONFieldExists(stripped, nestedResponseExtraFieldsPath) {
+		if nested, err := providerUtils.DeleteJSONField(stripped, nestedResponseExtraFieldsPath); err == nil {
+			stripped = nested
+		}
+	}
 	return stripped
 }
+
+// nestedResponseExtraFieldsPath is where a Responses stream event carries the extra_fields of
+// the response it wraps.
+const nestedResponseExtraFieldsPath = "response." + extraFieldsKey
 
 // applyExtraFieldsScalarHeaders writes the scalar extra_fields that have no body-mode header.
 // latencyKnown says extra came from a finished response, whose body always serializes latency,

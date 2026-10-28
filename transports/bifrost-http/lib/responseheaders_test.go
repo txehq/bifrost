@@ -646,6 +646,18 @@ func TestExtraFieldsPlacementHeaders(t *testing.T) {
 		assert.Equal(t, `[1]`, string(StripExtraFields([]byte(`[1]`))))
 	})
 
+	// A Responses stream event wraps the response object, which serializes its own
+	// extra_fields; headers mode must not leave that one in the event (upstream #8477's
+	// "No event carries extra_fields").
+	t.Run("strip removes a Responses stream event's nested extra_fields", func(t *testing.T) {
+		body := []byte(`{"type":"response.created","sequence_number":0,"response":{"id":"r","status":"in_progress","extra_fields":{"request_type":"","latency":0}},"extra_fields":{"latency":3}}`)
+		assert.Equal(t, `{"type":"response.created","sequence_number":0,"response":{"id":"r","status":"in_progress"}}`, string(StripExtraFields(body)))
+		delta := []byte(`{"type":"response.output_text.delta","delta":"ok","extra_fields":{"chunk_index":1}}`)
+		assert.Equal(t, `{"type":"response.output_text.delta","delta":"ok"}`, string(StripExtraFields(delta)))
+		output := []byte(`{"response":{"output":[{"extra_fields":"keep"}]}}`)
+		assert.Equal(t, string(output), string(StripExtraFields(output)), "only the response object's own extra_fields goes")
+	})
+
 	t.Run("strip-if is a no-op in body mode", func(t *testing.T) {
 		body := []byte(`{"id":"x","extra_fields":{"latency":1}}`)
 		assert.Equal(t, string(body), string(StripExtraFieldsIfInHeaders(&fasthttp.RequestCtx{}, body)))
