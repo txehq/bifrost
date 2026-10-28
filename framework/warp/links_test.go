@@ -582,6 +582,7 @@ func TestWarpLogsLinkPerFilterArgument(t *testing.T) {
 		"error_types":           {arg: []any{"overloaded_error"}, noLink: true},
 		"error_codes":           {arg: []any{"context_length_exceeded"}, noLink: true},
 		"status_codes":          {arg: []any{float64(429)}, noLink: true},
+		"guardrail_outcomes":    {arg: []any{"blocked"}, noLink: true},
 		// Widens the question; the page has no parameter for it.
 		"scope": {arg: "all"},
 	}
