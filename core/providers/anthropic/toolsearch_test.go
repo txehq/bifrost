@@ -1492,8 +1492,8 @@ func TestToolSearch_HostedQueueOverflowEndsStreamWithError(t *testing.T) {
 	assert.False(t, hostedToolSearchQueueLive(id), "the failed stream releases its queue")
 }
 
-// The queue costs nothing on a stream without hosted searches (a zero handle) and
-// one queue allocation plus amortized slice growth on one that has them.
+// The queue costs nothing on a stream without hosted searches (a zero handle); a
+// stream that has them pays for the queue once and the two copied ids per call.
 func BenchmarkHostedToolSearchQueue(b *testing.B) {
 	b.Run("no_hosted_search", func(b *testing.B) {
 		state := &anthropicToResponsesStreamState{}
@@ -1513,5 +1513,17 @@ func BenchmarkHostedToolSearchQueue(b *testing.B) {
 			_, _ = popHostedToolSearch(state, nil)
 		}
 		releaseHostedToolSearches(state)
+	})
+	// Once per stream that has a hosted search: the queue, its idle timer and its
+	// cancellation hook, then their release at the end of the stream.
+	b.Run("open_release", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		call := hostedToolSearchCall{toolUseID: schemas.Ptr("srvtoolu_bench")}
+		b.ReportAllocs()
+		for b.Loop() {
+			state := &anthropicToResponsesStreamState{}
+			pushHostedToolSearch(ctx, state, call)
+			releaseHostedToolSearches(state)
+		}
 	})
 }
