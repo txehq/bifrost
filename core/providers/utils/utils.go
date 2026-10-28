@@ -1523,11 +1523,13 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 
 // ExtractPassthroughProviderResponseHeaders extracts and filters response headers from a
 // fasthttp response. Transport-level and credential-bearing headers are excluded, except
-// content-type, which the passthrough response must retain.
+// content-type, which the passthrough response must retain. A content-type the upstream did
+// not send stays absent: fasthttp otherwise reports text/plain for it, which mislabels streams.
 func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	if resp == nil {
 		return nil
 	}
+	resp.Header.SetNoDefaultContentType(true)
 	headers := make(map[string]string)
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
@@ -1595,7 +1597,7 @@ func ExtractPassthroughProviderResponseHeadersFromHTTP(resp *http.Response) map[
 // Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
 // It accepts a list of headers (all canonicalized) to skip for security reasons.
 // Headers are only set if they don't already exist on the request to avoid overwriting important headers.
-func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders map[string]string, skipHeaders []string) {
+func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders map[string]schemas.SecretVar, skipHeaders []string) {
 	for key, value := range extraHeaders {
 		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
 		if skipHeaders != nil {
@@ -1605,7 +1607,7 @@ func SetExtraHeaders(ctx context.Context, req *fasthttp.Request, extraHeaders ma
 		}
 		// Only set the header if it doesn't already exist to avoid overwriting important headers
 		if len(req.Header.Peek(canonicalKey)) == 0 {
-			req.Header.Set(canonicalKey, value)
+			req.Header.Set(canonicalKey, value.GetValue())
 		}
 	}
 	// Give priority to extra headers in the context
@@ -2705,7 +2707,7 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 // Header keys are canonicalized using textproto.CanonicalMIMEHeaderKey to avoid duplicates.
 // It accepts a list of headers (all canonicalized) to skip for security reasons.
 // Headers are only set if they don't already exist on the request to avoid overwriting important headers.
-func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders map[string]string, skipHeaders []string) {
+func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders map[string]schemas.SecretVar, skipHeaders []string) {
 	for key, value := range extraHeaders {
 		canonicalKey := textproto.CanonicalMIMEHeaderKey(key)
 		if skipHeaders != nil {
@@ -2715,7 +2717,7 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 		}
 		// Only set the header if it doesn't already exist to avoid overwriting important headers
 		if req.Header.Get(canonicalKey) == "" {
-			req.Header.Set(canonicalKey, value)
+			req.Header.Set(canonicalKey, value.GetValue())
 		}
 	}
 

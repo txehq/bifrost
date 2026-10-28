@@ -1350,7 +1350,7 @@ func TestMigrationAddAgentGatewayTables_UpgradesExistingDatabase(t *testing.T) {
 	require.True(t, db.Migrator().HasTable(&tables.TableVirtualKeyAgentGrant{}))
 	require.True(t, db.Migrator().HasTable(&tables.TableAgentPushConfig{}))
 	require.True(t, db.Migrator().HasTable(&tables.TableAgentPushDelivery{}))
-	require.True(t, db.Migrator().HasColumn(&tables.TableAgentRegistration{}, "extension_uris"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableAgentRegistration{}, "extension_uris"))
 	require.True(t, db.Migrator().HasColumn(&tables.TableAgentRegistration{}, "forward_accepted_credential_overrides_auth"))
 
 	var grantDDL string
@@ -6479,4 +6479,48 @@ func TestUpgradeSecondPodWaitsForBusyMigrationHolder(t *testing.T) {
 		endReader()
 		require.NoError(t, <-podA)
 	})
+}
+
+// TestDropAgentRegistrationOptions pins the fork's data-preserving version of the
+// migration: registrations upgraded from a release that had tenant and extension_uris
+// keep both columns and their values, and the push config tenant is untouched.
+func TestDropAgentRegistrationOptions(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableAgentRegistration{}, &tables.TableAgentPushConfig{}))
+	require.NoError(t, db.Exec("ALTER TABLE config_agent_registrations ADD COLUMN tenant TEXT").Error)
+	require.NoError(t, db.Exec("ALTER TABLE config_agent_registrations ADD COLUMN extension_uris TEXT").Error)
+	require.NoError(t, db.Exec("INSERT INTO config_agent_registrations (name, agent_card_url, tenant, extension_uris, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", "fixture", "https://example.com/card", "kept-tenant", `["https://a2a.example.com/ext"]`, time.Now(), time.Now()).Error)
+	require.NoError(t, migrationDropAgentRegistrationOptions(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableAgentRegistration{}, "tenant"))
+	require.True(t, db.Migrator().HasColumn(&tables.TableAgentRegistration{}, "extension_uris"))
+	require.True(t, db.Migrator().HasColumn(&tables.TableAgentPushConfig{}, "tenant"))
+	var kept struct {
+		Tenant        string
+		ExtensionURIs string `gorm:"column:extension_uris"`
+	}
+	require.NoError(t, db.Table("config_agent_registrations").Select("tenant, extension_uris").Where("name = ?", "fixture").Take(&kept).Error)
+	require.Equal(t, "kept-tenant", kept.Tenant)
+	require.Equal(t, `["https://a2a.example.com/ext"]`, kept.ExtensionURIs)
+	var row tables.TableAgentRegistration
+	require.NoError(t, db.First(&row, "name = ?", "fixture").Error)
+	require.Equal(t, "https://example.com/card", row.AgentCardURL)
+	// A registration written by this version, which no longer knows either column.
+	require.NoError(t, db.Create(&tables.TableAgentRegistration{Name: "new", AgentCardURL: "https://example.com/new"}).Error)
+	require.NoError(t, migrationDropAgentRegistrationOptions(ctx, db, testMigrationLogger))
+	require.NoError(t, db.Table("config_agent_registrations").Select("tenant, extension_uris").Where("name = ?", "fixture").Take(&kept).Error)
+	require.Equal(t, "kept-tenant", kept.Tenant)
+}
+
+// TestDropAgentRegistrationOptionsWithoutLegacyColumns covers direct upgrades and fresh installs.
+func TestDropAgentRegistrationOptionsWithoutLegacyColumns(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&tables.TableAgentRegistration{}))
+	require.NoError(t, db.Create(&tables.TableAgentRegistration{Name: "existing", AgentCardURL: "https://example.com/card"}).Error)
+	require.NoError(t, migrationDropAgentRegistrationOptions(context.Background(), db, testMigrationLogger))
+	require.False(t, db.Migrator().HasColumn(&tables.TableAgentRegistration{}, "tenant"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableAgentRegistration{}, "extension_uris"))
+	var count int64
+	require.NoError(t, db.Model(&tables.TableAgentRegistration{}).Count(&count).Error)
+	require.EqualValues(t, 1, count)
 }

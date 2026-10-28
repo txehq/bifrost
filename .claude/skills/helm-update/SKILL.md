@@ -1,6 +1,6 @@
 ---
 name: helm-update
-description: Apply helm chart updates for Bifrost. Detects config.schema.json changes since the last helm release, applies user-requested changes, updates values.yaml / values.schema.json / _helpers.tpl, bumps Chart.yaml version, updates helm README (Latest Version + Upcoming section), creates a docs MDX changelog, and updates docs.json navigation. Ends with a diff review to verify every helm field maps back to a config.schema.json counterpart. Invoked with /helm-update.
+description: Apply Bifrost Helm chart updates, checking the published repository index and grouping changes into the next unreleased version. Keep values, schemas, templates, README, changelog, and navigation consistent. Invoked with /helm-update.
 allowed-tools: Read, Grep, Glob, Bash, Edit, Write, AskUserQuestion
 ---
 
@@ -25,7 +25,7 @@ Apply changes to the Bifrost Helm chart, keep it in sync with `config.schema.jso
 
 ## Workflow
 
-### Step 1: Gather Current State
+### Step 1: Check the published release and local state
 
 Read the current helm chart version, then find the last version **this repository** published. The chart is published from this repository's own `gh-pages` branch (`helm-charts/index.yaml`, pushed by `.github/workflows/helm-release.yml`), with each tarball attached to this repository's `helm-chart-v<VERSION>` GitHub release. That index is the only record of what was released here. Do not read the upstream project's Pages index, and do not infer the last release from `docs/changelogs/helm-v*.mdx`: upstream merges bring in changelog pages for versions this repository never published.
 
@@ -99,27 +99,32 @@ Wire new values into the generated config.json block inside `{{- define "bifrost
 
 Search the existing template for a nearby field to find the right insertion point.
 
-### Step 4: Determine New Helm Chart Version
+### Step 4: Reuse or create the next unreleased version
 
-Read `helm-charts/bifrost/Chart.yaml`. Increment the **patch** version (third number) unless the scope of changes clearly warrants a minor bump. Ask the user if unsure:
+Use the latest published chart version from Step 1 as the baseline. The target is its immediate next patch version, unless the user explicitly chooses another release line.
 
-```
-Current: 2.1.27  →  New: 2.1.28
-```
+- If that next version already exists locally in `Chart.yaml` or a changelog, append the current changes to it. Keep its existing changes. Do not increment the version again.
+- If it does not exist, set `Chart.yaml` to that next version and create its changelog in Step 6.
+- If this work already introduced a separate, later unreleased version, set `Chart.yaml` to the selected target version and consolidate the later version's notes and navigation into it. Preserve all existing notes; remove only the superseded unreleased page and its navigation entry.
+- Never modify a published version's release notes to add new work. If the local chart is behind the published version or uses a different intended release line, clarify the mismatch before changing it.
 
-Update `Chart.yaml`:
+Examples:
 
-```yaml
-version: 2.1.28   # updated line
-```
+| Latest published | Existing local work | Action |
+|---|---|---|
+| `2.1.44` | Unreleased `2.1.45` | Add changes to `2.1.45` |
+| `2.1.44` | No next version yet | Create `2.1.45` |
+| `2.1.45` | Local chart still at `2.1.45` | Create `2.1.46` |
+
+Repeated runs before publication must keep using the same target version.
 
 ### Step 5: Update Helm README
 
 File: `helm-charts/bifrost/README.md`
 
-**5a. Bump "Latest Version" line**
+**5a. Set "Latest Version" to the target from Step 4**
 
-Find and update:
+Keep this line aligned with `Chart.yaml`. It describes the chart in the checkout; use the published index, not this line, to determine release status. For example:
 ```
 **Latest Version:** 2.1.27
 ```
@@ -130,7 +135,7 @@ Find and update:
 
 **5b. Update the Upcoming section**
 
-Look for an `### Upcoming` section immediately after the `## Changelog` heading. If it **does not exist**, insert one. On every run, **append** bullet points for the current changes to `### Upcoming` — do not create a new versioned heading; that happens at release time.
+Look for an `### Upcoming` section immediately after the `## Changelog` heading. If it **does not exist**, insert one. Append the current changes while preserving existing bullets and avoiding duplicates on repeated runs. Do not create a new versioned heading; that happens at release time.
 
 Structure:
 ```markdown
@@ -146,17 +151,17 @@ Structure:
 
 Keep bullets concise — one line each. No paragraph prose. Mirror the style of existing changelog entries.
 
-### Step 6: Create Docs MDX Changelog
+### Step 6: Update or create the target changelog
 
-Create a new file `docs/changelogs/helm-v<NEW_VERSION>.mdx`:
+Use `docs/changelogs/helm-v<TARGET_VERSION>.mdx` for the version selected in Step 4. If it exists and is unreleased, append the current changes without replacing existing notes or duplicating bullets. Preserve its existing date. Only create a file when the target changelog does not exist:
 
 ```mdx
 ---
-title: "v<NEW_VERSION>"
-description: "Helm v<NEW_VERSION> changelog - <YYYY-MM-DD>"
+title: "v<TARGET_VERSION>"
+description: "Helm v<TARGET_VERSION> changelog - <YYYY-MM-DD>"
 ---
 
-<Update label="Bifrost Helm" description="v<NEW_VERSION>">
+<Update label="Bifrost Helm" description="v<TARGET_VERSION>">
 
 ## Changelog
 
@@ -167,11 +172,11 @@ description: "Helm v<NEW_VERSION> changelog - <YYYY-MM-DD>"
 </Update>
 ```
 
-Use today's date (`2026-07-10` or whatever the current date is). Mirror the bullet style from `docs/changelogs/helm-v2.1.26.mdx`.
+For a new file, use today's date and mirror the existing changelog style. Include all changes grouped into the target version, including its previous unreleased notes.
 
 ### Step 7: Update docs.json Navigation
 
-In `docs/docs.json`, find the `"item": "Helm"` group (under changelogs). Prepend the new entry at the top of its `pages` array:
+In `docs/docs.json`, find the `"item": "Helm"` group under changelogs. Ensure the target page appears exactly once at the top of its `pages` array. Reuse an existing entry rather than inserting another one:
 
 ```json
 "pages": [
@@ -184,6 +189,8 @@ In `docs/docs.json`, find the `"item": "Helm"` group (under changelogs). Prepend
 ### Step 8: Final Diff Review (Correctness Check)
 
 After all edits, run a fresh perspective check:
+
+Confirm that `Chart.yaml`, README, changelog, and navigation use the same target version. Report the latest published version, the chosen target, and whether the target was reused or created. Check that consolidation preserved all earlier unreleased notes and left no references to a superseded page.
 
 ```bash
 git diff -- helm-charts/bifrost/values.yaml helm-charts/bifrost/values.schema.json helm-charts/bifrost/templates/_helpers.tpl
@@ -232,6 +239,7 @@ Report a short table:
 
 ## Important Rules
 
+- Check the live production index on each run. Do not bump solely because the skill was invoked or because a local changelog exists.
 - **Never** omit the `### Upcoming` section after Step 5 — always ensure it exists and is populated.
 - **Never** promote `### Upcoming` to a versioned heading — that is done by the changelog-writer skill at release time.
 - **Never** write values.yaml fields as uncommented unless they were already uncommented (i.e., they are mandatory defaults like `replicaCount`).

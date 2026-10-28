@@ -210,6 +210,10 @@
       "description": "Role-targeted dashboard notifications, delivered over the dashboard WebSocket"
     },
     {
+      "name": "News Feeds",
+      "description": "RSS and Atom news sources shown in the News tab of the dashboard notification tray"
+    },
+    {
       "name": "Background Jobs",
       "description": "Status, progress and cancellation of durable background jobs (cost recalculation, Warp log indexing, and others)"
     },
@@ -2221,7 +2225,7 @@
       "post": {
         "operationId": "createDecision",
         "summary": "Evaluate a decision",
-        "description": "Asks a list of questions about some input and returns one typed answer\nper question, in order, with per-answer confidence and probabilities.\nServed by any decision model: Typesafe's jev models (and Laya, Nimble,\nand Clef), or any chat model through structured output.\n\nThe map form (a `state` plus questions keyed by name) is deprecated but\nstill served; a map-form request is answered in the map form.\n",
+        "description": "Asks a list of questions about some input and returns one typed answer\nper question, in order, with per-answer confidence and probabilities.\nServed by any decision model: Typesafe's jev models (and Laya, Nimble,\nand Clef), or any chat model through structured output.\n\nThe map form (a `state` plus questions keyed by name) is deprecated but\nstill served; a map-form request is answered in the map form.\n\nImages sent by reference to Typesafe can also come as a multipart request:\nthe JSON in a part named `request`, and each image in its own file part,\nnamed by the image part's `name`.\n",
         "tags": [
           "Decisions"
         ],
@@ -2238,6 +2242,25 @@
                     "$ref": "#/components/schemas/DecisionMapFormRequest"
                   }
                 ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "request"
+                ],
+                "properties": {
+                  "request": {
+                    "type": "string",
+                    "description": "The JSON request, as for `application/json` (not the map form), with each image part's `name` naming a file part of this request."
+                  }
+                },
+                "additionalProperties": {
+                  "type": "string",
+                  "format": "binary",
+                  "description": "An image file part, named by exactly one image part's `name`"
+                }
               }
             }
           }
@@ -28232,7 +28255,7 @@
       "post": {
         "operationId": "typesafeSystemOne",
         "summary": "Evaluate state (Typesafe format)",
-        "description": "Evaluates state against a map of named questions using Typesafe's native\nSystem One API. The request body matches Typesafe's native format; question\nidentifiers become result field names.\n",
+        "description": "Evaluates state against a map of named questions using Typesafe's native\nSystem One API. The request body matches Typesafe's native format; question\nidentifiers become result field names. Images are listed in `assets` and placed\nby reference; send them base64 in JSON, or as file parts of a multipart request\nwhose `request` part holds the JSON. Bifrost adds the\n`TypeSafe-Danger-Zone-Images` header Typesafe requires for images and box questions.\n",
         "tags": [
           "Typesafe Integration"
         ],
@@ -28266,7 +28289,39 @@
                   },
                   "model": {
                     "type": "string",
-                    "description": "Typesafe model identifier (e.g. `jev-1.13.0`, `jev-latest`)."
+                    "description": "Typesafe model identifier (e.g. `jev-1.14.0`, `jev-latest`)."
+                  },
+                  "assets": {
+                    "type": "object",
+                    "description": "Images keyed by the reference string written wherever each belongs in the state, instructions, or criteria.",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "image"
+                          ]
+                        },
+                        "format": {
+                          "type": "string",
+                          "enum": [
+                            "png",
+                            "jpg",
+                            "jpeg"
+                          ],
+                          "description": "Required with `data_base64`"
+                        },
+                        "data_base64": {
+                          "type": "string",
+                          "description": "The image file, base64-encoded, without a `data:` prefix"
+                        },
+                        "part": {
+                          "type": "string",
+                          "description": "In a multipart request, the name of the file part holding the image"
+                        }
+                      }
+                    }
                   },
                   "questions": {
                     "type": "object",
@@ -28284,9 +28339,10 @@
                           "enum": [
                             "noul",
                             "choice",
-                            "score"
+                            "score",
+                            "box"
                           ],
-                          "description": "Question type. `noul` returns a probability from 0 to 1, `choice` a selection with probabilities, `score` a probability-weighted rubric value."
+                          "description": "Question type. `noul` returns a probability from 0 to 1, `choice` a selection with probabilities, `score` a probability-weighted rubric value, `box` the edges of a box around the instructions' subject in an image (Jev 1.14)."
                         },
                         "instructions": {
                           "description": "Question instructions. A string, or structured data.",
@@ -28326,6 +28382,25 @@
                   }
                 }
               }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "request"
+                ],
+                "properties": {
+                  "request": {
+                    "type": "string",
+                    "description": "The JSON request, as for `application/json`, with each multipart asset's `part` naming a file part of this request."
+                  }
+                },
+                "additionalProperties": {
+                  "type": "string",
+                  "format": "binary",
+                  "description": "An image file part, named by exactly one asset's `part`"
+                }
+              }
             }
           }
         },
@@ -28359,7 +28434,8 @@
                             "enum": [
                               "noul",
                               "choice",
-                              "score"
+                              "score",
+                              "box"
                             ]
                           },
                           "noul": {
@@ -28373,6 +28449,30 @@
                           "score": {
                             "type": "number",
                             "description": "Probability-weighted value (score answers)"
+                          },
+                          "box": {
+                            "type": "object",
+                            "description": "Box answers. Edges as fractions from 0 to 1 of the image, from its top-left",
+                            "required": [
+                              "top",
+                              "bottom",
+                              "left",
+                              "right"
+                            ],
+                            "properties": {
+                              "top": {
+                                "type": "number"
+                              },
+                              "bottom": {
+                                "type": "number"
+                              },
+                              "left": {
+                                "type": "number"
+                              },
+                              "right": {
+                                "type": "number"
+                              }
+                            }
                           },
                           "probabilities": {
                             "type": "object",
@@ -87928,6 +88028,32 @@
             }
           },
           {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "min_latency",
             "in": "query",
             "description": "Minimum latency filter",
@@ -88612,6 +88738,32 @@
             }
           },
           {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "min_latency",
             "in": "query",
             "description": "Minimum latency filter",
@@ -88888,7 +89040,25 @@
           {
             "name": "period",
             "in": "query",
-            "description": "Relative time period filter",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
             "schema": {
               "type": "string"
             }
@@ -89183,6 +89353,32 @@
             }
           },
           {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "min_latency",
             "in": "query",
             "description": "Minimum latency filter",
@@ -89437,6 +89633,32 @@
             "schema": {
               "type": "string",
               "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -89699,6 +89921,32 @@
             "schema": {
               "type": "string",
               "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -89975,6 +90223,32 @@
             }
           },
           {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "min_latency",
             "in": "query",
             "description": "Minimum latency filter",
@@ -90236,6 +90510,32 @@
             }
           },
           {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "min_latency",
             "in": "query",
             "description": "Minimum latency filter",
@@ -90494,6 +90794,32 @@
             "schema": {
               "type": "string",
               "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -90767,6 +91093,32 @@
             "schema": {
               "type": "string",
               "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -91067,6 +91419,32 @@
             }
           },
           {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "min_latency",
             "in": "query",
             "description": "Minimum latency filter",
@@ -91359,6 +91737,32 @@
             "schema": {
               "type": "string",
               "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -91665,6 +92069,32 @@
             "schema": {
               "type": "string",
               "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -92151,7 +92581,25 @@
           {
             "name": "period",
             "in": "query",
-            "description": "Relative time period filter",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
             "schema": {
               "type": "string"
             }
@@ -92445,7 +92893,25 @@
           {
             "name": "period",
             "in": "query",
-            "description": "Relative time period filter",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
             "schema": {
               "type": "string"
             }
@@ -92763,7 +93229,25 @@
           {
             "name": "period",
             "in": "query",
-            "description": "Relative time period filter",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
             "schema": {
               "type": "string"
             }
@@ -93181,7 +93665,25 @@
           {
             "name": "period",
             "in": "query",
-            "description": "Relative time period filter",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
             "schema": {
               "type": "string"
             }
@@ -93588,7 +94090,25 @@
           {
             "name": "period",
             "in": "query",
-            "description": "Relative time period filter",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
             "schema": {
               "type": "string"
             }
@@ -93841,7 +94361,25 @@
           {
             "name": "period",
             "in": "query",
-            "description": "Relative time period filter",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
             "schema": {
               "type": "string"
             }
@@ -95053,6 +95591,32 @@
             }
           },
           {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "min_latency",
             "in": "query",
             "description": "Minimum latency filter (milliseconds)",
@@ -95655,6 +96219,32 @@
             }
           },
           {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "min_latency",
             "in": "query",
             "description": "Minimum latency filter",
@@ -95892,6 +96482,32 @@
             }
           },
           {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "min_latency",
             "in": "query",
             "description": "Minimum latency filter (milliseconds)",
@@ -96061,6 +96677,32 @@
             }
           },
           {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "min_latency",
             "in": "query",
             "description": "Minimum latency filter (milliseconds)",
@@ -96218,6 +96860,32 @@
             "schema": {
               "type": "string",
               "format": "date-time"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "description": "Time window resolved server-side; takes precedence over start_time and end_time. Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week, this_month) start at midnight of the current day, week (Monday) or month in `timezone`.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "description": "IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or unknown values fall back to UTC. Ignored for sliding periods.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -102188,7 +102856,26 @@
             "name": "period",
             "in": "query",
             "required": false,
-            "description": "Relative window (e.g. `1h`, `24h`) resolved server-side. Takes\nprecedence over `start_time` / `end_time`.\n",
+            "description": "Window resolved server-side. Takes precedence over `start_time` /\n`end_time`. Sliding periods (`1h` to `30d`) end now; calendar periods\n(`today`, `this_week`, `this_month`) start at midnight in `timezone`.\n",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1h",
+                "6h",
+                "24h",
+                "7d",
+                "30d",
+                "today",
+                "this_week",
+                "this_month"
+              ]
+            }
+          },
+          {
+            "name": "timezone",
+            "in": "query",
+            "required": false,
+            "description": "IANA timezone that calendar periods are measured in. Empty or unknown\nvalues fall back to UTC. Ignored for sliding periods.\n",
             "schema": {
               "type": "string"
             }
@@ -102480,6 +103167,495 @@
         ]
       }
     },
+      "/api/rss/feeds": {
+        "get": {
+          "operationId": "listRSSFeeds",
+          "summary": "List news feeds",
+          "description": "Returns every configured news feed: the built-in catalog (Bifrost\nannouncements, OpenAI, Anthropic, Gemini, Cursor) and any custom RSS or\nAtom feeds an administrator added. Only enabled feeds contribute items to\nthe News tab of the dashboard notification tray.\n",
+          "tags": [
+            "News Feeds"
+          ],
+          "responses": {
+            "200": {
+              "description": "Configured feeds",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/RSSFeedList"
+                  }
+                }
+              }
+            },
+            "500": {
+              "description": "Internal server error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            },
+            "503": {
+              "description": "Config store not available",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "ManagementBearerAuth": []
+            },
+            {
+              "BasicAuth": []
+            }
+          ]
+        },
+        "post": {
+          "operationId": "createRSSFeed",
+          "summary": "Add a custom news feed",
+          "description": "Adds a custom RSS 2.0, RSS 1.0 or Atom feed, or a news listing page that\npublishes no feed (its article cards are read instead). Before saving, the\ngateway fetches the URL once through its SSRF-guarded client and rejects it\nunless it returns a parseable feed or listing, so private, loopback and\nlink-local addresses are refused. Custom feeds are enabled unless\n`enabled` is false.\n",
+          "tags": [
+            "News Feeds"
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RSSFeedCreateRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "201": {
+              "description": "Feed created",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/RSSFeed"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Bad request",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            },
+            "409": {
+              "description": "Conflict with the current state of the resource",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            },
+            "500": {
+              "description": "Internal server error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            },
+            "503": {
+              "description": "Config store not available",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "ManagementBearerAuth": []
+            },
+            {
+              "BasicAuth": []
+            }
+          ]
+        }
+      },
+      "/api/rss/feeds/{id}": {
+        "put": {
+          "operationId": "updateRSSFeed",
+          "summary": "Update a news feed",
+          "description": "Enables or disables a feed. Custom feeds can also be renamed or\nrepointed; a new URL is fetched and validated the same way as on create.\nBuilt-in feeds only accept `enabled`.\n",
+          "tags": [
+            "News Feeds"
+          ],
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "description": "Feed ID",
+              "schema": {
+                "type": "integer"
+              }
+            }
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RSSFeedUpdateRequest"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Feed updated",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/RSSFeed"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Bad request",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "Resource not found",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            },
+            "500": {
+              "description": "Internal server error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            },
+            "503": {
+              "description": "Config store not available",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "ManagementBearerAuth": []
+            },
+            {
+              "BasicAuth": []
+            }
+          ]
+        },
+        "delete": {
+          "operationId": "deleteRSSFeed",
+          "summary": "Delete a custom news feed",
+          "description": "Removes a custom feed. Built-in feeds cannot be deleted; disable them instead.",
+          "tags": [
+            "News Feeds"
+          ],
+          "parameters": [
+            {
+              "name": "id",
+              "in": "path",
+              "required": true,
+              "description": "Feed ID",
+              "schema": {
+                "type": "integer"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Feed deleted",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/MessageResponse"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Bad request",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "Resource not found",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            },
+            "500": {
+              "description": "Internal server error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            },
+            "503": {
+              "description": "Config store not available",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "ManagementBearerAuth": []
+            },
+            {
+              "BasicAuth": []
+            }
+          ]
+        }
+      },
+      "/api/rss/items": {
+        "get": {
+          "operationId": "listRSSItems",
+          "summary": "List news items",
+          "description": "Fetches every enabled feed server-side, merges the entries and returns\nthem newest first. Each feed is cached for 15 minutes (2 minutes after a\nfailure) and contributes at most 20 entries. A feed that fails to load\nis reported in `errors` with an opaque message instead of failing the\nresponse. The built-in Bifrost announcements feed is the exception: its\nfailures are only logged by the gateway and never appear in `errors`.\nEntries whose link is not http or https are dropped.\n",
+          "tags": [
+            "News Feeds"
+          ],
+          "parameters": [
+            {
+              "name": "limit",
+              "in": "query",
+              "required": false,
+              "description": "Maximum number of items. Values above 100 are clamped.",
+              "schema": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 50
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Merged news items",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/RSSItemList"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Bad request",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            },
+            "500": {
+              "description": "Internal server error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            },
+            "503": {
+              "description": "Config store not available",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "ManagementBearerAuth": []
+            },
+            {
+              "BasicAuth": []
+            }
+          ]
+        }
+      },
+      "/api/rss/settings": {
+        "get": {
+          "operationId": "getRSSSettings",
+          "summary": "Get news settings",
+          "description": "Returns whether news is switched on for the gateway. News is on unless an administrator turned it off.",
+          "tags": [
+            "News Feeds"
+          ],
+          "responses": {
+            "200": {
+              "description": "News settings",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/RSSSettings"
+                  }
+                }
+              }
+            },
+            "500": {
+              "description": "Internal server error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            },
+            "503": {
+              "description": "Config store not available",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "ManagementBearerAuth": []
+            },
+            {
+              "BasicAuth": []
+            }
+          ]
+        },
+        "put": {
+          "operationId": "updateRSSSettings",
+          "summary": "Turn news on or off",
+          "description": "Gateway-wide switch for the News tab. While news is off the gateway\nfetches no feeds, `GET /api/rss/items` returns `enabled: false` with no\nitems, and the dashboard hides the News tab for every user. Feed\nconfiguration is kept, so turning news back on restores the same sources.\n",
+          "tags": [
+            "News Feeds"
+          ],
+          "requestBody": {
+            "required": true,
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RSSSettings"
+                }
+              }
+            }
+          },
+          "responses": {
+            "200": {
+              "description": "Updated news settings",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/RSSSettings"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Bad request",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            },
+            "500": {
+              "description": "Internal server error",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            },
+            "503": {
+              "description": "Config store not available",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/BifrostError"
+                  }
+                }
+              }
+            }
+          },
+          "security": [
+            {
+              "ManagementBearerAuth": []
+            },
+            {
+              "BasicAuth": []
+            }
+          ]
+        }
+      },
     "/api/sidekiq/jobs": {
       "get": {
         "operationId": "listSidekiqJobs",
@@ -107986,19 +109162,22 @@
           "runtime_auth": {
             "$ref": "#/components/schemas/AgentUpstreamAuth"
           },
+          "credential_origins": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^https?://[^@/?#\\s]+$"
+            },
+            "description": "Additional HTTP(S) origins permitted for runtime requests, including configured credentials, caller-provided upstream headers, forwarded Bifrost credentials, and TLS client certificates. Every runtime endpoint must pass this policy. The card origin is permitted automatically. Include scheme and optional port; paths, userinfo, queries, and fragments are forbidden. Private destinations also need permission in a2a_private_allowlist. Nonempty values require dashboard authentication.\n"
+          },
           "virtual_key_ids": {
             "type": "array",
             "items": {
               "type": "string"
             },
             "description": "Virtual key IDs granted access to the agent. Empty and duplicate IDs are rejected."
-          },
-          "extension_uris": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "A2A extension URIs enabled for upstream requests."
           }
         },
         "required": [
@@ -108071,7 +109250,7 @@
         "required": [
           "type"
         ],
-        "description": "Shared upstream authentication. Header auth requires nonempty headers. OAuth uses client credentials and requires client_id, client_secret, and a token, discovery, or provider URL. Interactive OAuth is not supported."
+        "description": "Shared upstream authentication. Header auth requires nonempty headers. OAuth uses client credentials and requires client_id, client_secret, and a token, discovery, or provider URL. Interactive OAuth is not supported. Using environment or vault secret references requires dashboard authentication for card inspection, creation, and updates. Operator declarations in config.json may use these references. Preserving stored secrets through masked placeholders on an update also requires dashboard authentication."
       },
       "AgentUpstreamOAuthConfig": {
         "type": "object",
@@ -108296,19 +109475,22 @@
           "runtime_auth": {
             "$ref": "#/components/schemas/AgentUpstreamAuth"
           },
+          "credential_origins": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^https?://[^@/?#\\s]+$"
+            },
+            "description": "Additional HTTP(S) origins permitted for runtime requests, including configured credentials, caller-provided upstream headers, forwarded Bifrost credentials, and TLS client certificates. Every runtime endpoint must pass this policy. The card origin is permitted automatically. Include scheme and optional port; paths, userinfo, queries, and fragments are forbidden. Private destinations also need permission in a2a_private_allowlist. Nonempty values require dashboard authentication. Omit or send [] to clear.\n"
+          },
           "virtual_key_ids": {
             "type": "array",
             "items": {
               "type": "string"
             },
             "description": "Virtual key IDs granted access to the agent. Empty and duplicate IDs are rejected."
-          },
-          "extension_uris": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "A2A extension URIs enabled for upstream requests."
           }
         },
         "required": [
@@ -108847,12 +110029,15 @@
           "runtime_auth": {
             "$ref": "#/components/schemas/AgentUpstreamAuth"
           },
-          "extension_uris": {
+          "credential_origins": {
             "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
             "items": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^https?://[^@/?#\\s]+$"
             },
-            "description": "A2A extension URIs enabled for upstream requests."
+            "description": "Additional origins permitted for all runtime requests and their credentials. The card origin is permitted automatically.\n"
           },
           "virtual_key_ids": {
             "type": "array",
@@ -111129,9 +112314,7 @@
             }
           },
           "guardrail_debug": {
-            "type": "object",
-            "description": "Guardrail judge calls and detect-only matches",
-            "additionalProperties": true
+            "$ref": "#/components/schemas/BifrostGuardrailMetadata"
           },
           "parse_errors": {
             "type": "array",
@@ -111221,6 +112404,125 @@
             "type": "integer",
             "format": "int64",
             "description": "Milliseconds spent serving a cache hit. Set only on a hit."
+          }
+        }
+      },
+      "BifrostGuardrailMetadata": {
+        "type": "object",
+        "description": "Guardrail judge calls and matches recorded for a request.",
+        "properties": {
+          "judge_calls": {
+            "type": "array",
+            "description": "Billable guardrail judge invocations (LLM-backed guardrail providers)",
+            "items": {
+              "$ref": "#/components/schemas/BifrostGuardrailJudgeCall"
+            }
+          },
+          "detections": {
+            "type": "array",
+            "description": "Guardrail matches. Enforced rules record detect-only matches; output-monitor rules record every match they see, with the action enforcement would have taken.",
+            "items": {
+              "$ref": "#/components/schemas/BifrostGuardrailDetection"
+            }
+          }
+        }
+      },
+      "BifrostGuardrailDetection": {
+        "type": "object",
+        "properties": {
+          "phase": {
+            "type": "string",
+            "description": "Phase the match was found in (input, output, or mcp-<source>)"
+          },
+          "rule_id": {
+            "type": "integer"
+          },
+          "rule_name": {
+            "type": "string"
+          },
+          "guardrail_name": {
+            "type": "string",
+            "description": "Guardrail profile that matched"
+          },
+          "guardrail_provider": {
+            "type": "string",
+            "description": "Guardrail provider type of the profile (for example regex or bedrock)"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "assessments": {
+            "type": "array",
+            "description": "Sanitized policy categories; never the matched text",
+            "items": {
+              "type": "string"
+            }
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "detect",
+              "block",
+              "redact",
+              "transform"
+            ],
+            "description": "What the guardrail did, or would have done when the rule only monitors"
+          },
+          "enforced": {
+            "type": "boolean",
+            "description": "False when an output-monitor rule recorded the match without acting on it"
+          }
+        }
+      },
+      "BifrostGuardrailJudgeCall": {
+        "type": "object",
+        "properties": {
+          "phase": {
+            "type": "string"
+          },
+          "rule_id": {
+            "type": "integer"
+          },
+          "rule_name": {
+            "type": "string"
+          },
+          "guardrail_name": {
+            "type": "string"
+          },
+          "guardrail_provider": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "judge_provider": {
+            "type": "string"
+          },
+          "judge_model": {
+            "type": "string"
+          },
+          "judge_request_type": {
+            "type": "string"
+          },
+          "prompt_tokens": {
+            "type": "integer"
+          },
+          "prompt_tokens_details": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "completion_tokens": {
+            "type": "integer"
+          },
+          "completion_tokens_details": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "total_tokens": {
+            "type": "integer"
           }
         }
       },
@@ -112534,9 +113836,6 @@
                       "type": "string"
                     }
                   }
-                },
-                "cache_control": {
-                  "$ref": "#/components/schemas/CacheControl"
                 }
               }
             }
@@ -115585,9 +116884,10 @@
             "enum": [
               "predicate",
               "choice",
-              "score"
+              "score",
+              "box"
             ],
-            "description": "How the question is decided. `predicate` yields the probability a condition is true (Typesafe's `noul`), `choice` one of the choices, `score` a probability-weighted level index that may fall between levels."
+            "description": "How the question is decided. `predicate` yields the probability a condition is true (Typesafe's `noul`), `choice` one of the choices, `score` a probability-weighted level index that may fall between levels, `box` the edges of a box around the instructions' subject in an image (Typesafe Jev 1.14)."
           },
           "name": {
             "type": "string",
@@ -115705,6 +117005,30 @@
             "type": "number",
             "description": "Score answers. Probability-weighted level index"
           },
+          "box": {
+            "type": "object",
+            "description": "Box answers. Each edge is a fraction from 0 to 1 of the image's height (`top`, `bottom`) or width (`left`, `right`), measured from its top-left",
+            "required": [
+              "top",
+              "bottom",
+              "left",
+              "right"
+            ],
+            "properties": {
+              "top": {
+                "type": "number"
+              },
+              "bottom": {
+                "type": "number"
+              },
+              "left": {
+                "type": "number"
+              },
+              "right": {
+                "type": "number"
+              }
+            }
+          },
           "probabilities": {
             "type": "array",
             "description": "Distribution over choices or levels, in question order, when supplied",
@@ -115813,6 +117137,9 @@
           },
           {
             "$ref": "#/components/schemas/DecisionInputImage"
+          },
+          {
+            "$ref": "#/components/schemas/DecisionInputImageAsset"
           }
         ]
       },
@@ -115830,12 +117157,26 @@
             ]
           },
           "text": {
-            "type": "string"
+            "description": "A string, or structured data that Typesafe-based models read as is and OpenAI receives as JSON text",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "additionalProperties": true
+              },
+              {
+                "type": "array",
+                "items": {}
+              }
+            ]
           }
         }
       },
       "DecisionInputImage": {
         "type": "object",
+        "description": "An inline image, read as evidence",
         "required": [
           "type",
           "image_url"
@@ -115860,6 +117201,47 @@
               "original"
             ],
             "description": "Image detail level, forwarded to models that read images (OpenAI's defaults to `auto`)"
+          }
+        }
+      },
+      "DecisionInputImageAsset": {
+        "type": "object",
+        "description": "Typesafe only. An image sent by reference, as one of Typesafe's `assets`, placed wherever its ID is written in the input, instructions, or criteria instead of as evidence itself. Other providers reject it.",
+        "required": [
+          "type",
+          "id"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "data"
+            ]
+          },
+          {
+            "required": [
+              "name"
+            ]
+          }
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "input_image"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "The reference written where the image belongs"
+          },
+          "data": {
+            "type": "string",
+            "format": "byte",
+            "description": "The image file, base64-encoded, without a `data:` prefix; its format is read from the bytes"
+          },
+          "name": {
+            "type": "string",
+            "description": "In a multipart request, the name of the file part that holds the image. A JSON request cannot use it."
           }
         }
       },
@@ -115959,9 +117341,10 @@
             "enum": [
               "noul",
               "choice",
-              "score"
+              "score",
+              "box"
             ],
-            "description": "How the question is decided. `noul` yields a probability between 0 and 1, `choice` yields one option from the criteria, `score` yields a numeric rubric score including fractions."
+            "description": "How the question is decided. `noul` yields a probability between 0 and 1, `choice` yields one option from the criteria, `score` yields a numeric rubric score including fractions, `box` yields the edges of a box around the instructions' subject in an image (Typesafe Jev 1.14)."
           },
           "instructions": {
             "description": "Instructions for this question. A string, or structured data preserved losslessly.",
@@ -115980,7 +117363,7 @@
             ]
           },
           "criteria": {
-            "description": "Applicable criteria. Optional `true`/`false` descriptions for `noul`; a\nrequired map of option to description for `choice` (at most 255 options);\na required ordered array of 2-10 level descriptions for `score`.\n",
+            "description": "Applicable criteria. Optional `true`/`false` descriptions for `noul`; a\nrequired map of option to description for `choice` (at most 255 options);\na required ordered array of 2-10 level descriptions for `score`; none\nfor `box`.\n",
             "oneOf": [
               {
                 "type": "object",
@@ -116010,18 +117393,43 @@
             "enum": [
               "noul",
               "choice",
-              "score"
+              "score",
+              "box"
             ],
             "description": "The question's decision kind"
           },
           "value": {
-            "description": "The decided value. A number in [0,1] for `noul`, an option string for `choice`, a numeric rubric score for `score`.",
+            "description": "The decided value. A number in [0,1] for `noul`, an option string for `choice`, a numeric rubric score for `score`, the box's edges for `box`.",
             "oneOf": [
               {
                 "type": "number"
               },
               {
                 "type": "string"
+              },
+              {
+                "type": "object",
+                "description": "Box answers. Each edge is a fraction from 0 to 1 of the image's height (`top`, `bottom`) or width (`left`, `right`), measured from its top-left",
+                "required": [
+                  "top",
+                  "bottom",
+                  "left",
+                  "right"
+                ],
+                "properties": {
+                  "top": {
+                    "type": "number"
+                  },
+                  "bottom": {
+                    "type": "number"
+                  },
+                  "left": {
+                    "type": "number"
+                  },
+                  "right": {
+                    "type": "number"
+                  }
+                }
               }
             ]
           },
@@ -119516,9 +120924,6 @@
                       "type": "string"
                     }
                   }
-                },
-                "cache_control": {
-                  "$ref": "#/components/schemas/CacheControl"
                 }
               }
             }
@@ -124486,6 +125891,13 @@
                 },
                 "description": "Hostnames, IP addresses, or CIDR ranges (no scheme or port) that the MCP OAuth chain (discovery, dynamic client registration, token requests) may reach when they resolve to a loopback or private address. Applies only to MCP clients registered by an authenticated admin or declared in config.json. Link-local and cloud metadata addresses are always refused and cannot be listed. Omit to keep the current list; send [] to clear it. Changing it requires an authenticated admin session.\n"
               },
+              "a2a_private_allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Hosts, IP addresses, or CIDR ranges without a scheme or port that Agent Gateway card discovery, OAuth, and runtime HTTP or gRPC calls may reach when they resolve to private or loopback addresses. Link-local and cloud metadata addresses are always blocked. Applies to agents registered by an authenticated administrator or declared in config.json. Registrations created with dashboard authentication bypassed cannot use private permissions. Omit to keep the current list; send [] to clear it. Changing this setting requires dashboard authentication.\n"
+              },
               "mcp_code_mode_limits": {
                 "type": "object",
                 "description": "Limits applied to each code mode (executeToolCode) execution. Omit the object to keep the current limits; send {} to reset every limit to its default. Any field omitted or set to 0 uses its default. There is no limit on concurrent executions.\n",
@@ -125008,6 +126420,13 @@
                   "type": "string"
                 },
                 "description": "Hostnames, IP addresses, or CIDR ranges (no scheme or port) that the MCP OAuth chain (discovery, dynamic client registration, token requests) may reach when they resolve to a loopback or private address. Applies only to MCP clients registered by an authenticated admin or declared in config.json. Link-local and cloud metadata addresses are always refused and cannot be listed. Omit to keep the current list; send [] to clear it. Changing it requires an authenticated admin session.\n"
+              },
+              "a2a_private_allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Hosts, IP addresses, or CIDR ranges without a scheme or port that Agent Gateway card discovery, OAuth, and runtime HTTP or gRPC calls may reach when they resolve to private or loopback addresses. Link-local and cloud metadata addresses are always blocked. Applies to agents registered by an authenticated administrator or declared in config.json. Registrations created with dashboard authentication bypassed cannot use private permissions. Omit to keep the current list; send [] to clear it. Changing this setting requires dashboard authentication.\n"
               },
               "mcp_code_mode_limits": {
                 "type": "object",
@@ -127348,7 +128767,44 @@
             "additionalProperties": {
               "type": "string"
             },
-            "description": "Additional headers to include in requests"
+            "description": "Additional headers to include in requests. A value may be a literal, an `env.VAR_NAME` reference, or a `vault.path` reference; references are resolved at load time and only the reference is stored. Literal values are masked in API responses while env/vault references stay visible as references; on update, a masked value sent back under the same header name keeps the stored value, while a masked value under a new or renamed header, or on provider create, is rejected with 400."
+          },
+          "extra_headers_secret_vars": {
+            "type": "object",
+            "readOnly": true,
+            "additionalProperties": {
+              "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+              "oneOf": [
+                {
+                  "type": "string",
+                  "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                },
+                {
+                  "type": "object",
+                  "description": "Resolved form, as returned by GET responses",
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "description": "Resolved value (redacted in GET responses for secret fields)"
+                    },
+                    "ref": {
+                      "type": "string",
+                      "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "plain_text",
+                        "env",
+                        "vault"
+                      ],
+                      "description": "Source type of the value"
+                    }
+                  }
+                }
+              ]
+            },
+            "description": "Response only. The same headers as `extra_headers`, as SecretVar objects (`value`, `ref`, `type`) so clients can tell literals from `env`/`vault` references without parsing prefixes. Literal values are `<REDACTED>`. Ignored on input; send `extra_headers` to change headers."
           },
           "default_request_timeout_in_seconds": {
             "type": "integer",
@@ -129594,7 +131050,10 @@
             "type": "string"
           },
           "metadata": {
-            "type": ["object", "null"],
+            "type": [
+              "object",
+              "null"
+            ],
             "description": "Replaces the key's metadata as a whole. Omit (or send null) to leave it unchanged; send {} to clear it. Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.",
             "maxProperties": 50,
             "propertyNames": {
@@ -133340,6 +134799,14 @@
             },
             "description": "Phase-scoped placeholder-to-original-value mappings for reversible redactions. Present only on log detail responses when the caller has `Logs:Reveal`."
           },
+          "guardrail_debug": {
+            "$ref": "#/components/schemas/BifrostGuardrailMetadata",
+            "description": "Guardrail judge calls and matches for the request, including output-monitor results (action, enforced false), which land after the response completes. Present only on log detail responses."
+          },
+          "plugin_logs": {
+            "type": "string",
+            "description": "JSON object of plugin log entries grouped by plugin name. Output-monitor guardrail lines are prefixed `[output-monitor]`. Present only on log detail responses."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -134809,9 +136276,17 @@
                       "6h",
                       "24h",
                       "7d",
-                      "30d"
+                      "30d",
+                      "today",
+                      "this_week",
+                      "this_month"
                     ],
-                    "description": "Relative time window resolved when the job is created. When recognized, it takes precedence over start_time and end_time."
+                    "description": "Time window resolved when the job is created; it takes precedence over start_time and end_time. Sliding periods (1h to 30d) end now. Calendar periods start at midnight of the current day, week (Monday) or month in `timezone`. An unrecognized value is rejected with 400."
+                  },
+                  "timezone": {
+                    "type": "string",
+                    "example": "America/New_York",
+                    "description": "IANA timezone that calendar periods are measured in. Empty or unknown values fall back to UTC. Ignored for sliding periods."
                   }
                 }
               }
@@ -135973,6 +137448,234 @@
           }
         }
       },
+        "RSSFeed": {
+          "type": "object",
+          "required": [
+            "id",
+            "slug",
+            "name",
+            "url",
+            "source",
+            "enabled"
+          ],
+          "properties": {
+            "id": {
+              "type": "integer"
+            },
+            "slug": {
+              "type": "string",
+              "description": "Stable identifier. Built-in feeds use fixed slugs (`bifrost`, `openai`, `anthropic`, `gemini`, `cursor`)."
+            },
+            "name": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string",
+              "description": "RSS 2.0, RSS 1.0 or Atom feed URL, or a news listing page that publishes no feed."
+            },
+            "icon": {
+              "type": "string",
+              "description": "Built-in icon key. Empty for custom feeds."
+            },
+            "icon_url": {
+              "type": "string",
+              "description": "Custom feeds only: the logo shown for the feed, as an http(s) image URL\nor a base64 `data:image/...` URI (PNG, JPEG, GIF, WebP, SVG or ICO,\nunder 96 KB). When empty, the feed site's favicon is shown.\n"
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "builtin",
+                "custom"
+              ]
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "RSSFeedList": {
+          "type": "object",
+          "required": [
+            "feeds"
+          ],
+          "properties": {
+            "feeds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/RSSFeed"
+              }
+            }
+          }
+        },
+        "RSSFeedCreateRequest": {
+          "type": "object",
+          "required": [
+            "name",
+            "url"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 120
+            },
+            "url": {
+              "type": "string",
+              "maxLength": 2048,
+              "description": "Public http or https URL of an RSS 2.0, RSS 1.0 or Atom feed, or of a news listing page that publishes no feed (its article cards are read instead)."
+            },
+            "icon_url": {
+              "type": "string",
+              "description": "Optional logo, as an http(s) image URL or a base64 `data:image/...` URI under 96 KB."
+            },
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            }
+          }
+        },
+        "RSSFeedUpdateRequest": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 120,
+              "description": "Custom feeds only."
+            },
+            "url": {
+              "type": "string",
+              "maxLength": 2048,
+              "description": "Custom feeds only."
+            },
+            "icon_url": {
+              "type": "string",
+              "description": "Custom feeds only. An empty string removes the logo."
+            },
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
+        "RSSItem": {
+          "type": "object",
+          "required": [
+            "id",
+            "feed_id",
+            "feed_slug",
+            "feed_name",
+            "feed_url",
+            "title",
+            "link",
+            "published_at"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "`<feed_slug>:<entry guid>`; stable across fetches."
+            },
+            "feed_id": {
+              "type": "integer"
+            },
+            "feed_slug": {
+              "type": "string"
+            },
+            "feed_name": {
+              "type": "string"
+            },
+            "feed_icon": {
+              "type": "string"
+            },
+            "feed_url": {
+              "type": "string"
+            },
+            "title": {
+              "type": "string"
+            },
+            "link": {
+              "type": "string"
+            },
+            "summary": {
+              "type": "string",
+              "description": "Plain-text summary, HTML stripped, at most 280 characters."
+            },
+            "published_at": {
+              "type": "string",
+              "format": "date-time",
+              "description": "`0001-01-01T00:00:00Z` when the entry has no parseable date."
+            }
+          }
+        },
+        "RSSFeedError": {
+          "type": "object",
+          "required": [
+            "feed_id",
+            "feed_name",
+            "message"
+          ],
+          "properties": {
+            "feed_id": {
+              "type": "integer"
+            },
+            "feed_name": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          }
+        },
+        "RSSItemList": {
+          "type": "object",
+          "required": [
+            "enabled",
+            "items",
+            "errors"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "False when news is switched off for the gateway; items and errors are then empty."
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/RSSItem"
+              }
+            },
+            "errors": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/RSSFeedError"
+              }
+            },
+            "feed_icons": {
+              "type": "object",
+              "description": "Custom logo (http(s) URL or data URI) for each feed that has one, keyed by feed ID. Sent once per feed rather than on every item; omitted when no feed has a logo.",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "RSSSettings": {
+          "type": "object",
+          "required": [
+            "enabled"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether the News tab is shown and feeds are fetched for this gateway."
+            }
+          }
+        },
       "SidekiqJobStatus": {
         "type": "string",
         "description": "Lifecycle of a job. `completed`, `failed` and `cancelled` are terminal.\n",

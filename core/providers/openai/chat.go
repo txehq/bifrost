@@ -302,7 +302,7 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 		if req.ChatParameters.Reasoning.Effort != nil {
 			// Native field is provided, use it (and clear max_tokens)
 			effort := *req.ChatParameters.Reasoning.Effort
-			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(effort, defaultEffortControl(caps.Model())))
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(normalizeReasoningEffort(req.Provider, caps, effort))
 			// Clear max_tokens since OpenAI doesn't use it
 			req.ChatParameters.Reasoning.MaxTokens = nil
 		} else if req.ChatParameters.Reasoning.MaxTokens != nil {
@@ -320,7 +320,7 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 		// A model that always reasons rejects "none"; "minimal" normalizes to its lowest level.
 		if e := req.ChatParameters.Reasoning.Effort; e != nil && *e == schemas.ReasoningEffortNone &&
 			!caps.CanDisableReasoning(defaultCanDisableReasoning(caps.Model())) {
-			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(caps.Model())))
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(req.Provider, caps.Model())))
 		}
 	}
 }
@@ -443,6 +443,13 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 	if req.Reasoning != nil && req.Reasoning.Effort != nil {
 		if *req.Reasoning.Effort != "none" && *req.Reasoning.Effort != "high" {
 			req.Reasoning.Effort = schemas.Ptr("high")
+		}
+	}
+
+	// Mistral rejects unknown assistant fields with 422 extra_forbidden, reasoning_content included
+	for i := range req.Messages {
+		if assistantMessage := req.Messages[i].OpenAIChatAssistantMessage; assistantMessage != nil {
+			assistantMessage.Reasoning = nil
 		}
 	}
 }

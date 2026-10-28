@@ -122,6 +122,21 @@ resources:
     cpu: 500m
     memory: 512Mi
 
+# startupProbe holds off the liveness probe until /health first answers.
+# Bifrost serves HTTP only after its database migrations finish, and on an
+# upgrade against a large log store those can wait (by design, with retries)
+# for other replicas' long queries and for a peer's migration lock: up to 20
+# minutes for the lock alone. Without this probe the liveness probe kills the
+# pod about 2 minutes in and the next pod starts the wait over. 30s x 60 = 30
+# minutes. Set to null to disable.
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 60
+
 livenessProbe:
   httpGet:
     path: /health
@@ -363,6 +378,9 @@ bifrost:
   # Server configuration
   server:
     readBufferSize: 65536 # Read buffer size in bytes for reading HTTP headers (default: 64 KiB)
+    # Largest request-body buffer a keep-alive connection keeps for reuse. Larger buffers are freed
+    # after each request (the body is still served). Unset = 4 MiB default, 0 = unlimited (previous behaviour).
+    # bodyBufferPoolLimitBytes: 4194304
     # Hosts/IPs/CIDRs custom plugin (.so) downloads may reach despite resolving to a private address (blocked by default to prevent SSRF).
     # pluginDownloadPrivateAllowlist:
     #   - "artifacts.internal.corp"
@@ -397,6 +415,7 @@ bifrost:
   #     - name: "primary-key"         # Key name (required, must be unique)
   #       value: "sk-..."             # Direct value
   #       weight: 1
+  #       enabled: true               # false = keep the key configured but skip it in routing (new keys default to true; omitted keeps the stored value)
   #       models: ["gpt-4o", "gpt-4o-mini"]  # Restrict key to specific models
   #       use_for_batch_api: false    # Whether this key can be used for batch API
   #       # use_anthropic_endpoints: false  # deepseek/fireworks/vllm/sgl keys only: route chat completions
@@ -474,6 +493,7 @@ bifrost:
   #         region: "us-central1"
   #         auth_credentials: "env.GOOGLE_CREDENTIALS"
   #         force_single_region: false  # Set true for provisioned throughput to skip multi-region promotion
+  #         use_session_routing: false  # Set true only on projects where Google enabled Vertex session routing
   #
   # # AWS Bedrock example (requires bedrock_key_config)
   # bedrock:
@@ -854,6 +874,8 @@ bifrost:
         # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name, supports env.VAR_NAME)
         # enable_metrics: true
         # enable_llm_obs: true
+        # otel_llmobs_conversion: "disabled"  # Whether Datadog builds its own LLM Observability spans from Bifrost's trace: disabled, inherit or enabled
+        # llmobs_gateway_mode: false  # Datadog's proxy-service pattern: a workflow span per request plus MCP tool spans. Changes the exported span shape
         # group_traces_by_session: false  # Group requests sharing x-bf-session-id into one APM trace (agent mode only)
         # disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
@@ -1039,6 +1061,8 @@ bifrost:
       #   expires_at: "2026-12-31T23:59:59Z"  # Optional RFC3339 expiry; requests rejected once passed. Omit for no expiry
       #   delete_after_expire: true  # Delete the key once expires_at passes; omit to follow client.deleteExpiredVirtualKeys
       #   disable_content_logging: true  # Per-key override of client.disableContentLogging; omit to inherit
+      #   metadata:                # Custom key/value metadata copied onto every log entry this key produces
+      #     cost_center: "cc-42"
       #   calendar_aligned: false  # Snap all budget resets for this key to calendar boundaries
       #   allow_all_providers: false  # Grant access to every provider (incl. ones added later); provider_configs still apply per-provider limits
       #   team_id: "team-1"        # Mutually exclusive with customer_id and business_unit_id
@@ -1498,6 +1522,7 @@ bifrost:
       #   max_turns_to_send: 8   # With the switch false: current input + 8 previous turns; 0 = current input only
       #   evaluation_mode: "bundled"   # "bundled" (default) | "per_turn" (each turn scanned in isolation; avoids cross-turn false positives, more provider calls)
       #   stream_replay_event_interval_ms: 25  # Delay between buffered events after an allowed response; 0 sends them immediately
+      #   output_mode: "enforce"   # "enforce" (default) | "monitor" (deliver the response untouched, evaluate it in the background, log matches without enforcing; needs apply_to output|both)
       #   provider_config_ids: [1]   # Links this rule to guardrails.providers[].id above
 
   # Declarative Skills Repository. Rendered verbatim as top-level `skills_registry`
@@ -1651,9 +1676,7 @@ bifrost:
   #     allow_by_default: false                        # Reachable by any virtual key without an explicit grant
   #     forward_accepted_credential: false             # Forward the accepted Bifrost credential upstream as x-bf-vk
   #     forward_accepted_credential_overrides_auth: false # Forward it as Authorization, replacing configured runtime auth
-  #     tenant: ""                                     # Optional tenant label
   #     credential_origins: ["https://research.internal:9000"] # Additional origins permitted for runtime requests; card origin is automatic
-  #     extension_uris: []                             # A2A extension URIs to advertise
   #     virtual_key_ids: []                            # Virtual key IDs granted access to this agent
   #     discovery_auth:                                # Auth for fetching the agent card (types: none, headers, oauth)
   #       type: "headers"
@@ -1760,6 +1783,7 @@ storage:
     # connMaxIdleTime: "5m"  # How long an idle connection is kept (config and logs stores use separate pools).
     # statementTimeout: "120s"                  # Server-side statement_timeout per pool connection ("0" keeps the server default)
     # idleInTransactionSessionTimeout: "120s"   # Ends sessions idle inside an open transaction ("0" keeps the server default)
+    # migrationLockRetryBudget: "10m"           # How long a migration step retries lock timeouts (e.g. behind an old replica's long query) before the pod exits. Keep startupProbe at least this long.
 
     # Vault store for external secret management (enterprise).
     # Resolves "vault.<path>" references in config fields at load time.
@@ -1816,6 +1840,7 @@ storage:
     # connMaxIdleTime: "5m"  # How long an idle connection is kept (config and logs stores use separate pools).
     # statementTimeout: "120s"                  # Server-side statement_timeout per pool connection ("0" keeps the server default)
     # idleInTransactionSessionTimeout: "120s"   # Ends sessions idle inside an open transaction ("0" keeps the server default)
+    # migrationLockRetryBudget: "10m"           # How long a migration step retries lock timeouts (e.g. behind an old replica's long query) before the pod exits. Keep startupProbe at least this long.
     # Point the logs store at a SEPARATE external PostgreSQL than the config store (only when the
     # logs store resolves to postgres). When disabled (default), it shares the top-level `postgresql`
     # connection. Fields mirror `postgresql.external`.

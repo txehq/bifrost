@@ -1,0 +1,23 @@
+---
+title: "v2.1.47-sync.4"
+description: "Helm v2.1.47-sync.4 prerelease changelog - 2026-10-28"
+---
+
+<Update label="Bifrost Helm" description="v2.1.47-sync.4 (prerelease)">
+
+## Changelog
+
+Prerelease of the txehq fork for transport v2.3.1-sync.4; the published chart stays 2.1.46 until a stable version supersedes it. Install this one with `helm install --devel` or `--version 2.1.47-sync.4`. It carries upstream's v2.3.1 chart changes after the development-line chart 2.1.45 that 2.1.47-sync.3 shipped (upstream #8479, #8572, #8602, #8610, #8641, #8650, #8679, #8680, #8552):
+
+- Added a top-level `startupProbe` (default: `/health` every 30s, 60 failures = 30 minutes; set to `null` to disable) that holds off the liveness probe until Bifrost first answers. Upgrade migrations against a large store can wait on other replicas' queries and on a peer's migration lock before HTTP is served.
+- Added `storage.configStore.migrationLockRetryBudget` and `storage.logsStore.migrationLockRetryBudget` (Go duration, default `10m`), rendered as `migration_lock_retry_budget` on a Postgres store: how long a migration step retries after lock timeouts before the pod exits. Keep `startupProbe` at least as long.
+- Added `bifrost.server.bodyBufferPoolLimitBytes` (`server.body_buffer_pool_limit_bytes`). Keep-alive connections free request-body buffers larger than this after each request instead of holding the largest body they ever read (default 4 MiB when unset; `0` means unlimited, the old behaviour).
+- Added `bifrost.governance.virtualKeys[].metadata` (`metadata`): custom key/value metadata copied onto every log entry the key produces. Up to 50 entries; keys may use letters, digits, `.`, `_` and `-`, values up to 512 characters.
+- Added `bifrost.plugins.datadog.config.otel_llmobs_conversion` (`disabled` default, `inherit` or `enabled`) and `llmobs_gateway_mode` (default `false`). A config that still sets `dd_llmobs_enabled` through `custom_tags` is refused, and the Datadog plugin does not load until that tag is replaced by `otel_llmobs_conversion`.
+- Added `use_session_routing` to Vertex keys (`vertex_key_config.use_session_routing`, default `false`).
+- Documented `enabled` on provider keys (`bifrost.providers.<name>.keys[].enabled`). New keys default to `true`; omitting it on an existing key keeps the stored value, and Bifrost now saves the value from config.json on restart.
+- Added `output_mode` to `bifrost.guardrails.rules[]` (`guardrails_config.guardrail_rules[].output_mode`: `enforce` default, or `monitor`, which requires `apply_to` `output` or `both`).
+- Removed `bifrost.agents[].tenant` and `bifrost.agents[].extension_uris` from the values schema; Agent Gateway discovers supported extensions from the upstream agent card. In this fork the `drop_agent_registration_options` migration keeps the existing `tenant` and `extension_uris` columns and their values in the config store instead of dropping them.
+- `appVersion` is now `2.3.1-sync.4`, the transport prerelease this chart ships with; it sets only the `app.kubernetes.io/version` label, and `image.tag` stays required.
+
+</Update>
