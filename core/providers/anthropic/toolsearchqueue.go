@@ -44,10 +44,15 @@ const (
 	hostedToolSearchQueueTTL = 30 * time.Minute
 )
 
+// hostedToolSearchQueue's fields are guarded by mu. Every lifecycle step (push,
+// pop, the idle check and release) takes it, so the idle check sees the latest
+// touch, a queue being used is never expired, and a released queue is never
+// written to or re-armed.
 type hostedToolSearchQueue struct {
 	mu      sync.Mutex
 	pending []hostedToolSearchCall // oldest first
-	touched atomic.Int64           // unix nanoseconds of the last push or pop
+	touched int64                  // unix nanoseconds of the last push or pop
+	closed  bool                   // released; the stream must open a new queue
 	timer   *time.Timer            // idle expiry; set once at creation
 	stop    func() bool            // detaches the cancellation cleanup
 }
@@ -59,6 +64,7 @@ const (
 	hostedToolSearchQueued hostedToolSearchPushResult = iota
 	hostedToolSearchQueueFull
 	hostedToolSearchIDTooLong
+	hostedToolSearchCancelled
 )
 
 // pushHostedToolSearch queues call for the stream that state belongs to. Nothing
@@ -69,18 +75,31 @@ func pushHostedToolSearch(ctx *schemas.BifrostContext, state *anthropicToRespons
 		(call.callID != nil && len(*call.callID) > maxHostedToolSearchIDBytes) {
 		return hostedToolSearchIDTooLong
 	}
-	q := state.hostedToolSearchQueue()
-	if q == nil {
-		q = newHostedToolSearchQueue(ctx, state)
+	for {
+		q := state.hostedToolSearchQueue()
+		if q == nil {
+			if ctx != nil && ctx.Err() != nil {
+				// A cancelled request's queue would be released as soon as it opened.
+				return hostedToolSearchCancelled
+			}
+			q = newHostedToolSearchQueue(ctx, state)
+		}
+		q.mu.Lock()
+		if q.closed {
+			// Released between the lookup and the lock (cancellation or idle expiry):
+			// drop the handle and open a new queue rather than write to a dead one.
+			q.mu.Unlock()
+			state.hostedToolSearches = 0
+			continue
+		}
+		defer q.mu.Unlock()
+		if len(q.pending) >= maxPendingHostedToolSearches {
+			return hostedToolSearchQueueFull
+		}
+		q.pending = append(q.pending, hostedToolSearchCall{toolUseID: cloneStringPtr(call.toolUseID), callID: cloneStringPtr(call.callID)})
+		q.touched = time.Now().UnixNano()
+		return hostedToolSearchQueued
 	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if len(q.pending) >= maxPendingHostedToolSearches {
-		return hostedToolSearchQueueFull
-	}
-	q.pending = append(q.pending, hostedToolSearchCall{toolUseID: cloneStringPtr(call.toolUseID), callID: cloneStringPtr(call.callID)})
-	q.touched.Store(time.Now().UnixNano())
-	return hostedToolSearchQueued
 }
 
 // popHostedToolSearch removes and returns the call an output pairs with: the one
@@ -93,7 +112,7 @@ func popHostedToolSearch(state *anthropicToResponsesStreamState, callID *string)
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if len(q.pending) == 0 {
+	if q.closed || len(q.pending) == 0 {
 		return nil, false
 	}
 	pick := 0
@@ -107,7 +126,7 @@ func popHostedToolSearch(state *anthropicToResponsesStreamState, callID *string)
 	}
 	toolUseID = q.pending[pick].toolUseID
 	q.pending = append(q.pending[:pick], q.pending[pick+1:]...)
-	q.touched.Store(time.Now().UnixNano())
+	q.touched = time.Now().UnixNano()
 	return toolUseID, true
 }
 
@@ -135,8 +154,7 @@ func (state *anthropicToResponsesStreamState) hostedToolSearchQueue() *hostedToo
 
 func newHostedToolSearchQueue(ctx *schemas.BifrostContext, state *anthropicToResponsesStreamState) *hostedToolSearchQueue {
 	id := hostedToolSearchQueueNext.Add(1)
-	q := &hostedToolSearchQueue{}
-	q.touched.Store(time.Now().UnixNano())
+	q := &hostedToolSearchQueue{touched: time.Now().UnixNano()}
 	q.mu.Lock() // the timer and cancellation callbacks may fire before the fields are set
 	hostedToolSearchQueues.Store(id, q)
 	q.timer = time.AfterFunc(hostedToolSearchQueueTTL, func() { expireHostedToolSearchQueue(id, time.Now()) })
@@ -150,30 +168,44 @@ func newHostedToolSearchQueue(ctx *schemas.BifrostContext, state *anthropicToRes
 
 // expireHostedToolSearchQueue releases the queue if it has been idle for
 // hostedToolSearchQueueTTL at now, and otherwise re-arms its timer for the rest.
+// The decision is made under the queue's lock, against the latest touch.
 func expireHostedToolSearchQueue(id uint64, now time.Time) {
 	v, ok := hostedToolSearchQueues.Load(id)
 	if !ok {
 		return
 	}
 	q := v.(*hostedToolSearchQueue)
-	idle := now.Sub(time.Unix(0, q.touched.Load()))
-	if idle >= hostedToolSearchQueueTTL {
-		releaseHostedToolSearchQueue(id)
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed {
 		return
 	}
-	q.mu.Lock()
-	q.timer.Reset(hostedToolSearchQueueTTL - idle)
-	q.mu.Unlock()
+	idle := now.Sub(time.Unix(0, q.touched))
+	if idle < hostedToolSearchQueueTTL {
+		q.timer.Reset(hostedToolSearchQueueTTL - idle)
+		return
+	}
+	q.closeLocked(id)
 }
 
 func releaseHostedToolSearchQueue(id uint64) {
-	v, ok := hostedToolSearchQueues.LoadAndDelete(id)
+	v, ok := hostedToolSearchQueues.Load(id)
 	if !ok {
 		return
 	}
 	q := v.(*hostedToolSearchQueue)
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	q.closeLocked(id)
+}
+
+// closeLocked releases q, registered under id. q.mu must be held. Idempotent.
+func (q *hostedToolSearchQueue) closeLocked(id uint64) {
+	if q.closed {
+		return
+	}
+	q.closed = true
+	hostedToolSearchQueues.CompareAndDelete(id, q)
 	if q.timer != nil {
 		q.timer.Stop()
 	}

@@ -8811,8 +8811,11 @@ func openAIToolSearchItemStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			// never be paired.
 			releaseHostedToolSearches(state)
 			message := fmt.Sprintf("upstream left more than %d tool searches without results", maxPendingHostedToolSearches)
-			if res == hostedToolSearchIDTooLong {
+			switch res {
+			case hostedToolSearchIDTooLong:
 				message = fmt.Sprintf("upstream tool search id is longer than %d bytes", maxHostedToolSearchIDBytes)
+			case hostedToolSearchCancelled:
+				message = "request cancelled"
 			}
 			return []*AnthropicStreamEvent{{
 				Type:  AnthropicStreamEventTypeError,

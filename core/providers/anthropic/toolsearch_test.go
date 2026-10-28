@@ -1410,6 +1410,86 @@ func TestToolSearch_HostedQueueReleasedOnFailureCancelAndIdle(t *testing.T) {
 	})
 }
 
+// The idle check runs under the queue's lock against the latest touch: a push or pop
+// that lands while the timer callback waits for the lock keeps the queue alive, and a
+// queue released while the callback waits is neither deleted twice nor re-armed.
+func TestToolSearch_HostedQueueIdleCheckSerializesWithUse(t *testing.T) {
+	t.Parallel()
+	open := func(t *testing.T) (*schemas.BifrostContext, *anthropicToResponsesStreamState, uint64, *hostedToolSearchQueue) {
+		t.Helper()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		state := &anthropicToResponsesStreamState{}
+		require.Equal(t, hostedToolSearchQueued, pushHostedToolSearch(ctx, state, hostedToolSearchCall{toolUseID: schemas.Ptr("srvtoolu_a")}))
+		id := state.hostedToolSearches
+		v, ok := hostedToolSearchQueues.Load(id)
+		require.True(t, ok)
+		return ctx, state, id, v.(*hostedToolSearchQueue)
+	}
+
+	t.Run("use while the callback waits keeps the queue", func(t *testing.T) {
+		_, state, id, q := open(t)
+		q.mu.Lock()
+		q.touched = time.Now().Add(-2 * hostedToolSearchQueueTTL).UnixNano() // idle as far as the callback could see
+		done := make(chan struct{})
+		go func() { expireHostedToolSearchQueue(id, time.Now()); close(done) }()
+		time.Sleep(50 * time.Millisecond) // the callback has loaded the queue and waits for the lock
+		q.touched = time.Now().UnixNano() // a push or pop refreshes it before the callback decides
+		q.mu.Unlock()
+		<-done
+		require.True(t, hostedToolSearchQueueLive(id), "a queue touched before the idle decision is not expired")
+		toolUseID, ok := popHostedToolSearch(state, nil)
+		require.True(t, ok, "the waiting call is still paired")
+		assert.Equal(t, "srvtoolu_a", *toolUseID)
+		releaseHostedToolSearches(state)
+	})
+
+	t.Run("release while the callback waits does not re-arm", func(t *testing.T) {
+		_, _, id, q := open(t)
+		q.mu.Lock()
+		done := make(chan struct{})
+		go func() { expireHostedToolSearchQueue(id, time.Now()); close(done) }() // not idle: would re-arm
+		time.Sleep(50 * time.Millisecond)
+		q.closeLocked(id) // a release (end of stream, cancellation) wins the lock first
+		q.mu.Unlock()
+		<-done
+		assert.False(t, hostedToolSearchQueueLive(id))
+		assert.False(t, q.timer.Stop(), "a released queue's timer must not be re-armed")
+	})
+
+	t.Run("push after release opens a fresh queue", func(t *testing.T) {
+		ctx, state, id, _ := open(t)
+		releaseHostedToolSearchQueue(id) // released behind the stream's back; the handle is stale
+		require.Equal(t, hostedToolSearchQueued, pushHostedToolSearch(ctx, state, hostedToolSearchCall{toolUseID: schemas.Ptr("srvtoolu_b")}))
+		require.NotEqual(t, id, state.hostedToolSearches)
+		toolUseID, ok := popHostedToolSearch(state, nil)
+		require.True(t, ok)
+		assert.Equal(t, "srvtoolu_b", *toolUseID, "the new call pairs; nothing of the released queue leaks in")
+		releaseHostedToolSearches(state)
+	})
+
+	t.Run("expiry racing use", func(t *testing.T) {
+		ctx, state, id, _ := open(t)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				expireHostedToolSearchQueue(id, time.Now())
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				pushHostedToolSearch(ctx, state, hostedToolSearchCall{toolUseID: schemas.Ptr("srvtoolu_r")})
+				popHostedToolSearch(state, nil)
+			}
+		}()
+		wg.Wait()
+		assert.True(t, hostedToolSearchQueueLive(state.hostedToolSearches), "a queue in use is never expired")
+		releaseHostedToolSearches(state)
+	})
+}
+
 // An id longer than the bound ends the stream with an error instead of being kept
 // or shortened.
 func TestToolSearch_HostedQueueRefusesOversizedIDs(t *testing.T) {
