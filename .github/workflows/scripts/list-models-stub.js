@@ -23,6 +23,13 @@
 // created it (TXE-5254). Bifrost enforces that; the stub only has to be a files
 // API, so /openai/v1/files keeps uploads in memory in OpenAI's shapes.
 //
+// The extra-fields-placement collection (upstream #8477) sends chat completions
+// streamed and unary, Responses requests streamed and unary, and requests for
+// MISSING_MODEL that must fail so Bifrost falls back. The stub answers chat with
+// SSE chunks when asked to stream, serves /openai/v1/responses in OpenAI's
+// Responses shapes, and returns OpenAI's model_not_found 404 for MISSING_MODEL
+// (TXE-5329).
+//
 // Usage: node list-models-stub.js <port>
 
 const http = require("http");
@@ -57,6 +64,38 @@ if (!Number.isInteger(port) || port <= 0) {
 
 // Fixed token counts, so a priced log row has non-zero prompt and completion tokens.
 const USAGE = { prompt_tokens: 9, completion_tokens: 3, total_tokens: 12 };
+const RESPONSES_USAGE = { input_tokens: 9, output_tokens: 3, total_tokens: 12 };
+
+// The model the extra-fields-placement collection asks for when it needs a provider
+// error (and, with a fallback configured, a fallback).
+const MISSING_MODEL = "bifrost-e2e-missing-model";
+
+function modelNotFound(res, model) {
+  res.statusCode = 404;
+  res.end(JSON.stringify({
+    error: { message: `The model \`${model}\` does not exist or you do not have access to it.`, type: "invalid_request_error", param: null, code: "model_not_found" },
+  }));
+}
+
+// readJSON reads a JSON request body; it answers 400 itself when the body is not JSON.
+function readJSON(req, res, done) {
+  readBody(req, (raw) => {
+    let body;
+    try {
+      body = JSON.parse(raw.toString("utf8"));
+    } catch (e) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ error: { message: "list-models stub: request body is not JSON" } }));
+      return;
+    }
+    done(body);
+  });
+}
+
+function sse(res) {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+}
 
 function notFound(res, req, path) {
   res.statusCode = 404;
@@ -162,30 +201,30 @@ function filesAPI(req, res, path) {
 }
 
 function chatCompletion(req, res, path) {
-  let raw = "";
-  req.setEncoding("utf8");
-  req.on("data", (chunk) => {
-    raw += chunk;
-  });
-  req.on("end", () => {
-    let body;
-    try {
-      body = JSON.parse(raw);
-    } catch (e) {
-      res.statusCode = 400;
-      res.end(JSON.stringify({ error: { message: "list-models stub: request body is not JSON" } }));
+  readJSON(req, res, (body) => {
+    const model = typeof body.model === "string" ? body.model : "stub";
+    if (model === MISSING_MODEL) {
+      modelNotFound(res, model);
       return;
     }
+    const id = `chatcmpl-stub-${Date.now()}`;
+    const created = Math.floor(Date.now() / 1000);
     if (body.stream) {
-      notFound(res, req, `${path} (stream)`);
+      sse(res);
+      const chunk = (choices, extra) => `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices, ...extra })}\n\n`;
+      res.write(chunk([{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }]));
+      res.write(chunk([{ index: 0, delta: { content: "ok" }, finish_reason: null }]));
+      res.write(chunk([{ index: 0, delta: {}, finish_reason: "stop" }]));
+      res.write(chunk([], { usage: USAGE }));
+      res.end("data: [DONE]\n\n");
       return;
     }
     res.end(
       JSON.stringify({
-        id: `chatcmpl-stub-${Date.now()}`,
+        id,
         object: "chat.completion",
-        created: Math.floor(Date.now() / 1000),
-        model: typeof body.model === "string" ? body.model : "stub",
+        created,
+        model,
         choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
         usage: USAGE,
       }),
@@ -193,10 +232,47 @@ function chatCompletion(req, res, path) {
   });
 }
 
+// responses serves OpenAI's Responses API: one assistant message whose text is "ok".
+function responses(req, res) {
+  readJSON(req, res, (body) => {
+    const model = typeof body.model === "string" ? body.model : "stub";
+    if (model === MISSING_MODEL) {
+      modelNotFound(res, model);
+      return;
+    }
+    const id = `resp_stub_${Date.now()}`;
+    const createdAt = Math.floor(Date.now() / 1000);
+    const text = { type: "output_text", text: "ok", annotations: [] };
+    const message = { type: "message", id: `msg_stub_${Date.now()}`, status: "completed", role: "assistant", content: [text] };
+    const response = (status, output, usage) => ({ id, object: "response", created_at: createdAt, status, model, output, ...(usage ? { usage } : {}) });
+    if (!body.stream) {
+      res.end(JSON.stringify(response("completed", [message], RESPONSES_USAGE)));
+      return;
+    }
+    sse(res);
+    let seq = 0;
+    const send = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, sequence_number: seq++, ...data })}\n\n`);
+    send("response.created", { response: response("in_progress", []) });
+    send("response.in_progress", { response: response("in_progress", []) });
+    send("response.output_item.added", { output_index: 0, item: { ...message, status: "in_progress", content: [] } });
+    send("response.content_part.added", { item_id: message.id, output_index: 0, content_index: 0, part: { ...text, text: "" } });
+    send("response.output_text.delta", { item_id: message.id, output_index: 0, content_index: 0, delta: "ok" });
+    send("response.output_text.done", { item_id: message.id, output_index: 0, content_index: 0, text: "ok" });
+    send("response.content_part.done", { item_id: message.id, output_index: 0, content_index: 0, part: text });
+    send("response.output_item.done", { output_index: 0, item: message });
+    send("response.completed", { response: response("completed", [message], RESPONSES_USAGE) });
+    res.end();
+  });
+}
+
 const server = http.createServer((req, res) => {
   const path = (req.url || "").split("?")[0];
   res.setHeader("Content-Type", "application/json");
   if (path.startsWith("/openai/v1/files") && filesAPI(req, res, path)) {
+    return;
+  }
+  if (/^\/openai\/v1\/responses\/?$/.test(path) && req.method === "POST") {
+    responses(req, res);
     return;
   }
   const chat = /^\/([a-z0-9-]+)\/v1\/chat\/completions\/?$/.exec(path);

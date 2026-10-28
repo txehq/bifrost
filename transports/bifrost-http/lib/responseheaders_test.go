@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/valyala/fasthttp"
@@ -646,6 +647,18 @@ func TestExtraFieldsPlacementHeaders(t *testing.T) {
 		assert.Equal(t, `[1]`, string(StripExtraFields([]byte(`[1]`))))
 	})
 
+	// A Responses stream event wraps the response object, which serializes its own
+	// extra_fields; headers mode must not leave that one in the event (upstream #8477's
+	// "No event carries extra_fields").
+	t.Run("strip removes a Responses stream event's nested extra_fields", func(t *testing.T) {
+		body := []byte(`{"type":"response.created","sequence_number":0,"response":{"id":"r","status":"in_progress","extra_fields":{"request_type":"","latency":0}},"extra_fields":{"latency":3}}`)
+		assert.Equal(t, `{"type":"response.created","sequence_number":0,"response":{"id":"r","status":"in_progress"}}`, string(StripExtraFields(body)))
+		delta := []byte(`{"type":"response.output_text.delta","delta":"ok","extra_fields":{"chunk_index":1}}`)
+		assert.Equal(t, `{"type":"response.output_text.delta","delta":"ok"}`, string(StripExtraFields(delta)))
+		output := []byte(`{"response":{"output":[{"extra_fields":"keep"}]}}`)
+		assert.Equal(t, string(output), string(StripExtraFields(output)), "only the response object's own extra_fields goes")
+	})
+
 	t.Run("strip-if is a no-op in body mode", func(t *testing.T) {
 		body := []byte(`{"id":"x","extra_fields":{"latency":1}}`)
 		assert.Equal(t, string(body), string(StripExtraFieldsIfInHeaders(&fasthttp.RequestCtx{}, body)))
@@ -653,6 +666,30 @@ func TestExtraFieldsPlacementHeaders(t *testing.T) {
 		ctx.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
 		assert.Equal(t, `{"id":"x"}`, string(StripExtraFieldsIfInHeaders(ctx, body)))
 	})
+}
+
+// BenchmarkStripExtraFields_HeadersMode measures the headers-mode strip per streamed chunk:
+// "top_level_only" is the strip before the nested response.extra_fields fix, "strip" the
+// current one, on a chat chunk (no nested response) and a Responses event (nested response).
+func BenchmarkStripExtraFields_HeadersMode(b *testing.B) {
+	chunks := map[string][]byte{
+		"chat_chunk":      []byte(`{"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"ok"}}],"extra_fields":{"latency":3,"chunk_index":1}}`),
+		"responses_event": []byte(`{"type":"response.completed","sequence_number":8,"response":{"id":"r","status":"completed","output":[],"extra_fields":{"request_type":"","latency":0}},"extra_fields":{"latency":3}}`),
+	}
+	for name, body := range chunks {
+		b.Run(name+"/top_level_only", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = providerUtils.DeleteJSONField(body, extraFieldsKey)
+			}
+		})
+		b.Run(name+"/strip", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = StripExtraFields(body)
+			}
+		})
+	}
 }
 
 // BenchmarkApplyBifrostResponseHeaders_BodyMode pins the common-case cost: body mode adds one

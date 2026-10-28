@@ -268208,6 +268208,56 @@
           }
         },
         {
+          "name": "openai extra-fields-in-headers /v1/responses stream - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed responses request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('the stream delivered Responses events', function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.include('data: ');",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.include('response.completed');",
+                  "});",
+                  "pm.test('no event carries extra_fields, not even the nested response object', function () {",
+                  "  pm.expect(pm.response.text(), 'stream: ' + pm.response.text()).to.not.include('\"extra_fields\"');",
+                  "});",
+                  "pm.test('stream headers carry the routed identity', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('openai');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.include('gpt-4o-mini');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Say ok.\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+            }
+          }
+        },
+        {
           "name": "openai extra-fields-in-headers /openai/v1/chat/completions integration - gpt-4o-mini",
           "event": [
             {

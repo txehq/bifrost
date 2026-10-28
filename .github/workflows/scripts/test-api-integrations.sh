@@ -164,12 +164,16 @@ if [ -n "$POSTGRES_CONTAINER" ]; then
 fi
 
 echo "📝 Building merged config (tests/config.json + postgres overlay)..."
+# The Skills marketplace endpoints serve only with an explicit public base URL
+# (client.skills_external_client_url); the collection reaches this server at
+# http://localhost:$PORT, so that is the URL it advertises.
 jq --arg host "$POSTGRES_HOST" --arg port "$POSTGRES_PORT" --arg user "$POSTGRES_USER" \
    --arg pass "$POSTGRES_PASSWORD" --arg db "$POSTGRES_DB" --arg ssl "$POSTGRES_SSLMODE" \
+   --arg skills_url "http://localhost:$PORT" \
    '. + {
      "config_store": {"enabled": true, "type": "postgres", "config": {"host": $host, "port": $port, "user": $user, "password": $pass, "db_name": $db, "ssl_mode": $ssl}},
      "logs_store":   {"enabled": true, "type": "postgres", "config": {"host": $host, "port": $port, "user": $user, "password": $pass, "db_name": $db, "ssl_mode": $ssl}}
-   }' "$SOURCE_CONFIG" > "$MERGED_CONFIG"
+   } | .client.skills_external_client_url = $skills_url' "$SOURCE_CONFIG" > "$MERGED_CONFIG"
 
 # Providers whose API key secret is unset get a local list-models stub instead of
 # their real endpoint (TXE-4950). The VK List Models Restriction folder needs one
