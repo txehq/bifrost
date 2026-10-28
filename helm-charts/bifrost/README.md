@@ -4,14 +4,33 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/capsohq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.46 (prereleases 2.1.47-sync.1, 2.1.47-sync.2 and 2.1.47-sync.3 carry the changes below; install them with `--devel`)
+**Latest Version:** 2.1.46 (prereleases 2.1.47-sync.1, 2.1.47-sync.2, 2.1.47-sync.3 and 2.1.47-sync.4 carry the changes below; install them with `--devel`)
 
 ## Changelog
+
+### 2.1.47-sync.4 (prerelease)
+
+The prerelease chart for transport v2.3.1-sync.4, carrying upstream's v2.3.1 chart changes after the development-line chart 2.1.45 that 2.1.47-sync.3 shipped (upstream #8479, #8572, #8602, #8610, #8641, #8650, #8679, #8680, #8552):
+
+- Added a top-level `startupProbe` (default: `/health` every 30s, 60 failures = 30 minutes; set to `null` to disable) that holds off the liveness probe until Bifrost first answers. Upgrade migrations against a large store can wait on other replicas' queries and on a peer's migration lock before HTTP is served.
+- Added `storage.configStore.migrationLockRetryBudget` and `storage.logsStore.migrationLockRetryBudget` (Go duration, default `10m`), rendered as `migration_lock_retry_budget` on a Postgres store: how long a migration step retries after lock timeouts before the pod exits. Keep `startupProbe` at least as long.
+- Added `bifrost.server.bodyBufferPoolLimitBytes` (`server.body_buffer_pool_limit_bytes`). Keep-alive connections free request-body buffers larger than this after each request instead of holding the largest body they ever read (default 4 MiB when unset; `0` means unlimited, the old behaviour).
+- Added `bifrost.governance.virtualKeys[].metadata` (`metadata`): custom key/value metadata copied onto every log entry the key produces. Up to 50 entries; keys may use letters, digits, `.`, `_` and `-`, values up to 512 characters.
+- Added `bifrost.plugins.datadog.config.otel_llmobs_conversion` (`disabled` default, `inherit` or `enabled`) and `llmobs_gateway_mode` (default `false`). A config that still sets `dd_llmobs_enabled` through `custom_tags` is refused, and the Datadog plugin does not load until that tag is replaced by `otel_llmobs_conversion`.
+- Added `use_session_routing` to Vertex keys (`vertex_key_config.use_session_routing`, default `false`).
+- Documented `enabled` on provider keys (`bifrost.providers.<name>.keys[].enabled`). New keys default to `true`; omitting it on an existing key keeps the stored value, and Bifrost now saves the value from config.json on restart.
+- Added `output_mode` to `bifrost.guardrails.rules[]` (`guardrails_config.guardrail_rules[].output_mode`: `enforce` default, or `monitor`, which requires `apply_to` `output` or `both`).
+- Removed `bifrost.agents[].tenant` and `bifrost.agents[].extension_uris` from the values schema; Agent Gateway discovers supported extensions from the upstream agent card. In this fork the `drop_agent_registration_options` migration keeps the existing `tenant` and `extension_uris` columns and their values in the config store instead of dropping them.
+- `appVersion` is now `2.3.1-sync.4`, the transport prerelease this chart ships with; it sets only the `app.kubernetes.io/version` label, and `image.tag` stays required.
 
 ### 2.1.47-sync.3 (prerelease)
 
 The prerelease chart for transport v2.3.1-sync.3, carrying upstream's development-line chart 2.1.45 (not the fork's published 2.1.45):
 
+- Added `bifrost.plugins.datadog.config.llmobs_gateway_mode` (`llmobs_gateway_mode`), default `false`. Follows Datadog's proxy-service pattern for LLM Observability: a `bifrost.request` workflow span per request with the LLM span nested under it, so filtering on that name lists gateway requests rather than raw model calls, plus MCP tool spans so an agentic request shows the tools it ran. Changes the exported LLM Observability span shape, so it is opt-in.
+- Added `bifrost.plugins.datadog.config.otel_llmobs_conversion` (`otel_llmobs_conversion`), one of `disabled` (default), `inherit` or `enabled`. Controls whether Datadog builds its own LLM Observability spans from Bifrost's APM trace. Datadog resolves this across the whole trace, so the default opt-out also suppresses conversion for upstream services sharing the trace; `inherit` leaves the decision to them. With `inherit` or `enabled` and LLM Observability still on, Bifrost leaves `gen_ai.*` off its own APM spans so nothing is counted twice. **Migrate before upgrading:** a config that still sets `dd_llmobs_enabled` through `custom_tags` is now refused, and the Datadog plugin will not load until that tag is replaced by this setting.
+- Added `bifrost.governance.virtualKeys[].metadata` (`metadata`), custom key/value metadata copied onto every log entry the key produces, so logs and spend can be filtered by it. Up to 50 entries; keys may use letters, digits, `.`, `_` and `-`. The field existed in Bifrost but had no Helm path, so it could not be set from a declarative install.
+- Removed `bifrost.agents[].tenant` and `bifrost.agents[].extension_uris` from registration configuration; Agent Gateway discovers supported extensions from the upstream agent card.
 - Added `bifrost.client.a2aPrivateAllowlist` (`client.a2a_private_allowlist`) for private hosts, IPs, or CIDRs used by Agent Gateway card discovery, OAuth, and runtime connections. Link-local and cloud metadata destinations remain blocked. Per-agent `bifrost.agents[].credential_origins` permits additional HTTP(S) origins for all runtime requests and their credentials; the card origin is permitted automatically.
 - Added `bifrost.client.skillsExternalClientUrl` (`client.skills_external_client_url`) for the public skills marketplace URL, including environment and vault references. When unset, marketplace serving is disabled; skill management and downloads remain available.
 - Updated `bifrost.client.a2aExternalClientUrl` (`client.a2a_external_client_url`) to accept secret-reference objects and document that an unset URL disables all Agent Gateway protocol endpoints while management remains available.
@@ -982,6 +1001,8 @@ vectorStore:
 Configure AI provider API keys:
 
 > **Note:** `keys[].weight` is optional in Helm values. If omitted, the chart renders it as `1`.
+>
+> **Note:** `keys[].enabled` is optional. New keys default to `true`, and omitting it on an existing key keeps its stored value (for example a UI toggle). Set it to `false` to keep a key configured but skip it during key selection (the **Enabled** toggle in the UI).
 
 ```yaml
 bifrost:
