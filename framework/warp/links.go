@@ -293,11 +293,14 @@ func failuresLink(filters *logstore.SearchFilters, totalRequests int64, successR
 
 // linkableInLogsView reports whether the Logs page can show what these filters
 // select. It has no error-type, error-code or status-code filter, by decision,
-// so a query narrowed by one cannot be reproduced there: the link would open
-// every failure beside a count of seventeen. Such a result gets no link - each
-// row still carries its own - rather than one that is silently wider.
+// and reads no guardrail outcome from its URL (the outcome filter reaches the
+// logs API but not the page's query state), so a query narrowed by one cannot
+// be reproduced there: the link would open every failure beside a count of
+// seventeen. Such a result gets no link - each row still carries its own -
+// rather than one that is silently wider.
 func linkableInLogsView(filters *logstore.SearchFilters) bool {
-	return len(filters.ErrorTypes) == 0 && len(filters.ErrorCodes) == 0 && len(filters.StatusCodes) == 0
+	return len(filters.ErrorTypes) == 0 && len(filters.ErrorCodes) == 0 && len(filters.StatusCodes) == 0 &&
+		len(filters.GuardrailOutcomes) == 0
 }
 
 // setLogsLink puts logs_link on a result when there is one to give.

@@ -200,6 +200,7 @@ const FilterSchema = `{
     "min_cost": {"type": "number"},
     "max_cost": {"type": "number"},
     "cache_hit_types": {"type": "array", "items": {"type": "string", "enum": ["direct", "semantic"]}, "minItems": 1, "description": "Local-cache hit type: direct (exact match) or semantic (fuzzy match)."},
+    "guardrail_outcomes": {"type": "array", "items": {"type": "string", "enum": ["blocked", "detected"]}, "minItems": 1, "maxItems": 2, "description": "Requests a guardrail acted on: blocked (the guardrail stopped the request) or detected (a detect-only match). Several values are OR-ed together."},
     "routing_rule_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Routing rules that handled the request. Ids come from describe_filter_space or a query_usage_by routing_rule ranking - never guess one."},
     "routing_engine_used": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Routing engines the request passed through, e.g. routing-rule, governance, loadbalancing. A request can pass through several."},
     "selected_key_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Provider API keys Bifrost picked for the request - not virtual keys. Ids come from describe_filter_space (provider_keys)."},
@@ -237,6 +238,9 @@ func (e *unknownFilterFieldsError) Error() string {
 	return fmt.Sprintf("unknown filter fields: %s. Supported fields are: %s", strings.Join(e.fields, ", "), strings.Join(e.supported, ", "))
 }
 
+// guardrailOutcomes is the guardrail_outcomes vocabulary FilterSchema advertises.
+var guardrailOutcomes = []string{logstore.GuardrailOutcomeBlocked, logstore.GuardrailOutcomeDetected}
+
 // parseFilters converts the model's filter object into SearchFilters.
 //
 // Unknown keys are rejected rather than ignored. A silently dropped filter
@@ -261,7 +265,7 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		"complexity_tiers": true, "complexity_mechanisms": true, "tool_call_names": true, "user_agents": true,
 		"metadata_filters": true, "session_id": true, "request_id": true, "parent_request_id": true,
 		"agent_names": true, "agent_correlation_id": true,
-		"missing_cost_only": true,
+		"missing_cost_only": true, "guardrail_outcomes": true,
 	}
 	unknown := []string{}
 	for key := range raw {
@@ -380,6 +384,15 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		return nil, err
 	}
 	filters.StatusCodes = statusCodes
+	if _, present := raw["guardrail_outcomes"]; present {
+		// Validated, not passed through: the store matches nothing for an unknown
+		// outcome, so a misspelt one would answer zero instead of failing.
+		outcomes, err := enumSliceArg(raw, "guardrail_outcomes", "guardrail outcome", guardrailOutcomes, len(guardrailOutcomes))
+		if err != nil {
+			return nil, err
+		}
+		filters.GuardrailOutcomes = outcomes
+	}
 	if value, present := raw["content_search"]; present {
 		// Present-and-null is not the same as absent, for the same reason the time
 		// fields check presence above: the schema types this as a string.
