@@ -20,6 +20,7 @@
 - `reasoning_effort: "xhigh"` reaches vLLM, Ollama, SGL and custom OpenAI-compatible providers (#6244); Gemini and Vertex batch results and SGLang count reasoning tokens (#8600, #8687)
 - Azure deployments route forwards unknown chat fields (#8703); decisions gate custom OpenAI-base providers on allowed requests and recover stringified answers (#8626, #8705); zero-key custom providers no longer claim every model in routing (#8706)
 - Provider key `enabled` from config.json persists without re-syncing UI-edited keys (#8610, #8647); MCP library "Installed" is computed server-side (#8581); dashboard throughput counts only inference requests (#8579)
+- Chat streams converted to Responses or Anthropic drop text that arrives after a tool call closed the text item, instead of sending a delta on a finished item (#8574; upstream's fix `c3946fe8c`, one commit after this cut, is included)
 - Passthrough log keys no longer show "(deleted)" and passthrough streams without a `Content-Type` are no longer labelled `text/plain` (#8601, #8638, #8689, #8715); SQLite busy/locked log batches retry whole (#8707)
 
 ## 🗄️ Migrations
@@ -32,5 +33,6 @@
 - chore: v2.3.1-sync.4 is a prerelease: v2.3.1-sync.3 merged with upstream's v2.3.1 line up to `8f0d3f51f` (the v2.3.1 merge, #8718). It is not tagged `latest`; v2.3.0 stays the stable release
 - chore: the core, framework and plugin module paths and versions are unchanged, and no new core, framework or plugin version is published; upstream's module changelog entries are folded into this file and the module changelogs stay empty
 - preserved: config data. Upstream's `drop_agent_registration_options` drops `config_agent_registrations.tenant` and `.extension_uris` and cannot roll back. In this fork the migration keeps both columns and their values: the code no longer reads or writes them (Agent Gateway discovers extensions from the agent card, and registration tenant was unused), both are nullable, and a rollback to an earlier fork release still finds them. The migration fixtures keep asserting those values on Postgres and SQLite. Removing the columns later needs a new migration ID
+- feat: Warp accepts upstream's new `guardrail_outcomes` logs filter (`blocked`, `detected`; anything else is refused). The Logs page cannot take that filter from a link, so a Warp result narrowed by it carries no logs link
 - preserved: the fork's module paths (`github.com/capsohq/bifrost/transports/v2`), custom providers, native Anthropic and xAI APIs (byte-exact xAI passthrough apart from the provider-prefix model rewrite), the OpenAPI MCP hardening, the hosted tool-search queue lifecycle, parsed passthrough visibility, streaming and unary clients, setup-token lock, release and migration guards, and every TXE fix through v2.3.1-sync.3
 - chore: the Helm chart is the prerelease 2.1.47-sync.4 with `appVersion` 2.3.1-sync.4; 2.1.46 stays the stable chart and `image.tag` stays required
