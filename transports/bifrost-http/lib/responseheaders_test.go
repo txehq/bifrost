@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/valyala/fasthttp"
@@ -665,6 +666,30 @@ func TestExtraFieldsPlacementHeaders(t *testing.T) {
 		ctx.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
 		assert.Equal(t, `{"id":"x"}`, string(StripExtraFieldsIfInHeaders(ctx, body)))
 	})
+}
+
+// BenchmarkStripExtraFields_HeadersMode measures the headers-mode strip per streamed chunk:
+// "top_level_only" is the strip before the nested response.extra_fields fix, "strip" the
+// current one, on a chat chunk (no nested response) and a Responses event (nested response).
+func BenchmarkStripExtraFields_HeadersMode(b *testing.B) {
+	chunks := map[string][]byte{
+		"chat_chunk":      []byte(`{"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"ok"}}],"extra_fields":{"latency":3,"chunk_index":1}}`),
+		"responses_event": []byte(`{"type":"response.completed","sequence_number":8,"response":{"id":"r","status":"completed","output":[],"extra_fields":{"request_type":"","latency":0}},"extra_fields":{"latency":3}}`),
+	}
+	for name, body := range chunks {
+		b.Run(name+"/top_level_only", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = providerUtils.DeleteJSONField(body, extraFieldsKey)
+			}
+		})
+		b.Run(name+"/strip", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = StripExtraFields(body)
+			}
+		})
+	}
 }
 
 // BenchmarkApplyBifrostResponseHeaders_BodyMode pins the common-case cost: body mode adds one
