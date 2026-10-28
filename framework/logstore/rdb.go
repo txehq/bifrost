@@ -395,7 +395,7 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("agent_correlation_id = ?", filters.AgentCorrelationID)
 	}
 	if len(filters.Objects) > 0 {
-		baseQuery = baseQuery.Where("object_type IN ?", filters.Objects)
+		baseQuery = applyObjectsFilter(baseQuery, filters.Objects)
 	}
 	if filters.ParentRequestID != "" {
 		// A row is never its own child: parent_request_id is client-settable, and
@@ -1206,7 +1206,7 @@ func (s *RDBLogStore) searchLogs(ctx context.Context, filters SearchFilters, pag
 			// with the (always-raw) row list rendered alongside it. Long windows
 			// keep the matview win because raw COUNT over multi-day ranges is the
 			// expensive path.
-			if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
+			if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(ctx, filters) {
 				c, err := s.getCountFromMatView(gCtx, filters)
 				if !s.fallBackToRaw(err) {
 					totalCount = c
@@ -1585,7 +1585,7 @@ func normalizeAggregateTimestamp(value any) string {
 // combined Tool/User/Assistant summary and needs the full turn context.
 func (s *RDBLogStore) listSelectColumns() string {
 	baseCols := strings.Join([]string{
-		"id", "parent_request_id", "timestamp", "object_type", "provider", "model", "alias",
+		"id", "parent_request_id", "timestamp", "object_type", "is_passthrough", "provider", "model", "alias",
 		"canonical_model_name", "alias_model_family", "server_side_fallback_model", "served_model",
 		"number_of_retries", "fallback_index",
 		"selected_key_id", "selected_key_name",
@@ -1777,6 +1777,21 @@ func billingScalarSelectColumns() string {
 // from a modality payload column (audio, image, video, OCR output). Such a row
 // read with PaginationOptions.OmitBillingPayloads must be re-read with the full
 // billing projection before it is priced.
+// applyObjectsFilter narrows to the requested request types. A passthrough row is stored under its
+// inferred type and tagged is_passthrough, so the passthrough types also match on the tag:
+// passthrough matches every passthrough call (streamed or not, and rows written as
+// passthrough_stream before the tag existed), while passthrough_stream on its own matches only the
+// streamed ones.
+func applyObjectsFilter(q *gorm.DB, objects []string) *gorm.DB {
+	switch {
+	case slices.Contains(objects, "passthrough"):
+		return q.Where("(object_type IN ? OR object_type = ? OR is_passthrough = ?)", objects, "passthrough_stream", true)
+	case slices.Contains(objects, "passthrough_stream"):
+		return q.Where("(object_type IN ? OR (is_passthrough = ? AND stream = ?))", objects, true, true)
+	}
+	return q.Where("object_type IN ?", objects)
+}
+
 func BillingPayloadRequired(objectType string) bool {
 	return billingPayloadColumnFor(objectType) != ""
 }
@@ -1801,7 +1816,7 @@ func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*Sea
 	// the raw table even if matview-eligible, so /api/logs/stats stays
 	// consistent with the real-time /api/logs row list. See
 	// canUseMatViewForFreshAggregate.
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(ctx, filters) {
 		if stats, err := s.getStatsFromMatView(ctx, filters); !s.fallBackToRaw(err) {
 			return stats, err
 		}
@@ -1897,8 +1912,9 @@ func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*Sea
 				WHERE status = 'success' AND parent_request_id IS NOT NULL`
 			var innerArgs []interface{}
 			if hidden := HiddenRequestTypesFromContext(ctx); len(hidden) > 0 {
-				innerJoin += " AND object_type NOT IN ?"
-				innerArgs = append(innerArgs, hidden)
+				clause, args := hiddenRequestTypesPredicate(hidden)
+				innerJoin += " AND " + clause
+				innerArgs = append(innerArgs, args...)
 			}
 			if filters.StartTime != nil {
 				innerJoin += " AND timestamp >= ?"
@@ -1986,7 +2002,7 @@ func (s *RDBLogStore) GetHistogram(ctx context.Context, filters SearchFilters, b
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 && bucketSizeSeconds%3600 == 0 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(ctx, filters) && bucketSizeSeconds >= 3600 && bucketSizeSeconds%3600 == 0 {
 		if res, err := s.getHistogramFromMatView(ctx, filters, bucketSizeSeconds); !s.fallBackToRaw(err) {
 			return res, err
 		}
@@ -2100,7 +2116,7 @@ func (s *RDBLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilte
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(ctx, filters) && bucketSizeSeconds >= 3600 {
 		if res, err := s.getTokenHistogramFromMatView(ctx, filters, bucketSizeSeconds); !s.fallBackToRaw(err) {
 			return res, err
 		}
@@ -2221,7 +2237,7 @@ func (s *RDBLogStore) GetThroughputHistogram(ctx context.Context, filters Search
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(ctx, filters) && bucketSizeSeconds >= 3600 {
 		if res, err := s.getThroughputHistogramFromMatView(ctx, filters, bucketSizeSeconds); !s.fallBackToRaw(err) {
 			return res, err
 		}
@@ -2310,7 +2326,7 @@ func (s *RDBLogStore) GetProviderThroughputHistogram(ctx context.Context, filter
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(ctx, filters) && bucketSizeSeconds >= 3600 {
 		if res, err := s.getProviderThroughputHistogramFromMatView(ctx, filters, bucketSizeSeconds); !s.fallBackToRaw(err) {
 			return res, err
 		}
@@ -2405,7 +2421,7 @@ func (s *RDBLogStore) GetCostHistogram(ctx context.Context, filters SearchFilter
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(ctx, filters) && bucketSizeSeconds >= 3600 {
 		if res, err := s.getCostHistogramFromMatView(ctx, filters, bucketSizeSeconds); !s.fallBackToRaw(err) {
 			return res, err
 		}
@@ -2513,7 +2529,7 @@ func (s *RDBLogStore) GetModelHistogram(ctx context.Context, filters SearchFilte
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(ctx, filters) && bucketSizeSeconds >= 3600 {
 		if res, err := s.getModelHistogramFromMatView(ctx, filters, bucketSizeSeconds); !s.fallBackToRaw(err) {
 			return res, err
 		}
@@ -2655,7 +2671,7 @@ func (s *RDBLogStore) GetLatencyHistogram(ctx context.Context, filters SearchFil
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(ctx, filters) && bucketSizeSeconds >= 3600 {
 		if res, err := s.getLatencyHistogramFromMatView(ctx, filters, bucketSizeSeconds); !s.fallBackToRaw(err) {
 			return res, err
 		}
@@ -2965,7 +2981,7 @@ func (s *RDBLogStore) buildLatencyHistogramResult(computedBuckets map[int64]Late
 // buckets, which visibly inflates rankings against the raw-path stats and
 // cost-histogram totals shown on the same dashboard.
 func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilters) (*ModelRankingResult, error) {
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(ctx, filters) {
 		if res, err := s.getModelRankingsFromMatView(ctx, filters); !s.fallBackToRaw(err) {
 			return res, err
 		}
@@ -3138,7 +3154,7 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 // buckets, which visibly inflates rankings against the raw-path stats and
 // cost-histogram totals shown on the same dashboard.
 func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters) (*UserRankingResult, error) {
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(ctx, filters) {
 		if res, err := s.getUserRankingsFromMatView(ctx, filters); !s.fallBackToRaw(err) {
 			return res, err
 		}
@@ -3260,7 +3276,7 @@ func (s *RDBLogStore) GetUserRankings(ctx context.Context, filters SearchFilters
 // from the raw table, so the totals stay exactly inside the window; everything else
 // reads the raw logs table with the same status and user filters as GetUserRankings.
 func (s *RDBLogStore) GetUserSpend(ctx context.Context, filters SearchFilters) ([]UserSpendEntry, error) {
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) &&
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(ctx, filters) &&
 		!isDegenerateHybridWindow(filters.StartTime, filters.EndTime) {
 		entries, err := s.getUserSpendHybrid(ctx, filters)
 		if !s.fallBackToRaw(err) {
@@ -3370,7 +3386,7 @@ func (s *RDBLogStore) GetDimensionRankings(ctx context.Context, filters SearchFi
 	// cost-histogram totals shown on the same dashboard. Bucketed dimensions
 	// always use the raw path — the matview reader has neither an Unassigned
 	// bucket nor the array columns the fan-out needs.
-	if !src.Bucketed && !dimensionColumns[dimension].RawOnly && s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(filters) {
+	if !src.Bucketed && !dimensionColumns[dimension].RawOnly && s.db.Dialector.Name() == "postgres" && s.canUseMatViewForFreshAggregate(ctx, filters) {
 		if res, err := s.getDimensionRankingsFromMatView(ctx, filters, dimension); !s.fallBackToRaw(err) {
 			return res, err
 		}
@@ -3623,7 +3639,7 @@ func (s *RDBLogStore) GetProviderCostHistogram(ctx context.Context, filters Sear
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(ctx, filters) && bucketSizeSeconds >= 3600 {
 		if res, err := s.getProviderCostHistogramFromMatView(ctx, filters, bucketSizeSeconds); !s.fallBackToRaw(err) {
 			return res, err
 		}
@@ -3720,7 +3736,7 @@ func (s *RDBLogStore) GetProviderTokenHistogram(ctx context.Context, filters Sea
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(ctx, filters) && bucketSizeSeconds >= 3600 {
 		if res, err := s.getProviderTokenHistogramFromMatView(ctx, filters, bucketSizeSeconds); !s.fallBackToRaw(err) {
 			return res, err
 		}
@@ -3829,7 +3845,7 @@ func (s *RDBLogStore) GetProviderLatencyHistogram(ctx context.Context, filters S
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600
 	}
-	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if s.db.Dialector.Name() == "postgres" && s.canUseMatView(ctx, filters) && bucketSizeSeconds >= 3600 {
 		if res, err := s.getProviderLatencyHistogramFromMatView(ctx, filters, bucketSizeSeconds); !s.fallBackToRaw(err) {
 			return res, err
 		}
@@ -4194,7 +4210,7 @@ func (s *RDBLogStore) GetDimensionCostHistogram(ctx context.Context, filters Sea
 		dimValueExpr = fmt.Sprintf("COALESCE(%s, '')", dimCol)
 		groupCol = dimCol
 	}
-	if !src.Bucketed && dialect == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if !src.Bucketed && dialect == "postgres" && s.canUseMatView(ctx, filters) && bucketSizeSeconds >= 3600 {
 		if res, err := s.getDimensionCostHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension); !s.fallBackToRaw(err) {
 			return res, err
 		}
@@ -4297,7 +4313,7 @@ func (s *RDBLogStore) GetDimensionTokenHistogram(ctx context.Context, filters Se
 		dimValueExpr = fmt.Sprintf("COALESCE(%s, '')", dimCol)
 		groupCol = dimCol
 	}
-	if !src.Bucketed && dialect == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if !src.Bucketed && dialect == "postgres" && s.canUseMatView(ctx, filters) && bucketSizeSeconds >= 3600 {
 		if res, err := s.getDimensionTokenHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension); !s.fallBackToRaw(err) {
 			return res, err
 		}
@@ -4420,7 +4436,7 @@ func (s *RDBLogStore) GetDimensionLatencyHistogram(ctx context.Context, filters 
 		dimValueExpr = fmt.Sprintf("COALESCE(%s, '')", dimCol)
 		groupCol = dimCol
 	}
-	if !src.Bucketed && s.db.Dialector.Name() == "postgres" && s.canUseMatView(filters) && bucketSizeSeconds >= 3600 {
+	if !src.Bucketed && s.db.Dialector.Name() == "postgres" && s.canUseMatView(ctx, filters) && bucketSizeSeconds >= 3600 {
 		if res, err := s.getDimensionLatencyHistogramFromMatView(ctx, filters, bucketSizeSeconds, dimension); !s.fallBackToRaw(err) {
 			return res, err
 		}

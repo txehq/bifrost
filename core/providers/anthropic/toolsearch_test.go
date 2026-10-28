@@ -3,8 +3,11 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	schemas "github.com/capsohq/bifrost/core/schemas"
@@ -315,9 +318,9 @@ func TestToolSearch_ReverseRebuildsAnthropicBlocks(t *testing.T) {
 	if resultBlock.ToolUseID == nil || *resultBlock.ToolUseID != tsServerToolUseID {
 		t.Fatalf("tool_search_tool_result tool_use_id = %v, want %q", resultBlock.ToolUseID, tsServerToolUseID)
 	}
-	if len(resultBlock.ToolReferences) != 1 || resultBlock.ToolReferences[0].ToolName == nil ||
-		*resultBlock.ToolReferences[0].ToolName != tsDiscoveredTool {
-		t.Fatalf("rebuilt tool_references = %+v, want one ref to %q", resultBlock.ToolReferences, tsDiscoveredTool)
+	if refs := resultBlock.DiscoveredToolReferences(); len(refs) != 1 || refs[0].ToolName == nil ||
+		*refs[0].ToolName != tsDiscoveredTool {
+		t.Fatalf("rebuilt tool_references = %+v, want one ref to %q", refs, tsDiscoveredTool)
 	}
 }
 
@@ -820,4 +823,787 @@ func TestNeutralFunctionCallOutputToolReferenceReachesAnthropic(t *testing.T) {
 	require.Len(t, wire.Tools, 2, "body=%s", body)
 	require.NotNil(t, wire.Tools[1].DeferLoading, "body=%s", body)
 	assert.True(t, *wire.Tools[1].DeferLoading)
+}
+
+// OpenAI tool search behind /anthropic/v1/messages. OpenAI (gpt-5.4+) emits its own
+// tool_search_call / tool_search_output items; an Anthropic client must see them as
+// the blocks it understands: a client-executed search becomes a tool_use for the
+// client's own search function, a hosted search becomes server_tool_use plus
+// tool_search_tool_result.
+
+// clientToolSearchRequest is the Claude Code shape: a client search function plus a
+// deferred tool it loads through tool_reference results.
+func clientToolSearchRequest() *AnthropicMessageRequest {
+	return &AnthropicMessageRequest{
+		Model:     "gpt-6-sol",
+		MaxTokens: 1024,
+		Tools: []AnthropicTool{
+			{Name: "ToolSearch", Description: schemas.Ptr("Load deferred tools by name."), InputSchema: &schemas.ToolFunctionParameters{Type: "object"}},
+			{Name: tsDiscoveredTool, DeferLoading: schemas.Ptr(true), InputSchema: &schemas.ToolFunctionParameters{Type: "object"}},
+		},
+		Messages: []AnthropicMessage{
+			{Role: AnthropicMessageRoleUser, Content: AnthropicContent{ContentStr: schemas.Ptr("What is the weather in Tokyo?")}},
+		},
+	}
+}
+
+// decodeResponsesItem decodes an item the way it arrives from the OpenAI wire.
+func decodeResponsesItem(t *testing.T, raw string) schemas.ResponsesMessage {
+	t.Helper()
+	var item schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(raw), &item))
+	return item
+}
+
+const (
+	openAIClientToolSearchCall = `{"id":"tsc_1","type":"tool_search_call","execution":"client","call_id":"call_ts_1","status":"completed","arguments":{"query":"weather"}}`
+	openAIHostedToolSearchCall = `{"id":"tsc_2","type":"tool_search_call","execution":"server","call_id":null,"status":"completed","arguments":{"paths":["weather"]}}`
+	openAIHostedToolSearchOut  = `{"id":"tso_2","type":"tool_search_output","execution":"server","call_id":null,"status":"completed","tools":[{"type":"function","name":"` + tsDiscoveredTool + `","parameters":{"type":"object"},"defer_loading":true}]}`
+)
+
+func TestToolSearch_OpenAIClientCallBecomesToolUse(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.NotNil(t, clientToolSearchRequest().ToBifrostResponsesRequest(ctx))
+
+	resp := ToAnthropicResponsesResponse(ctx, &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{decodeResponsesItem(t, openAIClientToolSearchCall)},
+	})
+	require.NotNil(t, resp)
+	require.Len(t, resp.Content, 1, "content=%+v", resp.Content)
+	block := resp.Content[0]
+	assert.Equal(t, AnthropicContentBlockTypeToolUse, block.Type)
+	require.NotNil(t, block.ID)
+	assert.Equal(t, "call_ts_1", *block.ID)
+	require.NotNil(t, block.Name)
+	assert.Equal(t, "ToolSearch", *block.Name)
+	assert.JSONEq(t, `{"query":"weather"}`, string(block.Input))
+	assert.Equal(t, AnthropicStopReasonToolUse, resp.StopReason)
+}
+
+func TestToolSearch_OpenAIHostedPairBecomesServerBlocks(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	resp := ToAnthropicResponsesResponse(ctx, &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{
+			decodeResponsesItem(t, openAIHostedToolSearchCall),
+			decodeResponsesItem(t, openAIHostedToolSearchOut),
+		},
+	})
+	require.NotNil(t, resp)
+	require.Len(t, resp.Content, 2, "content=%+v", resp.Content)
+	use, result := resp.Content[0], resp.Content[1]
+	assert.Equal(t, AnthropicContentBlockTypeServerToolUse, use.Type)
+	require.NotNil(t, use.ID)
+	require.NotNil(t, use.Name)
+	assert.Equal(t, string(AnthropicToolNameToolSearchBM25), *use.Name)
+	assert.JSONEq(t, `{"paths":["weather"]}`, string(use.Input))
+	assert.Equal(t, AnthropicContentBlockTypeToolSearchToolResult, result.Type)
+	require.NotNil(t, result.ToolUseID)
+	assert.Equal(t, *use.ID, *result.ToolUseID)
+	require.Len(t, result.DiscoveredToolReferences(), 1)
+	assert.Equal(t, tsDiscoveredTool, *result.DiscoveredToolReferences()[0].ToolName)
+}
+
+// streamItemFrames wraps decoded items in output_item.added/done frames followed by
+// response.completed, the way the OpenAI stream delivers tool search items.
+func streamItemFrames(items ...schemas.ResponsesMessage) []*schemas.BifrostResponsesStreamResponse {
+	extra := schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI}
+	var frames []*schemas.BifrostResponsesStreamResponse
+	for i := range items {
+		item := &items[i]
+		frames = append(frames,
+			&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(i), Item: item, ExtraFields: extra},
+			&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: schemas.Ptr(i), Item: item, ExtraFields: extra},
+		)
+	}
+	frames = append(frames, &schemas.BifrostResponsesStreamResponse{
+		Type:        schemas.ResponsesStreamResponseTypeCompleted,
+		Response:    &schemas.BifrostResponsesResponse{Output: items},
+		ExtraFields: extra,
+	})
+	return frames
+}
+
+func TestToolSearch_OpenAIClientCallStreamsAsToolUse(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.NotNil(t, clientToolSearchRequest().ToBifrostResponsesRequest(ctx))
+
+	var events []*AnthropicStreamEvent
+	for _, frame := range streamItemFrames(decodeResponsesItem(t, openAIClientToolSearchCall)) {
+		events = append(events, ToAnthropicResponsesStreamResponse(ctx, frame)...)
+	}
+
+	var start *AnthropicStreamEvent
+	var input strings.Builder
+	stops := 0
+	var stopReason string
+	for _, e := range events {
+		switch e.Type {
+		case AnthropicStreamEventTypeContentBlockStart:
+			require.Nil(t, start, "only one block expected, events=%s", mustJSON(t, events))
+			start = e
+		case AnthropicStreamEventTypeContentBlockDelta:
+			require.NotNil(t, e.Delta)
+			require.NotNil(t, e.Delta.PartialJSON)
+			input.WriteString(*e.Delta.PartialJSON)
+		case AnthropicStreamEventTypeContentBlockStop:
+			stops++
+		case AnthropicStreamEventTypeMessageDelta:
+			if e.Delta != nil && e.Delta.StopReason != nil {
+				stopReason = string(*e.Delta.StopReason)
+			}
+		}
+	}
+	require.NotNil(t, start, "events=%s", mustJSON(t, events))
+	require.NotNil(t, start.ContentBlock)
+	assert.Equal(t, AnthropicContentBlockTypeToolUse, start.ContentBlock.Type)
+	assert.Equal(t, "call_ts_1", *start.ContentBlock.ID)
+	assert.Equal(t, "ToolSearch", *start.ContentBlock.Name)
+	assert.JSONEq(t, `{"query":"weather"}`, input.String())
+	assert.Equal(t, 1, stops)
+	assert.Equal(t, string(AnthropicStopReasonToolUse), stopReason, "the client must run the search, so the turn ends on tool_use")
+}
+
+func TestToolSearch_OpenAIHostedPairStreamsAsServerBlocks(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	var events []*AnthropicStreamEvent
+	for _, frame := range streamItemFrames(
+		decodeResponsesItem(t, openAIHostedToolSearchCall),
+		decodeResponsesItem(t, openAIHostedToolSearchOut),
+	) {
+		events = append(events, ToAnthropicResponsesStreamResponse(ctx, frame)...)
+	}
+
+	var starts []*AnthropicContentBlock
+	stops := 0
+	for _, e := range events {
+		switch e.Type {
+		case AnthropicStreamEventTypeContentBlockStart:
+			require.NotNil(t, e.ContentBlock, "events=%s", mustJSON(t, events))
+			starts = append(starts, e.ContentBlock)
+		case AnthropicStreamEventTypeContentBlockStop:
+			stops++
+		}
+	}
+	require.Len(t, starts, 2, "events=%s", mustJSON(t, events))
+	assert.Equal(t, AnthropicContentBlockTypeServerToolUse, starts[0].Type)
+	assert.JSONEq(t, `{"paths":["weather"]}`, string(starts[0].Input))
+	assert.Equal(t, AnthropicContentBlockTypeToolSearchToolResult, starts[1].Type)
+	require.NotNil(t, starts[1].ToolUseID)
+	assert.Equal(t, *starts[0].ID, *starts[1].ToolUseID)
+	require.Len(t, starts[1].DiscoveredToolReferences(), 1)
+	assert.Equal(t, tsDiscoveredTool, *starts[1].DiscoveredToolReferences()[0].ToolName)
+	assert.Equal(t, 2, stops)
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := sonic.Marshal(v)
+	require.NoError(t, err)
+	return string(b)
+}
+
+// On the request path (history sent to Anthropic) verbatim OpenAI tool search items
+// have no Anthropic block, so they are dropped rather than rebuilt as server blocks
+// for a server tool the request never declared.
+func TestToolSearch_RequestPathDropsVerbatimOpenAIItems(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	history := []schemas.ResponsesMessage{
+		{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("weather?")}},
+		decodeResponsesItem(t, openAIHostedToolSearchCall),
+		decodeResponsesItem(t, openAIHostedToolSearchOut),
+		decodeResponsesItem(t, openAIClientToolSearchCall),
+	}
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, history, true,
+		schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-6"))
+	body := mustJSON(t, msgs)
+	assert.NotContains(t, body, "server_tool_use")
+	assert.NotContains(t, body, "tool_search_tool_result")
+	assert.NotContains(t, body, "tool_use")
+}
+
+// A tool search item that renders no block (here a client tool_search_output, which
+// only the caller sends) must not consume a content-block index: Anthropic SDKs push
+// one block per content_block_start and look deltas up by index, so a skipped index
+// lands later deltas on the wrong block.
+func TestToolSearch_UnrenderedItemReservesNoBlockIndex(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	clientOutput := decodeResponsesItem(t, `{"id":"tso_c","type":"tool_search_output","execution":"client","call_id":"call_ts_1","status":"completed","tools":[]}`)
+	message := decodeResponsesItem(t, `{"id":"msg_1","type":"message","role":"assistant","status":"in_progress","content":[]}`)
+	extra := schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI}
+	frames := []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(0), Item: &clientOutput, ExtraFields: extra},
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: schemas.Ptr(0), Item: &clientOutput, ExtraFields: extra},
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(1), Item: &message, ExtraFields: extra},
+		{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, OutputIndex: schemas.Ptr(1), ContentIndex: schemas.Ptr(0), ItemID: schemas.Ptr("msg_1"), Delta: schemas.Ptr("hi"), ExtraFields: extra},
+	}
+	var starts []*AnthropicStreamEvent
+	for _, frame := range frames {
+		for _, e := range ToAnthropicResponsesStreamResponse(ctx, frame) {
+			if e.Type == AnthropicStreamEventTypeContentBlockStart {
+				starts = append(starts, e)
+			}
+		}
+	}
+	require.Len(t, starts, 1)
+	require.NotNil(t, starts[0].Index)
+	assert.Equal(t, 0, *starts[0].Index, "the text block must take the first index")
+}
+
+// assertNestedToolSearchResult checks a tool_search_tool_result block on the wire:
+// Anthropic nests the references in a tool_search_tool_search_result content object,
+// and sends an empty array when the search found nothing.
+func assertNestedToolSearchResult(t *testing.T, block *AnthropicContentBlock, want []string) {
+	t.Helper()
+	raw := mustJSON(t, block)
+	var wire struct {
+		ToolReferences json.RawMessage `json:"tool_references"`
+		Content        struct {
+			Type           string             `json:"type"`
+			ToolReferences *[]json.RawMessage `json:"tool_references"`
+		} `json:"content"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(raw), &wire), raw)
+	assert.Nil(t, wire.ToolReferences, "tool_references belong inside content, not on the block: %s", raw)
+	assert.Equal(t, "tool_search_tool_search_result", wire.Content.Type, raw)
+	require.NotNil(t, wire.Content.ToolReferences, "content.tool_references must be present, even when empty: %s", raw)
+	var got []string
+	for _, ref := range *wire.Content.ToolReferences {
+		var r struct {
+			Type     string `json:"type"`
+			ToolName string `json:"tool_name"`
+		}
+		require.NoError(t, json.Unmarshal(ref, &r))
+		assert.Equal(t, "tool_reference", r.Type)
+		got = append(got, r.ToolName)
+	}
+	assert.Equal(t, want, got, raw)
+}
+
+func TestToolSearch_HostedResultUsesNestedWireShape(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp := ToAnthropicResponsesResponse(ctx, &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{
+			decodeResponsesItem(t, openAIHostedToolSearchCall),
+			decodeResponsesItem(t, openAIHostedToolSearchOut),
+		},
+	})
+	require.Len(t, resp.Content, 2)
+	assertNestedToolSearchResult(t, &resp.Content[1], []string{tsDiscoveredTool})
+
+	streamCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var result *AnthropicContentBlock
+	for _, frame := range streamItemFrames(
+		decodeResponsesItem(t, openAIHostedToolSearchCall),
+		decodeResponsesItem(t, openAIHostedToolSearchOut),
+	) {
+		for _, e := range ToAnthropicResponsesStreamResponse(streamCtx, frame) {
+			if e.Type == AnthropicStreamEventTypeContentBlockStart && e.ContentBlock != nil &&
+				e.ContentBlock.Type == AnthropicContentBlockTypeToolSearchToolResult {
+				result = e.ContentBlock
+			}
+		}
+	}
+	require.NotNil(t, result)
+	assertNestedToolSearchResult(t, result, []string{tsDiscoveredTool})
+}
+
+func TestToolSearch_EmptyHostedResultSendsEmptyReferences(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	empty := `{"id":"tso_3","type":"tool_search_output","execution":"server","call_id":null,"status":"completed","tools":[]}`
+	resp := ToAnthropicResponsesResponse(ctx, &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{
+			decodeResponsesItem(t, openAIHostedToolSearchCall),
+			decodeResponsesItem(t, empty),
+		},
+	})
+	require.Len(t, resp.Content, 2)
+	assertNestedToolSearchResult(t, &resp.Content[1], nil)
+}
+
+// Two hosted searches can both finish their calls before either output arrives. Each
+// output must pair with its own call, in order, rather than both landing on the last.
+func twoHostedSearches(t *testing.T) []schemas.ResponsesMessage {
+	t.Helper()
+	return []schemas.ResponsesMessage{
+		decodeResponsesItem(t, `{"id":"tsc_a","type":"tool_search_call","execution":"server","call_id":null,"status":"completed","arguments":{"paths":["weather"]}}`),
+		decodeResponsesItem(t, `{"id":"tsc_b","type":"tool_search_call","execution":"server","call_id":null,"status":"completed","arguments":{"paths":["stocks"]}}`),
+		decodeResponsesItem(t, `{"id":"tso_a","type":"tool_search_output","execution":"server","call_id":null,"status":"completed","tools":[{"type":"function","name":"get_weather"}]}`),
+		decodeResponsesItem(t, `{"id":"tso_b","type":"tool_search_output","execution":"server","call_id":null,"status":"completed","tools":[{"type":"function","name":"get_stock"}]}`),
+	}
+}
+
+// resultsByToolUseID maps each tool_search_tool_result's tool_use_id to its references.
+func resultsByToolUseID(blocks []*AnthropicContentBlock) map[string][]string {
+	out := map[string][]string{}
+	for _, b := range blocks {
+		if b.Type != AnthropicContentBlockTypeToolSearchToolResult || b.ToolUseID == nil {
+			continue
+		}
+		var names []string
+		for _, ref := range b.DiscoveredToolReferences() {
+			names = append(names, *ref.ToolName)
+		}
+		out[*b.ToolUseID] = names
+	}
+	return out
+}
+
+func TestToolSearch_InterleavedHostedSearchesPairInOrder(t *testing.T) {
+	t.Parallel()
+	want := map[string][]string{"tsc_a": {"get_weather"}, "tsc_b": {"get_stock"}}
+
+	resp := ToAnthropicResponsesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		&schemas.BifrostResponsesResponse{Output: twoHostedSearches(t)})
+	var blocks []*AnthropicContentBlock
+	for i := range resp.Content {
+		blocks = append(blocks, &resp.Content[i])
+	}
+	assert.Equal(t, want, resultsByToolUseID(blocks), "non-streaming: %s", mustJSON(t, resp.Content))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var started []*AnthropicContentBlock
+	for _, frame := range streamItemFrames(twoHostedSearches(t)...) {
+		for _, e := range ToAnthropicResponsesStreamResponse(ctx, frame) {
+			if e.Type == AnthropicStreamEventTypeContentBlockStart && e.ContentBlock != nil {
+				started = append(started, e.ContentBlock)
+			}
+		}
+	}
+	assert.Equal(t, want, resultsByToolUseID(started), "streaming: %s", mustJSON(t, started))
+}
+
+// anthropicToolSearchReplayCall is a Claude tool_search_call as /v1/responses returns it,
+// echoed back by the client on the next turn.
+const anthropicToolSearchReplayCall = `{"id":"` + tsServerToolUseID + `","arguments":` + tsSearchQuery + `,"call_id":"` + tsServerToolUseID + `","status":"completed","type":"tool_search_call","name":"tool_search_tool_bm25","tool_references":["` + tsDiscoveredTool + `"]}`
+
+// A Claude tool search replayed through /v1/responses arrives JSON-decoded, like the
+// OpenAI items dropped above, but it is Anthropic's own server search: the request must
+// carry the server_tool_use + tool_search_tool_result pair back unchanged.
+func TestToolSearch_RequestPathRebuildsAnthropicReplay(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	history := []schemas.ResponsesMessage{
+		{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("weather?")}},
+		decodeResponsesItem(t, anthropicToolSearchReplayCall),
+		decodeResponsesItem(t, `{"type":"function_call","id":"fc_1","call_id":"`+tsDiscoveredCallID+`","name":"`+tsDiscoveredTool+`","arguments":"{\"location\":\"Tokyo\"}","status":"completed"}`),
+		decodeResponsesItem(t, `{"type":"function_call_output","call_id":"`+tsDiscoveredCallID+`","output":"sunny"}`),
+	}
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, history, true,
+		schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-6"))
+	require.Len(t, msgs, 3, "messages=%s", mustJSON(t, msgs))
+	blocks := msgs[1].Content.ContentBlocks
+	require.Len(t, blocks, 3, "assistant=%s", mustJSON(t, msgs[1]))
+
+	use, result, call := blocks[0], blocks[1], blocks[2]
+	assert.Equal(t, AnthropicContentBlockTypeServerToolUse, use.Type)
+	require.NotNil(t, use.ID)
+	assert.Equal(t, tsServerToolUseID, *use.ID)
+	require.NotNil(t, use.Name)
+	assert.Equal(t, string(AnthropicToolNameToolSearchBM25), *use.Name)
+	assert.JSONEq(t, tsSearchQuery, string(use.Input))
+	assert.Equal(t, AnthropicContentBlockTypeToolSearchToolResult, result.Type)
+	require.NotNil(t, result.ToolUseID)
+	assert.Equal(t, tsServerToolUseID, *result.ToolUseID)
+	assertNestedToolSearchResult(t, &result, []string{tsDiscoveredTool})
+	assert.Equal(t, AnthropicContentBlockTypeToolUse, call.Type)
+	require.NotNil(t, call.ID)
+	assert.Equal(t, tsDiscoveredCallID, *call.ID)
+}
+
+// /anthropic/v1/messages renders a Claude tool search back to the client through the
+// same rebuild; the client replays the block verbatim, so it must carry content.
+func TestToolSearch_AnthropicResponseRendersResultContent(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp := ToAnthropicResponsesResponse(ctx, &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{{
+			ID:     new(tsServerToolUseID),
+			Type:   new(schemas.ResponsesMessageTypeToolSearchCall),
+			Status: new("completed"),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:                  new(tsServerToolUseID),
+				Name:                    new(string(AnthropicToolNameToolSearchBM25)),
+				Arguments:               new(tsSearchQuery),
+				ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: []string{tsDiscoveredTool}},
+			},
+		}},
+	})
+	require.NotNil(t, resp)
+	require.Len(t, resp.Content, 2, "content=%s", mustJSON(t, resp.Content))
+	assert.Equal(t, AnthropicContentBlockTypeServerToolUse, resp.Content[0].Type)
+	assert.Equal(t, AnthropicContentBlockTypeToolSearchToolResult, resp.Content[1].Type)
+	assertNestedToolSearchResult(t, &resp.Content[1], []string{tsDiscoveredTool})
+}
+
+// hostedToolSearchPair returns a hosted tool_search_call and its output with ids
+// derived from n, so several streams' calls are told apart.
+func hostedToolSearchPair(t *testing.T, n string) (call, out schemas.ResponsesMessage) {
+	t.Helper()
+	call = decodeResponsesItem(t, strings.Replace(openAIHostedToolSearchCall, `"id":"tsc_2"`, `"id":"tsc_`+n+`"`, 1))
+	out = decodeResponsesItem(t, strings.Replace(openAIHostedToolSearchOut, `"id":"tso_2"`, `"id":"tso_`+n+`"`, 1))
+	return call, out
+}
+
+// hostedToolSearchFrame wraps one item in its output_item.done frame.
+func hostedToolSearchFrame(item *schemas.ResponsesMessage, index int) *schemas.BifrostResponsesStreamResponse {
+	return &schemas.BifrostResponsesStreamResponse{
+		Type:        schemas.ResponsesStreamResponseTypeOutputItemDone,
+		OutputIndex: schemas.Ptr(index),
+		Item:        item,
+		ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI},
+	}
+}
+
+// pendingHostedToolSearchCount reads the stream's queue from the manager; -1 when
+// the stream holds no queue.
+func pendingHostedToolSearchCount(ctx *schemas.BifrostContext) int {
+	state, ok := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState)
+	if !ok || state.hostedToolSearches == 0 {
+		return -1
+	}
+	v, ok := hostedToolSearchQueues.Load(state.hostedToolSearches)
+	if !ok {
+		return -1
+	}
+	q := v.(*hostedToolSearchQueue)
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.pending)
+}
+
+func hostedToolSearchQueueLive(id uint64) bool {
+	_, ok := hostedToolSearchQueues.Load(id)
+	return ok
+}
+
+// The calls waiting for their outputs live in the manager, not on the context: the
+// stream state holds only a handle, the queue empties as outputs pair, and the end of
+// the stream releases it.
+func TestToolSearch_HostedQueueLivesInManagerAndIsReleasedAtEnd(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	call, out := hostedToolSearchPair(t, "life")
+
+	ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 0))
+	state := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState)
+	id := state.hostedToolSearches
+	require.NotZero(t, id, "the first hosted call opens a queue")
+	assert.Equal(t, 1, pendingHostedToolSearchCount(ctx))
+
+	events := ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&out, 1))
+	require.NotEmpty(t, events)
+	require.NotNil(t, events[0].ContentBlock)
+	assert.Equal(t, "tsc_life", *events[0].ContentBlock.ToolUseID, "the output pairs with the queued call")
+	assert.Equal(t, 0, pendingHostedToolSearchCount(ctx))
+
+	ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCompleted, Response: &schemas.BifrostResponsesResponse{},
+		ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI},
+	})
+	assert.False(t, hostedToolSearchQueueLive(id), "response.completed releases the queue")
+	assert.Zero(t, state.hostedToolSearches)
+}
+
+// A stream that ends in failure, or whose context is cancelled before any terminal
+// event, does not leave its queue behind; nor does one abandoned past the TTL, a
+// cancelled context, repeated terminal events or a release racing a push.
+func TestToolSearch_HostedQueueReleasedOnFailureCancelAndIdle(t *testing.T) {
+	t.Parallel()
+	t.Run("failed", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		call, _ := hostedToolSearchPair(t, "fail")
+		ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 0))
+		id := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState).hostedToolSearches
+		require.True(t, hostedToolSearchQueueLive(id))
+		ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeFailed, Message: schemas.Ptr("upstream failed"),
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI},
+		})
+		assert.False(t, hostedToolSearchQueueLive(id))
+	})
+	t.Run("cancelled", func(t *testing.T) {
+		parent, cancel := context.WithCancel(context.Background())
+		ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+		call, _ := hostedToolSearchPair(t, "cancel")
+		ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 0))
+		id := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState).hostedToolSearches
+		require.True(t, hostedToolSearchQueueLive(id))
+		cancel()
+		require.Eventually(t, func() bool { return !hostedToolSearchQueueLive(id) }, 5*time.Second, 5*time.Millisecond,
+			"cancelling the request releases the queue")
+	})
+	t.Run("idle expiry without later traffic", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		call, _ := hostedToolSearchPair(t, "ttl")
+		ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 0))
+		id := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState).hostedToolSearches
+		v, ok := hostedToolSearchQueues.Load(id)
+		require.True(t, ok)
+		require.NotNil(t, v.(*hostedToolSearchQueue).timer, "every queue carries its own idle timer")
+		// The timer's callback: before the TTL it only re-arms, after it it releases.
+		expireHostedToolSearchQueue(id, time.Now().Add(hostedToolSearchQueueTTL-time.Minute))
+		assert.True(t, hostedToolSearchQueueLive(id), "a queue inside its TTL is kept")
+		expireHostedToolSearchQueue(id, time.Now().Add(hostedToolSearchQueueTTL+time.Minute))
+		assert.False(t, hostedToolSearchQueueLive(id), "an idle queue is released by its own timer, with no further stream traffic")
+	})
+	t.Run("already cancelled context", func(t *testing.T) {
+		parent, cancel := context.WithCancel(context.Background())
+		cancel()
+		ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+		call, out := hostedToolSearchPair(t, "dead")
+		ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 0))
+		state := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState)
+		id := state.hostedToolSearches
+		require.Eventually(t, func() bool { return !hostedToolSearchQueueLive(id) }, 5*time.Second, 5*time.Millisecond,
+			"a queue opened on a cancelled request is released at once")
+		assert.NotPanics(t, func() { ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&out, 1)) })
+		assert.Zero(t, state.hostedToolSearches, "the stale handle is dropped")
+	})
+	t.Run("duplicate terminal events and pop after release", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		call, out := hostedToolSearchPair(t, "dup")
+		ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 0))
+		state := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState)
+		id := state.hostedToolSearches
+		done := &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeCompleted, Response: &schemas.BifrostResponsesResponse{},
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI},
+		}
+		ToAnthropicResponsesStreamResponse(ctx, done)
+		assert.NotPanics(t, func() { ToAnthropicResponsesStreamResponse(ctx, done) })
+		releaseHostedToolSearchQueue(id)
+		assert.False(t, hostedToolSearchQueueLive(id))
+		_, ok := popHostedToolSearch(state, nil)
+		assert.False(t, ok, "nothing pairs after the queue is released")
+		events := ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&out, 1))
+		for _, e := range events {
+			if e.ContentBlock != nil {
+				assert.NotEqual(t, AnthropicContentBlockTypeToolSearchToolResult, e.ContentBlock.Type, "an output after release pairs with nothing")
+			}
+		}
+	})
+	t.Run("concurrent release and push", func(t *testing.T) {
+		for i := 0; i < 50; i++ {
+			parent, cancel := context.WithCancel(context.Background())
+			ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+			state := &anthropicToResponsesStreamState{}
+			call := hostedToolSearchCall{toolUseID: schemas.Ptr("srvtoolu_race")}
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() { defer wg.Done(); pushHostedToolSearch(ctx, state, call) }()
+			go func() { defer wg.Done(); cancel() }()
+			wg.Wait()
+			id := state.hostedToolSearches
+			cancel()
+			require.Eventually(t, func() bool { return !hostedToolSearchQueueLive(id) }, 5*time.Second, time.Millisecond)
+		}
+	})
+}
+
+// The idle check runs under the queue's lock against the latest touch: a push or pop
+// that lands while the timer callback waits for the lock keeps the queue alive, and a
+// queue released while the callback waits is neither deleted twice nor re-armed.
+func TestToolSearch_HostedQueueIdleCheckSerializesWithUse(t *testing.T) {
+	t.Parallel()
+	open := func(t *testing.T) (*schemas.BifrostContext, *anthropicToResponsesStreamState, uint64, *hostedToolSearchQueue) {
+		t.Helper()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		state := &anthropicToResponsesStreamState{}
+		require.Equal(t, hostedToolSearchQueued, pushHostedToolSearch(ctx, state, hostedToolSearchCall{toolUseID: schemas.Ptr("srvtoolu_a")}))
+		id := state.hostedToolSearches
+		v, ok := hostedToolSearchQueues.Load(id)
+		require.True(t, ok)
+		return ctx, state, id, v.(*hostedToolSearchQueue)
+	}
+
+	t.Run("use while the callback waits keeps the queue", func(t *testing.T) {
+		_, state, id, q := open(t)
+		q.mu.Lock()
+		q.touched = time.Now().Add(-2 * hostedToolSearchQueueTTL).UnixNano() // idle as far as the callback could see
+		done := make(chan struct{})
+		go func() { expireHostedToolSearchQueue(id, time.Now()); close(done) }()
+		time.Sleep(50 * time.Millisecond) // the callback has loaded the queue and waits for the lock
+		q.touched = time.Now().UnixNano() // a push or pop refreshes it before the callback decides
+		q.mu.Unlock()
+		<-done
+		require.True(t, hostedToolSearchQueueLive(id), "a queue touched before the idle decision is not expired")
+		toolUseID, ok := popHostedToolSearch(state, nil)
+		require.True(t, ok, "the waiting call is still paired")
+		assert.Equal(t, "srvtoolu_a", *toolUseID)
+		releaseHostedToolSearches(state)
+	})
+
+	t.Run("release while the callback waits does not re-arm", func(t *testing.T) {
+		_, _, id, q := open(t)
+		q.mu.Lock()
+		done := make(chan struct{})
+		go func() { expireHostedToolSearchQueue(id, time.Now()); close(done) }() // not idle: would re-arm
+		time.Sleep(50 * time.Millisecond)
+		q.closeLocked(id) // a release (end of stream, cancellation) wins the lock first
+		q.mu.Unlock()
+		<-done
+		assert.False(t, hostedToolSearchQueueLive(id))
+		assert.False(t, q.timer.Stop(), "a released queue's timer must not be re-armed")
+	})
+
+	t.Run("push after release opens a fresh queue", func(t *testing.T) {
+		ctx, state, id, _ := open(t)
+		releaseHostedToolSearchQueue(id) // released behind the stream's back; the handle is stale
+		require.Equal(t, hostedToolSearchQueued, pushHostedToolSearch(ctx, state, hostedToolSearchCall{toolUseID: schemas.Ptr("srvtoolu_b")}))
+		require.NotEqual(t, id, state.hostedToolSearches)
+		toolUseID, ok := popHostedToolSearch(state, nil)
+		require.True(t, ok)
+		assert.Equal(t, "srvtoolu_b", *toolUseID, "the new call pairs; nothing of the released queue leaks in")
+		releaseHostedToolSearches(state)
+	})
+
+	t.Run("expiry racing use", func(t *testing.T) {
+		ctx, state, id, _ := open(t)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				expireHostedToolSearchQueue(id, time.Now())
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				pushHostedToolSearch(ctx, state, hostedToolSearchCall{toolUseID: schemas.Ptr("srvtoolu_r")})
+				popHostedToolSearch(state, nil)
+			}
+		}()
+		wg.Wait()
+		assert.True(t, hostedToolSearchQueueLive(state.hostedToolSearches), "a queue in use is never expired")
+		releaseHostedToolSearches(state)
+	})
+}
+
+// An id longer than the bound ends the stream with an error instead of being kept
+// or shortened.
+func TestToolSearch_HostedQueueRefusesOversizedIDs(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	call := decodeResponsesItem(t, strings.Replace(openAIHostedToolSearchCall, `"id":"tsc_2"`, `"id":"tsc_`+strings.Repeat("x", maxHostedToolSearchIDBytes)+`"`, 1))
+	events := ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 0))
+	require.Len(t, events, 1)
+	assert.Equal(t, AnthropicStreamEventTypeError, events[0].Type)
+	assert.Contains(t, events[0].Error.Message, "longer than")
+	assert.Zero(t, ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState).hostedToolSearches)
+}
+
+// Concurrent streams each pair their own calls: the queues are keyed per stream, so
+// one stream's output never takes another stream's waiting call.
+func TestToolSearch_HostedQueuesDoNotCrossStreams(t *testing.T) {
+	t.Parallel()
+	const streams, perStream = 16, 8
+	var wg sync.WaitGroup
+	errs := make(chan string, streams*perStream)
+	type pair struct{ call, out schemas.ResponsesMessage }
+	pairs := make([][]pair, streams)
+	for s := range pairs {
+		for i := 0; i < perStream; i++ {
+			call, out := hostedToolSearchPair(t, fmt.Sprintf("s%d_%d", s, i))
+			pairs[s] = append(pairs[s], pair{call, out})
+		}
+	}
+	for s := 0; s < streams; s++ {
+		wg.Add(1)
+		go func(s int) {
+			defer wg.Done()
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			for i := 0; i < perStream; i++ {
+				n := fmt.Sprintf("s%d_%d", s, i)
+				call, out := pairs[s][i].call, pairs[s][i].out
+				ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 2*i))
+				events := ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&out, 2*i+1))
+				if len(events) == 0 || events[0].ContentBlock == nil || events[0].ContentBlock.ToolUseID == nil {
+					errs <- n + ": no paired result"
+					continue
+				}
+				if got := *events[0].ContentBlock.ToolUseID; got != "tsc_"+n {
+					errs <- n + ": paired with " + got
+				}
+			}
+			ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
+				Type: schemas.ResponsesStreamResponseTypeCompleted, Response: &schemas.BifrostResponsesResponse{},
+				ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI},
+			})
+		}(s)
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Error(e)
+	}
+}
+
+// An upstream that leaves more calls waiting than the bound ends the stream with an
+// error event; it never drops a pairing silently.
+func TestToolSearch_HostedQueueOverflowEndsStreamWithError(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for i := 0; i < maxPendingHostedToolSearches; i++ {
+		call, _ := hostedToolSearchPair(t, fmt.Sprintf("o%d", i))
+		events := ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, i))
+		require.NotEmpty(t, events)
+		require.NotEqual(t, AnthropicStreamEventTypeError, events[0].Type, "call %d is within the bound", i)
+	}
+	assert.Equal(t, maxPendingHostedToolSearches, pendingHostedToolSearchCount(ctx))
+	id := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState).hostedToolSearches
+
+	call, _ := hostedToolSearchPair(t, "over")
+	events := ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, maxPendingHostedToolSearches))
+	require.Len(t, events, 1)
+	assert.Equal(t, AnthropicStreamEventTypeError, events[0].Type)
+	require.NotNil(t, events[0].Error)
+	assert.Contains(t, events[0].Error.Message, "tool searches without results")
+	assert.False(t, hostedToolSearchQueueLive(id), "the failed stream releases its queue")
+}
+
+// The queue costs nothing on a stream without hosted searches (a zero handle); a
+// stream that has them pays for the queue once and the two copied ids per call.
+func BenchmarkHostedToolSearchQueue(b *testing.B) {
+	b.Run("no_hosted_search", func(b *testing.B) {
+		state := &anthropicToResponsesStreamState{}
+		b.ReportAllocs()
+		for b.Loop() {
+			_, _ = popHostedToolSearch(state, nil)
+			releaseHostedToolSearches(state)
+		}
+	})
+	b.Run("push_pop", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		state := &anthropicToResponsesStreamState{}
+		call := hostedToolSearchCall{toolUseID: schemas.Ptr("srvtoolu_bench")}
+		b.ReportAllocs()
+		for b.Loop() {
+			pushHostedToolSearch(ctx, state, call)
+			_, _ = popHostedToolSearch(state, nil)
+		}
+		releaseHostedToolSearches(state)
+	})
+	// Once per stream that has a hosted search: the queue, its idle timer and its
+	// cancellation hook, then their release at the end of the stream.
+	b.Run("open_release", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		call := hostedToolSearchCall{toolUseID: schemas.Ptr("srvtoolu_bench")}
+		b.ReportAllocs()
+		for b.Loop() {
+			state := &anthropicToResponsesStreamState{}
+			pushHostedToolSearch(ctx, state, call)
+			releaseHostedToolSearches(state)
+		}
+	})
 }

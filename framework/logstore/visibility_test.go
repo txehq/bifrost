@@ -147,7 +147,7 @@ func TestHiddenRequestTypesPostgres(t *testing.T) {
 	}
 	refreshTestMatViews(t, db)
 	s.matViewsReady.Store(true)
-	require.True(t, s.canUseMatViewForFreshAggregate(SearchFilters{}))
+	require.True(t, s.canUseMatViewForFreshAggregate(context.Background(), SearchFilters{}))
 	require.False(t, s.canUseFilterMatView(ctx))
 	page, err := s.SearchLogs(ctx, SearchFilters{}, PaginationOptions{Limit: 10})
 	require.NoError(t, err)
@@ -159,4 +159,114 @@ func TestHiddenRequestTypesPostgres(t *testing.T) {
 	models, err := s.GetDistinctModels(ctx, 100, "")
 	require.NoError(t, err)
 	require.Equal(t, []string{"responses"}, models)
+}
+
+// passthroughVisibilityRows are one plain typed call, the two kinds of passthrough
+// call now stored under their inferred type and tagged, and a passthrough call
+// written before the tag existed.
+func passthroughVisibilityRows(now time.Time) []*Log {
+	cost := 1.0
+	return []*Log{
+		{ID: "plain", Object: "chat_completion", Status: "success", Model: "m", Timestamp: now, Cost: &cost, TotalTokens: 10},
+		{ID: "tagged", Object: "chat_completion", IsPassthrough: true, Status: "success", Model: "m", Timestamp: now.Add(time.Second), Cost: &cost, TotalTokens: 10},
+		{ID: "tagged-stream", Object: "chat_completion_stream", IsPassthrough: true, Stream: true, Status: "success", Model: "m", Timestamp: now.Add(2 * time.Second), Cost: &cost, TotalTokens: 10},
+		{ID: "untagged", Object: "passthrough", Status: "success", Model: "m", Timestamp: now.Add(3 * time.Second), Cost: &cost, TotalTokens: 10},
+	}
+}
+
+// Hiding passthrough or passthrough_stream keeps hiding those calls now that they are
+// stored under their inferred request type: passthrough hides the non-streamed tagged
+// rows, passthrough_stream the streamed ones, as each did when the rows carried that
+// object type, and rows written before the tag still match on object_type.
+func TestHiddenRequestTypesHideTaggedPassthroughRows(t *testing.T) {
+	s := newTestSQLiteStore(t)
+	base := context.Background()
+	t.Cleanup(func() { require.NoError(t, s.Close(base)) })
+	now := time.Now().UTC().Truncate(time.Minute)
+	for _, row := range passthroughVisibilityRows(now) {
+		require.NoError(t, s.Create(base, row))
+	}
+	for _, tc := range []struct {
+		hidden []string
+		want   []string
+	}{
+		{nil, []string{"plain", "tagged", "tagged-stream", "untagged"}},
+		{[]string{"passthrough"}, []string{"plain", "tagged-stream"}},
+		{[]string{"passthrough_stream"}, []string{"plain", "tagged", "untagged"}},
+		{[]string{"passthrough", "passthrough_stream"}, []string{"plain"}},
+		{[]string{"chat_completion"}, []string{"tagged-stream", "untagged"}},
+	} {
+		ctx := base
+		if tc.hidden != nil {
+			ctx = context.WithValue(base, HiddenRequestTypesContextKey, tc.hidden)
+		}
+		page, err := s.SearchLogs(ctx, SearchFilters{}, PaginationOptions{Limit: 10, SortBy: "timestamp", Order: "asc"})
+		require.NoError(t, err, "hidden=%v", tc.hidden)
+		var ids []string
+		for _, l := range page.Logs {
+			ids = append(ids, l.ID)
+		}
+		require.Equal(t, tc.want, ids, "hidden=%v", tc.hidden)
+		require.Equal(t, int64(len(tc.want)), page.Pagination.TotalCount, "hidden=%v", tc.hidden)
+		stats, err := s.GetStats(ctx, SearchFilters{})
+		require.NoError(t, err)
+		require.Equal(t, int64(len(tc.want)), stats.TotalRequests, "hidden=%v", tc.hidden)
+		require.Equal(t, float64(len(tc.want)), stats.TotalCost, "hidden=%v", tc.hidden)
+		hist, err := s.GetHistogram(ctx, SearchFilters{}, 60)
+		require.NoError(t, err)
+		var count int64
+		for _, b := range hist.Buckets {
+			count += b.Count
+		}
+		require.Equal(t, int64(len(tc.want)), count, "hidden=%v", tc.hidden)
+	}
+
+	// A hidden passthrough fallback success does not count toward the visible success rate.
+	rootID := "root"
+	require.NoError(t, s.Create(base, &Log{ID: rootID, Object: "chat_completion", Status: "error", Timestamp: now.Add(time.Hour)}))
+	require.NoError(t, s.Create(base, &Log{ID: "fallback", Object: "chat_completion", IsPassthrough: true, Status: "success",
+		Timestamp: now.Add(time.Hour), ParentRequestID: &rootID, FallbackIndex: 1}))
+	window := SearchFilters{StartTime: schemasTime(now.Add(30 * time.Minute)), EndTime: schemasTime(now.Add(2 * time.Hour))}
+	hiddenCtx := context.WithValue(base, HiddenRequestTypesContextKey, []string{"passthrough"})
+	stats, err := s.GetStats(hiddenCtx, window)
+	require.NoError(t, err)
+	require.Zero(t, stats.UserFacingSuccessRate, "a hidden passthrough fallback must not rescue the visible root")
+	stats, err = s.GetStats(base, window)
+	require.NoError(t, err)
+	require.NotZero(t, stats.UserFacingSuccessRate, "without hiding, the fallback succeeds the root")
+}
+
+func schemasTime(t time.Time) *time.Time { return &t }
+
+// On Postgres the hourly view has no is_passthrough column, so a read that hides
+// passthrough is served from the raw table, while other hidden types keep the view.
+func TestHiddenPassthroughTypesSkipHourlyViewPostgres(t *testing.T) {
+	s, db := setupPerfTestDB(t)
+	s.logger = testLogger{}
+	base := context.Background()
+	for _, row := range passthroughVisibilityRows(time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Hour)) {
+		require.NoError(t, s.Create(base, row))
+	}
+	refreshTestMatViews(t, db)
+	s.matViewsReady.Store(true)
+
+	hidePassthrough := context.WithValue(base, HiddenRequestTypesContextKey, []string{"passthrough"})
+	hideEmbedding := context.WithValue(base, HiddenRequestTypesContextKey, []string{"embedding"})
+	require.False(t, s.canUseMatView(hidePassthrough, SearchFilters{}), "the view cannot tell tagged passthrough rows apart")
+	require.False(t, s.canUseMatViewForFreshAggregate(hidePassthrough, SearchFilters{}))
+	require.True(t, s.canUseMatViewForFreshAggregate(hideEmbedding, SearchFilters{}), "other hidden types keep the view")
+
+	stats, err := s.GetStats(hidePassthrough, SearchFilters{})
+	require.NoError(t, err)
+	require.Equal(t, int64(2), stats.TotalRequests)
+	hist, err := s.GetHistogram(hidePassthrough, SearchFilters{}, 3600)
+	require.NoError(t, err)
+	var count int64
+	for _, b := range hist.Buckets {
+		count += b.Count
+	}
+	require.Equal(t, int64(2), count)
+	stats, err = s.GetStats(hideEmbedding, SearchFilters{})
+	require.NoError(t, err)
+	require.Equal(t, int64(4), stats.TotalRequests, "the view path still serves every passthrough row when they are not hidden")
 }

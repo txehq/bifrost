@@ -162,6 +162,93 @@ func TestMatViewStaleShapeFallsBackAndSelfHeals(t *testing.T) {
 		"self-heal must rebuild the stale-shaped view with the current columns")
 }
 
+// TestMatViewSelfHealWaitsOutAMigrationPause holds the refresh advisory lock the
+// way a concurrent migration does (PauseMatViewMaintenance, same database) while a
+// stale-shaped mv_logs_hourly triggers the self-heal. While the lock is held every
+// read is still correct through the raw fallback, the heal does not rebuild the
+// view, and the premature re-enable it leaves behind cannot serve the stale view: the
+// next read falls back again. Once the pause is released, a later read past the heal
+// cooldown rebuilds the view with the current columns and the matview path serves
+// the same answer.
+func TestMatViewSelfHealWaitsOutAMigrationPause(t *testing.T) {
+	store, db := setupPerfTestDB(t)
+	ctx := context.Background()
+
+	day := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	insertCountTestLog(t, db, day.Add(10*time.Hour), "success")
+	insertCountTestLog(t, db, day.Add(11*time.Hour), "error")
+	require.NoError(t, db.Exec("DROP MATERIALIZED VIEW mv_logs_hourly CASCADE").Error)
+	require.NoError(t, db.Exec(`
+		CREATE MATERIALIZED VIEW mv_logs_hourly AS
+		SELECT date_trunc('hour', timestamp) AS hour, provider, model, status, COUNT(*) AS count
+		FROM logs WHERE status IN ('success', 'error', 'cancelled')
+		GROUP BY 1, 2, 3, 4
+	`).Error)
+	require.NoError(t, db.Exec("REFRESH MATERIALIZED VIEW mv_logs_hourly").Error)
+
+	viewHasCurrentShape := func() bool {
+		var has bool
+		require.NoError(t, db.Raw(`
+			SELECT EXISTS (
+				SELECT 1 FROM pg_attribute a
+				JOIN pg_class c ON c.oid = a.attrelid
+				WHERE c.relname = 'mv_logs_hourly' AND c.relkind = 'm'
+				  AND a.attname = 'cancelled_count' AND a.attnum > 0 AND NOT a.attisdropped
+			)`).Scan(&has).Error)
+		return has
+	}
+	histogramTotal := func() int64 {
+		t.Helper()
+		hist, err := store.GetHistogram(ctx, SearchFilters{}, 3600)
+		require.NoError(t, err, "a read must never surface the stale view's error")
+		var total int64
+		for _, b := range hist.Buckets {
+			total += b.Count
+		}
+		return total
+	}
+	waitHealDone := func() {
+		t.Helper()
+		require.Eventually(t, func() bool { return !store.matViewHealInFlight.Load() }, 30*time.Second, 20*time.Millisecond)
+	}
+
+	// A migration elsewhere in the database holds the refresh lock.
+	release, err := PauseMatViewMaintenance(ctx, db, nil, MatViewPauseOptions{})
+	require.NoError(t, err)
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			release()
+		}
+	})
+
+	store.resetMatViewHeal()
+	store.matViewsReady.Store(true)
+	assert.Equal(t, int64(2), histogramTotal(), "the shape error is served from the raw tables")
+	waitHealDone()
+	assert.False(t, viewHasCurrentShape(), "the heal must not rebuild while a migration holds the lock")
+
+	// Whatever the heal left in matViewsReady, the stale view never answers a read.
+	for i := 0; i < 3; i++ {
+		assert.Equal(t, int64(2), histogramTotal(), "reads stay correct while the lock is held (read %d)", i)
+	}
+	waitHealDone()
+	assert.False(t, viewHasCurrentShape())
+
+	// The migration ends. A read after the heal cooldown retries the heal, which
+	// now takes the lock and rebuilds the view.
+	release()
+	released = true
+	store.matViewHealLastAttempt.Store(time.Now().Add(-2 * matViewHealCooldown).UnixNano())
+	store.matViewsReady.Store(true) // as the periodic refresher re-arms it on its next tick
+	assert.Equal(t, int64(2), histogramTotal(), "the read that re-triggers the heal is still correct")
+	require.Eventually(t, func() bool { return store.matViewsReady.Load() && viewHasCurrentShape() },
+		60*time.Second, 100*time.Millisecond, "after the pause, a later read must rebuild the view")
+	waitHealDone()
+	assert.Equal(t, int64(2), histogramTotal(), "the rebuilt matview agrees with the raw tables")
+	assert.True(t, store.matViewsReady.Load(), "the rebuilt view keeps the matview path enabled")
+}
+
 // TestFilterMatViewShapeErrorFallsBack covers the mv_filter_* views: dropping
 // one must not break its GetDistinct* endpoint.
 func TestFilterMatViewShapeErrorFallsBack(t *testing.T) {

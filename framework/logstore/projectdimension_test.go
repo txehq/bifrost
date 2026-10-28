@@ -348,7 +348,7 @@ func TestHourlyMatView_FiltersByProject(t *testing.T) {
 	start := now.Add(-48 * time.Hour)
 	end := now.Add(time.Hour)
 	filters := SearchFilters{StartTime: &start, EndTime: &end, ProjectIDs: []string{"proj-a"}}
-	require.True(t, store.canUseMatView(filters), "a project filter must not force the raw path")
+	require.True(t, store.canUseMatView(context.Background(), filters), "a project filter must not force the raw path")
 
 	stats, err := store.getStatsFromMatView(ctx, filters)
 	require.NoError(t, err)

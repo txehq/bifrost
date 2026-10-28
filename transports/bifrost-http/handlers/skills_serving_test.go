@@ -15,9 +15,13 @@ import (
 
 	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/network/proxytest"
+	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/framework/configstore/tables"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/fasthttp/router"
 	"github.com/go-git/go-git/v5/storage/memory"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttputil"
 )
@@ -46,7 +50,7 @@ func TestSkillsServingGenericFileDownloadDecodesEncodedPathParams(t *testing.T) 
 		t.Fatalf("create skill: %v", err)
 	}
 
-	handler := NewSkillsServingHandler(store, nil)
+	handler := NewSkillsServingHandler(store, nil, &lib.Config{ClientConfig: &configstore.ClientConfig{SkillsExternalClientURL: schemas.NewSecretVar("http://bifrost")}})
 	r := router.New()
 	handler.RegisterRoutes(r)
 
@@ -99,7 +103,7 @@ func TestClaudeMarketplaceGitRepoContainsMarketplaceAndCloneablePlugin(t *testin
 		t.Fatalf("create skill: %v", err)
 	}
 
-	handler := NewSkillsServingHandler(store, nil)
+	handler := NewSkillsServingHandler(store, nil, &lib.Config{ClientConfig: &configstore.ClientConfig{SkillsExternalClientURL: schemas.NewSecretVar("http://bifrost")}})
 	r := router.New()
 	handler.RegisterRoutes(r)
 
@@ -108,11 +112,14 @@ func TestClaudeMarketplaceGitRepoContainsMarketplaceAndCloneablePlugin(t *testin
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
+	// Point the marketplace at the listener before serving: requests read the URL under
+	// the config lock, so changing it after Serve starts is a data race.
+	baseURL := "http://" + ln.Addr().String()
+	handler.config.ClientConfig.SkillsExternalClientURL = schemas.NewSecretVar(baseURL)
 	go server.Serve(ln) //nolint:errcheck
 	defer server.Shutdown()
 	defer ln.Close()
 
-	baseURL := "http://" + ln.Addr().String()
 	marketplaceURL := baseURL + "/api/skills/serve/claude-code.git"
 	cloneDir := filepath.Join(t.TempDir(), "marketplace")
 	cloneGitRepo(t, marketplaceURL, cloneDir)
@@ -242,7 +249,7 @@ func TestSkillsServingAllSkillsGitRepoReusedUntilCorpusChanges(t *testing.T) {
 	}
 
 	exports := countingBareRepoExport(t)
-	handler := NewSkillsServingHandler(store, nil)
+	handler := NewSkillsServingHandler(store, nil, &lib.Config{ClientConfig: &configstore.ClientConfig{SkillsExternalClientURL: schemas.NewSecretVar("http://bifrost")}})
 	t.Cleanup(handler.Close)
 	r := router.New()
 	handler.RegisterRoutes(r)
@@ -298,7 +305,7 @@ func TestSkillsServingPluginGitRepoUnknownSkillIsNotFound(t *testing.T) {
 	}
 	store := newTestConfigStore(t)
 	exports := countingBareRepoExport(t)
-	handler := NewSkillsServingHandler(store, nil)
+	handler := NewSkillsServingHandler(store, nil, &lib.Config{ClientConfig: &configstore.ClientConfig{SkillsExternalClientURL: schemas.NewSecretVar("http://bifrost")}})
 	t.Cleanup(handler.Close)
 	r := router.New()
 	handler.RegisterRoutes(r)
@@ -316,7 +323,7 @@ func TestSkillsServingPluginGitRepoUnknownSkillIsNotFound(t *testing.T) {
 func TestSkillsServingCorpusGateRejectsWhenSaturated(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newTestConfigStore(t)
-	handler := NewSkillsServingHandler(store, nil)
+	handler := NewSkillsServingHandler(store, nil, &lib.Config{ClientConfig: &configstore.ClientConfig{SkillsExternalClientURL: schemas.NewSecretVar("http://bifrost")}})
 	t.Cleanup(handler.Close)
 	r := router.New()
 	handler.RegisterRoutes(r)
@@ -617,5 +624,68 @@ func TestSkillsGitRepoCacheIsBoundedAcrossKeys(t *testing.T) {
 	}
 	if _, err := os.Stat(dirs[len(dirs)-2]); !os.IsNotExist(err) {
 		t.Fatalf("an expired export must be removed from disk, stat err=%v", err)
+	}
+}
+
+// TestSkillsMarketplaceRequiresExternalURL pins marketplace gating, header independence, and live configuration changes.
+func TestSkillsMarketplaceRequiresExternalURL(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newTestConfigStore(t)
+	require.NoError(t, store.CreateSkill(context.Background(), &tables.TableSkill{Name: "url-skill", Description: "fixture", SkillMDBody: "body"}, "1.0.0", nil))
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{}}
+	h := NewSkillsServingHandler(store, nil, config)
+	h.gitAvailable = true
+	t.Cleanup(h.Close)
+	r := router.New()
+	h.RegisterRoutes(r)
+	paths := []struct{ method, path string }{
+		{"GET", "/api/skills/serve/claude-code/.claude-plugin/marketplace.json"},
+		{"GET", "/api/skills/serve/codex/.agents/plugins/marketplace.json"},
+		{"GET", "/api/skills/serve/claude-code.git/info/refs"},
+		{"POST", "/api/skills/serve/claude-code.git/git-upload-pack"},
+		{"GET", "/api/skills/serve/codex/info/refs"},
+		{"POST", "/api/skills/serve/codex/git-upload-pack"},
+		{"GET", "/api/skills/serve/codex/plugins/bifrost-url-skill/info/refs"},
+		{"POST", "/api/skills/serve/claude-code/plugins/bifrost-url-skill/git-upload-pack"},
+	}
+	for _, route := range paths {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(route.method)
+		ctx.Request.SetRequestURI("http://spoofed.example" + route.path)
+		r.Handler(ctx)
+		require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), route.path)
+	}
+	client := skillsServingTestServer(t, r)
+	code, _, _ := getSkillsServing(t, client, "/api/skills/serve/url-skill/download.zip")
+	require.Equal(t, fasthttp.StatusOK, code)
+	for _, baseURL := range []string{"https://public.example/prefix/", "https://changed.example"} {
+		config.ClientConfig.SkillsExternalClientURL = schemas.NewSecretVar(baseURL)
+		for _, route := range paths[:2] {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI("http://spoofed.example" + route.path)
+			ctx.Request.Header.Set("X-Forwarded-Host", "attacker.example")
+			ctx.Request.Header.Set("X-Forwarded-Proto", "http")
+			r.Handler(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+			require.Contains(t, string(ctx.Response.Body()), strings.TrimRight(baseURL, "/")+"/api/skills/serve/")
+			require.NotContains(t, string(ctx.Response.Body()), "spoofed.example")
+			require.NotContains(t, string(ctx.Response.Body()), "attacker.example")
+		}
+	}
+	config.ClientConfig.SkillsExternalClientURL = nil
+	disabled := &fasthttp.RequestCtx{}
+	disabled.Request.SetRequestURI("http://spoofed.example" + paths[0].path)
+	r.Handler(disabled)
+	require.Equal(t, fasthttp.StatusServiceUnavailable, disabled.Response.StatusCode())
+}
+
+// BenchmarkSkillsMarketplaceURLGate measures the enabled marketplace middleware without catalog or Git work.
+func BenchmarkSkillsMarketplaceURLGate(b *testing.B) {
+	h := &SkillsServingHandler{config: &lib.Config{ClientConfig: &configstore.ClientConfig{SkillsExternalClientURL: schemas.NewSecretVar("https://skills.example")}}}
+	handler := h.requireMarketplaceURL(func(*fasthttp.RequestCtx) {})
+	ctx := &fasthttp.RequestCtx{}
+	b.ReportAllocs()
+	for b.Loop() {
+		handler(ctx)
 	}
 }

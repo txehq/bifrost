@@ -93,7 +93,7 @@ write_tree() {
   local d="$1"
   mkdir -p "$d/core" "$d/framework" "$d/plugins/governance" "$d/plugins/litellmcompat" \
     "$d/transports" "$d/cli" "$d/docs/changelogs" "$d/examples/plugins/hello-world"
-  printf 'module %s/core\n\ngo 1.27.0\n' "$MODULE" > "$d/core/go.mod"
+  printf 'module %s/core\n\ngo 1.27.2\n' "$MODULE" > "$d/core/go.mod"
   printf 'build:\n' > "$d/examples/plugins/hello-world/Makefile"
   echo "1.8.6" > "$d/core/version"
   echo "1.6.2" > "$d/framework/version"
@@ -108,7 +108,7 @@ write_tree() {
   cat > "$d/transports/go.mod" <<GOMOD
 module $MODULE/transports
 
-go 1.27.0
+go 1.27.2
 
 require (
 	$MODULE/core v1.8.6
