@@ -4222,3 +4222,36 @@ func TestExtractDecisionImages_ForwardsURLsForTheProviderToJudge(t *testing.T) {
 		}
 	}
 }
+
+// BenchmarkSetExtraHeaders measures the per-request copy of a provider's configured
+// extra headers onto the outbound request, now that the values are SecretVars. The
+// headers come from decoding a network config, so the same benchmark builds against
+// the string-valued map the previous release used and records a true before/after.
+// "none" is the common case (no extra headers configured) and must not allocate.
+func BenchmarkSetExtraHeaders(b *testing.B) {
+	b.Setenv("BF_BENCH_EXTRA_HEADER", "from-env")
+	cases := []struct {
+		name string
+		json string
+	}{
+		{"none", `{}`},
+		{"three_literals", `{"extra_headers":{"X-Team":"platform","X-Project":"gateway","X-Trace-Tier":"gold"}}`},
+		{"env_reference", `{"extra_headers":{"X-Team":"platform","X-Env":"env.BF_BENCH_EXTRA_HEADER"}}`},
+	}
+	for _, c := range cases {
+		var nc schemas.NetworkConfig
+		if err := sonic.Unmarshal([]byte(c.json), &nc); err != nil {
+			b.Fatal(err)
+		}
+		b.Run(c.name, func(b *testing.B) {
+			ctx := context.Background()
+			req := fasthttp.AcquireRequest()
+			defer fasthttp.ReleaseRequest(req)
+			b.ReportAllocs()
+			for b.Loop() {
+				req.Header.Reset()
+				SetExtraHeaders(ctx, req, nc.ExtraHeaders, nil)
+			}
+		})
+	}
+}
