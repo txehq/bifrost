@@ -41,11 +41,18 @@ else
 fi
 
 mkdir -p "${APP_DIR}"
+# The fixture agent and its push receiver listen on 127.0.0.1. The Agent Gateway refuses
+# private destinations unless client.a2a_private_allowlist names them, so the config
+# allows exactly that loopback address and nothing else.
 cat > "${APP_DIR}/config.json" <<JSON
 {
   "\$schema": "https://www.getbifrost.ai/schema",
   "server": { "a2a_allow_private_push_callbacks": true },
-  "client": { "a2a_external_client_url": "http://127.0.0.1:${PORT}", "enforce_auth_on_inference": false },
+  "client": {
+    "a2a_external_client_url": "http://127.0.0.1:${PORT}",
+    "a2a_private_allowlist": ["127.0.0.1"],
+    "enforce_auth_on_inference": false
+  },
   "governance": {
     "auth_config": {
       "admin_username": "e2e-admin",
