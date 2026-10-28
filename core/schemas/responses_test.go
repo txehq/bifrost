@@ -2562,3 +2562,33 @@ func TestResponsesStreamEventOmitsEmptyNestedExtraFields(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "responses", gjson.GetBytes(unary, "extra_fields.request_type").String(), "a filled extra_fields must stay: %s", unary)
 }
+
+// BenchmarkMarshalResponsesStreamLifecycleEvent measures the transport's sonic.Marshal of a
+// Responses lifecycle event (created, in_progress, completed) that wraps a response, the
+// chunk shape whose nested extra_fields omitzero now drops.
+func BenchmarkMarshalResponsesStreamLifecycleEvent(b *testing.B) {
+	chunk := &BifrostStreamChunk{BifrostResponsesStreamResponse: &BifrostResponsesStreamResponse{
+		Type:        ResponsesStreamResponseTypeCreated,
+		Response:    &BifrostResponsesResponse{ID: Ptr("resp_1"), Model: "gpt-4o"},
+		ExtraFields: BifrostResponseExtraFields{RequestType: ResponsesStreamRequest, Provider: OpenAI},
+	}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := Marshal(chunk); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkMarshalResponsesResponseUnary measures a unary Responses body, whose filled
+// extra_fields omitzero keeps.
+func BenchmarkMarshalResponsesResponseUnary(b *testing.B) {
+	resp := &BifrostResponsesResponse{ID: Ptr("resp_1"), Model: "gpt-4o",
+		ExtraFields: BifrostResponseExtraFields{RequestType: ResponsesRequest, Provider: OpenAI}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := Marshal(resp); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

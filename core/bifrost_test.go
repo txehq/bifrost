@@ -831,6 +831,16 @@ func BenchmarkAgentContinuationChecksOnPlainRequest(b *testing.B) {
 	}
 }
 
+// BenchmarkDrainAndAttachPluginLogsNoLogs measures the drain RunRealtimeTurnPreHooks now
+// runs on every realtime or Live turn (upstream #8738), on a turn where no plugin logged.
+func BenchmarkDrainAndAttachPluginLogsNoLogs(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	b.ReportAllocs()
+	for b.Loop() {
+		drainAndAttachPluginLogs(ctx)
+	}
+}
+
 // Benchmark IsRateLimitErrorMessage performance
 func BenchmarkIsRateLimitError(b *testing.B) {
 	messages := []string{
