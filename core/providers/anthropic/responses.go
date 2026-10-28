@@ -8805,13 +8805,18 @@ func openAIToolSearchItemStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			return nil
 		}
 		toolUseID := providerUtils.SanitizeAnthropicToolUseIDPtr(id)
-		if !pushHostedToolSearch(ctx, state, hostedToolSearchCall{toolUseID: toolUseID, callID: callID}) {
-			// More calls waiting than any real turn makes: end the stream loudly rather
-			// than emit a server_tool_use whose result could never be paired.
+		if res := pushHostedToolSearch(ctx, state, hostedToolSearchCall{toolUseID: toolUseID, callID: callID}); res != hostedToolSearchQueued {
+			// More calls waiting than any real turn makes, or an id too long to keep: end
+			// the stream loudly rather than emit a server_tool_use whose result could
+			// never be paired.
 			releaseHostedToolSearches(state)
+			message := fmt.Sprintf("upstream left more than %d tool searches without results", maxPendingHostedToolSearches)
+			if res == hostedToolSearchIDTooLong {
+				message = fmt.Sprintf("upstream tool search id is longer than %d bytes", maxHostedToolSearchIDBytes)
+			}
 			return []*AnthropicStreamEvent{{
 				Type:  AnthropicStreamEventTypeError,
-				Error: &AnthropicStreamError{Type: "api_error", Message: fmt.Sprintf("upstream left more than %d tool searches without results", maxPendingHostedToolSearches)},
+				Error: &AnthropicStreamError{Type: "api_error", Message: message},
 			}}
 		}
 		block = AnthropicContentBlock{

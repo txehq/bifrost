@@ -1315,8 +1315,9 @@ func TestToolSearch_HostedQueueLivesInManagerAndIsReleasedAtEnd(t *testing.T) {
 }
 
 // A stream that ends in failure, or whose context is cancelled before any terminal
-// event, does not leave its queue behind; nor does one abandoned past the TTL.
-func TestToolSearch_HostedQueueReleasedOnFailureCancelAndTTL(t *testing.T) {
+// event, does not leave its queue behind; nor does one abandoned past the TTL, a
+// cancelled context, repeated terminal events or a release racing a push.
+func TestToolSearch_HostedQueueReleasedOnFailureCancelAndIdle(t *testing.T) {
 	t.Parallel()
 	t.Run("failed", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -1341,16 +1342,85 @@ func TestToolSearch_HostedQueueReleasedOnFailureCancelAndTTL(t *testing.T) {
 		require.Eventually(t, func() bool { return !hostedToolSearchQueueLive(id) }, 5*time.Second, 5*time.Millisecond,
 			"cancelling the request releases the queue")
 	})
-	t.Run("ttl", func(t *testing.T) {
+	t.Run("idle expiry without later traffic", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		call, _ := hostedToolSearchPair(t, "ttl")
 		ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 0))
 		id := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState).hostedToolSearches
-		sweepHostedToolSearchQueues(time.Now().Add(hostedToolSearchQueueTTL - time.Minute))
+		v, ok := hostedToolSearchQueues.Load(id)
+		require.True(t, ok)
+		require.NotNil(t, v.(*hostedToolSearchQueue).timer, "every queue carries its own idle timer")
+		// The timer's callback: before the TTL it only re-arms, after it it releases.
+		expireHostedToolSearchQueue(id, time.Now().Add(hostedToolSearchQueueTTL-time.Minute))
 		assert.True(t, hostedToolSearchQueueLive(id), "a queue inside its TTL is kept")
-		sweepHostedToolSearchQueues(time.Now().Add(hostedToolSearchQueueTTL + time.Minute))
-		assert.False(t, hostedToolSearchQueueLive(id), "a queue past its TTL is swept")
+		expireHostedToolSearchQueue(id, time.Now().Add(hostedToolSearchQueueTTL+time.Minute))
+		assert.False(t, hostedToolSearchQueueLive(id), "an idle queue is released by its own timer, with no further stream traffic")
 	})
+	t.Run("already cancelled context", func(t *testing.T) {
+		parent, cancel := context.WithCancel(context.Background())
+		cancel()
+		ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+		call, out := hostedToolSearchPair(t, "dead")
+		ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 0))
+		state := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState)
+		id := state.hostedToolSearches
+		require.Eventually(t, func() bool { return !hostedToolSearchQueueLive(id) }, 5*time.Second, 5*time.Millisecond,
+			"a queue opened on a cancelled request is released at once")
+		assert.NotPanics(t, func() { ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&out, 1)) })
+		assert.Zero(t, state.hostedToolSearches, "the stale handle is dropped")
+	})
+	t.Run("duplicate terminal events and pop after release", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		call, out := hostedToolSearchPair(t, "dup")
+		ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 0))
+		state := ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState)
+		id := state.hostedToolSearches
+		done := &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeCompleted, Response: &schemas.BifrostResponsesResponse{},
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI},
+		}
+		ToAnthropicResponsesStreamResponse(ctx, done)
+		assert.NotPanics(t, func() { ToAnthropicResponsesStreamResponse(ctx, done) })
+		releaseHostedToolSearchQueue(id)
+		assert.False(t, hostedToolSearchQueueLive(id))
+		_, ok := popHostedToolSearch(state, nil)
+		assert.False(t, ok, "nothing pairs after the queue is released")
+		events := ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&out, 1))
+		for _, e := range events {
+			if e.ContentBlock != nil {
+				assert.NotEqual(t, AnthropicContentBlockTypeToolSearchToolResult, e.ContentBlock.Type, "an output after release pairs with nothing")
+			}
+		}
+	})
+	t.Run("concurrent release and push", func(t *testing.T) {
+		for i := 0; i < 50; i++ {
+			parent, cancel := context.WithCancel(context.Background())
+			ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+			state := &anthropicToResponsesStreamState{}
+			call := hostedToolSearchCall{toolUseID: schemas.Ptr("srvtoolu_race")}
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() { defer wg.Done(); pushHostedToolSearch(ctx, state, call) }()
+			go func() { defer wg.Done(); cancel() }()
+			wg.Wait()
+			id := state.hostedToolSearches
+			cancel()
+			require.Eventually(t, func() bool { return !hostedToolSearchQueueLive(id) }, 5*time.Second, time.Millisecond)
+		}
+	})
+}
+
+// An id longer than the bound ends the stream with an error instead of being kept
+// or shortened.
+func TestToolSearch_HostedQueueRefusesOversizedIDs(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	call := decodeResponsesItem(t, strings.Replace(openAIHostedToolSearchCall, `"id":"tsc_2"`, `"id":"tsc_`+strings.Repeat("x", maxHostedToolSearchIDBytes)+`"`, 1))
+	events := ToAnthropicResponsesStreamResponse(ctx, hostedToolSearchFrame(&call, 0))
+	require.Len(t, events, 1)
+	assert.Equal(t, AnthropicStreamEventTypeError, events[0].Type)
+	assert.Contains(t, events[0].Error.Message, "longer than")
+	assert.Zero(t, ctx.Value(anthropicToResponsesStreamStateKey).(*anthropicToResponsesStreamState).hostedToolSearches)
 }
 
 // Concurrent streams each pair their own calls: the queues are keyed per stream, so
