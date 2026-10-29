@@ -18,6 +18,10 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS="${RELEASE_SCRIPTS_DIR:-$SCRIPT_DIR}"
+# The fixture's go directive is the one the prep script holds transports/go.mod to, so a
+# Go bump there does not read as drift here.
+GO_DIRECTIVE="$(sed -n 's/^GO_DIRECTIVE="\(.*\)"$/\1/p' "$SCRIPTS/release-bifrost-http-prep.sh")"
+[ -n "$GO_DIRECTIVE" ] || { echo "FAIL: no GO_DIRECTIVE in $SCRIPTS/release-bifrost-http-prep.sh" >&2; exit 1; }
 
 for tool in git go jq node; do
   if ! command -v "$tool" >/dev/null 2>&1; then
@@ -93,7 +97,7 @@ write_tree() {
   local d="$1"
   mkdir -p "$d/core" "$d/framework" "$d/plugins/governance" "$d/plugins/litellmcompat" \
     "$d/transports" "$d/cli" "$d/docs/changelogs" "$d/examples/plugins/hello-world"
-  printf 'module %s/core\n\ngo 1.27.2\n' "$MODULE" > "$d/core/go.mod"
+  printf 'module %s/core\n\ngo %s\n' "$MODULE" "$GO_DIRECTIVE" > "$d/core/go.mod"
   printf 'build:\n' > "$d/examples/plugins/hello-world/Makefile"
   echo "1.8.6" > "$d/core/version"
   echo "1.6.2" > "$d/framework/version"
@@ -108,7 +112,7 @@ write_tree() {
   cat > "$d/transports/go.mod" <<GOMOD
 module $MODULE/transports
 
-go 1.27.2
+go $GO_DIRECTIVE
 
 require (
 	$MODULE/core v1.8.6
