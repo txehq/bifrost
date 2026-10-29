@@ -573,7 +573,9 @@
               {
                 "group": "Cohere SDK",
                 "icon": "c",
-                "pages": ["integrations/cohere-sdk/overview"]
+                "pages": [
+                  "integrations/cohere-sdk/overview"
+                ]
               },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
@@ -2016,6 +2018,8 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.3.2",
+              "changelogs/v2.3.1",
               "changelogs/v2.3.0",
               "changelogs/v2.2.6",
               "changelogs/v2.2.5",
@@ -2248,6 +2252,8 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.3.2",
+              "changelogs/ent-v2.3.1",
               "changelogs/ent-v2.3.0",
               "changelogs/ent-v2.2.6",
               "changelogs/ent-v2.2.5",
@@ -2416,6 +2422,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.48",
               "changelogs/helm-v2.1.47",
               "changelogs/helm-v2.1.47-sync.4",
               "changelogs/helm-v2.1.47-sync.3",

@@ -1,6 +1,6 @@
 module github.com/capsohq/bifrost/examples/plugins/llm-only
 
-go 1.27.2
+go 1.27.3
 
 replace github.com/capsohq/bifrost/core => ../../../core
 
