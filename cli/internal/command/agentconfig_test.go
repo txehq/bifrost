@@ -749,3 +749,26 @@ func TestLocalConfigBaseURLChangeClearsCredentials(t *testing.T) {
 		t.Fatalf("base URL = %q", got)
 	}
 }
+
+// TestLocalConfigBaseURLSchemeOrPortChangeClearsCredentials pins that another
+// scheme or port on the same host is another destination too: every stored
+// credential is dropped before the URL changes.
+func TestLocalConfigBaseURLSchemeOrPortChangeClearsCredentials(t *testing.T) {
+	for _, next := range []string{"http://gateway.example", "https://gateway.example:8443"} {
+		t.Run(next, func(t *testing.T) {
+			runner, _, store := newTestRunner(t, testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				t.Fatalf("config set unexpectedly called %s", request.URL)
+				return nil, nil
+			}))
+			for _, kind := range contextCredentialKinds {
+				store["test:"+string(kind)] = "secret-" + string(kind)
+			}
+			if err := runner.Run(context.Background(), []string{"config", "set", "base-url", next}); err != nil {
+				t.Fatal(err)
+			}
+			if len(store) != 0 {
+				t.Fatalf("credentials survived a change to %s: %d left", next, len(store))
+			}
+		})
+	}
+}

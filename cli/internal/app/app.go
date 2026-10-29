@@ -236,8 +236,16 @@ func (a *App) Run(ctx context.Context) error {
 			}
 			selection.Harness = strings.TrimSpace(choice.Harness)
 			selection.Model = strings.TrimSpace(choice.Model)
-			vk = strings.TrimSpace(choice.VirtualKey)
+			vk = chooserVirtualKey(previousBaseURL, newBaseURL, currentVK, choice.VirtualKey)
 			worktree = strings.TrimSpace(choice.Worktree)
+			if vk == "" && strings.TrimSpace(choice.VirtualKey) != "" {
+				// The old gateway's key was dropped with its other credentials; the
+				// chooser reopens so the key for the new gateway can be entered.
+				a.persistChooserPreferences(activeProfile, selection, vk)
+				msg = "Gateway URL changed: its stored credentials were cleared. Enter the virtual key for " + newBaseURL + "."
+				isAfterSession = false
+				continue
+			}
 
 			if choice.LoginRequested || choice.LogoutRequested {
 				a.persistChooserPreferences(activeProfile, selection, vk)
@@ -578,6 +586,20 @@ func launchAgentToken(agentToken, trustedBaseURL, launchBaseURL string) string {
 		return ""
 	}
 	return agentToken
+}
+
+// chooserVirtualKey returns the virtual key the chooser submitted, or empty when
+// the gateway URL was changed and the key is still the one the chooser was
+// prefilled with. That key was issued by the previous gateway and was cleared
+// with the profile's other credentials; persisting it again, or launching with
+// it, would send it to the new destination. A key typed for the new gateway is
+// kept.
+func chooserVirtualKey(previousBaseURL, newBaseURL, prefilledVK, chosenVK string) string {
+	chosen := strings.TrimSpace(chosenVK)
+	if strings.TrimSpace(newBaseURL) != strings.TrimSpace(previousBaseURL) && chosen == strings.TrimSpace(prefilledVK) {
+		return ""
+	}
+	return chosen
 }
 
 // loadStateAndConfig loads configuration from saved state from the last run

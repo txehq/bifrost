@@ -2,6 +2,10 @@ package secrets
 
 import (
 	"errors"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"slices"
 	"strings"
 	"testing"
 
@@ -66,5 +70,47 @@ func TestSetTrimsCredentialAndEmptyDeletes(t *testing.T) {
 	}
 	if deleted != "profile:engineering:virtual-key" {
 		t.Fatalf("deleted = %q", deleted)
+	}
+}
+
+// TestProfileCredentialKindsCoversEveryKind pins that every credential kind this
+// package declares is in ProfileCredentialKinds, the list cleared when a profile's
+// gateway URL changes or the profile is deleted. A kind added later without
+// joining the list would otherwise survive a URL change and reach the new gateway.
+func TestProfileCredentialKindsCoversEveryKind(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "secrets.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var declared []Kind
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			value := spec.(*ast.ValueSpec)
+			if ident, ok := value.Type.(*ast.Ident); !ok || ident.Name != "Kind" {
+				continue
+			}
+			for _, lit := range value.Values {
+				basic, ok := lit.(*ast.BasicLit)
+				if !ok || basic.Kind != token.STRING {
+					t.Fatalf("Kind constant with a non-literal value: %T", lit)
+				}
+				declared = append(declared, Kind(strings.Trim(basic.Value, `"`)))
+			}
+		}
+	}
+	if len(declared) == 0 {
+		t.Fatal("found no Kind constants in secrets.go")
+	}
+	for _, kind := range declared {
+		if !slices.Contains(ProfileCredentialKinds, kind) {
+			t.Errorf("credential kind %q is not in ProfileCredentialKinds, so it would survive a gateway URL change", kind)
+		}
+	}
+	if len(ProfileCredentialKinds) != len(declared) {
+		t.Errorf("ProfileCredentialKinds has %d entries, secrets.go declares %d kinds", len(ProfileCredentialKinds), len(declared))
 	}
 }

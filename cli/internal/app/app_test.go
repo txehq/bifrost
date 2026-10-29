@@ -192,6 +192,33 @@ func TestLaunchAgentTokenUsesFinalChoiceURL(t *testing.T) {
 	}
 }
 
+// TestChooserVirtualKeyDropsThePreviousGatewaysKey pins that changing the gateway
+// URL in the chooser does not carry the virtual key it was prefilled with, which
+// the previous gateway issued, to the new destination: not for another host, nor
+// for another scheme or port on the same host. A key typed for the new gateway,
+// and any key when the URL is unchanged, is kept.
+func TestChooserVirtualKeyDropsThePreviousGatewaysKey(t *testing.T) {
+	const previous = "https://gateway.example"
+	cases := []struct {
+		name, newURL, prefilled, chosen, want string
+	}{
+		{"unchanged URL keeps the key", previous, "sk-bf-old", "sk-bf-old", "sk-bf-old"},
+		{"unchanged URL with surrounding space", " " + previous + " ", "sk-bf-old", " sk-bf-old ", "sk-bf-old"},
+		{"another host drops the prefilled key", "https://other.example", "sk-bf-old", "sk-bf-old", ""},
+		{"another scheme drops the prefilled key", "http://gateway.example", "sk-bf-old", "sk-bf-old", ""},
+		{"another port drops the prefilled key", "https://gateway.example:8443", "sk-bf-old", "sk-bf-old", ""},
+		{"a key typed for the new gateway is kept", "https://other.example", "sk-bf-old", "sk-bf-new", "sk-bf-new"},
+		{"no key stays empty", "https://other.example", "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := chooserVirtualKey(previous, tc.newURL, tc.prefilled, tc.chosen); got != tc.want {
+				t.Fatalf("chooserVirtualKey() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestListModelsDoesNotSendAgentTokenToUntrustedBaseURL verifies the live
 // Enterprise SSO bearer token is only attached when the requested base URL
 // matches the profile's configured (trusted) base URL, not an edited or
