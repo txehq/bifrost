@@ -6355,6 +6355,33 @@ compare_postgres_snapshots() {
       continue
     fi
 
+    # matview_refresh_state is the materialized-view refresher's bookkeeping
+    # (framework/logstore/matviewrefreshstate.go): one row per view it manages, all named
+    # mv_logs_* or mv_filter_*, rewritten by every refresh and deleted when its view is
+    # rebuilt. A baseline from v2.3.1-sync.3 on refreshes at boot, and so does the current
+    # binary, so those rows change or vanish by design. Leave them out on both sides. Every
+    # other row, such as the seeded mv_migration_fixture, still goes through the row-count
+    # and value checks below; a header without view_name leaves every row in.
+    if [ "$table" = "matview_refresh_state" ]; then
+      local snapshot_file
+      for snapshot_file in "$before_file" "$after_file"; do
+        awk -F'|' '
+          NR == 1 {
+            header = $0
+            sub(/^# COLUMNS: /, "", header)
+            n = split(header, cols, ",")
+            for (i = 1; i <= n; i++) if (cols[i] == "view_name") key = i
+            print
+            next
+          }
+          key && $key ~ /^mv_(logs|filter)_/ { next }
+          { print }
+        ' "$snapshot_file" > "${snapshot_file}.unmanaged"
+      done
+      before_file="${before_file}.unmanaged"
+      after_file="${after_file}.unmanaged"
+    fi
+
     # Get before columns
     local before_columns
     before_columns=$(head -1 "$before_file" | sed 's/^# COLUMNS: //')

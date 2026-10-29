@@ -74,6 +74,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: ./.github/workflows/scripts/migration-sqlite-faker.test.sh
 
+      # Synthetic snapshot files only: the refresher's own matview_refresh_state rows are
+      # left out of the before/after comparison, and the seeded row is still held to it.
+      - name: Check matview refresh state comparison keeps seeded rows
+        if: ${{ !cancelled() }}
+        run: ./.github/workflows/scripts/migration-matview-state.test.sh
+
       # Loopback Python listeners only: the migration tests must refuse a port that the
       # bifrost they started does not serve.
       - name: Check migration tests use only their own server
