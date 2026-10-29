@@ -2169,6 +2169,50 @@ func TestUpdatePreservesMaskedTLSMaterial(t *testing.T) {
 	require.Nil(t, stored.RuntimeAuth)
 }
 
+// TestUpdatePreservesMaskedTLSMaterialPerFieldAndAuth pins that an echoed
+// masked TLS field is restored from its own stored field of its own auth block:
+// discovery and runtime hold different material, and each CA, certificate and
+// key keeps exactly what was stored for it rather than a sibling's value.
+func TestUpdatePreservesMaskedTLSMaterialPerFieldAndAuth(t *testing.T) {
+	upstream, _, _ := fixture(t, nil, nil)
+	defer upstream.Close()
+	store := &memoryStore{regs: map[string]schemas.AgentRegistration{}}
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	require.NoError(t, err)
+	defer m.Close()
+	base := upstream.URL + agentCardPath
+	tlsAuth := func(ca, cert, key string) *schemas.UpstreamAuth {
+		return &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeNone, TLS: &schemas.UpstreamTLSConfig{CACertPEM: schemas.NewSecretVar(ca), ClientCertPEM: schemas.NewSecretVar(cert), ClientKeyPEM: schemas.NewSecretVar(key)}}
+	}
+	discoveryCA, discoveryCert, discoveryKey := testTLSMaterial(t)
+	runtimeCA, runtimeCert, runtimeKey := testTLSMaterial(t)
+	require.NotEqual(t, discoveryKey, runtimeKey)
+	_, err = m.Create(context.Background(), CreateRequest{Name: "fixture", AgentCardURL: base, Enabled: boolPtr(false),
+		DiscoveryAuth: tlsAuth(discoveryCA, discoveryCert, discoveryKey), RuntimeAuth: tlsAuth(runtimeCA, runtimeCert, runtimeKey)})
+	require.NoError(t, err)
+
+	view, err := m.Get(context.Background(), "fixture")
+	require.NoError(t, err)
+	_, err = m.Update(context.Background(), "fixture", UpdateRequest{AgentCardURL: &base, Enabled: boolPtr(false), DiscoveryAuth: view.DiscoveryAuth, RuntimeAuth: view.RuntimeAuth})
+	require.NoError(t, err)
+	stored, err := store.GetAgentRegistration(context.Background(), "fixture")
+	require.NoError(t, err)
+	for _, check := range []struct {
+		name string
+		got  *schemas.SecretVar
+		want string
+	}{
+		{"discovery ca_cert_pem", stored.DiscoveryAuth.TLS.CACertPEM, discoveryCA},
+		{"discovery client_cert_pem", stored.DiscoveryAuth.TLS.ClientCertPEM, discoveryCert},
+		{"discovery client_key_pem", stored.DiscoveryAuth.TLS.ClientKeyPEM, discoveryKey},
+		{"runtime ca_cert_pem", stored.RuntimeAuth.TLS.CACertPEM, runtimeCA},
+		{"runtime client_cert_pem", stored.RuntimeAuth.TLS.ClientCertPEM, runtimeCert},
+		{"runtime client_key_pem", stored.RuntimeAuth.TLS.ClientKeyPEM, runtimeKey},
+	} {
+		require.True(t, check.got.GetValue() == check.want, "%s was not restored from its own stored field", check.name)
+	}
+}
+
 // TestUpdateWritesAnOAuthSecretSwitchedToAReference pins that switching an upstream
 // OAuth secret to an env reference is written: every reference used to count as
 // redacted, so the old plaintext was kept, and adding OAuth with a reference failed.
