@@ -278714,6 +278714,539 @@
           }
         }
       ]
+    },
+    {
+      "name": "263. OSS setup lock: scoped consent tokens and provider header references (setup-lock-e2e)",
+      "description": "Opt-in profile regression for TXE-5411 (PR5 8338c04af M105 and 36f076c4c). Run with provider_config/setup-lock-temp-token/config.json (setup_token set, no enabled admin, temp-token auth and the MCP OAuth2 server on) on an isolated fresh instance, INCLUDE_PREVIEW=1, PARALLEL=0 and FEATURE=setup-lock-e2e; the harness's setup token must be the profile's (BIFROST_SETUP_TOKEN, default bifrost-e2e-setup-token). Rows that must act without a credential strip the X-Bifrost-Setup-Token header the harness injects. Part 1, scoped temp tokens: while the OSS setup lock is active, an MCP consent or per-user auth temp token authorizes exactly its method, raw path and resource, as it does once dashboard auth is on, and is not the admin. Before the fix the lock answered every such request 401 'send the setup token', stranding MCP users mid-consent. Case 1 proves the lock is active; cases 2-3 register a disposable client and open a consent flow, chaining the flow id and token out of the 302 Location; case 4 reads the flow with only the token (200; red before the fix); case 5 submits mode=session with only the token and expects the consent handler's 401, not the lock's (red before the fix); cases 6-7 keep another flow and a management route at 401. Part 2, provider extra-header server-secret references: the 403 for an auth-bypassed caller that introduces or repoints an env./vault. header reference is reachable only where the fail-open bypass exists (no setup lock; enterprise builds) and is pinned by the handler Go tests. Under the OSS setup lock the same caller is refused before the handler: case 8 creates a keyless custom provider with a header reference as the setup-token admin (base_url 127.0.0.1:9, nothing listens and nothing leaves the host), case 9 tries to repoint it with no credential and gets the lock's 401, case 10 shows nothing was persisted, case 11 shows an authenticated save of the unchanged reference still succeeds, and case 12 deletes the provider. The openai keyword is only a harness filter label; no provider calls are made. Cookies and redirect following are disabled. Every unexpected status fails. Run the whole folder in order.",
+      "item": [
+        {
+          "name": "[PREVIEW] [EXPECT-401] openai setup-lock-e2e setup lock precondition - setup-lock-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('setupLockE2EClient');",
+                  "pm.collectionVariables.unset('setupLockE2EFlow');",
+                  "pm.collectionVariables.unset('setupLockE2EToken');",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('setup lock precondition exact response status - setup-lock-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "});",
+                  "pm.test('the setup lock answers - setup-lock-e2e', function () {",
+                  "  pm.expect(pm.response.text(), 'run against provider_config/setup-lock-temp-token: ' + pm.response.text()).to.include('X-Bifrost-Setup-Token');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/config"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-201] openai setup-lock-e2e register consent client - setup-lock-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('register exact response status - setup-lock-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(201);",
+                  "});",
+                  "pm.test('consent client created - setup-lock-e2e', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.client_id).to.be.a('string').and.not.empty;",
+                  "  pm.collectionVariables.set('setupLockE2EClient', body.client_id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/oauth2/register",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_name\":\"setup-lock e2e regression\",\"redirect_uris\":[\"http://127.0.0.1/cb\"],\"token_endpoint_auth_method\":\"none\"}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-302] openai setup-lock-e2e obtain consent token - setup-lock-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('setupLockE2EClient'), 'consent client missing').to.be.a('string').and.not.empty;"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('authorize exact response status - setup-lock-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(302);",
+                  "});",
+                  "pm.test('redirect carries a scoped consent token - setup-lock-e2e', function () {",
+                  "  var location = pm.response.headers.get('Location') || '';",
+                  "  pm.expect(location).to.include('/oauth/consent?flow=');",
+                  "  pm.expect(location).not.to.include('error=');",
+                  "  var flow = location.match(/[?&]flow=([^&#]+)/);",
+                  "  var token = location.match(/#t=([^&]+)/);",
+                  "  pm.expect(flow, 'flow missing in redirect').not.to.equal(null);",
+                  "  pm.expect(token, 'token missing in redirect').not.to.equal(null);",
+                  "  pm.collectionVariables.set('setupLockE2EFlow', decodeURIComponent(flow[1]));",
+                  "  pm.collectionVariables.set('setupLockE2EToken', decodeURIComponent(token[1]));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/oauth2/authorize?client_id={{setupLockE2EClient}}&redirect_uri=http%3A%2F%2F127.0.0.1%2Fcb&response_type=code&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&state=setuplock"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai setup-lock-e2e consent flow opens with only its scoped token - setup-lock-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('setupLockE2EFlow'), 'run the entire setup-lock-e2e folder in order').to.be.a('string').and.not.empty;",
+                  "pm.expect(pm.collectionVariables.get('setupLockE2EToken'), 'run the entire setup-lock-e2e folder in order').to.be.a('string').and.not.empty;",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('scoped consent read exact response status - setup-lock-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the scoped token reaches its bound flow without the setup token - setup-lock-e2e', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.client_name, 'failed: ' + pm.response.text()).to.equal('setup-lock e2e regression');",
+                  "  pm.expect(body.available_modes, 'failed: ' + pm.response.text()).to.be.an('array').that.includes('vk');",
+                  "  pm.expect(body.available_modes).not.to.include('session');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{setupLockE2EToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/oauth2/consent/flows/{{setupLockE2EFlow}}"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-401] openai setup-lock-e2e scoped token is not the admin for session consent - setup-lock-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('setupLockE2EFlow'), 'run the entire setup-lock-e2e folder in order').to.be.a('string').and.not.empty;",
+                  "pm.expect(pm.collectionVariables.get('setupLockE2EToken'), 'run the entire setup-lock-e2e folder in order').to.be.a('string').and.not.empty;",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('scoped session consent exact response status - setup-lock-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "});",
+                  "pm.test('the consent handler refuses it, not the setup lock - setup-lock-e2e', function () {",
+                  "  pm.expect(pm.response.text()).to.include('authenticated consenting user');",
+                  "  pm.expect(pm.response.text()).not.to.include('X-Bifrost-Setup-Token');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{setupLockE2EToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/oauth2/consent/flows/{{setupLockE2EFlow}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"mode\":\"session\"}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-401] openai setup-lock-e2e scoped token does not open another flow - setup-lock-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('setupLockE2EFlow'), 'run the entire setup-lock-e2e folder in order').to.be.a('string').and.not.empty;",
+                  "pm.expect(pm.collectionVariables.get('setupLockE2EToken'), 'run the entire setup-lock-e2e folder in order').to.be.a('string').and.not.empty;",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('other flow exact response status - setup-lock-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{setupLockE2EToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/oauth2/consent/flows/setup-lock-not-the-bound-flow"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-401] openai setup-lock-e2e scoped token does not open a management route - setup-lock-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('setupLockE2EFlow'), 'run the entire setup-lock-e2e folder in order').to.be.a('string').and.not.empty;",
+                  "pm.expect(pm.collectionVariables.get('setupLockE2EToken'), 'run the entire setup-lock-e2e folder in order').to.be.a('string').and.not.empty;",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('management route exact response status - setup-lock-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "});",
+                  "pm.test('no provider configuration is returned - setup-lock-e2e', function () {",
+                  "  pm.expect(pm.response.text()).not.to.include('\"providers\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Bifrost-Temp-Token",
+                "value": "{{setupLockE2EToken}}"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai setup-lock-e2e setup-token admin creates a provider with a header reference - setup-lock-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider create exact response status - setup-lock-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the stored X-Team header is still the original reference - setup-lock-e2e', function () {",
+                  "  var body = pm.response.json();",
+                  "  var v = body.network_config && body.network_config.extra_headers ? body.network_config.extra_headers['X-Team'] : undefined;",
+                  "  var ref = (typeof v === 'string') ? v : (v && (v.ref || v.value));",
+                  "  pm.expect(ref, 'failed: ' + pm.response.text()).to.equal('env.SETUPLOCK_E2E_HEADER_REF');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\": \"setuplock-e2e-header-refs\", \"custom_provider_config\": {\"base_provider_type\": \"openai\", \"is_key_less\": true}, \"network_config\": {\"base_url\": \"http://127.0.0.1:9/v1\", \"allow_private_network\": true, \"extra_headers\": {\"X-Team\": \"env.SETUPLOCK_E2E_HEADER_REF\"}}, \"concurrency_and_buffer_size\": {\"concurrency\": 1, \"buffer_size\": 4}}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-401] openai setup-lock-e2e credential-less header reference repoint is refused - setup-lock-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('credential-less repoint exact response status - setup-lock-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "});",
+                  "pm.test('the setup lock refuses the repoint - setup-lock-e2e', function () {",
+                  "  pm.expect(pm.response.text(), 'run against provider_config/setup-lock-temp-token: ' + pm.response.text()).to.include('X-Bifrost-Setup-Token');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/setuplock-e2e-header-refs",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"custom_provider_config\": {\"base_provider_type\": \"openai\", \"is_key_less\": true}, \"network_config\": {\"base_url\": \"http://127.0.0.1:9/v1\", \"allow_private_network\": true, \"extra_headers\": {\"X-Team\": \"env.AWS_SECRET_ACCESS_KEY\"}}, \"concurrency_and_buffer_size\": {\"concurrency\": 1, \"buffer_size\": 4}}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai setup-lock-e2e refused repoint left the reference unchanged - setup-lock-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider read exact response status - setup-lock-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the stored X-Team header is still the original reference - setup-lock-e2e', function () {",
+                  "  var body = pm.response.json();",
+                  "  var v = body.network_config && body.network_config.extra_headers ? body.network_config.extra_headers['X-Team'] : undefined;",
+                  "  var ref = (typeof v === 'string') ? v : (v && (v.ref || v.value));",
+                  "  pm.expect(ref, 'failed: ' + pm.response.text()).to.equal('env.SETUPLOCK_E2E_HEADER_REF');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/setuplock-e2e-header-refs"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai setup-lock-e2e setup-token admin save keeps the unchanged reference - setup-lock-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unchanged reference save exact response status - setup-lock-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the stored X-Team header is still the original reference - setup-lock-e2e', function () {",
+                  "  var body = pm.response.json();",
+                  "  var v = body.network_config && body.network_config.extra_headers ? body.network_config.extra_headers['X-Team'] : undefined;",
+                  "  var ref = (typeof v === 'string') ? v : (v && (v.ref || v.value));",
+                  "  pm.expect(ref, 'failed: ' + pm.response.text()).to.equal('env.SETUPLOCK_E2E_HEADER_REF');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/setuplock-e2e-header-refs",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"custom_provider_config\": {\"base_provider_type\": \"openai\", \"is_key_less\": true}, \"network_config\": {\"base_url\": \"http://127.0.0.1:9/v1\", \"allow_private_network\": true, \"extra_headers\": {\"X-Team\": \"env.SETUPLOCK_E2E_HEADER_REF\"}}, \"concurrency_and_buffer_size\": {\"concurrency\": 1, \"buffer_size\": 4}}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai setup-lock-e2e cleanup deletes the provider - setup-lock-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup exact response status - setup-lock-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/setuplock-e2e-header-refs"
+          }
+        }
+      ]
     }
   ]
 }

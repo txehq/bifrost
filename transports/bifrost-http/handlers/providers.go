@@ -437,6 +437,9 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusForbidden, providerDialTargetForbiddenMsg)
 			return
 		}
+		if requireGenuineAuthForHeaderSecretRefs(ctx, nil, payload.NetworkConfig.ExtraHeaders) {
+			return
+		}
 		if payload.NetworkConfig.BaseURL != "" {
 			if err := bifrost.ValidateExternalURL(payload.NetworkConfig.BaseURL, payload.NetworkConfig.AllowPrivateNetwork); err != nil {
 				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
@@ -696,6 +699,9 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	nc.ExtraHeaders = restoredHeaders
+	if requireGenuineAuthForHeaderSecretRefs(ctx, storedHeaders, nc.ExtraHeaders) {
+		return
+	}
 	config.NetworkConfig = &nc
 	// Merge proxy config - preserve secrets if redacted values were sent back
 	if payload.ProxyConfig != nil && oldConfigRaw.ProxyConfig != nil && oldRedactedConfig.ProxyConfig != nil {
@@ -1860,6 +1866,35 @@ func requireGenuineAuthForInterception(ctx *fasthttp.RequestCtx, old, next confi
 		return false
 	}
 	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Changing a provider's proxy, TLS trust or absolute request URL settings (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
+	return true
+}
+
+// requireGenuineAuthForHeaderSecretRefs rejects, under the fail-open bypass, extra
+// headers that introduce or repoint a server secret reference (env.VAR or
+// vault.path). Such a header is resolved on every request and sent to the
+// provider, so whoever chooses the reference chooses which server secret leaves
+// the gateway. Unchanged references, removals and literal values pass. stored is
+// nil on create. On rejection this sends the response and returns true.
+func requireGenuineAuthForHeaderSecretRefs(ctx *fasthttp.RequestCtx, stored, next map[string]schemas.SecretVar) bool {
+	if !isAuthBypassed(ctx) {
+		return false
+	}
+	var changed []string
+	for name, value := range next {
+		if !value.IsFromSecret() {
+			continue
+		}
+		previous, ok := stored[name]
+		if ok && previous.IsFromSecret() && previous.GetRawRef() == value.GetRawRef() {
+			continue
+		}
+		changed = append(changed, name)
+	}
+	if len(changed) == 0 {
+		return false
+	}
+	sort.Strings(changed)
+	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Setting an extra header to a server secret reference (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
 	return true
 }
 

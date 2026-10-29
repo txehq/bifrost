@@ -170,15 +170,7 @@ func (r *Runner) deleteContext(statePath string, state *config.State, args []str
 	}
 	id := profile.ID
 	displayName := profile.Name
-	kinds := []secrets.Kind{
-		secrets.VirtualKey,
-		secrets.ManagementKey,
-		secrets.SessionToken,
-		secrets.AgentToken,
-		secrets.AgentRefreshToken,
-		secrets.AgentUser,
-		secrets.AgentVirtualKeyID,
-	}
+	kinds := contextCredentialKinds
 	// Snapshot every credential before deleting any of them, so a failure
 	// partway through (a delete, or the state save that follows) can be
 	// rolled back: secrets.Delete is idempotent, so simply retrying after a
@@ -218,6 +210,10 @@ func (r *Runner) deleteContext(statePath string, state *config.State, args []str
 	_, err := fmt.Fprintf(r.Out, "Deleted context %q and its stored credentials.\n", displayName)
 	return err
 }
+
+// contextCredentialKinds lists every credential stored per context. Each is
+// issued by, and only valid for, the context's gateway.
+var contextCredentialKinds = secrets.ProfileCredentialKinds
 
 // contextID converts a display name into a stable local identifier.
 func contextID(name string) string {

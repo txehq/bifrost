@@ -23626,9 +23626,52 @@ func TestLoadAgentsConfigSourceOfTruthPrunes(t *testing.T) {
 	assert.Contains(t, names, "from-file")
 	assert.NotContains(t, names, "db-only", "rows absent from the file are pruned when it is the source of truth")
 
-	// Re-running with an unchanged file is a no-op (hash match).
+	// Re-running with an unchanged file rewrites the declaration and keeps the set.
 	loadAgentsConfig(context.Background(), config, configData)
 	assert.Len(t, agentNamesInStore(t, store), 1)
+}
+
+// TestLoadAgentsConfigSourceOfTruthRevertsAPIEdits pins that, with config.json
+// as the source of truth, an unchanged declaration restores the file's policy
+// over an API edit on the next load, even though the API edit left the stored
+// file hash in place. Split mode keeps the edit until the file changes.
+func TestLoadAgentsConfigSourceOfTruthRevertsAPIEdits(t *testing.T) {
+	initTestLogger()
+	for _, sourceOfTruth := range []bool{true, false} {
+		t.Run(fmt.Sprintf("source_of_truth=%t", sourceOfTruth), func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+			config := &Config{ConfigStore: store}
+			source := ""
+			if sourceOfTruth {
+				source = `"source_of_truth": "config.json",`
+			}
+			configData := parseConfigData(t, fmt.Sprintf(`{
+				%s
+				"agents": [
+					{"name": "from-file", "agent_card_url": "https://example.com/card", "enabled": true}
+				]
+			}`, source))
+			loadAgentsConfig(context.Background(), config, configData)
+
+			// An API edit: written with no ConfigHash, so the file's hash stays stored.
+			edited, err := store.GetAgentRegistration(context.Background(), "from-file")
+			require.NoError(t, err)
+			require.True(t, edited.Enabled)
+			edited.Enabled = false
+			edited.ConfigHash = ""
+			edited.UpdatedAt = time.Now().UTC()
+			require.NoError(t, store.UpdateAgentRegistration(context.Background(), edited))
+
+			loadAgentsConfig(context.Background(), config, configData)
+			reloaded, err := store.GetAgentRegistration(context.Background(), "from-file")
+			require.NoError(t, err)
+			if sourceOfTruth {
+				assert.True(t, reloaded.Enabled, "an authoritative config.json must restore the declared policy")
+			} else {
+				assert.False(t, reloaded.Enabled, "split mode keeps an API edit while the file is unchanged")
+			}
+		})
+	}
 }
 
 func TestLoadAgentsConfigInvalidDeclarationKeepsRegistration(t *testing.T) {

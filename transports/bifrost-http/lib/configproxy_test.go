@@ -174,3 +174,25 @@ func TestLoadProxyConfig_ClearedHashReappliesTheFile(t *testing.T) {
 	stored, _ := bootProxy(t, tempDir, nil)
 	assert.Equal(t, "http://proxy.corp:8080", stored.URL)
 }
+
+// TestLoadProxyConfig_OutboundFactoryUsesTheReconciledProxy: the outbound client factory is built
+// with the proxy in effect after config.json is applied, on the first boot and when the file changes,
+// so non-inference clients never run on the absent or previous proxy.
+func TestLoadProxyConfig_OutboundFactoryUsesTheReconciledProxy(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	ctx := context.Background()
+	for _, proxyURL := range []string{"http://proxy.corp:8080", "http://proxy2.corp:8080"} {
+		configData.ProxyConfig = proxyFileConfig(proxyURL)
+		createConfigFile(t, tempDir, configData)
+		config, err := LoadConfig(ctx, tempDir)
+		require.NoError(t, err)
+		require.NotNil(t, config.HTTPClientFactory)
+		factoryProxy := config.HTTPClientFactory.GetProxyConfig()
+		config.Close(ctx)
+		require.NotNil(t, factoryProxy, "the factory was built before the file's proxy was applied")
+		assert.True(t, factoryProxy.Enabled)
+		assert.Equal(t, proxyURL, factoryProxy.URL)
+	}
+}

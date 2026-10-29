@@ -1790,6 +1790,71 @@ func TestSetupLockMiddleware_LocksAPIWhileAuthInactive(t *testing.T) {
 	}
 }
 
+// TestSetupLockMiddleware_AcceptsScopedTempTokens pins that the setup lock does
+// not strand an MCP user mid-consent: while dashboard auth is inactive, a valid
+// temp token still authorizes exactly its scoped method, raw path and resource,
+// and does so without running as the setup administrator.
+func TestSetupLockMiddleware_AcceptsScopedTempTokens(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const token = "test-scoped-token"
+	const flowID = "flow-123"
+	route := oauth2ConsentScope.AllowedRoutes[0]
+	path := strings.ReplaceAll(route.Path, oauth2ConsentScope.ResourceIDInPath, flowID)
+	disabled := &configstore.AuthConfig{
+		AdminUserName: schemas.NewSecretVar("admin"),
+		AdminPassword: schemas.NewSecretVar("password"),
+		IsEnabled:     false,
+	}
+	for name, authConfig := range map[string]*configstore.AuthConfig{"no admin": nil, "auth disabled": disabled} {
+		for _, setupToken := range []string{"", "s3cret"} {
+			t.Run(fmt.Sprintf("%s/setup token %q", name, setupToken), func(t *testing.T) {
+				am := newSetupLockedAuthMiddleware(setupToken, authConfig)
+				store := &traversalTokenStore{row: tables.TempToken{
+					ID: "token-123", TokenHash: encrypt.HashSHA256(token),
+					Scope: oauth2ConsentScope.Name, ResourceID: flowID, ExpiresAt: time.Now().Add(time.Hour),
+				}}
+				am.tempTokensService = temptoken.NewService(store, temptoken.NewRegistry())
+				if err := RegisterTempTokenScopes(am.tempTokensService); err != nil {
+					t.Fatal(err)
+				}
+				am.UpdateTempTokenAuthEnabled(true)
+				request := func(method, uri, presented string) (*fasthttp.RequestCtx, bool) {
+					ctx := &fasthttp.RequestCtx{}
+					ctx.Request.Header.SetMethod(method)
+					ctx.Request.SetRequestURI(uri)
+					ctx.Request.Header.Set("X-Bifrost-Temp-Token", presented)
+					return ctx, runOSSAPIChain(am, ctx)
+				}
+
+				ctx, ran := request(route.Method, path, token)
+				if !ran {
+					t.Fatalf("scoped consent request was refused: status %d, body %s", ctx.Response.StatusCode(), ctx.Response.Body())
+				}
+				if ctx.UserValue(schemas.BifrostContextKeyTempTokenScope) == nil || ctx.UserValue(schemas.BifrostContextKeyTempTokenResourceID) == nil {
+					t.Error("a temp-token request must carry its validated scope and resource")
+				}
+				if admin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool); admin {
+					t.Error("a temp-token request must not run as the local admin")
+				}
+				if authed, _ := ctx.UserValue(schemas.BifrostContextKeySetupTokenAuthenticated).(bool); authed {
+					t.Error("a temp-token request must not be marked setup-token authenticated")
+				}
+
+				for _, refused := range []struct{ method, uri, token string }{
+					{route.Method, "/api/providers", token},
+					{route.Method, strings.ReplaceAll(path, flowID, "other-flow"), token},
+					{"DELETE", path, token},
+					{route.Method, path, "unknown-token"},
+				} {
+					if ctx, ran := request(refused.method, refused.uri, refused.token); ran {
+						t.Errorf("%s %s with token %q ran (status %d), want refusal", refused.method, refused.uri, refused.token, ctx.Response.StatusCode())
+					}
+				}
+			})
+		}
+	}
+}
+
 // TestSetupLockMiddleware_PublicRoutesStayOpen pins that the setup screen can bootstrap:
 // health, version and is-auth-enabled answer without the setup token while locked.
 func TestSetupLockMiddleware_PublicRoutesStayOpen(t *testing.T) {
@@ -5111,6 +5176,43 @@ func BenchmarkAuthBypassedMiddlewareOriginCheck(b *testing.B) {
 				handler(ctx)
 				if ctx.Response.StatusCode() == fasthttp.StatusForbidden {
 					b.Fatalf("%s was refused: %s", tc.name, ctx.Response.Body())
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkAuthDisabledMiddleware measures the dashboard-auth middleware with auth off, the
+// branch every inference request and every /api request takes on an instance without an
+// enabled admin account: an inference request, and a management request that the OSS setup
+// lock already let through with the setup token.
+func BenchmarkAuthDisabledMiddleware(b *testing.B) {
+	am := newSetupLockedAuthMiddleware("", nil)
+	cases := []struct {
+		name    string
+		handler fasthttp.RequestHandler
+		uri     string
+		setup   bool
+	}{
+		{"inference", am.InferenceMiddleware()(func(*fasthttp.RequestCtx) {}), "/v1/chat/completions", false},
+		{"api_setup_token", am.APIMiddleware()(func(*fasthttp.RequestCtx) {}), "/api/providers", true},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			// fasthttp reuses one RequestCtx per connection; so does the benchmark.
+			ctx := &fasthttp.RequestCtx{}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				ctx.Request.Reset()
+				ctx.ResetUserValues()
+				ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+				ctx.Request.SetRequestURI(tc.uri)
+				if tc.setup {
+					ctx.SetUserValue(schemas.BifrostContextKeySetupTokenAuthenticated, true)
+				}
+				tc.handler(ctx)
+				if admin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool); !admin {
+					b.Fatalf("%s did not run as the local admin", tc.name)
 				}
 			}
 		})

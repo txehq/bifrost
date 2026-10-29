@@ -1187,9 +1187,11 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 		logger.Warn(`oauth2_server_config.allowed_redirect_uris contains "*": any MCP OAuth client may register any https callback, so only the consent page stands between a user and a phishing client`)
 	}
 	config.SetHeaderMatcher(NewHeaderMatcher(config.ClientConfig.HeaderFilterConfig))
-	// 4a. Global proxy (store only). Loaded before providers so the first
-	// GetConfigForProvider already sees it for providers that inherit it.
-	loadGlobalProxyConfig(ctx, config)
+	// 4a. Global proxy (store, reconciled with config.json's proxy_config). Loaded
+	// before providers so the first GetConfigForProvider already sees it for
+	// providers that inherit it, and before the outbound factory below so that
+	// factory is built with the proxy in effect rather than the pre-sync one.
+	loadProxyConfig(ctx, config, &configData)
 	// Outbound clients for non-inference traffic (webhooks, skills, plugin downloads,
 	// MCP, OAuth, catalog sync, telemetry), built now so everything constructed below
 	// can take it. Registered as the process default for call sites without a handle.
@@ -1215,8 +1217,6 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	if err := loadAuthConfig(ctx, config, &configData); err != nil {
 		return nil, err
 	}
-	// 9a. Global proxy config (read by the enterprise build when it builds its outbound clients)
-	loadProxyConfig(ctx, config, &configData)
 	// 10. Plugins
 	loadPlugins(ctx, config, &configData)
 	// 11. Skills registry (after plugins, before framework)
@@ -3328,7 +3328,8 @@ func mergeAgentRegistrations(ctx context.Context, config *Config, fileAgents []*
 }
 
 // syncAgentRegistrationsFromFile makes the database mirror the config file:
-// declarations are created or updated as in the merge path, and stored
+// every valid declaration is written on each load (unlike the merge path, an
+// unchanged file hash does not skip it, so API edits are reverted), and stored
 // registrations not present in the file — including API-created ones — are
 // deleted, grants along with them (DeleteAgentRegistration removes the grant
 // rows in the same transaction, backed by the FK cascade). Best-effort,
@@ -3361,9 +3362,8 @@ func syncAgentRegistrationsFromFile(ctx context.Context, config *Config, fileAge
 		agent.ConfigHash = fileHash
 
 		if match != nil {
-			if match.ConfigHash == fileHash {
-				continue
-			}
+			// No hash shortcut here: an API edit keeps the stored file hash, so a
+			// matching hash does not mean the row still holds the declaration.
 			if err := config.ConfigStore.UpdateAgentRegistration(ctx, agent); err != nil {
 				logger.Warn("failed to update agent registration %q: %v", agent.Name, err)
 			}
@@ -7534,20 +7534,6 @@ func (c *Config) GetRawConfigString() string {
 //   - Thread-safe with read locks for concurrent access
 //
 // Returns a copy of the configuration to prevent external modifications.
-// loadGlobalProxyConfig reads the global proxy from the config store. A read
-// failure is logged and leaves the proxy unset rather than failing startup, the
-// same as before the global proxy reached inference.
-func loadGlobalProxyConfig(ctx context.Context, config *Config) {
-	if config.ConfigStore == nil {
-		return
-	}
-	proxyConfig, err := config.ConfigStore.GetProxyConfig(ctx)
-	if err != nil {
-		logger.Warn("failed to load global proxy config: %v", err)
-		return
-	}
-	config.ProxyConfig = proxyConfig
-}
 
 // GetGlobalProxyConfig returns the global proxy configuration, or nil when none is set.
 func (c *Config) GetGlobalProxyConfig() *configstoreTables.GlobalProxyConfig {

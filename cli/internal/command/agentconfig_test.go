@@ -715,3 +715,60 @@ func TestRollbackFailedConfigureRemovesReceiptWhenRollbackSucceeds(t *testing.T)
 		t.Fatalf("expected receipt to be removed after successful rollback, stat err = %v", statErr)
 	}
 }
+
+// TestLocalConfigBaseURLChangeClearsCredentials pins that credentials issued
+// by one gateway are never sent to another: moving a context's base URL drops
+// every stored credential, and keeping the same URL keeps them.
+func TestLocalConfigBaseURLChangeClearsCredentials(t *testing.T) {
+	runner, _, store := newTestRunner(t, testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		t.Fatalf("config set unexpectedly called %s", request.URL)
+		return nil, nil
+	}))
+	for _, kind := range contextCredentialKinds {
+		store["test:"+string(kind)] = "secret-" + string(kind)
+	}
+
+	if err := runner.Run(context.Background(), []string{"config", "set", "base-url", "https://gateway.example/"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(store) != len(contextCredentialKinds) {
+		t.Fatalf("unchanged base URL dropped credentials: %#v", store)
+	}
+
+	if err := runner.Run(context.Background(), []string{"config", "set", "base-url", "https://other-gateway.example"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(store) != 0 {
+		t.Fatalf("credentials survived a base URL change: %#v", store)
+	}
+	state, err := config.LoadState(runner.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.Profiles[0].BaseURL; got != "https://other-gateway.example" {
+		t.Fatalf("base URL = %q", got)
+	}
+}
+
+// TestLocalConfigBaseURLSchemeOrPortChangeClearsCredentials pins that another
+// scheme or port on the same host is another destination too: every stored
+// credential is dropped before the URL changes.
+func TestLocalConfigBaseURLSchemeOrPortChangeClearsCredentials(t *testing.T) {
+	for _, next := range []string{"http://gateway.example", "https://gateway.example:8443"} {
+		t.Run(next, func(t *testing.T) {
+			runner, _, store := newTestRunner(t, testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				t.Fatalf("config set unexpectedly called %s", request.URL)
+				return nil, nil
+			}))
+			for _, kind := range contextCredentialKinds {
+				store["test:"+string(kind)] = "secret-" + string(kind)
+			}
+			if err := runner.Run(context.Background(), []string{"config", "set", "base-url", next}); err != nil {
+				t.Fatal(err)
+			}
+			if len(store) != 0 {
+				t.Fatalf("credentials survived a change to %s: %d left", next, len(store))
+			}
+		})
+	}
+}

@@ -56,6 +56,19 @@ const (
 	AgentVirtualKeyID Kind = "agent-virtual-key-id"
 )
 
+// ProfileCredentialKinds lists every credential stored per profile. Each is
+// issued by, and only valid for, the profile's gateway, so all of them go when
+// the profile's gateway URL changes or the profile is deleted.
+var ProfileCredentialKinds = []Kind{
+	VirtualKey,
+	ManagementKey,
+	SessionToken,
+	AgentToken,
+	AgentRefreshToken,
+	AgentUser,
+	AgentVirtualKeyID,
+}
+
 // keyForProfile returns the keyring account name for a profile secret.
 func keyForProfile(profileID string, kind Kind) string {
 	return "profile:" + profileID + ":" + string(kind)

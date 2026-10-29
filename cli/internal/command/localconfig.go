@@ -66,15 +66,31 @@ func (r *Runner) setLocalConfig(env *environment, args []string) error {
 	if value == "" {
 		return fmt.Errorf("config value cannot be empty")
 	}
+	clearedCredentials := false
 	switch args[0] {
 	case "base-url":
-		env.Profile.BaseURL = strings.TrimRight(value, "/")
+		baseURL := strings.TrimRight(value, "/")
+		if baseURL != env.Profile.BaseURL {
+			// Stored credentials were issued by the previous gateway; sending them
+			// to a new destination would hand them to whoever runs it.
+			for _, kind := range contextCredentialKinds {
+				if err := r.Secrets.Delete(env.Profile.ID, kind); err != nil {
+					return fmt.Errorf("clear credentials for context %q before changing its base URL: %w", env.Profile.Name, err)
+				}
+			}
+			clearedCredentials = true
+		}
+		env.Profile.BaseURL = baseURL
 	case "default-model":
 		env.Profile.DefaultModel = value
 	default:
 		return fmt.Errorf("unknown or read-only config key %q", args[0])
 	}
 	if err := config.SaveState(env.StatePath, env.State); err != nil {
+		return err
+	}
+	if clearedCredentials {
+		_, err := fmt.Fprintf(r.Out, "Set %s for context %q and cleared its stored credentials; log in again.\n", args[0], env.Profile.Name)
 		return err
 	}
 	_, err := fmt.Fprintf(r.Out, "Set %s for context %q.\n", args[0], env.Profile.Name)

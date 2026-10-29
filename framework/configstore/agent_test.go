@@ -149,6 +149,120 @@ func TestUpdateAgentRegistrationEncryptsUpdatedCredentials(t *testing.T) {
 	require.Equal(t, "updated-secret", authorization.GetValue())
 }
 
+// TestAgentRegistrationStoresReferencesNotResolvedSecrets: a credential sourced
+// from an environment variable or vault is persisted as its reference only, on
+// create and on update. Its resolved value must never reach the JSON column,
+// where encryption does not cover it, and reloading must resolve it again.
+func TestAgentRegistrationStoresReferencesNotResolvedSecrets(t *testing.T) {
+	t.Setenv("AGENT_REF_HEADER", "resolved-header-secret")
+	t.Setenv("AGENT_REF_CLIENT_SECRET", "resolved-client-secret")
+	t.Setenv("AGENT_REF_TLS_KEY", "resolved-tls-key")
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	now := time.Now().UTC()
+	reg := &schemas.AgentRegistration{
+		Name:         "referenced",
+		AgentCardURL: "https://example.com",
+		Enabled:      true,
+		DiscoveryAuth: &schemas.UpstreamAuth{
+			Type:    schemas.MCPAuthTypeHeaders,
+			Headers: map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar("env.AGENT_REF_HEADER")},
+		},
+		RuntimeAuth: &schemas.UpstreamAuth{
+			Type: schemas.MCPAuthTypeOauth,
+			OAuth: &schemas.UpstreamOAuthConfig{
+				TokenURL:     "https://oauth.example/token",
+				ClientID:     schemas.NewSecretVar("literal-client"),
+				ClientSecret: schemas.NewSecretVar("env.AGENT_REF_CLIENT_SECRET"),
+			},
+			TLS: &schemas.UpstreamTLSConfig{ClientKeyPEM: schemas.NewSecretVar("env.AGENT_REF_TLS_KEY")},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	rawColumns := func() string {
+		var raw struct {
+			DiscoveryAuth string
+			RuntimeAuth   string
+		}
+		require.NoError(t, store.DB().Table("config_agent_registrations").Select("discovery_auth", "runtime_auth").Where("name = ?", reg.Name).Scan(&raw).Error)
+		return raw.DiscoveryAuth + raw.RuntimeAuth
+	}
+	assertStoredAsReferences := func() {
+		t.Helper()
+		stored := rawColumns()
+		for _, secret := range []string{"resolved-header-secret", "resolved-client-secret", "resolved-tls-key"} {
+			require.NotContains(t, stored, secret, "a referenced secret's resolved value must not be persisted")
+		}
+		for _, ref := range []string{"env.AGENT_REF_HEADER", "env.AGENT_REF_CLIENT_SECRET", "env.AGENT_REF_TLS_KEY"} {
+			require.Contains(t, stored, ref)
+		}
+		got, err := store.GetAgentRegistration(ctx, reg.Name)
+		require.NoError(t, err)
+		header := got.DiscoveryAuth.Headers["Authorization"]
+		require.Equal(t, "resolved-header-secret", header.GetValue())
+		require.Equal(t, "resolved-client-secret", got.RuntimeAuth.OAuth.ClientSecret.GetValue())
+		require.Equal(t, "literal-client", got.RuntimeAuth.OAuth.ClientID.GetValue())
+		require.Equal(t, "resolved-tls-key", got.RuntimeAuth.TLS.ClientKeyPEM.GetValue())
+	}
+
+	require.NoError(t, store.CreateAgentRegistration(ctx, reg))
+	assertStoredAsReferences()
+	header := reg.DiscoveryAuth.Headers["Authorization"]
+	require.Equal(t, "resolved-header-secret", header.GetValue(), "saving must not clear the caller's resolved value")
+
+	reg.UpdatedAt = now.Add(time.Minute)
+	require.NoError(t, store.UpdateAgentRegistration(ctx, reg))
+	assertStoredAsReferences()
+}
+
+// TestAgentRegistrationStoresVaultReferencesNotResolvedSecrets is the vault
+// counterpart: a vault-backed header and TLS key are persisted as their
+// references, and loading resolves them through the vault again.
+func TestAgentRegistrationStoresVaultReferencesNotResolvedSecrets(t *testing.T) {
+	const headerRef, keyRef = "vault.bifrost-test/agent-header", "vault.bifrost-test/agent-tls-key"
+	resolved := map[string]string{headerRef: "synthetic-vault-header", keyRef: "synthetic-vault-tls-key"}
+	previousHook := schemas.VaultResolveHook
+	schemas.VaultResolveHook = func(_ context.Context, value *string) error {
+		secret, ok := resolved[*value]
+		require.True(t, ok, "unexpected vault reference")
+		*value = secret
+		return nil
+	}
+	t.Cleanup(func() { schemas.VaultResolveHook = previousHook })
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	now := time.Now().UTC()
+	reg := &schemas.AgentRegistration{
+		Name:         "vault-referenced",
+		AgentCardURL: "https://example.com",
+		Enabled:      true,
+		RuntimeAuth: &schemas.UpstreamAuth{
+			Type:    schemas.MCPAuthTypeHeaders,
+			Headers: map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar(headerRef)},
+			TLS:     &schemas.UpstreamTLSConfig{ClientKeyPEM: schemas.NewSecretVar(keyRef)},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	header := reg.RuntimeAuth.Headers["Authorization"]
+	require.Equal(t, "synthetic-vault-header", header.GetValue(), "the reference resolves before it is saved")
+	require.NoError(t, store.CreateAgentRegistration(ctx, reg))
+
+	var raw struct{ RuntimeAuth string }
+	require.NoError(t, store.DB().Table("config_agent_registrations").Select("runtime_auth").Where("name = ?", reg.Name).Scan(&raw).Error)
+	for ref, secret := range resolved {
+		require.NotContains(t, raw.RuntimeAuth, secret, "a vault secret's resolved value must not be persisted")
+		require.Contains(t, raw.RuntimeAuth, ref)
+	}
+	got, err := store.GetAgentRegistration(ctx, reg.Name)
+	require.NoError(t, err)
+	header = got.RuntimeAuth.Headers["Authorization"]
+	require.True(t, header.IsFromVault())
+	require.Equal(t, "synthetic-vault-header", header.GetValue())
+	require.Equal(t, "synthetic-vault-tls-key", got.RuntimeAuth.TLS.ClientKeyPEM.GetValue())
+}
+
 func TestUpdateAgentRegistrationReplacesMutableFieldsAndGrants(t *testing.T) {
 	ctx := context.Background()
 	store := setupRDBTestStore(t)
