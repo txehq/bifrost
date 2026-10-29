@@ -1378,8 +1378,25 @@ func TestMemoryMultiInstance(t *testing.T) {
 // their lease, which are the only ones allowed to run more than once.
 type leaseLossLogger struct {
 	schemas.Logger
-	mu   sync.Mutex
-	lost map[string]bool
+	mu    sync.Mutex
+	lost  map[string]bool
+	trail []string // the latest engine Warn/Debug lines, formatted, for a failure's report
+}
+
+// maxLeaseLossTrail bounds the trail kept for a failing simulation's report.
+const maxLeaseLossTrail = 20000
+
+// trailFor returns the kept engine lines that name id, at most the last 40.
+func (l *leaseLossLogger) trailFor(id string) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for _, line := range l.trail {
+		if strings.Contains(line, id) {
+			out = append(out, line)
+		}
+	}
+	return out[max(0, len(out)-40):]
 }
 
 func newLeaseLossLogger() *leaseLossLogger {
@@ -1387,6 +1404,12 @@ func newLeaseLossLogger() *leaseLossLogger {
 }
 
 func (l *leaseLossLogger) record(msg string, args []any, idArg int) {
+	l.mu.Lock()
+	if len(l.trail) == maxLeaseLossTrail {
+		l.trail = append(l.trail[:0], l.trail[maxLeaseLossTrail/2:]...)
+	}
+	l.trail = append(l.trail, time.Now().Format("15:04:05.000000")+" "+fmt.Sprintf(msg, args...))
+	l.mu.Unlock()
 	// A settle (ack, retry, dead-letter) that fails outright leaves the delivery leased until its
 	// lease runs out, after which it is redelivered, exactly as for a lost lease.
 	lost := strings.HasPrefix(msg, "queue: lease lost") ||
@@ -1666,13 +1689,24 @@ func runMultiInstanceSimulation(t *testing.T, newPod func(t *testing.T, logger s
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	// A failure prints the engine's own lines for the delivery, so a recurrence
+	// shows what it did and when.
+	report := func(id string) {
+		for _, line := range losses.trailFor(id) {
+			t.Logf("engine: %s", line)
+		}
+	}
 	for id := range overlaps {
-		assert.True(t, losses.wasLost(id), "delivery %s ran on two instances at once without losing its lease", id)
+		if !assert.True(t, losses.wasLost(id), "delivery %s ran on two instances at once without losing its lease", id) {
+			report(id)
+		}
 	}
 	for _, g := range groups {
 		for _, id := range ids {
 			if handled[g+"/"+id] > 1 {
-				assert.True(t, losses.wasLost(DeliveryID(id, g)), "%s/%s completed %d times without losing its lease", g, id, handled[g+"/"+id])
+				if !assert.True(t, losses.wasLost(DeliveryID(id, g)), "%s/%s completed %d times without losing its lease", g, id, handled[g+"/"+id]) {
+					report(DeliveryID(id, g))
+				}
 			}
 		}
 	}
