@@ -280,6 +280,43 @@ func TestValidateExternalURLBoundsInFlightDNSLookup(t *testing.T) {
 	})
 }
 
+// staticLookuper answers every name with ips, or fails when err is set.
+type staticLookuper struct {
+	ips []net.IP
+	err error
+}
+
+func (s staticLookuper) LookupIP(context.Context, string, string) ([]net.IP, error) {
+	return s.ips, s.err
+}
+
+// TestValidateExternalURLWithResolverUsesTheInjectedResolver pins that the injected
+// resolver alone decides the answer ValidateExternalURLWithResolver checks, under the
+// same rules as ValidateExternalURL: public and loopback pass, private and link-local
+// are refused, and a failed lookup is reported. The names do not exist in real DNS.
+func TestValidateExternalURLWithResolverUsesTheInjectedResolver(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		r       staticLookuper
+		wantErr string
+	}{
+		{"public", staticLookuper{ips: []net.IP{net.ParseIP("93.184.216.34")}}, ""},
+		{"loopback", staticLookuper{ips: []net.IP{net.ParseIP("127.0.0.1")}}, ""},
+		{"private", staticLookuper{ips: []net.IP{net.ParseIP("93.184.216.34"), net.ParseIP("10.0.0.5")}}, "private IP addresses are not allowed"},
+		{"link-local", staticLookuper{ips: []net.IP{net.ParseIP("169.254.169.254")}}, "link-local IP addresses are not allowed"},
+		{"unresolvable", staticLookuper{err: errors.New("no such host")}, "failed to resolve hostname"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateExternalURLWithResolver("https://catalog.invalid/pricing.json", false, tc.r)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
+
 // TestResolverLookupIPAddrRespectsContextDeadline pins down the stdlib behavior
 // ValidateExternalURL's fix relies on: unlike the package-level net.LookupIP (which
 // always uses context.Background() internally and ignores any external deadline),

@@ -8,8 +8,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,6 +24,7 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/network"
+	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	configtables "github.com/capsohq/bifrost/framework/configstore/tables"
@@ -863,11 +866,10 @@ func TestCheckURLAccessibility_RejectsFileURLs(t *testing.T) {
 func TestCheckURLAccessibility_ReachesConfiguredPrivateProxy(t *testing.T) {
 	SetLogger(&mockLogger{})
 	var seen atomic.Value
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
 		seen.Store(r.URL.Host)
 		_, _ = w.Write([]byte("{}"))
-	}))
-	defer proxy.Close()
+	})
 	network.SetDefaultHTTPClientFactory(network.NewHTTPClientFactory(&network.GlobalProxyConfig{
 		Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: proxy.URL, EnableForAPI: true,
 	}, nil))
@@ -878,6 +880,135 @@ func TestCheckURLAccessibility_ReachesConfiguredPrivateProxy(t *testing.T) {
 	}
 	if got, _ := seen.Load().(string); got != "203.0.113.10" {
 		t.Fatalf("proxy saw target %q, want 203.0.113.10", got)
+	}
+}
+
+// catalogTestResolver answers each name from a sequence, the last answer repeating (a
+// nil answer fails the lookup), and counts lookups per name.
+type catalogTestResolver struct {
+	mu      sync.Mutex
+	answers map[string][][]net.IP
+	lookups map[string]int
+}
+
+func newCatalogTestResolver(answers map[string][][]net.IP) *catalogTestResolver {
+	return &catalogTestResolver{answers: answers, lookups: map[string]int{}}
+}
+
+func (r *catalogTestResolver) LookupIP(_ context.Context, _ string, host string) ([]net.IP, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	seq := r.answers[host]
+	n := r.lookups[host]
+	r.lookups[host] = n + 1
+	if len(seq) == 0 {
+		return nil, errors.New("no such host")
+	}
+	if n >= len(seq) {
+		n = len(seq) - 1
+	}
+	if seq[n] == nil {
+		return nil, errors.New("no such host")
+	}
+	return seq[n], nil
+}
+
+func (r *catalogTestResolver) calls(host string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lookups[host]
+}
+
+func fixedCatalogProxy(t *testing.T, raw string) func(*http.Request) (*url.URL, error) {
+	t.Helper()
+	u, err := url.Parse(raw)
+	require.NoError(t, err)
+	return func(*http.Request) (*url.URL, error) { return u, nil }
+}
+
+// TestCheckURLAccessibility_ProxiedNameTunnelsToTheCheckedAddress pins TXE-5377 for the
+// catalog URL check: behind a proxy, the tunnel is opened to the address the gateway
+// checked, so the proxy never resolves the name a second time. The resolver answers
+// public to the save-time check and to the destination check, and metadata to any later
+// lookup. Before the fix the proxy was handed "GET rebind.example" (absolute form) and
+// "CONNECT rebind.example:443".
+func TestCheckURLAccessibility_ProxiedNameTunnelsToTheCheckedAddress(t *testing.T) {
+	SetLogger(&mockLogger{})
+	rec := proxytest.NewHTTPRecorder(t, "proxy", "tcp4")
+	for _, tc := range []struct {
+		scheme, target string
+		reachable      bool
+	}{
+		{"http", "93.184.216.34:80", true},
+		{"https", "93.184.216.34:443", false},
+	} {
+		t.Run(tc.scheme, func(t *testing.T) {
+			rec.Reset()
+			public := []net.IP{net.ParseIP("93.184.216.34")}
+			resolver := newCatalogTestResolver(map[string][][]net.IP{"rebind.example": {public, public, {net.ParseIP("169.254.169.254")}}})
+			err := checkURLAccessibilityWith(tc.scheme+"://rebind.example/pricing.json", fixedCatalogProxy(t, "http://127.0.0.1:"+rec.Port()), resolver)
+			if tc.reachable {
+				require.NoError(t, err, "the recorder's tunnel answers 200")
+			} else {
+				require.ErrorIs(t, err, errURLNotReachable)
+			}
+			seen := rec.Seen()
+			require.Len(t, seen, 1, "proxy saw %+v", seen)
+			require.Equal(t, tc.target, seen[0].Target, "the proxy must be asked for the checked address, never the name")
+			require.Equal(t, 2, resolver.calls("rebind.example"), "one save-time lookup and one destination check; the tunnel uses the checked answer")
+		})
+	}
+}
+
+// TestCheckURLAccessibility_ProxiedPathKeepsThePublicOnlyPolicy pins that a proxied
+// check refuses what the direct dial refuses, before the proxy is contacted: a name
+// resolving to loopback (which the save-time check lets through and the direct dial
+// refuses), a name whose answer turns private after the save-time check, and a name
+// that stops resolving after it.
+func TestCheckURLAccessibility_ProxiedPathKeepsThePublicOnlyPolicy(t *testing.T) {
+	SetLogger(&mockLogger{})
+	rec := proxytest.NewHTTPRecorder(t, "proxy", "tcp4")
+	public := []net.IP{net.ParseIP("93.184.216.34")}
+	resolver := newCatalogTestResolver(map[string][][]net.IP{
+		"loopback.example": {{net.ParseIP("127.0.0.1")}},
+		"turns.example":    {public, {net.ParseIP("10.0.0.5")}},
+		"vanishes.example": {public, nil},
+	})
+	for _, host := range []string{"loopback.example", "turns.example", "vanishes.example"} {
+		rec.Reset()
+		err := checkURLAccessibilityWith("http://"+host+"/pricing.json", fixedCatalogProxy(t, "http://127.0.0.1:"+rec.Port()), resolver)
+		require.Empty(t, rec.Seen(), "%s must be refused before the proxy is contacted", host)
+		require.ErrorIs(t, err, errURLNotReachable, host)
+	}
+}
+
+// TestCheckURLAccessibility_ClosesIdleConnections pins that the check's per-call
+// transport does not keep its keep-alive socket after it returns: nothing reuses that
+// transport, so an idle connection left in its pool would stay open for the life of
+// the process.
+func TestCheckURLAccessibility_ClosesIdleConnections(t *testing.T) {
+	SetLogger(&mockLogger{})
+	useUnguardedURLAccessibilityDialer(t)
+	closed := make(chan struct{}, 1)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("{}"))
+	}))
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			select {
+			case closed <- struct{}{}:
+			default:
+			}
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+
+	require.NoError(t, checkURLAccessibility(srv.URL+"/pricing.json"))
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the check left its keep-alive connection open after returning")
 	}
 }
 
