@@ -1,6 +1,6 @@
 module github.com/capsohq/bifrost/examples/plugins/hello-world-wasm
 
-go 1.27.2
+go 1.27.3
 
 require github.com/capsohq/bifrost/core v0.0.0-00010101000000-000000000000
 

@@ -1,6 +1,6 @@
 module github.com/capsohq/bifrost/plugins/jsonparser
 
-go 1.27.2
+go 1.27.3
 
 require github.com/capsohq/bifrost/core v1.11.2
 

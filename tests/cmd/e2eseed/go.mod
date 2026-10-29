@@ -1,6 +1,6 @@
 module github.com/capsohq/bifrost/tests/cmd/e2eseed
 
-go 1.27.2
+go 1.27.3
 
 replace (
 	github.com/capsohq/bifrost/core => ../../../core
