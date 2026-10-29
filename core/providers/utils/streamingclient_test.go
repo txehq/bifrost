@@ -1241,3 +1241,39 @@ func TestTrimIncompleteRune(t *testing.T) {
 		})
 	}
 }
+
+// TestDoStreamingRequest_FirstTokenDeadlineEndsAStalledDial: a stream attempt whose
+// connection never gets established (stalled DNS, dial or proxy handshake) still ends
+// at its first-token deadline, so the fallback runs on time.
+func TestDoStreamingRequest_FirstTokenDeadlineEndsAStalledDial(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	base := &fasthttp.Client{
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		Dial: func(string) (net.Conn, error) {
+			<-release
+			return nil, errors.New("released")
+		},
+		Transport: NewContextTransport(),
+	}
+	stream := BuildStreamingClient(base)
+	req, resp := newSilentStreamingRequest("http://203.0.113.10")
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	abort := NewAttemptAbort(200 * time.Millisecond)
+	ctx := context.WithValue(parent, schemas.BifrostContextKeyStreamAttemptAbort, abort)
+	errCh := make(chan error, 1)
+	go func() { errCh <- DoStreamingRequest(ctx, stream, req, resp) }()
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, ErrStreamFirstTokenTimeout) {
+			t.Fatalf("DoStreamingRequest error = %v, want ErrStreamFirstTokenTimeout", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the first-token deadline did not end an attempt stalled in its dial")
+	}
+}
