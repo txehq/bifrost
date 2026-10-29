@@ -56,9 +56,17 @@ its 15-minute wait; `@codex review` on the PR asks for another attempt.
    or P1 you refuted is resolved by a person, never by you: an open, live P0/P1 thread is
    what the check fails on when a re-review posts no review of its own. Resolving a thread
    starts no run; re-run the latest `Codex review` run after it.
-6. **If no review starts within a few minutes**, comment `@codex review` once.
+6. **If the connector is silent, leave the re-request to the nudge job.** A review silent
+   for 10 minutes is re-requested once by the nudge job (txehq/action-runner-ops
+   `jobs/codex-review-nudge/`, an `@codex review` comment from `connorwang` carrying
+   `<!-- codex-nudge:v1 <sha> -->`); one still silent 10 minutes after that gets a second
+   comment asking for a new head: push one empty commit. Do not re-request by hand inside
+   those windows.
 7. **After a retarget, rebase onto the new base and force-push**; the check holds until
-   the connector has reviewed a push made after the base changed.
+   the connector has reviewed a push made after the base changed. After a change to the
+   gate lands on `main`, an open PR picks it up only through a new `pull_request` event
+   (edit the PR description, or push); re-running an existing `codex-review` run reuses
+   the base it was created with.
 8. **Merge** with a squash once `codex-review` and the other required checks are green.
 
 ## Limits
