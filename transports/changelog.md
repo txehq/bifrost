@@ -18,6 +18,7 @@
 - A stream attempt whose connection stalls in DNS, dialing or the proxy handshake ends at its first-token deadline and moves to its fallback on time
 - With config.json as the source of truth, an unchanged agent declaration is written again on every load, so an API edit to that agent is reverted as for other sections; split mode keeps the edit until the file changes
 - While dashboard auth is disabled, an agent update that resends the stored credential origins unchanged is accepted; only a change to them needs dashboard auth
+- The background queue reports a lease that lapsed because its renewals kept failing, and a claim that superseded an earlier claim of the same delivery on the same instance, as a lost lease (`queue: lease lost ...`) like every other lease loss; they used to log "lease lapsed" or nothing, so a redelivery after either looked like an unexplained duplicate
 - `extra_headers` values in config.json and the Helm chart's `networkConfig` may be structured secret references (`{"type": "env", "ref": "env.VAR_NAME"}`), which the gateway already accepted
 
 ## 🗄️ Database Migrations
@@ -26,8 +27,8 @@
 
 ## 🍴 Fork changes (txehq/bifrost)
 
-- chore: v2.3.3-sync.3 is a prerelease on top of v2.3.2 carrying the network and destination-policy fixes from the PR5 preservation audit (TXE-5374, in v2.3.3-sync.1), the proxied MCP OAuth and catalog URL check pinning (TXE-5377, in v2.3.3-sync.2) and the PR5 credential-reference and destination-change fixes (TXE-5411); v2.3.2 stays the stable release and `latest`
+- chore: v2.3.3-sync.3 is a prerelease on top of v2.3.2 carrying the network and destination-policy fixes from the PR5 preservation audit (TXE-5374, in v2.3.3-sync.1), the proxied MCP OAuth and catalog URL check pinning (TXE-5377, in v2.3.3-sync.2) the PR5 credential-reference and destination-change fixes (TXE-5411) and the queue lease-loss reporting fix (TXE-5407); v2.3.2 stays the stable release and `latest`
 - note: module versions. This fork publishes no core, framework or plugin module versions: their module paths stay `github.com/capsohq/bifrost/...`, their version files and the transport's requires are unchanged, and the workspace builds them from source
 - preserved: everything v2.3.2 listed under Fork changes
-- chore: the Helm chart is 2.1.49-sync.3, a prerelease; `appVersion` is 2.3.3-sync.3, `image.tag` stays required, and `networkConfig.extra_headers` values may be structured secret references
+- chore: the Helm chart is 2.1.49-sync.3, a prerelease; `appVersion` is 2.3.3-sync.3, `image.tag` stays required, and `networkConfig.extra_headers` values may be structured secret references. The chart was released from 1da133bf8; this transport is published from a later commit carrying TXE-5407, with the same appVersion, and the chart is not republished
 - note: the CLI changes (every stored credential of a context is cleared when its gateway URL changes) ship with the next CLI release, not with this transport
