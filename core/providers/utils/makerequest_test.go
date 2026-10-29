@@ -1358,3 +1358,41 @@ func TestSetExtraHeaders_ResolvesSecretVarValues(t *testing.T) {
 		t.Errorf("http Authorization overwritten: %q", got)
 	}
 }
+
+// BenchmarkTransport_Streamed_ContextFirstTokenDeadline is the streamed path with a
+// first-token deadline armed, as every stream attempt with one has: the connection
+// acquisition also watches the deadline.
+func BenchmarkTransport_Streamed_ContextFirstTokenDeadline(b *testing.B) {
+	ln := benchServer(b, true)
+	client := benchClient(ln, NewContextTransport(), true)
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	buf := make([]byte, 4096)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		abort := NewAttemptAbort(time.Minute)
+		ctx := context.WithValue(parent, schemas.BifrostContextKeyStreamAttemptAbort, abort)
+		req := fasthttp.AcquireRequest()
+		resp := fasthttp.AcquireResponse()
+		req.SetRequestURI("http://bench/")
+		req.Header.SetMethod("POST")
+		req.SetBodyString(`{"model":"m","messages":[],"stream":true}`)
+		if err := DoStreamingRequest(ctx, client, req, resp); err != nil {
+			b.Fatalf("DoStreamingRequest: %v", err)
+		}
+		abort.Disarm()
+		stream := resp.BodyStream()
+		for {
+			if _, err := stream.Read(buf); err != nil {
+				if !errors.Is(err, io.EOF) {
+					b.Fatalf("read: %v", err)
+				}
+				break
+			}
+		}
+		resp.CloseBodyStream() //nolint:errcheck
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+	}
+}

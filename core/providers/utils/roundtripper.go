@@ -134,7 +134,7 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	if req.ConnectionClose() {
 		releaseAbandoned = hc.CloseConn
 	}
-	cc, err := acquireWithContext(ctx, hc.AcquireConn, req.ConnectionClose(), releaseAbandoned)
+	cc, err := acquireWithContext(ctx, abort, hc.AcquireConn, req.ConnectionClose(), releaseAbandoned)
 	if err != nil {
 		return false, err
 	}
@@ -287,7 +287,13 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 // request, so it goes back to the pool. Closing it instead drains the pool under
 // cancelled traffic: every later request then dials, dials are slower, more of
 // them are abandoned, and the churn feeds itself.
-func acquireWithContext[C any](ctx context.Context, acquire func(timeout time.Duration, connectionClose bool) (C, error), connectionClose bool, release func(C)) (C, error) {
+//
+// abort, a stream attempt's first-token deadline (nil when it has none), ends the
+// wait the same way and returns ErrStreamFirstTokenTimeout: DNS, dialing and a proxy
+// handshake all happen inside the acquisition, before the cancel watcher has a
+// socket, so a stalled one would otherwise hold the attempt past the deadline that
+// should move it to its fallback.
+func acquireWithContext[C any](ctx context.Context, abort *AttemptAbort, acquire func(timeout time.Duration, connectionClose bool) (C, error), connectionClose bool, release func(C)) (C, error) {
 	var zero C
 	var timeout time.Duration
 	if deadline, ok := ctx.Deadline(); ok {
@@ -295,7 +301,7 @@ func acquireWithContext[C any](ctx context.Context, acquire func(timeout time.Du
 			return zero, context.DeadlineExceeded
 		}
 	}
-	if ctx.Done() == nil {
+	if ctx.Done() == nil && abort == nil {
 		return acquire(timeout, connectionClose)
 	}
 	// One goroutine does the acquisition and, if the caller has gone by the time a
@@ -323,10 +329,7 @@ func acquireWithContext[C any](ctx context.Context, acquire func(timeout time.Du
 		}
 		done <- result{cc, err}
 	}()
-	select {
-	case r := <-done:
-		return r.cc, r.err
-	case <-ctx.Done():
+	abandon := func() {
 		mu.Lock()
 		abandoned = true
 		mu.Unlock()
@@ -338,7 +341,16 @@ func acquireWithContext[C any](ctx context.Context, acquire func(timeout time.Du
 			}
 		default:
 		}
+	}
+	select {
+	case r := <-done:
+		return r.cc, r.err
+	case <-ctx.Done():
+		abandon()
 		return zero, ctx.Err()
+	case <-abort.Done():
+		abandon()
+		return zero, ErrStreamFirstTokenTimeout
 	}
 }
 

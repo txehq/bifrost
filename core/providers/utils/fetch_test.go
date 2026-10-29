@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
@@ -360,4 +361,82 @@ func TestFetchAndEncodeURL_ProxiedTunnelIsBoundToTheCheckedAddress(t *testing.T)
 	if len(targets) != 1 || targets[0] != "203.0.113.10" {
 		t.Fatalf("proxy was asked for %v, want exactly the checked address [203.0.113.10]", targets)
 	}
+}
+
+// TestFetchAndEncodeURL_EnvironmentProxyFollowsTheRequestScheme pins that an https
+// fetch on a port other than 443 uses HTTPS_PROXY: the environment proxy is chosen by
+// the request's scheme, not guessed from its port. Nothing about the target outlives
+// the fetch: fetch targets come from requests, so a record kept per address would grow
+// with every distinct host.
+func TestFetchAndEncodeURL_EnvironmentProxyFollowsTheRequestScheme(t *testing.T) {
+	prev := fetchResolveTarget
+	fetchResolveTarget = func(_ context.Context, host string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("203.0.113.10")}, nil
+	}
+	t.Cleanup(func() { fetchResolveTarget = prev })
+
+	plain := proxytest.NewHTTPRecorder(t, "http-proxy", "tcp4")
+	secure := proxytest.NewHTTPRecorder(t, "https-proxy", "tcp4")
+	for _, name := range []string{"http_proxy", "https_proxy", "no_proxy", "NO_PROXY", "ALL_PROXY", "all_proxy"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:"+plain.Port())
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:"+secure.Port())
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	ctx = context.WithValue(ctx, schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{Type: schemas.EnvProxy})
+	_, _, _ = FetchAndEncodeURL(ctx, "https://secure.example:8443/img.png")
+
+	if seen := plain.Seen(); len(seen) != 0 {
+		t.Fatalf("HTTP_PROXY carried the https fetch: %+v", seen)
+	}
+	if seen := secure.Seen(); len(seen) != 1 || seen[0].Target != "203.0.113.10:8443" {
+		t.Fatalf("HTTPS_PROXY saw %+v, want one CONNECT to 203.0.113.10:8443", seen)
+	}
+
+	client, err := fetchClientFor(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := client.Transport.(*fasthttpRoundTripper)
+	if rt.schemes == nil {
+		t.Fatal("the fetch client keeps no scheme records, so its proxy dialer guesses by port")
+	}
+	if n := rt.schemes.size(); n != 0 {
+		t.Fatalf("the fetch client still holds %d scheme entries after the fetch", n)
+	}
+}
+
+// TestProviderHTTPClient_SchemeRecordsDoNotOutliveRequests: the auth client's scheme
+// records are held only while a request needs them, so a client that reached many
+// distinct hosts holds none once they are done.
+func TestProviderHTTPClient_SchemeRecordsDoNotOutliveRequests(t *testing.T) {
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy"} {
+		t.Setenv(name, "")
+	}
+	client := NewProviderHTTPClient(nil, schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 2}, nil)
+	rt := client.Transport.(*fasthttpRoundTripper)
+	for range 5 {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"access_token":"t"}`))
+		}))
+		resp, err := client.Get(server.URL + "/token")
+		if err != nil {
+			server.Close()
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		server.Close()
+	}
+	if n := rt.schemes.size(); n != 0 {
+		t.Fatalf("the auth client still holds %d scheme entries after its requests ended", n)
+	}
+}
+
+// size reports how many addresses hold a scheme.
+func (d *dialSchemes) size() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.entries)
 }

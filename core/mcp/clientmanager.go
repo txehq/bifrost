@@ -1079,19 +1079,11 @@ func (m *MCPManager) VerifyPerUserOAuthConnection(ctx context.Context, config *s
 		maps.Copy(finalHeaders, preReq.Headers)
 		finalHeaders["Authorization"] = fmt.Sprintf("Bearer %s", accessToken)
 
-		verifyOpts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(finalHeaders)}
-		verifyHTTPClient, tlsErr := m.buildTLSHTTPClient(config)
-		if tlsErr != nil {
-			return nil, fmt.Errorf("failed to build TLS HTTP client for verification: %w", tlsErr)
+		verifyTransport, tErr := m.newVerificationTransport(config, finalURL, finalHeaders)
+		if tErr != nil {
+			return nil, tErr
 		}
-		if verifyHTTPClient != nil {
-			verifyOpts = append(verifyOpts, transport.WithHTTPBasicClient(verifyHTTPClient))
-		}
-		httpTransport, hErr := transport.NewStreamableHTTP(finalURL, verifyOpts...)
-		if hErr != nil {
-			return nil, fmt.Errorf("failed to create HTTP transport for verification: %w", hErr)
-		}
-		tempClient = client.NewClient(httpTransport)
+		tempClient = client.NewClient(verifyTransport)
 		if startErr := tempClient.Start(verifyCtx); startErr != nil {
 			return nil, fmt.Errorf("failed to start MCP connection for verification: %w", startErr)
 		}
@@ -1255,19 +1247,11 @@ func (m *MCPManager) VerifyHeadersConnection(ctx context.Context, config *schema
 			finalHeaders[k] = v
 		}
 
-		headersVerifyOpts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(finalHeaders)}
-		headersVerifyTLSClient, tlsErr := m.buildTLSHTTPClient(config)
-		if tlsErr != nil {
-			return nil, fmt.Errorf("failed to build TLS HTTP client for verification: %w", tlsErr)
+		verifyTransport, tErr := m.newVerificationTransport(config, finalURL, finalHeaders)
+		if tErr != nil {
+			return nil, tErr
 		}
-		if headersVerifyTLSClient != nil {
-			headersVerifyOpts = append(headersVerifyOpts, transport.WithHTTPBasicClient(headersVerifyTLSClient))
-		}
-		httpTransport, hErr := transport.NewStreamableHTTP(finalURL, headersVerifyOpts...)
-		if hErr != nil {
-			return nil, fmt.Errorf("failed to create HTTP transport for verification: %w", hErr)
-		}
-		tempClient = client.NewClient(httpTransport)
+		tempClient = client.NewClient(verifyTransport)
 		if startErr := tempClient.Start(verifyCtx); startErr != nil {
 			return nil, fmt.Errorf("failed to start MCP connection for verification: %w", startErr)
 		}
@@ -1328,6 +1312,36 @@ func (m *MCPManager) VerifyHeadersConnection(ctx context.Context, config *schema
 
 	m.logger.Info("%s Per-user headers verification succeeded for '%s': discovered %d tools", MCPLogPrefix, config.Name, len(tools))
 	return tools, toolNameMapping, serverInstructions, nil
+}
+
+// newVerificationTransport builds the one-shot transport a verification handshake
+// runs over: SSE for an SSE client, Streamable HTTP otherwise, so the probe speaks
+// the protocol the server actually serves.
+func (m *MCPManager) newVerificationTransport(config *schemas.MCPClientConfig, url string, headers map[string]string) (transport.Interface, error) {
+	tlsClient, err := m.buildTLSHTTPClient(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build TLS HTTP client for verification: %w", err)
+	}
+	if config.ConnectionType == schemas.MCPConnectionTypeSSE {
+		sseOpts := []transport.ClientOption{transport.WithHeaders(headers)}
+		if tlsClient != nil {
+			sseOpts = append(sseOpts, transport.WithHTTPClient(tlsClient))
+		}
+		sseTransport, sseErr := transport.NewSSE(url, sseOpts...)
+		if sseErr != nil {
+			return nil, fmt.Errorf("failed to create SSE transport for verification: %w", sseErr)
+		}
+		return sseTransport, nil
+	}
+	httpOpts := []transport.StreamableHTTPCOption{transport.WithHTTPHeaders(headers)}
+	if tlsClient != nil {
+		httpOpts = append(httpOpts, transport.WithHTTPBasicClient(tlsClient))
+	}
+	httpTransport, httpErr := transport.NewStreamableHTTP(url, httpOpts...)
+	if httpErr != nil {
+		return nil, fmt.Errorf("failed to create HTTP transport for verification: %w", httpErr)
+	}
+	return httpTransport, nil
 }
 
 // performAdminToolDiscovery resolves the credential for a per-call client
@@ -3302,7 +3316,7 @@ func (m *MCPManager) failConnectAttempt(entry *schemas.MCPClientState, config *s
 // The proxy is network.DefaultProxyFunc's: the global proxy when it is enabled
 // for API traffic, else the process's HTTP_PROXY / HTTPS_PROXY / NO_PROXY
 // environment, matching every other outbound client in the process and the
-// behavior before core v1.8.5. See mcpProxySelector for how the destination
+// behavior before core v1.8.5. See mcpDestinationCheck for how the destination
 // guard stays intact on the proxied path.
 //
 // TLS customization from MCPTLSConfig is layered on top when provided.
@@ -3368,60 +3382,50 @@ func (m *MCPManager) buildTLSHTTPClientWithProxyAndResolver(config *schemas.MCPC
 	// pod behind an explicit HTTP_PROXY/HTTPS_PROXY) can only reach a public
 	// MCP server through that proxy. Proxying does change what the dial-time
 	// guard sees, though: http.Transport hands DialContext the proxy's
-	// address, not the MCP destination. The destination policy for a proxied
-	// request therefore runs in the selector wrapper (see mcpProxySelector),
-	// and on the direct path (no proxy configured, or a NO_PROXY match) the
-	// dialer sees the real target.
-	if !config.RequirePublicTarget {
-		return &http.Client{Transport: newTransport(mcpProxySelector(proxy, false, resolver), network.PrivateNetworkDialContext(mcpDialTimeout))}, nil
+	// address, not the MCP destination. So which path a request takes is
+	// decided per request, on two separate transports. mcpDestinationCheck
+	// vets a proxied destination when the request is routed, and the proxied
+	// transport's dialer (network.PinnedProxyDialContext) tunnels to an address
+	// that check approved, plain http included, so the proxy never resolves a
+	// name whose answer could have changed since. On the direct path (no proxy
+	// configured, or a NO_PROXY match) the dialer sees the real target. The
+	// proxy itself is operator configuration and routinely sits on a private or
+	// loopback address, so it is dialed under the private-network policy
+	// whichever policy the destination gets, and a direct request can never
+	// inherit that policy because its destination happens to be an address a
+	// proxied request used before.
+	strict := config.RequirePublicTarget
+	direct := network.PrivateNetworkDialContext(mcpDialTimeout)
+	if strict {
+		direct = network.SSRFSafeDialContext(mcpDialTimeout)
 	}
-	// A RequirePublicTarget client needs two dial policies: the strict one for
-	// its destinations and the private-network one for the proxy itself, which
-	// is operator configuration and routinely sits on a private or loopback
-	// address. Which policy applies is decided per request by whether a proxy
-	// is selected for it, on two separate transports, so a direct request can
-	// never inherit the proxy policy because its destination happens to be an
-	// address a proxied request used before.
 	return &http.Client{Transport: &network.ProxyAwareTransport{
-		Proxy:    proxy,
-		Direct:   newTransport(nil, network.SSRFSafeDialContext(mcpDialTimeout)),
-		ViaProxy: newTransport(mcpProxySelector(proxy, true, resolver), network.PrivateNetworkDialContext(mcpDialTimeout)),
+		Proxy:            proxy,
+		CheckDestination: mcpDestinationCheck(strict, resolver),
+		Direct:           newTransport(nil, direct),
+		ViaProxy:         newTransport(nil, network.PinnedProxyDialContext(network.ProxiedDestinationPolicy(strict), resolver, mcpDialTimeout)),
 	}}, nil
 }
 
-// mcpProxySelector wraps an http.Transport Proxy selector so the dial-time
-// destination policy still applies to a request that is routed through a
-// proxy. A direct request is validated by the dialer, which sees the real
-// target. A proxied request is validated here, through
-// network.CheckResolvedProxiedDestination: an IP-literal host is checked as is
-// and a hostname against what the local resolver answers. A hostname the local
-// resolver cannot answer is refused for every client rather than handed to the
-// proxy, whose resolver could map it to an address the policy blocks
-// (TXE-5086); deployments whose DNS lives only behind the proxy must let the
-// gateway resolve their MCP servers. The proxy still resolves the name again on
-// its own side, so this binds the destination as far as the gateway can see
-// it, not what the proxy dials. The proxy is operator configuration (process
-// environment), not request input; the dialer still refuses a proxy that
-// itself sits on a link-local or metadata address. With requirePublicTarget
-// set the destination must be public, matching the strict dialer the same
-// client uses on the direct path; otherwise the private-network policy
-// applies. A nil selector is returned as nil so a transport without one is
-// unchanged.
-func mcpProxySelector(next func(*http.Request) (*url.URL, error), requirePublicTarget bool, resolver network.IPLookuper) func(*http.Request) (*url.URL, error) {
-	if next == nil {
-		return nil
-	}
-	return func(req *http.Request) (*url.URL, error) {
-		proxyURL, err := next(req)
-		if err != nil || proxyURL == nil {
-			return proxyURL, err
-		}
-		ctx, cancel := context.WithTimeout(req.Context(), mcpDialTimeout)
+// mcpDestinationCheck is the destination policy for a proxied MCP request. A
+// direct request is validated by the dialer, which sees the real target. A
+// proxied request is validated here, through network.ResolveProxiedDestination:
+// an IP-literal host is checked as is and a hostname against what the local
+// resolver answers, and the approved addresses are what the pinned dialer
+// tunnels to. A hostname the local resolver cannot answer is refused for every
+// client rather than handed to the proxy, whose resolver could map it to an
+// address the policy blocks (TXE-5086); deployments whose DNS lives only behind
+// the proxy must let the gateway resolve their MCP servers. The proxy is
+// operator configuration (process environment), not request input; the dialer
+// still refuses a proxy that itself sits on a link-local or metadata address.
+// With requirePublicTarget set the destination must be public, matching the
+// strict dialer the same client uses on the direct path; otherwise the
+// private-network policy applies.
+func mcpDestinationCheck(requirePublicTarget bool, resolver network.IPLookuper) func(ctx context.Context, host string) ([]net.IP, error) {
+	return func(ctx context.Context, host string) ([]net.IP, error) {
+		ctx, cancel := context.WithTimeout(ctx, mcpDialTimeout)
 		defer cancel()
-		if err := network.CheckResolvedProxiedDestination(ctx, req.URL.Hostname(), requirePublicTarget, resolver); err != nil {
-			return nil, err
-		}
-		return proxyURL, nil
+		return network.ResolveProxiedDestination(ctx, host, requirePublicTarget, resolver)
 	}
 }
 

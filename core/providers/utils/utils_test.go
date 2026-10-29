@@ -4255,3 +4255,28 @@ func BenchmarkSetExtraHeaders(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkProviderHTTPClientRoundTrip measures a request through the provider auth
+// client (token exchanges for Vertex, Azure Entra ID, Databricks), whose round
+// tripper holds each request's scheme for the environment proxy dialer.
+func BenchmarkProviderHTTPClientRoundTrip(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"t"}`))
+	}))
+	defer server.Close()
+	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy", "ALL_PROXY", "all_proxy"} {
+		b.Setenv(name, "")
+	}
+	client := NewProviderHTTPClient(nil, schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 5}, nil)
+	target := server.URL + "/token"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		resp, err := client.Get(target)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+}

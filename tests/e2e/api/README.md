@@ -83,10 +83,10 @@ bytes, then closes without a `Connection: close` header. The gateway must emit a
 The connection-disposal regression is covered by the Go transport tests. These cases make
 no live provider calls and are skipped unless `providerErrorFixture=1`.
 
-Run from the repository root. Check that ports 8790 and 8791 are free before starting:
+Run from the repository root. Check that ports 8790, 8791 and 8799 (the fixture's stall proxy) are free before starting:
 
 ```bash
-lsof -nP -iTCP:8790 -iTCP:8791 -sTCP:LISTEN
+lsof -nP -iTCP:8790 -iTCP:8791 -iTCP:8799 -sTCP:LISTEN
 ```
 
 Start the fixture in one terminal:
@@ -184,6 +184,14 @@ newman run tests/e2e/api/collections/provider-harness.json \
 When the gateway needs a setup token for its management API, run the folder through
 `make run-provider-harness-test FEATURE=routing-error-fixture ENV_FILE=<an environment setting
 providerErrorFixture=1>` instead, which adds the token to every management call.
+
+The fixture also runs a stall proxy on port 8799 (`PROVIDER_ERROR_FIXTURE_STALL_PORT`): an
+HTTP proxy that accepts the connection and never answers the CONNECT, holding it for 15 seconds, and
+counts each CONNECT it reads as `__stall_proxy_connects` in `/__hits`. The `acquisition-first-token`
+folder routes a streamed request to a provider whose `proxy_config` points at it, with a 500ms
+first-token deadline and a fallback on the fixture, and asserts the fallback serves at the deadline
+although the attempt never got a connection. Run it like folder 185, with
+`providerErrorFixtureStallProxyUrl` when the stall proxy is not on `http://127.0.0.1:8799`.
 
 ## Vertex endpoint selection and header forwarding
 

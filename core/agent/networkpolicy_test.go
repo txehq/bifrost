@@ -432,3 +432,32 @@ func TestA2AOperationErrorAttribution(t *testing.T) {
 	require.False(t, wrapped.IsBifrostError)
 	require.ErrorIs(t, wrapped.Error.Error, upstream)
 }
+
+// TestCardHandlerKeepsRegistrationPublicTargetRestriction pins that live card
+// discovery applies the registration's persisted public-target restriction, as
+// registration and runtime calls do: an operator allowlist of private targets must
+// not let a public-only registration fetch its card from a private address.
+func TestCardHandlerKeepsRegistrationPublicTargetRestriction(t *testing.T) {
+	var cardCalls atomic.Int32
+	card := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cardCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"private"}`))
+	}))
+	defer card.Close()
+	store := &memoryStore{regs: map[string]schemas.AgentRegistration{
+		"public-only": {Name: "public-only", AgentCardURL: card.URL, Enabled: true, AllowByDefault: true, RequirePublicTarget: true},
+	}}
+	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
+	require.NoError(t, err)
+	defer m.Close()
+	m.privateAllowlistFn = func() []string { return []string{"127.0.0.1"} }
+
+	handler, found := m.CardHandler("public-only", "")
+	require.True(t, found)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	require.Equal(t, http.StatusBadGateway, response.Code, response.Body.String())
+	require.Contains(t, response.Body.String(), "blocked by the Agent Gateway private network policy")
+	require.Zero(t, cardCalls.Load(), "a public-only registration reached a private card URL")
+}
