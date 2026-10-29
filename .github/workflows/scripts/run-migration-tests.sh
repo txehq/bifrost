@@ -1691,6 +1691,8 @@ V230_ROW
 name|'vertex'
 send_back_raw_request|false
 send_back_raw_response|false
+store_raw_request_response|false
+ignore_provider_cost|false
 config_hash|'provider-hash-vertex'
 created_at|$now
 updated_at|$now
