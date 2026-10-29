@@ -1022,6 +1022,28 @@ func (c *GlobalProxyConfig) proxyTLS() *tls.Config {
 	return &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: c != nil && c.SkipTLSVerify}
 }
 
+// ProxyTLSFor returns the TLS config for reaching proxyURL when it is the registered
+// factory's global proxy (its skip_tls_verify applies), else nil for the system roots.
+// A dialer handed only the proxy a selector chose uses it to honour the operator's
+// proxy TLS settings the way the factory's own clients do.
+func ProxyTLSFor(proxyURL *url.URL) *tls.Config {
+	factory := defaultFactory.Load()
+	if factory == nil || proxyURL == nil {
+		return nil
+	}
+	factory.mu.RLock()
+	defer factory.mu.RUnlock()
+	if factory.proxyConfig == nil || !factory.proxyConfig.Enabled {
+		return nil
+	}
+	for _, purpose := range []ClientPurpose{ClientPurposeAPI, ClientPurposeInference, ClientPurposeSCIM} {
+		if global := factory.proxyURLForPurpose(purpose); global != nil && global.String() == proxyURL.String() {
+			return factory.proxyConfig.proxyTLS()
+		}
+	}
+	return nil
+}
+
 // connectDirect reports whether a request for host skips the proxy: a no_proxy match,
 // or a local or instance-metadata target.
 func connectDirect(host string, proxyCfg *GlobalProxyConfig) bool {
