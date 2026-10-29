@@ -1,0 +1,13 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "setup_token": "bifrost-e2e-setup-token",
+  "client": {
+    "enable_logging": false,
+    "mcp_enable_temp_token_auth": true,
+    "mcp_server_auth_mode": "both",
+    "oauth2_server_config": {
+      "issuer_url": "http://localhost:8080"
+    }
+  },
+  "providers": {}
+}
