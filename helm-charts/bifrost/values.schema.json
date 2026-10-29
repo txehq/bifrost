@@ -7857,9 +7857,39 @@
         "extra_headers": {
           "type": "object",
           "additionalProperties": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "ref": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "plain_text",
+                      "env",
+                      "vault"
+                    ]
+                  },
+                  "env_var": {
+                    "type": "string"
+                  },
+                  "from_env": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
           },
-          "description": "Additional headers to send with requests"
+          "description": "Additional headers to send with requests. A value may be a literal, an env.VAR_NAME or vault.path reference, or a structured secret reference ({\"type\": \"env\", \"ref\": \"env.VAR_NAME\"})."
         },
         "default_request_timeout_in_seconds": {
           "type": "integer",
