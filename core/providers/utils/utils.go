@@ -1101,13 +1101,8 @@ func NewProviderHTTPClient(proxyConfig *schemas.ProxyConfig, networkConfig schem
 	if !namesProxy(proxyConfig) {
 		effective = &schemas.ProxyConfig{Type: schemas.EnvProxy}
 	}
-	schemes := &sync.Map{} // dial address -> request scheme, for the environment dialer
-	client = configureProxy(client, effective, logger, func(addr string) string {
-		if scheme, ok := schemes.Load(addr); ok {
-			return scheme.(string)
-		}
-		return ""
-	})
+	schemes := newDialSchemes() // dial address -> request scheme, for the environment dialer
+	client = configureProxy(client, effective, logger, schemes.lookup)
 	client = ConfigureTLS(client, networkConfig, logger)
 	client.Dial = directForLocalTargets(client.Dial, timeout)
 	client.Transport = NewContextTransport()
@@ -1158,7 +1153,61 @@ func directForLocalTargets(proxyDial fasthttp.DialFunc, timeout time.Duration) f
 // while fasthttp is still dialing, which fasthttp cannot interrupt.
 type fasthttpRoundTripper struct {
 	client  *fasthttp.Client
-	schemes *sync.Map // non-nil: record each request's scheme under its dial address
+	schemes *dialSchemes // non-nil: hold each request's scheme under its dial address
+}
+
+// dialSchemes records the scheme of each in-flight request under the address
+// fasthttp dials for it, so a proxy dialer (which sees only host:port) can choose
+// the environment variable by scheme. An entry lives only while a request or dial
+// holds it, so a client whose targets come from requests keeps no state for
+// addresses it is no longer reaching: the map holds at most one entry per
+// in-flight request or pinned dial, and is empty when the client is idle.
+type dialSchemes struct {
+	mu      sync.Mutex
+	entries map[string]*dialScheme
+}
+
+type dialScheme struct {
+	scheme string
+	refs   int
+}
+
+func newDialSchemes() *dialSchemes {
+	return &dialSchemes{entries: make(map[string]*dialScheme)}
+}
+
+// hold records scheme for addr until the returned release runs. An empty scheme
+// records nothing. The latest hold's scheme wins while two overlap.
+func (d *dialSchemes) hold(addr, scheme string) (release func()) {
+	if scheme == "" {
+		return func() {}
+	}
+	d.mu.Lock()
+	entry := d.entries[addr]
+	if entry == nil {
+		entry = &dialScheme{}
+		d.entries[addr] = entry
+	}
+	entry.scheme = scheme
+	entry.refs++
+	d.mu.Unlock()
+	return func() {
+		d.mu.Lock()
+		if entry.refs--; entry.refs == 0 && d.entries[addr] == entry {
+			delete(d.entries, addr)
+		}
+		d.mu.Unlock()
+	}
+}
+
+// lookup returns the scheme held for addr, or "" when none is.
+func (d *dialSchemes) lookup(addr string) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if entry := d.entries[addr]; entry != nil {
+		return entry.scheme
+	}
+	return ""
 }
 
 // maxAuthResponseBytes caps a token or credential response on the auth client:
@@ -1194,8 +1243,11 @@ func (rt *fasthttpRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 		fasthttp.ReleaseRequest(freq)
 		fasthttp.ReleaseResponse(fresp)
 	}
+	// The scheme is held until fasthttp has finished with the request, which may be
+	// after RoundTrip returned on a cancelled context: the dial reads it.
+	releaseScheme := func() {}
 	if rt.schemes != nil {
-		rt.schemes.Store(dialAddr(req.URL), req.URL.Scheme)
+		releaseScheme = rt.schemes.hold(dialAddr(req.URL), req.URL.Scheme)
 	}
 	freq.SetRequestURI(req.URL.String())
 	freq.Header.SetMethod(req.Method)
@@ -1223,12 +1275,14 @@ func (rt *fasthttpRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 	select {
 	case err = <-done:
 		unbind()
+		releaseScheme()
 	case <-ctx.Done():
 		// fasthttp may still be dialing; let it finish in the background and
 		// release the pooled objects only once it has.
 		go func() {
 			<-done
 			unbind()
+			releaseScheme()
 			release()
 		}()
 		return nil, ctx.Err()

@@ -556,8 +556,9 @@ func sendProxyMatrixRequest(t *testing.T, stack string, proxyConfig *schemas.Pro
 //	auth     - NewProviderHTTPClient (Vertex OAuth, Azure Entra ID, Databricks M2M)
 //	fetch    - FetchAndEncodeURL (image and document URLs)
 //
-// All three choose HTTPS_PROXY vs HTTP_PROXY by port. Bedrock (TestBedrockTransportProxyMatrix)
-// and the WebSocket dialer (TestWebSocketProxyMatrix) choose by scheme.
+// Inference clients choose HTTPS_PROXY vs HTTP_PROXY by port; the auth and fetch clients,
+// Bedrock (TestBedrockTransportProxyMatrix) and the WebSocket dialer
+// (TestWebSocketProxyMatrix) choose by scheme.
 func TestProxyRoutingMatrix(t *testing.T) {
 	set := proxytest.NewSet(t)
 	for _, stack := range []string{"fasthttp", "auth", "fetch"} {
@@ -572,8 +573,8 @@ func TestProxyRoutingMatrix(t *testing.T) {
 						set.Reset()
 						proxytest.SetEnv(t, set, env, host)
 						rule := proxytest.ByPort
-						if stack == "auth" {
-							// The auth client tells the env dialer each request's scheme.
+						if stack == "auth" || stack == "fetch" {
+							// The auth and fetch clients tell the env dialer each request's scheme.
 							rule = proxytest.ByScheme
 						}
 						want := proxytest.Expect(set, source, env, target, rule, stack == "auth")

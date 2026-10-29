@@ -169,24 +169,26 @@ func fetchClientFor(ctx context.Context) (*http.Client, error) {
 // the hostname, before the address is pinned.
 // proxyBypassFunc reports whether a fetch to host:port skips proxyConfig's proxy, the
 // way ConfigureProxy's dialer decides it: a no_proxy match, or for the environment
-// proxy, NO_PROXY or no variable set for the port's scheme (443 is https, anything else
-// http, as envProxyDialFunc chooses).
-func proxyBypassFunc(proxyConfig *schemas.ProxyConfig) func(host, port string) bool {
+// proxy, NO_PROXY or no variable set for the request's scheme. An empty scheme is
+// chosen by port (443 is https, anything else http), as envProxyDialFunc does.
+func proxyBypassFunc(proxyConfig *schemas.ProxyConfig) func(scheme, host, port string) bool {
 	noProxy := proxyConfig.NoProxy
 	var envProxy func(*url.URL) (*url.URL, error)
 	if proxyConfig.Type == schemas.EnvProxy {
 		envProxy = httpproxy.FromEnvironment().ProxyFunc()
 	}
-	return func(host, port string) bool {
+	return func(scheme, host, port string) bool {
 		if noProxy != "" && network.MatchesNoProxy(host, noProxy) {
 			return true
 		}
 		if envProxy == nil {
 			return false
 		}
-		scheme := "http"
-		if port == "443" {
-			scheme = "https"
+		if scheme == "" {
+			scheme = "http"
+			if port == "443" {
+				scheme = "https"
+			}
 		}
 		proxyURL, err := envProxy(&url.URL{Scheme: scheme, Host: net.JoinHostPort(host, port)})
 		return err == nil && proxyURL == nil
@@ -210,8 +212,12 @@ func newFetchClient(proxyConfig *schemas.ProxyConfig) *http.Client {
 		NoDefaultUserAgentHeader: true,
 	}
 	proxied := false
+	// Dial address -> request scheme, so the environment proxy is chosen by the
+	// request's scheme rather than guessed from its port (an https URL on 8443 uses
+	// HTTPS_PROXY). Pinned dials hold it under the address they dial.
+	schemes := newDialSchemes()
 	if namesProxy(proxyConfig) {
-		client = ConfigureProxy(client, proxyConfig, getLogger())
+		client = configureProxy(client, proxyConfig, getLogger(), schemes.lookup)
 		if proxyDial := client.Dial; proxyDial != nil {
 			proxied = true
 			bypass := proxyBypassFunc(proxyConfig)
@@ -220,7 +226,8 @@ func newFetchClient(proxyConfig *schemas.ProxyConfig) *http.Client {
 				if err != nil {
 					return nil, err
 				}
-				if bypass(host, port) {
+				scheme := schemes.lookup(addr)
+				if bypass(scheme, host, port) {
 					return direct(addr)
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -232,7 +239,9 @@ func newFetchClient(proxyConfig *schemas.ProxyConfig) *http.Client {
 				var lastErr error
 				for _, ip := range ips {
 					pinned := net.JoinHostPort(ip.String(), port)
+					release := schemes.hold(pinned, scheme)
 					conn, err := proxyDial(pinned)
+					release()
 					if errors.Is(err, errBypassProxy) {
 						// no_proxy names the address (a CIDR entry): connect directly,
 						// still through the SSRF dialer.
@@ -254,7 +263,7 @@ func newFetchClient(proxyConfig *schemas.ProxyConfig) *http.Client {
 
 	return &http.Client{
 		Timeout:   20 * time.Second,
-		Transport: &fasthttpRoundTripper{client: client},
+		Transport: &fasthttpRoundTripper{client: client, schemes: schemes},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
 				return fmt.Errorf("blocked redirect to unsupported scheme %q", req.URL.Scheme)
