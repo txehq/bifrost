@@ -279451,8 +279451,9 @@
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "pm.test('the stored header still references the variable the admin set - key-secret-refs-e2e', function () {",
-                  "  var headers = (pm.response.json().network_config || {}).extra_headers || {};",
-                  "  pm.expect((headers['X-Team'] || {}).ref, 'failed: ' + pm.response.text()).to.equal('env.TXE4989_HARNESS_HEADER_REF');",
+                  "  var nc = pm.response.json().network_config || {};",
+                  "  pm.expect((nc.extra_headers || {})['X-Team'], 'failed: ' + pm.response.text()).to.equal('env.TXE4989_HARNESS_HEADER_REF');",
+                  "  pm.expect(((nc.extra_headers_secret_vars || {})['X-Team'] || {}).ref).to.equal('env.TXE4989_HARNESS_HEADER_REF');",
                   "});"
                 ]
               }
