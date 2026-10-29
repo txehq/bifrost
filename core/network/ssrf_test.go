@@ -1291,6 +1291,46 @@ func TestStrictGuardedProxyRefusesUnresolvedNames(t *testing.T) {
 	}
 }
 
+// TestPrivateNetworkGuardedProxyDNSSemantics pins the private-network guarded client's
+// proxied-path DNS contract (PR5 b67778c7b): a name the gateway resolves to a private
+// or loopback address is still reachable through the proxy, tunnelled to that address,
+// because self-hosted targets are the policy's purpose; a metadata answer is refused
+// before the proxy is asked; and a name only the proxy could resolve is refused rather
+// than deferred, so a proxy-only-DNS deployment must give the gateway DNS for the
+// hosts it proxies.
+func TestPrivateNetworkGuardedProxyDNSSemantics(t *testing.T) {
+	var seen []string
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.URL.Host)
+		w.WriteHeader(http.StatusOK)
+	})
+	resolver := hostResolver{
+		"datasheet.corp": {net.ParseIP("10.20.30.40")},
+		"mirror.local":   {net.ParseIP("127.0.0.1")},
+		"metadata.corp":  {net.ParseIP("169.254.169.254")},
+	}
+	client := newGuardedHTTPClientWith(5*time.Second, (&net.Dialer{}).DialContext, checkPrivateNetworkPolicy, fixedProxy(t, proxy.URL), resolver)
+	for _, host := range []string{"datasheet.corp", "mirror.local"} {
+		resp, err := client.Get("http://" + host + "/pricing.json")
+		if err != nil {
+			t.Fatalf("%s resolves to a private-network address the policy permits; proxying it must work, got %v", host, err)
+		}
+		resp.Body.Close()
+	}
+	if want := []string{"10.20.30.40", "127.0.0.1"}; strings.Join(seen, ",") != strings.Join(want, ",") {
+		t.Fatalf("proxy tunnels = %v, want %v (the resolved private addresses, never the names)", seen, want)
+	}
+	if _, err := client.Get("http://metadata.corp/latest/"); err == nil || !strings.Contains(err.Error(), "link-local") {
+		t.Fatalf("a metadata answer must be refused before the proxy, got %v", err)
+	}
+	if _, err := client.Get("http://proxy-only.corp/x"); err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
+		t.Fatalf("a name the gateway cannot resolve must be refused, not deferred to the proxy, got %v", err)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("refused requests reached the proxy: %v", seen)
+	}
+}
+
 // TestPinnedProxyDialKeepsProxyAuthAndScheme: pinning changes only what the tunnel
 // is opened to. An HTTP proxy still receives its Proxy-Authorization on the CONNECT,
 // and a SOCKS5 proxy its RFC 1929 login, with the checked address as the target.
