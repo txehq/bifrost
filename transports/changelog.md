@@ -1,6 +1,15 @@
 ## 🔒 Security
 
-- **Go 1.27.3** - Security release for [CVE-2026-111943](https://groups.google.com/g/golang-announce/c/66pojueaQek) in `crypto/x509`: certificate chains through a small set of intermediates from a specific Certificate Authority are no longer accepted by `Verify`, which covers every TLS connection Bifrost makes to providers, MCP servers and other upstreams. Bifrost now builds with Go 1.27.3, and the Docker images (`Dockerfile`, `Dockerfile.local`, `Dockerfile.redhat`) move to `golang:1.27.3-alpine3.24`. Custom Go plugins must be rebuilt with Go 1.27.3 to load.
+- **Proxied requests are pinned to the address the policy checked** - guarded HTTP clients (catalog and datasheet fetches, OpenAPI spec previews, RSS feeds) and MCP clients that reach their destination through a proxy now open a tunnel to the address the destination policy resolved and approved (CONNECT ip:port, or SOCKS5 to the IP, plain http included) instead of handing the proxy the hostname to resolve again. A DNS answer that changes after the check (rebinding) can no longer carry the request to a private, loopback or metadata address. The proxy's credentials, TLS settings and private-network reachability are unchanged
+- **Unresolvable proxied destinations are refused** - a hostname the gateway cannot resolve is refused on every proxied guarded path instead of being left to the proxy, as MCP clients already were: nothing could check where the proxy would send it. A deployment whose DNS lives only behind the proxy must let the gateway resolve the catalog, datasheet, OpenAPI and MCP hosts it reaches through that proxy
+- **Agent card discovery keeps a registration's public-target restriction** - live card discovery for a registration created without authentication applies its persisted public-only restriction, as registration and runtime calls do, so an operator's private-network allowlist no longer lets it fetch a card from a private address
+
+## 🐞 Fixed
+
+- A proxy changed from one URL to another never reuses a tunnel through the old proxy; guarded HTTP transports close idle connections after 90 seconds
+- MCP verification and instruction-refresh handshakes for an SSE client use SSE, so an SSE-only server no longer answers 405 and an edit no longer keeps stale instructions
+- Image and document URL fetches through the environment proxy choose `HTTPS_PROXY` or `HTTP_PROXY` by the request's scheme rather than its port, and the provider auth and fetch clients keep each target's scheme only while a request needs it instead of for the life of the process
+- A stream attempt whose connection stalls in DNS, dialing or the proxy handshake ends at its first-token deadline and moves to its fallback on time
 
 ## 🗄️ Database Migrations
 
@@ -8,7 +17,7 @@
 
 ## 🍴 Fork changes (txehq/bifrost)
 
-- chore: v2.3.2 is the fork's release of upstream transports/v2.3.2 (`a05ea20e6`) and the docs and changelog commits after it through `1123ea210`, merged onto v2.3.1. It supersedes v2.3.1 as the stable release. Upstream changed no Go source in this range
-- note: module versions. Upstream's v2.3.2 bumps core to v1.13.1 and framework to v1.10.1 across every module. This fork publishes no core, framework or plugin module versions: their module paths stay `github.com/capsohq/bifrost/...`, their version files and the transport's requires are unchanged (core v1.11.2, framework v1.9.0 and the plugin versions v2.3.1 shipped), the workspace builds them from source, and their changelogs stay empty. Every module, `go.work` and the release jobs now declare Go 1.27.3
-- preserved: everything v2.3.1 listed under Fork changes, including the non-dropping `drop_agent_registration_options` migration (`tenant` and `extension_uris` keep their values), the OpenAPI MCP hardening, the xAI native Messages byte-exact passthrough, and every TXE fix through v2.3.1
-- chore: the Helm chart is 2.1.48, the stable chart for this release; `appVersion` is 2.3.2 and `image.tag` stays required
+- chore: v2.3.3-sync.1 is a prerelease on top of v2.3.2 carrying the network and destination-policy fixes from the PR5 preservation audit (TXE-5374); v2.3.2 stays the stable release and `latest`
+- note: module versions. This fork publishes no core, framework or plugin module versions: their module paths stay `github.com/capsohq/bifrost/...`, their version files and the transport's requires are unchanged, and the workspace builds them from source
+- preserved: everything v2.3.2 listed under Fork changes
+- chore: the Helm chart is 2.1.49-sync.1, a prerelease; `appVersion` is 2.3.3-sync.1 and `image.tag` stays required
