@@ -1749,7 +1749,8 @@
                 "expanded": false,
                 "pages": [
                   "GET /api/governance/budgets",
-                  "GET /api/governance/rate-limits"
+                  "GET /api/governance/rate-limits",
+                  "POST /api/governance/budget-requests/{request_id}/approve"
                 ]
               },
               {
@@ -2415,6 +2416,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.47",
               "changelogs/helm-v2.1.47-sync.4",
               "changelogs/helm-v2.1.47-sync.3",
               "changelogs/helm-v2.1.47-sync.2",

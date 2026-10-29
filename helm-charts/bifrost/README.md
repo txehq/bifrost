@@ -4,9 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/capsohq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.46 (prereleases 2.1.47-sync.1, 2.1.47-sync.2, 2.1.47-sync.3 and 2.1.47-sync.4 carry the changes below; install them with `--devel`)
+**Latest Version:** 2.1.47
 
 ## Changelog
+
+### 2.1.47
+
+The txehq fork chart for transport v2.3.1. It supersedes 2.1.46 as the stable chart and carries everything the 2.1.47-sync.1 to 2.1.47-sync.4 prereleases did (their entries follow); since 2.1.47-sync.4 only `appVersion` changed:
+
+- `appVersion` is now `2.3.1`, the transport this chart ships with; it sets only the `app.kubernetes.io/version` label, and `image.tag` stays required.
 
 ### 2.1.47-sync.4 (prerelease)
 
