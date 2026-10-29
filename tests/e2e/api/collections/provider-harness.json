@@ -278717,7 +278717,7 @@
     },
     {
       "name": "263. OSS setup lock: scoped consent tokens and provider header references (setup-lock-e2e)",
-      "description": "Opt-in profile regression for TXE-5411 (PR5 8338c04af M105 and 36f076c4c). Run with provider_config/setup-lock-temp-token/config.json (setup_token set, no enabled admin, temp-token auth and the MCP OAuth2 server on) on an isolated fresh instance, INCLUDE_PREVIEW=1, PARALLEL=0 and FEATURE=setup-lock-e2e; the harness's setup token must be the profile's (BIFROST_SETUP_TOKEN, default bifrost-e2e-setup-token). Rows that must act without a credential strip the X-Bifrost-Setup-Token header the harness injects. Part 1, scoped temp tokens: while the OSS setup lock is active, an MCP consent or per-user auth temp token authorizes exactly its method, raw path and resource, as it does once dashboard auth is on, and is not the admin. Before the fix the lock answered every such request 401 'send the setup token', stranding MCP users mid-consent. Case 1 proves the lock is active; cases 2-3 register a disposable client and open a consent flow, chaining the flow id and token out of the 302 Location; case 4 reads the flow with only the token (200; red before the fix); case 5 submits mode=session with only the token and expects the consent handler's 401, not the lock's (red before the fix); cases 6-7 keep another flow and a management route at 401. Part 2, provider extra-header server-secret references: the 403 for an auth-bypassed caller that introduces or repoints an env./vault. header reference is reachable only where the fail-open bypass exists (no setup lock; enterprise builds) and is pinned by the handler Go tests. Under the OSS setup lock the same caller is refused before the handler: case 8 creates a keyless custom provider with a header reference as the setup-token admin (base_url 127.0.0.1:9, nothing listens and nothing leaves the host), case 9 tries to repoint it with no credential and gets the lock's 401, case 10 shows nothing was persisted, case 11 shows an authenticated save of the unchanged reference still succeeds, and case 12 deletes the provider. The openai keyword is only a harness filter label; no provider calls are made. Cookies and redirect following are disabled. Every unexpected status fails. Run the whole folder in order.",
+      "description": "Opt-in profile regression for TXE-5411 (PR5 8338c04af M105 and 36f076c4c). Run with provider_config/setup-lock-temp-token/config.json (setup_token set, no enabled admin, temp-token auth and the MCP OAuth2 server on) on an isolated fresh instance, INCLUDE_PREVIEW=1, PARALLEL=0 and FEATURE=setup-lock-e2e; the harness's setup token must be the profile's (BIFROST_SETUP_TOKEN, default bifrost-e2e-setup-token). Rows that must act without a credential strip the X-Bifrost-Setup-Token header the harness injects. Part 1, scoped temp tokens: while the OSS setup lock is active, an MCP consent or per-user auth temp token authorizes exactly its method, raw path and resource, as it does once dashboard auth is on, and is not the admin. Before the fix the lock answered every such request 401 'send the setup token', stranding MCP users mid-consent. Case 1 proves the lock is active; cases 2-3 register a disposable client and open a consent flow, chaining the flow id and token out of the 302 Location; case 4 reads the flow with only the token (200; red before the fix); case 5 submits mode=session with only the token and expects the consent handler's 401, not the lock's (red before the fix); cases 6-7 keep another flow and a management route at 401. Part 2, provider extra-header server-secret references: the 403 for an auth-bypassed caller that introduces or repoints an env./vault. header reference is reachable where the fail-open bypass admits a request: a gateway with no config store, enterprise builds, and (corrected by TXE-4989) an OSS gateway whose operator whitelisted the provider route, which passes the setup lock; folder 264 pins that last case over HTTP, and the handler Go tests pin the rest. Under the OSS setup lock the same caller is refused before the handler: case 8 creates a keyless custom provider with a header reference as the setup-token admin (base_url 127.0.0.1:9, nothing listens and nothing leaves the host), case 9 tries to repoint it with no credential and gets the lock's 401, case 10 shows nothing was persisted, case 11 shows an authenticated save of the unchanged reference still succeeds, and case 12 deletes the provider. The openai keyword is only a harness filter label; no provider calls are made. Cookies and redirect following are disabled. Every unexpected status fails. Run the whole folder in order.",
       "item": [
         {
           "name": "[PREVIEW] [EXPECT-401] openai setup-lock-e2e setup lock precondition - setup-lock-e2e",
@@ -279250,7 +279250,7 @@
     },
     {
       "name": "264. Provider key server-secret references on a whitelisted management route (key-secret-refs-e2e)",
-      "description": "Opt-in profile regression for TXE-4989. Run with provider_config/whitelisted-provider-keys/config.json (setup_token set, no admin, client.whitelisted_routes [\"/api/providers/*\"]) on an isolated fresh instance, INCLUDE_PREVIEW=1, PARALLEL=0 and FEATURE=key-secret-refs-e2e; the harness's setup token must be the profile's (BIFROST_SETUP_TOKEN, default bifrost-e2e-setup-token). With dashboard auth off, an operator-whitelisted /api route passes the OSS setup lock and is admitted by the fail-open bypass without any credential, which is how a caller with no credential reaches the provider-key handlers over HTTP in OSS (the other reachable bypasses are a gateway with no config store and enterprise builds with auth off). Before the fix such a caller could create or repoint a key whose value is an env./vault. reference, and the gateway resolved the server secret and sent it to the provider. Case 1 proves the lock is active for routes that are not whitelisted; case 2 creates a custom provider as the setup-token admin (POST /api/providers is not under the whitelisted prefix; base_url 127.0.0.1:9, where nothing listens, so nothing leaves the host); case 3 creates a key with an env. reference with no credential and expects the key handler's 403, not the lock's 401 (red before the fix); case 4 shows nothing was stored (red before the fix); case 5 creates a literal key, which stays allowed; case 6 repoints its value to an env. reference and expects the 403 (red before the fix); case 7 shows an edit that leaves the value alone still succeeds; case 8 shows the literal survived (red before the fix); case 9 deletes the provider. The referenced variable is not set on the gateway, so no secret exists to leak in either build. The openai keyword is only a harness filter label; no provider calls are made. Cookies and redirect following are disabled. Every unexpected status fails. Run the whole folder in order.",
+      "description": "Opt-in profile regression for TXE-4989. Run with provider_config/whitelisted-provider-keys/config.json (setup_token set, no admin, client.whitelisted_routes [\"/api/providers/*\"]) on an isolated fresh instance, INCLUDE_PREVIEW=1, PARALLEL=0 and FEATURE=key-secret-refs-e2e; the harness's setup token must be the profile's (BIFROST_SETUP_TOKEN, default bifrost-e2e-setup-token). With dashboard auth off, an operator-whitelisted /api route passes the OSS setup lock and is admitted by the fail-open bypass without any credential, which is how a caller with no credential reaches the provider-key handlers over HTTP in OSS (the other reachable bypasses are a gateway with no config store and enterprise builds with auth off). Before the fix such a caller could create or repoint a key whose value is an env./vault. reference, and the gateway resolved the server secret and sent it to the provider. Case 1 proves the lock is active for routes that are not whitelisted; case 2 creates a custom provider with an extra header referencing an env. variable as the setup-token admin (POST /api/providers is not under the whitelisted prefix; base_url 127.0.0.1:9, where nothing listens, so nothing leaves the host). Cases 3-5 cover the provider extra-header rule (TXE-5411) on this reachable path, correcting folder 263's claim that it had none in OSS: with no credential, resending the unchanged reference succeeds, repointing it gets the provider handler's 403, and the stored reference is unchanged. Case 6 creates a key with an env. reference with no credential and expects the key handler's 403, not the lock's 401 (red before the fix); case 7 shows nothing was stored (red before the fix); case 8 creates a literal key, which stays allowed; case 9 repoints its value to an env. reference and expects the 403 (red before the fix); case 10 shows an edit that leaves the value alone still succeeds; case 11 shows the literal survived (red before the fix); case 12 deletes the provider. The referenced variables are not set on the gateway, so no secret exists to leak in either build. The openai keyword is only a harness filter label; no provider calls are made. Cookies and redirect following are disabled. Every unexpected status fails. Run the whole folder in order.",
       "item": [
         {
           "name": "[PREVIEW] [EXPECT-401] openai key-secret-refs-e2e setup lock precondition - key-secret-refs-e2e",
@@ -279294,7 +279294,7 @@
           }
         },
         {
-          "name": "[PREVIEW] [EXPECT-200] openai key-secret-refs-e2e setup-token admin creates the provider - key-secret-refs-e2e",
+          "name": "[PREVIEW] [EXPECT-200] openai key-secret-refs-e2e setup-token admin creates the provider with a header reference - key-secret-refs-e2e",
           "protocolProfileBehavior": {
             "followRedirects": false,
             "disableCookies": true
@@ -279326,8 +279326,145 @@
             "url": "{{baseUrl}}/api/providers",
             "body": {
               "mode": "raw",
-              "raw": "{\"provider\": \"txe4989-key-refs\", \"custom_provider_config\": {\"base_provider_type\": \"openai\"}, \"network_config\": {\"base_url\": \"http://127.0.0.1:9/v1\", \"allow_private_network\": true}, \"concurrency_and_buffer_size\": {\"concurrency\": 1, \"buffer_size\": 4}}"
+              "raw": "{\"provider\": \"txe4989-key-refs\", \"custom_provider_config\": {\"base_provider_type\": \"openai\"}, \"network_config\": {\"base_url\": \"http://127.0.0.1:9/v1\", \"allow_private_network\": true, \"extra_headers\": {\"X-Team\": \"env.TXE4989_HARNESS_HEADER_REF\"}}, \"concurrency_and_buffer_size\": {\"concurrency\": 1, \"buffer_size\": 4}}"
             }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai key-secret-refs-e2e whitelisted provider update resending the unchanged header reference still works - key-secret-refs-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unchanged header reference update exact response status - key-secret-refs-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/txe4989-key-refs",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"custom_provider_config\": {\"base_provider_type\": \"openai\"}, \"network_config\": {\"base_url\": \"http://127.0.0.1:9/v1\", \"allow_private_network\": true, \"extra_headers\": {\"X-Team\": \"env.TXE4989_HARNESS_HEADER_REF\"}}, \"concurrency_and_buffer_size\": {\"concurrency\": 1, \"buffer_size\": 4}}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-403] openai key-secret-refs-e2e whitelisted provider update repointing the header reference is refused - key-secret-refs-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('header repoint exact response status - key-secret-refs-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('the provider handler refuses the header reference, not the setup lock - key-secret-refs-e2e', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, 'failed: ' + body).to.include('extra header to a server secret reference (X-Team)');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/txe4989-key-refs",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"custom_provider_config\": {\"base_provider_type\": \"openai\"}, \"network_config\": {\"base_url\": \"http://127.0.0.1:9/v1\", \"allow_private_network\": true, \"extra_headers\": {\"X-Team\": \"env.TXE4989_HARNESS_OTHER_REF\"}}, \"concurrency_and_buffer_size\": {\"concurrency\": 1, \"buffer_size\": 4}}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai key-secret-refs-e2e refused header repoint left the stored reference in place - key-secret-refs-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('provider read exact response status - key-secret-refs-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the stored header still references the admin's variable - key-secret-refs-e2e', function () {",
+                  "  var headers = (pm.response.json().network_config || {}).extra_headers || {};",
+                  "  pm.expect((headers['X-Team'] || {}).ref, 'failed: ' + pm.response.text()).to.equal('env.TXE4989_HARNESS_HEADER_REF');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/txe4989-key-refs"
           }
         },
         {
