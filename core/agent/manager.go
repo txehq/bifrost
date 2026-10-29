@@ -1067,7 +1067,9 @@ func (m *Manager) CardHandler(name, requestOrigin string) (http.Handler, bool) {
 		}
 		runtimeCtx := r.ctx
 		r.mu.Unlock()
-		ctx, cancel := context.WithCancel(req.Context())
+		// Discovery honours the registration's persisted destination restriction,
+		// exactly as registration and runtime calls do (buildGeneration).
+		ctx, cancel := context.WithCancel(WithPublicTargetsOnly(req.Context(), r.config.requirePublicTarget))
 		stop := context.AfterFunc(runtimeCtx, cancel)
 		defer func() {
 			stop()
