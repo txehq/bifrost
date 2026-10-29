@@ -1516,6 +1516,56 @@ func TestPinnedProxyDialHonoursGlobalProxySkipTLSVerify(t *testing.T) {
 	}
 }
 
+// TestAllowlistedPrivatePolicyReadsTheAllowlistPerCheck pins the exported per-address
+// form of the AllowlistedPrivateDialContext policy: public passes, an allowlisted
+// private address passes while listed and is refused once the allowlist is cleared, and
+// a metadata address is refused whatever the allowlist says.
+func TestAllowlistedPrivatePolicyReadsTheAllowlistPerCheck(t *testing.T) {
+	al, err := ValidatePrivateTargetAllowlist([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := al
+	check := AllowlistedPrivatePolicy(func() *Allowlist { return current })
+	if err := check(net.ParseIP("93.184.216.34"), "public.example"); err != nil {
+		t.Fatalf("public address refused: %v", err)
+	}
+	if err := check(net.ParseIP("10.0.0.7"), "internal.corp"); err != nil {
+		t.Fatalf("allowlisted address refused: %v", err)
+	}
+	if err := check(net.ParseIP("169.254.169.254"), "metadata.attack.io"); err == nil {
+		t.Fatal("a metadata address must be refused")
+	}
+	current = nil
+	var notAllowed *PrivateTargetNotAllowedError
+	if err := check(net.ParseIP("10.0.0.7"), "internal.corp"); !errors.As(err, &notAllowed) {
+		t.Fatalf("after the allowlist is cleared, got %v, want PrivateTargetNotAllowedError", err)
+	}
+}
+
+// TestProxiedDestinationCheckReturnsTheApprovedAddresses pins the exported
+// CheckDestination: a hostname whose every answer passes returns those answers for the
+// pinned dialer, a mixed answer and an unresolvable name are refused, and an IP literal
+// is checked without a lookup.
+func TestProxiedDestinationCheckReturnsTheApprovedAddresses(t *testing.T) {
+	public := &fakeResolver{ips: []net.IP{net.ParseIP("93.184.216.34"), net.ParseIP("93.184.216.35")}}
+	ips, err := ProxiedDestinationCheck(ProxiedDestinationPolicy(true), public)(context.Background(), "public.example")
+	if err != nil || len(ips) != 2 {
+		t.Fatalf("got %v, %v; want both public answers", ips, err)
+	}
+	mixed := &fakeResolver{ips: []net.IP{net.ParseIP("93.184.216.34"), net.ParseIP("127.0.0.1")}}
+	if _, err := ProxiedDestinationCheck(ProxiedDestinationPolicy(true), mixed)(context.Background(), "mixed.example"); err == nil {
+		t.Fatal("a mixed answer must be refused")
+	}
+	if _, err := ProxiedDestinationCheck(ProxiedDestinationPolicy(true), &fakeResolver{err: errors.New("nxdomain")})(context.Background(), "gone.example"); err == nil {
+		t.Fatal("an unresolvable name must be refused")
+	}
+	literal := &fakeResolver{}
+	if ips, err := ProxiedDestinationCheck(ProxiedDestinationPolicy(true), literal)(context.Background(), "93.184.216.34"); err != nil || ips != nil || literal.lookups != 0 {
+		t.Fatalf("literal: got %v, %v after %d lookups; want no addresses, no error, no lookup", ips, err, literal.lookups)
+	}
+}
+
 // BenchmarkProxyAwareTransportRoundTrip measures the per-request cost of the
 // proxy-aware guarded transport on its two paths against a local listener: direct
 // (a proxy selector that returns no proxy, the default deployment) and proxied

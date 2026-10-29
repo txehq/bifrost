@@ -578,6 +578,18 @@ func checkAllowlistedPrivatePolicy(ip net.IP, host string, allow *Allowlist) err
 	return nil
 }
 
+// AllowlistedPrivatePolicy is the per-address check AllowlistedPrivateDialContext
+// applies, for a ProxyAwareTransport's CheckDestination and PinnedProxyDialContext:
+// an address must be public, or permitted by the allowlist allow returns and outside
+// the link-local, metadata and unspecified ranges. allow is read on every check, so a
+// hot-reloaded allowlist applies to the next request; a nil allowlist permits only
+// public addresses.
+func AllowlistedPrivatePolicy(allow func() *Allowlist) func(ip net.IP, host string) error {
+	return func(ip net.IP, host string) error {
+		return checkAllowlistedPrivatePolicy(ip, host, allow())
+	}
+}
+
 // CheckAllowlistedPrivateLiteral applies the AllowlistedPrivateDialContext
 // policy to host without any DNS lookup: an IP literal (with or without IPv6
 // brackets) must be public, or allowlisted and outside the link-local,
@@ -778,6 +790,16 @@ func guardedDestinationCheck(checkIP func(ip net.IP, host string) error, resolve
 		defer cancel()
 		return vetGuardedDestination(ctx, host, resolver, checkIP)
 	}
+}
+
+// ProxiedDestinationCheck is a ProxyAwareTransport.CheckDestination for callers
+// outside this package that pair it with PinnedProxyDialContext(checkIP, resolver,
+// ...): it applies checkIP to the destination, under a bounded lookup, and returns
+// the addresses it approved for the pinned dialer to tunnel to. An IP literal is
+// checked without DNS; a hostname must resolve on resolver and every address must
+// pass; a hostname resolver cannot answer is refused rather than left to the proxy.
+func ProxiedDestinationCheck(checkIP func(ip net.IP, host string) error, resolver IPLookuper) func(ctx context.Context, host string) ([]net.IP, error) {
+	return guardedDestinationCheck(checkIP, resolver)
 }
 
 // vetGuardedDestination applies checkIP to a destination host before a guarded

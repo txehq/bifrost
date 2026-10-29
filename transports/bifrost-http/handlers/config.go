@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -1532,7 +1533,18 @@ var errFileURLOverAPI = errors.New("file:// URLs can only be configured in confi
 // the bytes it could not parse, which would turn this endpoint into a
 // port-scan and banner oracle for anyone who can call it. That detail is
 // useful to the operator, so it goes to the server log only.
+//
+// Behind a proxy the same public-only policy holds: the destination is checked
+// against the gateway's own resolver before the proxy is contacted, and the
+// tunnel is opened to an address that check approved, plain http included, so
+// the proxy never resolves the name a second time (DNS rebinding).
 func checkURLAccessibility(rawURL string) error {
+	return checkURLAccessibilityWith(rawURL, network.DefaultProxyFunc(network.ClientPurposeAPI), net.DefaultResolver)
+}
+
+// checkURLAccessibilityWith is the seam behind checkURLAccessibility with the
+// proxy selector and the proxied-path resolver injectable for tests.
+func checkURLAccessibilityWith(rawURL string, proxy func(*http.Request) (*url.URL, error), resolver network.IPLookuper) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
@@ -1540,20 +1552,27 @@ func checkURLAccessibility(rawURL string) error {
 	if strings.EqualFold(parsed.Scheme, "file") {
 		return errFileURLOverAPI
 	}
-	if err := bifrost.ValidateExternalURL(rawURL, false); err != nil {
+	if err := bifrost.ValidateExternalURLWithResolver(rawURL, false, resolver); err != nil {
 		return fmt.Errorf("URL validation failed: %w", err)
 	}
+	// The global proxy when it is enabled for API traffic, else the environment's:
+	// the sync that follows a successful check uses the same. A direct dial keeps
+	// the public-only check. A proxied request's destination must pass the same
+	// public-only policy on the gateway's resolver, and the pinned dialer tunnels
+	// through the proxy, which may be on a private address, to an address that
+	// check approved.
+	strict := network.ProxiedDestinationPolicy(true)
+	transport := &network.ProxyAwareTransport{
+		Proxy:            proxy,
+		CheckDestination: network.ProxiedDestinationCheck(strict, resolver),
+		Direct:           &http.Transport{DialContext: checkURLAccessibilityDialContext},
+		ViaProxy:         &http.Transport{DialContext: network.PinnedProxyDialContext(strict, resolver, 10*time.Second)},
+	}
+	// The transport lives for this one check; drop its keep-alive sockets with it.
+	defer transport.CloseIdleConnections()
 	client := &http.Client{
-		Timeout: 60 * time.Second,
-		// The global proxy when it is enabled for API traffic, else the environment's:
-		// the sync that follows a successful check uses the same. A direct dial keeps
-		// the public-only check; a proxied request dials only the proxy, which may be
-		// on a private address, and goes to the host ValidateExternalURL just checked.
-		Transport: &network.ProxyAwareTransport{
-			Proxy:    network.DefaultProxyFunc(network.ClientPurposeAPI),
-			Direct:   &http.Transport{DialContext: checkURLAccessibilityDialContext},
-			ViaProxy: &http.Transport{Proxy: network.DefaultProxyFunc(network.ClientPurposeAPI), DialContext: network.PrivateNetworkDialContext(10 * time.Second)},
-		},
+		Timeout:   60 * time.Second,
+		Transport: transport,
 		// The operator validated this URL, not wherever it redirects: a redirect
 		// is returned as-is and fails the 200 check below instead of being followed.
 		CheckRedirect: func(*http.Request, []*http.Request) error {

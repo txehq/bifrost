@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -58,9 +57,12 @@ func SetDiscoveryDialContextForTests(dial func(ctx context.Context, network, add
 // The allowlisted one is replaced whenever the allowlist changes; see
 // SetPrivateTargetAllowlist.
 var (
-	oauthDiscoveryTransport            = newOAuthDiscoveryTransport(oauthDialContext(10*time.Second, network.SSRFSafeDialContext(10*time.Second), proxiesFromEnvironment()...))
-	oauthAllowlistedDiscoveryTransport atomic.Pointer[http.Transport]
+	oauthDiscoveryTransport            = newOAuthTransport(network.SSRFSafeDialContext(oauthDialTimeout), network.ProxiedDestinationPolicy(true))
+	oauthAllowlistedDiscoveryTransport atomic.Pointer[network.ProxyAwareTransport]
 )
+
+// oauthDialTimeout bounds reaching an OAuth endpoint, or the proxy in front of it.
+const oauthDialTimeout = 10 * time.Second
 
 func init() {
 	oauthAllowlistedDiscoveryTransport.Store(newAllowlistedTransport())
@@ -68,15 +70,16 @@ func init() {
 
 // newAllowlistedTransport builds a transport for the allowlisted destination
 // policy, with an empty connection pool.
-func newAllowlistedTransport() *http.Transport {
-	return newOAuthAllowlistedDiscoveryTransport(oauthDialContext(10*time.Second, network.AllowlistedPrivateDialContext(10*time.Second, privateTargetAllowlist.Load), proxiesFromEnvironment()...))
+func newAllowlistedTransport() *network.ProxyAwareTransport {
+	return newOAuthTransport(network.AllowlistedPrivateDialContext(oauthDialTimeout, privateTargetAllowlist.Load), network.AllowlistedPrivatePolicy(privateTargetAllowlist.Load))
 }
 
 // privateTargetAllowlist holds the operator-approved private hosts and ranges
 // (tool_manager_config.oauth_private_allowlist) the OAuth chain may reach for
 // an MCP client that was not registered with auth bypassed. Nil permits none.
-// Read on every dial, so SetPrivateTargetAllowlist applies to the next
-// connection without rebuilding a transport.
+// Read on every dial and every proxied destination check, so
+// SetPrivateTargetAllowlist applies to the next connection without rebuilding
+// a transport.
 var privateTargetAllowlist atomic.Pointer[network.Allowlist]
 
 // SetPrivateTargetAllowlist replaces the private-target allowlist for MCP
@@ -118,146 +121,55 @@ func requirePublicTargetFrom(ctx context.Context) bool {
 	return !ok || requirePublic
 }
 
-// oauthDialContext returns guarded with one distinction: a dial addressed to
-// an operator-configured proxy (exact host:port, as http.Transport dials it)
-// goes straight through. The proxy is trusted configuration, and the
-// destination it forwards to has already been checked by oauthProxySelector.
-// Every other dial keeps guarded's destination policy, so a destination can
-// never be reached directly on an address that policy refuses.
-func oauthDialContext(timeout time.Duration, guarded func(ctx context.Context, network, addr string) (net.Conn, error), proxies ...*url.URL) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	direct := (&net.Dialer{Timeout: timeout}).DialContext
-	trusted := make(map[string]struct{}, len(proxies))
-	for _, p := range proxies {
-		if p == nil {
-			continue
+// newOAuthTransport builds an OAuth transport for one destination policy: direct
+// is the guarded dialer that applies it to a direct connection, and checkIP is the
+// same policy as a per-address predicate for the proxied path. The proxy is the
+// global proxy when it is enabled for API traffic, else the environment's
+// (network.DefaultProxyFunc).
+func newOAuthTransport(direct func(ctx context.Context, network, addr string) (net.Conn, error), checkIP func(ip net.IP, host string) error) *network.ProxyAwareTransport {
+	return newOAuthTransportWith(direct, checkIP, network.DefaultProxyFunc(network.ClientPurposeAPI), net.DefaultResolver)
+}
+
+// newOAuthTransportWith is the seam behind newOAuthTransport with the proxy
+// selector and the proxied-path resolver injectable for tests.
+//
+// Proxy-only installations keep working without losing the destination guard,
+// and which path a request takes is decided per request, on two separate
+// transports. A direct request is dialed by direct, which sees the real target.
+// A proxied request's destination is checked before the proxy is contacted: an
+// IP literal must pass checkIP, and a hostname must resolve on the gateway to
+// addresses that all pass it. A name the gateway cannot resolve is refused
+// rather than handed to the proxy, whose resolver could map it into its own
+// network (TXE-5086). The proxied transport's dialer (network.PinnedProxyDialContext)
+// then tunnels, plain http included, to an address that check approved, so the
+// proxy never resolves a name whose answer could have changed since (DNS
+// rebinding). The proxy itself is operator configuration and is dialed under the
+// private-network policy; a direct request whose destination happens to be the
+// proxy's address is still dialed under direct's policy, since nothing records
+// which addresses are proxies. Every hop of the chain, redirects included, is a
+// request of its own and is routed and checked the same way.
+func newOAuthTransportWith(direct func(ctx context.Context, network, addr string) (net.Conn, error), checkIP func(ip net.IP, host string) error, proxy func(*http.Request) (*url.URL, error), resolver network.IPLookuper) *network.ProxyAwareTransport {
+	newTransport := func(dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
+		return &http.Transport{
+			DialContext:         dial,
+			MaxIdleConns:        32,
+			MaxIdleConnsPerHost: 4,
+			IdleConnTimeout:     90 * time.Second,
+			TLSHandshakeTimeout: 10 * time.Second,
 		}
-		trusted[proxyDialAddr(p)] = struct{}{}
 	}
-	return func(ctx context.Context, netw, addr string) (net.Conn, error) {
-		if _, ok := trusted[addr]; ok {
-			return direct(ctx, netw, addr)
-		}
-		// The global proxy is configuration that can change at runtime, so it is
-		// looked up per dial rather than captured like the environment proxies.
-		if factory := network.DefaultHTTPClientFactory(); factory != nil {
-			if p := factory.ProxyURLForPurpose(network.ClientPurposeAPI); p != nil && proxyDialAddr(p) == addr {
-				return direct(ctx, netw, addr)
+	destination := network.ProxiedDestinationCheck(checkIP, resolver)
+	return &network.ProxyAwareTransport{
+		Proxy: proxy,
+		CheckDestination: func(ctx context.Context, host string) ([]net.IP, error) {
+			ips, err := destination(ctx, host)
+			if err != nil {
+				return nil, fmt.Errorf("blocked proxied OAuth connection: %w", err)
 			}
-		}
-		return guarded(ctx, netw, addr)
-	}
-}
-
-// proxyDialAddr is the host:port http.Transport dials for a proxy URL, with
-// the scheme's default port filled in the way the transport does.
-func proxyDialAddr(p *url.URL) string {
-	if p.Port() != "" {
-		return net.JoinHostPort(p.Hostname(), p.Port())
-	}
-	port := "80"
-	if p.Scheme == "https" {
-		port = "443"
-	}
-	return net.JoinHostPort(p.Hostname(), port)
-}
-
-// proxiesFromEnvironment parses the proxy URLs http.ProxyFromEnvironment will
-// select from, so the dialer can recognise them. Unparseable entries are
-// ignored; they would never be selected either.
-func proxiesFromEnvironment() []*url.URL {
-	var out []*url.URL
-	for _, name := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
-		raw := strings.TrimSpace(os.Getenv(name))
-		if raw == "" {
-			continue
-		}
-		if !strings.Contains(raw, "://") {
-			raw = "http://" + raw
-		}
-		if p, err := url.Parse(raw); err == nil && p.Hostname() != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// newOAuthDiscoveryTransport builds a transport around dial with bounded idle
-// connection settings. Production uses the single shared instance above; a
-// test dialer override gets its own transport so it never mutates the shared one.
-func newOAuthDiscoveryTransport(dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
-	return newOAuthTransportWithProxy(dial, oauthProxySelector(network.DefaultProxyFunc(network.ClientPurposeAPI)))
-}
-
-// newOAuthAllowlistedDiscoveryTransport is newOAuthDiscoveryTransport for the
-// allowlisted destination policy: its proxy selector also lets through a
-// destination that resolves only to addresses privateTargetAllowlist permits.
-func newOAuthAllowlistedDiscoveryTransport(dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
-	return newOAuthTransportWithProxy(dial, oauthAllowlistedProxySelector(network.DefaultProxyFunc(network.ClientPurposeAPI), privateTargetAllowlist.Load))
-}
-
-func newOAuthTransportWithProxy(dial func(ctx context.Context, network, addr string) (net.Conn, error), proxy func(*http.Request) (*url.URL, error)) *http.Transport {
-	return &http.Transport{
-		Proxy:               proxy,
-		DialContext:         dial,
-		MaxIdleConns:        32,
-		MaxIdleConnsPerHost: 4,
-		IdleConnTimeout:     90 * time.Second,
-		TLSHandshakeTimeout: 10 * time.Second,
-	}
-}
-
-// oauthProxySelector wraps a proxy chooser (network.DefaultProxyFunc in
-// production: the global proxy when it is enabled for API traffic, else the
-// environment) so proxy-only installations keep working without losing the
-// destination guard. When a proxy is chosen, http.Transport hands DialContext
-// the proxy's address rather than the OAuth endpoint's, so the dial-time check
-// alone would validate the proxy and let it forward to a blocked target. The
-// destination is therefore checked here, before the proxy is chosen: an IP
-// literal must be public, and a hostname must resolve on the gateway to public
-// addresses only. A name the gateway cannot resolve is refused rather than
-// handed to the proxy, whose resolver could map it into its own network - the
-// same rule core/mcp applies to proxied MCP connections (TXE-5086). The proxy
-// still resolves the name again on its own side, so this binds the destination
-// as far as the gateway can see it, not what the proxy dials.
-func oauthProxySelector(next func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
-	return func(req *http.Request) (*url.URL, error) {
-		proxyURL, err := next(req)
-		if err != nil || proxyURL == nil {
-			return proxyURL, err
-		}
-		ctx, cancel := context.WithTimeout(req.Context(), oauthProxyResolveTimeout)
-		defer cancel()
-		if err := network.CheckResolvedProxiedDestination(ctx, req.URL.Hostname(), true, oauthProxyResolver); err != nil {
-			return nil, fmt.Errorf("blocked proxied OAuth connection: %w", err)
-		}
-		return proxyURL, nil
-	}
-}
-
-// oauthProxyResolver resolves proxied OAuth destinations; tests replace it.
-var oauthProxyResolver network.IPLookuper = net.DefaultResolver
-
-// oauthProxyResolveTimeout bounds the gateway-side lookup of a proxied destination.
-const oauthProxyResolveTimeout = 5 * time.Second
-
-// oauthAllowlistedProxySelector is oauthProxySelector for the allowlisted
-// destination policy: the destination must be public, or permitted by allow
-// and outside the link-local, metadata and unspecified ranges. As in
-// oauthProxySelector, a hostname must resolve on the gateway to addresses the
-// policy accepts, and a name the gateway cannot resolve is refused rather than
-// handed to the proxy.
-func oauthAllowlistedProxySelector(next func(*http.Request) (*url.URL, error), allow func() *network.Allowlist) func(*http.Request) (*url.URL, error) {
-	return func(req *http.Request) (*url.URL, error) {
-		proxyURL, err := next(req)
-		if err != nil || proxyURL == nil {
-			return proxyURL, err
-		}
-		ctx, cancel := context.WithTimeout(req.Context(), oauthProxyResolveTimeout)
-		defer cancel()
-		if err := network.CheckResolvedAllowlistedProxiedDestination(ctx, req.URL.Hostname(), allow(), oauthProxyResolver); err != nil {
-			return nil, fmt.Errorf("blocked proxied OAuth connection: %w", err)
-		}
-		return proxyURL, nil
+			return ips, nil
+		},
+		Direct:   newTransport(direct),
+		ViaProxy: newTransport(network.PinnedProxyDialContext(checkIP, resolver, oauthDialTimeout)),
 	}
 }
 
@@ -265,13 +177,18 @@ func oauthAllowlistedProxySelector(next func(*http.Request) (*url.URL, error), a
 // transport applies the destination policy recorded on ctx (see
 // requirePublicTargetFrom).
 func newOAuthDiscoveryHTTPClient(ctx context.Context, timeout time.Duration) *http.Client {
-	transport := oauthDiscoveryTransport
+	var transport http.RoundTripper = oauthDiscoveryTransport
 	if !requirePublicTargetFrom(ctx) {
 		transport = oauthAllowlistedDiscoveryTransport.Load()
 	}
 	if testDialContextOverride != nil {
-		transport = newOAuthDiscoveryTransport(testDialContextOverride)
+		transport = newOAuthTransport(testDialContextOverride, network.ProxiedDestinationPolicy(true))
 	}
+	return newOAuthHTTPClient(transport, timeout)
+}
+
+// newOAuthHTTPClient wraps transport in the OAuth chain's redirect rules.
+func newOAuthHTTPClient(transport http.RoundTripper, timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout:   timeout,
 		Transport: transport,

@@ -771,6 +771,30 @@ var lookupIPAddr = (&net.Resolver{}).LookupIPAddr
 // When allowPrivateNetwork is true, RFC 1918 private IPs are permitted (for k8s/LAN deployments).
 // Link-local addresses (169.254.x.x, fe80::) are always blocked regardless of allowPrivateNetwork.
 func ValidateExternalURL(urlStr string, allowPrivateNetwork bool) error {
+	return validateExternalURL(urlStr, allowPrivateNetwork, func(ctx context.Context, host string) ([]net.IP, error) {
+		addrs, err := lookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, err
+		}
+		ips := make([]net.IP, len(addrs))
+		for i, addr := range addrs {
+			ips[i] = addr.IP
+		}
+		return ips, nil
+	})
+}
+
+// ValidateExternalURLWithResolver is ValidateExternalURL resolving the hostname with
+// resolver, for a caller that checks the same destination again with that resolver
+// before it connects (a proxied request whose tunnel is pinned to the checked address),
+// so one injected resolver answers both checks.
+func ValidateExternalURLWithResolver(urlStr string, allowPrivateNetwork bool, resolver network.IPLookuper) error {
+	return validateExternalURL(urlStr, allowPrivateNetwork, func(ctx context.Context, host string) ([]net.IP, error) {
+		return resolver.LookupIP(ctx, "ip", host)
+	})
+}
+
+func validateExternalURL(urlStr string, allowPrivateNetwork bool, lookup func(ctx context.Context, host string) ([]net.IP, error)) error {
 	if urlStr == "" {
 		return fmt.Errorf("URL cannot be empty")
 	}
@@ -793,13 +817,9 @@ func ValidateExternalURL(urlStr string, allowPrivateNetwork bool) error {
 	// resolver fails fast instead of hanging the caller forever.
 	lookupCtx, cancel := context.WithTimeout(context.Background(), externalURLDNSLookupTimeout)
 	defer cancel()
-	addrs, err := lookupIPAddr(lookupCtx, hostname)
+	ips, err := lookup(lookupCtx, hostname)
 	if err != nil {
 		return fmt.Errorf("failed to resolve hostname: %w", err)
-	}
-	ips := make([]net.IP, len(addrs))
-	for i, addr := range addrs {
-		ips[i] = addr.IP
 	}
 	for _, ip := range ips {
 		if ip.IsLoopback() {

@@ -2,6 +2,8 @@
 
 - **Proxied requests are pinned to the address the policy checked** - guarded HTTP clients (catalog and datasheet fetches, OpenAPI spec previews, RSS feeds) and MCP clients that reach their destination through a proxy now open a tunnel to the address the destination policy resolved and approved (CONNECT ip:port, or SOCKS5 to the IP, plain http included) instead of handing the proxy the hostname to resolve again. A DNS answer that changes after the check (rebinding) can no longer carry the request to a private, loopback or metadata address. The proxy's credentials, TLS settings and private-network reachability are unchanged
 - **Unresolvable proxied destinations are refused** - a hostname the gateway cannot resolve is refused on every proxied guarded path instead of being left to the proxy, as MCP clients already were: nothing could check where the proxy would send it. A deployment whose DNS lives only behind the proxy must let the gateway resolve the catalog, datasheet, OpenAPI and MCP hosts it reaches through that proxy
+- **Proxied MCP OAuth requests are pinned to the checked address** - MCP OAuth discovery, dynamic client registration and token requests (every hop, redirects included, of a chain whose later URLs come from the remote MCP server) that go through a proxy now open a tunnel to the address the destination policy approved, under both the public-only and the allowlisted policy, instead of handing the proxy the hostname to resolve again. A direct OAuth request whose destination happens to be a proxy's address is no longer dialed outside the destination policy
+- **The catalog URL check is pinned behind a proxy** - the reachability check for a pricing, model-parameters or MCP-library URL saved over the API applies the public-only policy to the destination before the proxy is contacted and tunnels to the checked address, so a name resolving to loopback or turning private after the save-time check is refused, and the check no longer keeps an idle connection open after it returns
 - **Agent card discovery keeps a registration's public-target restriction** - live card discovery for a registration created without authentication applies its persisted public-only restriction, as registration and runtime calls do, so an operator's private-network allowlist no longer lets it fetch a card from a private address
 
 ## 🐞 Fixed
@@ -17,7 +19,7 @@
 
 ## 🍴 Fork changes (txehq/bifrost)
 
-- chore: v2.3.3-sync.1 is a prerelease on top of v2.3.2 carrying the network and destination-policy fixes from the PR5 preservation audit (TXE-5374); v2.3.2 stays the stable release and `latest`
+- chore: v2.3.3-sync.2 is a prerelease on top of v2.3.2 carrying the network and destination-policy fixes from the PR5 preservation audit (TXE-5374, in v2.3.3-sync.1) and the proxied MCP OAuth and catalog URL check pinning (TXE-5377); v2.3.2 stays the stable release and `latest`
 - note: module versions. This fork publishes no core, framework or plugin module versions: their module paths stay `github.com/capsohq/bifrost/...`, their version files and the transport's requires are unchanged, and the workspace builds them from source
 - preserved: everything v2.3.2 listed under Fork changes
-- chore: the Helm chart is 2.1.49-sync.1, a prerelease; `appVersion` is 2.3.3-sync.1 and `image.tag` stays required
+- chore: the Helm chart is 2.1.49-sync.2, a prerelease; `appVersion` is 2.3.3-sync.2 and `image.tag` stays required
