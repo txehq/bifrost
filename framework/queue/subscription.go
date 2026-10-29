@@ -188,7 +188,8 @@ func (s *subscription) track(c *Claimed, leaseUntil time.Time) bool {
 		return false
 	}
 	if prev, ok := s.current[c.DeliveryID]; ok {
-		if f := s.inflight[prev]; f != nil {
+		if f := s.inflight[prev]; f != nil && !f.lost {
+			s.q.debug("queue: lease lost for delivery %s on %s/%s: claimed again after the lease ran out", c.DeliveryID, s.topic, s.group)
 			s.markLostLocked(f)
 		}
 	}
@@ -422,7 +423,7 @@ func (s *subscription) heartbeat() {
 			// Renewals keep failing and the last confirmed lease has run out:
 			// another instance may own the delivery now, whether or not this
 			// one has a free slot to notice by re-claiming it.
-			s.q.debug("queue: lease lapsed for delivery %s on %s/%s", c.DeliveryID, s.topic, s.group)
+			s.q.debug("queue: lease lost for delivery %s on %s/%s: renewals failed past the lease end", c.DeliveryID, s.topic, s.group)
 			s.markLostLocked(f)
 		}
 	}

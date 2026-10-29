@@ -103,6 +103,9 @@ func runEngineContract(t *testing.T, backend engineBackend) {
 		{"HeartbeatErrorKeepsLease", engineContractHeartbeatErrorKeepsLease},
 		{"RepeatedHeartbeatErrorsLoseLease", engineContractRepeatedHeartbeatErrorsLoseLease},
 		{"LapsedLeaseCancelsWithoutFreeSlots", engineContractLapsedLeaseCancelsWithoutFreeSlots},
+		{"LapsedLeaseRedeliveryIsReportedLost", engineContractLapsedLeaseRedeliveryIsReportedLost},
+		{"SupersededClaimIsReportedLost", engineContractSupersededClaimIsReportedLost},
+		{"SilentRedeliveryIsNotReportedLost", engineContractSilentRedeliveryIsNotReportedLost},
 		{"StaleHandlerDoesNotDeadLetter", engineContractStaleHandlerDoesNotDeadLetter},
 		{"ReleaseErrorIsReported", engineContractReleaseErrorIsReported},
 		{"ConcurrencyLimit", engineContractConcurrencyLimit},
@@ -1407,6 +1410,145 @@ func (l *leaseLossLogger) wasLost(deliveryID string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.lost[deliveryID]
+}
+
+// engineContractLapsedLeaseRedeliveryIsReportedLost fails every heartbeat
+// until the lease lapses under a running handler that then finishes its work
+// anyway, as a handler that does not watch its context does. The delivery is
+// then run again, which at-least-once allows only because the lease was lost,
+// so the engine must report that loss the way it reports every other.
+func engineContractLapsedLeaseRedeliveryIsReportedLost(t *testing.T, backend engineBackend) {
+	f := newFaultStore(backend(t, 1)[0])
+	losses := newLeaseLossLogger()
+	q, err := NewStoreQueue(f, EngineConfig{}, losses)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = q.Close(context.Background()) })
+	topic := uniqueTopic(t)
+	var completions atomic.Int32
+	var deliveryID atomic.Value
+	subscribe(t, q, topic, "w", func(ctx context.Context, d *Delivery) error {
+		deliveryID.Store(d.DeliveryID)
+		if d.Attempt == 1 {
+			f.inject("Extend", 1_000_000, errPermanent)
+			<-ctx.Done()
+			f.inject("Extend", 0, nil)
+		}
+		completions.Add(1)
+		return nil
+	}, WithConcurrency(1), WithLeaseDuration(400*time.Millisecond))
+	publish(t, q, &Message{Topic: topic})
+	waitStats(t, q, topic, "w", Stats{})
+	require.Equal(t, int32(2), completions.Load(), "the delivery runs again after its lease lapsed")
+	id, _ := deliveryID.Load().(string)
+	assert.True(t, losses.wasLost(id), "delivery %s ran again after its lease lapsed, but the engine never reported the lease lost", id)
+}
+
+// renewWithoutExtending reports every renewal as held without extending the
+// store's lease, so the lease runs out in the store while the subscription
+// still believes it holds it.
+type renewWithoutExtending struct{ *faultStore }
+
+func (r renewWithoutExtending) Extend(_ context.Context, cs []*Claimed, _ time.Duration) ([]string, error) {
+	ids := make([]string, len(cs))
+	for i, c := range cs {
+		ids[i] = c.DeliveryID
+	}
+	return ids, nil
+}
+
+// engineContractSupersededClaimIsReportedLost lets a delivery's lease run out
+// in the store while its handler runs and the subscription, with a free slot,
+// claims the same delivery again: the earlier run is superseded and its
+// handler, which finishes its work anyway, is cancelled. That run's lease was
+// lost, and the engine must report it before the delivery runs again.
+func engineContractSupersededClaimIsReportedLost(t *testing.T, backend engineBackend) {
+	f := newFaultStore(backend(t, 1)[0])
+	losses := newLeaseLossLogger()
+	q, err := NewStoreQueue(renewWithoutExtending{f}, EngineConfig{}, losses)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = q.Close(context.Background()) })
+	topic := uniqueTopic(t)
+	var completions atomic.Int32
+	var deliveryID atomic.Value
+	subscribe(t, q, topic, "w", func(ctx context.Context, d *Delivery) error {
+		deliveryID.Store(d.DeliveryID)
+		if d.Attempt == 1 {
+			<-ctx.Done()
+		}
+		completions.Add(1)
+		return nil
+	}, WithConcurrency(2), WithLeaseDuration(400*time.Millisecond))
+	publish(t, q, &Message{Topic: topic})
+	waitStats(t, q, topic, "w", Stats{})
+	require.Equal(t, int32(2), completions.Load(), "the delivery runs again after it was claimed a second time")
+	id, _ := deliveryID.Load().(string)
+	assert.True(t, losses.wasLost(id), "delivery %s was claimed again and ran twice, but the engine never reported the first claim's lease lost", id)
+}
+
+// ackWithoutWriting reports every acknowledgement as held without writing
+// it, so the store keeps the delivery leased and hands it out again once the
+// lease runs out: a duplicate no lease loss explains.
+type ackWithoutWriting struct{ *faultStore }
+
+func (a ackWithoutWriting) Ack(_ context.Context, cs []*Claimed) ([]string, error) {
+	ids := make([]string, len(cs))
+	for i, c := range cs {
+		ids[i] = c.DeliveryID
+	}
+	return ids, nil
+}
+
+// engineContractSilentRedeliveryIsNotReportedLost is the negative of the two
+// cases above: a delivery that runs again although no lease was lost (here an
+// acknowledgement the store dropped) must not be reported as a lost lease, so
+// the multi-instance simulation still fails on it.
+func engineContractSilentRedeliveryIsNotReportedLost(t *testing.T, backend engineBackend) {
+	f := newFaultStore(backend(t, 1)[0])
+	losses := newLeaseLossLogger()
+	q, err := NewStoreQueue(ackWithoutWriting{f}, EngineConfig{}, losses)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = q.Close(context.Background()) })
+	topic := uniqueTopic(t)
+	var completions atomic.Int32
+	var deliveryID atomic.Value
+	twice := make(chan struct{})
+	subscribe(t, q, topic, "w", func(ctx context.Context, d *Delivery) error {
+		deliveryID.Store(d.DeliveryID)
+		if completions.Add(1) == 2 {
+			close(twice)
+		}
+		return nil
+	}, WithConcurrency(1), WithLeaseDuration(400*time.Millisecond))
+	publish(t, q, &Message{Topic: topic})
+	select {
+	case <-twice:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the delivery whose acknowledgement was dropped never ran again")
+	}
+	id, _ := deliveryID.Load().(string)
+	assert.False(t, losses.wasLost(id), "delivery %s ran again with no lease lost, yet the observer excused it", id)
+}
+
+// TestLeaseLossLoggerCountsOnlyReportedLosses pins what the multi-instance
+// observer accepts as a lost lease: the engine's canonical "lease lost"
+// reports and failed settles, each for the delivery it names, and nothing
+// else, so a duplicate the engine did not explain is never excused.
+func TestLeaseLossLoggerCountsOnlyReportedLosses(t *testing.T) {
+	l := newLeaseLossLogger()
+	l.Debug("queue: lease lost for delivery %s on %s/%s: renewals failed past the lease end", "lapsed", "t", "g")
+	l.Debug("queue: lease lost for delivery %s on %s/%s: claimed again after the lease ran out", "superseded", "t", "g")
+	l.Debug("queue: lease lost for delivery %s on %s/%s", "store-said", "t", "g")
+	l.Warn("queue: lease lost before %s of delivery %s on %s/%s; it will be redelivered", "ack", "late-ack", "t", "g")
+	l.Warn("queue: %s of delivery %s on %s/%s failed: %v", "ack", "failed-ack", "t", "g", errors.New("boom"))
+	for _, id := range []string{"lapsed", "superseded", "store-said", "late-ack", "failed-ack"} {
+		assert.True(t, l.wasLost(id), "%s is a reported lease loss", id)
+	}
+	l.Debug("queue: dropping the outcome of delivery %s on %s/%s: its lease was lost", "dropped", "t", "g")
+	l.Warn("queue: lease heartbeat on %s/%s failed: %v", "t", "heartbeat", errors.New("boom"))
+	l.Debug("queue: claimed %d deliveries for %s", 3, "other")
+	for _, id := range []string{"dropped", "heartbeat", "other", "t", "g", "never-mentioned"} {
+		assert.False(t, l.wasLost(id), "%s is not a reported lease loss", id)
+	}
 }
 
 // sharedStore lets several engine instances ("pods") share one store without
