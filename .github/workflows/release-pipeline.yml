@@ -3200,12 +3200,12 @@ jobs:
         run: '[ "$(git rev-parse HEAD)" = "$GITHUB_SHA" ] || { echo "::error::checkout $(git rev-parse HEAD) is not the tested commit $GITHUB_SHA"; exit 1; }'
 
       # The finalize script reads core/go.mod with `go mod edit`, and the go directive
-      # needs Go 1.27.2. Without it the runner's older Go fetches a toolchain, and egress
+      # needs Go 1.27.3. Without it the runner's older Go fetches a toolchain, and egress
       # blocks that, so the release dies before it tags (TXE-4977).
       - name: Set up Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.2"
+          go-version: "1.27.3"
           cache: false
 
       - name: Configure R2
