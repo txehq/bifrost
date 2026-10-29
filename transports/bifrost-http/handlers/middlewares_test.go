@@ -5182,6 +5182,43 @@ func BenchmarkAuthBypassedMiddlewareOriginCheck(b *testing.B) {
 	}
 }
 
+// BenchmarkAuthDisabledMiddleware measures the dashboard-auth middleware with auth off, the
+// branch every inference request and every /api request takes on an instance without an
+// enabled admin account: an inference request, and a management request that the OSS setup
+// lock already let through with the setup token.
+func BenchmarkAuthDisabledMiddleware(b *testing.B) {
+	am := newSetupLockedAuthMiddleware("", nil)
+	cases := []struct {
+		name    string
+		handler fasthttp.RequestHandler
+		uri     string
+		setup   bool
+	}{
+		{"inference", am.InferenceMiddleware()(func(*fasthttp.RequestCtx) {}), "/v1/chat/completions", false},
+		{"api_setup_token", am.APIMiddleware()(func(*fasthttp.RequestCtx) {}), "/api/providers", true},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			// fasthttp reuses one RequestCtx per connection; so does the benchmark.
+			ctx := &fasthttp.RequestCtx{}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				ctx.Request.Reset()
+				ctx.ResetUserValues()
+				ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+				ctx.Request.SetRequestURI(tc.uri)
+				if tc.setup {
+					ctx.SetUserValue(schemas.BifrostContextKeySetupTokenAuthenticated, true)
+				}
+				tc.handler(ctx)
+				if admin, _ := ctx.UserValue(schemas.IsLocalAdminContextKey).(bool); !admin {
+					b.Fatalf("%s did not run as the local admin", tc.name)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkRequestDecompressionMiddleware measures the decompression middleware on a 4 KiB JSON
 // request body sent uncompressed (the common case, which it passes straight through) and gzipped
 // (decompressed under the expansion bound and the in-flight budget), plus a 10 MiB SDK-like body
