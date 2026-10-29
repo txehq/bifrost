@@ -1,6 +1,14 @@
 import http from "node:http";
+import net from "node:net";
 
 const port = Number(process.env.PROVIDER_ERROR_FIXTURE_PORT || "8791");
+// The stall proxy: an HTTP proxy that accepts the TCP connection and never answers the CONNECT, so a
+// gateway routed through it stalls inside connection acquisition (the proxy handshake), before any
+// request reaches an upstream. Each CONNECT it reads is counted under __stall_proxy_connects in /__hits.
+const stallPort = Number(process.env.PROVIDER_ERROR_FIXTURE_STALL_PORT || "8799");
+// How long a stalled connection is held before the fixture drops it, longer than any first-token deadline
+// a case arms and shorter than a proxy handshake timeout, so a gateway that waits for the proxy still fails.
+const STALL_HOLD_MS = 15000;
 
 // Per-model behaviour for POST /v1/chat/completions. The model name in the request
 // body selects the response, so one fixture serves every case. A model may carry a
@@ -248,6 +256,22 @@ const server = http.createServer((req, res) => {
 	});
 });
 
-server.listen(port, "127.0.0.1", () => {
-	console.log(`provider-error-fixture listening on http://127.0.0.1:${port}`);
+const stallProxy = net.createServer((socket) => {
+	let seen = "";
+	socket.on("data", (c) => {
+		seen += c.toString("latin1");
+		if (seen.includes("\r\n\r\n")) {
+			if (seen.startsWith("CONNECT ")) hits.__stall_proxy_connects = (hits.__stall_proxy_connects || 0) + 1;
+			seen = "";
+		}
+	});
+	socket.on("error", () => {});
+	setTimeout(() => socket.destroy(), STALL_HOLD_MS).unref();
+});
+
+stallProxy.listen(stallPort, "127.0.0.1", () => {
+	server.listen(port, "127.0.0.1", () => {
+		console.log(`provider-error-fixture stall proxy on http://127.0.0.1:${stallPort}`);
+		console.log(`provider-error-fixture listening on http://127.0.0.1:${port}`);
+	});
 });
