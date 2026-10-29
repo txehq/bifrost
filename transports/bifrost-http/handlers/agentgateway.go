@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -424,10 +425,6 @@ func (h *AgentGatewayHandler) update(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	name := pathName(ctx)
-	if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); bypassed && len(req.CredentialOrigins) > 0 {
-		sendAgentGatewayError(ctx, fasthttp.StatusForbidden, "Changing credential origins requires dashboard authentication")
-		return
-	}
 	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
 	defer cancel()
 	bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
@@ -440,6 +437,12 @@ func (h *AgentGatewayHandler) update(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if bypassed {
+		// Only a change needs dashboard authentication: the dashboard resends the
+		// stored origins on every toggle and edit.
+		if len(req.CredentialOrigins) > 0 && !slices.Equal(req.CredentialOrigins, previous.CredentialOrigins) {
+			sendAgentGatewayError(ctx, fasthttp.StatusForbidden, "Changing credential origins requires dashboard authentication")
+			return
+		}
 		req.CredentialOrigins = previous.CredentialOrigins
 	}
 	view, err := h.registrationManager.UpdateAgentRegistration(workCtx, name, req)

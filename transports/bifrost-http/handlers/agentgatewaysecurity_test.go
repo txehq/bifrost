@@ -14,8 +14,9 @@ import (
 )
 
 // TestAgentGatewayBypassedCredentialOrigins verifies permission changes stop before any manager call.
+// An update is judged against the stored origins, so it is covered by the replacement test below.
 func TestAgentGatewayBypassedCredentialOrigins(t *testing.T) {
-	for _, operation := range []string{"create", "update"} {
+	for _, operation := range []string{"create"} {
 		t.Run(operation, func(t *testing.T) {
 			h := &AgentGatewayHandler{}
 			ctx := &fasthttp.RequestCtx{}
@@ -34,7 +35,9 @@ func TestAgentGatewayBypassedCredentialOrigins(t *testing.T) {
 // TestAgentGatewayReplacementCredentialOrigins preserves operator permissions on bypassed replacements.
 func TestAgentGatewayReplacementCredentialOrigins(t *testing.T) {
 	for _, bypassed := range []bool{false, true} {
-		for _, field := range []string{"", `,"credential_origins":[]`, `,"credential_origins":["https://replacement.example.com"]`} {
+		// The unchanged origins are what the dashboard resends on every toggle and edit: they
+		// are not a change, so an auth-bypassed save must not be refused for carrying them.
+		for _, field := range []string{"", `,"credential_origins":[]`, `,"credential_origins":["https://replacement.example.com"]`, `,"credential_origins":["https://runtime.example.com"]`} {
 			t.Run(fmt.Sprintf("bypassed=%t/field=%s", bypassed, field), func(t *testing.T) {
 				origins := []string{"https://runtime.example.com"}
 				store := &agentAuthStore{registrations: map[string]schemas.AgentRegistration{
@@ -61,6 +64,8 @@ func TestAgentGatewayReplacementCredentialOrigins(t *testing.T) {
 					require.Equal(t, origins, recorder.updateRequest.CredentialOrigins)
 				} else if field == `,"credential_origins":["https://replacement.example.com"]` {
 					require.Equal(t, []string{"https://replacement.example.com"}, recorder.updateRequest.CredentialOrigins)
+				} else if field == `,"credential_origins":["https://runtime.example.com"]` {
+					require.Equal(t, origins, recorder.updateRequest.CredentialOrigins)
 				} else {
 					require.Empty(t, recorder.updateRequest.CredentialOrigins)
 				}

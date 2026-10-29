@@ -1839,7 +1839,8 @@ func (m *AuthMiddleware) HasSetupToken() bool {
 // SetupLockMiddleware locks the OSS admin API while dashboard auth is not active (no admin
 // account, or an admin account with auth disabled). In that state every non-public /api call
 // must carry the operator's setup token in SetupTokenHeader, or the setup session cookie the
-// dashboard got for it (POST /api/session/setup); with either, the request runs as the admin. Once dashboard auth is enabled this middleware is a no-op and APIMiddleware's normal
+// dashboard got for it (POST /api/session/setup); with either, the request runs as the admin.
+// A scoped temp token is also accepted for exactly the route it names, without admin rights. Once dashboard auth is enabled this middleware is a no-op and APIMiddleware's normal
 // session/Basic auth applies, so the setup token stops working.
 //
 // It must run before APIMiddleware, whose auth-off branch lets every request through. It is
@@ -1879,26 +1880,36 @@ func (m *AuthMiddleware) SetupLockMiddleware() schemas.BifrostHTTPMiddleware {
 				next(ctx)
 				return
 			}
-			if m.setupToken.Load() == nil {
-				SendError(ctx, fasthttp.StatusForbidden, "dashboard auth is not configured and no setup token is set; set setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and restart Bifrost")
-				return
-			}
-			// An explicit header wins: API clients send it, and a wrong one is a 403 even if
-			// a setup session cookie is also present.
-			if token := string(ctx.Request.Header.Peek(SetupTokenHeader)); token != "" {
-				if !m.CheckConfiguredSetupToken(token) {
-					SendError(ctx, fasthttp.StatusForbidden, "invalid setup token")
+			if m.setupToken.Load() != nil {
+				// An explicit header wins: API clients send it, and a wrong one is a 403 even if
+				// a setup session cookie is also present.
+				if token := string(ctx.Request.Header.Peek(SetupTokenHeader)); token != "" {
+					if !m.CheckConfiguredSetupToken(token) {
+						SendError(ctx, fasthttp.StatusForbidden, "invalid setup token")
+						return
+					}
+					ctx.SetUserValue(schemas.BifrostContextKeySetupTokenAuthenticated, true)
+					next(ctx)
 					return
 				}
-				ctx.SetUserValue(schemas.BifrostContextKeySetupTokenAuthenticated, true)
-				next(ctx)
+				// The dashboard holds an HttpOnly setup session cookie instead of the token.
+				// Browsers send it on WebSocket upgrades too, so no ticket is needed.
+				if m.validSetupSession(string(ctx.Request.Header.Cookie(SetupSessionCookie)), time.Now()) {
+					ctx.SetUserValue(schemas.BifrostContextKeySetupTokenAuthenticated, true)
+					next(ctx)
+					return
+				}
+			}
+			// A scoped temp token (an MCP consent or per-user auth flow) authorizes
+			// exactly its method, raw path and resource, as it does once dashboard
+			// auth is on. It is not the setup credential: the request is not marked
+			// setup-authenticated, and APIMiddleware does not run it as the admin.
+			if m.tempTokensService != nil && len(ctx.Request.Header.Peek("X-Bifrost-Temp-Token")) > 0 {
+				m.tryTempTokenOrUnauthorized(ctx, next)
 				return
 			}
-			// The dashboard holds an HttpOnly setup session cookie instead of the token.
-			// Browsers send it on WebSocket upgrades too, so no ticket is needed.
-			if m.validSetupSession(string(ctx.Request.Header.Cookie(SetupSessionCookie)), time.Now()) {
-				ctx.SetUserValue(schemas.BifrostContextKeySetupTokenAuthenticated, true)
-				next(ctx)
+			if m.setupToken.Load() == nil {
+				SendError(ctx, fasthttp.StatusForbidden, "dashboard auth is not configured and no setup token is set; set setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and restart Bifrost")
 				return
 			}
 			SendError(ctx, fasthttp.StatusUnauthorized, fmt.Sprintf("dashboard auth is not configured; send the setup token in the %s header", SetupTokenHeader))
@@ -1928,6 +1939,12 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 					return
 				}
 				ctx.SetUserValue(schemas.BifrostContextKeySessionToken, "")
+				// The OSS setup lock already authorized this request with a scoped
+				// temp token; it keeps that scope and is not the local admin.
+				if scope, _ := ctx.UserValue(schemas.BifrostContextKeyTempTokenScope).(string); scope != "" {
+					next(ctx)
+					return
+				}
 				// Mark as local admin so downstream RBAC bypasses cleanly when
 				// auth is fully disabled; otherwise RBAC 401s and the UI enters
 				// a logout/login redirect loop.
