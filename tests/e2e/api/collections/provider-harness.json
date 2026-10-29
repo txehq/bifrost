@@ -279247,6 +279247,404 @@
           }
         }
       ]
+    },
+    {
+      "name": "264. Provider key server-secret references on a whitelisted management route (key-secret-refs-e2e)",
+      "description": "Opt-in profile regression for TXE-4989. Run with provider_config/whitelisted-provider-keys/config.json (setup_token set, no admin, client.whitelisted_routes [\"/api/providers/*\"]) on an isolated fresh instance, INCLUDE_PREVIEW=1, PARALLEL=0 and FEATURE=key-secret-refs-e2e; the harness's setup token must be the profile's (BIFROST_SETUP_TOKEN, default bifrost-e2e-setup-token). With dashboard auth off, an operator-whitelisted /api route passes the OSS setup lock and is admitted by the fail-open bypass without any credential, which is how a caller with no credential reaches the provider-key handlers over HTTP in OSS (the other reachable bypasses are a gateway with no config store and enterprise builds with auth off). Before the fix such a caller could create or repoint a key whose value is an env./vault. reference, and the gateway resolved the server secret and sent it to the provider. Case 1 proves the lock is active for routes that are not whitelisted; case 2 creates a custom provider as the setup-token admin (POST /api/providers is not under the whitelisted prefix; base_url 127.0.0.1:9, where nothing listens, so nothing leaves the host); case 3 creates a key with an env. reference with no credential and expects the key handler's 403, not the lock's 401 (red before the fix); case 4 shows nothing was stored (red before the fix); case 5 creates a literal key, which stays allowed; case 6 repoints its value to an env. reference and expects the 403 (red before the fix); case 7 shows an edit that leaves the value alone still succeeds; case 8 shows the literal survived (red before the fix); case 9 deletes the provider. The referenced variable is not set on the gateway, so no secret exists to leak in either build. The openai keyword is only a harness filter label; no provider calls are made. Cookies and redirect following are disabled. Every unexpected status fails. Run the whole folder in order.",
+      "item": [
+        {
+          "name": "[PREVIEW] [EXPECT-401] openai key-secret-refs-e2e setup lock precondition - key-secret-refs-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('keySecretRefsE2EKey');",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('setup lock precondition exact response status - key-secret-refs-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(401);",
+                  "});",
+                  "pm.test('the setup lock answers a credential-less management call - key-secret-refs-e2e', function () {",
+                  "  pm.expect(pm.response.text(), 'run against provider_config/whitelisted-provider-keys: ' + pm.response.text()).to.include('X-Bifrost-Setup-Token');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/config"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai key-secret-refs-e2e setup-token admin creates the provider - key-secret-refs-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('admin provider create exact response status - key-secret-refs-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\": \"txe4989-key-refs\", \"custom_provider_config\": {\"base_provider_type\": \"openai\"}, \"network_config\": {\"base_url\": \"http://127.0.0.1:9/v1\", \"allow_private_network\": true}, \"concurrency_and_buffer_size\": {\"concurrency\": 1, \"buffer_size\": 4}}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-403] openai key-secret-refs-e2e whitelisted key create with a server secret reference is refused - key-secret-refs-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('referenced key create exact response status - key-secret-refs-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('the key handler refuses the value reference, not the setup lock - key-secret-refs-e2e', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, 'failed: ' + body).to.include('server secret reference (value)');",
+                  "  pm.expect(body).to.include('authenticated admin session');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/txe4989-key-refs/keys",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"txe4989-referenced\", \"value\": \"env.TXE4989_HARNESS_SERVER_SECRET\", \"models\": [\"*\"], \"weight\": 1}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai key-secret-refs-e2e refused reference key was not stored - key-secret-refs-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('key list exact response status - key-secret-refs-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('no key holds the refused reference - key-secret-refs-e2e', function () {",
+                  "  var keys = pm.response.json().keys || [];",
+                  "  pm.expect(keys.map(function (k) { return k.name; }), 'failed: ' + pm.response.text()).not.to.include('txe4989-referenced');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/txe4989-key-refs/keys"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai key-secret-refs-e2e whitelisted key create with a literal still works - key-secret-refs-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('literal key create exact response status - key-secret-refs-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('literal key stored without a reference - key-secret-refs-e2e', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.id, 'failed: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect((body.value && body.value.ref) || '').to.equal('');",
+                  "  pm.collectionVariables.set('keySecretRefsE2EKey', body.id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/txe4989-key-refs/keys",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"txe4989-literal\", \"value\": \"sk-txe4989-harness-literal-0000\", \"models\": [\"*\"], \"weight\": 1}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-403] openai key-secret-refs-e2e whitelisted key update repointing the value is refused - key-secret-refs-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('keySecretRefsE2EKey'), 'run the entire key-secret-refs-e2e folder in order').to.be.a('string').and.not.empty;",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('repoint update exact response status - key-secret-refs-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('the key handler refuses the value reference, not the setup lock - key-secret-refs-e2e', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, 'failed: ' + body).to.include('server secret reference (value)');",
+                  "  pm.expect(body).to.include('authenticated admin session');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/txe4989-key-refs/keys/{{keySecretRefsE2EKey}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"value\": \"env.TXE4989_HARNESS_SERVER_SECRET\"}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai key-secret-refs-e2e whitelisted key update leaving the value alone still works - key-secret-refs-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('keySecretRefsE2EKey'), 'run the entire key-secret-refs-e2e folder in order').to.be.a('string').and.not.empty;",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('weight update exact response status - key-secret-refs-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/txe4989-key-refs/keys/{{keySecretRefsE2EKey}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"weight\": 2}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai key-secret-refs-e2e refused repoint left the literal value in place - key-secret-refs-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('keySecretRefsE2EKey'), 'run the entire key-secret-refs-e2e folder in order').to.be.a('string').and.not.empty;",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('key read exact response status - key-secret-refs-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the stored value is still the literal, with the weight edit applied - key-secret-refs-e2e', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect((body.value && body.value.ref) || '', 'failed: ' + pm.response.text()).to.equal('');",
+                  "  pm.expect(body.weight).to.equal(2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/txe4989-key-refs/keys/{{keySecretRefsE2EKey}}"
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai key-secret-refs-e2e cleanup deletes the provider - key-secret-refs-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup exact response status - key-secret-refs-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/txe4989-key-refs"
+          }
+        }
+      ]
     }
   ]
 }

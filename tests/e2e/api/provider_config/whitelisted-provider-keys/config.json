@@ -1,0 +1,9 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "setup_token": "bifrost-e2e-setup-token",
+  "client": {
+    "enable_logging": false,
+    "whitelisted_routes": ["/api/providers/*"]
+  },
+  "providers": {}
+}
