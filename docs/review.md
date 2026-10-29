@@ -18,7 +18,7 @@ organisation for selected repositories; txehq/bifrost was added to it on 2026-10
 review settings (`chatgpt.com/settings/code-review`, repository `txehq/bifrost`) are
 automatic review on for all PRs, on every push, security review on, reporting floor
 Medium. When the plan behind it is rate-limited, reviews stop and the check fails after
-its 15-minute wait; `@codex review` on the PR asks for another attempt.
+its 25-minute wait; `@codex review` on the PR asks for another attempt.
 `security_review` is printed, never gated on.
 
 ## What the connector posts
@@ -43,10 +43,12 @@ its 15-minute wait; `@codex review` on the PR asks for another attempt.
    ```
 
    Done when `commit_sha` is your head (`gh pr view <n> -R txehq/bifrost --json headRefOid`)
-   and `status` is `completed`. A `has_any_findings` that is neither true nor false (`null`
-   on txehq/txe PR 4047, TXE-5126) passes only on the connector's receipt for the head and
-   otherwise fails naming the value: comment `@codex review` once, which posts a receipt on
-   a clean head, and re-run the check.
+   and `status` is `completed`. Until it is, the check polls every 30 seconds for up to 25
+   minutes, long enough for the nudge job's re-request of a silent review and the review
+   that follows to land (TXE-5348), then fails naming what differed. A `has_any_findings`
+   that is neither true nor false (`null` on txehq/txe PR 4047, TXE-5126) passes only on
+   the connector's receipt for the head and otherwise fails naming the value: comment
+   `@codex review` once, which posts a receipt on a clean head, and re-run the check.
 3. **Fix every P0 and P1 and push.** The push starts a new review; go back to 2. Fix a P2
    or P3 when it is right and cheap.
 4. **When a finding is wrong, reply in its thread with the evidence and stop.** Never add
@@ -63,10 +65,11 @@ its 15-minute wait; `@codex review` on the PR asks for another attempt.
    comment asking for a new head: push one empty commit. Do not re-request by hand inside
    those windows.
 7. **After a retarget, rebase onto the new base and force-push**; the check holds until
-   the connector has reviewed a push made after the base changed. After a change to the
-   gate lands on `main`, an open PR picks it up only through a new `pull_request` event
-   (edit the PR description, or push); re-running an existing `codex-review` run reuses
-   the base it was created with.
+   the connector has reviewed a push made after the base changed. After a change to
+   `codex-review.yml` lands on `main`, an open PR picks it up only through a new
+   `pull_request` event (edit the PR description, or push); re-running an existing
+   `codex-review` run reuses the workflow file it was created with. A change to the script
+   needs no new event: every run, a re-run included, checks it out from the tip of `main`.
 8. **Merge** with a squash once `codex-review` and the other required checks are green.
 
 ## Limits

@@ -34,7 +34,7 @@ jobs:
   codex-review:
     name: codex-review
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       # The script comes from the base branch tip, so a PR cannot pass its own check by
       # editing it. The job has no if: a skipped required check counts as passing.
@@ -49,8 +49,10 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           # A clean review emits no pull_request_review event, so a run waits for the
           # connector's state block on the head. Any review event cancels the run in
-          # progress (concurrency above) and waits again, never deciding early.
-          CODEX_REVIEW_WAIT_SECONDS: "900"
+          # progress (concurrency above) and waits again, never deciding early. 25 minutes
+          # outlasts the nudge job's re-request of a review silent 10 minutes, on its 5-minute
+          # tick, and the review that follows (TXE-5348).
+          CODEX_REVIEW_WAIT_SECONDS: "1500"
         run: bash scripts/codex-review-check.sh "$REPO" "$PR"
 
   check-test:
