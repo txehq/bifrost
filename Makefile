@@ -2292,6 +2292,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' "tmp/harness-failures.md"     "Categorized failure analyzer output + coverage matrices."; \
 		printf '  %-30s %s\n' "tmp/bifrost-dev.log"         "Bifrost runtime log (only if we auto-started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-mcp-fixture.log" "MCP test server log (sse_mcp on 3012; only if we started it)."; \
+		printf '  %-30s %s\n' "tmp/harness-a2a-fixture.log" "A2A push fixture log (127.0.0.1:18091; only if we started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-augmented.json"  "Provider harness plus generated streaming/thinking rows."; \
 		printf '  %-30s %s\n' "tmp/harness-filtered.json"   "Filtered collection (only if PROVIDER/FEATURE/RERUN_FAILED set)."; \
 		printf '  %-30s %s\n' "tmp/harness-timings.json"    "Measured median ms per request name, merged across runs. Drives both the shard sizing and the"; \
@@ -2518,6 +2519,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			kill $$(cat tmp/harness-mcp-fixture.pid) 2>/dev/null; \
 			rm -f tmp/harness-mcp-fixture.pid; \
 		fi; \
+		if [ -f tmp/harness-a2a-fixture.pid ]; then \
+			kill $$(cat tmp/harness-a2a-fixture.pid) 2>/dev/null; \
+			rm -f tmp/harness-a2a-fixture.pid; \
+		fi; \
 	}; \
 	preempt_viewer_port() { \
 		if [ -f tmp/harness-viewer.pid ]; then \
@@ -2579,6 +2584,21 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			else \
 				say "$(RED)MCP test server did not open 3012. See tmp/harness-mcp-fixture.log$(NC)"; \
 			fi; \
+		fi; \
+	fi; \
+	: "The Agent Gateway rows (folders 266 and 267, a2a-push-*) register the offline A2A push"; \
+	: "fixture (tests/e2e/api/runners/a2a-push-fixture.mjs, 127.0.0.1:18091) as their upstream agent"; \
+	: "and client callback, as test-provider-harness.sh does in CI; start it unless one is listening."; \
+	if nc -z 127.0.0.1 18091 2>/dev/null; then \
+		say "$(GREEN)A2A push fixture already listening on 18091$(NC)"; \
+	else \
+		node "$(CURDIR)/tests/e2e/api/runners/a2a-push-fixture.mjs" 18091 > tmp/harness-a2a-fixture.log 2>&1 & \
+		echo $$! > tmp/harness-a2a-fixture.pid; \
+		for i in $$(seq 1 40); do nc -z 127.0.0.1 18091 2>/dev/null && break; sleep 0.25; done; \
+		if nc -z 127.0.0.1 18091 2>/dev/null; then \
+			say "$(GREEN)A2A push fixture up on 18091 (log: tmp/harness-a2a-fixture.log)$(NC)"; \
+		else \
+			say "$(RED)A2A push fixture did not open 18091; the a2a-push-* rows will fail. See tmp/harness-a2a-fixture.log$(NC)"; \
 		fi; \
 	fi; \
 	if curl -fsS --max-time 2 "$$BASE_URL_VAL/health" > /dev/null 2>&1; then \
