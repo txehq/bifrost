@@ -965,3 +965,49 @@ func BenchmarkLiveSessionControlRoute(b *testing.B) {
 		})
 	}
 }
+
+// abandonCountingIO counts how often the session gave up on the provider's connection.
+type abandonCountingIO struct {
+	nopLiveIO
+	abandoned chan struct{}
+}
+
+func (io *abandonCountingIO) abandonUpstream() { io.abandoned <- struct{}{} }
+
+// TestLiveSessionStopsReadingADrainAtTheBillingBound: a refused session goes on reading what drains,
+// and stops the provider's connection, once, when its unit can hold no more responses.
+func TestLiveSessionStopsReadingADrainAtTheBillingBound(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+	runner.setRefuse(true)
+	io := &abandonCountingIO{abandoned: make(chan struct{}, liveMaxBillingSegments)}
+	controller := &liveSessionController{io: io, meter: meter, drainTimeout: time.Hour, upstreamDone: make(chan struct{})}
+	defer controller.stopDrainTimer()
+	respond := func(i int) {
+		controller.fromUpstream(fmt.Appendf(nil, `{"type":"response.event","delegation_id":"d%d","event":{"type":"response.completed","response":{"id":"r%d","object":"response","model":"gpt-5.6-luna","status":"completed","output":[],"usage":{"input_tokens":10,"output_tokens":1,"total_tokens":11}}}}`, i, i))
+	}
+
+	for i := range liveMaxBillingSegments - 1 {
+		respond(i)
+	}
+	select {
+	case <-io.abandoned:
+		t.Fatal("a drain under the bound keeps reading")
+	case <-time.After(50 * time.Millisecond):
+	}
+	respond(liveMaxBillingSegments - 1)
+	select {
+	case <-io.abandoned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the session kept reading past what its unit can hold")
+	}
+	respond(liveMaxBillingSegments)
+	select {
+	case <-io.abandoned:
+		t.Fatal("the connection was abandoned twice")
+	case <-time.After(50 * time.Millisecond):
+	}
+}

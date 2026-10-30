@@ -2,6 +2,7 @@ package live
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -289,6 +290,46 @@ func TestBilling_RefusedDrainPricesEachResponseOnItsOwn(t *testing.T) {
 		assert.Equal(t, 300000.0, row.Get("token_usage.prompt_tokens").Float(), "the row still reports the totals")
 		total := 60*fakeVoiceCostPerSecond + backendCost
 		assert.InDelta(t, total, row.Get("cost").Float(), 1e-9)
+		waitBudgetUsage(t, vk.BudgetID, total)
+	})
+}
+
+// A provider that keeps answering a refused session meets the unit's bound: the gateway stops reading
+// instead of pricing responses together. Whatever was read stays priced one by one, each on its own
+// tier and under the 272k threshold, and the log row and the budget agree on it.
+func TestBilling_RefusedDrainPastTheBoundStopsAndStaysPerResponse(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	forEachTransport(t, func(t *testing.T, tr transport) {
+		budget := 0.05 // two 30 s windows at $0.03 each cross it; the next renewal is refused
+		vk := createVirtualKey(t, virtualKeySpec{budgetUSD: &budget})
+		c, s := openFakeSession(t, tr, vk, backendModel, nil)
+		s.HoldClose()
+
+		s.EmitUsage(30)
+		settle()
+		s.EmitUsage(60)
+		settle()
+		const sent, bound = 90, 64
+		for i := range sent {
+			tier := ""
+			if i%2 == 0 {
+				tier = "priority"
+			}
+			s.Play(delegation{ID: fmt.Sprintf("item_%d", i), ResponseID: fmt.Sprintf("resp_%d", i), Model: backendModel, Input: 150000, Output: 1000, Tier: tier})
+		}
+		c.WaitGone()
+
+		row := findLiveLog(t, s.ID())
+		read := int(row.Get("token_usage.prompt_tokens").Int()) / 150000
+		require.GreaterOrEqual(t, read, bound, "every response up to the bound is read")
+		require.Less(t, read, sent, "the gateway stopped reading a drain that would not end")
+		priority := (read + 1) / 2
+		backendCost := float64(priority)*(150000*fakeInputCostPriority+1000*fakeOutputCostPriority) +
+			float64(read-priority)*(150000*fakeInputCostPerToken+1000*fakeOutputCostPerToken)
+		assert.InDelta(t, backendCost, row.Get("live_session.backend_cost").Float(), 1e-6, "each response read is priced on its own")
+		total := 60*fakeVoiceCostPerSecond + backendCost
+		assert.InDelta(t, total, row.Get("cost").Float(), 1e-6)
 		waitBudgetUsage(t, vk.BudgetID, total)
 	})
 }

@@ -7918,6 +7918,40 @@ func TestDecisionCost_EmulatedCacheAndNativeGuards(t *testing.T) {
 	assert.Zero(t, price(variable))
 }
 
+// TestCalculateCostBreakdown_SegmentsPastTheLiveBoundStayExact: a drain stopped at its bound can
+// hold a few responses more than it, and each still prices alone: 67 mixed-tier responses of 150k
+// input stay under the threshold and on their own tier, far from what their sum would cost.
+func TestCalculateCostBreakdown_SegmentsPastTheLiveBoundStayExact(t *testing.T) {
+	p := gpt56SolPricing()
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(p.Model, p.Provider, p.Mode): p,
+	})
+	priority := schemas.BifrostServiceTierPriority
+	one := &schemas.BifrostLLMUsage{PromptTokens: 150000, CompletionTokens: 1000, TotalTokens: 151000}
+	segments := make([]schemas.BifrostResponsesResponse, 67)
+	want := 0.0
+	for i := range segments {
+		segments[i].Usage = &schemas.ResponsesResponseUsage{InputTokens: 150000, OutputTokens: 1000, TotalTokens: 151000}
+		if i%2 == 0 {
+			segments[i].ServiceTier = &priority
+			want += computeTextCostTotal(&p, one, serviceTier{isPriority: true})
+		} else {
+			want += computeTextCostTotal(&p, one, serviceTier{})
+		}
+	}
+	got := s.CalculateCostBreakdown(&schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Usage: &schemas.ResponsesResponseUsage{InputTokens: 67 * 150000, OutputTokens: 67000, TotalTokens: 67 * 151000},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ResponsesRequest,
+			RoutingInfo: routingInfoFor(schemas.ModelProvider(p.Provider), p.Model),
+		},
+		BillingSegments: segments,
+	}}, nil)
+	require.NotNil(t, got)
+	assert.InDelta(t, want, got.TotalCost, 1e-9)
+	assert.InDelta(t, want, got.InputCost+got.OutputCost+got.AdditionalCost, 1e-9)
+}
+
 // BenchmarkCalculateCostBillingTurns measures pricing on the request path: an ordinary call
 // pays one length check for the turns, and a ten-turn loop one pricing pass per call.
 func BenchmarkCalculateCostBillingTurns(b *testing.B) {

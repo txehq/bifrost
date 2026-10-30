@@ -28,9 +28,11 @@ type liveUnitRunner interface {
 	RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*bifrost.RealtimeTurnHooks, *schemas.BifrostError)
 }
 
-// liveMaxBillingSegments bounds the responses one billing unit prices separately. A unit settles
-// more than one only while a refused session drains, so reaching it takes a provider that keeps
-// answering after the session was refused; responses beyond it are priced with the last segment.
+// liveMaxBillingSegments bounds the responses one billing unit holds. A unit settles more than one
+// only while a refused session drains, so reaching it takes a provider that keeps answering after
+// the session was refused. Pricing several responses together would misprice them, so the drain is
+// ended here instead (see billingBoundReached): every response read keeps its own segment, and
+// what stops is reading more.
 const liveMaxBillingSegments = 64
 
 // liveBillingUnit is one admitted pass through the plugin pipeline: pre-hooks already ran and
@@ -305,13 +307,21 @@ func (lane *liveLane) addBillingSegmentLocked(response *schemas.BifrostResponses
 		lane.segments = make([]schemas.BifrostResponsesResponse, 1, 4)
 		lane.segments[0] = first
 	}
-	if len(lane.segments) >= liveMaxBillingSegments {
-		last := &lane.segments[len(lane.segments)-1]
-		last.Usage = addResponsesUsage(last.Usage, response.Usage)
-		return
-	}
 	header.Usage = addResponsesUsage(nil, response.Usage)
 	lane.segments = append(lane.segments, header)
+}
+
+// billingBoundReached reports whether a unit holds as many responses as it may, so the session must
+// stop reading more. Frames already on their way when it turns true are still appended.
+func (m *liveMeter) billingBoundReached() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, lane := range m.backends {
+		if len(lane.segments) >= liveMaxBillingSegments {
+			return true
+		}
+	}
+	return false
 }
 
 // failBackend records a delegation the provider refused to run: the open backend unit closes
@@ -325,17 +335,20 @@ func (m *liveMeter) failBackend(bifrostErr *schemas.BifrostError) *schemas.Bifro
 		return m.refusal
 	}
 	next, openErr := m.openUnit(liveUnitBackend, lane.model, true)
-	postErr := *bifrostErr
-	postErr.ExtraFields.RequestType = schemas.LiveRequest
-	postErr.ExtraFields.Provider = m.provider
-	postErr.ExtraFields.OriginalModelRequested = lane.model
-	postCtx := m.unitContext(lane.current.requestID, true, liveUnitBackend)
-	postCtx.SetValue(schemas.BifrostContextKeyLiveDelegationFailed, true)
-	m.runPostHooks(lane.current, postCtx, nil, &postErr)
+	// The successor owns the lane before the failed unit's post hooks run: if one panics, the
+	// session's recovery finishes through the successor, never the unit the hooks released.
+	failed := lane.current
 	lane.current = next
 	if openErr != nil {
 		m.refusal = openErr
 	}
+	postErr := *bifrostErr
+	postErr.ExtraFields.RequestType = schemas.LiveRequest
+	postErr.ExtraFields.Provider = m.provider
+	postErr.ExtraFields.OriginalModelRequested = lane.model
+	postCtx := m.unitContext(failed.requestID, true, liveUnitBackend)
+	postCtx.SetValue(schemas.BifrostContextKeyLiveDelegationFailed, true)
+	m.runPostHooks(failed, postCtx, nil, &postErr)
 	return m.refusal
 }
 
