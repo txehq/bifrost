@@ -1830,7 +1830,10 @@ func BenchmarkPushConfigReads(b *testing.B) {
 // again under B's token, that push is a new delivery for B, not a retransmission
 // of A's (dead-lettered) one.
 func TestRetransmissionAfterReRegistrationReachesTheNewRegistration(t *testing.T) {
-	m, handler, store, upstream := pushGateway(t)
+	// The background relay is kept away from the outbox so the test delivers
+	// each row exactly once itself.
+	store := newMemoryPushStore()
+	m, handler, upstream := pushGatewayOn(t, idleRelayStore{store})
 	var newTenantHits atomic.Int32
 	newTenant := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		newTenantHits.Add(1)
