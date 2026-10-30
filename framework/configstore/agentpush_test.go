@@ -517,3 +517,34 @@ func TestBindAgentPushConfigTaskReplacesSameTenantRegistration(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, stale, "the replaced registration's ingress token must stop authenticating")
 }
+
+// TestSaveAgentPushConfigTreatsALegacyNullTenantAsEmpty: a row written before the
+// tenant column existed holds SQL NULL, which loads as the empty tenant. A tenantless
+// re-registration of that row must replace it, as the manager's own check allows,
+// instead of being reported as another tenant's conflict.
+func TestSaveAgentPushConfigTreatsALegacyNullTenantAsEmpty(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	require.NoError(t, store.DB().Exec(
+		"INSERT INTO config_agent_push_configs (agent_name, task_id, config_id, url, tenant, ingress_token_hash, encryption_status, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)",
+		"fixture", "task-1", "cfg-1", "https://a.example/legacy", "hash-legacy", "plain_text", now, now).Error)
+	loaded, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Empty(t, loaded.Tenant)
+
+	require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{
+		AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "",
+		URL: "https://a.example/replaced", IngressTokenHash: "hash-new", CreatedAt: now, UpdatedAt: now,
+	}), "a tenantless re-registration must replace a legacy NULL-tenant row")
+	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "https://a.example/replaced", got.URL)
+	require.Equal(t, "hash-new", got.IngressTokenHash)
+	// A named tenant still cannot take it over.
+	require.ErrorIs(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{
+		AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "tenant-b",
+		URL: "https://b.example/callback", IngressTokenHash: "hash-b", CreatedAt: now, UpdatedAt: now,
+	}), ErrAgentPushConfigTenantConflict)
+}

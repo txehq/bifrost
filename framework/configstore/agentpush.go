@@ -64,8 +64,10 @@ var ErrAgentPushConfigTenantConflict = errors.New("push configuration is registe
 func (s *RDBConfigStore) SaveAgentPushConfig(ctx context.Context, config *schemas.AgentPushConfig) error {
 	row := pushConfigToTable(config)
 	result := s.DB().WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "agent_name"}, {Name: "task_id"}, {Name: "config_id"}},
-		Where:     clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "config_agent_push_configs.tenant = excluded.tenant"}}},
+		Columns: []clause.Column{{Name: "agent_name"}, {Name: "task_id"}, {Name: "config_id"}},
+		// A row written before the tenant column existed holds SQL NULL, which reads
+		// back as the empty tenant; it must match a tenantless re-registration.
+		Where:     clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "COALESCE(config_agent_push_configs.tenant, '') = COALESCE(excluded.tenant, '')"}}},
 		UpdateAll: true,
 	}).Create(&row)
 	if result.Error != nil {

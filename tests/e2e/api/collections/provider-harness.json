@@ -280953,7 +280953,7 @@
     },
     {
       "name": "266. Agent Gateway push configurations are tenant-scoped and stream replies fail closed (a2a-push-tenancy) [SERIAL]",
-      "description": "TXE-5477 (PR5 preservation group 3a). The gateway stores each client's push callback itself and proxies the rest to the upstream agent; the fixture agent is tests/e2e/api/runners/a2a-push-fixture.mjs on 127.0.0.1:18091 (override with the a2aPushFixtureUrl variable), started by test-provider-harness.sh. Pins: a push configuration belongs to the tenant that registered it (another tenant naming the same task and config ID cannot replace, read, list or delete it; a tenantless request is the empty tenant, not a wildcard); a plain JSON reply to message/stream is reframed as one SSE event, while a malformed or oversized one surfaces as an error event instead of an empty or truncated successful stream; a registration created with enabled false reads back disabled. The folder sets a2a_external_client_url for its own rows and clears it at the end, so folder 233's missing-URL rows keep their meaning in a full run. Red on main ff00d1500 at 266.5 (the callback is replaced), 266.6-266.10 (cross-tenant reads, lists and delete), 266.16-266.17 (empty stream) and 266.19 (enabled true); green on this change.",
+      "description": "TXE-5477 (PR5 preservation group 3a). The gateway stores each client's push callback itself and proxies the rest to the upstream agent; the fixture agent is tests/e2e/api/runners/a2a-push-fixture.mjs on 127.0.0.1:18091 (override with the a2aPushFixtureUrl variable), started by test-provider-harness.sh. Pins: a push configuration belongs to the tenant that registered it (another tenant naming the same task and config ID cannot replace, read, list or delete it; a tenantless request is the empty tenant, not a wildcard); a plain JSON reply to message/stream is reframed as one SSE event, while a malformed or oversized one surfaces as an error event instead of an empty or truncated successful stream; a registration created with enabled false reads back disabled. The folder sets a2a_external_client_url for its own rows (reading the current client config first, since PUT /api/config validates the whole object) and clears it at the end, so folder 233's missing-URL rows keep their meaning in a full run. Red on main ff00d1500 at 266.5 (the callback is replaced), 266.6-266.12 (cross-tenant reads, lists and delete), 266.16-266.17 (empty stream) and 266.19 (enabled true); green on this change.",
       "item": [
         {
           "name": "266.1 a2a push tenancy: set a2a_external_client_url so the gateway can mint push callbacks",
@@ -280967,7 +280967,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"client_config\": {\"a2a_external_client_url\": \"{{baseUrl}}\"}}"
+              "raw": "{\"client_config\": {{a2aClientConfig}}}"
             },
             "url": "{{baseUrl}}/api/config"
           },
@@ -280979,7 +280979,18 @@
                 "exec": [
                   "// One fixture agent per run; the registration is deleted at the end of the folder.",
                   "if (!pm.variables.get('a2aPushAgent')) { pm.variables.set('a2aPushAgent', 'a2a-push-fixture-' + Date.now()); }",
-                  "pm.variables.set('a2aFixtureBase', pm.variables.get('a2aPushFixtureUrl') || 'http://127.0.0.1:18091');"
+                  "pm.variables.set('a2aFixtureBase', pm.variables.get('a2aPushFixtureUrl') || 'http://127.0.0.1:18091');",
+                  "// PUT /api/config validates the whole client config, so read the current one and change only the URL.",
+                  "var headers = { 'Accept': 'application/json' };",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "if (setupToken) { headers['X-Bifrost-Setup-Token'] = setupToken; }",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET', header: headers }, function (err, res) {",
+                  "  if (err) { throw err; }",
+                  "  if (res.code !== 200) { throw new Error('GET /api/config returned ' + res.code + ': ' + res.text()); }",
+                  "  var clientConfig = res.json().client_config || {};",
+                  "  clientConfig.a2a_external_client_url = pm.variables.get('baseUrl');",
+                  "  pm.variables.set('a2aClientConfig', JSON.stringify(clientConfig));",
+                  "});"
                 ]
               }
             },
@@ -280988,7 +280999,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
                 ]
               }
             }
@@ -281016,7 +281027,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 201', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(201); });"
+                  "pm.test(\"Status code is 201\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(201); });"
                 ]
               }
             }
@@ -281048,9 +281059,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var body = pm.response.json();",
-                  "pm.test('message/send returns a task', function () {",
+                  "pm.test(\"message/send returns a task\", function () {",
                   "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
                   "  pm.expect(body.result && body.result.task && body.result.task.id, 'no task id: ' + pm.response.text()).to.be.a('string');",
                   "  pm.variables.set('a2aPushTask', body.result.task.id);",
@@ -281086,9 +281097,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var body = pm.response.json();",
-                  "pm.test('tenant-a's registration is stored and redacted', function () {",
+                  "pm.test(\"tenant-a's registration is stored and redacted\", function () {",
                   "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
                   "  pm.expect(body.result.id).to.equal('shared-config');",
                   "  pm.expect(body.result.tenant).to.equal('tenant-a');",
@@ -281126,9 +281137,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var body = pm.response.json();",
-                  "pm.test('another tenant's registration of the same config ID is refused with invalid params', function () {",
+                  "pm.test(\"another tenant's registration of the same config ID is refused with invalid params\", function () {",
                   "  pm.expect(body.error, 'expected a JSON-RPC error, got: ' + pm.response.text()).to.be.an('object');",
                   "  pm.expect(body.result, 'a result came back with the error: ' + pm.response.text()).to.equal(undefined);",
                   "  pm.expect(body.error.code, pm.response.text()).to.equal(-32602);",
@@ -281165,9 +281176,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var body = pm.response.json();",
-                  "pm.test('another tenant's read is refused', function () {",
+                  "pm.test(\"another tenant's read is refused\", function () {",
                   "  pm.expect(body.error, 'expected a JSON-RPC error, got: ' + pm.response.text()).to.be.an('object');",
                   "  pm.expect(body.result, 'a result came back with the error: ' + pm.response.text()).to.equal(undefined);",
                   "  pm.expect(pm.response.text()).not.to.include('client.example');",
@@ -281203,9 +281214,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var body = pm.response.json();",
-                  "pm.test('a tenantless read does not see a named tenant's config', function () {",
+                  "pm.test(\"a tenantless read does not see a named tenant's config\", function () {",
                   "  pm.expect(body.error, 'expected a JSON-RPC error, got: ' + pm.response.text()).to.be.an('object');",
                   "  pm.expect(body.result, 'a result came back with the error: ' + pm.response.text()).to.equal(undefined);",
                   "  pm.expect(pm.response.text()).not.to.include('client.example');",
@@ -281241,9 +281252,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var body = pm.response.json();",
-                  "pm.test('another tenant's list is empty', function () {",
+                  "pm.test(\"another tenant's list is empty\", function () {",
                   "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
                   "  pm.expect(body.result.configs || [], pm.response.text()).to.have.lengthOf(0);",
                   "});"
@@ -281278,9 +281289,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var body = pm.response.json();",
-                  "pm.test('a tenantless list is empty', function () {",
+                  "pm.test(\"a tenantless list is empty\", function () {",
                   "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
                   "  pm.expect(body.result.configs || [], pm.response.text()).to.have.lengthOf(0);",
                   "});"
@@ -281315,9 +281326,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var body = pm.response.json();",
-                  "pm.test('another tenant's delete is a no-op for the stored record', function () {",
+                  "pm.test(\"another tenant's delete is a no-op for the stored record\", function () {",
                   "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
                   "});"
                 ]
@@ -281351,9 +281362,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var body = pm.response.json();",
-                  "pm.test('tenant-a's config survived another tenant's delete', function () {",
+                  "pm.test(\"tenant-a's config survived another tenant's delete\", function () {",
                   "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
                   "  pm.expect(body.result.url, pm.response.text()).to.equal('https://client.example/callback');",
                   "  pm.expect(body.result.tenant).to.equal('tenant-a');",
@@ -281390,9 +281401,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var body = pm.response.json();",
-                  "pm.test('tenant-a lists one config', function () {",
+                  "pm.test(\"tenant-a lists one config\", function () {",
                   "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
                   "  pm.expect(body.result.configs, pm.response.text()).to.have.lengthOf(1);",
                   "  pm.expect(body.result.configs[0].id).to.equal('shared-config');",
@@ -281428,9 +281439,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var body = pm.response.json();",
-                  "pm.test('tenant-a's delete succeeds', function () {",
+                  "pm.test(\"tenant-a's delete succeeds\", function () {",
                   "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
                   "});"
                 ]
@@ -281464,9 +281475,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var body = pm.response.json();",
-                  "pm.test('the deleted config no longer reads', function () {",
+                  "pm.test(\"the deleted config no longer reads\", function () {",
                   "  pm.expect(body.error, 'expected a JSON-RPC error, got: ' + pm.response.text()).to.be.an('object');",
                   "  pm.expect(body.result, 'a result came back with the error: ' + pm.response.text()).to.equal(undefined);",
                   "});"
@@ -281501,8 +281512,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
-                  "pm.test('the upstream JSON error reaches the client as an SSE event', function () {",
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"the upstream JSON error reaches the client as an SSE event\", function () {",
                   "  pm.expect(pm.response.headers.get('Content-Type') || '', pm.response.text()).to.include('text/event-stream');",
                   "  pm.expect(pm.response.text()).to.include('data:');",
                   "  pm.expect(pm.response.text()).to.include('fixture-error');",
@@ -281538,8 +281549,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
-                  "pm.test('a reply that is not JSON surfaces as an error event, not an empty stream', function () {",
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"a reply that is not JSON surfaces as an error event, not an empty stream\", function () {",
                   "  pm.expect(pm.response.text().trim(), 'empty stream: ' + pm.response.text()).to.not.equal('');",
                   "  pm.expect(pm.response.text(), pm.response.text()).to.include('\"error\"');",
                   "});"
@@ -281574,8 +281585,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
-                  "pm.test('a reply larger than the reframing buffer surfaces as an error event, not a truncated stream', function () {",
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"a reply larger than the reframing buffer surfaces as an error event, not a truncated stream\", function () {",
                   "  pm.expect(pm.response.text().trim(), 'empty stream: ' + pm.response.text()).to.not.equal('');",
                   "  pm.expect(pm.response.text(), pm.response.text().slice(0, 400)).to.include('\"error\"');",
                   "  pm.expect(pm.response.text(), 'the oversized body was passed through').not.to.include('fixture-oversized');",
@@ -281607,7 +281618,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 201', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(201); });"
+                  "pm.test(\"Status code is 201\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(201); });"
                 ]
               }
             }
@@ -281626,8 +281637,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
-                  "pm.test('enabled false survives create', function () {",
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"enabled false survives create\", function () {",
                   "  var body = pm.response.json();",
                   "  var reg = body.agent || body.registration || body;",
                   "  pm.expect(reg.enabled, 'a registration created disabled came back enabled: ' + pm.response.text()).to.equal(false);",
@@ -281650,7 +281661,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 204', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(204); });"
+                  "pm.test(\"Status code is 204\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(204); });"
                 ]
               }
             }
@@ -281669,7 +281680,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 204', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(204); });"
+                  "pm.test(\"Status code is 204\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(204); });"
                 ]
               }
             }
@@ -281687,17 +281698,36 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"client_config\": {\"a2a_external_client_url\": \"\"}}"
+              "raw": "{\"client_config\": {{a2aClientConfig}}}"
             },
             "url": "{{baseUrl}}/api/config"
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// PUT /api/config validates the whole client config, so read the current one and change only the URL.",
+                  "var headers = { 'Accept': 'application/json' };",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "if (setupToken) { headers['X-Bifrost-Setup-Token'] = setupToken; }",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET', header: headers }, function (err, res) {",
+                  "  if (err) { throw err; }",
+                  "  if (res.code !== 200) { throw new Error('GET /api/config returned ' + res.code + ': ' + res.text()); }",
+                  "  var clientConfig = res.json().client_config || {};",
+                  "  clientConfig.a2a_external_client_url = '';",
+                  "  pm.variables.set('a2aClientConfig', JSON.stringify(clientConfig));",
+                  "});"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
                 ]
               }
             }
