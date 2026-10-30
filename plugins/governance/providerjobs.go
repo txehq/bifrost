@@ -408,6 +408,91 @@ var passthroughCollections = map[string]string{
 	"cachedContents": configstoreTables.ProviderObjectKindCachedContent,
 }
 
+// passthroughTuningCollections are the path segments, folded, that name a tuning or
+// customization collection: OpenAI fine_tuning (and Azure's legacy fine-tunes), Gemini
+// tunedModels, Vertex tuningJobs, and Bedrock's customization collections (jobs, custom and
+// imported models, their deployments, imports, copies and provisioned throughput).
+var passthroughTuningCollections = [...]string{
+	"fine_tuning", "fine-tunes", "tunedModels", "tuningJobs",
+	"model-customization-jobs", "custom-models", "custom-model-deployments", "imported-models",
+	"model-import-jobs", "model-copy-jobs", "provisioned-model-throughput", "provisioned-model-throughputs",
+}
+
+// passthroughReachesTuning reports whether a passthrough request reaches a tuning collection
+// or tuned model on any provider (see passthroughTuningCollections, plus OpenAI's fine-tuned
+// models/ft:...). None records which key created a job or tuned model, so a virtual key can
+// neither manage its own nor be kept from another's: a list, read or cancel would reach other
+// keys' jobs, and a create may name another key's tuned model as its base. Inference on one Gemini
+// tuned model stays open (see tunedModelInference). Every method is
+// matched, so neither the method nor a method-override header changes the answer. The path
+// is matched as it will be sent, as in passthroughObjectRefs: BuildPassthroughURL re-encodes
+// every literal %, so the provider reads exactly these segments. Segments are folded and cut
+// at a Google custom-method ':' (tunedModels:generateText) or a ';' parameter, and a '\' is
+// read as a separator; each can only refuse more. The provider is not consulted, so a custom
+// provider built on any base type is covered alike. It allocates only for a path that holds a
+// dot segment, a doubled slash or a backslash.
+func passthroughReachesTuning(r *schemas.BifrostPassthroughRequest) bool {
+	sent := r.Path
+	if strings.Contains(sent, "\\") {
+		sent = strings.ReplaceAll(sent, "\\", "/")
+	}
+	if strings.Contains(sent, "/.") || strings.Contains(sent, "//") || strings.HasPrefix(sent, ".") {
+		sent = path.Clean("/" + sent)
+	}
+	afterModels := false
+	for rest := sent; rest != ""; {
+		var segment string
+		segment, rest, _ = strings.Cut(rest, "/")
+		// An OpenAI fine-tuned model (models/ft:...) belongs to the key that tuned it.
+		if afterModels && len(segment) >= 3 && strings.EqualFold(segment[:3], "ft:") {
+			return true
+		}
+		name := segment
+		if i := strings.IndexAny(name, ":;"); i >= 0 {
+			name = name[:i]
+		}
+		afterModels = strings.EqualFold(name, "models")
+		// Inference on one Gemini tuned model (tunedModels/<id>:generateContent and the other
+		// operations genAIInferencePath forwards) is governed by the key's model allow-list, as on
+		// every other route; only that exact shape is exempt, spelled as the router matches it.
+		if segment == "tunedModels" && tunedModelInference(rest) {
+			return false
+		}
+		for _, collection := range passthroughTuningCollections {
+			if strings.EqualFold(name, collection) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// tunedModelInferenceOperations are the GenAI operations that run a model rather than manage it,
+// as transports' genAIInferencePath lists them.
+var tunedModelInferenceOperations = [...]string{
+	"generateContent", "streamGenerateContent", "countTokens", "embedContent", "batchEmbedContents",
+	"predict", "rawPredict", "streamRawPredict",
+}
+
+// tunedModelInference reports whether the path after a tunedModels segment is exactly one
+// "<id>:<operation>" segment naming an inference operation (matched exactly, unlike the
+// collection names, so a spelling the exemption does not know stays refused).
+func tunedModelInference(rest string) bool {
+	if rest == "" || strings.ContainsAny(rest, "/;") {
+		return false
+	}
+	id, operation, ok := strings.Cut(rest, ":")
+	if !ok || id == "" {
+		return false
+	}
+	for _, op := range tunedModelInferenceOperations {
+		if operation == op {
+			return true
+		}
+	}
+	return false
+}
+
 // passthroughObjectRefs returns the provider objects a passthrough request reaches. The router
 // forwards the provider's own path and body under the shared key, so the object a path addresses
 // (files/<id>, batches/<id>, containers/<id> and the files inside it, videos/<id>,
@@ -1077,6 +1162,15 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 	}
 	if !enforced {
 		return nil
+	}
+	// Tuning jobs and tuned models carry no creator record (see passthroughReachesTuning).
+	if r := req.PassthroughRequest; r != nil && passthroughReachesTuning(r) {
+		ctx.SetValue(governanceRejectedContextKey, true)
+		return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
+			Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
+			StatusCode: bifrost.Ptr(403),
+			Error:      &schemas.ErrorField{Message: "fine-tuning through a passthrough route is not available to virtual keys: tuning jobs and tuned models carry no per-key ownership, so a request could reach another key's job or model"},
+		}}
 	}
 	for _, ref := range refs {
 		if ref.isList {

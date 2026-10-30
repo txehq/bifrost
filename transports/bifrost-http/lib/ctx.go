@@ -656,7 +656,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			// Normalize header name to lowercase
 			labelName = strings.ToLower(labelName)
 			// Validate against security denylist (always enforced)
-			if securityDenylist[labelName] {
+			if securityDenylist[labelName] || IsMethodOverrideHeader(labelName) {
 				return true
 			}
 			// Apply configurable header filter
@@ -690,7 +690,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 					return true
 				}
 				// Validate against security denylist (always enforced)
-				if securityDenylist[keyStr] {
+				if securityDenylist[keyStr] || IsMethodOverrideHeader(keyStr) {
 					return true
 				}
 				// Check denylist
@@ -988,4 +988,38 @@ func BuildHTTPResponseFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.HTTPRespon
 		resp.Headers[string(key)] = string(value)
 	}
 	return resp
+}
+
+// methodOverrideHeaders are the request headers an upstream may read as the request's real
+// method (Google APIs honour X-HTTP-Method-Override), lowercase.
+var methodOverrideHeaders = [...]string{"x-http-method-override", "x-http-method", "x-method-override"}
+
+// IsMethodOverrideHeader reports whether a header name is a method override, in any case and
+// with '_' read as '-' (CGI-style servers map both to one variable). Such a header is never
+// forwarded upstream: governance and ownership checks judge a request by its method, which an
+// upstream honouring the override would not act on.
+func IsMethodOverrideHeader(name string) bool {
+	for _, header := range methodOverrideHeaders {
+		if len(name) == len(header) && sameHeaderName(name, header) {
+			return true
+		}
+	}
+	return false
+}
+
+// sameHeaderName compares a header name with a lowercase, dashed one, folding case and '_'.
+func sameHeaderName(name, lowerDashed string) bool {
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c == '_':
+			c = '-'
+		case 'A' <= c && c <= 'Z':
+			c += 'a' - 'A'
+		}
+		if c != lowerDashed[i] {
+			return false
+		}
+	}
+	return true
 }

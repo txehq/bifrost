@@ -881,7 +881,7 @@ func addForwardedHeader(extraHeaders map[string][]string, matcher *lib.HeaderMat
 
 func isSecurityDeniedExtraHeader(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
-	if strings.HasPrefix(name, "sec-websocket-") {
+	if strings.HasPrefix(name, "sec-websocket-") || lib.IsMethodOverrideHeader(name) {
 		return true
 	}
 	switch name {

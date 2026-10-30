@@ -197,6 +197,88 @@ func TestConvertToBifrostContext_StarAllowlistDirectForwardingSecurityBlocked(t 
 	}
 }
 
+// TestConvertToBifrostContext_MethodOverridesNeverForwarded: governance judges a request by
+// its method, so a header an upstream reads as the real method (Google APIs honour
+// X-HTTP-Method-Override) is never forwarded, through x-bf-eh-* or direct forwarding, under a
+// "*" allowlist or one naming the header explicitly, in any case or with '_' for '-'.
+func TestConvertToBifrostContext_MethodOverridesNeverForwarded(t *testing.T) {
+	overrides := []string{"X-HTTP-Method-Override", "x-http-method", "X-Method-Override", "x_http_method_override", "X_HTTP_METHOD", "x-method_override"}
+	for name, allowlist := range map[string][]string{
+		"star":     {"*"},
+		"explicit": {"x-http-method-override", "x-http-method", "x-method-override", "x_http_method_override", "x_http_method", "x-method_override", "custom-header"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			matcher := NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{Allowlist: allowlist})
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.DisableNormalizing()
+			ctx.Request.Header.Set("x-bf-eh-custom-header", "allowed-value")
+			for _, h := range overrides {
+				ctx.Request.Header.Set("x-bf-eh-"+h, "DELETE")
+				ctx.Request.Header.Set(h, "DELETE")
+			}
+
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{matcher: matcher})
+			defer cancel()
+
+			extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+			if _, ok := extraHeaders["custom-header"]; !ok {
+				t.Error("expected custom-header to be forwarded via x-bf-eh- prefix")
+			}
+			for forwarded := range extraHeaders {
+				folded := strings.ReplaceAll(strings.ToLower(forwarded), "_", "-")
+				switch folded {
+				case "x-http-method-override", "x-http-method", "x-method-override":
+					t.Errorf("method override %q must not be forwarded", forwarded)
+				}
+			}
+		})
+	}
+}
+
+func TestIsMethodOverrideHeader(t *testing.T) {
+	for name, want := range map[string]bool{
+		"x-http-method-override":  true,
+		"X-HTTP-Method-Override":  true,
+		"x_http_method_override":  true,
+		"x-http-method":           true,
+		"X-Method-Override":       true,
+		"x-method_override":       true,
+		"x-http-method-overrid":   false,
+		"x-http-method-overridee": false,
+		"x-http-methods":          false,
+		"x-forwarded-method":      false,
+		"":                        false,
+	} {
+		if got := IsMethodOverrideHeader(name); got != want {
+			t.Errorf("IsMethodOverrideHeader(%q) = %v, want %v", name, got, want)
+		}
+		// It runs for every forwarded header name, so it must not allocate.
+		if allocs := testing.AllocsPerRun(100, func() { IsMethodOverrideHeader(name) }); allocs != 0 {
+			t.Errorf("IsMethodOverrideHeader(%q) allocates %v times", name, allocs)
+		}
+	}
+}
+
+// BenchmarkConvertToBifrostContextForwardedHeaders measures the header loop on a request that
+// forwards extra headers both ways: x-bf-eh-* and, under a "*" allowlist, directly.
+func BenchmarkConvertToBifrostContextForwardedHeaders(b *testing.B) {
+	store := testHandlerStore{matcher: NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{Allowlist: []string{"*"}})}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Request.Header.Set("Authorization", "Bearer sk-bench")
+	ctx.Request.Header.Set("Anthropic-Beta", "prompt-caching-2024-07-31")
+	ctx.Request.Header.Set("OpenAI-Beta", "assistants=v2")
+	ctx.Request.Header.Set("x-bf-eh-x-trace-id", "trace")
+	ctx.Request.Header.Set("x-bf-eh-originator", "bench")
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, cancel := ConvertToBifrostContext(ctx, store)
+		cancel()
+		ctx.ResetUserValues() // each iteration builds a fresh context, as a new request does
+	}
+}
+
 // TestConvertToBifrostContext_AsyncWebhookHeaderSurvivesStarAllowlist verifies
 // that the reserved x-bf-async-webhook header is captured into the context even
 // when a "*" allowlist would otherwise forward-and-return it as a direct header,

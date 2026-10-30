@@ -1027,11 +1027,9 @@ func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 		refused(t, pass(schemas.OpenAI, "GET", "/v1/containers/container-other/files", ""), "container-other")
 		refused(t, pass(schemas.Gemini, "POST", "/v1beta/models/gemini-2.5-flash:generateContent", geminiBody(geminiFiles+"g-other")), "files/g-other")
 		refused(t, pass(schemas.Gemini, "GET", "/v1beta/files/g-other", ""), "files/g-other")
-		// A batch or fine-tune created through passthrough runs on the input file its body names, as the
-		// native batch create runs on InputFileID.
+		// A batch created through passthrough runs on the input file its body names, as the native
+		// batch create runs on InputFileID. (Fine-tuning is refused outright for virtual keys below.)
 		refused(t, pass(schemas.OpenAI, "POST", "/v1/batches", `{"input_file_id":"file-other","endpoint":"/v1/chat/completions","completion_window":"24h"}`), "file-other")
-		refused(t, pass(schemas.OpenAI, "POST", "/v1/fine_tuning/jobs", `{"model":"gpt-4o-mini","training_file":"file-other"}`), "file-other")
-		refused(t, pass(schemas.OpenAI, "POST", "/v1/fine_tuning/jobs", `{"model":"gpt-4o-mini","training_file":"file-own","validation_file":"file-other"}`), "file-other")
 		refused(t, pass(schemas.Gemini, "POST", "/v1beta/models/gemini-2.5-flash:batchGenerateContent", `{"batch":{"displayName":"b","inputConfig":{"fileName":"files/g-other"}}}`), "files/g-other")
 		allowed(t, presentCtx(mcpTestVKValue), pass(schemas.OpenAI, "POST", "/v1/batches", `{"input_file_id":"file-own","endpoint":"/v1/chat/completions","completion_window":"24h"}`), "the creating key batches its own file")
 		// The Go SDK hands a path over as written, and the HTTP client resolves dot segments and
@@ -1065,6 +1063,45 @@ func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 		_, shortCircuit, err := plugin.PreLLMHook(emptyCtx(), pass(schemas.OpenAI, "GET", "/v1/files", ""))
 		require.NoError(t, err)
 		assert.Nil(t, shortCircuit, "a request that presented no key may list")
+
+		// Tuning jobs and tuned models carry no creator record, so a virtual key cannot
+		// use them through passthrough at all: a list, read or cancel would reach other
+		// keys' jobs, and a create may name another key's tuned model as its base.
+		for _, tc := range []struct{ method, path string }{
+			{"GET", "/v1/fine_tuning/jobs"},
+			{"GET", "/v1/fine_tuning/jobs/ftjob-other"},
+			{"POST", "/v1/fine_tuning/jobs/ftjob-other/cancel"},
+			{"GET", "/v1/fine_tuning/jobs/ftjob-other/events"},
+			{"GET", "/v1/fine_tuning/jobs/x/../ftjob-other/checkpoints"},
+			{"POST", "/v1/fine_tuning/checkpoints/ft:gpt-4o-mini:other/permissions"},
+			{"GET", "/v1/FINE_TUNING/jobs"},
+			// Other providers' tuning jobs carry no creator record either.
+			{"GET", "/v1beta/tunedModels"},
+			{"DELETE", "/v1beta/tunedModels/other-model"},
+			{"GET", "/v1/projects/p/locations/us-central1/tuningJobs/123"},
+			{"POST", "/v1/projects/p/locations/us-central1/tuningJobs/123:cancel"},
+			{"GET", "/model-customization-jobs"},
+			{"POST", "/model-customization-jobs/other-job/stop"},
+			{"POST", "/v1/fine_tuning/jobs"},
+			{"POST", "/v1beta/tunedModels"},
+			{"POST", "/v1beta/tunedModels:generateText"},
+			{"GET", "/v1/models/ft:gpt-4o-mini:org::other"},
+			{"DELETE", "/v1/models/ft:gpt-4o-mini:org::other"},
+			{"GET", "/custom-models"},
+			{"DELETE", "/custom-models/other-model"},
+			{"DELETE", "/imported-models/other-model"},
+			{"GET", "/model-import-jobs"},
+			{"POST", "/model-copy-jobs"},
+			{"DELETE", "/custom-model-deployments/other"},
+			{"DELETE", "/provisioned-model-throughput/other"},
+			{"GET", "/provisioned-model-throughputs"},
+		} {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), pass(schemas.OpenAI, tc.method, tc.path, ""))
+			require.NoError(t, err)
+			require.NotNil(t, shortCircuit, "%s %s must be refused for a virtual key", tc.method, tc.path)
+			assert.Equal(t, 403, *shortCircuit.Error.StatusCode)
+		}
+		allowed(t, emptyCtx(), pass(schemas.OpenAI, "POST", "/v1/fine_tuning/jobs/ftjob-other/cancel", ""), "a request that presented no key is unrestricted")
 	})
 
 	// An inline batch carries its work in each item's body, where the provider reads the files and
@@ -1430,6 +1467,12 @@ func BenchmarkPreLLMHookProviderObjectChecks(b *testing.B) {
 			return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: "/v1/chat/completions",
 				Body: []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`)}}
 		},
+		"passthrough_models_get": func() *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.OpenAI, Method: "GET", Path: "/v1/models/gpt-4o-mini"}}
+		},
+		"passthrough_tuning_list": func() *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.OpenAI, Method: "GET", Path: "/v1/fine_tuning/jobs"}}
+		},
 		"passthrough_responses_body": func() *schemas.BifrostRequest {
 			return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: "/v1/responses",
 				Body: []byte(`{"model":"gpt-4o","input":[{"role":"user","content":[{"type":"input_text","text":"hi"},{"type":"input_file","file_id":"file-bench"}]}]}`)}}
@@ -1437,7 +1480,7 @@ func BenchmarkPreLLMHookProviderObjectChecks(b *testing.B) {
 	}
 	// "on" is the default and runs every check; "off" is client.enforce_vk_object_ownership: false.
 	for _, mode := range []string{"off", "on"} {
-		for _, name := range []string{"chat_no_references", "file_retrieve", "passthrough_no_references", "passthrough_responses_body"} {
+		for _, name := range []string{"chat_no_references", "file_retrieve", "passthrough_no_references", "passthrough_models_get", "passthrough_tuning_list", "passthrough_responses_body"} {
 			build := cases[name]
 			b.Run(mode+"/"+name, func(b *testing.B) {
 				enforced = mode == "on"
@@ -1449,6 +1492,201 @@ func BenchmarkPreLLMHookProviderObjectChecks(b *testing.B) {
 				}
 			})
 		}
+	}
+}
+
+// A tuning job or tuned model records no creator on any provider, so under the shared provider
+// key a virtual key's passthrough request to one could list, read, cancel or build on another
+// key's. Every passthrough route reaches the same check, whatever the provider, the method or
+// the way the path is spelled, while inference and the key's own objects stay reachable.
+func TestPassthroughTuningIsRefusedForVirtualKeysOnEveryRoute(t *testing.T) {
+	plugin, _ := newPassthroughTuningTestPlugin(t)
+	const refusal = "fine-tuning through a passthrough route is not available to virtual keys"
+
+	refused := []struct {
+		provider     schemas.ModelProvider
+		method, path string
+	}{
+		// OpenAI: list, read, cancel and pause a shared job, and read or delete a tuned model.
+		{schemas.OpenAI, "GET", "/v1/fine_tuning/jobs"},
+		{schemas.OpenAI, "POST", "/v1/fine_tuning/jobs/ftjob-other/cancel"},
+		{schemas.OpenAI, "POST", "/v1/fine_tuning/jobs/ftjob-other/pause"},
+		{schemas.OpenAI, "GET", "/v1/fine_tuning/jobs/ftjob-other/checkpoints"},
+		{schemas.OpenAI, "GET", "/v1/models/ft:gpt-4o-mini:org::other"},
+		{schemas.OpenAI, "DELETE", "/v1/models/FT:gpt-4o-mini:org::other"},
+		// Spellings that reach the same collection upstream: case, repeated slashes, dot
+		// segments, a ';' parameter, a backslash, and a dot segment that lands on a tuned model.
+		{schemas.OpenAI, "GET", "/v1/Fine_Tuning/jobs"},
+		{schemas.OpenAI, "GET", "//v1//fine_tuning//jobs"},
+		{schemas.OpenAI, "GET", "/v1/x/../fine_tuning/jobs"},
+		{schemas.OpenAI, "GET", "/v1/fine_tuning;v=1/jobs"},
+		{schemas.OpenAI, "GET", "/v1\\fine_tuning\\jobs"},
+		{schemas.OpenAI, "GET", "/v1/models/x/../ft:gpt-4o-mini:org::other"},
+		// Sibling providers and routes.
+		{schemas.Azure, "GET", "/openai/fine_tuning/jobs"},
+		{schemas.Azure, "POST", "/openai/fine-tunes/ft-other/cancel"},
+		{schemas.Gemini, "GET", "/v1beta/tunedModels"},
+		{schemas.Gemini, "DELETE", "/v1beta/tunedModels/other-model"},
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/other-model:transferOwnership"},
+		{schemas.Gemini, "GET", "/v1beta/tunedModels/other-model"},
+		{schemas.Gemini, "GET", "/v1beta/tunedModels/other-model/permissions"},
+		// Only the exact inference shape is exempt: a trailing segment, an empty id, a ';'
+		// parameter or another spelling of the operation stays refused.
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/other-model:generateContent/x"},
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/:generateContent"},
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/other-model:generateContent;x=1"},
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/other-model:GenerateContent"},
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/other-model/x:generateContent"},
+		{schemas.Gemini, "POST", "/v1beta/TunedModels/other-model:countTokens"},
+		{schemas.Gemini, "POST", "/v1beta/tunedModels:generateContent"},
+		{schemas.Vertex, "GET", "/v1/projects/p/locations/us-central1/tuningJobs"},
+		{schemas.Vertex, "POST", "/v1/projects/p/locations/us-central1/tuningJobs/123:cancel"},
+		{schemas.Bedrock, "GET", "/model-customization-jobs"},
+		{schemas.Bedrock, "POST", "/model-customization-jobs/other-job/stop"},
+		{schemas.Bedrock, "DELETE", "/custom-models/other-model"},
+		{schemas.Bedrock, "GET", "/provisioned-model-throughputs"},
+		{schemas.Bedrock, "DELETE", "/provisioned-model-throughput/other"},
+		{schemas.Bedrock, "POST", "/model-copy-jobs"},
+		{schemas.Bedrock, "GET", "/imported-models"},
+		// A custom provider is refused alike, whatever its base type.
+		{"custom-openai", "GET", "/v1/fine_tuning/jobs"},
+	}
+	check := func(provider schemas.ModelProvider, method, path string) {
+		t.Helper()
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), passthroughTestRequest(provider, method, path, ""))
+		require.NoError(t, err)
+		if !assert.NotNil(t, shortCircuit, "%s %s %s must be refused for a virtual key", provider, method, path) {
+			return
+		}
+		assert.Equal(t, 403, *shortCircuit.Error.StatusCode, "%s %s %s", provider, method, path)
+		assert.Contains(t, shortCircuit.Error.Error.Message, refusal, "%s %s %s is refused as tuning, not for another reason", provider, method, path)
+	}
+	for _, tc := range refused {
+		check(tc.provider, tc.method, tc.path)
+	}
+	// The method decides nothing: a method override header upstream cannot turn a refused
+	// request into an allowed one, because every method is refused.
+	for _, method := range []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "get"} {
+		check(schemas.OpenAI, method, "/v1/fine_tuning/jobs")
+	}
+}
+
+// newPassthroughTuningTestPlugin is a plugin whose virtual key reaches every passthrough
+// provider (and a custom one), with one file of its own and one of another key's on record.
+// The returned flag is client.enforce_vk_object_ownership.
+func newPassthroughTuningTestPlugin(t *testing.T) (*GovernancePlugin, *bool) {
+	t.Helper()
+	store := newProviderObjectConfigStore(t)
+	vk := buildVKForMCPStamping(nil)
+	for _, provider := range []string{"gemini", "vertex", "bedrock", "azure", "custom-openai"} {
+		vk.ProviderConfigs = append(vk.ProviderConfigs, buildProviderConfig(provider, []string{"*"}))
+	}
+	plugin := newAccessTestPlugin(t, vk, nil)
+	plugin.configStore = store
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-own", "vk-mcp-stamp")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-other", "vk-someone-else")
+	enforced := true
+	plugin.objectOwnershipEnforcedFn = func() bool { return enforced }
+	return plugin, &enforced
+}
+
+func passthroughTestRequest(provider schemas.ModelProvider, method, path, body string) *schemas.BifrostRequest {
+	return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: provider, Method: method, Path: path, Body: []byte(body)}}
+}
+
+// Refusing tuning leaves the rest of passthrough as it was: inference on every provider, the
+// key's own objects, the 404 on another key's object, requests that present no virtual key,
+// and everything while client.enforce_vk_object_ownership is off.
+func TestPassthroughInferenceStaysOpenForVirtualKeys(t *testing.T) {
+	plugin, enforced := newPassthroughTuningTestPlugin(t)
+	pass := passthroughTestRequest
+
+	allowed := []struct {
+		provider           schemas.ModelProvider
+		method, path, body string
+	}{
+		{schemas.OpenAI, "POST", "/v1/chat/completions", `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`},
+		{schemas.OpenAI, "POST", "/v1/responses", `{"model":"gpt-4o-mini","input":"hi"}`},
+		{schemas.OpenAI, "POST", "/v1/embeddings", `{"model":"text-embedding-3-small","input":"hi"}`},
+		{schemas.OpenAI, "GET", "/v1/models", ""},
+		{schemas.OpenAI, "GET", "/v1/models/gpt-4o-mini", ""},
+		// Inference on a tuned model is governed by the key's model allow-list on every route.
+		{schemas.OpenAI, "POST", "/v1/chat/completions", `{"model":"ft:gpt-4o-mini:org::own","messages":[{"role":"user","content":"hi"}]}`},
+		// A segment that only contains a collection name is not that collection.
+		{schemas.OpenAI, "GET", "/v1/models/gpt-4o-fine_tuning", ""},
+		// The key's own objects stay reachable.
+		{schemas.OpenAI, "GET", "/v1/files/file-own", ""},
+		{schemas.Gemini, "POST", "/v1beta/models/gemini-2.5-flash:generateContent", `{"contents":[{"parts":[{"text":"hi"}]}]}`},
+		// Inference on a Gemini tuned model, as genAIInferencePath forwards it.
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/my-tuned-1:generateContent", `{"contents":[{"parts":[{"text":"hi"}]}]}`},
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/my-tuned-1:streamGenerateContent", `{"contents":[{"parts":[{"text":"hi"}]}]}`},
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/my-tuned-1:countTokens", `{"contents":[{"parts":[{"text":"hi"}]}]}`},
+		{schemas.Vertex, "POST", "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent", `{"contents":[{"parts":[{"text":"hi"}]}]}`},
+		{schemas.Azure, "POST", "/openai/deployments/gpt-4o/chat/completions", `{"messages":[{"role":"user","content":"hi"}]}`},
+		{schemas.Bedrock, "POST", "/agents/a/agentAliases/b/sessions/s/text", `{"inputText":"hi"}`},
+		{"custom-openai", "POST", "/v1/chat/completions", `{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`},
+	}
+	for _, tc := range allowed {
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), pass(tc.provider, tc.method, tc.path, tc.body))
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit, "%s %s %s stays open to the key", tc.provider, tc.method, tc.path)
+	}
+	// The stronger ownership check on another key's object is unchanged.
+	_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), pass(schemas.OpenAI, "GET", "/v1/files/file-other", ""))
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "another key's file stays refused")
+	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+
+	// A request that presented no virtual key is not governed by ownership.
+	_, shortCircuit, err = plugin.PreLLMHook(emptyCtx(), pass(schemas.OpenAI, "POST", "/v1/fine_tuning/jobs/ftjob-other/cancel", ""))
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "a request that presented no key is unrestricted")
+
+	// With client.enforce_vk_object_ownership turned off nothing is refused for ownership,
+	// tuning included: the operator has opted every key into every shared object.
+	*enforced = false
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), pass(schemas.OpenAI, "GET", "/v1/fine_tuning/jobs", ""))
+	require.NoError(t, err)
+	assert.Nil(t, shortCircuit, "tuning is not refused while ownership is turned off")
+}
+
+// passthroughReachesTuning runs on every virtual-key passthrough request, so an ordinary path
+// must cost no allocation; only a path holding a dot segment, a doubled slash or a backslash is
+// rebuilt first.
+func TestPassthroughReachesTuningAllocatesOnlyToNormalizePaths(t *testing.T) {
+	for _, tc := range []struct {
+		path   string
+		tuning bool
+		allocs float64
+	}{
+		{"/v1/chat/completions", false, 0},
+		{"/v1/models/gpt-4o-mini", false, 0},
+		{"/v1beta/models/gemini-2.5-flash:generateContent", false, 0},
+		{"/v1/fine_tuning/jobs", true, 0},
+		{"/v1/models/ft:gpt-4o-mini:org::other", true, 0},
+		{"/v1beta/tunedModels/my-tuned-1:generateContent", false, 0},
+		{"", false, 0},
+		{"/", false, 0},
+	} {
+		r := &schemas.BifrostPassthroughRequest{Method: "GET", Path: tc.path}
+		assert.Equal(t, tc.tuning, passthroughReachesTuning(r), tc.path)
+		assert.Equal(t, tc.allocs, testing.AllocsPerRun(100, func() { passthroughReachesTuning(r) }), tc.path)
+	}
+}
+
+func BenchmarkPassthroughReachesTuning(b *testing.B) {
+	for name, path := range map[string]string{
+		"inference": "/v1/chat/completions",
+		"tuning":    "/v1/fine_tuning/jobs/ftjob-other/cancel",
+		"dot_path":  "/v1/x/../fine_tuning/jobs",
+	} {
+		r := &schemas.BifrostPassthroughRequest{Method: "GET", Path: path}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				passthroughReachesTuning(r)
+			}
+		})
 	}
 }
 
