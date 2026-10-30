@@ -697,9 +697,9 @@ test.describe("LLM Logs", () => {
       // Answers the session's member pages after the Grouped View route above.
       async function mockSessionPages(
         page: import("@playwright/test").Page,
-        answer: (
-          offset: number,
-        ) => { status: number; logs: ReturnType<typeof members> },
+        answer: (offset: number) =>
+          | { status: number; logs: ReturnType<typeof members> }
+          | Promise<{ status: number; logs: ReturnType<typeof members> }>,
       ) {
         const offsets: number[] = [];
         await page.route(
@@ -711,7 +711,7 @@ test.describe("LLM Logs", () => {
               new URL(route.request().url()).searchParams.get("offset") ?? 0,
             );
             offsets.push(offset);
-            const { status, logs } = answer(offset);
+            const { status, logs } = await answer(offset);
             if (status !== 200) {
               return route.fulfill({
                 status,
@@ -751,6 +751,29 @@ test.describe("LLM Logs", () => {
           { timeout: 30000 },
         );
         expect(offsets).toEqual([0, pageLimit]);
+      });
+
+      test("a reset while a page is in flight stops the read before the next page", async ({
+        page,
+      }) => {
+        let release!: () => void;
+        const reset = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const offsets = await mockSessionPages(page, async () => {
+          await reset;
+          return { status: 200, logs: members(0, pageLimit) };
+        });
+        await page.goto("/workspace/logs?grouped=true");
+        await page.getByTestId("log-session-expand-btn").click();
+        await expect.poll(() => offsets).toEqual([0]);
+
+        // Leaving the grouped view resets every expansion.
+        await page.getByTestId("logs-group-chains-btn").click();
+        await expect(page.getByTestId("log-session-expand-btn")).toHaveCount(0);
+        release();
+        await page.waitForTimeout(500);
+        expect(offsets).toEqual([0]);
       });
 
       test("a failed later page collapses the session instead of showing part of it", async ({
