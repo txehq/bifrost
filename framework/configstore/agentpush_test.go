@@ -327,3 +327,34 @@ func TestPruneAgentPushDeliveries(t *testing.T) {
 		}
 	}
 }
+
+// TestSaveAgentPushConfigRefusesAnotherTenantsRow pins that the upsert never
+// replaces a push config owned by a different tenant, even when two registrations
+// race past the caller's own check.
+func TestSaveAgentPushConfigRefusesAnotherTenantsRow(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	owned := &schemas.AgentPushConfig{AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "tenant-a", URL: "https://a.example/callback", IngressTokenHash: "hash-a", CreatedAt: now, UpdatedAt: now}
+	require.NoError(t, store.SaveAgentPushConfig(ctx, owned))
+
+	intruder := *owned
+	intruder.Tenant = "tenant-b"
+	intruder.URL = "https://b.example/callback"
+	intruder.IngressTokenHash = "hash-b"
+	require.ErrorIs(t, store.SaveAgentPushConfig(ctx, &intruder), ErrAgentPushConfigTenantConflict)
+
+	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "tenant-a", got.Tenant)
+	require.Equal(t, "https://a.example/callback", got.URL)
+	require.Equal(t, "hash-a", got.IngressTokenHash)
+
+	// The owning tenant still replaces its own callback.
+	owned.URL = "https://a.example/replaced"
+	require.NoError(t, store.SaveAgentPushConfig(ctx, owned))
+	got, err = store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "https://a.example/replaced", got.URL)
+}

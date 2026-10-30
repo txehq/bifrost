@@ -1535,3 +1535,42 @@ func TestPushRelayReleasesOperationContexts(t *testing.T) {
 		})
 	}
 }
+
+// TestPushConfigsAreScopedToRequestTenant pins tenant isolation for stored push
+// callbacks: a request naming a tenant neither reads, lists, deletes nor replaces
+// another tenant's config that shares the agent, task and config IDs.
+func TestPushConfigsAreScopedToRequestTenant(t *testing.T) {
+	_, handler, store, upstream := pushGateway(t)
+	_, err := handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{
+		Tenant: "tenant-a", TaskID: "task-1", ID: "cfg-1", URL: "https://a.example/callback", Token: "token-a",
+	})
+	require.NoError(t, err)
+
+	_, err = handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{
+		Tenant: "tenant-b", TaskID: "task-1", ID: "cfg-1", URL: "https://b.example/callback", Token: "token-b",
+	})
+	require.ErrorIs(t, err, a2a.ErrInvalidParams)
+	stored, err := store.GetAgentPushConfig(context.Background(), "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "tenant-a", stored.Tenant)
+	require.Equal(t, "https://a.example/callback", stored.URL, "another tenant replaced the callback")
+	require.Equal(t, "token-a", stored.Token.GetValue())
+
+	_, err = handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{Tenant: "tenant-b", TaskID: "task-1", ID: "cfg-1"})
+	require.ErrorIs(t, err, push.ErrPushConfigNotFound)
+	listed, err := handler.ListTaskPushConfigs(context.Background(), &a2a.ListTaskPushConfigRequest{Tenant: "tenant-b", TaskID: "task-1"})
+	require.NoError(t, err)
+	require.Empty(t, listed.Configs)
+
+	require.NoError(t, handler.DeleteTaskPushConfig(context.Background(), &a2a.DeleteTaskPushConfigRequest{Tenant: "tenant-b", TaskID: "task-1", ID: "cfg-1"}))
+	stored, err = store.GetAgentPushConfig(context.Background(), "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.NotNil(t, stored, "another tenant deleted the local callback record")
+
+	got, err := handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{Tenant: "tenant-a", TaskID: "task-1", ID: "cfg-1"})
+	require.NoError(t, err)
+	require.Equal(t, "https://a.example/callback", got.URL)
+	upstream.mu.Lock()
+	require.Len(t, upstream.created, 1, "the conflicting registration must not reach the upstream")
+	upstream.mu.Unlock()
+}

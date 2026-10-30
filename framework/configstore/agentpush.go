@@ -52,15 +52,29 @@ func tableToPushConfig(row tables.TableAgentPushConfig) *schemas.AgentPushConfig
 	}
 }
 
+// ErrAgentPushConfigTenantConflict reports a registration whose (agent, task,
+// config) key another tenant already holds.
+var ErrAgentPushConfigTenantConflict = errors.New("push configuration is registered for another tenant")
+
 // SaveAgentPushConfig upserts one push callback registration. Upsert semantics
 // match the A2A contract for setting a push configuration: re-registering the
-// same (agent, task, config) key replaces the callback wholesale.
+// same (agent, task, config) key replaces the callback wholesale. The key does
+// not include the tenant, so the replacement only applies to the same tenant's
+// row; another tenant's row is left untouched and reported as a conflict.
 func (s *RDBConfigStore) SaveAgentPushConfig(ctx context.Context, config *schemas.AgentPushConfig) error {
 	row := pushConfigToTable(config)
-	return s.DB().WithContext(ctx).Clauses(clause.OnConflict{
+	result := s.DB().WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "agent_name"}, {Name: "task_id"}, {Name: "config_id"}},
+		Where:     clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "config_agent_push_configs.tenant = excluded.tenant"}}},
 		UpdateAll: true,
-	}).Create(&row).Error
+	}).Create(&row)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrAgentPushConfigTenantConflict
+	}
+	return nil
 }
 
 // BindAgentPushConfigTask attaches a task id to the exact pending embedded

@@ -329,12 +329,42 @@ func storedPushConfig(agentName, taskID, configID, tokenHash string, cfg *a2a.Pu
 	return stored
 }
 
+// pushTenantMatches reports whether a request scoped to requestTenant may see or
+// replace a stored config. The store keys configs by (agent, task, config), so
+// tenants sharing those IDs are told apart here. A request naming no tenant
+// keeps the unscoped behaviour.
+func pushTenantMatches(requestTenant, storedTenant string) bool {
+	return requestTenant == "" || requestTenant == storedTenant
+}
+
+// errPushConfigTenantConflict refuses a registration whose config ID another
+// tenant already holds for the same task, which would replace that tenant's callback.
+var errPushConfigTenantConflict = fmt.Errorf("%w: push configuration id is registered for another tenant", a2a.ErrInvalidParams)
+
+// checkPushConfigTenant refuses to store config over a row another tenant owns.
+func (m *Manager) checkPushConfigTenant(ctx context.Context, agentName, taskID, configID, tenant string) error {
+	if configID == "" {
+		return nil
+	}
+	existing, err := m.pushStore.GetAgentPushConfig(ctx, agentName, taskID, configID)
+	if err != nil {
+		return err
+	}
+	if existing != nil && existing.Tenant != tenant {
+		return errPushConfigTenantConflict
+	}
+	return nil
+}
+
 // createPushConfig performs the two-hop registration: upstream first (it owns
 // the config identity), then the durable local record of the client's real
 // callback. If persistence fails the upstream registration is best-effort
 // rolled back; if that also fails, the orphaned upstream config is harmless
 // because its ingress token hash was never stored, so its pushes are refused.
 func (m *Manager) createPushConfig(ctx context.Context, client sdkClient, agentName string, config *a2a.PushConfig) (*a2a.PushConfig, error) {
+	if err := m.checkPushConfigTenant(ctx, agentName, string(config.TaskID), config.ID, config.Tenant); err != nil {
+		return nil, err
+	}
 	token, hash, err := mintPushIngressToken()
 	if err != nil {
 		return nil, err
@@ -357,12 +387,18 @@ func (m *Manager) createPushConfig(ctx context.Context, client sdkClient, agentN
 	}
 	stored := storedPushConfig(agentName, string(config.TaskID), configID, hash, config)
 	phase := startPhaseSpan(schemas.NewBifrostContext(ctx, schemas.NoDeadline), "a2a.push.db.save")
-	saveErr := m.pushStore.SaveAgentPushConfig(ctx, stored)
+	saveErr := m.checkPushConfigTenant(ctx, agentName, string(config.TaskID), configID, config.Tenant)
+	if saveErr == nil {
+		saveErr = m.pushStore.SaveAgentPushConfig(ctx, stored)
+	}
 	endPhaseSpan(phase)
 	if err := saveErr; err != nil {
 		rollbackStart := time.Now()
-		_ = client.DeleteTaskPushConfig(ctx, &a2a.DeleteTaskPushConfigRequest{TaskID: config.TaskID, ID: configID})
+		_ = client.DeleteTaskPushConfig(ctx, &a2a.DeleteTaskPushConfigRequest{Tenant: config.Tenant, TaskID: config.TaskID, ID: configID})
 		schemas.AddUpstreamLatency(ctx, time.Since(rollbackStart))
+		if errors.Is(err, errPushConfigTenantConflict) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("persist push configuration: %w", err)
 	}
 	return redactedPushConfig(stored), nil
@@ -502,7 +538,7 @@ func (h *proxyRequestHandler) GetTaskPushConfig(ctx context.Context, req *a2a.Ge
 		if err != nil {
 			return nil, err
 		}
-		if stored == nil {
+		if stored == nil || !pushTenantMatches(req.Tenant, stored.Tenant) {
 			return nil, push.ErrPushConfigNotFound
 		}
 		return redactedPushConfig(stored), nil
@@ -531,7 +567,9 @@ func (h *proxyRequestHandler) ListTaskPushConfigs(ctx context.Context, req *a2a.
 		}
 		configs := make([]*a2a.PushConfig, 0, len(stored))
 		for i := range stored {
-			configs = append(configs, redactedPushConfig(&stored[i]))
+			if pushTenantMatches(req.Tenant, stored[i].Tenant) {
+				configs = append(configs, redactedPushConfig(&stored[i]))
+			}
 		}
 		return &a2a.ListTaskPushConfigResponse{Configs: configs}, nil
 	}, func(*a2a.ListTaskPushConfigResponse) *schemas.BifrostA2AResponse {
@@ -559,9 +597,17 @@ func (h *proxyRequestHandler) DeleteTaskPushConfig(ctx context.Context, req *a2a
 			return struct{}{}, err
 		}
 		phase := startPhaseSpan(schemas.NewBifrostContext(ctx, schemas.NoDeadline), "a2a.push.db.delete")
-		_, err := m.pushStore.DeleteAgentPushConfig(ctx, h.config.name, string(req.TaskID), req.ID)
-		endPhaseSpan(phase)
+		defer endPhaseSpan(phase)
+		stored, err := m.pushStore.GetAgentPushConfig(ctx, h.config.name, string(req.TaskID), req.ID)
 		if err != nil {
+			return struct{}{}, err
+		}
+		if stored == nil || !pushTenantMatches(req.Tenant, stored.Tenant) {
+			// Another tenant's record, or none: the upstream delete was scoped by
+			// the request's tenant, so the local record stays.
+			return struct{}{}, nil
+		}
+		if _, err := m.pushStore.DeleteAgentPushConfig(ctx, h.config.name, string(req.TaskID), req.ID); err != nil {
 			return struct{}{}, err
 		}
 		return struct{}{}, nil
