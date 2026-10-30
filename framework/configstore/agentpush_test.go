@@ -548,3 +548,67 @@ func TestSaveAgentPushConfigTreatsALegacyNullTenantAsEmpty(t *testing.T) {
 		URL: "https://b.example/callback", IngressTokenHash: "hash-b", CreatedAt: now, UpdatedAt: now,
 	}), ErrAgentPushConfigTenantConflict)
 }
+
+// TestPostgresAgentPushConfigTenantPredicateAndDeliveryOrder runs the SQL this
+// change adds against PostgreSQL (skipped when none is reachable, as the other
+// Postgres tests are): the coalesced tenant predicate of the push config upsert,
+// including a legacy NULL tenant, and the correlated head-of-line predicate of
+// the delivery list and claim.
+func TestPostgresAgentPushConfigTenantPredicateAndDeliveryOrder(t *testing.T) {
+	store := setupPostgresDeadlockStore(t)
+	ctx := context.Background()
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	// A row from before the tenant column existed: SQL NULL tenant.
+	require.NoError(t, store.DB().Exec(
+		"INSERT INTO config_agent_push_configs (agent_name, task_id, config_id, url, tenant, ingress_token_hash, encryption_status, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)",
+		"fixture", "task-1", "cfg-1", "https://a.example/legacy", "hash-legacy", "plain_text", now, now).Error)
+	require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{
+		AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "",
+		URL: "https://a.example/replaced", IngressTokenHash: "hash-new", CreatedAt: now, UpdatedAt: now,
+	}), "a tenantless re-registration must replace a legacy NULL-tenant row")
+	require.ErrorIs(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{
+		AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "tenant-b",
+		URL: "https://b.example/callback", IngressTokenHash: "hash-b", CreatedAt: now, UpdatedAt: now,
+	}), ErrAgentPushConfigTenantConflict)
+	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "https://a.example/replaced", got.URL)
+
+	// Same-tenant replacement and another tenant's conflict on a named tenant.
+	named := &schemas.AgentPushConfig{AgentName: "fixture", TaskID: "task-2", ConfigID: "cfg-1", Tenant: "tenant-a", URL: "https://a.example/one", IngressTokenHash: "hash-a1", CreatedAt: now, UpdatedAt: now}
+	require.NoError(t, store.SaveAgentPushConfig(ctx, named))
+	named.URL, named.IngressTokenHash = "https://a.example/two", "hash-a2"
+	require.NoError(t, store.SaveAgentPushConfig(ctx, named))
+	intruder := *named
+	intruder.Tenant, intruder.URL, intruder.IngressTokenHash = "tenant-b", "https://b.example/two", "hash-b2"
+	require.ErrorIs(t, store.SaveAgentPushConfig(ctx, &intruder), ErrAgentPushConfigTenantConflict)
+
+	// Deliveries for one registration go out in acceptance order on Postgres too.
+	delivery := func(id string, created, next time.Time) *schemas.AgentPushDelivery {
+		return &schemas.AgentPushDelivery{
+			ID: id, AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", RegistrationHash: "hash-new", Payload: `{"kind":"artifact-update"}`,
+			Status: schemas.AgentPushDeliveryStatusPending, NextAttemptAt: next, CreatedAt: created, UpdatedAt: created,
+		}
+	}
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("replacement", now.Add(-time.Minute), now.Add(time.Minute)))
+	require.NoError(t, err)
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("append", now.Add(-time.Second), now.Add(-time.Second)))
+	require.NoError(t, err)
+	due, err := store.ListDueAgentPushDeliveries(ctx, now, 10)
+	require.NoError(t, err)
+	require.Empty(t, due, "the append must not overtake the replacement it follows")
+	claimed, err := store.ClaimAgentPushDelivery(ctx, "append", "relay-1", now.Add(time.Minute))
+	require.NoError(t, err)
+	require.Nil(t, claimed, "a delivery behind a pending earlier one must not be claimable")
+	require.NoError(t, store.DB().Model(&tables.TableAgentPushDelivery{}).Where("id = ?", "replacement").Update("status", schemas.AgentPushDeliveryStatusDelivered).Error)
+	due, err = store.ListDueAgentPushDeliveries(ctx, now, 10)
+	require.NoError(t, err)
+	require.Len(t, due, 1)
+	require.Equal(t, "append", due[0].ID)
+	require.Equal(t, "hash-new", due[0].RegistrationHash)
+	claimed, err = store.ClaimAgentPushDelivery(ctx, "append", "relay-1", now.Add(time.Minute))
+	require.NoError(t, err)
+	require.NotNil(t, claimed)
+}
