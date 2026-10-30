@@ -557,6 +557,14 @@ func (s *memoryPushStore) delivery(t *testing.T, id string) schemas.AgentPushDel
 	return delivery
 }
 
+// deliveryCount reads the outbox size without holding the lock across an
+// assertion: a failed require stops the test while the relay still needs the lock.
+func (s *memoryPushStore) deliveryCount() int {
+	s.pushMu.Lock()
+	defer s.pushMu.Unlock()
+	return len(s.deliveries)
+}
+
 func (s *memoryPushStore) deliveryStatus(id string) string {
 	s.pushMu.Lock()
 	defer s.pushMu.Unlock()
@@ -1173,9 +1181,7 @@ func TestAcceptPushCallbackKeepsRepeatedArtifactAppends(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusAccepted, status)
 	}
-	store.pushMu.Lock()
-	require.Len(t, store.deliveries, 2, "each accepted append must be delivered")
-	store.pushMu.Unlock()
+	require.Equal(t, 2, store.deliveryCount(), "each accepted append must be delivered")
 
 	// A replacement (append false) is idempotent, so a retransmission of it still
 	// collapses into the delivery already recorded.
@@ -1186,9 +1192,7 @@ func TestAcceptPushCallbackKeepsRepeatedArtifactAppends(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusAccepted, status)
 	}
-	store.pushMu.Lock()
-	defer store.pushMu.Unlock()
-	require.Len(t, store.deliveries, 3, "a retransmitted idempotent event must not be delivered twice")
+	require.Equal(t, 3, store.deliveryCount(), "a retransmitted idempotent event must not be delivered twice")
 }
 
 func TestPushDeliveryBlocksPrivateDestination(t *testing.T) {
@@ -1732,8 +1736,8 @@ func TestQueuedPushNeverReachesAReplacedRegistration(t *testing.T) {
 	_, err = handler.CreateTaskPushConfig(ctx, &a2a.PushConfig{Tenant: "tenant-b", TaskID: "task-1", ID: "cfg-1", URL: newTenant.URL, Token: "token-b"})
 	require.NoError(t, err)
 
+	require.Equal(t, 1, store.deliveryCount())
 	store.pushMu.Lock()
-	require.Len(t, store.deliveries, 1)
 	var queued schemas.AgentPushDelivery
 	for _, delivery := range store.deliveries {
 		queued = delivery
