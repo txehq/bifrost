@@ -280751,7 +280751,7 @@
           }
         },
         {
-          "name": "[EXPECT-403] gemini passthrough-tuning-vk: a key allowing every model does not reach a tuned model it does not name",
+          "name": "gemini my-tuned-1 passthrough-tuning-vk: a key allowing every model also runs inference on a tuned model (pre-existing, TXE-5444)",
           "event": [
             {
               "listen": "prerequest",
@@ -280768,13 +280768,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('wildcard key tuned model inference: refused with 403', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403); });",
-                  "var body = {};",
-                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-                  "pm.test('wildcard key tuned model inference: refused by the model gate before any provider call', function () {",
-                  "  pm.expect(body.type, 'failed: ' + pm.response.text()).to.equal('model_blocked');",
-                  "  pm.expect(body.error && body.error.message, 'failed: ' + pm.response.text()).to.include('Model 'my-tuned-1' is not allowed');",
-                  "});"
+                  "pm.test('wildcard key tuned model inference: 200 (pre-existing, TXE-5444)', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('wildcard key tuned model inference: the provider answered', function () { pm.expect(pm.response.json().candidates, 'failed: ' + pm.response.text()).to.be.an('array').that.is.not.empty; });"
                 ]
               }
             }
