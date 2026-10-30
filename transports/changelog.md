@@ -54,6 +54,7 @@
 - Merging duplicate log rows keeps the priced row's cost split and breakdown
 - An injected-tool loop is priced one provider call at a time, on success, in streams and on errors, so turns of 150k input tokens no longer cross a 272k threshold together, and each turn keeps its own service tier, fallback model, per-request fee and provider-reported cost
 - Responses that drain onto one live billing unit after a refused renewal are priced one by one, and a settled live response's service tier no longer prices the next one
+- A request whose provider injects a tool is charged to its budgets: the tool call no longer replaces the limits the attempt answers to, or claims the inference's billing
 - Decision answers OpenAI rejects carry the reported usage, and OpenRouter's carry its billed cost, so governance and logging charge them instead of recording them free
 
 ## 🗄️ Database Migrations
