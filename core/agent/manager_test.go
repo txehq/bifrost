@@ -3706,9 +3706,9 @@ func TestWrapJSONStreamErrorRefusesRepliesItCannotFrame(t *testing.T) {
 // successful stream. This is the transport-level view of
 // TestWrapJSONStreamErrorRefusesRepliesItCannotFrame.
 func TestCredentialTransportRefusesJSONStreamRepliesItCannotFrame(t *testing.T) {
-	for _, tc := range []struct{ name, body string }{
-		{"oversized", `{"jsonrpc":"2.0","error":{"code":-32603,"message":"` + strings.Repeat("x", maxWrappedStreamErrorBody) + `"}}`},
-		{"malformed", `{"jsonrpc":"2.0","error":`},
+	for _, tc := range []struct{ name, body, reason string }{
+		{"oversized", `{"jsonrpc":"2.0","error":{"code":-32603,"message":"` + strings.Repeat("x", maxWrappedStreamErrorBody) + `"}}`, "exceeds"},
+		{"malformed", `{"jsonrpc":"2.0","error":`, "not valid JSON"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base := roundTripFunc(func(*http.Request) (*http.Response, error) {
@@ -3728,6 +3728,7 @@ func TestCredentialTransportRefusesJSONStreamRepliesItCannotFrame(t *testing.T) 
 				t.Logf("the transport returned a %d-byte %s body", len(framed), resp.Header.Get("Content-Type"))
 			}
 			require.Error(t, err, "a reply that cannot be framed must not become a truncated or empty stream")
+			require.ErrorContains(t, err, tc.reason, "the refusal must name its reason, not a side effect of the size limit")
 		})
 	}
 }

@@ -616,6 +616,15 @@ func (c *pushUpstreamClient) lastCreated(t testing.TB) *a2a.PushConfig {
 func pushGateway(t testing.TB) (*Manager, *proxyRequestHandler, *memoryPushStore, *pushUpstreamClient) {
 	t.Helper()
 	store := newMemoryPushStore()
+	m, handler, client := pushGatewayOn(t, store)
+	return m, handler, store, client
+}
+
+// pushGatewayOn is pushGateway for a caller that wraps the memory store: the
+// manager and its relay are built on the wrapper from the start, since the relay
+// reads the manager's store from its own goroutine and a later reassignment races it.
+func pushGatewayOn(t testing.TB, store Store) (*Manager, *proxyRequestHandler, *pushUpstreamClient) {
+	t.Helper()
 	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
 	require.NoError(t, err)
 	// End-to-end relay tests use local callback servers. Individual security
@@ -627,7 +636,7 @@ func pushGateway(t testing.TB) (*Manager, *proxyRequestHandler, *memoryPushStore
 	client := &pushUpstreamClient{}
 	require.NoError(t, runtime.replaceGeneration(newClientGeneration(&a2a.AgentCard{}, client, string(a2a.TransportProtocolJSONRPC))))
 	m.runtimes.store("fixture", runtime)
-	return m, &proxyRequestHandler{runtime: runtime, manager: m, config: runtime.config}, store, client
+	return m, &proxyRequestHandler{runtime: runtime, manager: m, config: runtime.config}, client
 }
 
 func pushEventPayload(t testing.TB, taskID string) []byte {
@@ -1691,7 +1700,9 @@ func (s *staleBindReadStore) GetAgentPushConfigByIngressTokenHash(ctx context.Co
 // pending config, the loser's bind changes nothing; it must then see that the
 // config was bound to another task and refuse, not queue its own task under it.
 func TestPendingPushBindRaceRejectsTheLosingTask(t *testing.T) {
-	m, _, store, _ := pushGateway(t)
+	store := newMemoryPushStore()
+	stale := &staleBindReadStore{memoryPushStore: store}
+	m, _, _ := pushGatewayOn(t, stale)
 	ctx := context.Background()
 	pending := schemas.AgentPushConfig{
 		AgentName: "fixture", TaskID: pendingAgentPushConfigTaskIDPrefix + "send-1", ConfigID: "cfg-1",
@@ -1700,7 +1711,7 @@ func TestPendingPushBindRaceRejectsTheLosingTask(t *testing.T) {
 	require.NoError(t, store.SaveAgentPushConfig(ctx, &pending))
 	// The winning push bound the row to task-a after the loser had read it.
 	require.NoError(t, store.BindAgentPushConfigTask(ctx, "fixture", pending.IngressTokenHash, pending.TaskID, "task-a"))
-	m.pushStore = &staleBindReadStore{memoryPushStore: store, stale: &pending}
+	stale.stale = &pending
 
 	status, err := m.AcceptPushCallback(ctx, "fixture", "ingress-token", pushEventPayload(t, "task-b"))
 	require.Error(t, err)
@@ -1760,8 +1771,8 @@ func (idleRelayStore) ListDueAgentPushDeliveries(context.Context, time.Time, int
 // delivery identity tells apart: a status update keeps its content digest, an
 // artifact append gets its own identity.
 func BenchmarkAcceptPushCallback(b *testing.B) {
-	m, handler, store, upstream := pushGateway(b)
-	m.pushStore = idleRelayStore{store}
+	store := newMemoryPushStore()
+	m, handler, upstream := pushGatewayOn(b, idleRelayStore{store})
 	_, err := handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{TaskID: "task-1", ID: "cfg-1", URL: "http://client.example/callback"})
 	require.NoError(b, err)
 	token := upstream.lastCreated(b).Token

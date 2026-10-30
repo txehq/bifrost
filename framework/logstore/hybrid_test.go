@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2383,15 +2384,33 @@ func TestHybrid_JSONFormat_DeleteRemovesParquetObject(t *testing.T) {
 	assert.Equal(t, 0, objStore.Len())
 }
 
-// gatedObjectStore holds every Put until release is closed.
+// gatedObjectStore holds every Put until release is closed, and closes entered
+// once the first Put is waiting, so a test can act while an upload is in flight.
 type gatedObjectStore struct {
 	objectstore.ObjectStore
 	release chan struct{}
+	entered chan struct{}
+	once    sync.Once
+}
+
+func newGatedObjectStore() *gatedObjectStore {
+	return &gatedObjectStore{ObjectStore: objectstore.NewInMemoryObjectStore(), release: make(chan struct{}), entered: make(chan struct{})}
 }
 
 func (s *gatedObjectStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	s.once.Do(func() { close(s.entered) })
 	<-s.release
 	return s.ObjectStore.Put(ctx, key, data, tags)
+}
+
+// waitEntered blocks until an upload is waiting at the gate.
+func (s *gatedObjectStore) waitEntered(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no upload reached the object store")
+	}
 }
 
 // TestHybrid_UpdateAgentLogBeforeInitialUploadKeepsFullPayload: an update that lands
@@ -2399,7 +2418,7 @@ func (s *gatedObjectStore) Put(ctx context.Context, key string, data []byte, tag
 // queued full payload, not from the row's previews, so the stored object keeps the
 // untruncated body and the raw fields.
 func TestHybrid_UpdateAgentLogBeforeInitialUploadKeepsFullPayload(t *testing.T) {
-	gate := &gatedObjectStore{ObjectStore: objectstore.NewInMemoryObjectStore(), release: make(chan struct{})}
+	gate := newGatedObjectStore()
 	hybrid, inner := newTestHybridWithObjects(t, gate)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
@@ -2411,6 +2430,8 @@ func TestHybrid_UpdateAgentLogBeforeInitialUploadKeepsFullPayload(t *testing.T) 
 		RequestBody: &requestBody, RawRequest: &rawRequest,
 	}
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	// The initial upload is in flight: its worker is waiting at the gate.
+	gate.waitEntered(t)
 
 	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{
 		"status":        "success",
@@ -2438,7 +2459,7 @@ func TestHybrid_UpdateAgentLogBeforeInitialUploadKeepsFullPayload(t *testing.T) 
 // it must be built on the queued full payload, not on the row's previews, or it
 // overwrites the full object with truncated bodies.
 func TestHybrid_UpdateAgentLogBodyBeforeInitialUploadKeepsFullPayload(t *testing.T) {
-	gate := &gatedObjectStore{ObjectStore: objectstore.NewInMemoryObjectStore(), release: make(chan struct{})}
+	gate := newGatedObjectStore()
 	hybrid, inner := newTestHybridWithObjects(t, gate)
 	defer hybrid.Close(context.Background())
 	ctx := context.Background()
@@ -2450,6 +2471,8 @@ func TestHybrid_UpdateAgentLogBodyBeforeInitialUploadKeepsFullPayload(t *testing
 		RequestBody: &requestBody, RawRequest: &rawRequest,
 	}
 	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	// The initial upload is in flight: its worker is waiting at the gate.
+	gate.waitEntered(t)
 
 	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{
 		"response_body": `{"response":"partial"}`,
