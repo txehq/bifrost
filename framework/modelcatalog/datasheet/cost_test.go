@@ -7733,6 +7733,33 @@ func TestCalculateCost_BillingTurnsKeepEachTurnsServedTier(t *testing.T) {
 	assert.InDelta(t, want, s.CalculateCostForUsage(usage, schemas.ModelProvider(p.Provider), p.Model, schemas.ChatCompletionRequest, nil), 1e-12)
 }
 
+// TestCalculateCost_BillingTurnsKeepEachTurnsServedModel: a turn a server-side fallback served is
+// priced at that model's rates, and the turn beside it at the requested model's, whichever the
+// last turn was.
+func TestCalculateCost_BillingTurnsKeepEachTurnsServedModel(t *testing.T) {
+	requested := gpt56SolPricing()
+	served := chatPricing(0.000001, 0.000002)
+	served.Model = "served-by-fallback"
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(requested.Model, requested.Provider, requested.Mode): requested,
+		makeKey(served.Model, served.Provider, served.Mode):          served,
+	})
+	first := schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100, ServerSideFallbackModel: bifrost.Ptr(served.Model)}
+	second := schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}
+	usage := schemas.AddBillingTurn(&first, &second)
+
+	want := computeTextCostTotal(&served, &first, serviceTier{}) + computeTextCostTotal(&requested, &second, serviceTier{})
+	assert.InDelta(t, want, s.CalculateCostForUsage(usage, schemas.ModelProvider(requested.Provider), requested.Model, schemas.ChatCompletionRequest, nil), 1e-12)
+
+	info := routingInfoFor(schemas.ModelProvider(requested.Provider), requested.Model)
+	info.ServerSideFallbackModel = bifrost.Ptr(served.Model) // the last turn's, which must not price the others
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage:       usage,
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, RoutingInfo: info},
+	}}
+	assert.InDelta(t, want, s.CalculateCost(resp, nil), 1e-12)
+}
+
 // TestCalculateCost_BillingTurnsFeesAndProviderCosts: a per-request fee is one per call, and a
 // provider-reported cost is that call's only, so a call without one is still priced.
 func TestCalculateCost_BillingTurnsFeesAndProviderCosts(t *testing.T) {

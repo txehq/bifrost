@@ -269,6 +269,9 @@ func TestBillingTurnsDoNotAliasTheirUsage(t *testing.T) {
 	first := &BifrostLLMUsage{PromptTokens: 10, TotalTokens: 10, PromptTokensDetails: &ChatPromptTokensDetails{CachedReadTokens: 4}}
 	second := &BifrostLLMUsage{PromptTokens: 20, TotalTokens: 20}
 	sum := AddBillingTurn(first, second)
+	if len(sum.BillingTurns) != 2 {
+		t.Fatalf("turns = %d, want 2", len(sum.BillingTurns))
+	}
 
 	first.PromptTokensDetails.CachedReadTokens = 999
 	if got := sum.BillingTurns[0].PromptTokensDetails.CachedReadTokens; got != 4 {

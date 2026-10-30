@@ -437,4 +437,3 @@ func TestToBifrostDecisionResponse_RejectionWithoutCostStaysPriced(t *testing.T)
 		}
 	}
 }
-

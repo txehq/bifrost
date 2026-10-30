@@ -548,4 +548,3 @@ func TestOpenAIProviderDecisionRejectionWithoutUsageStaysUnbilled(t *testing.T) 
 	assert.Nil(t, bifrostErr.ExtraFields.BilledUsage)
 	assert.Empty(t, bifrostErr.ExtraFields.ResolvedModelUsed)
 }
-
