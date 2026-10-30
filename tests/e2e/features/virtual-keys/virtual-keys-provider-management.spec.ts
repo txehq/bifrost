@@ -154,6 +154,7 @@ test.describe('Model budgets', () => {
 
     await virtualKeysPage.providerSelect.click()
     await page.getByRole('option', { name: 'OpenAI', exact: true }).click()
+    await page.getByTestId('vk-provider-header-0').click()
     await virtualKeysPage.sheet.getByText('Model budgets', { exact: true }).click()
 
     await page.getByTestId('vk-add-model-budget-0').click()

@@ -615,7 +615,8 @@ test.describe("MCP Registry - OpenAPI servers", () => {
   });
 
   // The client is created over the API so it can carry a stored secret and a stored document
-  // URL, and the document is parsed by the real preview endpoint. Only the final PUT is
+  // URL; no tool list reaches the sheet that way, so each test picks its operation. The
+  // document is parsed by the real preview endpoint. Only the final PUT is
   // mocked: its body is what the server would have stored.
   test.describe("Replacing the document: credentials and provenance", () => {
     const document = (location: "header" | "query") =>
@@ -729,6 +730,7 @@ test.describe("MCP Registry - OpenAPI servers", () => {
       await expect(
         panel.getByTestId("openapi-security-KeyAuth-input"),
       ).toHaveValue("");
+      await panel.getByTestId("openapi-tool-checkbox-listPets").check();
 
       await mcpRegistryPage.detailSheet
         .getByTestId("mcpclient-save-btn")
@@ -763,6 +765,7 @@ test.describe("MCP Registry - OpenAPI servers", () => {
       // Both previews read the stored document, so its relative server has a base.
       expect(previewBodies.length).toBeGreaterThan(0);
       for (const body of previewBodies) expect(body.spec_url).toBe(specUrl);
+      await panel.getByTestId("openapi-tool-checkbox-listPets").check();
 
       await mcpRegistryPage.detailSheet
         .getByLabel(/Name/i)

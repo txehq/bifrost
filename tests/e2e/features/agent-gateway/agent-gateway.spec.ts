@@ -267,7 +267,7 @@ test.describe("Agent Gateway settings the operator owns", () => {
     const saved = await mockRegistration(agentGatewayPage.page, registration(false));
     await agentGatewayPage.goto();
     await agentGatewayPage.openEditSheet(name);
-    await agentGatewayPage.fetchCard();
+    await agentGatewayPage.fetchCardBtn.first().click();
     await expect(agentGatewayPage.inspection).toContainText("mock-agent");
     await agentGatewayPage.save();
 
@@ -286,7 +286,7 @@ test.describe("Agent Gateway settings the operator owns", () => {
     const saved = await mockRegistration(agentGatewayPage.page, agent);
     await agentGatewayPage.goto();
     await agentGatewayPage.openEditSheet(name);
-    await agentGatewayPage.fetchCard();
+    await agentGatewayPage.fetchCardBtn.first().click();
     await expect(agentGatewayPage.inspection).toContainText("mock-agent");
     await agentGatewayPage.save();
 

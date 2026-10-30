@@ -170,7 +170,8 @@ test.describe("Agent log history state", () => {
         return route.fulfill({ status, json });
       }
       const params = url.searchParams;
-      const probe = params.get("limit") === "1" && params.get("period") === "30d";
+      // The probe is the only one-row request; a period reaches the server as timestamps.
+      const probe = params.get("limit") === "1";
       const logs = probe ? [] : rows;
       await route.fulfill({
         json: {
