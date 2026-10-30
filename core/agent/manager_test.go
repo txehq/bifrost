@@ -3669,3 +3669,33 @@ func BenchmarkA2AEventObservation(b *testing.B) {
 		})
 	}
 }
+
+// TestWrapJSONStreamErrorRefusesRepliesItCannotFrame: a JSON reply to a streaming
+// request is reframed as one SSE event. One larger than the buffer, or one that is
+// not JSON, cannot be, and must surface as an error rather than as a truncated or
+// empty successful stream.
+func TestWrapJSONStreamErrorRefusesRepliesItCannotFrame(t *testing.T) {
+	reply := func(body string) (*http.Request, *http.Response) {
+		req, _ := http.NewRequest(http.MethodPost, "http://agent.example/rpc", nil)
+		req.Header.Set("Accept", "text/event-stream")
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}
+		return req, resp
+	}
+
+	oversized := `{"jsonrpc":"2.0","error":{"code":-32603,"message":"` + strings.Repeat("x", maxWrappedStreamErrorBody) + `"}}`
+	req, resp := reply(oversized)
+	require.Error(t, wrapJSONStreamError(req, resp), "an oversized reply must not become a truncated stream")
+
+	req, resp = reply(`{"jsonrpc":"2.0","error":`)
+	require.Error(t, wrapJSONStreamError(req, resp), "a reply that is not JSON must not become an empty stream")
+
+	req, resp = reply(`{"jsonrpc":"2.0","error":{"code":-32603,"message":"boom"}}`)
+	require.NoError(t, wrapJSONStreamError(req, resp))
+	framed, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, "data: {\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"boom\"}}\n\n", string(framed))
+}

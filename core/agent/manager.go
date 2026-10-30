@@ -2322,16 +2322,21 @@ func wrapJSONStreamError(req *http.Request, resp *http.Response) error {
 		!strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
 		return nil
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxWrappedStreamErrorBody))
+	// One byte past the limit tells an oversized reply from one that just fits.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxWrappedStreamErrorBody+1))
 	resp.Body.Close()
 	if err != nil {
 		return fmt.Errorf("read upstream JSON reply to streaming request: %w", err)
 	}
-	// SSE data frames are line-delimited, so the JSON must be a single line.
+	if len(body) > maxWrappedStreamErrorBody {
+		return fmt.Errorf("upstream JSON reply to streaming request exceeds %d bytes", maxWrappedStreamErrorBody)
+	}
+	// SSE data frames are line-delimited, so the JSON must be a single line. A
+	// reply that is not JSON cannot be framed, and passed through it would read as
+	// an empty, successful stream.
 	var compact bytes.Buffer
-	if json.Compact(&compact, body) != nil {
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		return nil
+	if err := json.Compact(&compact, body); err != nil {
+		return fmt.Errorf("upstream JSON reply to streaming request is not valid JSON: %w", err)
 	}
 	framed := append([]byte("data: "), compact.Bytes()...)
 	framed = append(framed, '\n', '\n')
