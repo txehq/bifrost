@@ -1480,6 +1480,7 @@ id|'e5f9fe90f95ce1eacd85b39c5eefcf410100d18e228d9ac7d8bdf905b0a951fe'
 agent_name|'migration-test-agent'
 task_id|'task-migration-001'
 config_id|'push-config-migration-001'
+registration_hash|'aa11c3c9f893104feafdbe13ccb62017195ad3f8ee27d983d1b2f7318054c616'
 payload|'{"id":"task-migration-001","status":{"state":"completed"}}'
 status|'delivered'
 attempts|1
