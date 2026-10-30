@@ -1666,3 +1666,42 @@ func TestTenantlessPushRequestsCannotReachANamedTenantsConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, stored, "a tenantless delete must not remove tenant-a's record")
 }
+
+// staleBindReadStore returns, once, the pending row as it was before another
+// callback bound it: the losing side of two pushes racing on one pending config.
+type staleBindReadStore struct {
+	*memoryPushStore
+	stale *schemas.AgentPushConfig
+}
+
+func (s *staleBindReadStore) GetAgentPushConfigByIngressTokenHash(ctx context.Context, agentName, hash string) (*schemas.AgentPushConfig, error) {
+	if s.stale != nil {
+		stale := *s.stale
+		s.stale = nil
+		return &stale, nil
+	}
+	return s.memoryPushStore.GetAgentPushConfigByIngressTokenHash(ctx, agentName, hash)
+}
+
+// TestPendingPushBindRaceRejectsTheLosingTask: when two pushes race to bind one
+// pending config, the loser's bind changes nothing; it must then see that the
+// config was bound to another task and refuse, not queue its own task under it.
+func TestPendingPushBindRaceRejectsTheLosingTask(t *testing.T) {
+	m, _, store, _ := pushGateway(t)
+	ctx := context.Background()
+	pending := schemas.AgentPushConfig{
+		AgentName: "fixture", TaskID: pendingAgentPushConfigTaskIDPrefix + "send-1", ConfigID: "cfg-1",
+		URL: "https://client.example/callback", IngressTokenHash: hashPushIngressToken("ingress-token"),
+	}
+	require.NoError(t, store.SaveAgentPushConfig(ctx, &pending))
+	// The winning push bound the row to task-a after the loser had read it.
+	require.NoError(t, store.BindAgentPushConfigTask(ctx, "fixture", pending.IngressTokenHash, pending.TaskID, "task-a"))
+	m.pushStore = &staleBindReadStore{memoryPushStore: store, stale: &pending}
+
+	status, err := m.AcceptPushCallback(ctx, "fixture", "ingress-token", pushEventPayload(t, "task-b"))
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, status)
+	store.pushMu.Lock()
+	defer store.pushMu.Unlock()
+	require.Empty(t, store.deliveries, "the losing push queued a delivery for a task the config is not bound to")
+}

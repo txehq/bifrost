@@ -671,7 +671,16 @@ func (m *Manager) AcceptPushCallback(ctx context.Context, agentName, token strin
 		if err != nil {
 			return http.StatusInternalServerError, err
 		}
-		config.TaskID = taskID
+		// A concurrent push may have bound the row first, which leaves this bind a
+		// no-op: read back which task the config is bound to now.
+		bound, err := m.pushStore.GetAgentPushConfigByIngressTokenHash(ctx, agentName, hashPushIngressToken(token))
+		if err != nil {
+			return http.StatusInternalServerError, err
+		}
+		if bound == nil || bound.TaskID != taskID {
+			return http.StatusBadRequest, errors.New("pushed event does not address the configured task")
+		}
+		config = bound
 	} else if taskID != config.TaskID {
 		return http.StatusBadRequest, errors.New("pushed event does not address the configured task")
 	}
