@@ -454,8 +454,8 @@ func passthroughReachesTuning(r *schemas.BifrostPassthroughRequest) bool {
 		afterModels = strings.EqualFold(name, "models")
 		// Inference on one Gemini tuned model (tunedModels/<id>:generateContent and the other
 		// operations genAIInferencePath forwards) is governed by the key's model allow-list, as on
-		// every other route; only that exact last-segment shape is exempt.
-		if segment == name && strings.EqualFold(name, "tunedModels") && tunedModelInference(rest) {
+		// every other route; only that exact shape is exempt, spelled as the router matches it.
+		if segment == "tunedModels" && tunedModelInference(rest) {
 			return false
 		}
 		for _, collection := range passthroughTuningCollections {

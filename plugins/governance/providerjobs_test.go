@@ -1536,6 +1536,8 @@ func TestPassthroughTuningIsRefusedForVirtualKeysOnEveryRoute(t *testing.T) {
 		{schemas.Gemini, "POST", "/v1beta/tunedModels/:generateContent"},
 		{schemas.Gemini, "POST", "/v1beta/tunedModels/other-model:generateContent;x=1"},
 		{schemas.Gemini, "POST", "/v1beta/tunedModels/other-model:GenerateContent"},
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/other-model/x:generateContent"},
+		{schemas.Gemini, "POST", "/v1beta/TunedModels/other-model:countTokens"},
 		{schemas.Gemini, "POST", "/v1beta/tunedModels:generateContent"},
 		{schemas.Vertex, "GET", "/v1/projects/p/locations/us-central1/tuningJobs"},
 		{schemas.Vertex, "POST", "/v1/projects/p/locations/us-central1/tuningJobs/123:cancel"},
@@ -1618,7 +1620,7 @@ func TestPassthroughInferenceStaysOpenForVirtualKeys(t *testing.T) {
 		// Inference on a Gemini tuned model, as genAIInferencePath forwards it.
 		{schemas.Gemini, "POST", "/v1beta/tunedModels/my-tuned-1:generateContent", `{"contents":[{"parts":[{"text":"hi"}]}]}`},
 		{schemas.Gemini, "POST", "/v1beta/tunedModels/my-tuned-1:streamGenerateContent", `{"contents":[{"parts":[{"text":"hi"}]}]}`},
-		{schemas.Gemini, "POST", "/v1beta/TunedModels/my-tuned-1:countTokens", `{"contents":[{"parts":[{"text":"hi"}]}]}`},
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/my-tuned-1:countTokens", `{"contents":[{"parts":[{"text":"hi"}]}]}`},
 		{schemas.Vertex, "POST", "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent", `{"contents":[{"parts":[{"text":"hi"}]}]}`},
 		{schemas.Azure, "POST", "/openai/deployments/gpt-4o/chat/completions", `{"messages":[{"role":"user","content":"hi"}]}`},
 		{schemas.Bedrock, "POST", "/agents/a/agentAliases/b/sessions/s/text", `{"inputText":"hi"}`},
