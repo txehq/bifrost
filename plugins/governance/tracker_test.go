@@ -123,6 +123,55 @@ func TestUsageTracker_ToolCallDoesNotClaimItsInferencesBilling(t *testing.T) {
 	assert.Equal(t, 13.0, store.GetGovernanceData(context.Background()).Budgets["budget1"].CurrentUsage, "the inference billed once, with both tools")
 }
 
+// TestUsageTracker_ToolAndInferenceKeysStayIndependent walks the settlements one request can deliver
+// and proves each key bills once: a duplicate hook delivery, a retry, a fallback, parallel tools, a
+// stream's terminal racing its cancellation, and a failed turn after a tool ran.
+func TestUsageTracker_ToolAndInferenceKeysStayIndependent(t *testing.T) {
+	type settle struct {
+		cost            float64
+		tool            string
+		attempt, chain  int
+		streaming, fail bool
+	}
+	for name, tc := range map[string]struct {
+		settlements []settle
+		want        float64
+	}{
+		"duplicate tool hook":              {[]settle{{cost: 1, tool: "t1"}, {cost: 1, tool: "t1"}, {cost: 10}}, 11},
+		"duplicate inference hook":         {[]settle{{cost: 10}, {cost: 10}, {cost: 1, tool: "t1"}}, 11},
+		"parallel tools":                   {[]settle{{cost: 1, tool: "t1"}, {cost: 2, tool: "t2"}, {cost: 4, tool: "t3"}, {cost: 10}}, 17},
+		"retry bills its own attempt":      {[]settle{{cost: 1, tool: "t1"}, {cost: 10, fail: true}, {cost: 20, attempt: 1}}, 31},
+		"fallback bills its own chain":     {[]settle{{cost: 10, fail: true}, {cost: 20, chain: 1}, {cost: 20, chain: 1}}, 30},
+		"same tool id on another fallback": {[]settle{{cost: 1, tool: "t1"}, {cost: 1, tool: "t1", chain: 1}}, 2},
+		"stream terminal races cancel":     {[]settle{{cost: 1, tool: "t1"}, {cost: 10, streaming: true}, {cost: 10, streaming: true, fail: true}}, 11},
+		"failed turn after a tool":         {[]settle{{cost: 1, tool: "t1"}, {cost: 10, fail: true}}, 11},
+	} {
+		t.Run(name, func(t *testing.T) {
+			logger := NewMockLogger()
+			budget := buildBudgetWithUsage("budget1", 1000.0, 0.0, "1d")
+			vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
+			store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+				Budgets:     []configstoreTables.TableBudget{*budget},
+			}, nil, nil)
+			require.NoError(t, err)
+			tracker := NewUsageTracker(context.Background(), store, NewBudgetResolver(store, nil, logger, nil), nil, logger)
+			defer tracker.Cleanup()
+
+			for _, s := range tc.settlements {
+				tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", &UsageUpdate{
+					Success: !s.fail, Cost: s.cost, RequestID: "req-tool", BillingNonce: "nonce", ToolCallID: s.tool,
+					AttemptNumber: s.attempt, FallbackIndex: s.chain, IsStreaming: s.streaming, IsFinalChunk: true, HasUsageData: true,
+				}))
+			}
+			usage := func() float64 { return store.GetGovernanceData(context.Background()).Budgets["budget1"].CurrentUsage }
+			assert.Eventually(t, func() bool { return usage() == tc.want }, 2*time.Second, 20*time.Millisecond, "each key bills once")
+			time.Sleep(50 * time.Millisecond)
+			assert.Equal(t, tc.want, usage())
+		})
+	}
+}
+
 // TestUsageTracker_FailedRequestNoUsage_IsSkipped verifies the inverse: a
 // request that failed WITHOUT consuming any tokens (e.g. 401/403/429 before the
 // model ran) carries no usage and must NOT bill anything.

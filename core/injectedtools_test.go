@@ -1144,6 +1144,27 @@ func TestKeepAttemptLimits(t *testing.T) {
 	assert.Equal(t, attempt, g.Limits(), "the turns are billed to what admitted the attempt")
 }
 
+// TestKeepAttemptLimitsBelongToTheirAttempt: each attempt restores the limits it was admitted under,
+// so a later attempt on another provider is never billed to the one before it.
+func TestKeepAttemptLimitsBelongToTheirAttempt(t *testing.T) {
+	g := &limitsGrant{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.True(t, ctx.SetGrant(g))
+	tool := func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+		g.SetLimits(namedLimits{name: "tool"})
+		return searchResult(call)
+	}
+	first, fallback := namedLimits{name: "first"}, namedLimits{name: "fallback"}
+
+	g.SetLimits(first)
+	keepAttemptLimits(ctx, tool)(chatToolCall("c1", "web_search"))
+	assert.Equal(t, first, g.Limits())
+
+	g.SetLimits(fallback)
+	keepAttemptLimits(ctx, tool)(chatToolCall("c2", "web_search"))
+	assert.Equal(t, fallback, g.Limits())
+}
+
 // TestKeepAttemptLimitsWithoutGrant: a request nothing governs runs its tools unchanged.
 func TestKeepAttemptLimitsWithoutGrant(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
