@@ -252,6 +252,10 @@ func (m *liveMeter) onBackendResponse(response *schemas.BifrostResponsesResponse
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// finish billed the lanes and never runs again: a response after it has no unit to settle on.
+	if m.finished {
+		return m.refusal
+	}
 	if response.ID != nil && *response.ID != "" {
 		if _, billed := m.billedResponses[*response.ID]; billed {
 			return m.refusal

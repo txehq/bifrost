@@ -7835,7 +7835,7 @@ func TestCalculateCostBreakdown_BillingSegmentsSidecarsOnce(t *testing.T) {
 		}}
 	}
 
-	providerUsed, modelUsed, tokens := "openai", "gpt-5.6-sol", 1000
+	providerUsed, modelUsed, tokens := p.Provider, p.Model, 1000
 	routed := s.CalculateCostBreakdown(aggregate(schemas.BifrostResponseExtraFields{RoutingMetadata: &schemas.BifrostRoutingMetadata{
 		Calls: []schemas.BifrostRoutingCall{{ProviderUsed: &providerUsed, ModelUsed: &modelUsed, InputTokens: &tokens, RequestType: schemas.ChatCompletionRequest, CountTowardBudgets: true}},
 	}}), nil)
