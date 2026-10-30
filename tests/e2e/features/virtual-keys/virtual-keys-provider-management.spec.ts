@@ -159,7 +159,9 @@ test.describe('Model budgets', () => {
 
     await page.getByTestId('vk-add-model-budget-0').click()
     await page.keyboard.type('my-deployment-alias')
-    await page.getByRole('option', { name: 'Use my-deployment-alias' }).click()
+    const custom = page.getByRole('option', { name: 'Use my-deployment-alias' })
+    await expect(custom).toBeVisible()
+    await custom.click()
 
     await expect(virtualKeysPage.sheet.getByText('my-deployment-alias')).toBeVisible()
   })

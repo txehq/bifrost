@@ -151,7 +151,13 @@ test.describe("Agent log history state", () => {
   async function mockHistory(
     page: import("@playwright/test").Page,
     rows: Record<string, unknown>[],
-    operation: (id: string) => { status: number; json: unknown } = (id) => ({ status: 200, json: { ...alpha, id, events: [] } }),
+    {
+      probeRows = rows,
+      operation = (id) => ({ status: 200, json: { ...alpha, id, events: [] } }),
+    }: {
+      probeRows?: Record<string, unknown>[];
+      operation?: (id: string) => { status: number; json: unknown };
+    } = {},
   ) {
     const deleted: string[][] = [];
     await page.route("**/api/agents/history**", async (route) => {
@@ -172,7 +178,7 @@ test.describe("Agent log history state", () => {
       const params = url.searchParams;
       // The probe is the only one-row request; a period reaches the server as timestamps.
       const probe = params.get("limit") === "1";
-      const logs = probe ? [] : rows;
+      const logs = probe ? probeRows : rows;
       await route.fulfill({
         json: {
           logs,
@@ -184,7 +190,7 @@ test.describe("Agent log history state", () => {
   }
 
   test("keeps the history view when the 30-day probe is empty but the selected range has rows", async ({ page }) => {
-    await mockHistory(page, [alpha]);
+    await mockHistory(page, [alpha], { probeRows: [] });
     await page.goto("/workspace/agent-logs?polling=false&period=this_month");
     await expect(page.getByTestId("agent-logs-header-group-btn")).toBeVisible();
     await expect(page.getByText("alpha input")).toBeVisible();
@@ -197,9 +203,10 @@ test.describe("Agent log history state", () => {
   });
 
   test("a failed detail fetch shows the selected operation and Delete removes that one", async ({ page }) => {
-    const deleted = await mockHistory(page, [alpha, beta], (id) =>
-      id === alpha.id ? { status: 200, json: { ...alpha, events: [] } } : { status: 500, json: { error: { message: "boom" } } },
-    );
+    const deleted = await mockHistory(page, [alpha, beta], {
+      operation: (id) =>
+        id === alpha.id ? { status: 200, json: { ...alpha, events: [] } } : { status: 500, json: { error: { message: "boom" } } },
+    });
     await page.goto(`/workspace/agent-logs?polling=false&period=30d&selected_log=${alpha.id}`);
     await expect(page.getByRole("button", { name: "Log actions" })).toBeVisible();
     await page.keyboard.press("ArrowDown");

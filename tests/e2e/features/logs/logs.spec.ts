@@ -1152,7 +1152,8 @@ test.describe("sessions longer than one page", () => {
     Array.from({ length: count }, (_, i) => row(`member-${offset + i}`));
   type MemberPage = { status: number; logs: ReturnType<typeof members> };
 
-  // Answers the list with the session's root, and the session's pages with answer.
+  // Answers the list with the session's root, under a plain row so the sticky header
+  // does not cover it, and the session's pages with answer.
   async function mockSessionPages(
     page: import("@playwright/test").Page,
     answer: (offset: number) => MemberPage | Promise<MemberPage>,
@@ -1185,7 +1186,9 @@ test.describe("sessions longer than one page", () => {
         if (route.request().method() !== "GET") return route.continue();
         const params = new URL(route.request().url()).searchParams;
         if (params.get("session_id") !== "long-session") {
-          return route.fulfill({ json: body([root], 0) });
+          return route.fulfill({
+            json: body([row("plain-row", { session_id: undefined }), root], 0),
+          });
         }
         const offset = Number(params.get("offset") ?? 0);
         offsets.push(offset);

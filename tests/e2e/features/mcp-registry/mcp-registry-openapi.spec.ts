@@ -619,11 +619,11 @@ test.describe("MCP Registry - OpenAPI servers", () => {
   // document is parsed by the real preview endpoint. Only the final PUT is
   // mocked: its body is what the server would have stored.
   test.describe("Replacing the document: credentials and provenance", () => {
-    const document = (location: "header" | "query") =>
+    const document = (location: "header" | "query", server = "/v1") =>
       JSON.stringify({
         openapi: "3.0.3",
         info: { title: `Scheme in ${location}`, version: "1.0.0" },
-        servers: [{ url: "/v1" }],
+        servers: [{ url: server }],
         security: [{ KeyAuth: [] }],
         components: {
           securitySchemes: {
@@ -719,7 +719,10 @@ test.describe("MCP Registry - OpenAPI servers", () => {
         process.platform === "darwin" ? "Meta+A" : "Control+A",
       );
       await page.keyboard.press("Backspace");
-      await page.keyboard.insertText(document("query"));
+      // A pasted document is a new source, so its server has to be absolute.
+      await page.keyboard.insertText(
+        document("query", "https://api.example.test/v1"),
+      );
       await expect.poll(() => previews).toBeGreaterThan(1);
       releaseBaseline();
 
@@ -767,10 +770,13 @@ test.describe("MCP Registry - OpenAPI servers", () => {
       for (const body of previewBodies) expect(body.spec_url).toBe(specUrl);
       await panel.getByTestId("openapi-tool-checkbox-listPets").check();
 
+      // A rename makes the parse stale, so Save waits for the one it starts.
+      const reparsed = page.waitForResponse("**/mcp/openapi/preview");
       await mcpRegistryPage.detailSheet
         .getByLabel(/Name/i)
         .first()
         .fill(`${name}_renamed`);
+      await reparsed;
       await mcpRegistryPage.detailSheet
         .getByTestId("mcpclient-save-btn")
         .click();
