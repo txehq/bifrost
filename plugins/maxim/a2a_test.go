@@ -55,6 +55,10 @@ func TestA2AExportWire(t *testing.T) {
 			if disabled && (strings.Contains(wire, schemas.AttrInputMessages) || strings.Contains(wire, schemas.AttrOutputMessages)) {
 				t.Fatal("disabled content exported")
 			}
+			// The operation's status text is the upstream agent's error, so it is content.
+			if disabled == strings.Contains(wire, schemas.ExportFixtureSecret) {
+				t.Fatalf("content sentinel present=%v with content disabled=%v", !disabled, disabled)
+			}
 			if !strings.Contains(wire, `2023-11-14T22:13:20Z`) || !strings.Contains(wire, `2023-11-14T22:13:21Z`) {
 				t.Fatal("original timestamps missing")
 			}

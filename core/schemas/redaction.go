@@ -208,11 +208,21 @@ func StripSpanContent(src *Span) *Span {
 		StartTime:  src.StartTime,
 		EndTime:    src.EndTime,
 		Status:     src.Status,
-		StatusMsg:  src.StatusMsg,
+		StatusMsg:  contentFreeStatusMessage(src),
 		Attributes: attrs,
 		Enrichment: src.Enrichment,
 		Events:     events,
 	}
+}
+
+// contentFreeStatusMessage is the status message a content-stripped span keeps. An
+// A2A operation's message is the upstream agent's error text, which can echo the
+// request it was given, so it goes with the content; the error status remains.
+func contentFreeStatusMessage(span *Span) string {
+	if span.Kind == SpanKindA2AOperation {
+		return ""
+	}
+	return span.StatusMsg
 }
 
 // stripContentAttrs filters one attribute map, returning nil rather than an empty
