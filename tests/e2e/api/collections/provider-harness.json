@@ -279783,6 +279783,569 @@
           }
         }
       ]
+    },
+    {
+      "name": "265. Passthrough tuning is refused for virtual keys and method overrides never reach the provider (passthrough-tuning-vk) [SERIAL]",
+      "description": "TXE-5023 (PR5 H12 port). Bifrost forwards a passthrough request under the shared provider key, and no provider records which key created a tuning job or tuned model, so a tenant's virtual key could list every job on the shared OpenAI key and cancel another tenant's. With client.enforce_vk_object_ownership on (the default), a virtual-key passthrough request that reaches a tuning or customization collection (OpenAI fine_tuning and ft: models, Gemini tunedModels, Vertex tuningJobs, Bedrock's customization collections) is refused with 403 by governance before any provider call, whatever the method or the path spelling and whichever passthrough route carries it. A method-override header (X-HTTP-Method-Override and its variants) is never forwarded, directly or through x-bf-eh-*, because governance judges a request by its method. Inference through passthrough is unchanged. Red before the change: the list and cancel reached the provider, and an override header reached it too. The refusals never reach a provider; the override cases send an upload without a file, which the provider rejects; the chat case spends a few tokens on gpt-4o-mini. The virtual key is created and deleted by the folder.",
+      "item": [
+        {
+          "name": "openai passthrough-tuning-vk setup: create a virtual key on openai",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('ptvkId');",
+                  "pm.collectionVariables.unset('ptvkValue');",
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "pm.request.body.raw = JSON.stringify({name: 'harness-passthrough-tuning-vk-' + Date.now(), provider_configs: [{provider: 'openai', weight: 1.0, allowed_models: ['*'], key_ids: ['*']}]});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-tuning-vk: virtual key created', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.oneOf([200, 201]); });",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "var vk = j.virtual_key || j;",
+                  "if (vk && vk.id && vk.value) { pm.collectionVariables.set('ptvkId', vk.id); pm.collectionVariables.set('ptvkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai passthrough-tuning-vk: a virtual key cannot list fine-tuning jobs on the shared key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('ptvkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('tuning list: refused with 403', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('tuning list: refused as tuning by governance, not by auth or another check', function () {",
+                  "  pm.expect(body.error && body.error.message, 'failed: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'failed: ' + pm.response.text()).to.include('fine-tuning through a passthrough route is not available to virtual keys');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{ptvkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/openai_passthrough/v1/fine_tuning/jobs"
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai passthrough-tuning-vk: a virtual key cannot cancel a fine-tuning job on the shared key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('ptvkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('tuning cancel: refused with 403', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('tuning cancel: refused as tuning by governance, not by auth or another check', function () {",
+                  "  pm.expect(body.error && body.error.message, 'failed: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'failed: ' + pm.response.text()).to.include('fine-tuning through a passthrough route is not available to virtual keys');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{ptvkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/openai_passthrough/v1/fine_tuning/jobs/ftjob-harness-shared/cancel"
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai passthrough-tuning-vk: a virtual key cannot read a tuned model on the shared key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('ptvkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// /v1/models/ft:... names the model 'ft' to governance's model gate, which refuses it before the",
+                  "// ownership checks run; the next row uses a key that allows 'ft' to reach the tuning refusal.",
+                  "pm.test('tuned model read: refused with 403', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('tuned model read: refused by the model gate before any provider call', function () {",
+                  "  pm.expect(body.type, 'failed: ' + pm.response.text()).to.equal('model_blocked');",
+                  "  pm.expect(body.error && body.error.message, 'failed: ' + pm.response.text()).to.include('is not allowed for virtual key');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{ptvkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/openai_passthrough/v1/models/ft:gpt-4o-mini:harness::shared"
+          }
+        },
+        {
+          "name": "openai passthrough-tuning-vk setup: create a virtual key that allows the model ft",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('ptvkFtId');",
+                  "pm.collectionVariables.unset('ptvkFtValue');",
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "pm.request.body.raw = JSON.stringify({name: 'harness-passthrough-tuning-vk-ft-' + Date.now(), provider_configs: [{provider: 'openai', weight: 1.0, allowed_models: ['ft'], key_ids: ['*']}]});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-tuning-vk: virtual key allowing ft created', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.oneOf([200, 201]); });",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "var vk = j.virtual_key || j;",
+                  "if (vk && vk.id && vk.value) { pm.collectionVariables.set('ptvkFtId', vk.id); pm.collectionVariables.set('ptvkFtValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai passthrough-tuning-vk: a virtual key allowed the model ft still cannot read a tuned model",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('ptvkFtValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('tuned model read past the model gate: refused with 403', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('tuned model read past the model gate: refused as tuning by governance, not by auth or another check', function () {",
+                  "  pm.expect(body.error && body.error.message, 'failed: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'failed: ' + pm.response.text()).to.include('fine-tuning through a passthrough route is not available to virtual keys');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{ptvkFtValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/openai_passthrough/v1/models/ft:gpt-4o-mini:harness::shared"
+          }
+        },
+        {
+          "name": "openai passthrough-tuning-vk cleanup: delete the virtual key that allows ft",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('ptvkFtId')) { pm.execution.skipRequest(); }",
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-tuning-vk: virtual key allowing ft deleted', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                  "pm.collectionVariables.unset('ptvkFtId');",
+                  "pm.collectionVariables.unset('ptvkFtValue');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{ptvkFtId}}"
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai passthrough-tuning-vk: a mixed-case spelling of fine_tuning is refused too",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('ptvkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mixed-case tuning list: refused with 403', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('mixed-case tuning list: refused as tuning by governance, not by auth or another check', function () {",
+                  "  pm.expect(body.error && body.error.message, 'failed: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'failed: ' + pm.response.text()).to.include('fine-tuning through a passthrough route is not available to virtual keys');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{ptvkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/openai_passthrough/v1/Fine_Tuning/jobs"
+          }
+        },
+        {
+          "name": "[EXPECT-403] openai passthrough-tuning-vk: a Bedrock customization collection is refused on any passthrough route",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('ptvkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('customization collection: refused with 403', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('customization collection: refused as tuning by governance, not by auth or another check', function () {",
+                  "  pm.expect(body.error && body.error.message, 'failed: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'failed: ' + pm.response.text()).to.include('fine-tuning through a passthrough route is not available to virtual keys');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{ptvkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/openai_passthrough/model-customization-jobs"
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] openai passthrough-tuning-vk: X-HTTP-Method-Override does not turn a passthrough upload into a list",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('ptvkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('override header: rejected by the provider as the POST governance judged', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(400, 499); });",
+                  "pm.test('override header: not answered with a file list', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.object, 'failed: ' + pm.response.text()).to.not.equal('list');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{ptvkValue}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-HTTP-Method-Override",
+                "value": "GET"
+              }
+            ],
+            "url": "{{baseUrl}}/openai_passthrough/v1/files",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] openai passthrough-tuning-vk: an override sent through x-bf-eh does not turn a passthrough upload into a list",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('ptvkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('x-bf-eh override header: rejected by the provider as the POST governance judged', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(400, 499); });",
+                  "pm.test('x-bf-eh override header: not answered with a file list', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.object, 'failed: ' + pm.response.text()).to.not.equal('list');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{ptvkValue}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-x-http-method-override",
+                "value": "GET"
+              }
+            ],
+            "url": "{{baseUrl}}/openai_passthrough/v1/files",
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini passthrough-tuning-vk: a virtual key still runs chat completions through passthrough",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('ptvkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough chat with a virtual key: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('passthrough chat with a virtual key: has a choice', function () { pm.expect(pm.response.json().choices, 'failed: ' + pm.response.text()).to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{ptvkValue}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o-mini\",\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"Say ok.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai passthrough-tuning-vk cleanup: delete the virtual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('ptvkId')) { pm.execution.skipRequest(); }",
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-tuning-vk: virtual key deleted', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.below(300); });",
+                  "pm.collectionVariables.unset('ptvkId');",
+                  "pm.collectionVariables.unset('ptvkValue');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{ptvkId}}"
+          }
+        }
+      ]
     }
   ]
 }

@@ -30,6 +30,15 @@
 // Responses shapes, and returns OpenAI's model_not_found 404 for MISSING_MODEL
 // (TXE-5329).
 //
+// The same collection checks that a virtual key cannot manage fine-tuning through
+// /openai_passthrough (TXE-5023): tuning jobs and tuned models record no creator, so
+// under the shared key one tenant could list or cancel another's. The stub serves a
+// shared job at /openai/v1/fine_tuning/jobs (list, cancel) and a tuned model under
+// /openai/v1/models/ft:..., so a request Bifrost wrongly forwards succeeds visibly.
+// Like Google APIs, the stub honours X-HTTP-Method-Override (and X-HTTP-Method,
+// X-Method-Override, with '_' read as '-'), so a forwarded override that turns a
+// POST into a GET shows up as a list in the response.
+//
 // Usage: node list-models-stub.js <port>
 
 const http = require("http");
@@ -265,9 +274,50 @@ function responses(req, res) {
   });
 }
 
+// methodOverride returns the method an override header asks for, as an upstream
+// honouring one would act on it, or "" when there is none.
+function methodOverride(req) {
+  for (const [name, value] of Object.entries(req.headers)) {
+    const folded = name.toLowerCase().replace(/_/g, "-");
+    if ((folded === "x-http-method-override" || folded === "x-http-method" || folded === "x-method-override") && typeof value === "string" && value) {
+      return value.toUpperCase();
+    }
+  }
+  return "";
+}
+
+// The shared fine-tuning job every tenant reaches under the one provider key.
+const sharedJob = { id: "ftjob-stub-shared", object: "fine_tuning.job", model: "gpt-4o-mini-2024-07-18", status: "running", created_at: 1715367049 };
+
+function fineTuningAPI(req, res, path) {
+  if (/^\/openai\/v1\/fine_tuning\/jobs\/?$/.test(path) && req.method === "GET") {
+    res.end(JSON.stringify({ object: "list", data: [sharedJob], has_more: false }));
+    return true;
+  }
+  const cancel = /^\/openai\/v1\/fine_tuning\/jobs\/([^/]+)\/cancel\/?$/.exec(path);
+  if (cancel && req.method === "POST") {
+    res.end(JSON.stringify({ ...sharedJob, id: decodeURIComponent(cancel[1]), status: "cancelled" }));
+    return true;
+  }
+  const tuned = /^\/openai\/v1\/models\/(ft:[^/]+)\/?$/.exec(path);
+  if (tuned && (req.method === "GET" || req.method === "DELETE")) {
+    const id = decodeURIComponent(tuned[1]);
+    res.end(JSON.stringify(req.method === "GET" ? { id, object: "model", created: 1715367049, owned_by: "org-stub" } : { id, object: "model", deleted: true }));
+    return true;
+  }
+  return false;
+}
+
 const server = http.createServer((req, res) => {
   const path = (req.url || "").split("?")[0];
   res.setHeader("Content-Type", "application/json");
+  const override = methodOverride(req);
+  if (override) {
+    req.method = override;
+  }
+  if (fineTuningAPI(req, res, path)) {
+    return;
+  }
   if (path.startsWith("/openai/v1/files") && filesAPI(req, res, path)) {
     return;
   }

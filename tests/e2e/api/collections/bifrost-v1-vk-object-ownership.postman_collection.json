@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Bifrost V1 - Virtual Key Object Ownership",
-    "description": "client.enforce_vk_object_ownership end to end. Two virtual keys share one provider key. With the setting on, a file the owner uploads is a 404 to the other key on retrieve, download and delete and is missing from its list, while the owner still reaches it. Turned off, the other key retrieves, downloads and lists the file, and the owner uploads a second file. Turned back on, both files are a 404 to the other key and missing from its list, which shows the creator is recorded while the setting is off. Teardown deletes both files and both keys and restores the client config snapshot. Files are the probe because they are free; the same setting covers batches, videos, containers, cached contents and live sessions. Known limit: a fresh install reads back log_retention_days 0, which PUT /api/config refuses, so the snapshot raises it to 30 and Teardown restores 30. If a run is killed before Teardown and leaves ownership off, the next run's first check (enforce_vk_object_ownership is on by default) fails.",
+    "description": "client.enforce_vk_object_ownership end to end. Two virtual keys share one provider key. With the setting on, a file the owner uploads is a 404 to the other key on retrieve, download and delete and is missing from its list, while the owner still reaches it. Turned off, the other key retrieves, downloads and lists the file, and the owner uploads a second file. Turned back on, both files are a 404 to the other key and missing from its list, which shows the creator is recorded while the setting is off. Teardown deletes both files and both keys and restores the client config snapshot. Files are the probe because they are free; the same setting covers batches, videos, containers, cached contents and live sessions. Known limit: a fresh install reads back log_retention_days 0, which PUT /api/config refuses, so the snapshot raises it to 30 and Teardown restores 30. If a run is killed before Teardown and leaves ownership off, the next run's first check (enforce_vk_object_ownership is on by default) fails. Passthrough (TXE-5023): tuning jobs and tuned models record no creator, so with the setting on a virtual key is refused (403) when it lists, cancels or reads them through /openai_passthrough, in any spelling; a method-override header, sent directly or through x-bf-eh-*, never reaches the provider, so an upload is not turned into a list; the owner still reaches its file and chat completions still pass. With the setting off the tuning list reaches the provider.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -49,6 +49,14 @@
       "key": "file_2_id",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "tuned_vk_id",
+      "value": ""
+    },
+    {
+      "key": "tuned_vk_value",
+      "value": ""
     }
   ],
   "item": [
@@ -185,6 +193,68 @@
                   "  });",
                   "  pm.collectionVariables.set('other_vk_id', vk.id);",
                   "  pm.collectionVariables.set('other_vk_value', vk.value);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Create tuned-model VK",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The passthrough model gate reads /v1/models/ft:... as the model 'ft'; this key allows exactly that",
+                  "// model, so a tuned-model read gets past the model gate to the ownership checks behind it.",
+                  "var uniqueName = 'VK Object Ownership tuned ' + Date.now();",
+                  "var provider = pm.variables.get('provider') || 'openai';",
+                  "pm.request.body.raw = JSON.stringify({name: uniqueName, provider_configs: [{provider: provider, weight: 1.0, allowed_models: ['ft'], key_ids: ['*']}]});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Create tuned-model VK returns 200 or 201', function () { pm.expect(code, 'body: ' + pm.response.text()).to.be.oneOf([200, 201]); });",
+                  "if (code === 200 || code === 201) {",
+                  "  var j = pm.response.json();",
+                  "  var vk = (j && (j.virtual_key || j)) || {};",
+                  "  pm.test('Create tuned-model VK has id and value', function () {",
+                  "    pm.expect(vk.id).to.be.a('string').and.not.be.empty;",
+                  "    pm.expect(vk.value).to.be.a('string').and.not.be.empty;",
+                  "  });",
+                  "  pm.collectionVariables.set('tuned_vk_id', vk.id);",
+                  "  pm.collectionVariables.set('tuned_vk_value', vk.value);",
                   "}"
                 ]
               }
@@ -712,6 +782,494 @@
               ]
             }
           }
+        },
+        {
+          "name": "Other VK cannot list fine-tuning jobs through passthrough",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"other_vk_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Other VK passthrough tuning list returns 403', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('Other VK passthrough tuning list is refused as tuning', function () {",
+                  "  pm.expect(body.error && body.error.message, 'body: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'body: ' + pm.response.text()).to.include('fine-tuning through a passthrough route is not available to virtual keys');",
+                  "});",
+                  "pm.test('Other VK passthrough tuning list never reached the provider', function () { pm.expect(pm.response.text()).to.not.include('ftjob-stub-shared'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/openai_passthrough/v1/fine_tuning/jobs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "fine_tuning",
+                "jobs"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Other VK cannot cancel a shared fine-tuning job through passthrough",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"other_vk_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Other VK passthrough tuning cancel returns 403', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('Other VK passthrough tuning cancel is refused as tuning', function () {",
+                  "  pm.expect(body.error && body.error.message, 'body: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'body: ' + pm.response.text()).to.include('fine-tuning through a passthrough route is not available to virtual keys');",
+                  "});",
+                  "pm.test('Other VK passthrough tuning cancel never reached the provider', function () { pm.expect(pm.response.text()).to.not.include('cancelled'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/openai_passthrough/v1/fine_tuning/jobs/ftjob-stub-shared/cancel",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "fine_tuning",
+                "jobs",
+                "ftjob-stub-shared",
+                "cancel"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Other VK cannot reach fine-tuning under another spelling",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"other_vk_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Other VK passthrough tuning list in mixed case returns 403', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('Other VK passthrough tuning list in mixed case is refused as tuning', function () {",
+                  "  pm.expect(body.error && body.error.message, 'body: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'body: ' + pm.response.text()).to.include('fine-tuning through a passthrough route is not available to virtual keys');",
+                  "});",
+                  "pm.test('Other VK passthrough tuning list in mixed case never reached the provider', function () { pm.expect(pm.response.text()).to.not.include('ftjob-stub-shared'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/openai_passthrough/v1/Fine_Tuning/jobs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "Fine_Tuning",
+                "jobs"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Other VK cannot read a tuned model through passthrough",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"other_vk_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// /v1/models/ft:... names the model 'ft' to governance's model gate, which refuses it before",
+                  "// the ownership checks run (on main too); the tuning refusal behind it is unit-tested.",
+                  "pm.test('Other VK passthrough tuned model read returns 403', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('Other VK passthrough tuned model read is refused by the model gate', function () {",
+                  "  pm.expect(body.type, 'body: ' + pm.response.text()).to.equal('model_blocked');",
+                  "  pm.expect(body.error && body.error.message, 'body: ' + pm.response.text()).to.include('is not allowed for virtual key');",
+                  "});",
+                  "pm.test('Other VK passthrough tuned model read never reached the provider', function () { pm.expect(pm.response.text()).to.not.include('org-stub'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/openai_passthrough/v1/models/ft:gpt-4o-mini:org::shared",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "models",
+                "ft:gpt-4o-mini:org::shared"
+              ]
+            }
+          }
+        },
+        {
+          "name": "A VK allowed the model ft still cannot read a tuned model through passthrough",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"tuned_vk_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Tuned-model VK passthrough tuned model read returns 403', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403); });",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('Tuned-model VK passthrough tuned model read is refused as tuning', function () {",
+                  "  pm.expect(body.error && body.error.message, 'body: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.expect(body.error.message, 'body: ' + pm.response.text()).to.include('fine-tuning through a passthrough route is not available to virtual keys');",
+                  "});",
+                  "pm.test('Tuned-model VK passthrough tuned model read never reached the provider', function () { pm.expect(pm.response.text()).to.not.include('org-stub'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{tuned_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/openai_passthrough/v1/models/ft:gpt-4o-mini:org::shared",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "models",
+                "ft:gpt-4o-mini:org::shared"
+              ]
+            }
+          }
+        },
+        {
+          "name": "A method override does not turn another VK's passthrough upload into a file list",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"other_vk_value\",\"file_1_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Passthrough upload with X-HTTP-Method-Override is not answered with a file list', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.object, 'body: ' + pm.response.text()).to.not.equal('list');",
+                  "  pm.expect(pm.response.text()).to.not.include(pm.collectionVariables.get('file_1_id'));",
+                  "});",
+                  "pm.test('Passthrough upload with X-HTTP-Method-Override reaches the provider as the POST governance judged', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-HTTP-Method-Override",
+                "value": "GET"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai_passthrough/v1/files",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "A method override sent through x-bf-eh does not turn another VK's passthrough upload into a file list",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"other_vk_value\",\"file_1_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Passthrough upload with x-bf-eh-x-http-method-override is not answered with a file list', function () {",
+                  "  var body = {};",
+                  "  try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "  pm.expect(body.object, 'body: ' + pm.response.text()).to.not.equal('list');",
+                  "  pm.expect(pm.response.text()).to.not.include(pm.collectionVariables.get('file_1_id'));",
+                  "});",
+                  "pm.test('Passthrough upload with x-bf-eh-x-http-method-override reaches the provider as the POST governance judged', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(400); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-eh-x-http-method-override",
+                "value": "GET"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai_passthrough/v1/files",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "files"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Owner VK retrieves file 1 through passthrough",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"owner_vk_value\",\"file_1_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Owner VK passthrough retrieve of file 1 returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('Owner VK passthrough retrieve returns file 1', function () { pm.expect(pm.response.json().id).to.equal(pm.collectionVariables.get('file_1_id')); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{owner_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/openai_passthrough/v1/files/{{file_1_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "files",
+                "{{file_1_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Other VK chat completion through passthrough still works",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"other_vk_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Other VK passthrough chat completion returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('Other VK passthrough chat completion has a choice', function () { pm.expect(pm.response.json().choices, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai_passthrough/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
         }
       ]
     },
@@ -961,6 +1519,52 @@
                   "key": "order",
                   "value": "desc"
                 }
+              ]
+            }
+          }
+        },
+        {
+          "name": "With ownership off, passthrough tuning reaches the provider",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"other_vk_value\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Passthrough tuning list with ownership off returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('Passthrough tuning list with ownership off is the provider list', function () { pm.expect(pm.response.text()).to.include('ftjob-stub-shared'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{other_vk_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/openai_passthrough/v1/fine_tuning/jobs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "fine_tuning",
+                "jobs"
               ]
             }
           }
@@ -1632,6 +2236,46 @@
                 "governance",
                 "virtual-keys",
                 "{{other_vk_id}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete tuned-model VK",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = [\"tuned_vk_id\"].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Delete tuned-model VK returns 2xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/governance/virtual-keys/{{tuned_vk_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{tuned_vk_id}}"
               ]
             }
           }
