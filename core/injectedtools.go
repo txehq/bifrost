@@ -853,20 +853,32 @@ func (bifrost *Bifrost) runInjectedTools(provider schemas.Provider, config *sche
 	return bifrost.handleProviderRequest(provider, config, req, key, nil)
 }
 
-// keepAttemptLimits returns exec restoring what the attempt answers to after each tool call. A
-// tool is evaluated with no provider or model, and that evaluation settles its own limits on the
+// keepAttemptLimits returns exec restoring what the attempt answers to once no tool call is running.
+// A tool is evaluated with no provider or model, and that evaluation settles its own limits on the
 // grant the whole request shares; left there, the model-scoped limits that admitted the attempt
-// would be gone when the turns are billed. The tool's post hook runs inside exec and reads the
-// tool's limits, or, when a parallel call has just returned, the attempt's, which hold everything
-// the tool's do. Call it before the first tool runs.
+// would be gone when the turns are billed. Calls run in parallel and each one's post hook bills what
+// it reads from the grant, so restoring after any single call would charge a tool still running to
+// the inference's limits; the last call out restores them instead. Call it before the first tool runs.
 func keepAttemptLimits(ctx *schemas.BifrostContext, exec func(schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage) func(schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
 	g := ctx.Grant()
 	if g == nil {
 		return exec
 	}
 	limits := g.Limits()
+	var mu sync.Mutex
+	running := 0
 	return func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
-		defer g.SetLimits(limits)
+		mu.Lock()
+		running++
+		mu.Unlock()
+		defer func() {
+			mu.Lock()
+			defer mu.Unlock()
+			running--
+			if running == 0 {
+				g.SetLimits(limits)
+			}
+		}()
 		return exec(call)
 	}
 }

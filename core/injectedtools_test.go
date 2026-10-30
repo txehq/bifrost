@@ -1144,6 +1144,39 @@ func TestKeepAttemptLimits(t *testing.T) {
 	assert.Equal(t, attempt, g.Limits(), "the turns are billed to what admitted the attempt")
 }
 
+// TestKeepAttemptLimitsWaitForTheLastParallelCall: a tool's post hook bills what it reads from the
+// grant, so a call that finishes first must leave the tool limits in place for the one still running.
+func TestKeepAttemptLimitsWaitForTheLastParallelCall(t *testing.T) {
+	g := &limitsGrant{}
+	attempt, tool := namedLimits{name: "attempt"}, namedLimits{name: "tool"}
+	g.SetLimits(attempt)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.True(t, ctx.SetGrant(g))
+
+	slowEntered, fastDone, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var seen schemas.Limits
+	exec := keepAttemptLimits(ctx, func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+		g.SetLimits(tool)
+		if *call.ID == "slow" {
+			close(slowEntered)
+			<-fastDone
+			seen = g.Limits()
+		}
+		return searchResult(call)
+	})
+	go func() {
+		defer close(done)
+		exec(chatToolCall("slow", "web_search"))
+	}()
+	<-slowEntered
+	exec(chatToolCall("fast", "web_search"))
+	close(fastDone)
+	<-done
+
+	assert.Equal(t, tool, seen, "the running tool still reads the limits it was evaluated under")
+	assert.Equal(t, attempt, g.Limits(), "the last call out restores the attempt's")
+}
+
 // TestKeepAttemptLimitsBelongToTheirAttempt: each attempt restores the limits it was admitted under,
 // so a later attempt on another provider is never billed to the one before it.
 func TestKeepAttemptLimitsBelongToTheirAttempt(t *testing.T) {
