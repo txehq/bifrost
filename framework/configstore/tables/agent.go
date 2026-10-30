@@ -18,8 +18,9 @@ type TableAgentRegistration struct {
 	// Name is the primary key and the identifier used in gateway URLs and grants.
 	Name         string `gorm:"primaryKey;type:varchar(255)"`
 	AgentCardURL string `gorm:"type:text;not null"`
-	// Enabled false retains the row while removing the agent from the runtime.
-	Enabled bool `gorm:"not null;default:true"`
+	// Enabled false retains the row while removing the agent from the runtime. No
+	// column default: GORM would substitute it for an explicit false on create.
+	Enabled bool `gorm:"not null"`
 	// AllowByDefault grants access without any explicit grant row.
 	AllowByDefault                         bool                  `gorm:"column:allow_by_default;not null;default:false"`
 	ForwardAcceptedCredential              bool                  `gorm:"column:forward_accepted_credential;not null;default:false"`

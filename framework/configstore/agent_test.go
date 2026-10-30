@@ -403,3 +403,16 @@ func TestAgentDestinationPolicyHash(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEqual(t, initial, changed)
 }
+
+// TestCreateAgentRegistrationKeepsDisabled pins that a registration created disabled
+// stays disabled: a column default must not turn an explicit false into true, which
+// would publish the agent on the next reload.
+func TestCreateAgentRegistrationKeepsDisabled(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	reg := &schemas.AgentRegistration{Name: "dormant", AgentCardURL: "https://example.com", Enabled: false, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	require.NoError(t, store.CreateAgentRegistration(ctx, reg))
+	loaded, err := store.GetAgentRegistration(ctx, "dormant")
+	require.NoError(t, err)
+	require.False(t, loaded.Enabled, "a registration created disabled came back enabled")
+}
