@@ -39,6 +39,11 @@
 // X-Method-Override, with '_' read as '-'), so a forwarded override that turns a
 // POST into a GET shows up as a list in the response.
 //
+// For the Gemini half of that check the stub serves one tuned model under
+// /gemini/v1beta/tunedModels/<id>: generateContent and countTokens (inference, which
+// a key allowed that model may run), and read, delete and transferOwnership (tuning
+// management, which no virtual key may reach through passthrough). Matching is exact.
+//
 // Usage: node list-models-stub.js <port>
 
 const http = require("http");
@@ -289,6 +294,36 @@ function methodOverride(req) {
 // The shared fine-tuning job every tenant reaches under the one provider key.
 const sharedJob = { id: "ftjob-stub-shared", object: "fine_tuning.job", model: "gpt-4o-mini-2024-07-18", status: "running", created_at: 1715367049 };
 
+function geminiTunedModelAPI(req, res, path) {
+  const m = /^\/gemini\/v1beta\/tunedModels\/([^/:]+)(?::([A-Za-z]+))?$/.exec(path);
+  if (!m) {
+    return false;
+  }
+  const name = `tunedModels/${decodeURIComponent(m[1])}`;
+  const op = m[2] || "";
+  if (req.method === "POST" && op === "generateContent") {
+    res.end(JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "ok" }] }, finishReason: "STOP", index: 0 }], usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 1, totalTokenCount: 4 }, modelVersion: name }));
+    return true;
+  }
+  if (req.method === "POST" && op === "countTokens") {
+    res.end(JSON.stringify({ totalTokens: 3 }));
+    return true;
+  }
+  if (req.method === "POST" && op === "transferOwnership") {
+    res.end(JSON.stringify({ name, transferred: true }));
+    return true;
+  }
+  if (req.method === "GET" && op === "") {
+    res.end(JSON.stringify({ name, state: "ACTIVE", baseModel: "models/gemini-1.5-flash-001-tuning" }));
+    return true;
+  }
+  if (req.method === "DELETE" && op === "") {
+    res.end(JSON.stringify({ name, deleted: true }));
+    return true;
+  }
+  return false;
+}
+
 function fineTuningAPI(req, res, path) {
   if (/^\/openai\/v1\/fine_tuning\/jobs\/?$/.test(path) && req.method === "GET") {
     res.end(JSON.stringify({ object: "list", data: [sharedJob], has_more: false }));
@@ -315,7 +350,7 @@ const server = http.createServer((req, res) => {
   if (override) {
     req.method = override;
   }
-  if (fineTuningAPI(req, res, path)) {
+  if (fineTuningAPI(req, res, path) || geminiTunedModelAPI(req, res, path)) {
     return;
   }
   if (path.startsWith("/openai/v1/files") && filesAPI(req, res, path)) {
