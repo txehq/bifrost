@@ -733,6 +733,7 @@ test.describe("MCP Registry - OpenAPI servers", () => {
       await expect(
         panel.getByTestId("openapi-security-KeyAuth-input"),
       ).toHaveValue("");
+      await expect(page.getByText("Some credentials were cleared")).toBeVisible();
       await panel.getByTestId("openapi-tool-checkbox-listPets").check();
 
       await mcpRegistryPage.detailSheet
