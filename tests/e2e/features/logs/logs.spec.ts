@@ -1151,9 +1151,11 @@ test.describe("sessions longer than one page", () => {
   const members = (offset: number, count: number) =>
     Array.from({ length: count }, (_, i) => row(`member-${offset + i}`));
   type MemberPage = { status: number; logs: ReturnType<typeof members> };
+  // Scrolling the row into view for a click parks it under the sticky table header.
+  const expandSession = (page: import("@playwright/test").Page) =>
+    page.getByTestId("log-session-expand-btn").dispatchEvent("click");
 
-  // Answers the list with the session's root, under a plain row so the sticky header
-  // does not cover it, and the session's pages with answer.
+  // Answers the list with the session's root and the session's pages with answer.
   async function mockSessionPages(
     page: import("@playwright/test").Page,
     answer: (offset: number) => MemberPage | Promise<MemberPage>,
@@ -1186,9 +1188,7 @@ test.describe("sessions longer than one page", () => {
         if (route.request().method() !== "GET") return route.continue();
         const params = new URL(route.request().url()).searchParams;
         if (params.get("session_id") !== "long-session") {
-          return route.fulfill({
-            json: body([row("plain-row", { session_id: undefined }), root], 0),
-          });
+          return route.fulfill({ json: body([root], 0) });
         }
         const offset = Number(params.get("offset") ?? 0);
         offsets.push(offset);
@@ -1213,7 +1213,7 @@ test.describe("sessions longer than one page", () => {
       logs: offset === 0 ? members(0, pageLimit) : members(pageLimit, 2),
     }));
     await page.goto("/workspace/logs?grouped=true");
-    await page.getByTestId("log-session-expand-btn").click();
+    await expandSession(page);
 
     await expect(page.getByTestId("log-row-kind-session")).toHaveCount(
       pageLimit + 2,
@@ -1234,7 +1234,7 @@ test.describe("sessions longer than one page", () => {
       return { status: 200, logs: members(0, pageLimit) };
     });
     await page.goto("/workspace/logs?grouped=true");
-    await page.getByTestId("log-session-expand-btn").click();
+    await expandSession(page);
     await expect.poll(() => offsets).toEqual([0]);
 
     // Leaving the grouped view resets every expansion.
@@ -1254,11 +1254,13 @@ test.describe("sessions longer than one page", () => {
         : { status: 500, logs: [] },
     );
     await page.goto("/workspace/logs?grouped=true");
-    const expand = page.getByTestId("log-session-expand-btn");
-    await expand.click();
+    await expandSession(page);
 
     await expect.poll(() => offsets).toEqual([0, pageLimit]);
-    await expect(expand).toHaveAttribute("aria-expanded", "false");
+    await expect(page.getByTestId("log-session-expand-btn")).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
     await expect(page.getByTestId("log-row-kind-session")).toHaveCount(0);
   });
 });
