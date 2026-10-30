@@ -3,7 +3,10 @@ package logging
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"mime/multipart"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -488,4 +491,113 @@ func BenchmarkApplyParsedPassthrough(b *testing.B) {
 			plugin.applyParsedPassthrough(entry)
 		}
 	})
+	b.Run("openai_chat_partial", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			entry := &logstore.Log{
+				Object:                  string(schemas.PassthroughRequest),
+				Provider:                "openai",
+				PassthroughParseFormat:  schemas.OpenAI,
+				ParamsParsed:            &schemas.PassthroughLogParams{Method: "POST", Path: "/v1/chat/completions", StatusCode: 200, Model: "gpt-4o"},
+				PassthroughRequestBody:  ptChatRequest,
+				PassthroughResponseBody: `{"choices":[{"message":{"content":"x" oops}}]}`,
+			}
+			plugin.applyParsedPassthrough(entry)
+		}
+	})
+}
+
+// debugRecorder keeps every debug line the plugin formats.
+type debugRecorder struct {
+	testLogger
+	mu    sync.Mutex
+	lines []string
+}
+
+func (r *debugRecorder) Debug(format string, args ...any) {
+	r.mu.Lock()
+	r.lines = append(r.lines, fmt.Sprintf(format, args...))
+	r.mu.Unlock()
+}
+
+// requireNoMarkerInDebug fails on any recorded debug line carrying marker, naming
+// the line's index only: printing the line would repeat the leak.
+func requireNoMarkerInDebug(t *testing.T, recorder *debugRecorder, marker string) {
+	t.Helper()
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	sawParseLine := false
+	for i, line := range recorder.lines {
+		require.False(t, strings.Contains(line, marker), "debug line %d quoted body content", i)
+		if strings.Contains(line, "passthrough log parse") {
+			sawParseLine = true
+		}
+	}
+	require.True(t, sawParseLine, "the partial parse is still reported")
+}
+
+// ptDiagMarker is short on purpose: sonic's syntax error quotes the 16 bytes either
+// side of the failure, so a longer marker would never appear whole and the test
+// could not fail.
+const ptDiagMarker = "PT-SYN-MRK"
+
+// TestPassthroughParseDiagnosticsCarryNoContent pins that a body that fails to parse
+// is never quoted into the application log: the debug line names the row and the
+// failure's kind only, whichever side failed.
+func TestPassthroughParseDiagnosticsCarryNoContent(t *testing.T) {
+	cases := []struct {
+		name     string
+		request  string
+		response string
+	}{
+		{name: "malformed_response", request: ptChatRequest, response: `{"choices":[{"message":{"content":"` + ptDiagMarker + `" oops}}]}`},
+		{name: "malformed_request", request: `{"model":"gpt-4o","messages":[{"role":"user","content":"` + ptDiagMarker + `" oops}]}`, response: ptChatResponse},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := &debugRecorder{}
+			store := newTestStore(t)
+			plugin, err := Init(context.Background(), &Config{}, recorder, store, nil, nil, nil)
+			require.NoError(t, err)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-pt-diag-"+tc.name)
+			_, _, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+				RequestType: schemas.PassthroughRequest,
+				PassthroughRequest: &schemas.BifrostPassthroughRequest{
+					Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: "/v1/chat/completions",
+					Body: []byte(tc.request), SafeHeaders: map[string]string{"content-type": "application/json"},
+				},
+			})
+			require.NoError(t, err)
+			_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+				StatusCode: 200, Path: "/v1/chat/completions",
+				Body:        []byte(tc.response),
+				ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.PassthroughRequest, Provider: schemas.OpenAI},
+			}}, nil)
+			require.NoError(t, err)
+			require.NoError(t, plugin.Cleanup())
+			requireNoMarkerInDebug(t, recorder, ptDiagMarker)
+		})
+	}
+}
+
+// TestPassthroughStreamParseDiagnosticsCarryNoContent covers the streaming row, where
+// an upstream error event's message and an undecodable event both reach the error.
+func TestPassthroughStreamParseDiagnosticsCarryNoContent(t *testing.T) {
+	recorder := &debugRecorder{}
+	plugin := &LoggerPlugin{logger: recorder}
+	entry := &logstore.Log{
+		ID:                     "req-pt-diag-stream",
+		Object:                 string(schemas.ChatCompletionStreamRequest),
+		IsPassthrough:          true,
+		Stream:                 true,
+		Provider:               "openai",
+		PassthroughParseFormat: schemas.OpenAI,
+		ParamsParsed:           &schemas.PassthroughLogParams{Method: "POST", Path: "/v1/chat/completions", StatusCode: 200, Model: "gpt-4o"},
+		PassthroughRequestBody: `{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`,
+		PassthroughResponseBody: "data: {\"error\":{\"message\":\"" + ptDiagMarker + "\",\"type\":\"invalid_request_error\"}}\n\n" +
+			"data: {\"bad\" " + ptDiagMarker + "\n\n",
+	}
+	plugin.applyParsedPassthrough(entry)
+	requireNoMarkerInDebug(t, recorder, ptDiagMarker)
 }
