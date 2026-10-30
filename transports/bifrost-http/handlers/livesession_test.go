@@ -1011,3 +1011,21 @@ func TestLiveSessionStopsReadingADrainAtTheBillingBound(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 }
+
+// TestLiveSessionNotRefusedNeverStopsReading: an admitted session settles each response on its own
+// unit, so however many it serves it holds no segments and the bound never touches it.
+func TestLiveSessionNotRefusedNeverStopsReading(t *testing.T) {
+	t.Parallel()
+
+	meter := newTestLiveMeter(&fakeLiveRunner{})
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+	io := &abandonCountingIO{abandoned: make(chan struct{}, 1)}
+	controller := &liveSessionController{io: io, meter: meter, drainTimeout: time.Hour, upstreamDone: make(chan struct{})}
+
+	for i := range 3 * liveMaxBillingSegments {
+		controller.fromUpstream(fmt.Appendf(nil, `{"type":"response.event","delegation_id":"d%d","event":{"type":"response.completed","response":{"id":"r%d","object":"response","model":"gpt-5.6-luna","status":"completed","output":[],"usage":{"input_tokens":10,"output_tokens":1,"total_tokens":11}}}}`, i, i))
+	}
+
+	assert.False(t, meter.billingBoundReached())
+	assert.Empty(t, io.abandoned, "an admitted session is never cut off")
+}

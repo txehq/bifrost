@@ -310,23 +310,29 @@ func TestBilling_RefusedDrainPastTheBoundStopsAndStaysPerResponse(t *testing.T) 
 		settle()
 		s.EmitUsage(60)
 		settle()
-		const sent, bound = 90, 64
-		for i := range sent {
+		const bound, late = 64, 10
+		play := func(i int) {
 			tier := ""
 			if i%2 == 0 {
 				tier = "priority"
 			}
 			s.Play(delegation{ID: fmt.Sprintf("item_%d", i), ResponseID: fmt.Sprintf("resp_%d", i), Model: backendModel, Input: 150000, Output: 1000, Tier: tier})
 		}
+		for i := range bound {
+			play(i)
+		}
+		s.WaitConnections(t, 0) // the gateway hangs up on its own: this fake never answers session.close
+		for i := bound; i < bound+late; i++ {
+			play(i)
+		}
 		c.WaitGone()
 
 		row := findLiveLog(t, s.ID())
-		read := int(row.Get("token_usage.prompt_tokens").Int()) / 150000
-		require.GreaterOrEqual(t, read, bound, "every response up to the bound is read")
-		require.Less(t, read, sent, "the gateway stopped reading a drain that would not end")
-		priority := (read + 1) / 2
+		assert.Equal(t, float64(bound)*150000, row.Get("token_usage.prompt_tokens").Float(), "every response up to the bound is billed, none after the stop")
+		require.Len(t, row.Get("live_session.delegations").Array(), bound, "the gateway read nothing after the stop")
+		priority := (bound + 1) / 2
 		backendCost := float64(priority)*(150000*fakeInputCostPriority+1000*fakeOutputCostPriority) +
-			float64(read-priority)*(150000*fakeInputCostPerToken+1000*fakeOutputCostPerToken)
+			float64(bound-priority)*(150000*fakeInputCostPerToken+1000*fakeOutputCostPerToken)
 		assert.InDelta(t, backendCost, row.Get("live_session.backend_cost").Float(), 1e-6, "each response read is priced on its own")
 		total := 60*fakeVoiceCostPerSecond + backendCost
 		assert.InDelta(t, total, row.Get("cost").Float(), 1e-6)
