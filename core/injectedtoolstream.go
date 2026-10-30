@@ -507,6 +507,9 @@ func chainInjectedStream(ctx *schemas.BifrostContext, turns injectedStreamTurns,
 func (bifrost *Bifrost) startInjectedChatStream(ctx *schemas.BifrostContext, provider schemas.Provider, config *schemas.ProviderConfig, key schemas.Key, original *schemas.BifrostChatRequest, set *injectedToolSet, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	session := newInjectedChatStream(set)
 	turn := applyInjectedToolsChat(original, set)
+	exec := keepAttemptLimits(ctx, func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+		return bifrost.executeInjectedCall(ctx, set, call)
+	})
 	return chainInjectedStream(ctx, injectedStreamTurns{
 		process: func(result *schemas.BifrostResponse, final bool) ([]clientEmit, bool) {
 			if result.ChatResponse == nil {
@@ -522,9 +525,7 @@ func (bifrost *Bifrost) startInjectedChatStream(ctx *schemas.BifrostContext, pro
 		usage:     func() *schemas.BifrostLLMUsage { return session.usage },
 		advance: func() {
 			assistant, injected := session.endTurn()
-			results := executeInjectedCalls(injected, func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
-				return bifrost.executeInjectedCall(ctx, set, call)
-			})
+			results := executeInjectedCalls(injected, exec)
 			next := *turn
 			next.Params = relaxForcedChatChoice(turn.Params)
 			next.Input = make([]schemas.ChatMessage, 0, len(turn.Input)+1+len(results))
@@ -546,6 +547,9 @@ func (bifrost *Bifrost) startInjectedChatStream(ctx *schemas.BifrostContext, pro
 func (bifrost *Bifrost) startInjectedResponsesStream(ctx *schemas.BifrostContext, provider schemas.Provider, config *schemas.ProviderConfig, key schemas.Key, original *schemas.BifrostResponsesRequest, set *injectedToolSet, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	session := newInjectedResponsesStream(set)
 	turn := applyInjectedToolsResponses(original, set)
+	exec := keepAttemptLimits(ctx, func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+		return bifrost.executeInjectedCall(ctx, set, call)
+	})
 	return chainInjectedStream(ctx, injectedStreamTurns{
 		process: func(result *schemas.BifrostResponse, final bool) ([]clientEmit, bool) {
 			if result.ResponsesStreamResponse == nil {
@@ -561,9 +565,7 @@ func (bifrost *Bifrost) startInjectedResponsesStream(ctx *schemas.BifrostContext
 		usage:     func() *schemas.BifrostLLMUsage { return session.usage },
 		advance: func() {
 			items, injected := session.endTurn()
-			results := executeInjectedCalls(injected, func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
-				return bifrost.executeInjectedCall(ctx, set, call)
-			})
+			results := executeInjectedCalls(injected, exec)
 			next := *turn
 			next.Params = relaxForcedResponsesChoice(nextResponsesTools(original, turn, set).Params)
 			next.Input = make([]schemas.ResponsesMessage, 0, len(turn.Input)+len(items)+len(results))

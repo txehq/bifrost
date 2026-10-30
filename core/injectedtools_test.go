@@ -3,6 +3,7 @@ package bifrost
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -1097,6 +1098,57 @@ func BenchmarkWithGatewayToolSearch_NoDeferredTools(b *testing.B) {
 			b.Fatal("unexpected tool search")
 		}
 	}
+}
+
+// limitsGrant is a grant whose limits a test can settle and read.
+type limitsGrant struct {
+	stubGrant
+	limits atomic.Pointer[schemas.Limits]
+}
+
+func (g *limitsGrant) Limits() schemas.Limits {
+	if l := g.limits.Load(); l != nil {
+		return *l
+	}
+	return nil
+}
+
+func (g *limitsGrant) SetLimits(limits schemas.Limits) bool {
+	if limits == nil {
+		return false
+	}
+	g.limits.Store(&limits)
+	return true
+}
+
+type namedLimits struct {
+	schemas.Limits
+	name string
+}
+
+// TestKeepAttemptLimits: a tool's evaluation replaces the limits on the grant the whole request
+// shares, and the attempt's are back for billing once every parallel call has returned.
+func TestKeepAttemptLimits(t *testing.T) {
+	g := &limitsGrant{}
+	attempt, tool := namedLimits{name: "attempt"}, namedLimits{name: "tool"}
+	g.SetLimits(attempt)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.True(t, ctx.SetGrant(g))
+
+	exec := keepAttemptLimits(ctx, func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+		g.SetLimits(tool)
+		return searchResult(call)
+	})
+	executeInjectedCalls([]schemas.ChatAssistantMessageToolCall{chatToolCall("c1", "web_search"), chatToolCall("c2", "web_search")}, exec)
+
+	assert.Equal(t, attempt, g.Limits(), "the turns are billed to what admitted the attempt")
+}
+
+// TestKeepAttemptLimitsWithoutGrant: a request nothing governs runs its tools unchanged.
+func TestKeepAttemptLimitsWithoutGrant(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result := keepAttemptLimits(ctx, searchResult)(chatToolCall("c1", "web_search"))
+	require.NotNil(t, result)
 }
 
 // BenchmarkRunInjectedChatLoopUsage measures the loop's accounting on the request path: a

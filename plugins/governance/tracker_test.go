@@ -86,6 +86,43 @@ func TestUsageTracker_FailedRequestWithUsage_IsBilled(t *testing.T) {
 		"Failed request that consumed tokens should still bill the budget")
 }
 
+// TestUsageTracker_ToolCallDoesNotClaimItsInferencesBilling: a tool an injected loop runs shares
+// its inference's request id, nonce and attempt. Settling the tool first must leave the inference
+// billable, each tool call settles once of its own, and a replay of the inference is still refused.
+func TestUsageTracker_ToolCallDoesNotClaimItsInferencesBilling(t *testing.T) {
+	logger := NewMockLogger()
+
+	budget := buildBudgetWithUsage("budget1", 1000.0, 0.0, "1d")
+	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", budget)
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*budget},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	resolver := NewBudgetResolver(store, nil, logger, nil)
+	tracker := NewUsageTracker(context.Background(), store, resolver, nil, logger)
+	defer tracker.Cleanup()
+
+	charge := func(cost float64, toolCall string) {
+		tracker.UpdateUsage(context.Background(), settleLimits(store, "sk-bf-test", schemas.OpenAI, "gpt-4", &UsageUpdate{
+			Success: true, Cost: cost, RequestID: "req-tool", BillingNonce: "nonce", ToolCallID: toolCall, IsFinalChunk: true, HasUsageData: true,
+		}))
+	}
+	charge(1, "tool-a")
+	charge(2, "tool-b")
+	charge(1, "tool-a")
+	charge(10, "")
+	charge(10, "")
+
+	assert.Eventually(t, func() bool {
+		return store.GetGovernanceData(context.Background()).Budgets["budget1"].CurrentUsage == 13
+	}, 2*time.Second, 20*time.Millisecond, "each tool call and the inference bill once")
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, 13.0, store.GetGovernanceData(context.Background()).Budgets["budget1"].CurrentUsage, "the inference billed once, with both tools")
+}
+
 // TestUsageTracker_FailedRequestNoUsage_IsSkipped verifies the inverse: a
 // request that failed WITHOUT consuming any tokens (e.g. 401/403/429 before the
 // model ran) carries no usage and must NOT bill anything.

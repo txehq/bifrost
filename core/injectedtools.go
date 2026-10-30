@@ -827,9 +827,9 @@ func (bifrost *Bifrost) injectedToolsForStream(ctx *schemas.BifrostContext, conf
 // turn goes to the same provider, model and key; plugins see only the final response.
 func (bifrost *Bifrost) runInjectedTools(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, set *injectedToolSet) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	ctx := req.Context
-	exec := func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+	exec := keepAttemptLimits(ctx, func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
 		return bifrost.executeInjectedCall(ctx, set, call)
-	}
+	})
 	switch req.RequestType {
 	case schemas.ChatCompletionRequest:
 		original := req.BifrostRequest.ChatRequest
@@ -851,6 +851,24 @@ func (bifrost *Bifrost) runInjectedTools(provider schemas.Provider, config *sche
 		return &schemas.BifrostResponse{ResponsesResponse: resp}, nil
 	}
 	return bifrost.handleProviderRequest(provider, config, req, key, nil)
+}
+
+// keepAttemptLimits returns exec restoring what the attempt answers to after each tool call. A
+// tool is evaluated with no provider or model, and that evaluation settles its own limits on the
+// grant the whole request shares; left there, the model-scoped limits that admitted the attempt
+// would be gone when the turns are billed. The tool's post hook runs inside exec and reads the
+// tool's limits, or, when a parallel call has just returned, the attempt's, which hold everything
+// the tool's do. Call it before the first tool runs.
+func keepAttemptLimits(ctx *schemas.BifrostContext, exec func(schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage) func(schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+	g := ctx.Grant()
+	if g == nil {
+		return exec
+	}
+	limits := g.Limits()
+	return func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+		defer g.SetLimits(limits)
+		return exec(call)
+	}
 }
 
 // executeInjectedCall runs one injected tool call through the MCP plugin pipeline.
