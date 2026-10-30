@@ -619,3 +619,155 @@ func TestStripTraceAttributesClearsRawPayloads(t *testing.T) {
 		})
 	}
 }
+
+// TestTraceRedactionCoversTypedRequestInputs pins that the typed text, embedding
+// and speech inputs, and the params that carry caller text, are redacted on the
+// span like the flat attributes, as seen through the attribute map a connector
+// renders from them; and that redaction copies them rather than editing the
+// request they alias.
+func TestTraceRedactionCoversTypedRequestInputs(t *testing.T) {
+	const pii = "synthetic-pii@example.invalid"
+	type spanCase struct {
+		name  string
+		llm   func() *LLMSpanData
+		attrs []string
+	}
+	image := &EmbeddingMediaPart{URL: Ptr("https://example.invalid/a.png")}
+	cases := []spanCase{
+		{name: "text prompt string", attrs: []string{AttrInputText}, llm: func() *LLMSpanData {
+			return &LLMSpanData{TextPrompt: &TextCompletionInput{PromptStr: Ptr("call " + pii)}}
+		}},
+		{name: "text prompt array and suffix", attrs: []string{AttrInputText, AttrSuffix}, llm: func() *LLMSpanData {
+			return &LLMSpanData{
+				TextCompletion: &TextCompletionParameters{Suffix: Ptr("end " + pii), MaxTokens: Ptr(7)},
+				TextPrompt:     &TextCompletionInput{PromptArray: []string{"plain", "a " + pii}},
+			}
+		}},
+		{name: "embedding nested parts", attrs: []string{AttrInputText}, llm: func() *LLMSpanData {
+			return &LLMSpanData{EmbeddingInput: EmbeddingInput{
+				{Content: EmbeddingContent{{Type: EmbeddingContentPartTypeImage, Image: image}, {Type: EmbeddingContentPartTypeText, Text: Ptr("plain")}}},
+				{Content: EmbeddingContent{{Type: EmbeddingContentPartTypeText, Text: Ptr("embed " + pii)}, {Type: EmbeddingContentPartTypeImage, Image: image}}},
+			}}
+		}},
+		{name: "speech input and instructions", attrs: []string{AttrInputSpeech, AttrInstructions}, llm: func() *LLMSpanData {
+			return &LLMSpanData{
+				Speech:      &SpeechParameters{Instructions: "read to " + pii, ResponseFormat: "mp3"},
+				SpeechInput: &SpeechInput{Input: "say " + pii},
+			}
+		}},
+		{name: "transcription prompt", attrs: []string{AttrPrompt}, llm: func() *LLMSpanData {
+			return &LLMSpanData{Transcription: &TranscriptionParameters{Prompt: Ptr("names: " + pii), Language: Ptr("en")}}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			llm := tc.llm()
+			// The record's own fields are the span's; the inputs and params they point
+			// at are the caller's request. Keep the pointers to render the request later.
+			original := *llm
+			request, err := json.Marshal(original.Attributes())
+			require.NoError(t, err)
+			require.Contains(t, string(request), pii, "negative control: the case carries the marker")
+
+			span := &Span{LLM: llm}
+			trace := &Trace{RootSpan: span, Spans: []*Span{span}}
+			trace.SetRedactionReplacements(RedactionPhaseInput, map[string]string{pii: "[EMAIL-1]"})
+			trace.ApplyRedactionReplacements()
+
+			rendered := span.LLM.Attributes()
+			exported, err := json.Marshal(rendered)
+			require.NoError(t, err)
+			assert.False(t, strings.Contains(string(exported), pii), "typed input survived redaction into the rendered attributes")
+			for _, key := range tc.attrs {
+				assert.Contains(t, rendered[key], "[EMAIL-1]", key)
+			}
+			after, err := json.Marshal(original.Attributes())
+			require.NoError(t, err)
+			assert.Equal(t, string(request), string(after), "redaction edited the request the span aliases")
+		})
+	}
+
+	// Metadata beside the redacted text survives, and a span with nothing to
+	// redact keeps the request's own values rather than copies.
+	llm := &LLMSpanData{
+		TextCompletion: &TextCompletionParameters{Suffix: Ptr("end " + pii), MaxTokens: Ptr(7)},
+		Transcription:  &TranscriptionParameters{Prompt: Ptr("names"), Language: Ptr("en")},
+		SpeechInput:    &SpeechInput{Input: "plain"},
+		EmbeddingInput: EmbeddingInput{{Content: EmbeddingContent{{Type: EmbeddingContentPartTypeText, Text: Ptr("plain"), Tokens: []int{1}}}}},
+	}
+	transcription, speech, embedding := llm.Transcription, llm.SpeechInput, llm.EmbeddingInput
+	llm.redact(map[string]string{pii: "[EMAIL-1]"}, nil)
+	assert.Equal(t, 7, *llm.TextCompletion.MaxTokens)
+	assert.Equal(t, "end [EMAIL-1]", *llm.TextCompletion.Suffix)
+	assert.Same(t, transcription, llm.Transcription)
+	assert.Same(t, speech, llm.SpeechInput)
+	assert.Same(t, &embedding[0], &llm.EmbeddingInput[0])
+}
+
+// BenchmarkApplyRedactionReplacementsTypedInputs records the export-time cost of
+// guardrail redaction on a span carrying typed inputs. "none" is the default path
+// with no guardrail replacements recorded.
+func BenchmarkApplyRedactionReplacementsTypedInputs(b *testing.B) {
+	const pii = "synthetic-pii@example.invalid"
+	newTrace := func(text string) *Trace {
+		span := &Span{LLM: &LLMSpanData{
+			TextCompletion: &TextCompletionParameters{Suffix: Ptr("end " + text)},
+			TextPrompt:     &TextCompletionInput{PromptArray: []string{"first " + text, "second"}},
+			EmbeddingInput: EmbeddingInput{{Content: EmbeddingContent{{Type: EmbeddingContentPartTypeText, Text: Ptr("embed " + text)}}}},
+			SpeechInput:    &SpeechInput{Input: "say " + text},
+		}}
+		return &Trace{RootSpan: span, Spans: []*Span{span}}
+	}
+	for _, bc := range []struct {
+		name         string
+		text         string
+		replacements map[string]string
+	}{
+		{name: "none", text: pii},
+		{name: "unmatched", text: "plain", replacements: map[string]string{pii: "[EMAIL-1]"}},
+		{name: "matched", text: pii, replacements: map[string]string{pii: "[EMAIL-1]"}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				trace := newTrace(bc.text)
+				if bc.replacements != nil {
+					trace.SetRedactionReplacements(RedactionPhaseInput, bc.replacements)
+				}
+				trace.ApplyRedactionReplacements()
+			}
+		})
+	}
+}
+
+// TestApplyLiteralReplacementsNoMatchAllocatesNothing pins the no-match fast path:
+// with guardrail replacements recorded, every typed field that carries none of
+// them is returned as is, without building the sorted key list.
+func TestApplyLiteralReplacementsNoMatchAllocatesNothing(t *testing.T) {
+	replacements := map[string]string{"synthetic-pii@example.invalid": "[EMAIL-1]", "555-0100": "[PHONE-1]"}
+	text := "nothing sensitive here"
+	allocs := testing.AllocsPerRun(100, func() {
+		if ApplyLiteralReplacements(text, replacements) != text {
+			t.Fatal("unmatched text changed")
+		}
+	})
+	assert.Zero(t, allocs)
+	assert.Equal(t, "call [EMAIL-1] or [PHONE-1]", ApplyLiteralReplacements("call synthetic-pii@example.invalid or 555-0100", replacements))
+}
+
+// TestTypedInputRedactionNoMatchAllocatesNothing pins that guardrail replacements
+// which match none of a span's typed inputs or params cost no allocation.
+func TestTypedInputRedactionNoMatchAllocatesNothing(t *testing.T) {
+	llm := &LLMSpanData{
+		TextCompletion: &TextCompletionParameters{Suffix: Ptr("end plain")},
+		Transcription:  &TranscriptionParameters{Prompt: Ptr("names")},
+		Speech:         &SpeechParameters{Instructions: "read plainly"},
+		TextPrompt:     &TextCompletionInput{PromptStr: Ptr("plain"), PromptArray: []string{"first plain", "second"}},
+		EmbeddingInput: EmbeddingInput{{Content: EmbeddingContent{{Type: EmbeddingContentPartTypeText, Text: Ptr("embed plain")}}}},
+		SpeechInput:    &SpeechInput{Input: "say plain"},
+	}
+	replacements := map[string]string{"synthetic-pii@example.invalid": "[EMAIL-1]"}
+	assert.Zero(t, testing.AllocsPerRun(100, func() {
+		llm.redact(replacements, nil)
+	}))
+}

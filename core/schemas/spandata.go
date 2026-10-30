@@ -240,12 +240,135 @@ func (d *LLMSpanData) redact(input, output map[string]string) {
 	if len(input) > 0 {
 		d.RawRequest = redactRawPayload(d.RawRequest, input)
 		redactMessageSummaries(d.InputMessages, input)
+		d.redactRequestInputs(input)
+		d.redactRequestParams(input)
 	}
 	if len(output) > 0 {
 		d.RawResponse = redactRawPayload(d.RawResponse, output)
 		redactMessageSummaries(d.OutputMessages, output)
 		d.ReasoningText = ApplyLiteralReplacements(d.ReasoningText, output)
 	}
+}
+
+// redactRequestInputs redacts the text, embedding and speech inputs. They alias the
+// caller's request, so each one that changes is replaced with a redacted copy
+// rather than edited.
+func (d *LLMSpanData) redactRequestInputs(replacements map[string]string) {
+	if in := d.TextPrompt; in != nil {
+		var str *string
+		if in.PromptStr != nil {
+			if r := ApplyLiteralReplacements(*in.PromptStr, replacements); r != *in.PromptStr {
+				str = Ptr(r)
+			}
+		}
+		array := redactStrings(in.PromptArray, replacements)
+		if str != nil || array != nil {
+			cp := *in
+			if str != nil {
+				cp.PromptStr = str
+			}
+			if array != nil {
+				cp.PromptArray = array
+			}
+			d.TextPrompt = &cp
+		}
+	}
+	if in := d.SpeechInput; in != nil {
+		if r := ApplyLiteralReplacements(in.Input, replacements); r != in.Input {
+			cp := *in
+			cp.Input = r
+			d.SpeechInput = &cp
+		}
+	}
+	if items := redactEmbeddingInput(d.EmbeddingInput, replacements); items != nil {
+		d.EmbeddingInput = items
+	}
+}
+
+// redactRequestParams redacts the request params that carry caller text: speech
+// instructions, a transcription prompt and a text-completion suffix. Params alias
+// the caller's request too, so a changed one is replaced with a shallow copy.
+func (d *LLMSpanData) redactRequestParams(replacements map[string]string) {
+	if p := d.Speech; p != nil {
+		if r := ApplyLiteralReplacements(p.Instructions, replacements); r != p.Instructions {
+			cp := *p
+			cp.Instructions = r
+			d.Speech = &cp
+		}
+	}
+	if p := d.Transcription; p != nil && p.Prompt != nil {
+		if r := ApplyLiteralReplacements(*p.Prompt, replacements); r != *p.Prompt {
+			cp := *p
+			cp.Prompt = Ptr(r)
+			d.Transcription = &cp
+		}
+	}
+	if p := d.TextCompletion; p != nil && p.Suffix != nil {
+		if r := ApplyLiteralReplacements(*p.Suffix, replacements); r != *p.Suffix {
+			cp := *p
+			cp.Suffix = Ptr(r)
+			d.TextCompletion = &cp
+		}
+	}
+}
+
+// redactStrings returns a redacted copy of values, or nil when nothing changed.
+func redactStrings(values []string, replacements map[string]string) []string {
+	var out []string
+	for i, v := range values {
+		r := ApplyLiteralReplacements(v, replacements)
+		if out == nil {
+			if r == v {
+				continue
+			}
+			out = make([]string, len(values))
+			copy(out, values[:i])
+		}
+		out[i] = r
+	}
+	return out
+}
+
+// redactEmbeddingInput returns a redacted copy of the embedding input's text
+// parts, or nil when nothing changed. Media and token parts are shared as is.
+func redactEmbeddingInput(in EmbeddingInput, replacements map[string]string) EmbeddingInput {
+	var out EmbeddingInput
+	for i, item := range in {
+		var content EmbeddingContent
+		for j, part := range item.Content {
+			if part.Text == nil {
+				if content != nil {
+					content[j] = part
+				}
+				continue
+			}
+			r := ApplyLiteralReplacements(*part.Text, replacements)
+			if content == nil {
+				if r == *part.Text {
+					continue
+				}
+				content = make(EmbeddingContent, len(item.Content))
+				copy(content, item.Content[:j])
+			}
+			if r != *part.Text {
+				part.Text = Ptr(r)
+			}
+			content[j] = part
+		}
+		if content == nil {
+			if out != nil {
+				out[i] = item
+			}
+			continue
+		}
+		if out == nil {
+			out = make(EmbeddingInput, len(in))
+			copy(out, in[:i])
+		}
+		item.Content = content
+		out[i] = item
+	}
+	return out
 }
 
 // redactRawPayload applies guardrail replacements to a raw provider body. The
