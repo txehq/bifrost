@@ -208,11 +208,21 @@ func StripSpanContent(src *Span) *Span {
 		StartTime:  src.StartTime,
 		EndTime:    src.EndTime,
 		Status:     src.Status,
-		StatusMsg:  src.StatusMsg,
+		StatusMsg:  contentFreeStatusMessage(src),
 		Attributes: attrs,
 		Enrichment: src.Enrichment,
 		Events:     events,
 	}
+}
+
+// contentFreeStatusMessage is the status message a content-stripped span keeps. An
+// A2A operation's message is the upstream agent's error text, which can echo the
+// request it was given, so it goes with the content; the error status remains.
+func contentFreeStatusMessage(span *Span) string {
+	if span.Kind == SpanKindA2AOperation {
+		return ""
+	}
+	return span.StatusMsg
 }
 
 // stripContentAttrs filters one attribute map, returning nil rather than an empty
@@ -407,6 +417,11 @@ func ApplyLiteralReplacements(text string, replacements map[string]string) strin
 	if text == "" || len(replacements) == 0 {
 		return text
 	}
+	// Most fields contain none of the replaced literals; return them without
+	// building the sorted key list.
+	if !containsAnyLiteral(text, replacements) {
+		return text
+	}
 	keys := make([]string, 0, len(replacements))
 	for raw := range replacements {
 		if raw != "" {
@@ -424,6 +439,16 @@ func ApplyLiteralReplacements(text string, replacements map[string]string) strin
 		redacted = strings.ReplaceAll(redacted, raw, replacements[raw])
 	}
 	return redacted
+}
+
+// containsAnyLiteral reports whether text contains a non-empty key of replacements.
+func containsAnyLiteral(text string, replacements map[string]string) bool {
+	for raw := range replacements {
+		if raw != "" && strings.Contains(text, raw) {
+			return true
+		}
+	}
+	return false
 }
 
 // RedactAttributeValue applies literal replacements to supported attribute value shapes.

@@ -66,9 +66,12 @@ func (p *LoggerPlugin) applyParsedPassthrough(entry *logstore.Log) {
 		return
 	}
 
+	// Diagnostics name the row and the failure's kind only: a decoder error or panic
+	// value can quote the bodies it choked on, and those belong in the log store,
+	// under its content controls, not in the application log.
 	defer func() {
 		if r := recover(); r != nil {
-			p.logger.Debug("passthrough log parse for %s panicked, keeping raw bodies: %v", entry.ID, r)
+			p.logger.Debug("passthrough log parse for %s panicked (%T), keeping raw bodies", entry.ID, r)
 		}
 	}()
 
@@ -83,7 +86,7 @@ func (p *LoggerPlugin) applyParsedPassthrough(entry *logstore.Log) {
 		Stream:       entry.Stream,
 	})
 	if err != nil {
-		p.logger.Debug("passthrough log parse for %s was partial: %v", entry.ID, err)
+		p.logger.Debug("passthrough log parse for %s was partial (%T)", entry.ID, err)
 	}
 	if result == nil {
 		return

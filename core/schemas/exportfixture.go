@@ -28,14 +28,16 @@ const ExportFixtureRawSecret = "BIFROST-RAW-SENTINEL"
 const ExportFixturePII = "BIFROST-PII-SENTINEL"
 
 // NewA2AExportFixtureTrace builds synthetic agent content on root, operation and
-// stream events, with raw bodies on the private carrier. Backend tests use it
-// to verify their own formats rather than assuming OTel conversion proves parity.
+// stream events, with raw bodies on the private carrier. The operation's status
+// message carries content too: it is the upstream agent's error text, which can
+// echo the request. Backend tests use it to verify their own formats rather than
+// assuming OTel conversion proves parity.
 func NewA2AExportFixtureTrace() *Trace {
 	now := time.Unix(1700000000, 0).UTC()
 	input := `[{"role":"user","parts":[{"text":"` + ExportFixtureSecret + `"}]}]`
 	output := `[{"role":"agent","parts":[{"text":"` + ExportFixtureSecret + `"}]}]`
 	root := &Span{SpanID: "1111111111111111", Name: "a2a.dispatch", Kind: SpanKindHTTPRequest, StartTime: now, EndTime: now.Add(time.Second), Status: SpanStatusOk, Attributes: map[string]any{AttrInputMessages: input, AttrOutputMessages: output}}
-	op := &Span{SpanID: "2222222222222222", ParentID: root.SpanID, Name: "a2a.send_streaming_message.fixture", Kind: SpanKindA2AOperation, StartTime: now, EndTime: now.Add(time.Second), Status: SpanStatusError, StatusMsg: "Synthetic task failed", Attributes: map[string]any{
+	op := &Span{SpanID: "2222222222222222", ParentID: root.SpanID, Name: "a2a.send_streaming_message.fixture", Kind: SpanKindA2AOperation, StartTime: now, EndTime: now.Add(time.Second), Status: SpanStatusError, StatusMsg: "Synthetic task failed: " + ExportFixtureSecret, Attributes: map[string]any{
 		AttrInputMessages: input, AttrOutputMessages: output, AttrAgentName: "fixture-agent",
 		AttrBifrostA2AOperationName: "SendStreamingMessage", AttrOperationName: OTelOperationNameInvokeAgent,
 		AttrA2ATaskID: "fixture-task", AttrConversationID: "fixture-context", AttrA2ATaskState: "TASK_STATE_FAILED", AttrErrorTypeSpec: "a2a.task.failed",

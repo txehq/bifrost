@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -45,4 +46,28 @@ func TestA2ASpanContentLifecycle(t *testing.T) {
 	span.SetA2ARawPayloads("op", &A2ASpanData{RawRequest: "stale"})
 	require.Nil(t, span.A2A, "stale completion must not write into a recycled span")
 	require.Empty(t, span.A2AStreamOutput("op"))
+}
+
+// TestStripTraceContentWithholdsA2AStatusMessage pins that content suppression
+// takes an A2A operation's status text with it, since that text is the upstream
+// agent's error and can echo the request, while the error status and every other
+// span's status message survive serialization.
+func TestStripTraceContentWithholdsA2AStatusMessage(t *testing.T) {
+	trace := NewA2AExportFixtureTrace()
+	trace.RootSpan.Status, trace.RootSpan.StatusMsg = SpanStatusError, "upstream unavailable"
+
+	shown, err := json.Marshal(trace)
+	require.NoError(t, err)
+	require.Contains(t, string(shown), ExportFixtureSecret, "negative control: the fixture's status text carries content")
+
+	stripped := StripTraceContent(trace)
+	hidden, err := json.Marshal(stripped)
+	require.NoError(t, err)
+	require.False(t, strings.Contains(string(hidden), ExportFixtureSecret), "suppressed A2A content survived serialization")
+	op := stripped.Spans[1]
+	require.Equal(t, SpanKindA2AOperation, op.Kind)
+	require.Equal(t, SpanStatusError, op.Status, "the error status itself is kept")
+	require.Empty(t, op.StatusMsg)
+	require.Equal(t, "upstream unavailable", stripped.RootSpan.StatusMsg, "non-A2A status text is not content")
+	require.Contains(t, trace.Spans[1].StatusMsg, ExportFixtureSecret, "stripping must not edit the source span")
 }

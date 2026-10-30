@@ -3,11 +3,14 @@ package otel
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +20,7 @@ import (
 	"github.com/capsohq/bifrost/framework/tracing"
 	"github.com/stretchr/testify/require"
 	collectorpb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/proto"
 )
@@ -421,6 +425,17 @@ func TestNoSessionIDNoTag(t *testing.T) {
 // tracer. Raw-policy conversion uses a synthetic capture already tested at the gate.
 func a2aExportTrace(t *testing.T) *schemas.Trace {
 	t.Helper()
+	return a2aGateTrace(t, func(_ *schemas.BifrostA2ARequest, observe func(*schemas.BifrostA2AEvent)) (*schemas.BifrostA2AResponse, error) {
+		body := `{"taskId":"created-task","artifact":{"parts":[{"text":"synthetic output"}]}}`
+		observe(&schemas.BifrostA2AEvent{EventType: schemas.A2AEventTypeArtifactUpdate, TaskID: "created-task", ContextID: "created-context", Body: &body})
+		return &schemas.BifrostA2AResponse{}, nil
+	}, true)
+}
+
+// a2aGateTrace runs op through the actual gateway gate and framework tracer and
+// returns the ended trace. wantOK is whether op succeeds at the gate.
+func a2aGateTrace(t *testing.T, op agent.A2AOpFunc, wantOK bool) *schemas.Trace {
+	t.Helper()
 	log := bifrost.NewDefaultLogger(schemas.LogLevelError)
 	tracer := tracing.NewTracer(tracing.NewTraceStore(time.Minute, log), nil, log)
 	t.Cleanup(tracer.Stop)
@@ -432,12 +447,8 @@ func a2aExportTrace(t *testing.T) *schemas.Trace {
 	rootSpan := tracer.SpanFromHandle(root)
 	ctx.SetValue(schemas.BifrostContextKeySpanID, rootSpan.SpanID)
 	request := `{"message":{"role":"user","parts":[{"text":"synthetic input"}]}}`
-	_, err := (&agent.Manager{}).RunWithPluginPipeline(ctx, &schemas.BifrostA2ARequest{RequestType: schemas.A2ARequestTypeSendStreamingMessage, AgentName: "fixture", RequestBody: &request}, func(_ *schemas.BifrostA2ARequest, observe func(*schemas.BifrostA2AEvent)) (*schemas.BifrostA2AResponse, error) {
-		body := `{"taskId":"created-task","artifact":{"parts":[{"text":"synthetic output"}]}}`
-		observe(&schemas.BifrostA2AEvent{EventType: schemas.A2AEventTypeArtifactUpdate, TaskID: "created-task", ContextID: "created-context", Body: &body})
-		return &schemas.BifrostA2AResponse{}, nil
-	})
-	require.Nil(t, err)
+	_, err := (&agent.Manager{}).RunWithPluginPipeline(ctx, &schemas.BifrostA2ARequest{RequestType: schemas.A2ARequestTypeSendStreamingMessage, AgentName: "fixture", RequestBody: &request}, op)
+	require.Equal(t, wantOK, err == nil)
 	tracer.EndSpan(root, schemas.SpanStatusOk, "")
 	trace := tracer.EndTrace(id)
 	require.NotNil(t, trace)
@@ -573,6 +584,99 @@ func TestA2AExportWireProfiles(t *testing.T) {
 				_, rawRequest := attrs[schemas.AttrBifrostRawRequest]
 				require.Equal(t, content && !root && service == "raw", rawRequest, service)
 			}
+		}
+	}
+}
+
+// TestA2AExportStatusMessageFollowsContentPolicy pins, on the HTTP and gRPC wire,
+// that an A2A operation's error text leaves only when content does: it is the
+// upstream agent's error, which can echo the caller's input. The error status,
+// error type and task identity are kept either way, and so is a non-A2A span's
+// status text.
+func TestA2AExportStatusMessageFollowsContentPolicy(t *testing.T) {
+	const marker = "SYNTHETIC-A2A-STATUS-MARKER"
+	logger = bifrost.NewDefaultLogger(schemas.LogLevelError)
+	requests := make(chan *collectorpb.ExportTraceServiceRequest, 8)
+	httpCollector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "unreadable", 400)
+			return
+		}
+		req := &collectorpb.ExportTraceServiceRequest{}
+		if err := proto.Unmarshal(data, req); err != nil {
+			http.Error(w, "undecodable", 400)
+			return
+		}
+		requests <- req
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer httpCollector.Close()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	grpcCollector := &a2aGRPCCollector{requests: requests}
+	server := grpc.NewServer()
+	collectorpb.RegisterTraceServiceServer(server, grpcCollector)
+	go func() { _ = server.Serve(listener) }()
+	defer server.Stop()
+	httpClient, err := NewOtelClientHTTP(httpCollector.URL, nil, "", true, time.Second)
+	require.NoError(t, err)
+	defer httpClient.Close()
+	grpcClient, err := NewOtelClientGRPC(listener.Addr().String(), nil, "", true)
+	require.NoError(t, err)
+	defer grpcClient.Close()
+	p := &OtelPlugin{targets: []*otelTarget{
+		{client: httpClient, serviceName: "content", exportTimeout: time.Second},
+		{client: grpcClient, serviceName: "disabled", disableContentLogging: true, exportTimeout: time.Second},
+	}}
+
+	trace := a2aGateTrace(t, func(*schemas.BifrostA2ARequest, func(*schemas.BifrostA2AEvent)) (*schemas.BifrostA2AResponse, error) {
+		return nil, errors.New("agent rejected: " + marker)
+	}, false)
+	trace.RootSpan.Status, trace.RootSpan.StatusMsg = schemas.SpanStatusError, "upstream unavailable"
+	for _, vkDisabled := range []bool{false, true} {
+		trace.RootSpan.SetAttribute(schemas.AttrBifrostContentLoggingDisabled, vkDisabled)
+		require.NoError(t, p.Inject(context.Background(), trace))
+		for range p.targets {
+			var request *collectorpb.ExportTraceServiceRequest
+			select {
+			case request = <-requests:
+			case <-time.After(3 * time.Second):
+				t.Fatal("missing protobuf export")
+			}
+			rs := request.ResourceSpans[0]
+			service := kvMap(rs.Resource.Attributes)["service.name"].GetStringValue()
+			content := !vkDisabled && service != "disabled"
+			sawOp := false
+			for _, span := range rs.ScopeSpans[0].Spans {
+				if span.Name == "request" {
+					require.Equal(t, "upstream unavailable", span.Status.GetMessage(), "non-A2A status text is not withheld (%s)", service)
+					continue
+				}
+				sawOp = true
+				require.Equal(t, tracepb.Status_STATUS_CODE_ERROR, span.Status.GetCode(), service)
+				require.Equal(t, content, strings.Contains(span.Status.GetMessage(), marker), "status text exported=%v, want %v (%s, vk disabled=%v)", !content, content, service, vkDisabled)
+				require.NotEmpty(t, kvMap(span.Attributes)[schemas.AttrErrorTypeSpec].GetStringValue(), "error classification kept (%s)", service)
+			}
+			require.True(t, sawOp, "A2A operation span missing (%s)", service)
+		}
+	}
+}
+
+// BenchmarkConvertSpanToOTELSpanStatus records per-span conversion cost for an
+// errored A2A operation and an errored LLM call, with content on and off.
+func BenchmarkConvertSpanToOTELSpanStatus(b *testing.B) {
+	for _, kind := range []schemas.SpanKind{schemas.SpanKindA2AOperation, schemas.SpanKindLLMCall} {
+		span := makeSpan("0102030405060708", "", "op", kind)
+		span.Status, span.StatusMsg = schemas.SpanStatusError, "synthetic failure"
+		span.Attributes = map[string]any{schemas.AttrErrorTypeSpec: "synthetic", schemas.AttrInputMessages: "synthetic input"}
+		for _, disabled := range []bool{false, true} {
+			b.Run(fmt.Sprintf("%s/content_disabled=%v", kind, disabled), func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					_ = convertSpanToOTELSpan("0102030405060708090a0b0c0d0e0f10", span, disabled, false)
+				}
+			})
 		}
 	}
 }

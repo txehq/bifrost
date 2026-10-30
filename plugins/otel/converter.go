@@ -184,7 +184,7 @@ func convertSpanToOTELSpan(traceID string, span *schemas.Span, disableContentLog
 		StartTimeUnixNano: uint64(span.StartTime.UnixNano()),
 		EndTimeUnixNano:   uint64(span.EndTime.UnixNano()),
 		Attributes:        convertAttributesToKeyValues(span.Attributes, disableContentLogging),
-		Status:            convertSpanStatus(span.Status, span.StatusMsg),
+		Status:            convertSpanStatus(span.Status, exportedStatusMessage(span, disableContentLogging)),
 		Events:            convertSpanEvents(span.Events, disableContentLogging),
 	}
 
@@ -394,6 +394,16 @@ func convertSpanStatus(status schemas.SpanStatus, msg string) *tracepb.Status {
 	default:
 		return &tracepb.Status{Code: tracepb.Status_STATUS_CODE_UNSET}
 	}
+}
+
+// exportedStatusMessage is the status message a span exports. An A2A operation's
+// message is the upstream agent's error text, which can echo the request it was
+// given, so it is withheld when content is suppressed; the error status remains.
+func exportedStatusMessage(span *schemas.Span, disableContentLogging bool) string {
+	if disableContentLogging && span.Kind == schemas.SpanKindA2AOperation {
+		return ""
+	}
+	return span.StatusMsg
 }
 
 // convertSpanEvents converts Bifrost span events to OTEL events
