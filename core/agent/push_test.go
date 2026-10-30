@@ -706,13 +706,13 @@ func TestCreateTaskPushConfigRewritesUpstreamAndStoresCallback(t *testing.T) {
 	require.Equal(t, "client-credential", stored.AuthCredentials.GetValue())
 	require.Equal(t, "downstream-tenant", stored.Tenant)
 
-	// Reads are served from the gateway store and stay redacted.
-	got, err := handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{TaskID: "task-1", ID: "cfg-1"})
+	// Reads are served from the gateway store, scoped to the tenant, and stay redacted.
+	got, err := handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{Tenant: "downstream-tenant", TaskID: "task-1", ID: "cfg-1"})
 	require.NoError(t, err)
 	require.Empty(t, got.Token)
 	require.Equal(t, "downstream-tenant", got.Tenant)
 	require.Equal(t, "http://client.example/callback", got.URL)
-	listed, err := handler.ListTaskPushConfigs(context.Background(), &a2a.ListTaskPushConfigRequest{TaskID: "task-1"})
+	listed, err := handler.ListTaskPushConfigs(context.Background(), &a2a.ListTaskPushConfigRequest{Tenant: "downstream-tenant", TaskID: "task-1"})
 	require.NoError(t, err)
 	require.Len(t, listed.Configs, 1)
 	require.Equal(t, "downstream-tenant", listed.Configs[0].Tenant)
@@ -1644,4 +1644,25 @@ func TestPushDeliveryDeadLettersWhenItsRegistrationWasReplaced(t *testing.T) {
 	newPushRelay(m).deliver(&delivery, time.Now().Add(time.Minute))
 	require.Zero(t, newTenantHits.Load(), "a queued payload reached a registration it was not accepted for")
 	require.Equal(t, schemas.AgentPushDeliveryStatusDead, delivery.Status)
+}
+
+// TestTenantlessPushRequestsCannotReachANamedTenantsConfig: a request that names
+// no tenant is its own (empty) tenant, not a wildcard: it neither reads, lists nor
+// deletes a config a named tenant registered.
+func TestTenantlessPushRequestsCannotReachANamedTenantsConfig(t *testing.T) {
+	_, handler, store, _ := pushGateway(t)
+	_, err := handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{
+		Tenant: "tenant-a", TaskID: "task-1", ID: "cfg-1", URL: "https://a.example/callback", Token: "token-a",
+	})
+	require.NoError(t, err)
+
+	_, err = handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{TaskID: "task-1", ID: "cfg-1"})
+	require.Error(t, err, "a tenantless read must not see tenant-a's callback")
+	listed, err := handler.ListTaskPushConfigs(context.Background(), &a2a.ListTaskPushConfigRequest{TaskID: "task-1"})
+	require.NoError(t, err)
+	require.Empty(t, listed.Configs, "a tenantless list must not include tenant-a's callback")
+	require.NoError(t, handler.DeleteTaskPushConfig(context.Background(), &a2a.DeleteTaskPushConfigRequest{TaskID: "task-1", ID: "cfg-1"}))
+	stored, err := store.GetAgentPushConfig(context.Background(), "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.NotNil(t, stored, "a tenantless delete must not remove tenant-a's record")
 }

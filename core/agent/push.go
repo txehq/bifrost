@@ -335,10 +335,10 @@ func storedPushConfig(agentName, taskID, configID, tokenHash string, cfg *a2a.Pu
 
 // pushTenantMatches reports whether a request scoped to requestTenant may see or
 // replace a stored config. The store keys configs by (agent, task, config), so
-// tenants sharing those IDs are told apart here. A request naming no tenant
-// keeps the unscoped behaviour.
+// tenants sharing those IDs are told apart here. A request naming no tenant is the
+// empty tenant, not a wildcard: it reaches only configs registered without one.
 func pushTenantMatches(requestTenant, storedTenant string) bool {
-	return requestTenant == "" || requestTenant == storedTenant
+	return requestTenant == storedTenant
 }
 
 // errPushConfigTenantConflict refuses a registration whose config ID another
