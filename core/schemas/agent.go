@@ -223,8 +223,10 @@ const (
 
 // AgentPushDelivery is one durable outbox row: a verified upstream push queued
 // for re-originated delivery to the downstream callback. ID is a content digest
-// so an upstream retransmission of the same event deduplicates instead of
-// producing a second delivery. Rows carry no secrets.
+// scoped to the registration that accepted the push, so an upstream
+// retransmission of the same event deduplicates instead of producing a second
+// delivery, while the same event accepted under a replacement registration is
+// a new delivery. Rows carry no secrets.
 type AgentPushDelivery struct {
 	ID        string `json:"id"`
 	AgentName string `json:"agent_name"`

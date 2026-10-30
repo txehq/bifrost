@@ -10,6 +10,7 @@ import (
 	"iter"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1821,4 +1822,106 @@ func BenchmarkPushConfigReads(b *testing.B) {
 			}
 		}
 	})
+}
+
+// TestRetransmissionAfterReRegistrationReachesTheNewRegistration: a delivery's
+// identity is scoped to the registration that accepted it. When tenant A's
+// registration is replaced by tenant B's and the upstream sends the same event
+// again under B's token, that push is a new delivery for B, not a retransmission
+// of A's (dead-lettered) one.
+func TestRetransmissionAfterReRegistrationReachesTheNewRegistration(t *testing.T) {
+	m, handler, store, upstream := pushGateway(t)
+	var newTenantHits atomic.Int32
+	newTenant := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		newTenantHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer newTenant.Close()
+	ctx := context.Background()
+	payload := pushEventPayload(t, "task-1")
+	_, err := handler.CreateTaskPushConfig(ctx, &a2a.PushConfig{Tenant: "tenant-a", TaskID: "task-1", ID: "cfg-1", URL: "https://a.example/callback", Token: "token-a"})
+	require.NoError(t, err)
+	oldToken := upstream.lastCreated(t).Token
+	status, err := m.AcceptPushCallback(ctx, "fixture", oldToken, payload)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusAccepted, status)
+
+	require.NoError(t, handler.DeleteTaskPushConfig(ctx, &a2a.DeleteTaskPushConfigRequest{Tenant: "tenant-a", TaskID: "task-1", ID: "cfg-1"}))
+	_, err = handler.CreateTaskPushConfig(ctx, &a2a.PushConfig{Tenant: "tenant-b", TaskID: "task-1", ID: "cfg-1", URL: newTenant.URL, Token: "token-b"})
+	require.NoError(t, err)
+	newToken := upstream.lastCreated(t).Token
+	require.NotEqual(t, oldToken, newToken)
+	status, err = m.AcceptPushCallback(ctx, "fixture", newToken, payload)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusAccepted, status)
+	require.Equal(t, 2, store.deliveryCount(), "the same event accepted under the replacement registration must be its own delivery")
+
+	// The new registration's delivery reaches its callback; the old one is dead.
+	store.pushMu.Lock()
+	deliveries := make([]schemas.AgentPushDelivery, 0, 2)
+	for _, delivery := range store.deliveries {
+		deliveries = append(deliveries, delivery)
+	}
+	store.pushMu.Unlock()
+	relay := newPushRelay(m)
+	for i := range deliveries {
+		relay.deliver(&deliveries[i], time.Now().Add(time.Minute))
+	}
+	require.Equal(t, int32(1), newTenantHits.Load(), "the delivery accepted under the new registration must reach its callback exactly once")
+	// A retransmission under the same token still collapses.
+	status, err = m.AcceptPushCallback(ctx, "fixture", newToken, payload)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusAccepted, status)
+	require.Equal(t, 2, store.deliveryCount(), "a retransmission under the same registration must deduplicate")
+}
+
+// headOfLineStore lists at most one due delivery per pass, as the RDB store does
+// for one registration's deliveries, and exposes none until armed.
+type headOfLineStore struct {
+	*memoryPushStore
+	armed atomic.Bool
+}
+
+func (s *headOfLineStore) ListDueAgentPushDeliveries(ctx context.Context, now time.Time, limit int) ([]schemas.AgentPushDelivery, error) {
+	if !s.armed.Load() {
+		return nil, nil
+	}
+	due, err := s.memoryPushStore.ListDueAgentPushDeliveries(ctx, now, limit)
+	if err != nil || len(due) == 0 {
+		return due, err
+	}
+	sort.Slice(due, func(i, j int) bool { return due[i].CreatedAt.Before(due[j].CreatedAt) })
+	return due[:1], nil
+}
+
+// TestPushRelayDrainsAHeadOfLineBacklogInOnePass: with one registration's
+// deliveries listed one at a time, a single relay pass must keep re-querying while
+// it makes progress, so a backlog drains at once instead of one event per poll.
+func TestPushRelayDrainsAHeadOfLineBacklogInOnePass(t *testing.T) {
+	store := newMemoryPushStore()
+	gated := &headOfLineStore{memoryPushStore: store}
+	m, _, _ := pushGatewayOn(t, gated)
+	var hits atomic.Int32
+	downstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer downstream.Close()
+	ctx := context.Background()
+	require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", URL: downstream.URL, IngressTokenHash: "registration-a"}))
+	base := time.Now().UTC().Add(-time.Minute)
+	for i := range 5 {
+		_, err := store.CreateAgentPushDeliveryIfNotExists(ctx, &schemas.AgentPushDelivery{
+			ID: fmt.Sprintf("backlog-%d", i), AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", RegistrationHash: "registration-a",
+			Payload: `{"kind":"status-update"}`, Status: schemas.AgentPushDeliveryStatusPending,
+			NextAttemptAt: base, CreatedAt: base.Add(time.Duration(i) * time.Second), UpdatedAt: base,
+		})
+		require.NoError(t, err)
+	}
+	gated.armed.Store(true)
+	newPushRelay(m).processDue()
+	require.Equal(t, int32(5), hits.Load(), "one pass must drain the whole head-of-line backlog")
+	for i := range 5 {
+		require.Equal(t, schemas.AgentPushDeliveryStatusDelivered, store.deliveryStatus(fmt.Sprintf("backlog-%d", i)))
+	}
 }

@@ -686,9 +686,13 @@ func (m *Manager) AcceptPushCallback(ctx context.Context, agentName, token strin
 	}
 
 	payload := string(body)
-	// The delivery ID is a content digest scoped to the Agent and config, so an
-	// upstream retransmission of the same event deduplicates without colliding
-	// with an identical config ID and payload from another Agent. An artifact
+	// The delivery ID is a content digest scoped to the Agent, the config and the
+	// registration that accepted the push (its ingress token hash), so an upstream
+	// retransmission of the same event deduplicates without colliding with an
+	// identical config ID and payload from another Agent, and without colliding
+	// with a delivery accepted under an earlier registration of the same tuple:
+	// that one is dead-lettered once the registration is replaced, and the event
+	// sent again under the new token must reach the new callback. An artifact
 	// append carries no event identity and is not idempotent: two equal appends
 	// are two increments, so each gets a unique ID instead of a digest. Appends
 	// are therefore delivered at least once: A2A gives nothing that tells an
@@ -696,7 +700,7 @@ func (m *Manager) AcceptPushCallback(ctx context.Context, agentName, token strin
 	// repeat, and dropping a repeat silently corrupts the artifact, while a
 	// retransmitted append is only ever duplicated. Every other event is
 	// idempotent and keeps the digest, so its retransmissions still collapse.
-	identity := agentName + "\x00" + config.ConfigID + "\x00" + payload
+	identity := agentName + "\x00" + config.ConfigID + "\x00" + config.IngressTokenHash + "\x00" + payload
 	if appendsArtifact {
 		identity += "\x00" + uuid.NewString()
 	}
@@ -867,8 +871,9 @@ func (r *pushRelay) prune() {
 	}
 }
 
-// processDue drains everything currently due in bounded batches. Rows that
-// fail are rescheduled into the future by deliver, so the loop terminates.
+// processDue drains everything currently due in bounded batches, re-querying
+// after every pass that made progress. Rows that fail are rescheduled into the
+// future by deliver, so the loop terminates.
 func (r *pushRelay) processDue() {
 	m := r.manager
 	for {
@@ -905,7 +910,11 @@ func (r *pushRelay) processDue() {
 			madeProgress = true
 			r.deliver(claimed, leaseUntil)
 		}
-		if len(due) < pushDeliveryBatchSize || !madeProgress {
+		// A short batch does not mean the queue is drained: a registration's
+		// deliveries are listed one at a time (head of line), so a completed row
+		// may have unblocked its successor. Only a pass that claimed nothing ends
+		// the drain; failed rows back off into the future, so the loop terminates.
+		if !madeProgress {
 			return
 		}
 	}
