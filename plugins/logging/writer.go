@@ -695,6 +695,8 @@ func mergeMissingLogBilling(dst, src *logstore.Log) {
 	if dst == nil || src == nil {
 		return
 	}
+	// Before the cost below: a breakdown on dst's usage makes it read as having usage.
+	takeUsage := !logHasUsage(dst) && logHasUsage(src)
 	if dst.Cost == nil && src.Cost != nil {
 		// The split travels with the total; SerializeFields would otherwise
 		// attribute the whole total to input.
@@ -717,7 +719,7 @@ func mergeMissingLogBilling(dst, src *logstore.Log) {
 			}
 		}
 	}
-	if logHasUsage(dst) || !logHasUsage(src) {
+	if !takeUsage {
 		return
 	}
 	dst.TokenUsage = src.TokenUsage

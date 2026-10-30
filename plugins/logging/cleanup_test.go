@@ -1018,6 +1018,39 @@ func TestProcessBatchMergeKeepsBreakdownOfPricedDuplicate(t *testing.T) {
 	}
 }
 
+// An empty usage object on the winning row is no usage: the priced duplicate's breakdown
+// must not make it read as filled and cost the row its token counts.
+func TestProcessBatchMergeFillsEmptyUsageFromPricedDuplicate(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+
+	cost := 0.003
+	priced := makeTestLog("empty-usage-winner")
+	priced.Status = ""
+	priced.Cost = &cost
+	priced.TokenUsageParsed = &schemas.BifrostLLMUsage{PromptTokens: 40, CompletionTokens: 2, TotalTokens: 42,
+		Cost: &schemas.BifrostCost{InputCost: 0.002, OutputCost: 0.001, TotalCost: cost}}
+	empty := makeTestLog(priced.ID)
+	empty.TokenUsageParsed = &schemas.BifrostLLMUsage{}
+
+	plugin.processBatch(context.Background(), []*writeQueueEntry{{log: empty}, {log: priced}})
+
+	got, err := store.FindByID(context.Background(), priced.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if got.TotalTokens != 42 || got.PromptTokens != 40 || got.CompletionTokens != 2 {
+		t.Fatalf("stored tokens = %d/%d/%d, want 40/2/42", got.PromptTokens, got.CompletionTokens, got.TotalTokens)
+	}
+	if got.InputCost != 0.002 || got.OutputCost != 0.001 {
+		t.Fatalf("stored cost split = %g/%g, want 0.002/0.001", got.InputCost, got.OutputCost)
+	}
+}
+
 // billingBenchStore accepts every write without doing one, so a benchmark sees the
 // plugin's own bookkeeping.
 type billingBenchStore struct{ logstore.LogStore }
