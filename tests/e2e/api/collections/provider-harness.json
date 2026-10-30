@@ -280988,6 +280988,8 @@
                   "  if (err) { throw err; }",
                   "  if (res.code !== 200) { throw new Error('GET /api/config returned ' + res.code + ': ' + res.text()); }",
                   "  var clientConfig = res.json().client_config || {};",
+                  "  // The server reports log_retention_days 0 by default but rejects that on write (as set-raw-override-config.mjs notes).",
+                  "  if (!(clientConfig.log_retention_days >= 1)) { clientConfig.log_retention_days = 1; }",
                   "  clientConfig.a2a_external_client_url = pm.variables.get('baseUrl');",
                   "  pm.variables.set('a2aClientConfig', JSON.stringify(clientConfig));",
                   "});"
@@ -281716,6 +281718,8 @@
                   "  if (err) { throw err; }",
                   "  if (res.code !== 200) { throw new Error('GET /api/config returned ' + res.code + ': ' + res.text()); }",
                   "  var clientConfig = res.json().client_config || {};",
+                  "  // The server reports log_retention_days 0 by default but rejects that on write (as set-raw-override-config.mjs notes).",
+                  "  if (!(clientConfig.log_retention_days >= 1)) { clientConfig.log_retention_days = 1; }",
                   "  clientConfig.a2a_external_client_url = '';",
                   "  pm.variables.set('a2aClientConfig', JSON.stringify(clientConfig));",
                   "});"
