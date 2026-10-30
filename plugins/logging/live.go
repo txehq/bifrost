@@ -28,6 +28,18 @@ type liveSessionState struct {
 	toolCalls    []schemas.ChatAssistantMessageToolCall
 	toolNames    []string // every tool the backend called, function or server, for the row's filter
 	failure      *schemas.BifrostError
+	costSplit    schemas.BifrostCost // input, output and additional charges, summed (see addCostSplit)
+}
+
+// addCostSplit adds one unit's input, output and additional charges to the session's,
+// so the row keeps the categories its total is made of.
+func (s *liveSessionState) addCostSplit(breakdown *schemas.BifrostCost) {
+	if breakdown == nil {
+		return
+	}
+	s.costSplit.InputCost += breakdown.InputCost
+	s.costSplit.OutputCost += breakdown.OutputCost
+	s.costSplit.AdditionalCost += breakdown.AdditionalCost
 }
 
 // foldDelegation adds one billed response to its delegation, or starts the delegation.
@@ -95,12 +107,17 @@ func (p *LoggerPlugin) postLiveUnit(ctx *schemas.BifrostContext, kind string, re
 	}
 	contentLoggingEnabled := p.contentLoggingEnabled(ctx)
 	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
-	cost := p.liveUnitCost(ctx, pending, result, bifrostErr)
+	breakdown := p.liveUnitCost(ctx, pending, result, bifrostErr)
+	cost := 0.0
+	if breakdown != nil {
+		cost = breakdown.TotalCost
+	}
 
 	state.mu.Lock()
 	switch kind {
 	case "voice":
 		state.voiceCost += cost
+		state.addCostSplit(breakdown)
 		if result != nil && result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil && result.ResponsesResponse.Usage.AudioSeconds != nil {
 			state.voiceSeconds += *result.ResponsesResponse.Usage.AudioSeconds
 		} else if result == nil && bifrostErr != nil && bifrostErr.ExtraFields.BilledUsage != nil && bifrostErr.ExtraFields.BilledUsage.AudioSeconds != nil {
@@ -110,6 +127,7 @@ func (p *LoggerPlugin) postLiveUnit(ctx *schemas.BifrostContext, kind string, re
 		// A backend lane's open unit closes empty at session end; only calls that ran are delegations.
 		if delegation, ok := liveDelegation(ctx, result, bifrostErr, cost, contentLoggingEnabled); ok {
 			state.backendCost += cost
+			state.addCostSplit(breakdown)
 			if delegation.Usage != nil {
 				state.usage = addLLMUsage(state.usage, delegation.Usage)
 			}
@@ -140,24 +158,22 @@ func (p *LoggerPlugin) postLiveUnit(ctx *schemas.BifrostContext, kind string, re
 }
 
 // liveUnitCost prices one unit the way its request type is priced: voice seconds for a window,
-// Responses tokens for a delegation.
-func (p *LoggerPlugin) liveUnitCost(ctx *schemas.BifrostContext, pending *PendingLogData, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) float64 {
+// Responses tokens for a delegation. nil when nothing prices it.
+func (p *LoggerPlugin) liveUnitCost(ctx *schemas.BifrostContext, pending *PendingLogData, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) *schemas.BifrostCost {
 	if p.pricingManager == nil {
-		return 0
+		return nil
 	}
 	scopes := modelcatalog.PricingLookupScopesFromContext(ctx, pending.InitialData.Provider)
 	if result != nil {
-		if breakdown := p.pricingManager.CalculateCostBreakdown(result, scopes); breakdown != nil {
-			return breakdown.TotalCost
-		}
+		return p.pricingManager.CalculateCostBreakdown(result, scopes)
 	} else if bifrostErr != nil && bifrostErr.ExtraFields.BilledUsage != nil {
 		requestType, provider, requestedModel, resolvedModel := bifrost.GetResponseFields(nil, bifrostErr)
 		if resolvedModel == "" {
 			resolvedModel = requestedModel
 		}
-		return p.pricingManager.CalculateCostForUsage(bifrostErr.ExtraFields.BilledUsage, provider, resolvedModel, requestType, scopes)
+		return p.pricingManager.CalculateCostBreakdownForUsage(bifrostErr.ExtraFields.BilledUsage, provider, resolvedModel, requestType, scopes)
 	}
-	return 0
+	return nil
 }
 
 // liveDelegation describes one billed backend response as the delegation it ran, from the unit
@@ -273,6 +289,19 @@ func (p *LoggerPlugin) buildLiveSessionEntry(ctx *schemas.BifrostContext, pendin
 		usage = &schemas.BifrostLLMUsage{}
 	}
 	usage.AudioSeconds = new(session.VoiceSeconds)
+	if total := state.voiceCost + state.backendCost; total > 0 {
+		// The split the units were priced at, so the row's input, output and
+		// additional columns add up to its cost instead of filing it all as input.
+		split := state.costSplit
+		split.TotalCost = total
+		// A unit priced as an opaque total adds nothing to the categories. Beside
+		// units that do, its charge goes to input, as an opaque row's does; with
+		// none, the split stays empty and the row reads as an opaque total.
+		if categorized := split.InputCost + split.OutputCost + split.AdditionalCost; categorized > 0 && total > categorized {
+			split.InputCost += total - categorized
+		}
+		usage.Cost = &split
+	}
 	entry.TokenUsageParsed = usage
 	entry.PromptTokens = usage.PromptTokens
 	entry.CompletionTokens = usage.CompletionTokens

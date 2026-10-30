@@ -1274,9 +1274,11 @@ type LoggerPlugin struct {
 	recentLogBillingMu           sync.Mutex
 	recentLogBilling             map[string]persistedLogBillingState
 	recentLogBillingOrder        []string
+	recentLogBillingPinned       map[string]bool    // IDs whose interrupted repair awaits its retry; eviction skips them (see repairRecentDuplicateBilling)
 	deferredUsageSem             chan struct{}      // Limits concurrent deferred usage DB updates
 	deferredUsageWatchSem        chan struct{}      // Caps goroutines parked on a deferred-usage channel (see scheduleDeferredUsageUpdate)
 	heldGuardrailRows            sync.Map           // Maps log ID -> *writeQueueEntry held until its output-monitor guardrail result lands (see holdForDeferredGuardrail)
+	heldGuardrailMu              sync.RWMutex       // Read side: a result's claim-then-queue; write side: Cleanup's release
 	droppedDeferredUsage         atomic.Int64       // Deferred usage updates dropped because a semaphore was full
 	clusterNodeID                atomic.Value       // Cluster node ID (string) for log attribution in clustered deployments
 	batchCtx                     context.Context    // Cancelled by Cleanup to stop the batchWriter goroutine before any further DB work
@@ -1287,6 +1289,9 @@ type LoggerPlugin struct {
 	recoveredBatch               []*writeQueueEntry // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
 	userAgentMappings            atomic.Value       // []compiledUserAgentMapping, read from request hot paths
 	userAgentMappingMu           sync.Mutex         // serializes user-agent mapping write+reload sequences to keep the cache consistent
+	writeAdmission               sync.RWMutex       // Read-held by a producer until its entry is queued or parked; Cleanup takes the write side (see admitWrite)
+	afterWriteAdmission          func()             // Test seam, nil outside tests: runs inside admitWrite
+	afterGuardrailClaim          func()             // Test seam, nil outside tests: runs between a guardrail result's claim and its send
 }
 
 // Init creates new logger plugin with given log store. batchStore is the
@@ -2628,9 +2633,13 @@ func (p *LoggerPlugin) Cleanup() error {
 			p.videoSweeperCancel = nil
 		}
 		p.mu.Unlock()
-		// After closed is set, so no new row can be held behind this pass, and
-		// before the writer stops, so the released rows are drained with the rest.
+		// Taking writeAdmission waits out producers admitted before closed was set:
+		// each queues or parks its entry first, so the release and the drain below
+		// see it. After closed is set, so no new row can be held behind this pass,
+		// and before the writer stops, so the released rows are drained with the rest.
+		p.writeAdmission.Lock()
 		p.releaseHeldGuardrailRows()
+		p.writeAdmission.Unlock()
 		if p.cleanupTicker != nil {
 			p.cleanupTicker.Stop()
 		}
@@ -2638,8 +2647,8 @@ func (p *LoggerPlugin) Cleanup() error {
 		close(p.done)
 		// p.closed was already set above (it doubles as the sweeper-start guard),
 		// which is what stops new producers before we kill batchWriter so the queue
-		// does not grow while we drain it. Any producer that raced past that check is
-		// absorbed by the enqueue recover path.
+		// does not grow while we drain it; the producers admitted before it finished
+		// under writeAdmission.
 		// Kill batchWriter. Its current in-memory batch is handed back via
 		// p.recoveredBatch; it does not issue any further DB writes.
 		p.batchCancel()
@@ -2673,6 +2682,8 @@ func (p *LoggerPlugin) drainPending() {
 	// by the same wall-clock deadline instead.
 	drainCtx, cancelDrain := context.WithDeadline(p.ctx, deadline)
 	defer cancelDrain()
+	// Nothing retries after the drain, so nothing pinned has a reason to stay.
+	defer p.clearRecentLogBillingPins()
 
 	// Pull everything currently buffered in the channel. Non-blocking — we
 	// only want what is there right now; new sends are already blocked by

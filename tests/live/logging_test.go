@@ -56,6 +56,35 @@ func TestLogging_OneRowPerSessionWithTotals(t *testing.T) {
 	})
 }
 
+// The row's cost arrives over the API in the categories its units were priced in: a voice
+// second is input, backend tokens are input and output, and the three add up to the cost.
+func TestLogging_SessionCostKeepsItsSplit(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	forEachTransport(t, func(t *testing.T, tr transport) {
+		budget := 10.0
+		vk := createVirtualKey(t, virtualKeySpec{budgetUSD: &budget})
+		c, s := openFakeSession(t, tr, vk, backendModel, nil)
+
+		s.Play(delegation{ID: "item_1", ResponseID: "resp_1", Model: backendModel, Created: true, Input: 400, Output: 40, Items: []string{messageItem("msg_1", "Sunny.")}})
+		s.EmitUsage(30)
+		settle()
+		c.CloseSession()
+
+		row := findLiveLog(t, s.ID())
+		voiceCost := 30 * fakeVoiceCostPerSecond
+		inputCost := 400 * fakeInputCostPerToken
+		outputCost := 40 * fakeOutputCostPerToken
+		breakdown := row.Get("cost_breakdown")
+		assert.InDelta(t, voiceCost+inputCost, breakdown.Get("input_cost").Float(), 1e-9, "voice and backend input are input cost")
+		assert.InDelta(t, outputCost, breakdown.Get("output_cost").Float(), 1e-9, "backend output tokens are output cost")
+		assert.InDelta(t, 0, breakdown.Get("additional_cost").Float(), 1e-9)
+		assert.InDelta(t, voiceCost+inputCost+outputCost, breakdown.Get("total_cost").Float(), 1e-9)
+		assert.InDelta(t, voiceCost+inputCost+outputCost, row.Get("cost").Float(), 1e-9, "the columns reconcile to the row's cost")
+		waitBudgetUsage(t, vk.BudgetID, voiceCost+inputCost+outputCost)
+	})
+}
+
 func TestLogging_ErrorSessionKeepsItsRow(t *testing.T) {
 	requireFake(t)
 	t.Parallel()

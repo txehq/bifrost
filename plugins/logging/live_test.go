@@ -567,3 +567,192 @@ func TestLiveSessionRowKeepsVirtualKeyMetadata(t *testing.T) {
 	assert.Equal(t, "cc-live", row.MetadataParsed["cost_center"], "the key's metadata lands on the session row")
 	assert.Equal(t, "vk-wins", row.MetadataParsed["realtime_transport"], "the key's value beats the realtime merge")
 }
+
+// livePricedPlugin is a plugin on a store of its own with the prices the live cost
+// tests read: a voice second is input, and the backend has both token categories.
+func livePricedPlugin(t testing.TB) (*LoggerPlugin, logstore.LogStore) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pricing.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+		"gpt-live-1":{"provider":"openai","mode":"live","input_cost_per_second":0.001},
+		"gpt-5.6-luna":{"provider":"openai","mode":"responses","input_cost_per_token":0.001,"output_cost_per_token":0.002}
+	}`), 0o600))
+	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + path})
+	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, modelcatalog.NewTestCatalogWithDatasheet(ds), nil)
+	require.NoError(t, err)
+	return plugin, store
+}
+
+func openLiveSession(t *testing.T, plugin *LoggerPlugin, sessionID string) {
+	t.Helper()
+	_, _, err := plugin.PreLLMHook(liveUnitCtx(sessionID, "unit-1", "voice", true, false), liveStartRequest("gpt-live-1"))
+	require.NoError(t, err)
+}
+
+func closeLiveSession(t *testing.T, plugin *LoggerPlugin, store logstore.LogStore, sessionID string) *logstore.Log {
+	t.Helper()
+	_, _, err := plugin.PostLLMHook(liveUnitCtx(sessionID, "unit-end", "voice", false, true), liveVoiceResponse(0, &schemas.LiveSessionLog{Transport: "websocket"}), nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+	row, err := store.FindByID(context.Background(), sessionID)
+	require.NoError(t, err)
+	return row
+}
+
+// TestLiveSessionRowKeepsItsCostSplit pins that a session row's input, output and
+// additional cost columns add up to its cost from the categories its units were
+// priced in, instead of the whole total landing in input_cost.
+func TestLiveSessionRowKeepsItsCostSplit(t *testing.T) {
+	plugin, store := livePricedPlugin(t)
+	openLiveSession(t, plugin, "bfsess-split")
+	_, _, err := plugin.PostLLMHook(liveUnitCtx("bfsess-split", "unit-1", "voice", false, false), liveVoiceResponse(10, nil), nil)
+	require.NoError(t, err)
+	usage := &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
+	_, _, err = plugin.PostLLMHook(liveDelegationCtx("bfsess-split", "unit-2", "item_1", 0), liveBackendResponse("resp_1", nil, usage), nil)
+	require.NoError(t, err)
+	row := closeLiveSession(t, plugin, store, "bfsess-split")
+
+	require.NotNil(t, row.Cost)
+	assert.InDelta(t, 0.03, *row.Cost, 1e-9, "10s of voice at 0.001 plus 10 in at 0.001 and 5 out at 0.002")
+	assert.InDelta(t, 0.01, row.OutputCost, 1e-9, "output tokens are output cost")
+	assert.InDelta(t, 0.02, row.InputCost, 1e-9)
+	assert.InDelta(t, *row.Cost, row.InputCost+row.OutputCost+row.AdditionalCost, 1e-9)
+	require.NotNil(t, row.TokenUsageParsed.Cost, "the split is on the row's usage")
+	assert.InDelta(t, 0.01, row.TokenUsageParsed.Cost.OutputCost, 1e-9)
+	assert.InDelta(t, 0.03, row.TokenUsageParsed.Cost.TotalCost, 1e-9)
+	require.NotNil(t, row.CostBreakdown, "the read path assembles what the API serves")
+	assert.InDelta(t, 0.02, row.CostBreakdown.InputCost, 1e-9)
+	assert.InDelta(t, 0.01, row.CostBreakdown.OutputCost, 1e-9)
+}
+
+// A session that only spoke is all input, and reads as an input charge, not an opaque total.
+func TestLiveSessionRowVoiceOnlyIsInputCost(t *testing.T) {
+	plugin, store := livePricedPlugin(t)
+	openLiveSession(t, plugin, "bfsess-voice")
+	_, _, err := plugin.PostLLMHook(liveUnitCtx("bfsess-voice", "unit-1", "voice", false, false), liveVoiceResponse(10, nil), nil)
+	require.NoError(t, err)
+	row := closeLiveSession(t, plugin, store, "bfsess-voice")
+
+	require.NotNil(t, row.Cost)
+	assert.InDelta(t, 0.01, *row.Cost, 1e-9)
+	assert.InDelta(t, 0.01, row.InputCost, 1e-9)
+	require.NotNil(t, row.CostBreakdown)
+	assert.InDelta(t, 0.01, row.CostBreakdown.InputCost, 1e-9)
+}
+
+// Reasoning tokens stay counted once per unit, and two delegations of one id sum both
+// their tokens and their categories.
+func TestLiveSessionSplitSumsDelegationsAndCountsReasoningOnce(t *testing.T) {
+	plugin, store := livePricedPlugin(t)
+	openLiveSession(t, plugin, "bfsess-sum")
+	for i, id := range []string{"resp_1", "resp_2"} {
+		usage := &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15,
+			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{ReasoningTokens: 2}}
+		_, _, err := plugin.PostLLMHook(liveDelegationCtx("bfsess-sum", "unit-"+id, "item_1", int64(i)), liveBackendResponse(id, nil, usage), nil)
+		require.NoError(t, err)
+	}
+	row := closeLiveSession(t, plugin, store, "bfsess-sum")
+
+	require.NotNil(t, row.Cost)
+	assert.InDelta(t, 0.04, *row.Cost, 1e-9)
+	assert.InDelta(t, 0.02, row.InputCost, 1e-9)
+	assert.InDelta(t, 0.02, row.OutputCost, 1e-9)
+	require.NotNil(t, row.TokenUsageParsed.CompletionTokensDetails)
+	assert.Equal(t, 4, row.TokenUsageParsed.CompletionTokensDetails.ReasoningTokens)
+	assert.Equal(t, 30, row.TotalTokens)
+}
+
+// A failed delegation's billed usage carries its categories like a response does.
+func TestLiveSessionSplitIncludesBilledFailure(t *testing.T) {
+	plugin, store := livePricedPlugin(t)
+	openLiveSession(t, plugin, "bfsess-failed")
+	ctx := liveDelegationCtx("bfsess-failed", "unit-2", "item_1", 0)
+	ctx.SetValue(schemas.BifrostContextKeyLiveDelegationFailed, true)
+	failure := &schemas.BifrostError{
+		Error: &schemas.ErrorField{Message: "delegation refused"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType: schemas.ResponsesRequest, Provider: schemas.OpenAI, OriginalModelRequested: "gpt-5.6-luna",
+			BilledUsage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		},
+	}
+	_, _, err := plugin.PostLLMHook(ctx, nil, failure)
+	require.NoError(t, err)
+	row := closeLiveSession(t, plugin, store, "bfsess-failed")
+
+	require.NotNil(t, row.Cost)
+	assert.InDelta(t, 0.02, *row.Cost, 1e-9)
+	assert.InDelta(t, 0.01, row.InputCost, 1e-9)
+	assert.InDelta(t, 0.01, row.OutputCost, 1e-9)
+}
+
+// A provider-reported total has no categories. Beside units that do, it goes to input so
+// the columns reach the row's cost; alone, the row stays an opaque total.
+func TestLiveSessionSplitWithOpaqueProviderCost(t *testing.T) {
+	opaque := func() *schemas.ResponsesResponseUsage {
+		return &schemas.ResponsesResponseUsage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2, Cost: &schemas.BifrostCost{TotalCost: 0.05}}
+	}
+	t.Run("beside categorized units", func(t *testing.T) {
+		plugin, store := livePricedPlugin(t)
+		openLiveSession(t, plugin, "bfsess-mixed")
+		split := &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
+		_, _, err := plugin.PostLLMHook(liveDelegationCtx("bfsess-mixed", "unit-2", "item_1", 0), liveBackendResponse("resp_1", nil, split), nil)
+		require.NoError(t, err)
+		_, _, err = plugin.PostLLMHook(liveDelegationCtx("bfsess-mixed", "unit-3", "item_2", 0), liveBackendResponse("resp_2", nil, opaque()), nil)
+		require.NoError(t, err)
+		row := closeLiveSession(t, plugin, store, "bfsess-mixed")
+
+		require.NotNil(t, row.Cost)
+		assert.InDelta(t, 0.07, *row.Cost, 1e-9)
+		assert.InDelta(t, 0.06, row.InputCost, 1e-9)
+		assert.InDelta(t, 0.01, row.OutputCost, 1e-9)
+		assert.InDelta(t, *row.Cost, row.InputCost+row.OutputCost+row.AdditionalCost, 1e-9)
+	})
+	t.Run("alone", func(t *testing.T) {
+		plugin, store := livePricedPlugin(t)
+		openLiveSession(t, plugin, "bfsess-opaque")
+		_, _, err := plugin.PostLLMHook(liveDelegationCtx("bfsess-opaque", "unit-2", "item_1", 0), liveBackendResponse("resp_1", nil, opaque()), nil)
+		require.NoError(t, err)
+		row := closeLiveSession(t, plugin, store, "bfsess-opaque")
+
+		require.NotNil(t, row.Cost)
+		assert.InDelta(t, 0.05, *row.Cost, 1e-9)
+		assert.InDelta(t, 0.05, row.InputCost, 1e-9, "the column keeps reconciling, as any opaque row's does")
+		require.NotNil(t, row.CostBreakdown)
+		assert.Zero(t, row.CostBreakdown.InputCost, "the API shows an opaque total, not an input charge")
+	})
+}
+
+// With no pricing a session has no cost to split: no cost appears on its usage.
+func TestLiveSessionWithoutPricingCarriesNoCost(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+	openLiveSession(t, plugin, "bfsess-unpriced")
+	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-unpriced", "unit-1", "voice", false, false), liveVoiceResponse(10, nil), nil)
+	require.NoError(t, err)
+	row := closeLiveSession(t, plugin, store, "bfsess-unpriced")
+
+	assert.Nil(t, row.Cost)
+	assert.Nil(t, row.TokenUsageParsed.Cost)
+	assert.Zero(t, row.InputCost+row.OutputCost+row.AdditionalCost)
+}
+
+// BenchmarkPostLiveUnit prices one closed voice window into its session. Live units run
+// once per billing window, not per request or per chunk.
+func BenchmarkPostLiveUnit(b *testing.B) {
+	plugin, _ := livePricedPlugin(b)
+	const sessionID = "bfsess-bench"
+	_, _, err := plugin.PreLLMHook(liveUnitCtx(sessionID, "unit-1", "voice", true, false), liveStartRequest("gpt-live-1"))
+	require.NoError(b, err)
+	ctx := liveUnitCtx(sessionID, "unit-2", "voice", false, false)
+	response := liveVoiceResponse(10, nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := plugin.postLiveUnit(ctx, "voice", response, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

@@ -47,6 +47,11 @@
 - Entity pickers start from the first page after a search is cleared, instead of reviving the offset left behind before it
 - Model budgets accept names the catalog does not list, such as deployment aliases
 - Warp follow-ups queued behind an answer survive the dock closing and send when it reopens, and a history load that lands after its panel unmounted no longer replaces a newer conversation
+- A row whose insert the store dropped no longer counts as persisted billing, so a later richer duplicate still repairs the row that did land
+- A duplicate-billing repair interrupted by shutdown is retried by the drain, and a wedged repair no longer holds shutdown past its deadline
+- Log rows accepted before shutdown reach the store: Cleanup waits for admitted producers and for guardrail results already claimed, instead of closing the queue behind them
+- A live session row keeps its input, output and additional cost split, so its cost breakdown adds up to its cost
+- Merging duplicate log rows keeps the priced row's cost split and breakdown
 
 ## 🗄️ Database Migrations
 
@@ -54,8 +59,8 @@
 
 ## 🍴 Fork changes (txehq/bifrost)
 
-- chore: v2.3.3-sync.8 is a prerelease on top of v2.3.2 carrying the network and destination-policy fixes from the PR5 preservation audit (TXE-5374, in v2.3.3-sync.1), the proxied MCP OAuth and catalog URL check pinning (TXE-5377, in v2.3.3-sync.2) the PR5 credential-reference and destination-change fixes (TXE-5411), the queue lease-loss reporting fix (TXE-5407), the provider-key secret-reference check (TXE-4989, in v2.3.3-sync.4), the PR5 content-redaction fixes for logs and traces (TXE-5431, in v2.3.3-sync.5) the PR5 passthrough tuning and method-override refusals (TXE-5023, in v2.3.3-sync.6) the PR5 Agent Gateway push tenancy, delivery ordering and stream fixes (TXE-5477, in v2.3.3-sync.7) and the PR5 UI credential, pagination and stale-state fixes (TXE-5496); v2.3.2 stays the stable release and `latest`
+- chore: v2.3.3-sync.9 is a prerelease on top of v2.3.2 carrying the network and destination-policy fixes from the PR5 preservation audit (TXE-5374, in v2.3.3-sync.1), the proxied MCP OAuth and catalog URL check pinning (TXE-5377, in v2.3.3-sync.2) the PR5 credential-reference and destination-change fixes (TXE-5411), the queue lease-loss reporting fix (TXE-5407), the provider-key secret-reference check (TXE-4989, in v2.3.3-sync.4), the PR5 content-redaction fixes for logs and traces (TXE-5431, in v2.3.3-sync.5) the PR5 passthrough tuning and method-override refusals (TXE-5023, in v2.3.3-sync.6) the PR5 Agent Gateway push tenancy, delivery ordering and stream fixes (TXE-5477, in v2.3.3-sync.7) the PR5 UI credential, pagination and stale-state fixes (TXE-5496, in v2.3.3-sync.8) and the PR5 logging billing repair, shutdown and cost-split fixes (TXE-5515); v2.3.2 stays the stable release and `latest`
 - note: module versions. This fork publishes no core, framework or plugin module versions: their module paths stay `github.com/capsohq/bifrost/...`, their version files and the transport's requires are unchanged, and the workspace builds them from source
 - preserved: everything v2.3.2 listed under Fork changes
-- chore: the Helm chart is 2.1.49-sync.8, a prerelease; `appVersion` is 2.3.3-sync.8, `image.tag` stays required, and `networkConfig.extra_headers` values may be structured secret references (since 2.1.49-sync.3)
+- chore: the Helm chart is 2.1.49-sync.9, a prerelease; `appVersion` is 2.3.3-sync.9, `image.tag` stays required, and `networkConfig.extra_headers` values may be structured secret references (since 2.1.49-sync.3)
 - note: the CLI changes (every stored credential of a context is cleared when its gateway URL changes) ship with the next CLI release, not with this transport

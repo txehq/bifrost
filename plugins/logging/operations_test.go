@@ -196,7 +196,7 @@ func (s *fakeBatchStore) FailProviderJob(ctx context.Context, id, runnerID strin
 	return s.markTerminal(id, cstables.ProviderJobAccountingStatusError, "")
 }
 
-func newTestStore(t *testing.T) logstore.LogStore {
+func newTestStore(t testing.TB) logstore.LogStore {
 	t.Helper()
 
 	store, err := logstore.NewLogStore(context.Background(), &logstore.Config{
