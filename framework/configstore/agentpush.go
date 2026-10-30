@@ -278,14 +278,20 @@ func (s *RDBConfigStore) ListDueAgentPushDeliveries(ctx context.Context, now tim
 
 // pushDeliveryHeadOfLine keeps one registration's deliveries in the order they
 // were accepted: a delivery is due only while no earlier one for the same
-// agent/task/config is still pending (for instance backing off after a failed
-// attempt), so an append cannot overtake the replacement it follows and be
-// overwritten by its retry. Claims check it too, in the same statement, so the
-// order holds across relay instances. Its one argument is the pending status.
+// agent/task/config accepted under the same registration (registration_hash;
+// rows from before the column existed hold NULL and count as one registration)
+// is still pending (for instance backing off after a failed attempt), so an
+// append cannot overtake the replacement it follows and be overwritten by its
+// retry. A replacement registration's deliveries are not held behind the old
+// registration's rows, which can never reach the new callback and are
+// dead-lettered when they next come due. Claims check it too, in the same
+// statement, so the order holds across relay instances. Its one argument is
+// the pending status.
 const pushDeliveryHeadOfLine = `NOT EXISTS (SELECT 1 FROM config_agent_push_deliveries AS earlier
 	WHERE earlier.agent_name = config_agent_push_deliveries.agent_name
 	AND earlier.task_id = config_agent_push_deliveries.task_id
 	AND earlier.config_id = config_agent_push_deliveries.config_id
+	AND COALESCE(earlier.registration_hash, '') = COALESCE(config_agent_push_deliveries.registration_hash, '')
 	AND earlier.status = ?
 	AND (earlier.created_at < config_agent_push_deliveries.created_at
 		OR (earlier.created_at = config_agent_push_deliveries.created_at AND earlier.id < config_agent_push_deliveries.id)))`

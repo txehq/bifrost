@@ -470,6 +470,43 @@ func TestAgentPushDeliveriesStayInOrderPerRegistration(t *testing.T) {
 	require.ElementsMatch(t, []string{"append", "other-config"}, ids)
 }
 
+// TestAgentPushDeliveriesOfAReplacementRegistrationAreNotHeldBehindTheOld: the
+// head of line is one registration's. When an unreachable callback's
+// registration is replaced, the old registration's backed-off row can never
+// reach the new callback, so a delivery accepted under the replacement must
+// not wait for it to come due and be dead-lettered.
+func TestAgentPushDeliveriesOfAReplacementRegistrationAreNotHeldBehindTheOld(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	delivery := func(id, registration string, created, next time.Time) *schemas.AgentPushDelivery {
+		return &schemas.AgentPushDelivery{
+			ID: id, AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", RegistrationHash: registration, Payload: `{"kind":"status-update"}`,
+			Status: schemas.AgentPushDeliveryStatusPending, NextAttemptAt: next, CreatedAt: created, UpdatedAt: created,
+		}
+	}
+	// The old registration's delivery failed and backs off; the replacement's is due now.
+	_, err := store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("old-registration", "registration-a", now.Add(-time.Minute), now.Add(time.Minute)))
+	require.NoError(t, err)
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("new-registration", "registration-b", now.Add(-time.Second), now.Add(-time.Second)))
+	require.NoError(t, err)
+	// A later row of the same new registration still waits behind it.
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("new-registration-2", "registration-b", now, now))
+	require.NoError(t, err)
+
+	due, err := store.ListDueAgentPushDeliveries(ctx, now, 10)
+	require.NoError(t, err)
+	require.Len(t, due, 1, "a delivery accepted under the replacement registration must not wait behind the old registration's row")
+	require.Equal(t, "new-registration", due[0].ID)
+	claimed, err := store.ClaimAgentPushDelivery(ctx, "new-registration", "relay-1", now.Add(time.Minute))
+	require.NoError(t, err)
+	require.NotNil(t, claimed, "the replacement registration's delivery must be claimable")
+	claimed, err = store.ClaimAgentPushDelivery(ctx, "new-registration-2", "relay-1", now.Add(time.Minute))
+	require.NoError(t, err)
+	require.Nil(t, claimed, "a later delivery of the replacement registration still waits behind its predecessor")
+}
+
 // TestSaveAgentPushConfigKeepsAnotherTenantsRow: the upsert that re-registers a
 // callback must leave a row another tenant holds under the same (agent, task,
 // config) key untouched and report the attempt as an error.
@@ -596,12 +633,18 @@ func TestPostgresAgentPushConfigTenantPredicateAndDeliveryOrder(t *testing.T) {
 	require.NoError(t, err)
 	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("append", now.Add(-time.Second), now.Add(-time.Second)))
 	require.NoError(t, err)
+	replacementRegistration := delivery("new-registration", now.Add(-time.Second), now.Add(-time.Second))
+	replacementRegistration.RegistrationHash = "hash-b"
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, replacementRegistration)
+	require.NoError(t, err)
 	due, err := store.ListDueAgentPushDeliveries(ctx, now, 10)
 	require.NoError(t, err)
-	require.Empty(t, due, "the append must not overtake the replacement it follows")
+	require.Len(t, due, 1, "the append must not overtake the replacement it follows")
+	require.Equal(t, "new-registration", due[0].ID, "a delivery accepted under the replacement registration must not wait behind the old registration's row")
 	claimed, err := store.ClaimAgentPushDelivery(ctx, "append", "relay-1", now.Add(time.Minute))
 	require.NoError(t, err)
 	require.Nil(t, claimed, "a delivery behind a pending earlier one must not be claimable")
+	require.NoError(t, store.DB().Model(&tables.TableAgentPushDelivery{}).Where("id = ?", "new-registration").Update("status", schemas.AgentPushDeliveryStatusDelivered).Error)
 	require.NoError(t, store.DB().Model(&tables.TableAgentPushDelivery{}).Where("id = ?", "replacement").Update("status", schemas.AgentPushDeliveryStatusDelivered).Error)
 	due, err = store.ListDueAgentPushDeliveries(ctx, now, 10)
 	require.NoError(t, err)
