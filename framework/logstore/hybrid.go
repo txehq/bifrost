@@ -67,6 +67,12 @@ type HybridLogStore struct {
 	closed         atomic.Bool
 	droppedUploads atomic.Int64
 	pendingBytes   atomic.Int64
+
+	// pendingAgent holds each Agent log's latest queued upload until it settles. Until
+	// then the row carries only previews, so an update builds on this full payload
+	// instead of truncating the object it replaces.
+	pendingAgentMu sync.Mutex
+	pendingAgent   map[string]*uploadWork
 	// excludedPayloadFields is the set of payload field names (DB column names) that must NOT be offloaded to object storage and must remain in the DB.
 	excludedPayloadFields map[string]struct{}
 	// excludedRequestTypes is the set of log object types that are never offloaded; their rows stay complete in the DB.
@@ -178,6 +184,8 @@ func (h *HybridLogStore) queuedUploads() int {
 func (h *HybridLogStore) processUpload(work *uploadWork) {
 	payloadSize := int64(len(work.payload))
 	defer h.pendingBytes.Add(-payloadSize)
+	// Settled last, after has_object is set: from then on an update reads the object.
+	defer h.settlePendingAgentUpload(work)
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -471,8 +479,7 @@ func (h *HybridLogStore) enqueueReplacingUpload(logID string, timestamp time.Tim
 		h.logger.Warn("objectstore: upload queue memory limit reached, dropping upload for log %s", logID)
 		return
 	}
-	select {
-	case h.uploadShard(logID) <- &uploadWork{
+	work := &uploadWork{
 		logID:     logID,
 		timestamp: timestamp,
 		key:       key,
@@ -481,12 +488,59 @@ func (h *HybridLogStore) enqueueReplacingUpload(logID string, timestamp time.Tim
 		payload:   data,
 		tags:      tags,
 		staleKey:  staleKey,
-	}:
+	}
+	// Recorded before the send, so a worker that settles it at once cannot run first.
+	h.trackPendingAgentUpload(work)
+	sent := false
+	defer func() {
+		if !sent {
+			h.settlePendingAgentUpload(work)
+		}
+	}()
+	select {
+	case h.uploadShard(logID) <- work:
+		sent = true
 		h.pendingBytes.Add(int64(len(data)))
 	default:
 		h.droppedUploads.Add(1)
 		h.logger.Warn("objectstore: upload queue full, dropping upload for log %s", logID)
 	}
+}
+
+// trackPendingAgentUpload records work as its Agent log's latest queued upload.
+func (h *HybridLogStore) trackPendingAgentUpload(work *uploadWork) {
+	if work.kind != uploadKindAgent {
+		return
+	}
+	h.pendingAgentMu.Lock()
+	if h.pendingAgent == nil {
+		h.pendingAgent = make(map[string]*uploadWork)
+	}
+	h.pendingAgent[work.logID] = work
+	h.pendingAgentMu.Unlock()
+}
+
+// settlePendingAgentUpload forgets work once it is uploaded, dropped or failed, unless
+// a later upload for the same log has replaced it.
+func (h *HybridLogStore) settlePendingAgentUpload(work *uploadWork) {
+	if work.kind != uploadKindAgent {
+		return
+	}
+	h.pendingAgentMu.Lock()
+	if h.pendingAgent[work.logID] == work {
+		delete(h.pendingAgent, work.logID)
+	}
+	h.pendingAgentMu.Unlock()
+}
+
+// pendingAgentPayload returns the full payload of id's queued upload, or nil.
+func (h *HybridLogStore) pendingAgentPayload(id string) []byte {
+	h.pendingAgentMu.Lock()
+	defer h.pendingAgentMu.Unlock()
+	if work := h.pendingAgent[id]; work != nil {
+		return work.payload
+	}
+	return nil
 }
 
 // --- Intercepted methods ---
@@ -2153,6 +2207,9 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 		return h.inner.UpdateAgentLog(ctx, id, entry)
 	}
 
+	// Read before the row: a queued upload settles only after has_object is set, so
+	// a row still without its object is covered by this payload.
+	pending := h.pendingAgentPayload(id)
 	current, err := h.inner.FindAgentLog(ctx, id)
 	if err != nil {
 		return err
@@ -2160,6 +2217,11 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 	if current.HasObject {
 		if err := h.hydrateAgentLogFromObject(ctx, current); err != nil {
 			return err
+		}
+	} else if pending != nil {
+		// The row holds only previews until its upload lands; build on the full payload.
+		if err := MergeAgentLogPayloadFromJSON(current, pending); err != nil {
+			return fmt.Errorf("logstore: merge queued Agent log payload for %s: %w", id, err)
 		}
 	}
 

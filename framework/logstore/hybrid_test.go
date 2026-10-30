@@ -2340,3 +2340,52 @@ func TestHybrid_JSONFormat_DeleteRemovesParquetObject(t *testing.T) {
 	require.NoError(t, hybrid.DeleteLogs(ctx, []string{entry.ID}))
 	assert.Equal(t, 0, objStore.Len())
 }
+
+// gatedObjectStore holds every Put until release is closed.
+type gatedObjectStore struct {
+	objectstore.ObjectStore
+	release chan struct{}
+}
+
+func (s *gatedObjectStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	<-s.release
+	return s.ObjectStore.Put(ctx, key, data, tags)
+}
+
+// TestHybrid_UpdateAgentLogBeforeInitialUploadKeepsFullPayload: an update that lands
+// while the log's initial upload is still queued builds its replacement from the
+// queued full payload, not from the row's previews, so the stored object keeps the
+// untruncated body and the raw fields.
+func TestHybrid_UpdateAgentLogBeforeInitialUploadKeepsFullPayload(t *testing.T) {
+	gate := &gatedObjectStore{ObjectStore: objectstore.NewInMemoryObjectStore(), release: make(chan struct{})}
+	hybrid, inner := newTestHybridWithObjects(t, gate)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	requestBody := `{"request":"` + strings.Repeat("x", 3*maxA2APayloadPreviewRunes) + `"}`
+	rawRequest := `{"raw":"request"}`
+	entry := &AgentLog{
+		ID: "agent-early-update", Timestamp: time.Now().UTC(), RecordKind: "request",
+		Operation: "SendMessage", Status: "processing", AgentName: "fixture", RequestID: "req-agent-early-update",
+		RequestBody: &requestBody, RawRequest: &rawRequest,
+	}
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{
+		"status":        "success",
+		"response_body": `{"response":"done"}`,
+	}))
+	close(gate.release)
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject && hybrid.queuedUploads() == 0
+	})
+
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.RequestBody)
+	assert.Equal(t, len(requestBody), len(*found.RequestBody), "the request body was truncated to its preview")
+	require.NotNil(t, found.RawRequest, "the raw request was dropped")
+	assert.Equal(t, rawRequest, *found.RawRequest)
+	require.NotNil(t, found.ResponseBody)
+	assert.Equal(t, `{"response":"done"}`, *found.ResponseBody)
+}
