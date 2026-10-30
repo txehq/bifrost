@@ -1915,7 +1915,7 @@ func TestPushRelayDrainsAHeadOfLineBacklogInOnePass(t *testing.T) {
 	base := time.Now().UTC().Add(-time.Minute)
 	for i := range 5 {
 		_, err := store.CreateAgentPushDeliveryIfNotExists(ctx, &schemas.AgentPushDelivery{
-			ID: fmt.Sprintf("backlog-%d", i), AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", RegistrationHash: "registration-a",
+			ID: fmt.Sprintf("backlog-%d", i), AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1",
 			Payload: `{"kind":"status-update"}`, Status: schemas.AgentPushDeliveryStatusPending,
 			NextAttemptAt: base, CreatedAt: base.Add(time.Duration(i) * time.Second), UpdatedAt: base,
 		})
