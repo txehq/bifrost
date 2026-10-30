@@ -22,6 +22,8 @@ import (
 	"github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
+	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/fasthttp/router"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1802,5 +1804,120 @@ func TestRawBodyForRequestNilBody(t *testing.T) {
 	ctx.Request.Header.Set(schemas.AsyncHeaderCreate, "true")
 	if got := rawBodyForRequest(ctx, nil); got != nil {
 		t.Fatalf("async nil body = %v, want nil", got)
+	}
+}
+
+// TestPassthroughSafeHeadersDropMethodOverrides: governance judges a passthrough
+// request by its method, so a header that makes the upstream treat it as another
+// method (Google APIs honour X-HTTP-Method-Override) must not be forwarded.
+func TestPassthroughSafeHeadersDropMethodOverrides(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.DisableNormalizing()
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.Header.Set("Authorization", "Bearer caller")
+	ctx.Request.Header.Set("X-HTTP-Method-Override", "DELETE")
+	ctx.Request.Header.Set("X-HTTP-Method", "GET")
+	ctx.Request.Header.Set("X-Method-Override", "PATCH")
+	ctx.Request.Header.Set("x_http_method_override", "DELETE")
+	ctx.Request.Header.Set("X-Bf-Vk", "sk-bf-internal")
+	ctx.Request.Header.Set("Anthropic-Version", "2023-06-01")
+
+	safe, callerAuth := genericPassthroughHeaders(ctx)
+	require.Equal(t, "Bearer caller", callerAuth)
+	for _, name := range []string{"x-http-method-override", "x-http-method", "x-method-override", "x_http_method_override", "x-bf-vk", "authorization"} {
+		_, present := safe[name]
+		require.False(t, present, "%s must not be forwarded", name)
+	}
+	require.Equal(t, "2023-06-01", safe["anthropic-version"], "ordinary headers still pass")
+}
+
+// methodOverrideTestAccount points OpenAI and Gemini at one local upstream with synthetic keys.
+type methodOverrideTestAccount struct{ baseURL string }
+
+func (a methodOverrideTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI, schemas.Gemini}, nil
+}
+
+func (a methodOverrideTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "operator-" + string(p), Value: *schemas.NewSecretVar("synthetic-operator-" + string(p)), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+}
+
+func (a methodOverrideTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if p != schemas.OpenAI && p != schemas.Gemini {
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	nc := schemas.DefaultNetworkConfig
+	nc.BaseURL = a.baseURL
+	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// A passthrough request reaches the upstream with the method governance judged it by: no
+// method-override header gets there, whether the caller sends it directly, through x-bf-eh-*,
+// or under a "*" header allowlist, in any case or with '_' for '-'. Ordinary headers, the
+// method, the path and the body pass unchanged, on the OpenAI and the GenAI routes.
+func TestPassthroughUpstreamNeverSeesMethodOverrides(t *testing.T) {
+	type hit struct {
+		method, uri, body string
+		headers           http.Header
+	}
+	var mu sync.Mutex
+	var hits []hit
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		hits = append(hits, hit{method: r.Method, uri: r.URL.RequestURI(), body: string(body), headers: r.Header.Clone()})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: methodOverrideTestAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	store := &mockHandlerStore{headerMatcher: lib.NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{Allowlist: []string{"*"}})}
+	NewOpenAIPassthroughRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewGenAIPassthroughRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	overrides := []string{"X-HTTP-Method-Override", "X-HTTP-Method", "X-Method-Override", "x_http_method_override", "X_HTTP_METHOD",
+		"x-bf-eh-x-http-method-override", "x-bf-eh-X_HTTP_METHOD", "x-bf-eh-x-method-override"}
+	for _, uri := range []string{"/openai_passthrough/v1/files", "/genai_passthrough/v1beta/files"} {
+		t.Run(uri, func(t *testing.T) {
+			mu.Lock()
+			hits = nil
+			mu.Unlock()
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.DisableNormalizing()
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI(uri)
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.SetBodyString(`{"purpose":"batch"}`)
+			for _, h := range overrides {
+				ctx.Request.Header.Set(h, "GET")
+			}
+			ctx.Request.Header.Set("OpenAI-Beta", "assistants=v2")
+			r.Handler(&ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+
+			mu.Lock()
+			defer mu.Unlock()
+			require.Len(t, hits, 1, "exactly one upstream request")
+			got := hits[0]
+			assert.Equal(t, http.MethodPost, got.method)
+			assert.Equal(t, `{"purpose":"batch"}`, got.body)
+			assert.Equal(t, "assistants=v2", got.headers.Get("OpenAI-Beta"), "ordinary headers still pass")
+			for name := range got.headers {
+				switch strings.ReplaceAll(strings.ToLower(name), "_", "-") {
+				case "x-http-method-override", "x-http-method", "x-method-override":
+					t.Errorf("method override %q reached the upstream", name)
+				}
+			}
+		})
 	}
 }

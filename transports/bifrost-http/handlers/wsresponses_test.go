@@ -246,6 +246,28 @@ func TestCreateBifrostContextFromAuth_AppliesHeaderFilterAndDirectAllowlist(t *t
 	assert.NotContains(t, extraHeaders, "anthropic-secret")
 }
 
+// A method override never rides a websocket's forwarded headers either, through x-bf-eh-* or a
+// "*" allowlist, in any case or with '_' for '-'.
+func TestCreateBifrostContextFromAuth_DropsMethodOverrides(t *testing.T) {
+	matcher := lib.NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{Allowlist: []string{"*"}})
+	ctx, cancel := createBifrostContextFromAuth(testWSHandlerStore{matcher: matcher}, &authHeaders{
+		headers: map[string][]string{
+			"x-bf-eh-originator":             {"allowed"},
+			"x-bf-eh-x-http-method-override": {"DELETE"},
+			"x-bf-eh-x_http_method":          {"DELETE"},
+			"x-method-override":              {"DELETE"},
+			"x_http_method_override":         {"DELETE"},
+		},
+	})
+	defer cancel()
+
+	extraHeaders, _ := ctx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+	assert.Equal(t, []string{"allowed"}, extraHeaders["originator"])
+	for _, name := range []string{"x-http-method-override", "x_http_method", "x-method-override", "x_http_method_override"} {
+		assert.NotContains(t, extraHeaders, name)
+	}
+}
+
 func TestCaptureAuthHeaders_PreservesDuplicateHeaderValues(t *testing.T) {
 	var req fasthttp.Request
 	req.Header.Set("Host", "example.test")
