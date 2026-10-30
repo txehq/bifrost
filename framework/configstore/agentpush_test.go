@@ -358,3 +358,44 @@ func TestSaveAgentPushConfigRefusesAnotherTenantsRow(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "https://a.example/replaced", got.URL)
 }
+
+// TestBindAgentPushConfigTaskReplacesExistingRegistration covers a follow-up
+// send that embeds an existing task's config ID: binding replaces the earlier
+// registration and rotates its ingress token instead of colliding with the
+// (agent, task, config) key. Another tenant's row is never replaced.
+func TestBindAgentPushConfigTaskReplacesExistingRegistration(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	save := func(taskID, tenant, url, hash string) {
+		t.Helper()
+		require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{AgentName: "fixture", TaskID: taskID, ConfigID: "cfg-1", Tenant: tenant, URL: url, IngressTokenHash: hash, CreatedAt: now, UpdatedAt: now}))
+	}
+	save("task-1", "tenant-a", "https://a.example/first", "hash-old")
+	save("__bifrost_pending__:one", "tenant-a", "https://a.example/second", "hash-new")
+
+	require.NoError(t, store.BindAgentPushConfigTask(ctx, "fixture", "hash-new", "__bifrost_pending__:one", "task-1"))
+	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "https://a.example/second", got.URL)
+	require.Equal(t, "hash-new", got.IngressTokenHash)
+	stale, err := store.GetAgentPushConfigByIngressTokenHash(ctx, "fixture", "hash-old")
+	require.NoError(t, err)
+	require.Nil(t, stale, "the replaced registration's ingress token must stop authenticating")
+	pending, err := store.GetAgentPushConfigByIngressTokenHash(ctx, "fixture", "hash-new")
+	require.NoError(t, err)
+	require.Equal(t, "task-1", pending.TaskID)
+
+	// A pending row from another tenant must not replace tenant-a's registration.
+	save("__bifrost_pending__:two", "tenant-b", "https://b.example/callback", "hash-b")
+	require.ErrorIs(t, store.BindAgentPushConfigTask(ctx, "fixture", "hash-b", "__bifrost_pending__:two", "task-1"), ErrAgentPushConfigTenantConflict)
+	got, err = store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "tenant-a", got.Tenant)
+	require.Equal(t, "hash-new", got.IngressTokenHash)
+
+	// Binding a row that is no longer pending is a no-op.
+	require.NoError(t, store.BindAgentPushConfigTask(ctx, "fixture", "hash-new", "__bifrost_pending__:one", "task-1"))
+}

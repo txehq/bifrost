@@ -1157,6 +1157,27 @@ func TestAcceptPushCallbackAuthenticatesAndDeduplicates(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, status)
 }
 
+// TestAcceptPushCallbackKeepsRepeatedArtifactAppends verifies that two append
+// events with identical bytes are both delivered: an append carries no event
+// identity, so equal payloads are distinct increments, not a retransmission.
+func TestAcceptPushCallbackKeepsRepeatedArtifactAppends(t *testing.T) {
+	m, handler, store, upstream := pushGateway(t)
+	_, err := handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{TaskID: "task-1", ID: "cfg-1", URL: "http://client.example/callback"})
+	require.NoError(t, err)
+	token := upstream.lastCreated(t).Token
+	appendEvent, err := json.Marshal(a2a.StreamResponse{Event: &a2a.TaskArtifactUpdateEvent{TaskID: "task-1", ContextID: "ctx-1", Append: true, Artifact: &a2a.Artifact{ID: "artifact-1", Parts: []*a2a.Part{a2a.NewTextPart("ha")}}}})
+	require.NoError(t, err)
+
+	for range 2 {
+		status, err := m.AcceptPushCallback(context.Background(), "fixture", token, appendEvent)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusAccepted, status)
+	}
+	store.pushMu.Lock()
+	defer store.pushMu.Unlock()
+	require.Len(t, store.deliveries, 2, "each accepted append must be delivered")
+}
+
 func TestPushDeliveryBlocksPrivateDestination(t *testing.T) {
 	called := atomic.Bool{}
 	downstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {

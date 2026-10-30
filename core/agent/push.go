@@ -649,7 +649,7 @@ func (m *Manager) AcceptPushCallback(ctx context.Context, agentName, token strin
 	if config == nil {
 		return http.StatusUnauthorized, errors.New("push ingress token is not recognized")
 	}
-	taskID, err := pushEventTaskID(body)
+	taskID, appendsArtifact, err := pushEventTaskID(body)
 	if err != nil {
 		return http.StatusBadRequest, err
 	}
@@ -675,8 +675,14 @@ func (m *Manager) AcceptPushCallback(ctx context.Context, agentName, token strin
 	payload := string(body)
 	// The delivery ID is a content digest scoped to the Agent and config, so an
 	// upstream retransmission of the same event deduplicates without colliding
-	// with an identical config ID and payload from another Agent.
-	sum := sha256.Sum256([]byte(agentName + "\x00" + config.ConfigID + "\x00" + payload))
+	// with an identical config ID and payload from another Agent. An artifact
+	// append carries no event identity and is not idempotent: two equal appends
+	// are two increments, so each gets a unique ID instead of a digest.
+	identity := agentName + "\x00" + config.ConfigID + "\x00" + payload
+	if appendsArtifact {
+		identity += "\x00" + uuid.NewString()
+	}
+	sum := sha256.Sum256([]byte(identity))
 	deliveryID := hex.EncodeToString(sum[:])
 
 	envelope := &schemas.BifrostA2ARequest{
@@ -730,23 +736,24 @@ func (m *Manager) AcceptPushCallback(ctx context.Context, agentName, token strin
 	return http.StatusAccepted, nil
 }
 
-// pushEventTaskID extracts the addressed task from one pushed strict-v1 event.
-func pushEventTaskID(body []byte) (string, error) {
+// pushEventTaskID extracts the addressed task from one pushed strict-v1 event
+// and reports whether the event appends to an artifact.
+func pushEventTaskID(body []byte) (string, bool, error) {
 	var sr a2a.StreamResponse
 	if err := json.Unmarshal(body, &sr); err != nil || sr.Event == nil {
-		return "", errors.New("push payload is not a valid A2A event")
+		return "", false, errors.New("push payload is not a valid A2A event")
 	}
 	switch event := sr.Event.(type) {
 	case *a2a.Message:
-		return string(event.TaskID), nil
+		return string(event.TaskID), false, nil
 	case *a2a.Task:
-		return string(event.ID), nil
+		return string(event.ID), false, nil
 	case *a2a.TaskStatusUpdateEvent:
-		return string(event.TaskID), nil
+		return string(event.TaskID), false, nil
 	case *a2a.TaskArtifactUpdateEvent:
-		return string(event.TaskID), nil
+		return string(event.TaskID), event.Append, nil
 	default:
-		return "", errors.New("push payload event type is not supported")
+		return "", false, errors.New("push payload event type is not supported")
 	}
 }
 

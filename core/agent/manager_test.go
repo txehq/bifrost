@@ -173,6 +173,31 @@ func TestWrapJSONStreamErrorReframesJSONReplyAsSSE(t *testing.T) {
 	require.Equal(t, errBody, string(body))
 }
 
+// TestCredentialTransportPropagatesTruncatedJSONStreamReply verifies that a
+// failed read of a JSON reply to a streaming request surfaces as an error
+// instead of an empty, apparently successful stream.
+func TestCredentialTransportPropagatesTruncatedJSONStreamReply(t *testing.T) {
+	base := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(io.MultiReader(strings.NewReader(`{"jsonrpc":"2.0",`), iotestErrReader{io.ErrUnexpectedEOF})),
+		}, nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "http://upstream/", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := (&credentialTransport{base: base}).RoundTrip(req)
+	if err == nil {
+		_, err = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+	}
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+}
+
+type iotestErrReader struct{ err error }
+
+func (r iotestErrReader) Read([]byte) (int, error) { return 0, r.err }
+
 type memoryStore struct {
 	mu         sync.Mutex
 	regs       map[string]schemas.AgentRegistration
