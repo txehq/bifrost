@@ -84,6 +84,10 @@ source "$SCRIPT_DIR/harness-gateway.sh"
 cleanup() {
   local exit_code=$?
   harness_stop_gateway
+  if [ -n "${A2A_FIXTURE_PID:-}" ] && kill -0 "$A2A_FIXTURE_PID" 2>/dev/null; then
+    kill "$A2A_FIXTURE_PID" 2>/dev/null || true
+    wait "$A2A_FIXTURE_PID" 2>/dev/null || true
+  fi
   # The service-account key is the only secret written to disk; never leave it
   # behind for the artifact-upload step to pick up.
   rm -f "$GCLOUD_KEY_FILE"
@@ -113,6 +117,25 @@ if [ -n "${VERTEX_CREDENTIALS:-}" ] && command -v gcloud >/dev/null 2>&1; then
 else
   echo "⚠️  VERTEX_CREDENTIALS unset or gcloud missing - Vertex direct-provider parity cells will 401"
 fi
+
+# The Agent Gateway rows (folder 266, a2a-push-tenancy) need an upstream A2A agent.
+# tests/e2e/api/runners/a2a-push-fixture.mjs is one, on loopback only; the python
+# profile allowlists 127.0.0.1 as an A2A destination so the gateway may discover it.
+A2A_FIXTURE_PORT="${A2A_FIXTURE_PORT:-18091}"
+A2A_FIXTURE_LOG="$REPO_ROOT/tmp/a2a-push-fixture.log"
+node "$REPO_ROOT/tests/e2e/api/runners/a2a-push-fixture.mjs" "$A2A_FIXTURE_PORT" > "$A2A_FIXTURE_LOG" 2>&1 &
+A2A_FIXTURE_PID=$!
+for _ in $(seq 1 20); do
+  if curl -fsS --max-time 2 "http://127.0.0.1:$A2A_FIXTURE_PORT/.well-known/agent-card.json" >/dev/null 2>&1; then break; fi
+  if ! kill -0 "$A2A_FIXTURE_PID" 2>/dev/null; then break; fi
+  sleep 1
+done
+if ! curl -fsS --max-time 2 "http://127.0.0.1:$A2A_FIXTURE_PORT/.well-known/agent-card.json" >/dev/null 2>&1; then
+  echo "❌ a2a-push-fixture did not come up on 127.0.0.1:$A2A_FIXTURE_PORT" >&2
+  cat "$A2A_FIXTURE_LOG" >&2 || true
+  exit 1
+fi
+echo "✅ a2a-push-fixture listening on 127.0.0.1:$A2A_FIXTURE_PORT (PID $A2A_FIXTURE_PID)"
 
 harness_start_gateway "$APP_DIR" "$PORT" "$SERVER_LOG"
 
