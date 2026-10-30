@@ -258,6 +258,41 @@ func TestBilling_BudgetExhaustionEndsTheSessionGracefully(t *testing.T) {
 	})
 }
 
+// After a refused renewal, responses still draining settle on the last admitted unit. Each is
+// priced on its own: two 150k-input responses stay under the 272k threshold and keep their own
+// service tiers, in the log row and the budget alike, and the row reports the totals.
+func TestBilling_RefusedDrainPricesEachResponseOnItsOwn(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	forEachTransport(t, func(t *testing.T, tr transport) {
+		budget := 0.05 // two 30 s windows at $0.03 each cross it; the next renewal is refused
+		vk := createVirtualKey(t, virtualKeySpec{budgetUSD: &budget})
+		c, s := openFakeSession(t, tr, vk, backendModel, nil)
+		s.HoldClose()
+
+		s.EmitUsage(30)
+		settle()
+		s.EmitUsage(60)
+		settle()
+		s.Play(delegation{ID: "item_1", ResponseID: "resp_1", Model: backendModel, Input: 150000, Output: 1000, Tier: "priority"})
+		assert.Contains(t, strings.ToLower(errorMessage(c.WaitFor("error"))), "budget")
+		s.WaitInbound(t, "session.close", 1)
+		s.Play(delegation{ID: "item_2", ResponseID: "resp_2", Model: backendModel, Input: 150000, Output: 1000})
+		settle()
+		s.Close("close_requested", 60)
+		c.WaitFor("session.closed")
+		c.WaitGone()
+
+		row := findLiveLog(t, s.ID())
+		backendCost := 150000*fakeInputCostPriority + 1000*fakeOutputCostPriority + 150000*fakeInputCostPerToken + 1000*fakeOutputCostPerToken
+		assert.InDelta(t, backendCost, row.Get("live_session.backend_cost").Float(), 1e-9, "each drained response is priced on its own")
+		assert.Equal(t, 300000.0, row.Get("token_usage.prompt_tokens").Float(), "the row still reports the totals")
+		total := 60*fakeVoiceCostPerSecond + backendCost
+		assert.InDelta(t, total, row.Get("cost").Float(), 1e-9)
+		waitBudgetUsage(t, vk.BudgetID, total)
+	})
+}
+
 func TestBilling_UpstreamDropBillsLastReportedUsage(t *testing.T) {
 	requireFake(t)
 	t.Parallel()

@@ -188,6 +188,11 @@ const (
 	fakeVoiceCostPerSecond = 0.001
 	fakeInputCostPerToken  = 0.000001
 	fakeOutputCostPerToken = 0.000002
+	// Rates a merged usage or a borrowed tier would reach, which no single test response does.
+	fakeInputCostAbove272k  = 0.00001
+	fakeOutputCostAbove272k = 0.00002
+	fakeInputCostPriority   = 0.000002
+	fakeOutputCostPriority  = 0.000004
 )
 
 // installFakePricing pins the prices the fake-mode gateway bills with, replacing any left by an
@@ -202,7 +207,11 @@ func installFakePricing() error {
 	}
 	for _, model := range []string{backendModel, backendModel2} {
 		overrides = append(overrides, map[string]any{"name": "live-e2e backend " + model, "scope_kind": "global", "match_type": "exact", "pattern": model,
-			"request_types": []string{"responses"}, "patch": map[string]any{"input_cost_per_token": fakeInputCostPerToken, "output_cost_per_token": fakeOutputCostPerToken}})
+			"request_types": []string{"responses"}, "patch": map[string]any{
+				"input_cost_per_token": fakeInputCostPerToken, "output_cost_per_token": fakeOutputCostPerToken,
+				"input_cost_per_token_above_272k_tokens": fakeInputCostAbove272k, "output_cost_per_token_above_272k_tokens": fakeOutputCostAbove272k,
+				"input_cost_per_token_priority": fakeInputCostPriority, "output_cost_per_token_priority": fakeOutputCostPriority,
+			}})
 	}
 	for _, override := range overrides {
 		if status, raw, err := apiCall(http.MethodPost, "/api/governance/pricing-overrides", override, nil); err != nil || status >= 300 {

@@ -102,3 +102,47 @@ test("the stall proxy holds a CONNECT unanswered and counts it", async (t) => {
   const hits = await (await fetch(`http://127.0.0.1:${post.port}/__hits`)).json();
   assert.equal(hits.data[0].hits.__stall_proxy_connects, 1);
 });
+
+test("a turns model calls the tool, then answers once the result comes back", async (t) => {
+  const post = await startFixture(t);
+  const first = await (await post({ model: "turns-priced", messages: [{ role: "user", content: "weather?" }] })).json();
+  assert.equal(first.choices[0].finish_reason, "tool_calls");
+  assert.equal(first.usage.prompt_tokens, 150000);
+  const second = await (await post({ model: "turns-priced", messages: [{ role: "tool", content: "Sunny.", tool_call_id: "call_turn_1" }] })).json();
+  assert.equal(second.choices[0].finish_reason, "stop");
+
+  const tiered = await (await post({ model: "turns-tiered", input: [] }, "/v1/responses")).json();
+  assert.equal(tiered.service_tier, "priority");
+  assert.equal(tiered.output[0].type, "function_call");
+  const third = await post({ model: "turns-fail", input: [{ type: "function_call_output" }, { type: "function_call_output" }] }, "/v1/responses");
+  assert.equal(third.status, 500);
+});
+
+test("a turns model streams its turn with usage on the terminal event", async (t) => {
+  const post = await startFixture(t);
+  const chat = await (await post({ model: "turns-priced", stream: true, messages: [] })).text();
+  assert.match(chat, /"prompt_tokens":150000/);
+  assert.match(chat, /data: \[DONE\]/);
+  const responses = await (await post({ model: "turns-priced", stream: true, input: [] }, "/v1/responses")).text();
+  assert.match(responses, /event: response\.completed/);
+  assert.match(responses, /"input_tokens":150000/);
+});
+
+test("the MCP endpoint serves the tool the turns models call", async (t) => {
+  const post = await startFixture(t);
+  const call = async (method) => (await post({ jsonrpc: "2.0", id: 1, method }, "/mcp")).json();
+  assert.equal((await call("initialize")).result.serverInfo.name, "provider-error-fixture");
+  assert.equal((await call("tools/list")).result.tools[0].name, "web_search");
+  assert.equal((await call("tools/call")).result.content[0].text, "Sunny.");
+  assert.equal((await post({ jsonrpc: "2.0", method: "notifications/initialized" }, "/mcp")).status, 202);
+});
+
+test("decision routes reject their answers but report usage", async (t) => {
+  const post = await startFixture(t);
+  const native = await (await post({ model: "gpt-6-luna" }, "/v1/decisions")).json();
+  assert.deepEqual(native.answers, []);
+  assert.equal(native.usage.total_tokens, 1010);
+  const routed = await (await post({ model: "typesafe/jev-1.13" }, "/alpha/decisions")).json();
+  assert.equal(routed.usage.cost, 0.25);
+});
+

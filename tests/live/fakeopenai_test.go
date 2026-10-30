@@ -60,6 +60,7 @@ type fakeSession struct {
 	recordingPace  time.Duration // pause between 1 MiB chunks of a large recording
 	recordingSent  int           // bytes of a large recording written so far
 	closed         bool
+	holdClose      bool // a session.close waits for the test to call Close
 }
 
 // fakeConn is one connection of a session: a WebSocket, or a WebRTC data channel.
@@ -620,9 +621,11 @@ func (s *fakeSession) handleInbound(frame []byte) {
 		s.broadcast([]byte(`{"type":"session.thinking.appended","event_id":"evt_thinking","client_event_id":"` + gjson.GetBytes(frame, "event_id").Str + `"}`))
 	case "session.close":
 		s.mu.Lock()
-		seconds := s.seconds
+		seconds, hold := s.seconds, s.holdClose
 		s.mu.Unlock()
-		s.Close("close_requested", seconds)
+		if !hold {
+			s.Close("close_requested", seconds)
+		}
 	}
 }
 
@@ -644,6 +647,14 @@ func (s *fakeSession) EmitUsage(seconds float64) {
 	s.seconds = seconds
 	s.mu.Unlock()
 	s.Emit(fmt.Sprintf(`{"type":"session.usage.updated","usage":{"seconds":%g,"context_window":0.01}}`, seconds))
+}
+
+// HoldClose leaves a session.close unanswered until the test calls Close, the window in which
+// a refused session's responses still drain.
+func (s *fakeSession) HoldClose() {
+	s.mu.Lock()
+	s.holdClose = true
+	s.mu.Unlock()
 }
 
 // Close ends the session the way OpenAI does: session.closed with the final usage, then the
@@ -774,7 +785,8 @@ type delegation struct {
 	Output     int
 	Reasoning  int
 	Cached     int
-	Created    bool // send session.delegation.created first
+	Created    bool   // send session.delegation.created first
+	Tier       string // service_tier the response reports, none when empty
 }
 
 // item builders, in OpenAI's wire shapes.
@@ -805,8 +817,12 @@ func (s *fakeSession) Play(d delegation) {
 	for i, item := range d.Items {
 		s.Emit(fmt.Sprintf(`{"type":"response.event","delegation_id":%q,"event":{"type":"response.output_item.done","output_index":%d,"item":%s}}`, d.ID, i, item))
 	}
-	s.Emit(fmt.Sprintf(`{"type":"response.event","delegation_id":%q,"event":{"type":"response.completed","response":{"id":%q,"object":"response","model":%q,"status":"completed","output":[],"usage":{"input_tokens":%d,"input_tokens_details":{"cached_tokens":%d},"output_tokens":%d,"output_tokens_details":{"reasoning_tokens":%d},"total_tokens":%d}}}}`,
-		d.ID, d.ResponseID, d.Model, d.Input, d.Cached, d.Output, d.Reasoning, d.Input+d.Output))
+	tier := ""
+	if d.Tier != "" {
+		tier = fmt.Sprintf(`"service_tier":%q,`, d.Tier)
+	}
+	s.Emit(fmt.Sprintf(`{"type":"response.event","delegation_id":%q,"event":{"type":"response.completed","response":{"id":%q,"object":"response","model":%q,"status":"completed",%s"output":[],"usage":{"input_tokens":%d,"input_tokens_details":{"cached_tokens":%d},"output_tokens":%d,"output_tokens_details":{"reasoning_tokens":%d},"total_tokens":%d}}}}`,
+		d.ID, d.ResponseID, d.Model, tier, d.Input, d.Cached, d.Output, d.Reasoning, d.Input+d.Output))
 }
 
 // DelegateToClient hands the app a task, as OpenAI does under client delegation: metadata only.
