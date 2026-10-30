@@ -13,6 +13,7 @@ import (
 	"math"
 	"net"
 	"net/url"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -143,6 +144,10 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 	baseProvider := provider
 	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.BaseProviderType != "" {
 		baseProvider = providerConfig.CustomProviderConfig.BaseProviderType
+	}
+
+	if requireGenuineAuthForKeySecretRefs(ctx, nil, &key) {
+		return
 	}
 
 	if requireGenuineAuthForEndpointChange(ctx, nil, key) {
@@ -282,6 +287,10 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 	baseProvider := provider
 	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.BaseProviderType != "" {
 		baseProvider = providerConfig.CustomProviderConfig.BaseProviderType
+	}
+
+	if requireGenuineAuthForKeySecretRefs(ctx, oldRawKey, &mergedKey) {
+		return
 	}
 
 	if requireGenuineAuthForEndpointChange(ctx, oldRawKey, mergedKey) {
@@ -1316,6 +1325,106 @@ func requireGenuineAuthForEndpointChange(ctx *fasthttp.RequestCtx, oldKey *schem
 	}
 	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Changing where a provider key dials (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
 	return true
+}
+
+// requireGenuineAuthForKeySecretRefs rejects, under the fail-open bypass, a provider-key
+// create/update that introduces or repoints a server secret reference (env.VAR or vault.path)
+// in any field of the key. The key's credentials are resolved from that reference and sent to
+// the provider on every request, so whoever chooses the reference chooses which server secret
+// leaves the gateway - the same rule requireGenuineAuthForHeaderSecretRefs applies to provider
+// extra headers. Comparison is by JSON path against the stored key (nil on create): a
+// reference kept at its stored path passes, while one moved to another field counts as new.
+// Removals and literal values pass. The body was already decoded, which resolves env
+// references in memory; on rejection nothing is persisted and the response names only the
+// paths. On rejection this sends the response and returns true.
+func requireGenuineAuthForKeySecretRefs(ctx *fasthttp.RequestCtx, stored, next *schemas.Key) bool {
+	if !isAuthBypassed(ctx) {
+		return false
+	}
+	changed := changedKeySecretRefs(stored, next)
+	if len(changed) == 0 {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Setting a provider key field to a server secret reference (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
+	return true
+}
+
+// changedKeySecretRefs returns the sorted paths of the secret references in next that are not
+// stored at the same path in stored (nil on create, so every reference counts).
+func changedKeySecretRefs(stored, next *schemas.Key) []string {
+	storedRefs := map[string]string{}
+	if stored != nil {
+		storedRefs = keySecretRefs(stored)
+	}
+	var changed []string
+	for path, ref := range keySecretRefs(next) {
+		if previous, ok := storedRefs[path]; ok && previous == ref {
+			continue
+		}
+		changed = append(changed, path)
+	}
+	slices.Sort(changed)
+	return changed
+}
+
+var secretVarReflectType = reflect.TypeOf(schemas.SecretVar{})
+
+// keySecretRefs returns every env or vault reference held anywhere in key, keyed by its JSON
+// path. It walks the key by reflection rather than listing fields, so a SecretVar added to any
+// key config later is covered without a change here (keyDialTargets is a list because only some
+// fields are destinations; every SecretVar can name a server secret). Embedded structs are
+// flattened as JSON flattens them, and map keys are quoted so no two paths can collide.
+func keySecretRefs(key *schemas.Key) map[string]string {
+	refs := map[string]string{}
+	if key != nil {
+		collectSecretRefs(reflect.ValueOf(key).Elem(), "", refs)
+	}
+	return refs
+}
+
+func collectSecretRefs(v reflect.Value, path string, refs map[string]string) {
+	if v.Type() == secretVarReflectType {
+		secret := v.Interface().(schemas.SecretVar)
+		if secret.IsFromSecret() {
+			refs[path] = string(secret.Type()) + ":" + secret.GetRawRef()
+		}
+		return
+	}
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if !v.IsNil() {
+			collectSecretRefs(v.Elem(), path, refs)
+		}
+	case reflect.Struct:
+		t := v.Type()
+		for i := range t.NumField() {
+			field := t.Field(i)
+			if !field.IsExported() {
+				continue
+			}
+			name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+			if field.Anonymous && name == "" {
+				collectSecretRefs(v.Field(i), path, refs)
+				continue
+			}
+			if name == "" || name == "-" {
+				name = field.Name
+			}
+			if path != "" {
+				name = path + "." + name
+			}
+			collectSecretRefs(v.Field(i), name, refs)
+		}
+	case reflect.Map:
+		iter := v.MapRange()
+		for iter.Next() {
+			collectSecretRefs(iter.Value(), fmt.Sprintf("%s[%q]", path, fmt.Sprint(iter.Key().Interface())), refs)
+		}
+	case reflect.Slice, reflect.Array:
+		for i := range v.Len() {
+			collectSecretRefs(v.Index(i), fmt.Sprintf("%s[%d]", path, i), refs)
+		}
+	}
 }
 
 // validateVertexKeyAuth rejects Vertex keys that configure two identities at once: an

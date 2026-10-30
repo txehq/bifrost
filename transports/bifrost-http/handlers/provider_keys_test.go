@@ -1,18 +1,27 @@
 package handlers
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/bytedance/sonic"
+	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
@@ -1964,4 +1973,596 @@ func TestProviderKeyWrites_RejectUnknownOAuthKeyConfigFields(t *testing.T) {
 			t.Fatalf("the stored key must be untouched, got %+v", stored.OAuthKeyConfig)
 		}
 	})
+}
+
+// The synthetic server secret the TXE-4989 tests place in the environment. Tests assert on
+// whether it was delivered or echoed and never print it.
+const (
+	txe4989SecretEnv = "TXE4989_SYNTHETIC_SERVER_SECRET"
+	txe4989Secret    = "txe4989-synthetic-server-secret-0123456789"
+	txe4989OtherEnv  = "TXE4989_SYNTHETIC_OTHER_SECRET"
+	txe4989Other     = "txe4989-synthetic-other-secret-9876543210"
+)
+
+// TestCreateProviderKey_BypassedSecretReferenceNeverReachesTheProvider is the end-to-end form
+// of TXE-4989: an administrator configured a custom provider whose base URL is an owned loopback
+// target, and a caller let through only because dashboard auth is off creates a key whose value
+// is an env. reference to a server secret. The create must be refused and inference must not
+// carry the secret. The genuine-admin control proves the target does see the secret when the
+// same key is legitimately configured, so the bypassed case cannot pass by delivering nothing.
+func TestCreateProviderKey_BypassedSecretReferenceNeverReachesTheProvider(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	t.Setenv(txe4989SecretEnv, txe4989Secret)
+
+	for _, tc := range []struct {
+		name          string
+		bypassed      bool
+		wantStatus    int
+		wantDelivered int64
+	}{
+		{name: "auth bypassed", bypassed: true, wantStatus: fasthttp.StatusForbidden, wantDelivered: 0},
+		{name: "genuine admin", bypassed: false, wantStatus: fasthttp.StatusOK, wantDelivered: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requests, delivered atomic.Int64
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if strings.Contains(r.Header.Get("Authorization"), txe4989Secret) {
+					delivered.Add(1)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"c","object":"chat.completion","created":1,"model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+			}))
+			defer target.Close()
+
+			const provider = schemas.ModelProvider("owned-openai")
+			store := &lib.Config{
+				ClientConfig: &configstore.ClientConfig{},
+				Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+					provider: {
+						NetworkConfig:            &schemas.NetworkConfig{BaseURL: target.URL, AllowPrivateNetwork: true, DefaultRequestTimeoutInSeconds: 10},
+						ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+						CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+					},
+				},
+			}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: lib.NewBaseAccount(store), Logger: bifrost.NewDefaultLogger(schemas.LogLevelError)})
+			if err != nil {
+				t.Fatalf("init: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+			store.SetBifrostClient(client)
+			h := &ProviderHandler{inMemoryStore: store, modelsManager: &mockModelsManager{}}
+
+			ctx := newTestRequestCtx(`{"name":"referenced","value":"env.` + txe4989SecretEnv + `","models":["*"],"weight":1}`)
+			ctx.SetUserValue("provider", string(provider))
+			if tc.bypassed {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
+			h.createProviderKey(ctx)
+			// Errorf, not Fatalf: inference below still runs, so a missing guard is reported with
+			// what it costs (the target receiving the secret), not only the status.
+			if got := ctx.Response.StatusCode(); got != tc.wantStatus {
+				t.Errorf("create status got %d, want %d", got, tc.wantStatus)
+			}
+			if strings.Contains(string(ctx.Response.Body()), txe4989Secret) {
+				t.Errorf("the create response disclosed the resolved server secret")
+			}
+			if tc.bypassed {
+				if keys := store.Providers[provider].Keys; len(keys) != 0 {
+					t.Errorf("a refused key was stored (%d keys)", len(keys))
+				}
+			}
+
+			bctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(15*time.Second))
+			_, _ = client.ChatCompletionRequest(bctx, &schemas.BifrostChatRequest{Provider: provider, Model: "gpt-4o-mini",
+				Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}}})
+			if got := delivered.Load(); got != tc.wantDelivered {
+				t.Fatalf("owned target requests carrying the synthetic secret: got %d, want %d (requests %d)", got, tc.wantDelivered, requests.Load())
+			}
+		})
+	}
+}
+
+// keySecretSite is one place a SecretVar can sit in a schemas.Key, as the steps that reach it
+// from the Key: a field index, or one of the container steps below.
+type keySecretSite []int
+
+const (
+	siteDeref    = -1 // follow (allocating) a pointer
+	siteMapEntry = -2 // the map entry under key "m"
+	siteSliceEl  = -3 // the slice's single element
+)
+
+// enumerateKeySecretSites lists every SecretVar site in the Key type graph, generated from the
+// types themselves so a SecretVar added to any key config later is in the list automatically.
+func enumerateKeySecretSites(t *testing.T) []keySecretSite {
+	t.Helper()
+	var sites []keySecretSite
+	seen := map[reflect.Type]bool{}
+	var walk func(typ reflect.Type, steps []int)
+	walk = func(typ reflect.Type, steps []int) {
+		next := func(step int) []int { return append(slices.Clone(steps), step) }
+		if typ == secretVarReflectType {
+			sites = append(sites, keySecretSite(slices.Clone(steps)))
+			return
+		}
+		switch typ.Kind() {
+		case reflect.Pointer:
+			walk(typ.Elem(), next(siteDeref))
+		case reflect.Struct:
+			if seen[typ] {
+				return
+			}
+			seen[typ] = true
+			defer delete(seen, typ)
+			for i := range typ.NumField() {
+				walk(typ.Field(i).Type, next(i))
+			}
+		case reflect.Map:
+			if typ.Key().Kind() != reflect.String {
+				t.Fatalf("%s: a key config map with a non-string key needs a path rule in collectSecretRefs", typ)
+			}
+			walk(typ.Elem(), next(siteMapEntry))
+		case reflect.Slice:
+			walk(typ.Elem(), next(siteSliceEl))
+		case reflect.Array, reflect.Interface:
+			if typeReachesSecretVar(typ, map[reflect.Type]bool{}) {
+				t.Fatalf("%s: arrays and interfaces holding a SecretVar need a site rule here", typ)
+			}
+		}
+	}
+	walk(reflect.TypeOf(schemas.Key{}), nil)
+	return sites
+}
+
+func typeReachesSecretVar(typ reflect.Type, seen map[reflect.Type]bool) bool {
+	return typeReaches(typ, secretVarReflectType, seen)
+}
+
+// typeReaches reports whether a value of typ can hold a target through fields, pointers,
+// slices, arrays or map values.
+func typeReaches(typ, target reflect.Type, seen map[reflect.Type]bool) bool {
+	if typ == target {
+		return true
+	}
+	if seen[typ] {
+		return false
+	}
+	seen[typ] = true
+	switch typ.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
+		return typeReaches(typ.Elem(), target, seen)
+	case reflect.Struct:
+		for i := range typ.NumField() {
+			if typeReaches(typ.Field(i).Type, target, seen) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestProviderWritesCarryNoKeys pins why provider create and update need no key secret
+// reference guard of their own (TXE-4989): neither payload type can hold a schemas.Key, so a
+// "keys" array sent to POST /api/providers is dropped at decode and PUT /api/providers/{provider}
+// refuses one. If either payload gains keys, it must run requireGenuineAuthForKeySecretRefs on
+// them first.
+func TestProviderWritesCarryNoKeys(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	t.Setenv(txe4989SecretEnv, txe4989Secret)
+	keyType := reflect.TypeOf(schemas.Key{})
+	for _, payload := range []any{providerCreatePayload{}, providerUpdatePayload{}} {
+		if typ := reflect.TypeOf(payload); typeReaches(typ, keyType, map[reflect.Type]bool{}) {
+			t.Fatalf("%s can carry a provider key; guard its secret references under the auth bypass", typ)
+		}
+	}
+	keys := `"keys":[{"id":"k","name":"k","value":"env.` + txe4989SecretEnv + `","weight":1}]`
+
+	t.Run("create drops keys", func(t *testing.T) {
+		h := &ProviderHandler{
+			inMemoryStore: &lib.Config{ClientConfig: &configstore.ClientConfig{}, Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+			modelsManager: &mockModelsManager{},
+		}
+		attachBifrostClient(t, h.inMemoryStore)
+		ctx := newTestRequestCtx(`{"provider":"custom-openai","custom_provider_config":{"base_provider_type":"openai"},` + keys + `}`)
+		ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		h.addProvider(ctx)
+		if strings.Contains(string(ctx.Response.Body()), txe4989Secret) {
+			t.Fatalf("the response disclosed the resolved server secret")
+		}
+		if config, ok := h.inMemoryStore.Providers["custom-openai"]; ok && len(config.Keys) != 0 {
+			t.Fatalf("provider create stored %d keys from the body", len(config.Keys))
+		}
+	})
+
+	t.Run("update refuses keys", func(t *testing.T) {
+		h := &ProviderHandler{
+			inMemoryStore: &lib.Config{ClientConfig: &configstore.ClientConfig{}, Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-existing", Value: *schemas.NewSecretVar("sk-stored-literal"), Weight: 1}}},
+			}},
+			modelsManager: &mockModelsManager{},
+		}
+		ctx := newTestRequestCtx(`{"concurrency_and_buffer_size":{"concurrency":1,"buffer_size":4},` + keys + `}`)
+		ctx.SetUserValue("provider", string(schemas.OpenAI))
+		ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		h.updateProvider(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), "keys are not accepted") {
+			t.Fatalf("status %d, want 400 from the keys guard: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		if stored := h.inMemoryStore.Providers[schemas.OpenAI].Keys; len(stored) != 1 || len(keySecretRefs(&stored[0])) != 0 {
+			t.Fatalf("provider update changed the stored keys")
+		}
+	})
+}
+
+// keyWithSecretAt returns a Key holding secret at site and nothing else set on the way there.
+func keyWithSecretAt(site keySecretSite, secret schemas.SecretVar) *schemas.Key {
+	key := &schemas.Key{}
+	var set func(v reflect.Value, steps []int)
+	set = func(v reflect.Value, steps []int) {
+		if len(steps) == 0 {
+			v.Set(reflect.ValueOf(secret))
+			return
+		}
+		switch step := steps[0]; step {
+		case siteDeref:
+			if v.IsNil() {
+				v.Set(reflect.New(v.Type().Elem()))
+			}
+			set(v.Elem(), steps[1:])
+		case siteMapEntry:
+			if v.IsNil() {
+				v.Set(reflect.MakeMap(v.Type()))
+			}
+			elem := reflect.New(v.Type().Elem()).Elem()
+			set(elem, steps[1:])
+			v.SetMapIndex(reflect.ValueOf("m").Convert(v.Type().Key()), elem)
+		case siteSliceEl:
+			elem := reflect.New(v.Type().Elem()).Elem()
+			set(elem, steps[1:])
+			v.Set(reflect.Append(v, elem))
+		default:
+			set(v.Field(step), steps[1:])
+		}
+	}
+	set(reflect.ValueOf(key).Elem(), site)
+	return key
+}
+
+func secretRef(t *testing.T, ref string) schemas.SecretVar {
+	t.Helper()
+	var secret schemas.SecretVar
+	if err := sonic.Unmarshal([]byte(strconv.Quote(ref)), &secret); err != nil {
+		t.Fatalf("decode reference: %v", err)
+	}
+	return secret
+}
+
+// TestKeySecretRefs_CoversEveryKeyField pins the path-keyed comparison over every SecretVar
+// site of schemas.Key, generated from its type graph: each site is found under its own path,
+// no two sites share a path (so a reference moved to another field is never read as
+// unchanged), and an unchanged reference, a removal and a literal all pass.
+func TestKeySecretRefs_CoversEveryKeyField(t *testing.T) {
+	sites := enumerateKeySecretSites(t)
+	// Value plus the Azure, Vertex, Bedrock, Bedrock Mantle, vLLM, Ollama, SGL, Databricks,
+	// Copilot, Cloudflare, OAuth and per-alias fields. A drop below this means the generator
+	// stopped seeing part of the key, not that fields were removed.
+	if len(sites) < 40 {
+		t.Fatalf("found %d SecretVar sites in schemas.Key, want at least 40", len(sites))
+	}
+	ref := secretRef(t, "env."+txe4989SecretEnv)
+	other := secretRef(t, "env."+txe4989OtherEnv)
+	vaultRef := secretRef(t, "vault.txe4989/synthetic")
+	literal := *schemas.NewSecretVar("synthetic-literal")
+
+	paths := make([]string, len(sites))
+	for i, site := range sites {
+		refs := keySecretRefs(keyWithSecretAt(site, ref))
+		if len(refs) != 1 {
+			t.Fatalf("site %v: got %d references, want 1", site, len(refs))
+		}
+		for path := range refs {
+			paths[i] = path
+		}
+	}
+	for i := range paths {
+		for j := range i {
+			if paths[i] == paths[j] {
+				t.Fatalf("sites %v and %v share the path %s", sites[i], sites[j], paths[i])
+			}
+		}
+	}
+
+	for i, site := range sites {
+		t.Run(paths[i], func(t *testing.T) {
+			stored := keyWithSecretAt(site, ref)
+			if changed := changedKeySecretRefs(nil, stored); !slices.Equal(changed, []string{paths[i]}) {
+				t.Fatalf("create: changed %v, want [%s]", changed, paths[i])
+			}
+			if changed := changedKeySecretRefs(stored, keyWithSecretAt(site, ref)); len(changed) != 0 {
+				t.Fatalf("unchanged reference: changed %v", changed)
+			}
+			if changed := changedKeySecretRefs(stored, &schemas.Key{}); len(changed) != 0 {
+				t.Fatalf("removal: changed %v", changed)
+			}
+			if changed := changedKeySecretRefs(stored, keyWithSecretAt(site, literal)); len(changed) != 0 {
+				t.Fatalf("literal: changed %v", changed)
+			}
+			for name, repointed := range map[string]schemas.SecretVar{"another env var": other, "a vault path": vaultRef} {
+				if changed := changedKeySecretRefs(stored, keyWithSecretAt(site, repointed)); !slices.Equal(changed, []string{paths[i]}) {
+					t.Fatalf("repointed to %s: changed %v, want [%s]", name, changed, paths[i])
+				}
+			}
+			moved := keyWithSecretAt(sites[(i+1)%len(sites)], ref)
+			if changed := changedKeySecretRefs(stored, moved); !slices.Equal(changed, []string{paths[(i+1)%len(sites)]}) {
+				t.Fatalf("moved to %s: changed %v", paths[(i+1)%len(sites)], changed)
+			}
+		})
+	}
+}
+
+// TestKeySecretRefs_NoUnexportedSecretFields pins the one thing collectSecretRefs skips:
+// unexported fields. None of the key's types may hold a SecretVar in one.
+func TestKeySecretRefs_NoUnexportedSecretFields(t *testing.T) {
+	seen := map[reflect.Type]bool{}
+	var check func(typ reflect.Type, path string)
+	check = func(typ reflect.Type, path string) {
+		if typ == secretVarReflectType || seen[typ] {
+			return
+		}
+		seen[typ] = true
+		switch typ.Kind() {
+		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
+			check(typ.Elem(), path)
+		case reflect.Struct:
+			for i := range typ.NumField() {
+				field := typ.Field(i)
+				if !field.IsExported() && typeReachesSecretVar(field.Type, map[reflect.Type]bool{}) {
+					t.Errorf("%s.%s is unexported and holds a SecretVar the bypass guard cannot see", path, field.Name)
+				}
+				check(field.Type, path+"."+field.Name)
+			}
+		}
+	}
+	check(reflect.TypeOf(schemas.Key{}), "Key")
+}
+
+// TestProviderKeyWrites_BypassedSecretReferenceEveryField drives every SecretVar site through
+// both key routes under the bypass: a create and an update carrying an env. reference there are
+// refused with the site's path, store nothing, and never echo the resolved secret. The body is
+// the key as JSON clients send it; the one site with no JSON name (the deprecated per-alias
+// Vertex project, json:"-") is sent as the field it is promoted to.
+func TestProviderKeyWrites_BypassedSecretReferenceEveryField(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	ref := secretRef(t, "env."+txe4989SecretEnv) // resolved while the variable is unset
+	t.Setenv(txe4989SecretEnv, txe4989Secret)
+
+	for _, site := range enumerateKeySecretSites(t) {
+		body, err := sonic.Marshal(keyWithSecretAt(site, ref))
+		if err != nil {
+			t.Fatalf("site %v: marshal: %v", site, err)
+		}
+		for _, create := range []bool{true, false} {
+			name := fmt.Sprintf("%v/update", site)
+			if create {
+				name = fmt.Sprintf("%v/create", site)
+			}
+			t.Run(name, func(t *testing.T) {
+				stored := schemas.Key{ID: "key-1", Name: "stored", Value: *schemas.NewSecretVar("sk-stored-literal"), Weight: 1}
+				h := &ProviderHandler{
+					inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+						schemas.OpenAI: {Keys: []schemas.Key{stored}},
+					}},
+					modelsManager: &mockModelsManager{},
+				}
+				attachBifrostClient(t, h.inMemoryStore) // so a write the guard misses is stored, not a nil-client panic
+				ctx := newTestRequestCtx(string(body))
+				ctx.SetUserValue("provider", string(schemas.OpenAI))
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+				if create {
+					h.createProviderKey(ctx)
+				} else {
+					ctx.SetUserValue("key_id", "key-1")
+					h.updateProviderKey(ctx)
+				}
+				resp := string(ctx.Response.Body())
+				if ctx.Response.StatusCode() != fasthttp.StatusForbidden || !strings.Contains(resp, "server secret reference") {
+					t.Fatalf("status %d, want 403 from the secret reference guard (%d-byte body)", ctx.Response.StatusCode(), len(resp))
+				}
+				if strings.Contains(resp, txe4989Secret) {
+					t.Fatalf("the refusal disclosed the resolved server secret")
+				}
+				keys := h.inMemoryStore.Providers[schemas.OpenAI].Keys
+				if len(keys) != 1 || len(keySecretRefs(&keys[0])) != 0 || keys[0].Value.GetValue() != "sk-stored-literal" {
+					t.Fatalf("the refused write changed the stored keys")
+				}
+			})
+		}
+	}
+}
+
+// errorMessage returns the decoded message of an error response, so a path holding quotes
+// (aliases["m.x"]) compares as written rather than JSON-escaped.
+func errorMessage(t *testing.T, ctx *fasthttp.RequestCtx) string {
+	t.Helper()
+	var resp schemas.BifrostError
+	if err := sonic.Unmarshal(ctx.Response.Body(), &resp); err != nil || resp.Error == nil {
+		t.Fatalf("not an error response (%v): %d bytes", err, len(ctx.Response.Body()))
+	}
+	return resp.Error.Message
+}
+
+// TestUpdateProviderKey_SecretReferenceGuardWhenAuthBypassed covers the update cases the guard
+// must tell apart for a stored key holding env. references: unchanged references, a masked
+// echo of the redacted GET, removals and literal edits pass; a repointed reference, one moved to
+// another field, and a swap between two fields are refused; a genuine admin may do any of them.
+func TestUpdateProviderKey_SecretReferenceGuardWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	t.Setenv(txe4989SecretEnv, txe4989Secret)
+	t.Setenv(txe4989OtherEnv, txe4989Other)
+
+	newStore := func() *lib.Config {
+		return &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: []schemas.Key{{
+				ID:     "key-1",
+				Name:   "bedrock-key",
+				Value:  *schemas.NewSecretVar("env." + txe4989SecretEnv),
+				Weight: 1,
+				BedrockKeyConfig: &schemas.BedrockKeyConfig{
+					AccessKey: *schemas.NewSecretVar("env." + txe4989OtherEnv),
+					SecretKey: *schemas.NewSecretVar("synthetic-literal-secret-key"),
+					Region:    schemas.NewSecretVar("us-east-1"),
+				},
+			}}},
+		}}
+	}
+	maskedEcho := func(t *testing.T) string {
+		t.Helper()
+		store := newStore()
+		redacted, err := store.GetProviderKeyRedacted(schemas.Bedrock, "key-1")
+		if err != nil {
+			t.Fatalf("redacted read: %v", err)
+		}
+		redacted.Weight = 3
+		body, err := sonic.Marshal(redacted)
+		if err != nil {
+			t.Fatalf("marshal redacted key: %v", err)
+		}
+		if strings.Contains(string(body), txe4989Secret) || strings.Contains(string(body), txe4989Other) {
+			t.Fatalf("the redacted read disclosed a resolved server secret")
+		}
+		return string(body)
+	}
+	region := `"region":"us-east-1"`
+
+	cases := []struct {
+		name       string
+		body       func(t *testing.T) string
+		bypassed   bool
+		wantStatus int
+		wantPath   string
+		wantValue  string // stored Value reference after the call
+		wantAccess string // stored access_key reference after the call
+	}{
+		{name: "weight only", body: func(*testing.T) string { return `{"weight":2}` }, bypassed: true, wantStatus: fasthttp.StatusOK, wantValue: "env." + txe4989SecretEnv, wantAccess: "env." + txe4989OtherEnv},
+		{name: "unchanged references resent", body: func(*testing.T) string {
+			return `{"value":"env.` + txe4989SecretEnv + `","bedrock_key_config":{"access_key":"env.` + txe4989OtherEnv + `","secret_key":"synthetic-literal-secret-key",` + region + `}}`
+		}, bypassed: true, wantStatus: fasthttp.StatusOK, wantValue: "env." + txe4989SecretEnv, wantAccess: "env." + txe4989OtherEnv},
+		{name: "masked echo of the redacted read", body: maskedEcho, bypassed: true, wantStatus: fasthttp.StatusOK, wantValue: "env." + txe4989SecretEnv, wantAccess: "env." + txe4989OtherEnv},
+		{name: "references removed for literals", body: func(*testing.T) string {
+			return `{"value":"sk-synthetic-literal","bedrock_key_config":{"access_key":"synthetic-literal-access","secret_key":"synthetic-literal-secret-key",` + region + `}}`
+		}, bypassed: true, wantStatus: fasthttp.StatusOK},
+		{name: "value repointed", body: func(*testing.T) string { return `{"value":"env.` + txe4989OtherEnv + `"}` }, bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPath: "value", wantValue: "env." + txe4989SecretEnv, wantAccess: "env." + txe4989OtherEnv},
+		{name: "value repointed to vault", body: func(*testing.T) string { return `{"value":"vault.txe4989/synthetic"}` }, bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPath: "value", wantValue: "env." + txe4989SecretEnv, wantAccess: "env." + txe4989OtherEnv},
+		{name: "value reference moved to secret_key", body: func(*testing.T) string {
+			return `{"value":"sk-synthetic-literal","bedrock_key_config":{"access_key":"env.` + txe4989OtherEnv + `","secret_key":"env.` + txe4989SecretEnv + `",` + region + `}}`
+		}, bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPath: "bedrock_key_config.secret_key", wantValue: "env." + txe4989SecretEnv, wantAccess: "env." + txe4989OtherEnv},
+		{name: "references swapped between fields", body: func(*testing.T) string {
+			return `{"value":"env.` + txe4989OtherEnv + `","bedrock_key_config":{"access_key":"env.` + txe4989SecretEnv + `","secret_key":"synthetic-literal-secret-key",` + region + `}}`
+		}, bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPath: "bedrock_key_config.access_key, value", wantValue: "env." + txe4989SecretEnv, wantAccess: "env." + txe4989OtherEnv},
+		{name: "object-form reference", body: func(*testing.T) string {
+			return `{"value":{"value":"","ref":"env.` + txe4989OtherEnv + `","type":"env"}}`
+		}, bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPath: "value", wantValue: "env." + txe4989SecretEnv, wantAccess: "env." + txe4989OtherEnv},
+		{name: "legacy env_var form", body: func(*testing.T) string {
+			return `{"value":{"env_var":"` + txe4989OtherEnv + `","from_env":true}}`
+		}, bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPath: "value", wantValue: "env." + txe4989SecretEnv, wantAccess: "env." + txe4989OtherEnv},
+		{name: "genuine admin repoints and moves", body: func(*testing.T) string {
+			return `{"value":"env.` + txe4989OtherEnv + `","bedrock_key_config":{"access_key":"env.` + txe4989SecretEnv + `","secret_key":"synthetic-literal-secret-key",` + region + `}}`
+		}, wantStatus: fasthttp.StatusOK, wantValue: "env." + txe4989OtherEnv, wantAccess: "env." + txe4989SecretEnv},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ProviderHandler{inMemoryStore: newStore(), modelsManager: &mockModelsManager{}}
+			attachBifrostClient(t, h.inMemoryStore)
+			ctx := newTestRequestCtx(tc.body(t))
+			ctx.SetUserValue("provider", string(schemas.Bedrock))
+			ctx.SetUserValue("key_id", "key-1")
+			if tc.bypassed {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
+			h.updateProviderKey(ctx)
+
+			resp := string(ctx.Response.Body())
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d (%d-byte body)", ctx.Response.StatusCode(), tc.wantStatus, len(resp))
+			}
+			if strings.Contains(resp, txe4989Secret) || strings.Contains(resp, txe4989Other) {
+				t.Fatalf("the response disclosed a resolved server secret")
+			}
+			if tc.wantPath != "" && !strings.Contains(errorMessage(t, ctx), "server secret reference ("+tc.wantPath+")") {
+				t.Fatalf("the refusal must name %s, got %q", tc.wantPath, errorMessage(t, ctx))
+			}
+			stored := h.inMemoryStore.Providers[schemas.Bedrock].Keys[0]
+			if got := stored.Value.GetRawRef(); got != tc.wantValue {
+				t.Fatalf("stored value reference got %q, want %q", got, tc.wantValue)
+			}
+			if got := stored.BedrockKeyConfig.AccessKey.GetRawRef(); got != tc.wantAccess {
+				t.Fatalf("stored access_key reference got %q, want %q", got, tc.wantAccess)
+			}
+		})
+	}
+}
+
+// TestCreateProviderKey_SecretReferenceGuardWhenAuthBypassed pins the create side: a literal
+// key is still creatable under the bypass, an alias-level reference is refused under its
+// quoted alias path, and a genuine admin may create a referenced key.
+func TestCreateProviderKey_SecretReferenceGuardWhenAuthBypassed(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	t.Setenv(txe4989SecretEnv, txe4989Secret)
+
+	cases := []struct {
+		name       string
+		body       string
+		bypassed   bool
+		wantStatus int
+		wantPath   string
+	}{
+		{name: "literal", body: `{"name":"k","value":"sk-synthetic-literal","weight":1}`, bypassed: true, wantStatus: fasthttp.StatusOK},
+		{name: "env reference", body: `{"name":"k","value":"env.` + txe4989SecretEnv + `","weight":1}`, bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPath: "value"},
+		{name: "alias project reference", body: `{"name":"k","value":"sk-synthetic-literal","weight":1,"aliases":{"m.x":{"model_id":"gpt-4o","project_id":"env.` + txe4989SecretEnv + `"}}}`, bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPath: `aliases["m.x"].project_id`},
+		{name: "oauth client secret reference", body: `{"name":"k","weight":1,"oauth_key_config":{"token_url":"https://auth.example.com/token","client_id":"id","client_secret":"env.` + txe4989SecretEnv + `"}}`, bypassed: true, wantStatus: fasthttp.StatusForbidden, wantPath: "oauth_key_config.client_secret"},
+		{name: "genuine admin env reference", body: `{"name":"k","value":"env.` + txe4989SecretEnv + `","weight":1}`, wantStatus: fasthttp.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("provider", string(schemas.OpenAI))
+			if tc.bypassed {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
+			h.createProviderKey(ctx)
+
+			resp := string(ctx.Response.Body())
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d (%d-byte body)", ctx.Response.StatusCode(), tc.wantStatus, len(resp))
+			}
+			if strings.Contains(resp, txe4989Secret) {
+				t.Fatalf("the response disclosed the resolved server secret")
+			}
+			keys := h.inMemoryStore.Providers[schemas.OpenAI].Keys
+			if tc.wantStatus == fasthttp.StatusForbidden {
+				if !strings.Contains(errorMessage(t, ctx), "server secret reference ("+tc.wantPath+")") {
+					t.Fatalf("the refusal must name %s, got %q", tc.wantPath, errorMessage(t, ctx))
+				}
+				if len(keys) != 0 {
+					t.Fatalf("a refused key was stored")
+				}
+				return
+			}
+			if len(keys) != 1 {
+				t.Fatalf("got %d stored keys, want 1", len(keys))
+			}
+		})
+	}
 }
