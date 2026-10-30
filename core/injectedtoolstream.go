@@ -1,6 +1,7 @@
 package bifrost
 
 import (
+	"cmp"
 	"context"
 	"sort"
 	"strings"
@@ -66,7 +67,11 @@ type injectedChatStream struct {
 	calls     map[uint16]*streamedCall
 	finish    *string
 	turnUsage *schemas.BifrostLLMUsage
-	more      bool // set on the turn's final chunk: injected calls are pending
+	turnTier  *schemas.BifrostServiceTier // what served the turn, reported by whichever chunk carries it
+	turnSpeed *string
+	turnGeo   *string
+	turnModel *string // the server-side fallback that served the turn
+	more      bool    // set on the turn's final chunk: injected calls are pending
 }
 
 func newInjectedChatStream(set *injectedToolSet) *injectedChatStream {
@@ -82,6 +87,10 @@ func (s *injectedChatStream) onChunk(resp *schemas.BifrostChatResponse, final bo
 	if resp.Usage != nil {
 		s.turnUsage = resp.Usage
 	}
+	s.turnTier = cmp.Or(resp.ServiceTier, s.turnTier)
+	s.turnSpeed = cmp.Or(resp.Speed, s.turnSpeed)
+	s.turnGeo = cmp.Or(resp.InferenceGeo, s.turnGeo)
+	s.turnModel = cmp.Or(resp.ExtraFields.RoutingInfo.ServerSideFallbackModel, s.turnModel)
 	var visible *schemas.ChatStreamResponseChoiceDelta
 	if len(resp.Choices) > 0 {
 		choice := resp.Choices[0]
@@ -111,8 +120,8 @@ func (s *injectedChatStream) onChunk(resp *schemas.BifrostChatResponse, final bo
 	}
 	if len(injected) > 0 && s.depth < s.set.maxDepth {
 		s.more = true
-		s.usage = schemas.MergeBifrostLLMUsage(s.usage, s.turnUsage)
-		s.turnUsage = nil
+		s.usage = schemas.AddBillingTurn(s.usage, s.servedUsage())
+		s.turnUsage, s.turnTier, s.turnSpeed, s.turnGeo, s.turnModel = nil, nil, nil, nil, nil
 		return emits
 	}
 	s.more = false
@@ -122,8 +131,13 @@ func (s *injectedChatStream) onChunk(resp *schemas.BifrostChatResponse, final bo
 		finish = new(string(schemas.BifrostFinishReasonStop))
 	}
 	terminal := s.clientChunk(resp, &schemas.ChatStreamResponseChoiceDelta{ToolCalls: client}, finish)
-	terminal.Usage = schemas.MergeBifrostLLMUsage(s.usage, s.turnUsage)
+	terminal.Usage = schemas.AddBillingTurn(s.usage, s.servedUsage())
 	return append(emits, streamEmit{resp: terminal, terminal: true})
+}
+
+// servedUsage is the current turn's usage with what served it.
+func (s *injectedChatStream) servedUsage() *schemas.BifrostLLMUsage {
+	return servedTurnUsage(s.turnUsage, s.turnTier, s.turnSpeed, s.turnGeo, s.turnModel)
 }
 
 // absorbDelta records the delta for the turn and returns its client-visible part, or
@@ -646,7 +660,7 @@ func (s *injectedResponsesStream) onEvent(ev *schemas.BifrostResponsesStreamResp
 		if failed.Response != nil {
 			// The client stream ends here: bill the turns that finished before it too.
 			response := *failed.Response
-			response.Usage = schemas.MergeBifrostLLMUsage(s.usage, response.Usage.ToBifrostLLMUsage()).ToResponsesResponseUsage()
+			response.Usage = schemas.AddBillingTurn(s.usage, responsesTurnUsage(&response)).ToResponsesResponseUsage()
 			failed.Response = &response
 		}
 		return []responsesEmit{{event: failed, terminal: true}}
@@ -804,9 +818,9 @@ func (s *injectedResponsesStream) recordDone(route itemRoute, item schemas.Respo
 func (s *injectedResponsesStream) onTurnEnd(ev *schemas.BifrostResponsesStreamResponse) []responsesEmit {
 	var turnUsage *schemas.BifrostLLMUsage
 	if ev.Response != nil {
-		turnUsage = ev.Response.Usage.ToBifrostLLMUsage()
+		turnUsage = responsesTurnUsage(ev.Response)
 	}
-	s.usage = schemas.MergeBifrostLLMUsage(s.usage, turnUsage)
+	s.usage = schemas.AddBillingTurn(s.usage, turnUsage)
 	if len(s.injected) > 0 && s.depth < s.set.maxDepth && !s.sentCall {
 		s.more = true
 		return nil

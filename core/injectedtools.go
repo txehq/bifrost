@@ -457,11 +457,11 @@ func runInjectedChatLoop(
 				withoutInjectedCalls(resp, 0, client)
 			}
 			stripInjectedCallsFromOtherChoices(resp, set)
-			resp.Usage = schemas.MergeBifrostLLMUsage(usage, resp.Usage)
+			resp.Usage = schemas.AddBillingTurn(usage, chatTurnUsage(resp))
 			prependChatText(resp, priorText)
 			return resp, nil
 		}
-		usage = schemas.MergeBifrostLLMUsage(usage, resp.Usage)
+		usage = schemas.AddBillingTurn(usage, chatTurnUsage(resp))
 		if text := chatMessageText(msg); text != "" {
 			priorText = append(priorText, text)
 		}
@@ -515,10 +515,10 @@ func runInjectedResponsesLoop(
 				}
 			}
 			resp.Output = output
-			resp.Usage = schemas.MergeBifrostLLMUsage(usage, resp.Usage.ToBifrostLLMUsage()).ToResponsesResponseUsage()
+			resp.Usage = schemas.AddBillingTurn(usage, responsesTurnUsage(resp)).ToResponsesResponseUsage()
 			return resp, nil
 		}
-		usage = schemas.MergeBifrostLLMUsage(usage, resp.Usage.ToBifrostLLMUsage())
+		usage = schemas.AddBillingTurn(usage, responsesTurnUsage(resp))
 
 		results := executeInjectedCalls(injected, exec)
 		next := *turn
@@ -686,7 +686,40 @@ func billEarlierTurns(bifrostErr *schemas.BifrostError, earlier *schemas.Bifrost
 	if bifrostErr == nil || earlier == nil {
 		return
 	}
-	bifrostErr.ExtraFields.BilledUsage = schemas.MergeBifrostLLMUsage(earlier, bifrostErr.ExtraFields.BilledUsage)
+	bifrostErr.ExtraFields.BilledUsage = schemas.AddBillingTurn(earlier, bifrostErr.ExtraFields.BilledUsage)
+}
+
+// chatTurnUsage is one chat turn's usage with what served it, see servedTurnUsage.
+func chatTurnUsage(resp *schemas.BifrostChatResponse) *schemas.BifrostLLMUsage {
+	return servedTurnUsage(resp.Usage, resp.ServiceTier, resp.Speed, resp.InferenceGeo, resp.ExtraFields.RoutingInfo.ServerSideFallbackModel)
+}
+
+// responsesTurnUsage is one Responses turn's usage with what served it, see servedTurnUsage.
+func responsesTurnUsage(resp *schemas.BifrostResponsesResponse) *schemas.BifrostLLMUsage {
+	return servedTurnUsage(resp.Usage.ToBifrostLLMUsage(), resp.ServiceTier, resp.Speed, resp.InferenceGeo, resp.ExtraFields.RoutingInfo.ServerSideFallbackModel)
+}
+
+// servedTurnUsage returns usage carrying the tier and model that served its turn. A loop's
+// response reports only the last turn's, so a turn that does not carry its own would be priced
+// at that one's rates. The provider's usage object is left as it is.
+func servedTurnUsage(usage *schemas.BifrostLLMUsage, tier *schemas.BifrostServiceTier, speed, geo, fallback *string) *schemas.BifrostLLMUsage {
+	if usage == nil || (tier == nil && speed == nil && geo == nil && fallback == nil) {
+		return usage
+	}
+	served := *usage
+	if tier != nil {
+		served.ServiceTier = tier
+	}
+	if speed != nil {
+		served.Speed = speed
+	}
+	if geo != nil {
+		served.InferenceGeo = geo
+	}
+	if fallback != nil {
+		served.ServerSideFallbackModel = fallback
+	}
+	return &served
 }
 
 func chatMessageText(msg *schemas.ChatMessage) string {

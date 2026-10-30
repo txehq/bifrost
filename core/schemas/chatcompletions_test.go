@@ -218,3 +218,129 @@ func BenchmarkBifrostLLMUsageUnmarshal(b *testing.B) {
 		})
 	}
 }
+
+// TestAddBillingTurn pins what pricing depends on: totals still add up, every provider call
+// stays separate however the sum was built, and a single call records no turns.
+func TestAddBillingTurn(t *testing.T) {
+	a := &BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 1, TotalTokens: 11}
+	b := &BifrostLLMUsage{PromptTokens: 20, CompletionTokens: 2, TotalTokens: 22}
+	c := &BifrostLLMUsage{PromptTokens: 30, CompletionTokens: 3, TotalTokens: 33}
+
+	if AddBillingTurn(nil, nil) != nil {
+		t.Fatal("no usage sums to no usage")
+	}
+	if got := AddBillingTurn(nil, a); got != a || len(got.BillingTurns) != 0 {
+		t.Fatalf("one call is that call, without turns: %+v", got)
+	}
+	if got := AddBillingTurn(a, nil); got != a {
+		t.Fatalf("a turn that reported nothing changes nothing: %+v", got)
+	}
+
+	ab := AddBillingTurn(a, b)
+	abc := AddBillingTurn(ab, c)
+	if abc.PromptTokens != 60 || abc.CompletionTokens != 6 || abc.TotalTokens != 66 {
+		t.Fatalf("totals = %+v", abc)
+	}
+	if len(ab.BillingTurns) != 2 {
+		t.Fatalf("an earlier sum must keep its own turns, got %d", len(ab.BillingTurns))
+	}
+	if len(abc.BillingTurns) != 3 {
+		t.Fatalf("turns = %d, want 3", len(abc.BillingTurns))
+	}
+	for i, want := range []int{10, 20, 30} {
+		if abc.BillingTurns[i].PromptTokens != want || len(abc.BillingTurns[i].BillingTurns) != 0 {
+			t.Fatalf("turn %d = %+v", i, abc.BillingTurns[i])
+		}
+	}
+	if len(a.BillingTurns) != 0 || len(c.BillingTurns) != 0 {
+		t.Fatal("adding must not modify its arguments")
+	}
+
+	joined := AddBillingTurn(ab, AddBillingTurn(c, a))
+	if len(joined.BillingTurns) != 4 {
+		t.Fatalf("two sums keep all their calls, got %d", len(joined.BillingTurns))
+	}
+}
+
+// TestBillingTurnsDoNotAliasTheirUsage: a recorded turn shares nothing with the usage it came
+// from, a deep copy shares nothing with the record, and two sums built from one earlier sum do
+// not share a backing array, so nothing later done to one reaches another's bill.
+func TestBillingTurnsDoNotAliasTheirUsage(t *testing.T) {
+	first := &BifrostLLMUsage{PromptTokens: 10, TotalTokens: 10, PromptTokensDetails: &ChatPromptTokensDetails{CachedReadTokens: 4}}
+	second := &BifrostLLMUsage{PromptTokens: 20, TotalTokens: 20}
+	sum := AddBillingTurn(first, second)
+
+	first.PromptTokensDetails.CachedReadTokens = 999
+	if got := sum.BillingTurns[0].PromptTokensDetails.CachedReadTokens; got != 4 {
+		t.Fatalf("a turn aliases the provider's usage: cached reads = %d", got)
+	}
+
+	copied := sum.DeepCopy()
+	copied.BillingTurns[0].PromptTokens = 777
+	copied.BillingTurns[0].PromptTokensDetails.CachedReadTokens = 777
+	if sum.BillingTurns[0].PromptTokens != 10 || sum.BillingTurns[0].PromptTokensDetails.CachedReadTokens != 4 {
+		t.Fatalf("a deep copy shares its turns: %+v", sum.BillingTurns[0])
+	}
+
+	left := AddBillingTurn(sum, &BifrostLLMUsage{PromptTokens: 1, TotalTokens: 1})
+	right := AddBillingTurn(sum, &BifrostLLMUsage{PromptTokens: 2, TotalTokens: 2})
+	if left.BillingTurns[2].PromptTokens != 1 || right.BillingTurns[2].PromptTokens != 2 {
+		t.Fatalf("sums share a backing array: %d, %d", left.BillingTurns[2].PromptTokens, right.BillingTurns[2].PromptTokens)
+	}
+}
+
+// TestBillingTurnsStayOffTheWire: the turns are the gateway's own accounting. A client sees
+// the totals on chat and Responses usage alike.
+func TestBillingTurnsStayOffTheWire(t *testing.T) {
+	sum := AddBillingTurn(
+		&BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 1, TotalTokens: 11},
+		&BifrostLLMUsage{PromptTokens: 20, CompletionTokens: 2, TotalTokens: 22},
+	)
+	body, err := Marshal(sum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responsesBody, err := Marshal(sum.ToResponsesResponseUsage())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wire := range [][]byte{body, responsesBody} {
+		if strings.Contains(strings.ToLower(string(wire)), "billing") {
+			t.Fatalf("billing turns reached the wire: %s", wire)
+		}
+	}
+	if round := sum.ToResponsesResponseUsage().ToBifrostLLMUsage(); len(round.BillingTurns) != 2 || round.PromptTokens != 30 {
+		t.Fatalf("the conversions must carry the turns: %+v", round)
+	}
+}
+
+// BenchmarkAddBillingTurn measures both shapes on the request path: a single call adds nothing
+// (no turn is recorded, nothing is allocated), and a ten-turn loop, the default agent depth,
+// is the cost of keeping each call. Run with -benchmem.
+func BenchmarkAddBillingTurn(b *testing.B) {
+	turn := &BifrostLLMUsage{
+		PromptTokens: 150000, CompletionTokens: 1000, TotalTokens: 151000,
+		PromptTokensDetails:     &ChatPromptTokensDetails{CachedReadTokens: 1000},
+		CompletionTokensDetails: &ChatCompletionTokensDetails{ReasoningTokens: 100},
+	}
+	b.Run("single", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if AddBillingTurn(nil, turn) != turn {
+				b.Fatal("a single call must stay that call")
+			}
+		}
+	})
+	b.Run("loop10", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			var total *BifrostLLMUsage
+			for range 10 {
+				total = AddBillingTurn(total, turn)
+			}
+			if len(total.BillingTurns) != 10 {
+				b.Fatalf("turns = %d", len(total.BillingTurns))
+			}
+		}
+	})
+}

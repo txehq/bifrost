@@ -28,6 +28,11 @@ type liveUnitRunner interface {
 	RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*bifrost.RealtimeTurnHooks, *schemas.BifrostError)
 }
 
+// liveMaxBillingSegments bounds the responses one billing unit prices separately. A unit settles
+// more than one only while a refused session drains, so reaching it takes a provider that keeps
+// answering after the session was refused; responses beyond it are priced with the last segment.
+const liveMaxBillingSegments = 64
+
 // liveBillingUnit is one admitted pass through the plugin pipeline: pre-hooks already ran and
 // admitted it, and the post-hooks that close it bill whatever usage accrued under it.
 type liveBillingUnit struct {
@@ -46,8 +51,10 @@ type liveLane struct {
 	backend       bool   // backend Responses tokens rather than voice seconds
 	current       *liveBillingUnit
 
-	seconds     float64                         // voice: accrued, unbilled seconds
-	usage       *schemas.ResponsesResponseUsage // backend: accrued, unbilled tokens
+	seconds     float64                            // voice: accrued, unbilled seconds
+	usage       *schemas.ResponsesResponseUsage    // backend: accrued, unbilled tokens
+	segments    []schemas.BifrostResponsesResponse // backend: each response's own usage and tier, once a unit holds more than one
+	segment     schemas.BifrostResponsesResponse   // backend: what served the unit's first response; its usage is the lane's until a second arrives
 	serviceTier *schemas.BifrostServiceTier
 	status      *string
 	responseErr *schemas.ResponsesResponseError
@@ -256,6 +263,7 @@ func (m *liveMeter) onBackendResponse(response *schemas.BifrostResponsesResponse
 		return m.refusal
 	}
 	if response.Usage != nil {
+		lane.addBillingSegmentLocked(response)
 		lane.usage = addResponsesUsage(lane.usage, response.Usage)
 	}
 	lane.status, lane.responseErr = response.Status, response.Error
@@ -269,6 +277,37 @@ func (m *liveMeter) onBackendResponse(response *schemas.BifrostResponsesResponse
 	lane.delegation, lane.delegatedMs = delegationID, delegatedMs
 	m.rotateLocked(lane)
 	return m.refusal
+}
+
+// addBillingSegmentLocked records what prices response on its own. Normally a unit settles one
+// response, which the lane's usage and the segment header already describe, so nothing is copied.
+// Once a renewal is refused, responses still draining settle on the last admitted unit, and each
+// keeps its usage and tier so a merged context length or another response's tier never sets its
+// rate. Call it before adding response's usage to the lane's.
+func (lane *liveLane) addBillingSegmentLocked(response *schemas.BifrostResponsesResponse) {
+	header := schemas.BifrostResponsesResponse{
+		Model:        response.Model,
+		ServiceTier:  response.ServiceTier,
+		Speed:        response.Speed,
+		InferenceGeo: response.InferenceGeo,
+	}
+	if lane.usage == nil {
+		lane.segment = header
+		return
+	}
+	if lane.segments == nil {
+		first := lane.segment
+		first.Usage = addResponsesUsage(nil, lane.usage)
+		lane.segments = make([]schemas.BifrostResponsesResponse, 1, 4)
+		lane.segments[0] = first
+	}
+	if len(lane.segments) >= liveMaxBillingSegments {
+		last := &lane.segments[len(lane.segments)-1]
+		last.Usage = addResponsesUsage(last.Usage, response.Usage)
+		return
+	}
+	header.Usage = addResponsesUsage(nil, response.Usage)
+	lane.segments = append(lane.segments, header)
 }
 
 // failBackend records a delegation the provider refused to run: the open backend unit closes
@@ -444,6 +483,7 @@ func (m *liveMeter) closeLaneLocked(lane *liveLane) {
 		if lane.responseID != "" {
 			resp.ID = new(lane.responseID)
 		}
+		resp.BillingSegments = lane.segments
 	}
 	result := &schemas.BifrostResponse{ResponsesResponse: resp}
 	postCtx := m.unitContext(unit.requestID, false, kind)
@@ -452,8 +492,9 @@ func (m *liveMeter) closeLaneLocked(lane *liveLane) {
 			postCtx.SetValue(schemas.BifrostContextKeyLiveDelegationID, lane.delegation)
 			postCtx.SetValue(schemas.BifrostContextKeyLiveDelegationStartMs, lane.delegatedMs)
 		}
-		lane.usage, lane.outputs, lane.responseID, lane.delegation, lane.delegatedMs = nil, nil, "", "", 0
-		lane.status, lane.responseErr = nil, nil
+		lane.usage, lane.segments, lane.outputs, lane.responseID, lane.delegation, lane.delegatedMs = nil, nil, nil, "", "", 0
+		lane.status, lane.responseErr, lane.serviceTier = nil, nil, nil
+		lane.segment = schemas.BifrostResponsesResponse{}
 	} else {
 		seconds := lane.seconds
 		resp.Usage = &schemas.ResponsesResponseUsage{AudioSeconds: &seconds}

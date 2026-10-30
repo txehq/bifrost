@@ -391,3 +391,50 @@ func TestDecision_ForwardsProviderHeaders(t *testing.T) {
 		})
 	}
 }
+
+// TestToBifrostDecisionResponse_RejectionKeepsBilledCost pins that a rejected
+// answer keeps OpenRouter's billed figure on the error's usage, as an accepted
+// one keeps it on the response.
+func TestToBifrostDecisionResponse_RejectionKeepsBilledCost(t *testing.T) {
+	request := &schemas.BifrostDecisionRequest{Questions: []schemas.DecisionQuestion{
+		{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("is_spam"), Instructions: schemas.NewDecisionText("Is this spam?")},
+	}}
+	var native openrouter.OpenRouterDecisionResponse
+	if err := json.Unmarshal([]byte(`{"model":"typesafe/jev-1.13","answers":{},"usage":{"input_tokens":3,"output_tokens":1,"cost":0.25}}`), &native); err != nil {
+		t.Fatal(err)
+	}
+	_, bifrostErr := openrouter.ToBifrostDecisionResponse(&native, request)
+	if bifrostErr == nil {
+		t.Fatal("expected the missing answer to be rejected")
+	}
+	billed := bifrostErr.ExtraFields.BilledUsage
+	if billed == nil || billed.PromptTokens != 3 || billed.Cost == nil || billed.Cost.TotalCost != 0.25 {
+		t.Fatalf("billed usage = %+v", billed)
+	}
+}
+
+// TestToBifrostDecisionResponse_RejectionWithoutCostStaysPriced pins that a rejected answer with
+// no billed figure, or a non-positive one, leaves pricing to the datasheet.
+func TestToBifrostDecisionResponse_RejectionWithoutCostStaysPriced(t *testing.T) {
+	request := &schemas.BifrostDecisionRequest{Questions: []schemas.DecisionQuestion{
+		{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("is_spam"), Instructions: schemas.NewDecisionText("Is this spam?")},
+	}}
+	for _, body := range []string{
+		`{"model":"typesafe/jev-1.13","answers":{},"usage":{"input_tokens":3,"output_tokens":1}}`,
+		`{"model":"typesafe/jev-1.13","answers":{},"usage":{"input_tokens":3,"output_tokens":1,"cost":0}}`,
+	} {
+		var native openrouter.OpenRouterDecisionResponse
+		if err := json.Unmarshal([]byte(body), &native); err != nil {
+			t.Fatal(err)
+		}
+		_, bifrostErr := openrouter.ToBifrostDecisionResponse(&native, request)
+		if bifrostErr == nil {
+			t.Fatal("expected the missing answer to be rejected")
+		}
+		billed := bifrostErr.ExtraFields.BilledUsage
+		if billed == nil || billed.PromptTokens != 3 || billed.Cost != nil {
+			t.Fatalf("billed usage = %+v", billed)
+		}
+	}
+}
+

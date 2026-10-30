@@ -118,6 +118,7 @@ func TestInjectedChatStream_TextThenInjectedCallThenAnswer(t *testing.T) {
 	assert.True(t, last.terminal)
 	assert.Equal(t, "stop", *last.resp.Choices[0].FinishReason)
 	assert.Equal(t, 30, last.resp.Usage.PromptTokens, "the terminal chunk carries usage for every turn")
+	assertBillingTurns(t, last.resp.Usage, 10, 20)
 	assert.False(t, s.continues())
 
 	all := append(turn1, turn2...)
@@ -326,6 +327,7 @@ func TestInjectedResponsesStream_TwoTurnsBecomeOneResponse(t *testing.T) {
 	assert.Equal(t, "resp_1", *last.event.Response.ID)
 	require.Len(t, last.event.Response.Output, 2)
 	assert.Equal(t, 30, last.event.Response.Usage.InputTokens)
+	assertBillingTurns(t, last.event.Response.Usage.ToBifrostLLMUsage(), 10, 20)
 }
 
 func TestInjectedResponsesStream_ClientCallIsReleasedAtTurnEnd(t *testing.T) {
@@ -575,6 +577,77 @@ func TestInjectedResponsesStream_FailureEventCarriesEarlierUsage(t *testing.T) {
 	require.Len(t, emits, 1)
 	require.NotNil(t, emits[0].event.Response.Usage)
 	assert.Equal(t, 13, emits[0].event.Response.Usage.InputTokens, "the failure bills the finished turn too")
+}
+
+// The chunk that reports a turn's tier need not be the one that reports its usage, and a
+// turn's tier never prices the next one.
+func TestInjectedChatStream_TurnsKeepTheirServedTier(t *testing.T) {
+	s := newInjectedChatStream(testInjectedSet(t))
+	priority := schemas.BifrostServiceTierPriority
+	head := chatStreamChunk("turn-1", chatDelta{role: "assistant"})
+	head.ServiceTier = &priority
+	s.onChunk(head, false)
+	feed(s, "turn-1",
+		chatDelta{call: callStart(0, "c1", "web_search")},
+		chatDelta{finish: "tool_calls", usage: usage(10)},
+	)
+	s.endTurn()
+
+	emits := feed(s, "turn-2", chatDelta{text: "Sunny."}, chatDelta{finish: "stop", usage: usage(20)})
+
+	final := emits[len(emits)-1].resp.Usage
+	assertBillingTurns(t, final, 10, 20)
+	require.NotNil(t, final.BillingTurns[0].ServiceTier)
+	assert.Equal(t, priority, *final.BillingTurns[0].ServiceTier)
+	assert.Nil(t, final.BillingTurns[1].ServiceTier, "the first turn's tier must not reach the second")
+}
+
+// A failure carries each finished turn as its own call, and a stream cancelled between turns
+// bills them the same way.
+func TestInjectedStreams_ErrorSettlementKeepsSeparateTurns(t *testing.T) {
+	chat := newInjectedChatStream(testInjectedSet(t))
+	feed(chat, "turn-1",
+		chatDelta{call: callStart(0, "c1", "web_search")},
+		chatDelta{finish: "tool_calls", usage: usage(10)},
+	)
+	chat.endTurn()
+	feed(chat, "turn-2",
+		chatDelta{call: callStart(0, "c2", "web_search")},
+		chatDelta{finish: "tool_calls", usage: usage(20)},
+	)
+	chat.endTurn()
+
+	cancelled := injectedTurnsCancelledError(chat.usage)
+	assertBillingTurns(t, cancelled.ExtraFields.BilledUsage, 10, 20)
+
+	midTurn := &schemas.BifrostError{ExtraFields: schemas.BifrostErrorExtraFields{BilledUsage: usage(5)}}
+	billEarlierTurns(midTurn, chat.usage)
+	assertBillingTurns(t, midTurn.ExtraFields.BilledUsage, 10, 20, 5)
+	assert.Equal(t, 35, midTurn.ExtraFields.BilledUsage.PromptTokens)
+}
+
+func TestInjectedResponsesStream_FailureEventKeepsSeparateTurns(t *testing.T) {
+	s := newInjectedResponsesStream(testInjectedSet(t))
+	t1 := &responsesEvents{respID: "resp_1"}
+	feedResponses(s, t1.created(),
+		t1.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, responsesFunctionCall("c1", "web_search")),
+		t1.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, responsesFunctionCall("c1", "web_search")),
+		t1.completed(10),
+	)
+	s.endTurn()
+	t2 := &responsesEvents{respID: "resp_2"}
+	failed := t2.ev(schemas.ResponsesStreamResponseTypeFailed)
+	flex := schemas.BifrostServiceTierFlex
+	failed.Response = &schemas.BifrostResponsesResponse{ServiceTier: &flex, Usage: &schemas.ResponsesResponseUsage{InputTokens: 3, TotalTokens: 3}}
+
+	emits := feedResponses(s, failed)
+
+	require.Len(t, emits, 1)
+	billed := emits[0].event.Response.Usage.ToBifrostLLMUsage()
+	assertBillingTurns(t, billed, 10, 3)
+	require.NotNil(t, billed.BillingTurns[1].ServiceTier)
+	assert.Equal(t, flex, *billed.BillingTurns[1].ServiceTier)
+	assert.Nil(t, failed.Response.Usage.BillingTurns, "the provider's event is not modified")
 }
 
 // A streaming Responses request that defers tools on gpt-4o (no native tool search)

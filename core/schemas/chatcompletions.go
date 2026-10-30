@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -1981,7 +1982,37 @@ type BifrostLLMUsage struct {
 	// Carried here for the same reason as the two above: the bare-usage billing path
 	// (CalculateCostForUsage) never sees RoutingInfo, so without it a fallback-served
 	// turn is priced at the requested model's rates.
-	ServerSideFallbackModel *string `json:"-"`
+	ServerSideFallbackModel *string           `json:"-"`
+	BillingTurns            []BifrostLLMUsage `json:"-"` // Separate provider calls this usage sums; set only by AddBillingTurn
+}
+
+// AddBillingTurn returns the sum of total and turn, keeping each provider call it sums in
+// BillingTurns so pricing applies context-length thresholds, tiers and per-request fees to
+// each call rather than to the sum. Use it only to add up distinct calls, never the partial
+// usage of one call, which stays one priced unit. Neither argument is modified, and each
+// recorded turn is a deep copy, so nothing later done to a turn's usage reaches the record.
+// The record is bounded by the caller's turn limit; it is copied on every add, which keeps a
+// slice handed to one usage from ever growing under another.
+func AddBillingTurn(total, turn *BifrostLLMUsage) *BifrostLLMUsage {
+	if turn == nil {
+		return total
+	}
+	if total == nil {
+		return turn
+	}
+	merged := MergeBifrostLLMUsage(total, turn)
+	merged.BillingTurns = append(billingTurnsOf(total), billingTurnsOf(turn)...)
+	return merged
+}
+
+// billingTurnsOf returns a new slice of the separate calls usage sums: its BillingTurns, or
+// usage itself when it is one call.
+func billingTurnsOf(usage *BifrostLLMUsage) []BifrostLLMUsage {
+	if len(usage.BillingTurns) > 0 {
+		return slices.Clone(usage.BillingTurns)
+	}
+	single := usage.DeepCopy()
+	return []BifrostLLMUsage{*single}
 }
 
 // NormalizeReasoningTokens folds a top-level reasoning_tokens into CompletionTokensDetails, keeping a nested value if set.
@@ -2567,6 +2598,12 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 	if u.ServerSideFallbackModel != nil {
 		m := *u.ServerSideFallbackModel
 		c.ServerSideFallbackModel = &m
+	}
+	if len(u.BillingTurns) > 0 {
+		c.BillingTurns = make([]BifrostLLMUsage, len(u.BillingTurns))
+		for i := range u.BillingTurns {
+			c.BillingTurns[i] = *u.BillingTurns[i].DeepCopy()
+		}
 	}
 	return &c
 }

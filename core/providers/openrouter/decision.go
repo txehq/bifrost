@@ -45,13 +45,21 @@ func ToBifrostDecisionResponse(resp *OpenRouterDecisionResponse, request *schema
 	if resp.Usage != nil {
 		native.Usage = &resp.Usage.TypesafeUsage
 	}
+	var cost *schemas.BifrostCost
+	if resp.Usage != nil && resp.Usage.Cost != nil && *resp.Usage.Cost > 0 {
+		cost = &schemas.BifrostCost{TotalCost: *resp.Usage.Cost}
+	}
 	bifrostResp, bifrostErr := typesafe.ToBifrostDecisionResponse(native, request)
 	if bifrostErr != nil {
+		// A rejected answer was still billed at OpenRouter's figure.
+		if bifrostErr.ExtraFields.BilledUsage != nil {
+			bifrostErr.ExtraFields.BilledUsage.Cost = cost
+		}
 		return nil, bifrostErr
 	}
 	bifrostResp.ID = resp.ID
-	if resp.Usage != nil && resp.Usage.Cost != nil && *resp.Usage.Cost > 0 {
-		bifrostResp.Usage.Cost = &schemas.BifrostCost{TotalCost: *resp.Usage.Cost}
+	if cost != nil {
+		bifrostResp.Usage.Cost = cost
 	}
 	return bifrostResp, nil
 }
