@@ -732,7 +732,8 @@ func mergeMissingLogBilling(dst, src *logstore.Log) {
 // timer or size flush lands between the two copies. Inserts are intentionally
 // idempotent, so a later richer row would otherwise be ignored forever. logs
 // must be rows the store confirmed. It returns the logs whose repair ctx
-// interrupted; their state is left as it was, so a retry repairs them again.
+// interrupted; their state is left as it was and pinned against eviction, or the
+// retry would read the duplicate as unseen and skip its UPDATE.
 func (p *LoggerPlugin) repairRecentDuplicateBilling(ctx context.Context, logs []*logstore.Log) (interrupted []*logstore.Log) {
 	if len(logs) == 0 {
 		return nil

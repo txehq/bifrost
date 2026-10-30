@@ -28,12 +28,11 @@ type liveSessionState struct {
 	toolCalls    []schemas.ChatAssistantMessageToolCall
 	toolNames    []string // every tool the backend called, function or server, for the row's filter
 	failure      *schemas.BifrostError
-	// costSplit sums the units' input, output and additional charges, so the row
-	// keeps the categories its total is made of.
-	costSplit schemas.BifrostCost
+	costSplit    schemas.BifrostCost // input, output and additional charges, summed (see addCostSplit)
 }
 
-// addCostSplit adds one unit's input, output and additional charges to the session's.
+// addCostSplit adds one unit's input, output and additional charges to the session's,
+// so the row keeps the categories its total is made of.
 func (s *liveSessionState) addCostSplit(breakdown *schemas.BifrostCost) {
 	if breakdown == nil {
 		return
