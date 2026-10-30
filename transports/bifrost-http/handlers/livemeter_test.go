@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -941,4 +942,3 @@ func BenchmarkLiveMeterBackendResponse(b *testing.B) {
 	b.Run("settled", func(b *testing.B) { run(b, false) })
 	b.Run("drain", func(b *testing.B) { run(b, true) })
 }
-
