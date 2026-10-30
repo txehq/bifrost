@@ -250,6 +250,7 @@ func (s *RDBConfigStore) ListDueAgentPushDeliveries(ctx context.Context, now tim
 	var rows []tables.TableAgentPushDelivery
 	if err := s.DB().WithContext(ctx).
 		Where("status = ? AND next_attempt_at <= ? AND (claimed_until IS NULL OR claimed_until < ?)", schemas.AgentPushDeliveryStatusPending, now, now).
+		Where(pushDeliveryHeadOfLine, schemas.AgentPushDeliveryStatusPending).
 		Order("next_attempt_at ASC, id ASC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -273,6 +274,20 @@ func (s *RDBConfigStore) ListDueAgentPushDeliveries(ctx context.Context, now tim
 	return result, nil
 }
 
+// pushDeliveryHeadOfLine keeps one registration's deliveries in the order they
+// were accepted: a delivery is due only while no earlier one for the same
+// agent/task/config is still pending (for instance backing off after a failed
+// attempt), so an append cannot overtake the replacement it follows and be
+// overwritten by its retry. Claims check it too, in the same statement, so the
+// order holds across relay instances. Its one argument is the pending status.
+const pushDeliveryHeadOfLine = `NOT EXISTS (SELECT 1 FROM config_agent_push_deliveries AS earlier
+	WHERE earlier.agent_name = config_agent_push_deliveries.agent_name
+	AND earlier.task_id = config_agent_push_deliveries.task_id
+	AND earlier.config_id = config_agent_push_deliveries.config_id
+	AND earlier.status = ?
+	AND (earlier.created_at < config_agent_push_deliveries.created_at
+		OR (earlier.created_at = config_agent_push_deliveries.created_at AND earlier.id < config_agent_push_deliveries.id)))`
+
 // ClaimAgentPushDelivery atomically leases one due pending delivery and returns
 // its current persisted state. The exact lease expiry also fences the outcome
 // update, so an attempt that outlives its lease cannot overwrite a later
@@ -285,6 +300,7 @@ func (s *RDBConfigStore) ClaimAgentPushDelivery(ctx context.Context, id, runnerI
 	}
 	result := s.DB().WithContext(ctx).Model(&tables.TableAgentPushDelivery{}).
 		Where("id = ? AND status = ? AND next_attempt_at <= ? AND (claimed_until IS NULL OR claimed_until < ?)", id, schemas.AgentPushDeliveryStatusPending, now, now).
+		Where(pushDeliveryHeadOfLine, schemas.AgentPushDeliveryStatusPending).
 		Updates(map[string]any{"claimed_by": runnerID, "claimed_until": leaseUntil})
 	if result.Error != nil {
 		return nil, result.Error

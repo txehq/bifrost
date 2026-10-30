@@ -423,3 +423,49 @@ func TestAgentPushDeliveryKeepsItsRegistrationHash(t *testing.T) {
 	require.NotNil(t, claimed)
 	require.Equal(t, "registration-a", claimed.RegistrationHash)
 }
+
+// TestAgentPushDeliveriesStayInOrderPerRegistration: deliveries for one
+// registration are delivered in the order they were accepted. While an earlier
+// one waits on its retry backoff, a later one (an append after a replacement)
+// is neither listed nor claimable, so it cannot overtake it; once the earlier
+// one settles, the later one is due again.
+func TestAgentPushDeliveriesStayInOrderPerRegistration(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	delivery := func(id string, created, next time.Time) *schemas.AgentPushDelivery {
+		return &schemas.AgentPushDelivery{
+			ID: id, AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Payload: `{"kind":"artifact-update"}`,
+			Status: schemas.AgentPushDeliveryStatusPending, NextAttemptAt: next, CreatedAt: created, UpdatedAt: created,
+		}
+	}
+	// The replacement failed once and backs off; the append behind it is due now.
+	_, err := store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("replacement", now.Add(-time.Minute), now.Add(time.Minute)))
+	require.NoError(t, err)
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("append", now.Add(-time.Second), now.Add(-time.Second)))
+	require.NoError(t, err)
+	// Another registration's delivery is not held behind it.
+	other := delivery("other-config", now.Add(-time.Second), now.Add(-time.Second))
+	other.ConfigID = "cfg-2"
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, other)
+	require.NoError(t, err)
+
+	due, err := store.ListDueAgentPushDeliveries(ctx, now, 10)
+	require.NoError(t, err)
+	require.Len(t, due, 1)
+	require.Equal(t, "other-config", due[0].ID, "the append must not overtake the replacement it follows")
+	claimed, err := store.ClaimAgentPushDelivery(ctx, "append", "relay-1", now.Add(time.Minute))
+	require.NoError(t, err)
+	require.Nil(t, claimed, "a delivery behind a pending earlier one must not be claimable")
+
+	require.NoError(t, store.DB().Model(&tables.TableAgentPushDelivery{}).Where("id = ?", "replacement").
+		Update("status", schemas.AgentPushDeliveryStatusDelivered).Error)
+	due, err = store.ListDueAgentPushDeliveries(ctx, now, 10)
+	require.NoError(t, err)
+	ids := []string{}
+	for _, d := range due {
+		ids = append(ids, d.ID)
+	}
+	require.ElementsMatch(t, []string{"append", "other-config"}, ids)
+}
