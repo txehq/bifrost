@@ -220,17 +220,18 @@ func (s *RDBConfigStore) DeletePendingAgentPushConfig(ctx context.Context, agent
 // created. This is the deduplication point for upstream retransmissions.
 func (s *RDBConfigStore) CreateAgentPushDeliveryIfNotExists(ctx context.Context, delivery *schemas.AgentPushDelivery) (bool, error) {
 	row := tables.TableAgentPushDelivery{
-		ID:            delivery.ID,
-		AgentName:     delivery.AgentName,
-		TaskID:        delivery.TaskID,
-		ConfigID:      delivery.ConfigID,
-		Payload:       delivery.Payload,
-		Status:        delivery.Status,
-		Attempts:      delivery.Attempts,
-		NextAttemptAt: delivery.NextAttemptAt,
-		LastError:     delivery.LastError,
-		CreatedAt:     delivery.CreatedAt,
-		UpdatedAt:     delivery.UpdatedAt,
+		ID:               delivery.ID,
+		AgentName:        delivery.AgentName,
+		TaskID:           delivery.TaskID,
+		ConfigID:         delivery.ConfigID,
+		RegistrationHash: delivery.RegistrationHash,
+		Payload:          delivery.Payload,
+		Status:           delivery.Status,
+		Attempts:         delivery.Attempts,
+		NextAttemptAt:    delivery.NextAttemptAt,
+		LastError:        delivery.LastError,
+		CreatedAt:        delivery.CreatedAt,
+		UpdatedAt:        delivery.UpdatedAt,
 	}
 	result := s.DB().WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&row)
 	if result.Error != nil {
@@ -255,17 +256,18 @@ func (s *RDBConfigStore) ListDueAgentPushDeliveries(ctx context.Context, now tim
 	result := make([]schemas.AgentPushDelivery, 0, len(rows))
 	for _, row := range rows {
 		result = append(result, schemas.AgentPushDelivery{
-			ID:            row.ID,
-			AgentName:     row.AgentName,
-			TaskID:        row.TaskID,
-			ConfigID:      row.ConfigID,
-			Payload:       row.Payload,
-			Status:        row.Status,
-			Attempts:      row.Attempts,
-			NextAttemptAt: row.NextAttemptAt,
-			LastError:     row.LastError,
-			CreatedAt:     row.CreatedAt,
-			UpdatedAt:     row.UpdatedAt,
+			ID:               row.ID,
+			AgentName:        row.AgentName,
+			TaskID:           row.TaskID,
+			ConfigID:         row.ConfigID,
+			RegistrationHash: row.RegistrationHash,
+			Payload:          row.Payload,
+			Status:           row.Status,
+			Attempts:         row.Attempts,
+			NextAttemptAt:    row.NextAttemptAt,
+			LastError:        row.LastError,
+			CreatedAt:        row.CreatedAt,
+			UpdatedAt:        row.UpdatedAt,
 		})
 	}
 	return result, nil
@@ -297,17 +299,18 @@ func (s *RDBConfigStore) ClaimAgentPushDelivery(ctx context.Context, id, runnerI
 		return nil, err
 	}
 	return &schemas.AgentPushDelivery{
-		ID:            row.ID,
-		AgentName:     row.AgentName,
-		TaskID:        row.TaskID,
-		ConfigID:      row.ConfigID,
-		Payload:       row.Payload,
-		Status:        row.Status,
-		Attempts:      row.Attempts,
-		NextAttemptAt: row.NextAttemptAt,
-		LastError:     row.LastError,
-		CreatedAt:     row.CreatedAt,
-		UpdatedAt:     row.UpdatedAt,
+		ID:               row.ID,
+		AgentName:        row.AgentName,
+		TaskID:           row.TaskID,
+		ConfigID:         row.ConfigID,
+		RegistrationHash: row.RegistrationHash,
+		Payload:          row.Payload,
+		Status:           row.Status,
+		Attempts:         row.Attempts,
+		NextAttemptAt:    row.NextAttemptAt,
+		LastError:        row.LastError,
+		CreatedAt:        row.CreatedAt,
+		UpdatedAt:        row.UpdatedAt,
 	}, nil
 }
 

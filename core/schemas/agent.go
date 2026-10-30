@@ -226,15 +226,20 @@ const (
 // so an upstream retransmission of the same event deduplicates instead of
 // producing a second delivery. Rows carry no secrets.
 type AgentPushDelivery struct {
-	ID            string    `json:"id"`
-	AgentName     string    `json:"agent_name"`
-	TaskID        string    `json:"task_id"`
-	ConfigID      string    `json:"config_id"`
-	Payload       string    `json:"payload,omitempty"`
-	Status        string    `json:"status"`
-	Attempts      int       `json:"attempts"`
-	NextAttemptAt time.Time `json:"next_attempt_at"`
-	LastError     string    `json:"last_error,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID        string `json:"id"`
+	AgentName string `json:"agent_name"`
+	TaskID    string `json:"task_id"`
+	ConfigID  string `json:"config_id"`
+	// RegistrationHash is the ingress token hash of the push registration the
+	// delivery was accepted for. Re-registering the same agent/task/config rotates
+	// the token, so a delivery whose registration was replaced is dead-lettered
+	// instead of going to the new callback. Empty on rows written before it existed.
+	RegistrationHash string    `json:"-"`
+	Payload          string    `json:"payload,omitempty"`
+	Status           string    `json:"status"`
+	Attempts         int       `json:"attempts"`
+	NextAttemptAt    time.Time `json:"next_attempt_at"`
+	LastError        string    `json:"last_error,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }

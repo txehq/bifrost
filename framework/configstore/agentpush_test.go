@@ -399,3 +399,27 @@ func TestBindAgentPushConfigTaskReplacesExistingRegistration(t *testing.T) {
 	// Binding a row that is no longer pending is a no-op.
 	require.NoError(t, store.BindAgentPushConfigTask(ctx, "fixture", "hash-new", "__bifrost_pending__:one", "task-1"))
 }
+
+// TestAgentPushDeliveryKeepsItsRegistrationHash: the registration a delivery was
+// accepted for survives the round trip through the outbox, so the relay can
+// refuse a delivery whose registration was replaced.
+func TestAgentPushDeliveryKeepsItsRegistrationHash(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	_, err := store.CreateAgentPushDeliveryIfNotExists(ctx, &schemas.AgentPushDelivery{
+		ID: "bound", AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", RegistrationHash: "registration-a",
+		Payload: `{"kind":"status-update"}`, Status: schemas.AgentPushDeliveryStatusPending,
+		NextAttemptAt: now, CreatedAt: now, UpdatedAt: now,
+	})
+	require.NoError(t, err)
+	due, err := store.ListDueAgentPushDeliveries(ctx, now.Add(time.Second), 10)
+	require.NoError(t, err)
+	require.Len(t, due, 1)
+	require.Equal(t, "registration-a", due[0].RegistrationHash)
+	claimed, err := store.ClaimAgentPushDelivery(ctx, "bound", "relay-1", now.Add(time.Minute))
+	require.NoError(t, err)
+	require.NotNil(t, claimed)
+	require.Equal(t, "registration-a", claimed.RegistrationHash)
+}

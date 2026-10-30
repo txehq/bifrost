@@ -108,6 +108,10 @@ const (
 // immediately instead of retrying.
 var errPushConfigMissing = errors.New("push configuration no longer exists")
 
+// errPushRegistrationReplaced marks a delivery whose registration was replaced by
+// a new one for the same agent/task/config. It dead-letters like a missing config.
+var errPushRegistrationReplaced = fmt.Errorf("%w: the registration this delivery was accepted for was replaced", errPushConfigMissing)
+
 // PushStore is the durable persistence contract for the push relay, declared
 // here (like Store) so core does not depend on the framework config store. The
 // config-store getters report a missing row as (nil, nil) so this package needs
@@ -708,15 +712,16 @@ func (m *Manager) AcceptPushCallback(ctx context.Context, agentName, token strin
 		now := time.Now().UTC()
 		enqueue := startPhaseSpan(gateCtx, "a2a.push.db.enqueue")
 		_, err := m.pushStore.CreateAgentPushDeliveryIfNotExists(gateCtx, &schemas.AgentPushDelivery{
-			ID:            deliveryID,
-			AgentName:     agentName,
-			TaskID:        config.TaskID,
-			ConfigID:      config.ConfigID,
-			Payload:       payload,
-			Status:        schemas.AgentPushDeliveryStatusPending,
-			NextAttemptAt: now,
-			CreatedAt:     now,
-			UpdatedAt:     now,
+			ID:               deliveryID,
+			AgentName:        agentName,
+			TaskID:           config.TaskID,
+			ConfigID:         config.ConfigID,
+			RegistrationHash: config.IngressTokenHash,
+			Payload:          payload,
+			Status:           schemas.AgentPushDeliveryStatusPending,
+			NextAttemptAt:    now,
+			CreatedAt:        now,
+			UpdatedAt:        now,
 		})
 		endPhaseSpan(enqueue)
 		if err != nil {
@@ -926,6 +931,11 @@ func (r *pushRelay) deliver(delivery *schemas.AgentPushDelivery, leaseUntil time
 		endPhaseSpan(lookup)
 		if err == nil && config == nil {
 			err = errPushConfigMissing
+		}
+		// The tuple may now name a different registration (deleted and registered
+		// again, possibly by another tenant): its callback never accepted this payload.
+		if err == nil && delivery.RegistrationHash != "" && config.IngressTokenHash != delivery.RegistrationHash {
+			err = errPushRegistrationReplaced
 		}
 		if err == nil {
 			err = m.sendPushDownstream(gateCtx, config, delivery.Payload)

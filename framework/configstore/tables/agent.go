@@ -227,6 +227,9 @@ type TableAgentPushDelivery struct {
 	AgentName string `gorm:"type:varchar(255);not null;index:idx_agent_push_deliveries_agent"`
 	TaskID    string `gorm:"type:varchar(255);not null"`
 	ConfigID  string `gorm:"type:varchar(255);not null"`
+	// RegistrationHash is the ingress token hash of the registration the delivery
+	// was accepted for; empty on rows written before the column existed.
+	RegistrationHash string `gorm:"type:varchar(64)"`
 
 	Payload       string     `gorm:"type:text;not null"`
 	Status        string     `gorm:"type:varchar(16);not null;index:idx_agent_push_deliveries_status"`

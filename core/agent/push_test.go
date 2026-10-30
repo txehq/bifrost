@@ -1608,3 +1608,40 @@ func TestPushConfigsAreScopedToRequestTenant(t *testing.T) {
 	require.Len(t, upstream.created, 1, "the conflicting registration must not reach the upstream")
 	upstream.mu.Unlock()
 }
+
+// TestPushDeliveryDeadLettersWhenItsRegistrationWasReplaced: a delivery belongs to
+// the registration it was accepted for. If that registration is deleted and the
+// same agent/task/config tuple is registered again (by another tenant here), the
+// queued payload must not go to the new registration's callback.
+func TestPushDeliveryDeadLettersWhenItsRegistrationWasReplaced(t *testing.T) {
+	m, _, store, _ := pushGateway(t)
+	var newTenantHits atomic.Int32
+	newTenant := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		newTenantHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer newTenant.Close()
+	ctx := context.Background()
+	require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{
+		AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "tenant-a",
+		URL: "https://a.example/callback", IngressTokenHash: "registration-a",
+	}))
+	delivery := schemas.AgentPushDelivery{
+		ID: "queued-for-a", AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1",
+		RegistrationHash: "registration-a", Payload: `{"secret":"tenant-a"}`,
+		Status: schemas.AgentPushDeliveryStatusPending, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	_, err := store.CreateAgentPushDeliveryIfNotExists(ctx, &delivery)
+	require.NoError(t, err)
+
+	_, err = store.DeleteAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{
+		AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "tenant-b",
+		URL: newTenant.URL, IngressTokenHash: "registration-b",
+	}))
+
+	newPushRelay(m).deliver(&delivery, time.Now().Add(time.Minute))
+	require.Zero(t, newTenantHits.Load(), "a queued payload reached a registration it was not accepted for")
+	require.Equal(t, schemas.AgentPushDeliveryStatusDead, delivery.Status)
+}
