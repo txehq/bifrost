@@ -10,6 +10,7 @@ import (
 	"iter"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -557,6 +558,14 @@ func (s *memoryPushStore) delivery(t *testing.T, id string) schemas.AgentPushDel
 	return delivery
 }
 
+// deliveryCount reads the outbox size without holding the lock across an
+// assertion: a failed require stops the test while the relay still needs the lock.
+func (s *memoryPushStore) deliveryCount() int {
+	s.pushMu.Lock()
+	defer s.pushMu.Unlock()
+	return len(s.deliveries)
+}
+
 func (s *memoryPushStore) deliveryStatus(id string) string {
 	s.pushMu.Lock()
 	defer s.pushMu.Unlock()
@@ -595,7 +604,7 @@ func (c *pushUpstreamClient) DeleteTaskPushConfig(_ context.Context, req *a2a.De
 	return nil
 }
 
-func (c *pushUpstreamClient) lastCreated(t *testing.T) *a2a.PushConfig {
+func (c *pushUpstreamClient) lastCreated(t testing.TB) *a2a.PushConfig {
 	t.Helper()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -605,9 +614,18 @@ func (c *pushUpstreamClient) lastCreated(t *testing.T) *a2a.PushConfig {
 
 // pushGateway builds a push-enabled manager whose fixture runtime forwards to a
 // recording fake upstream, bypassing discovery.
-func pushGateway(t *testing.T) (*Manager, *proxyRequestHandler, *memoryPushStore, *pushUpstreamClient) {
+func pushGateway(t testing.TB) (*Manager, *proxyRequestHandler, *memoryPushStore, *pushUpstreamClient) {
 	t.Helper()
 	store := newMemoryPushStore()
+	m, handler, client := pushGatewayOn(t, store)
+	return m, handler, store, client
+}
+
+// pushGatewayOn is pushGateway for a caller that wraps the memory store: the
+// manager and its relay are built on the wrapper from the start, since the relay
+// reads the manager's store from its own goroutine and a later reassignment races it.
+func pushGatewayOn(t testing.TB, store Store) (*Manager, *proxyRequestHandler, *pushUpstreamClient) {
+	t.Helper()
 	m, err := NewManager(context.Background(), store, nil, "http://gateway", nil)
 	require.NoError(t, err)
 	// End-to-end relay tests use local callback servers. Individual security
@@ -619,10 +637,10 @@ func pushGateway(t *testing.T) (*Manager, *proxyRequestHandler, *memoryPushStore
 	client := &pushUpstreamClient{}
 	require.NoError(t, runtime.replaceGeneration(newClientGeneration(&a2a.AgentCard{}, client, string(a2a.TransportProtocolJSONRPC))))
 	m.runtimes.store("fixture", runtime)
-	return m, &proxyRequestHandler{runtime: runtime, manager: m, config: runtime.config}, store, client
+	return m, &proxyRequestHandler{runtime: runtime, manager: m, config: runtime.config}, client
 }
 
-func pushEventPayload(t *testing.T, taskID string) []byte {
+func pushEventPayload(t testing.TB, taskID string) []byte {
 	t.Helper()
 	body, err := json.Marshal(a2a.StreamResponse{Event: &a2a.TaskStatusUpdateEvent{
 		TaskID:    a2a.TaskID(taskID),
@@ -706,13 +724,13 @@ func TestCreateTaskPushConfigRewritesUpstreamAndStoresCallback(t *testing.T) {
 	require.Equal(t, "client-credential", stored.AuthCredentials.GetValue())
 	require.Equal(t, "downstream-tenant", stored.Tenant)
 
-	// Reads are served from the gateway store and stay redacted.
-	got, err := handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{TaskID: "task-1", ID: "cfg-1"})
+	// Reads are served from the gateway store, scoped to the tenant, and stay redacted.
+	got, err := handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{Tenant: "downstream-tenant", TaskID: "task-1", ID: "cfg-1"})
 	require.NoError(t, err)
 	require.Empty(t, got.Token)
 	require.Equal(t, "downstream-tenant", got.Tenant)
 	require.Equal(t, "http://client.example/callback", got.URL)
-	listed, err := handler.ListTaskPushConfigs(context.Background(), &a2a.ListTaskPushConfigRequest{TaskID: "task-1"})
+	listed, err := handler.ListTaskPushConfigs(context.Background(), &a2a.ListTaskPushConfigRequest{Tenant: "downstream-tenant", TaskID: "task-1"})
 	require.NoError(t, err)
 	require.Len(t, listed.Configs, 1)
 	require.Equal(t, "downstream-tenant", listed.Configs[0].Tenant)
@@ -1157,6 +1175,36 @@ func TestAcceptPushCallbackAuthenticatesAndDeduplicates(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, status)
 }
 
+// TestAcceptPushCallbackKeepsRepeatedArtifactAppends verifies that two append
+// events with identical bytes are both delivered: an append carries no event
+// identity, so equal payloads are distinct increments, not a retransmission.
+func TestAcceptPushCallbackKeepsRepeatedArtifactAppends(t *testing.T) {
+	m, handler, store, upstream := pushGateway(t)
+	_, err := handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{TaskID: "task-1", ID: "cfg-1", URL: "http://client.example/callback"})
+	require.NoError(t, err)
+	token := upstream.lastCreated(t).Token
+	appendEvent, err := json.Marshal(a2a.StreamResponse{Event: &a2a.TaskArtifactUpdateEvent{TaskID: "task-1", ContextID: "ctx-1", Append: true, Artifact: &a2a.Artifact{ID: "artifact-1", Parts: []*a2a.Part{a2a.NewTextPart("ha")}}}})
+	require.NoError(t, err)
+
+	for range 2 {
+		status, err := m.AcceptPushCallback(context.Background(), "fixture", token, appendEvent)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusAccepted, status)
+	}
+	require.Equal(t, 2, store.deliveryCount(), "each accepted append must be delivered")
+
+	// A replacement (append false) is idempotent, so a retransmission of it still
+	// collapses into the delivery already recorded.
+	replaceEvent, err := json.Marshal(a2a.StreamResponse{Event: &a2a.TaskArtifactUpdateEvent{TaskID: "task-1", ContextID: "ctx-1", Artifact: &a2a.Artifact{ID: "artifact-1", Parts: []*a2a.Part{a2a.NewTextPart("final")}}}})
+	require.NoError(t, err)
+	for range 2 {
+		status, err := m.AcceptPushCallback(context.Background(), "fixture", token, replaceEvent)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusAccepted, status)
+	}
+	require.Equal(t, 3, store.deliveryCount(), "a retransmitted idempotent event must not be delivered twice")
+}
+
 func TestPushDeliveryBlocksPrivateDestination(t *testing.T) {
 	called := atomic.Bool{}
 	downstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -1533,5 +1581,350 @@ func TestPushRelayReleasesOperationContexts(t *testing.T) {
 				require.NoError(t, parent.Err(), "operation cleanup must not cancel the manager")
 			}
 		})
+	}
+}
+
+// TestPushConfigsAreScopedToRequestTenant pins tenant isolation for stored push
+// callbacks: a request naming a tenant neither reads, lists, deletes nor replaces
+// another tenant's config that shares the agent, task and config IDs.
+func TestPushConfigsAreScopedToRequestTenant(t *testing.T) {
+	_, handler, store, upstream := pushGateway(t)
+	_, err := handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{
+		Tenant: "tenant-a", TaskID: "task-1", ID: "cfg-1", URL: "https://a.example/callback", Token: "token-a",
+	})
+	require.NoError(t, err)
+
+	_, err = handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{
+		Tenant: "tenant-b", TaskID: "task-1", ID: "cfg-1", URL: "https://b.example/callback", Token: "token-b",
+	})
+	require.ErrorIs(t, err, a2a.ErrInvalidParams)
+	stored, err := store.GetAgentPushConfig(context.Background(), "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "tenant-a", stored.Tenant)
+	require.Equal(t, "https://a.example/callback", stored.URL, "another tenant replaced the callback")
+	require.Equal(t, "token-a", stored.Token.GetValue())
+
+	_, err = handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{Tenant: "tenant-b", TaskID: "task-1", ID: "cfg-1"})
+	require.ErrorIs(t, err, push.ErrPushConfigNotFound)
+	listed, err := handler.ListTaskPushConfigs(context.Background(), &a2a.ListTaskPushConfigRequest{Tenant: "tenant-b", TaskID: "task-1"})
+	require.NoError(t, err)
+	require.Empty(t, listed.Configs)
+
+	require.NoError(t, handler.DeleteTaskPushConfig(context.Background(), &a2a.DeleteTaskPushConfigRequest{Tenant: "tenant-b", TaskID: "task-1", ID: "cfg-1"}))
+	stored, err = store.GetAgentPushConfig(context.Background(), "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.NotNil(t, stored, "another tenant deleted the local callback record")
+
+	got, err := handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{Tenant: "tenant-a", TaskID: "task-1", ID: "cfg-1"})
+	require.NoError(t, err)
+	require.Equal(t, "https://a.example/callback", got.URL)
+	upstream.mu.Lock()
+	require.Len(t, upstream.created, 1, "the conflicting registration must not reach the upstream")
+	upstream.mu.Unlock()
+}
+
+// TestPushDeliveryDeadLettersWhenItsRegistrationWasReplaced: a delivery belongs to
+// the registration it was accepted for. If that registration is deleted and the
+// same agent/task/config tuple is registered again (by another tenant here), the
+// queued payload must not go to the new registration's callback.
+func TestPushDeliveryDeadLettersWhenItsRegistrationWasReplaced(t *testing.T) {
+	m, _, store, _ := pushGateway(t)
+	var newTenantHits atomic.Int32
+	newTenant := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		newTenantHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer newTenant.Close()
+	ctx := context.Background()
+	require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{
+		AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "tenant-a",
+		URL: "https://a.example/callback", IngressTokenHash: "registration-a",
+	}))
+	delivery := schemas.AgentPushDelivery{
+		ID: "queued-for-a", AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1",
+		RegistrationHash: "registration-a", Payload: `{"secret":"tenant-a"}`,
+		Status: schemas.AgentPushDeliveryStatusPending, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	_, err := store.CreateAgentPushDeliveryIfNotExists(ctx, &delivery)
+	require.NoError(t, err)
+
+	_, err = store.DeleteAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{
+		AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "tenant-b",
+		URL: newTenant.URL, IngressTokenHash: "registration-b",
+	}))
+
+	newPushRelay(m).deliver(&delivery, time.Now().Add(time.Minute))
+	require.Zero(t, newTenantHits.Load(), "a queued payload reached a registration it was not accepted for")
+	require.Equal(t, schemas.AgentPushDeliveryStatusDead, delivery.Status)
+}
+
+// TestTenantlessPushRequestsCannotReachANamedTenantsConfig: a request that names
+// no tenant is its own (empty) tenant, not a wildcard: it neither reads, lists nor
+// deletes a config a named tenant registered.
+func TestTenantlessPushRequestsCannotReachANamedTenantsConfig(t *testing.T) {
+	_, handler, store, _ := pushGateway(t)
+	_, err := handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{
+		Tenant: "tenant-a", TaskID: "task-1", ID: "cfg-1", URL: "https://a.example/callback", Token: "token-a",
+	})
+	require.NoError(t, err)
+
+	_, err = handler.GetTaskPushConfig(context.Background(), &a2a.GetTaskPushConfigRequest{TaskID: "task-1", ID: "cfg-1"})
+	require.Error(t, err, "a tenantless read must not see tenant-a's callback")
+	listed, err := handler.ListTaskPushConfigs(context.Background(), &a2a.ListTaskPushConfigRequest{TaskID: "task-1"})
+	require.NoError(t, err)
+	require.Empty(t, listed.Configs, "a tenantless list must not include tenant-a's callback")
+	require.NoError(t, handler.DeleteTaskPushConfig(context.Background(), &a2a.DeleteTaskPushConfigRequest{TaskID: "task-1", ID: "cfg-1"}))
+	stored, err := store.GetAgentPushConfig(context.Background(), "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.NotNil(t, stored, "a tenantless delete must not remove tenant-a's record")
+}
+
+// staleBindReadStore returns, once, the pending row as it was before another
+// callback bound it: the losing side of two pushes racing on one pending config.
+type staleBindReadStore struct {
+	*memoryPushStore
+	stale *schemas.AgentPushConfig
+}
+
+func (s *staleBindReadStore) GetAgentPushConfigByIngressTokenHash(ctx context.Context, agentName, hash string) (*schemas.AgentPushConfig, error) {
+	if s.stale != nil {
+		stale := *s.stale
+		s.stale = nil
+		return &stale, nil
+	}
+	return s.memoryPushStore.GetAgentPushConfigByIngressTokenHash(ctx, agentName, hash)
+}
+
+// TestPendingPushBindRaceRejectsTheLosingTask: when two pushes race to bind one
+// pending config, the loser's bind changes nothing; it must then see that the
+// config was bound to another task and refuse, not queue its own task under it.
+func TestPendingPushBindRaceRejectsTheLosingTask(t *testing.T) {
+	store := newMemoryPushStore()
+	stale := &staleBindReadStore{memoryPushStore: store}
+	m, _, _ := pushGatewayOn(t, stale)
+	ctx := context.Background()
+	pending := schemas.AgentPushConfig{
+		AgentName: "fixture", TaskID: pendingAgentPushConfigTaskIDPrefix + "send-1", ConfigID: "cfg-1",
+		URL: "https://client.example/callback", IngressTokenHash: hashPushIngressToken("ingress-token"),
+	}
+	require.NoError(t, store.SaveAgentPushConfig(ctx, &pending))
+	// The winning push bound the row to task-a after the loser had read it.
+	require.NoError(t, store.BindAgentPushConfigTask(ctx, "fixture", pending.IngressTokenHash, pending.TaskID, "task-a"))
+	stale.stale = &pending
+
+	status, err := m.AcceptPushCallback(ctx, "fixture", "ingress-token", pushEventPayload(t, "task-b"))
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, status)
+	store.pushMu.Lock()
+	defer store.pushMu.Unlock()
+	require.Empty(t, store.deliveries, "the losing push queued a delivery for a task the config is not bound to")
+}
+
+// TestQueuedPushNeverReachesAReplacedRegistration pins the registration binding end
+// to end through the manager's own store contract: a push accepted for tenant A's
+// registration belongs to it. When that registration is deleted and tenant B
+// registers the same agent/task/config tuple before the relay delivers, the queued
+// payload is dead-lettered instead of being sent to B's callback.
+func TestQueuedPushNeverReachesAReplacedRegistration(t *testing.T) {
+	m, handler, store, upstream := pushGateway(t)
+	var newTenantHits atomic.Int32
+	newTenant := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		newTenantHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer newTenant.Close()
+	ctx := context.Background()
+	_, err := handler.CreateTaskPushConfig(ctx, &a2a.PushConfig{Tenant: "tenant-a", TaskID: "task-1", ID: "cfg-1", URL: "https://a.example/callback", Token: "token-a"})
+	require.NoError(t, err)
+	token := upstream.lastCreated(t).Token
+	status, err := m.AcceptPushCallback(ctx, "fixture", token, pushEventPayload(t, "task-1"))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusAccepted, status)
+
+	// A's registration goes away and B takes the tuple with its own callback.
+	require.NoError(t, handler.DeleteTaskPushConfig(ctx, &a2a.DeleteTaskPushConfigRequest{Tenant: "tenant-a", TaskID: "task-1", ID: "cfg-1"}))
+	_, err = handler.CreateTaskPushConfig(ctx, &a2a.PushConfig{Tenant: "tenant-b", TaskID: "task-1", ID: "cfg-1", URL: newTenant.URL, Token: "token-b"})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, store.deliveryCount())
+	store.pushMu.Lock()
+	var queued schemas.AgentPushDelivery
+	for _, delivery := range store.deliveries {
+		queued = delivery
+	}
+	store.pushMu.Unlock()
+	newPushRelay(m).deliver(&queued, time.Now().Add(time.Minute))
+	require.Zero(t, newTenantHits.Load(), "a queued payload reached the registration that replaced its own")
+	require.Equal(t, schemas.AgentPushDeliveryStatusDead, queued.Status)
+}
+
+// idleRelayStore hides queued deliveries from the background relay so a benchmark
+// measures the ingress alone.
+type idleRelayStore struct{ *memoryPushStore }
+
+func (idleRelayStore) ListDueAgentPushDeliveries(context.Context, time.Time, int) ([]schemas.AgentPushDelivery, error) {
+	return nil, nil
+}
+
+// BenchmarkAcceptPushCallback measures the push ingress for the two event kinds the
+// delivery identity tells apart: a status update keeps its content digest, an
+// artifact append gets its own identity.
+func BenchmarkAcceptPushCallback(b *testing.B) {
+	store := newMemoryPushStore()
+	m, handler, upstream := pushGatewayOn(b, idleRelayStore{store})
+	_, err := handler.CreateTaskPushConfig(context.Background(), &a2a.PushConfig{TaskID: "task-1", ID: "cfg-1", URL: "http://client.example/callback"})
+	require.NoError(b, err)
+	token := upstream.lastCreated(b).Token
+	appendEvent, err := json.Marshal(a2a.StreamResponse{Event: &a2a.TaskArtifactUpdateEvent{TaskID: "task-1", ContextID: "ctx-1", Append: true, Artifact: &a2a.Artifact{ID: "artifact-1", Parts: []*a2a.Part{a2a.NewTextPart("ha")}}}})
+	require.NoError(b, err)
+	for _, tc := range []struct {
+		name    string
+		payload []byte
+	}{
+		{"status_update", pushEventPayload(b, "task-1")},
+		{"artifact_append", appendEvent},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				status, err := m.AcceptPushCallback(context.Background(), "fixture", token, tc.payload)
+				if err != nil || status != http.StatusAccepted {
+					b.Fatalf("accept: status %d, err %v", status, err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkPushConfigReads measures the gateway-local, tenant-scoped reads.
+func BenchmarkPushConfigReads(b *testing.B) {
+	_, handler, store, _ := pushGateway(b)
+	ctx := context.Background()
+	require.NoError(b, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{
+		AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "tenant-a",
+		URL: "https://a.example/callback", IngressTokenHash: "hash-a",
+	}))
+	b.Run("get", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := handler.GetTaskPushConfig(ctx, &a2a.GetTaskPushConfigRequest{Tenant: "tenant-a", TaskID: "task-1", ID: "cfg-1"}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("list", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := handler.ListTaskPushConfigs(ctx, &a2a.ListTaskPushConfigRequest{Tenant: "tenant-a", TaskID: "task-1"}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+// TestRetransmissionAfterReRegistrationReachesTheNewRegistration: a delivery's
+// identity is scoped to the registration that accepted it. When tenant A's
+// registration is replaced by tenant B's and the upstream sends the same event
+// again under B's token, that push is a new delivery for B, not a retransmission
+// of A's (dead-lettered) one.
+func TestRetransmissionAfterReRegistrationReachesTheNewRegistration(t *testing.T) {
+	// The background relay is kept away from the outbox so the test delivers
+	// each row exactly once itself.
+	store := newMemoryPushStore()
+	m, handler, upstream := pushGatewayOn(t, idleRelayStore{store})
+	var newTenantHits atomic.Int32
+	newTenant := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		newTenantHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer newTenant.Close()
+	ctx := context.Background()
+	payload := pushEventPayload(t, "task-1")
+	_, err := handler.CreateTaskPushConfig(ctx, &a2a.PushConfig{Tenant: "tenant-a", TaskID: "task-1", ID: "cfg-1", URL: "https://a.example/callback", Token: "token-a"})
+	require.NoError(t, err)
+	oldToken := upstream.lastCreated(t).Token
+	status, err := m.AcceptPushCallback(ctx, "fixture", oldToken, payload)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusAccepted, status)
+
+	require.NoError(t, handler.DeleteTaskPushConfig(ctx, &a2a.DeleteTaskPushConfigRequest{Tenant: "tenant-a", TaskID: "task-1", ID: "cfg-1"}))
+	_, err = handler.CreateTaskPushConfig(ctx, &a2a.PushConfig{Tenant: "tenant-b", TaskID: "task-1", ID: "cfg-1", URL: newTenant.URL, Token: "token-b"})
+	require.NoError(t, err)
+	newToken := upstream.lastCreated(t).Token
+	require.NotEqual(t, oldToken, newToken)
+	status, err = m.AcceptPushCallback(ctx, "fixture", newToken, payload)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusAccepted, status)
+	require.Equal(t, 2, store.deliveryCount(), "the same event accepted under the replacement registration must be its own delivery")
+
+	// The new registration's delivery reaches its callback; the old one is dead.
+	store.pushMu.Lock()
+	deliveries := make([]schemas.AgentPushDelivery, 0, 2)
+	for _, delivery := range store.deliveries {
+		deliveries = append(deliveries, delivery)
+	}
+	store.pushMu.Unlock()
+	relay := newPushRelay(m)
+	for i := range deliveries {
+		relay.deliver(&deliveries[i], time.Now().Add(time.Minute))
+	}
+	require.Equal(t, int32(1), newTenantHits.Load(), "the delivery accepted under the new registration must reach its callback exactly once")
+	// A retransmission under the same token still collapses.
+	status, err = m.AcceptPushCallback(ctx, "fixture", newToken, payload)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusAccepted, status)
+	require.Equal(t, 2, store.deliveryCount(), "a retransmission under the same registration must deduplicate")
+}
+
+// headOfLineStore lists at most one due delivery per pass, as the RDB store does
+// for one registration's deliveries, and exposes none until armed.
+type headOfLineStore struct {
+	*memoryPushStore
+	armed atomic.Bool
+}
+
+func (s *headOfLineStore) ListDueAgentPushDeliveries(ctx context.Context, now time.Time, limit int) ([]schemas.AgentPushDelivery, error) {
+	if !s.armed.Load() {
+		return nil, nil
+	}
+	due, err := s.memoryPushStore.ListDueAgentPushDeliveries(ctx, now, limit)
+	if err != nil || len(due) == 0 {
+		return due, err
+	}
+	sort.Slice(due, func(i, j int) bool { return due[i].CreatedAt.Before(due[j].CreatedAt) })
+	return due[:1], nil
+}
+
+// TestPushRelayDrainsAHeadOfLineBacklogInOnePass: with one registration's
+// deliveries listed one at a time, a single relay pass must keep re-querying while
+// it makes progress, so a backlog drains at once instead of one event per poll.
+func TestPushRelayDrainsAHeadOfLineBacklogInOnePass(t *testing.T) {
+	store := newMemoryPushStore()
+	gated := &headOfLineStore{memoryPushStore: store}
+	m, _, _ := pushGatewayOn(t, gated)
+	var hits atomic.Int32
+	downstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer downstream.Close()
+	ctx := context.Background()
+	require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", URL: downstream.URL, IngressTokenHash: "registration-a"}))
+	base := time.Now().UTC().Add(-time.Minute)
+	for i := range 5 {
+		_, err := store.CreateAgentPushDeliveryIfNotExists(ctx, &schemas.AgentPushDelivery{
+			ID: fmt.Sprintf("backlog-%d", i), AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1",
+			Payload: `{"kind":"status-update"}`, Status: schemas.AgentPushDeliveryStatusPending,
+			NextAttemptAt: base, CreatedAt: base.Add(time.Duration(i) * time.Second), UpdatedAt: base,
+		})
+		require.NoError(t, err)
+	}
+	gated.armed.Store(true)
+	newPushRelay(m).processDue()
+	require.Equal(t, int32(5), hits.Load(), "one pass must drain the whole head-of-line backlog")
+	for i := range 5 {
+		require.Equal(t, schemas.AgentPushDeliveryStatusDelivered, store.deliveryStatus(fmt.Sprintf("backlog-%d", i)))
 	}
 }

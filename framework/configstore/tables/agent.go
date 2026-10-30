@@ -18,8 +18,13 @@ type TableAgentRegistration struct {
 	// Name is the primary key and the identifier used in gateway URLs and grants.
 	Name         string `gorm:"primaryKey;type:varchar(255)"`
 	AgentCardURL string `gorm:"type:text;not null"`
-	// Enabled false retains the row while removing the agent from the runtime.
-	Enabled bool `gorm:"not null;default:true"`
+	// Enabled false retains the row while removing the agent from the runtime. The
+	// column default is false, not true: GORM substitutes a column default for a
+	// zero value on create, so a default of true turned an explicit false into true
+	// and published a registration created disabled. A default of false leaves an
+	// explicit false as is, and a prior binary that omits the column on insert still
+	// writes a row (disabled) instead of failing NOT NULL.
+	Enabled bool `gorm:"not null;default:false"`
 	// AllowByDefault grants access without any explicit grant row.
 	AllowByDefault                         bool                  `gorm:"column:allow_by_default;not null;default:false"`
 	ForwardAcceptedCredential              bool                  `gorm:"column:forward_accepted_credential;not null;default:false"`
@@ -227,6 +232,9 @@ type TableAgentPushDelivery struct {
 	AgentName string `gorm:"type:varchar(255);not null;index:idx_agent_push_deliveries_agent"`
 	TaskID    string `gorm:"type:varchar(255);not null"`
 	ConfigID  string `gorm:"type:varchar(255);not null"`
+	// RegistrationHash is the ingress token hash of the registration the delivery
+	// was accepted for; empty on rows written before the column existed.
+	RegistrationHash string `gorm:"type:varchar(64)"`
 
 	Payload       string     `gorm:"type:text;not null"`
 	Status        string     `gorm:"type:varchar(16);not null;index:idx_agent_push_deliveries_status"`

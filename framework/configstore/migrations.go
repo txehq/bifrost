@@ -570,6 +570,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_vertex_use_session_routing_column"}, run: migrationAddVertexUseSessionRoutingColumn},
 	{IDs: []string{"add_rss_feeds_table"}, run: migrationAddRSSFeedsTable},
 	{IDs: []string{"add_rss_feeds_icon_url_column"}, run: migrationAddRSSFeedsIconURLColumn},
+	{IDs: []string{"add_agent_push_delivery_registration_hash_column"}, run: migrationAddAgentPushDeliveryRegistrationHashColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1184,6 +1185,23 @@ func migrationAddAgentGatewayTables(ctx context.Context, db *gorm.DB, logger sch
 			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "A2AExternalClientURL")
 		},
 		Rollback: rollbackAgentGatewayTables,
+	})
+}
+
+// migrationAddAgentPushDeliveryRegistrationHashColumn records which push
+// registration each queued delivery was accepted for, so a delivery whose
+// registration was replaced is dead-lettered instead of reaching the new
+// callback. Rows queued before it keep an empty hash.
+func migrationAddAgentPushDeliveryRegistrationHashColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_agent_push_delivery_registration_hash_column"
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableAgentPushDelivery{}, "registration_hash")
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: dropping registration_hash would let queued deliveries reach a replaced registration", migrationName)
+		},
 	})
 }
 

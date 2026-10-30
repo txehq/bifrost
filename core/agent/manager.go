@@ -2292,7 +2292,9 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		return nil, &upstreamHTTPStatusError{StatusCode: resp.StatusCode, Status: resp.Status}
 	}
 	if err == nil && resp != nil {
-		wrapJSONStreamError(clone, resp)
+		if wrapErr := wrapJSONStreamError(clone, resp); wrapErr != nil {
+			return nil, wrapErr
+		}
 	}
 	return resp, err
 }
@@ -2311,24 +2313,30 @@ const maxWrappedStreamErrorBody = 1 << 20
 // plain 200 application/json error response instead of opening an SSE stream
 // (the Python SDK does exactly this); the a2a-go client's SSE parser sees no
 // "data:" lines in such a body and silently reports an empty stream, swallowing
-// the upstream error. Reframing lets the SDK surface the error unchanged.
-func wrapJSONStreamError(req *http.Request, resp *http.Response) {
+// the upstream error. Reframing lets the SDK surface the error unchanged. A
+// failed body read is returned so a truncated reply never reads as an empty,
+// successful stream.
+func wrapJSONStreamError(req *http.Request, resp *http.Response) error {
 	if resp.StatusCode != http.StatusOK ||
 		!strings.Contains(req.Header.Get("Accept"), "text/event-stream") ||
 		!strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
-		return
+		return nil
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxWrappedStreamErrorBody))
+	// One byte past the limit tells an oversized reply from one that just fits.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxWrappedStreamErrorBody+1))
 	resp.Body.Close()
 	if err != nil {
-		resp.Body = io.NopCloser(bytes.NewReader(nil))
-		return
+		return fmt.Errorf("read upstream JSON reply to streaming request: %w", err)
 	}
-	// SSE data frames are line-delimited, so the JSON must be a single line.
+	if len(body) > maxWrappedStreamErrorBody {
+		return fmt.Errorf("upstream JSON reply to streaming request exceeds %d bytes", maxWrappedStreamErrorBody)
+	}
+	// SSE data frames are line-delimited, so the JSON must be a single line. A
+	// reply that is not JSON cannot be framed, and passed through it would read as
+	// an empty, successful stream.
 	var compact bytes.Buffer
-	if json.Compact(&compact, body) != nil {
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		return
+	if err := json.Compact(&compact, body); err != nil {
+		return fmt.Errorf("upstream JSON reply to streaming request is not valid JSON: %w", err)
 	}
 	framed := append([]byte("data: "), compact.Bytes()...)
 	framed = append(framed, '\n', '\n')
@@ -2336,6 +2344,7 @@ func wrapJSONStreamError(req *http.Request, resp *http.Response) {
 	resp.Header.Del("Content-Length")
 	resp.ContentLength = int64(len(framed))
 	resp.Body = io.NopCloser(bytes.NewReader(framed))
+	return nil
 }
 
 // sanitizeUpstreamHeaders builds the header set sent upstream. It copies

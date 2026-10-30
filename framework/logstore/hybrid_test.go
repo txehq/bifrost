@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -806,6 +807,48 @@ func TestHybrid_UpdateAgentLogOffloadsMergedPayload(t *testing.T) {
 
 	found, err := hybrid.FindAgentLog(ctx, entry.ID)
 	require.NoError(t, err)
+	require.NotNil(t, found.RequestBody)
+	require.NotNil(t, found.ResponseBody)
+	assert.Equal(t, requestBody, *found.RequestBody)
+	assert.Equal(t, updatedResponseBody, *found.ResponseBody)
+}
+
+// A body update that also moves the row's status must queue its upload under
+// the new status. The worker drops an upload whose status no longer matches the
+// row, so queueing the old one left has_object false and only the database
+// preview of the updated body.
+func TestHybrid_UpdateAgentLogStatusTransitionUploadsPayload(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 7, 20, 13, 14, 15, 0, time.UTC)
+	requestBody := `{"request":"original"}`
+	updatedResponseBody := `{"response":"done"}`
+	entry := &AgentLog{
+		ID: "agent-update-status", Timestamp: ts, RecordKind: "request",
+		Operation: "SendMessage", Status: "processing", AgentName: "fixture", RequestID: "req-agent-update-status",
+		RequestBody: &requestBody,
+	}
+
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject
+	})
+
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{
+		"status":        "success",
+		"response_body": updatedResponseBody,
+	}))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject
+	})
+	assert.Zero(t, hybrid.DroppedUploads())
+
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "success", found.Status)
 	require.NotNil(t, found.RequestBody)
 	require.NotNil(t, found.ResponseBody)
 	assert.Equal(t, requestBody, *found.RequestBody)
@@ -2339,4 +2382,139 @@ func TestHybrid_JSONFormat_DeleteRemovesParquetObject(t *testing.T) {
 	defer hybrid.Close(ctx)
 	require.NoError(t, hybrid.DeleteLogs(ctx, []string{entry.ID}))
 	assert.Equal(t, 0, objStore.Len())
+}
+
+// gatedObjectStore holds every Put until release is closed, and closes entered
+// once the first Put is waiting, so a test can act while an upload is in flight.
+type gatedObjectStore struct {
+	objectstore.ObjectStore
+	release chan struct{}
+	entered chan struct{}
+	once    sync.Once
+}
+
+func newGatedObjectStore() *gatedObjectStore {
+	return &gatedObjectStore{ObjectStore: objectstore.NewInMemoryObjectStore(), release: make(chan struct{}), entered: make(chan struct{})}
+}
+
+func (s *gatedObjectStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	s.once.Do(func() { close(s.entered) })
+	<-s.release
+	return s.ObjectStore.Put(ctx, key, data, tags)
+}
+
+// waitEntered blocks until an upload is waiting at the gate.
+func (s *gatedObjectStore) waitEntered(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no upload reached the object store")
+	}
+}
+
+// TestHybrid_UpdateAgentLogBeforeInitialUploadKeepsFullPayload: an update that lands
+// while the log's initial upload is still queued builds its replacement from the
+// queued full payload, not from the row's previews, so the stored object keeps the
+// untruncated body and the raw fields.
+func TestHybrid_UpdateAgentLogBeforeInitialUploadKeepsFullPayload(t *testing.T) {
+	gate := newGatedObjectStore()
+	hybrid, inner := newTestHybridWithObjects(t, gate)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	requestBody := `{"request":"` + strings.Repeat("x", 3*maxA2APayloadPreviewRunes) + `"}`
+	rawRequest := `{"raw":"request"}`
+	entry := &AgentLog{
+		ID: "agent-early-update", Timestamp: time.Now().UTC(), RecordKind: "request",
+		Operation: "SendMessage", Status: "processing", AgentName: "fixture", RequestID: "req-agent-early-update",
+		RequestBody: &requestBody, RawRequest: &rawRequest,
+	}
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	// The initial upload is in flight: its worker is waiting at the gate.
+	gate.waitEntered(t)
+
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{
+		"status":        "success",
+		"response_body": `{"response":"done"}`,
+	}))
+	close(gate.release)
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject && hybrid.queuedUploads() == 0
+	})
+
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.RequestBody, "the request body was lost")
+	assert.Equal(t, len(requestBody), len(*found.RequestBody), "the request body was truncated to its preview")
+	require.NotNil(t, found.RawRequest, "the raw request was dropped")
+	assert.Equal(t, rawRequest, *found.RawRequest)
+	require.NotNil(t, found.ResponseBody, "the response body was lost")
+	assert.Equal(t, `{"response":"done"}`, *found.ResponseBody)
+}
+
+// TestHybrid_UpdateAgentLogBodyBeforeInitialUploadKeepsFullPayload is the body-only
+// variant of TestHybrid_UpdateAgentLogBeforeInitialUploadKeepsFullPayload: with no
+// status change the initial upload still lands, but the replacement queued behind
+// it must be built on the queued full payload, not on the row's previews, or it
+// overwrites the full object with truncated bodies.
+func TestHybrid_UpdateAgentLogBodyBeforeInitialUploadKeepsFullPayload(t *testing.T) {
+	gate := newGatedObjectStore()
+	hybrid, inner := newTestHybridWithObjects(t, gate)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	requestBody := `{"request":"` + strings.Repeat("x", 3*maxA2APayloadPreviewRunes) + `"}`
+	rawRequest := `{"raw":"request"}`
+	entry := &AgentLog{
+		ID: "agent-early-body-update", Timestamp: time.Now().UTC(), RecordKind: "request",
+		Operation: "SendMessage", Status: "processing", AgentName: "fixture", RequestID: "req-agent-early-body-update",
+		RequestBody: &requestBody, RawRequest: &rawRequest,
+	}
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	// The initial upload is in flight: its worker is waiting at the gate.
+	gate.waitEntered(t)
+
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{
+		"response_body": `{"response":"partial"}`,
+	}))
+	close(gate.release)
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject && hybrid.queuedUploads() == 0
+	})
+
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.RequestBody)
+	assert.Equal(t, len(requestBody), len(*found.RequestBody), "the request body was truncated to its preview")
+	require.NotNil(t, found.RawRequest, "the raw request was dropped")
+	assert.Equal(t, rawRequest, *found.RawRequest)
+	require.NotNil(t, found.ResponseBody)
+	assert.Equal(t, `{"response":"partial"}`, *found.ResponseBody)
+}
+
+// BenchmarkPendingAgentUploadTracking measures what the queued-upload record adds
+// to an enqueue: a mutex-guarded map write and delete for an Agent log, and only a
+// kind check for every other upload.
+func BenchmarkPendingAgentUploadTracking(b *testing.B) {
+	h := &HybridLogStore{}
+	agentWork := &uploadWork{logID: "agent-bench", kind: uploadKindAgent, payload: []byte(`{"request":"x"}`)}
+	b.Run("agent", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			h.trackPendingAgentUpload(agentWork)
+			if h.pendingAgentPayload("agent-bench") == nil {
+				b.Fatal("queued payload not found")
+			}
+			h.settlePendingAgentUpload(agentWork)
+		}
+	})
+	logWork := &uploadWork{logID: "log-bench", kind: uploadKindLog}
+	b.Run("other_kind", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			h.trackPendingAgentUpload(logWork)
+			h.settlePendingAgentUpload(logWork)
+		}
+	})
 }

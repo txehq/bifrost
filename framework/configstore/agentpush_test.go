@@ -327,3 +327,331 @@ func TestPruneAgentPushDeliveries(t *testing.T) {
 		}
 	}
 }
+
+// TestSaveAgentPushConfigRefusesAnotherTenantsRow pins that the upsert never
+// replaces a push config owned by a different tenant, even when two registrations
+// race past the caller's own check.
+func TestSaveAgentPushConfigRefusesAnotherTenantsRow(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	owned := &schemas.AgentPushConfig{AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "tenant-a", URL: "https://a.example/callback", IngressTokenHash: "hash-a", CreatedAt: now, UpdatedAt: now}
+	require.NoError(t, store.SaveAgentPushConfig(ctx, owned))
+
+	intruder := *owned
+	intruder.Tenant = "tenant-b"
+	intruder.URL = "https://b.example/callback"
+	intruder.IngressTokenHash = "hash-b"
+	require.ErrorIs(t, store.SaveAgentPushConfig(ctx, &intruder), ErrAgentPushConfigTenantConflict)
+
+	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "tenant-a", got.Tenant)
+	require.Equal(t, "https://a.example/callback", got.URL)
+	require.Equal(t, "hash-a", got.IngressTokenHash)
+
+	// The owning tenant still replaces its own callback.
+	owned.URL = "https://a.example/replaced"
+	require.NoError(t, store.SaveAgentPushConfig(ctx, owned))
+	got, err = store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "https://a.example/replaced", got.URL)
+}
+
+// TestBindAgentPushConfigTaskReplacesExistingRegistration covers a follow-up
+// send that embeds an existing task's config ID: binding replaces the earlier
+// registration and rotates its ingress token instead of colliding with the
+// (agent, task, config) key. Another tenant's row is never replaced.
+func TestBindAgentPushConfigTaskReplacesExistingRegistration(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	save := func(taskID, tenant, url, hash string) {
+		t.Helper()
+		require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{AgentName: "fixture", TaskID: taskID, ConfigID: "cfg-1", Tenant: tenant, URL: url, IngressTokenHash: hash, CreatedAt: now, UpdatedAt: now}))
+	}
+	save("task-1", "tenant-a", "https://a.example/first", "hash-old")
+	save("__bifrost_pending__:one", "tenant-a", "https://a.example/second", "hash-new")
+
+	require.NoError(t, store.BindAgentPushConfigTask(ctx, "fixture", "hash-new", "__bifrost_pending__:one", "task-1"))
+	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "https://a.example/second", got.URL)
+	require.Equal(t, "hash-new", got.IngressTokenHash)
+	stale, err := store.GetAgentPushConfigByIngressTokenHash(ctx, "fixture", "hash-old")
+	require.NoError(t, err)
+	require.Nil(t, stale, "the replaced registration's ingress token must stop authenticating")
+	pending, err := store.GetAgentPushConfigByIngressTokenHash(ctx, "fixture", "hash-new")
+	require.NoError(t, err)
+	require.Equal(t, "task-1", pending.TaskID)
+
+	// A pending row from another tenant must not replace tenant-a's registration.
+	save("__bifrost_pending__:two", "tenant-b", "https://b.example/callback", "hash-b")
+	require.ErrorIs(t, store.BindAgentPushConfigTask(ctx, "fixture", "hash-b", "__bifrost_pending__:two", "task-1"), ErrAgentPushConfigTenantConflict)
+	got, err = store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "tenant-a", got.Tenant)
+	require.Equal(t, "hash-new", got.IngressTokenHash)
+
+	// Binding a row that is no longer pending is a no-op.
+	require.NoError(t, store.BindAgentPushConfigTask(ctx, "fixture", "hash-new", "__bifrost_pending__:one", "task-1"))
+}
+
+// TestAgentPushDeliveryKeepsItsRegistrationHash: the registration a delivery was
+// accepted for survives the round trip through the outbox, so the relay can
+// refuse a delivery whose registration was replaced.
+func TestAgentPushDeliveryKeepsItsRegistrationHash(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	_, err := store.CreateAgentPushDeliveryIfNotExists(ctx, &schemas.AgentPushDelivery{
+		ID: "bound", AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", RegistrationHash: "registration-a",
+		Payload: `{"kind":"status-update"}`, Status: schemas.AgentPushDeliveryStatusPending,
+		NextAttemptAt: now, CreatedAt: now, UpdatedAt: now,
+	})
+	require.NoError(t, err)
+	due, err := store.ListDueAgentPushDeliveries(ctx, now.Add(time.Second), 10)
+	require.NoError(t, err)
+	require.Len(t, due, 1)
+	require.Equal(t, "registration-a", due[0].RegistrationHash)
+	claimed, err := store.ClaimAgentPushDelivery(ctx, "bound", "relay-1", now.Add(time.Minute))
+	require.NoError(t, err)
+	require.NotNil(t, claimed)
+	require.Equal(t, "registration-a", claimed.RegistrationHash)
+}
+
+// TestAgentPushDeliveriesStayInOrderPerRegistration: deliveries for one
+// registration are delivered in the order they were accepted. While an earlier
+// one waits on its retry backoff, a later one (an append after a replacement)
+// is neither listed nor claimable, so it cannot overtake it; once the earlier
+// one settles, the later one is due again.
+func TestAgentPushDeliveriesStayInOrderPerRegistration(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	delivery := func(id string, created, next time.Time) *schemas.AgentPushDelivery {
+		return &schemas.AgentPushDelivery{
+			ID: id, AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Payload: `{"kind":"artifact-update"}`,
+			Status: schemas.AgentPushDeliveryStatusPending, NextAttemptAt: next, CreatedAt: created, UpdatedAt: created,
+		}
+	}
+	// The replacement failed once and backs off; the append behind it is due now.
+	_, err := store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("replacement", now.Add(-time.Minute), now.Add(time.Minute)))
+	require.NoError(t, err)
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("append", now.Add(-time.Second), now.Add(-time.Second)))
+	require.NoError(t, err)
+	// Another registration's delivery is not held behind it.
+	other := delivery("other-config", now.Add(-time.Second), now.Add(-time.Second))
+	other.ConfigID = "cfg-2"
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, other)
+	require.NoError(t, err)
+
+	due, err := store.ListDueAgentPushDeliveries(ctx, now, 10)
+	require.NoError(t, err)
+	require.Len(t, due, 1)
+	require.Equal(t, "other-config", due[0].ID, "the append must not overtake the replacement it follows")
+	claimed, err := store.ClaimAgentPushDelivery(ctx, "append", "relay-1", now.Add(time.Minute))
+	require.NoError(t, err)
+	require.Nil(t, claimed, "a delivery behind a pending earlier one must not be claimable")
+
+	require.NoError(t, store.DB().Model(&tables.TableAgentPushDelivery{}).Where("id = ?", "replacement").
+		Update("status", schemas.AgentPushDeliveryStatusDelivered).Error)
+	due, err = store.ListDueAgentPushDeliveries(ctx, now, 10)
+	require.NoError(t, err)
+	ids := []string{}
+	for _, d := range due {
+		ids = append(ids, d.ID)
+	}
+	require.ElementsMatch(t, []string{"append", "other-config"}, ids)
+}
+
+// TestAgentPushDeliveriesOfAReplacementRegistrationAreNotHeldBehindTheOld: the
+// head of line is one registration's. When an unreachable callback's
+// registration is replaced, the old registration's backed-off row can never
+// reach the new callback, so a delivery accepted under the replacement must
+// not wait for it to come due and be dead-lettered.
+func TestAgentPushDeliveriesOfAReplacementRegistrationAreNotHeldBehindTheOld(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	delivery := func(id, registration string, created, next time.Time) *schemas.AgentPushDelivery {
+		return &schemas.AgentPushDelivery{
+			ID: id, AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", RegistrationHash: registration, Payload: `{"kind":"status-update"}`,
+			Status: schemas.AgentPushDeliveryStatusPending, NextAttemptAt: next, CreatedAt: created, UpdatedAt: created,
+		}
+	}
+	// The old registration's delivery failed and backs off; the replacement's is due now.
+	_, err := store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("old-registration", "registration-a", now.Add(-time.Minute), now.Add(time.Minute)))
+	require.NoError(t, err)
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("new-registration", "registration-b", now.Add(-time.Second), now.Add(-time.Second)))
+	require.NoError(t, err)
+	// A later row of the same new registration still waits behind it.
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("new-registration-2", "registration-b", now, now))
+	require.NoError(t, err)
+
+	due, err := store.ListDueAgentPushDeliveries(ctx, now, 10)
+	require.NoError(t, err)
+	require.Len(t, due, 1, "a delivery accepted under the replacement registration must not wait behind the old registration's row")
+	require.Equal(t, "new-registration", due[0].ID)
+	claimed, err := store.ClaimAgentPushDelivery(ctx, "new-registration", "relay-1", now.Add(time.Minute))
+	require.NoError(t, err)
+	require.NotNil(t, claimed, "the replacement registration's delivery must be claimable")
+	claimed, err = store.ClaimAgentPushDelivery(ctx, "new-registration-2", "relay-1", now.Add(time.Minute))
+	require.NoError(t, err)
+	require.Nil(t, claimed, "a later delivery of the replacement registration still waits behind its predecessor")
+}
+
+// TestSaveAgentPushConfigKeepsAnotherTenantsRow: the upsert that re-registers a
+// callback must leave a row another tenant holds under the same (agent, task,
+// config) key untouched and report the attempt as an error.
+func TestSaveAgentPushConfigKeepsAnotherTenantsRow(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	owned := &schemas.AgentPushConfig{AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "tenant-a", URL: "https://a.example/callback", IngressTokenHash: "hash-a", CreatedAt: now, UpdatedAt: now}
+	require.NoError(t, store.SaveAgentPushConfig(ctx, owned))
+
+	intruder := *owned
+	intruder.Tenant, intruder.URL, intruder.IngressTokenHash = "tenant-b", "https://b.example/callback", "hash-b"
+	require.Error(t, store.SaveAgentPushConfig(ctx, &intruder), "another tenant's registration must be refused")
+	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "tenant-a", got.Tenant)
+	require.Equal(t, "https://a.example/callback", got.URL, "another tenant's registration replaced the stored callback")
+	require.Equal(t, "hash-a", got.IngressTokenHash)
+}
+
+// TestBindAgentPushConfigTaskReplacesSameTenantRegistration: binding a pending
+// embedded config to a task that already holds the same config ID for the same
+// tenant replaces that registration and rotates its ingress token, instead of
+// failing on the (agent, task, config) key.
+func TestBindAgentPushConfigTaskReplacesSameTenantRegistration(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	save := func(taskID, url, hash string) {
+		t.Helper()
+		require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{AgentName: "fixture", TaskID: taskID, ConfigID: "cfg-1", Tenant: "tenant-a", URL: url, IngressTokenHash: hash, CreatedAt: now, UpdatedAt: now}))
+	}
+	save("task-1", "https://a.example/first", "hash-old")
+	save("__bifrost_pending__:one", "https://a.example/second", "hash-new")
+
+	require.NoError(t, store.BindAgentPushConfigTask(ctx, "fixture", "hash-new", "__bifrost_pending__:one", "task-1"), "a follow-up send embedding the task's config ID must re-register it")
+	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "https://a.example/second", got.URL)
+	require.Equal(t, "hash-new", got.IngressTokenHash)
+	stale, err := store.GetAgentPushConfigByIngressTokenHash(ctx, "fixture", "hash-old")
+	require.NoError(t, err)
+	require.Nil(t, stale, "the replaced registration's ingress token must stop authenticating")
+}
+
+// TestSaveAgentPushConfigTreatsALegacyNullTenantAsEmpty: a row written before the
+// tenant column existed holds SQL NULL, which loads as the empty tenant. A tenantless
+// re-registration of that row must replace it, as the manager's own check allows,
+// instead of being reported as another tenant's conflict.
+func TestSaveAgentPushConfigTreatsALegacyNullTenantAsEmpty(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	require.NoError(t, store.DB().Exec(
+		"INSERT INTO config_agent_push_configs (agent_name, task_id, config_id, url, tenant, ingress_token_hash, encryption_status, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)",
+		"fixture", "task-1", "cfg-1", "https://a.example/legacy", "hash-legacy", "plain_text", now, now).Error)
+	loaded, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Empty(t, loaded.Tenant)
+
+	require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{
+		AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "",
+		URL: "https://a.example/replaced", IngressTokenHash: "hash-new", CreatedAt: now, UpdatedAt: now,
+	}), "a tenantless re-registration must replace a legacy NULL-tenant row")
+	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "https://a.example/replaced", got.URL)
+	require.Equal(t, "hash-new", got.IngressTokenHash)
+	// A named tenant still cannot take it over.
+	require.ErrorIs(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{
+		AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "tenant-b",
+		URL: "https://b.example/callback", IngressTokenHash: "hash-b", CreatedAt: now, UpdatedAt: now,
+	}), ErrAgentPushConfigTenantConflict)
+}
+
+// TestPostgresAgentPushConfigTenantPredicateAndDeliveryOrder runs the SQL this
+// change adds against PostgreSQL (skipped when none is reachable, as the other
+// Postgres tests are): the coalesced tenant predicate of the push config upsert,
+// including a legacy NULL tenant, and the correlated head-of-line predicate of
+// the delivery list and claim.
+func TestPostgresAgentPushConfigTenantPredicateAndDeliveryOrder(t *testing.T) {
+	store := setupPostgresDeadlockStore(t)
+	ctx := context.Background()
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	// A row from before the tenant column existed: SQL NULL tenant.
+	require.NoError(t, store.DB().Exec(
+		"INSERT INTO config_agent_push_configs (agent_name, task_id, config_id, url, tenant, ingress_token_hash, encryption_status, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)",
+		"fixture", "task-1", "cfg-1", "https://a.example/legacy", "hash-legacy", "plain_text", now, now).Error)
+	require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{
+		AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "",
+		URL: "https://a.example/replaced", IngressTokenHash: "hash-new", CreatedAt: now, UpdatedAt: now,
+	}), "a tenantless re-registration must replace a legacy NULL-tenant row")
+	require.ErrorIs(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{
+		AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "tenant-b",
+		URL: "https://b.example/callback", IngressTokenHash: "hash-b", CreatedAt: now, UpdatedAt: now,
+	}), ErrAgentPushConfigTenantConflict)
+	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "https://a.example/replaced", got.URL)
+
+	// Same-tenant replacement and another tenant's conflict on a named tenant.
+	named := &schemas.AgentPushConfig{AgentName: "fixture", TaskID: "task-2", ConfigID: "cfg-1", Tenant: "tenant-a", URL: "https://a.example/one", IngressTokenHash: "hash-a1", CreatedAt: now, UpdatedAt: now}
+	require.NoError(t, store.SaveAgentPushConfig(ctx, named))
+	named.URL, named.IngressTokenHash = "https://a.example/two", "hash-a2"
+	require.NoError(t, store.SaveAgentPushConfig(ctx, named))
+	intruder := *named
+	intruder.Tenant, intruder.URL, intruder.IngressTokenHash = "tenant-b", "https://b.example/two", "hash-b2"
+	require.ErrorIs(t, store.SaveAgentPushConfig(ctx, &intruder), ErrAgentPushConfigTenantConflict)
+
+	// Deliveries for one registration go out in acceptance order on Postgres too.
+	delivery := func(id string, created, next time.Time) *schemas.AgentPushDelivery {
+		return &schemas.AgentPushDelivery{
+			ID: id, AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", RegistrationHash: "hash-new", Payload: `{"kind":"artifact-update"}`,
+			Status: schemas.AgentPushDeliveryStatusPending, NextAttemptAt: next, CreatedAt: created, UpdatedAt: created,
+		}
+	}
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("replacement", now.Add(-time.Minute), now.Add(time.Minute)))
+	require.NoError(t, err)
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, delivery("append", now.Add(-time.Second), now.Add(-time.Second)))
+	require.NoError(t, err)
+	replacementRegistration := delivery("new-registration", now.Add(-time.Second), now.Add(-time.Second))
+	replacementRegistration.RegistrationHash = "hash-b"
+	_, err = store.CreateAgentPushDeliveryIfNotExists(ctx, replacementRegistration)
+	require.NoError(t, err)
+	due, err := store.ListDueAgentPushDeliveries(ctx, now, 10)
+	require.NoError(t, err)
+	require.Len(t, due, 1, "the append must not overtake the replacement it follows")
+	require.Equal(t, "new-registration", due[0].ID, "a delivery accepted under the replacement registration must not wait behind the old registration's row")
+	claimed, err := store.ClaimAgentPushDelivery(ctx, "append", "relay-1", now.Add(time.Minute))
+	require.NoError(t, err)
+	require.Nil(t, claimed, "a delivery behind a pending earlier one must not be claimable")
+	require.NoError(t, store.DB().Model(&tables.TableAgentPushDelivery{}).Where("id = ?", "new-registration").Update("status", schemas.AgentPushDeliveryStatusDelivered).Error)
+	require.NoError(t, store.DB().Model(&tables.TableAgentPushDelivery{}).Where("id = ?", "replacement").Update("status", schemas.AgentPushDeliveryStatusDelivered).Error)
+	due, err = store.ListDueAgentPushDeliveries(ctx, now, 10)
+	require.NoError(t, err)
+	require.Len(t, due, 1)
+	require.Equal(t, "append", due[0].ID)
+	require.Equal(t, "hash-new", due[0].RegistrationHash)
+	claimed, err = store.ClaimAgentPushDelivery(ctx, "append", "relay-1", now.Add(time.Minute))
+	require.NoError(t, err)
+	require.NotNil(t, claimed)
+}

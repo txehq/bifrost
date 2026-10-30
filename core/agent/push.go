@@ -108,6 +108,10 @@ const (
 // immediately instead of retrying.
 var errPushConfigMissing = errors.New("push configuration no longer exists")
 
+// errPushRegistrationReplaced marks a delivery whose registration was replaced by
+// a new one for the same agent/task/config. It dead-letters like a missing config.
+var errPushRegistrationReplaced = fmt.Errorf("%w: the registration this delivery was accepted for was replaced", errPushConfigMissing)
+
 // PushStore is the durable persistence contract for the push relay, declared
 // here (like Store) so core does not depend on the framework config store. The
 // config-store getters report a missing row as (nil, nil) so this package needs
@@ -329,12 +333,42 @@ func storedPushConfig(agentName, taskID, configID, tokenHash string, cfg *a2a.Pu
 	return stored
 }
 
+// pushTenantMatches reports whether a request scoped to requestTenant may see or
+// replace a stored config. The store keys configs by (agent, task, config), so
+// tenants sharing those IDs are told apart here. A request naming no tenant is the
+// empty tenant, not a wildcard: it reaches only configs registered without one.
+func pushTenantMatches(requestTenant, storedTenant string) bool {
+	return requestTenant == storedTenant
+}
+
+// errPushConfigTenantConflict refuses a registration whose config ID another
+// tenant already holds for the same task, which would replace that tenant's callback.
+var errPushConfigTenantConflict = fmt.Errorf("%w: push configuration id is registered for another tenant", a2a.ErrInvalidParams)
+
+// checkPushConfigTenant refuses to store config over a row another tenant owns.
+func (m *Manager) checkPushConfigTenant(ctx context.Context, agentName, taskID, configID, tenant string) error {
+	if configID == "" {
+		return nil
+	}
+	existing, err := m.pushStore.GetAgentPushConfig(ctx, agentName, taskID, configID)
+	if err != nil {
+		return err
+	}
+	if existing != nil && existing.Tenant != tenant {
+		return errPushConfigTenantConflict
+	}
+	return nil
+}
+
 // createPushConfig performs the two-hop registration: upstream first (it owns
 // the config identity), then the durable local record of the client's real
 // callback. If persistence fails the upstream registration is best-effort
 // rolled back; if that also fails, the orphaned upstream config is harmless
 // because its ingress token hash was never stored, so its pushes are refused.
 func (m *Manager) createPushConfig(ctx context.Context, client sdkClient, agentName string, config *a2a.PushConfig) (*a2a.PushConfig, error) {
+	if err := m.checkPushConfigTenant(ctx, agentName, string(config.TaskID), config.ID, config.Tenant); err != nil {
+		return nil, err
+	}
 	token, hash, err := mintPushIngressToken()
 	if err != nil {
 		return nil, err
@@ -357,12 +391,18 @@ func (m *Manager) createPushConfig(ctx context.Context, client sdkClient, agentN
 	}
 	stored := storedPushConfig(agentName, string(config.TaskID), configID, hash, config)
 	phase := startPhaseSpan(schemas.NewBifrostContext(ctx, schemas.NoDeadline), "a2a.push.db.save")
-	saveErr := m.pushStore.SaveAgentPushConfig(ctx, stored)
+	saveErr := m.checkPushConfigTenant(ctx, agentName, string(config.TaskID), configID, config.Tenant)
+	if saveErr == nil {
+		saveErr = m.pushStore.SaveAgentPushConfig(ctx, stored)
+	}
 	endPhaseSpan(phase)
 	if err := saveErr; err != nil {
 		rollbackStart := time.Now()
-		_ = client.DeleteTaskPushConfig(ctx, &a2a.DeleteTaskPushConfigRequest{TaskID: config.TaskID, ID: configID})
+		_ = client.DeleteTaskPushConfig(ctx, &a2a.DeleteTaskPushConfigRequest{Tenant: config.Tenant, TaskID: config.TaskID, ID: configID})
 		schemas.AddUpstreamLatency(ctx, time.Since(rollbackStart))
+		if errors.Is(err, errPushConfigTenantConflict) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("persist push configuration: %w", err)
 	}
 	return redactedPushConfig(stored), nil
@@ -502,7 +542,7 @@ func (h *proxyRequestHandler) GetTaskPushConfig(ctx context.Context, req *a2a.Ge
 		if err != nil {
 			return nil, err
 		}
-		if stored == nil {
+		if stored == nil || !pushTenantMatches(req.Tenant, stored.Tenant) {
 			return nil, push.ErrPushConfigNotFound
 		}
 		return redactedPushConfig(stored), nil
@@ -531,7 +571,9 @@ func (h *proxyRequestHandler) ListTaskPushConfigs(ctx context.Context, req *a2a.
 		}
 		configs := make([]*a2a.PushConfig, 0, len(stored))
 		for i := range stored {
-			configs = append(configs, redactedPushConfig(&stored[i]))
+			if pushTenantMatches(req.Tenant, stored[i].Tenant) {
+				configs = append(configs, redactedPushConfig(&stored[i]))
+			}
 		}
 		return &a2a.ListTaskPushConfigResponse{Configs: configs}, nil
 	}, func(*a2a.ListTaskPushConfigResponse) *schemas.BifrostA2AResponse {
@@ -559,9 +601,17 @@ func (h *proxyRequestHandler) DeleteTaskPushConfig(ctx context.Context, req *a2a
 			return struct{}{}, err
 		}
 		phase := startPhaseSpan(schemas.NewBifrostContext(ctx, schemas.NoDeadline), "a2a.push.db.delete")
-		_, err := m.pushStore.DeleteAgentPushConfig(ctx, h.config.name, string(req.TaskID), req.ID)
-		endPhaseSpan(phase)
+		defer endPhaseSpan(phase)
+		stored, err := m.pushStore.GetAgentPushConfig(ctx, h.config.name, string(req.TaskID), req.ID)
 		if err != nil {
+			return struct{}{}, err
+		}
+		if stored == nil || !pushTenantMatches(req.Tenant, stored.Tenant) {
+			// Another tenant's record, or none: the upstream delete was scoped by
+			// the request's tenant, so the local record stays.
+			return struct{}{}, nil
+		}
+		if _, err := m.pushStore.DeleteAgentPushConfig(ctx, h.config.name, string(req.TaskID), req.ID); err != nil {
 			return struct{}{}, err
 		}
 		return struct{}{}, nil
@@ -603,7 +653,7 @@ func (m *Manager) AcceptPushCallback(ctx context.Context, agentName, token strin
 	if config == nil {
 		return http.StatusUnauthorized, errors.New("push ingress token is not recognized")
 	}
-	taskID, err := pushEventTaskID(body)
+	taskID, appendsArtifact, err := pushEventTaskID(body)
 	if err != nil {
 		return http.StatusBadRequest, err
 	}
@@ -621,16 +671,40 @@ func (m *Manager) AcceptPushCallback(ctx context.Context, agentName, token strin
 		if err != nil {
 			return http.StatusInternalServerError, err
 		}
-		config.TaskID = taskID
+		// A concurrent push may have bound the row first, which leaves this bind a
+		// no-op: read back which task the config is bound to now.
+		bound, err := m.pushStore.GetAgentPushConfigByIngressTokenHash(ctx, agentName, hashPushIngressToken(token))
+		if err != nil {
+			return http.StatusInternalServerError, err
+		}
+		if bound == nil || bound.TaskID != taskID {
+			return http.StatusBadRequest, errors.New("pushed event does not address the configured task")
+		}
+		config = bound
 	} else if taskID != config.TaskID {
 		return http.StatusBadRequest, errors.New("pushed event does not address the configured task")
 	}
 
 	payload := string(body)
-	// The delivery ID is a content digest scoped to the Agent and config, so an
-	// upstream retransmission of the same event deduplicates without colliding
-	// with an identical config ID and payload from another Agent.
-	sum := sha256.Sum256([]byte(agentName + "\x00" + config.ConfigID + "\x00" + payload))
+	// The delivery ID is a content digest scoped to the Agent, the config and the
+	// registration that accepted the push (its ingress token hash), so an upstream
+	// retransmission of the same event deduplicates without colliding with an
+	// identical config ID and payload from another Agent, and without colliding
+	// with a delivery accepted under an earlier registration of the same tuple:
+	// that one is dead-lettered once the registration is replaced, and the event
+	// sent again under the new token must reach the new callback. An artifact
+	// append carries no event identity and is not idempotent: two equal appends
+	// are two increments, so each gets a unique ID instead of a digest. Appends
+	// are therefore delivered at least once: A2A gives nothing that tells an
+	// upstream retransmission (after a lost ingress response) from a genuine
+	// repeat, and dropping a repeat silently corrupts the artifact, while a
+	// retransmitted append is only ever duplicated. Every other event is
+	// idempotent and keeps the digest, so its retransmissions still collapse.
+	identity := agentName + "\x00" + config.ConfigID + "\x00" + config.IngressTokenHash + "\x00" + payload
+	if appendsArtifact {
+		identity += "\x00" + uuid.NewString()
+	}
+	sum := sha256.Sum256([]byte(identity))
 	deliveryID := hex.EncodeToString(sum[:])
 
 	envelope := &schemas.BifrostA2ARequest{
@@ -651,15 +725,16 @@ func (m *Manager) AcceptPushCallback(ctx context.Context, agentName, token strin
 		now := time.Now().UTC()
 		enqueue := startPhaseSpan(gateCtx, "a2a.push.db.enqueue")
 		_, err := m.pushStore.CreateAgentPushDeliveryIfNotExists(gateCtx, &schemas.AgentPushDelivery{
-			ID:            deliveryID,
-			AgentName:     agentName,
-			TaskID:        config.TaskID,
-			ConfigID:      config.ConfigID,
-			Payload:       payload,
-			Status:        schemas.AgentPushDeliveryStatusPending,
-			NextAttemptAt: now,
-			CreatedAt:     now,
-			UpdatedAt:     now,
+			ID:               deliveryID,
+			AgentName:        agentName,
+			TaskID:           config.TaskID,
+			ConfigID:         config.ConfigID,
+			RegistrationHash: config.IngressTokenHash,
+			Payload:          payload,
+			Status:           schemas.AgentPushDeliveryStatusPending,
+			NextAttemptAt:    now,
+			CreatedAt:        now,
+			UpdatedAt:        now,
 		})
 		endPhaseSpan(enqueue)
 		if err != nil {
@@ -684,23 +759,24 @@ func (m *Manager) AcceptPushCallback(ctx context.Context, agentName, token strin
 	return http.StatusAccepted, nil
 }
 
-// pushEventTaskID extracts the addressed task from one pushed strict-v1 event.
-func pushEventTaskID(body []byte) (string, error) {
+// pushEventTaskID extracts the addressed task from one pushed strict-v1 event
+// and reports whether the event appends to an artifact.
+func pushEventTaskID(body []byte) (string, bool, error) {
 	var sr a2a.StreamResponse
 	if err := json.Unmarshal(body, &sr); err != nil || sr.Event == nil {
-		return "", errors.New("push payload is not a valid A2A event")
+		return "", false, errors.New("push payload is not a valid A2A event")
 	}
 	switch event := sr.Event.(type) {
 	case *a2a.Message:
-		return string(event.TaskID), nil
+		return string(event.TaskID), false, nil
 	case *a2a.Task:
-		return string(event.ID), nil
+		return string(event.ID), false, nil
 	case *a2a.TaskStatusUpdateEvent:
-		return string(event.TaskID), nil
+		return string(event.TaskID), false, nil
 	case *a2a.TaskArtifactUpdateEvent:
-		return string(event.TaskID), nil
+		return string(event.TaskID), event.Append, nil
 	default:
-		return "", errors.New("push payload event type is not supported")
+		return "", false, errors.New("push payload event type is not supported")
 	}
 }
 
@@ -795,8 +871,9 @@ func (r *pushRelay) prune() {
 	}
 }
 
-// processDue drains everything currently due in bounded batches. Rows that
-// fail are rescheduled into the future by deliver, so the loop terminates.
+// processDue drains everything currently due in bounded batches, re-querying
+// after every pass that made progress. Rows that fail are rescheduled into the
+// future by deliver, so the loop terminates.
 func (r *pushRelay) processDue() {
 	m := r.manager
 	for {
@@ -833,7 +910,11 @@ func (r *pushRelay) processDue() {
 			madeProgress = true
 			r.deliver(claimed, leaseUntil)
 		}
-		if len(due) < pushDeliveryBatchSize || !madeProgress {
+		// A short batch does not mean the queue is drained: a registration's
+		// deliveries are listed one at a time (head of line), so a completed row
+		// may have unblocked its successor. Only a pass that claimed nothing ends
+		// the drain; failed rows back off into the future, so the loop terminates.
+		if !madeProgress {
 			return
 		}
 	}
@@ -868,6 +949,11 @@ func (r *pushRelay) deliver(delivery *schemas.AgentPushDelivery, leaseUntil time
 		endPhaseSpan(lookup)
 		if err == nil && config == nil {
 			err = errPushConfigMissing
+		}
+		// The tuple may now name a different registration (deleted and registered
+		// again, possibly by another tenant): its callback never accepted this payload.
+		if err == nil && delivery.RegistrationHash != "" && config.IngressTokenHash != delivery.RegistrationHash {
+			err = errPushRegistrationReplaced
 		}
 		if err == nil {
 			err = m.sendPushDownstream(gateCtx, config, delivery.Payload)

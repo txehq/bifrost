@@ -161,6 +161,8 @@ NOT_DIALLED_HOSTS = {
     "en.wikipedia.org": "googleSearch excludeDomains filter value, not a URL anyone fetches",
     "petstore3.swagger.io": "servers/base_url inside the inline specs of the 229 mcp-openapi-spec rows; no tool is called, and the rows carry the setup token, so the auth-bypassed public-target DNS check never runs",
     "placeholder.search.windows.net": "Azure AI Search placeholder in a request body; never resolved",
+    "client.example": "push callback URL the gateway stores in the 266 a2a-push-tenancy rows; the fixture agent never pushes, so no delivery dials it",
+    "intruder.example": "another tenant's attempted push callback URL in the 266 a2a-push-tenancy rows; refused before anything is stored or dialled",
     # Deliberately unresolvable - negative tests assert the failure path.
     "bifrost.invalid": "reserved .invalid TLD; negative-path tests assert it fails to resolve",
     "does-not-resolve.invalid": "reserved .invalid TLD; the unresolvable MCP client probe asserts the connect fails",

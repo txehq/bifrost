@@ -52,24 +52,68 @@ func tableToPushConfig(row tables.TableAgentPushConfig) *schemas.AgentPushConfig
 	}
 }
 
+// ErrAgentPushConfigTenantConflict reports a registration whose (agent, task,
+// config) key another tenant already holds.
+var ErrAgentPushConfigTenantConflict = errors.New("push configuration is registered for another tenant")
+
 // SaveAgentPushConfig upserts one push callback registration. Upsert semantics
 // match the A2A contract for setting a push configuration: re-registering the
-// same (agent, task, config) key replaces the callback wholesale.
+// same (agent, task, config) key replaces the callback wholesale. The key does
+// not include the tenant, so the replacement only applies to the same tenant's
+// row; another tenant's row is left untouched and reported as a conflict.
 func (s *RDBConfigStore) SaveAgentPushConfig(ctx context.Context, config *schemas.AgentPushConfig) error {
 	row := pushConfigToTable(config)
-	return s.DB().WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "agent_name"}, {Name: "task_id"}, {Name: "config_id"}},
+	result := s.DB().WithContext(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "agent_name"}, {Name: "task_id"}, {Name: "config_id"}},
+		// A row written before the tenant column existed holds SQL NULL, which reads
+		// back as the empty tenant; it must match a tenantless re-registration.
+		Where:     clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "COALESCE(config_agent_push_configs.tenant, '') = COALESCE(excluded.tenant, '')"}}},
 		UpdateAll: true,
-	}).Create(&row).Error
+	}).Create(&row)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrAgentPushConfigTenantConflict
+	}
+	return nil
 }
 
 // BindAgentPushConfigTask attaches a task id to the exact pending embedded
 // push config identified by its ingress token hash and internal pending task id.
-// A row already bound by another path is left untouched.
+// A row already bound by another path is left untouched. A send that embeds a
+// config ID the task already holds re-registers it: like SaveAgentPushConfig,
+// the bound row replaces the same tenant's registration, rotating its ingress
+// token, while another tenant's row is reported as a conflict.
 func (s *RDBConfigStore) BindAgentPushConfigTask(ctx context.Context, agentName, ingressTokenHash, pendingTaskID, taskID string) error {
-	return s.DB().WithContext(ctx).Model(&tables.TableAgentPushConfig{}).
-		Where("agent_name = ? AND ingress_token_hash = ? AND task_id = ?", agentName, ingressTokenHash, pendingTaskID).
-		Updates(map[string]any{"task_id": taskID, "updated_at": time.Now().UTC()}).Error
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var pending tables.TableAgentPushConfig
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&pending, "agent_name = ? AND ingress_token_hash = ? AND task_id = ?", agentName, ingressTokenHash, pendingTaskID).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var existing tables.TableAgentPushConfig
+		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&existing, "agent_name = ? AND task_id = ? AND config_id = ?", agentName, taskID, pending.ConfigID).Error
+		switch {
+		case errors.Is(err, gorm.ErrRecordNotFound):
+		case err != nil:
+			return err
+		case existing.Tenant != pending.Tenant:
+			return ErrAgentPushConfigTenantConflict
+		default:
+			if err := tx.Delete(&tables.TableAgentPushConfig{}, "agent_name = ? AND task_id = ? AND config_id = ?", agentName, taskID, pending.ConfigID).Error; err != nil {
+				return err
+			}
+		}
+		return tx.Model(&tables.TableAgentPushConfig{}).
+			Where("agent_name = ? AND ingress_token_hash = ? AND task_id = ?", agentName, ingressTokenHash, pendingTaskID).
+			Updates(map[string]any{"task_id": taskID, "updated_at": time.Now().UTC()}).Error
+	})
 }
 
 // GetAgentPushConfig loads one push config; a missing row is reported as
@@ -178,17 +222,18 @@ func (s *RDBConfigStore) DeletePendingAgentPushConfig(ctx context.Context, agent
 // created. This is the deduplication point for upstream retransmissions.
 func (s *RDBConfigStore) CreateAgentPushDeliveryIfNotExists(ctx context.Context, delivery *schemas.AgentPushDelivery) (bool, error) {
 	row := tables.TableAgentPushDelivery{
-		ID:            delivery.ID,
-		AgentName:     delivery.AgentName,
-		TaskID:        delivery.TaskID,
-		ConfigID:      delivery.ConfigID,
-		Payload:       delivery.Payload,
-		Status:        delivery.Status,
-		Attempts:      delivery.Attempts,
-		NextAttemptAt: delivery.NextAttemptAt,
-		LastError:     delivery.LastError,
-		CreatedAt:     delivery.CreatedAt,
-		UpdatedAt:     delivery.UpdatedAt,
+		ID:               delivery.ID,
+		AgentName:        delivery.AgentName,
+		TaskID:           delivery.TaskID,
+		ConfigID:         delivery.ConfigID,
+		RegistrationHash: delivery.RegistrationHash,
+		Payload:          delivery.Payload,
+		Status:           delivery.Status,
+		Attempts:         delivery.Attempts,
+		NextAttemptAt:    delivery.NextAttemptAt,
+		LastError:        delivery.LastError,
+		CreatedAt:        delivery.CreatedAt,
+		UpdatedAt:        delivery.UpdatedAt,
 	}
 	result := s.DB().WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&row)
 	if result.Error != nil {
@@ -207,27 +252,49 @@ func (s *RDBConfigStore) ListDueAgentPushDeliveries(ctx context.Context, now tim
 	var rows []tables.TableAgentPushDelivery
 	if err := s.DB().WithContext(ctx).
 		Where("status = ? AND next_attempt_at <= ? AND (claimed_until IS NULL OR claimed_until < ?)", schemas.AgentPushDeliveryStatusPending, now, now).
+		Where(pushDeliveryHeadOfLine, schemas.AgentPushDeliveryStatusPending).
 		Order("next_attempt_at ASC, id ASC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	result := make([]schemas.AgentPushDelivery, 0, len(rows))
 	for _, row := range rows {
 		result = append(result, schemas.AgentPushDelivery{
-			ID:            row.ID,
-			AgentName:     row.AgentName,
-			TaskID:        row.TaskID,
-			ConfigID:      row.ConfigID,
-			Payload:       row.Payload,
-			Status:        row.Status,
-			Attempts:      row.Attempts,
-			NextAttemptAt: row.NextAttemptAt,
-			LastError:     row.LastError,
-			CreatedAt:     row.CreatedAt,
-			UpdatedAt:     row.UpdatedAt,
+			ID:               row.ID,
+			AgentName:        row.AgentName,
+			TaskID:           row.TaskID,
+			ConfigID:         row.ConfigID,
+			RegistrationHash: row.RegistrationHash,
+			Payload:          row.Payload,
+			Status:           row.Status,
+			Attempts:         row.Attempts,
+			NextAttemptAt:    row.NextAttemptAt,
+			LastError:        row.LastError,
+			CreatedAt:        row.CreatedAt,
+			UpdatedAt:        row.UpdatedAt,
 		})
 	}
 	return result, nil
 }
+
+// pushDeliveryHeadOfLine keeps one registration's deliveries in the order they
+// were accepted: a delivery is due only while no earlier one for the same
+// agent/task/config accepted under the same registration (registration_hash;
+// rows from before the column existed hold NULL and count as one registration)
+// is still pending (for instance backing off after a failed attempt), so an
+// append cannot overtake the replacement it follows and be overwritten by its
+// retry. A replacement registration's deliveries are not held behind the old
+// registration's rows, which can never reach the new callback and are
+// dead-lettered when they next come due. Claims check it too, in the same
+// statement, so the order holds across relay instances. Its one argument is
+// the pending status.
+const pushDeliveryHeadOfLine = `NOT EXISTS (SELECT 1 FROM config_agent_push_deliveries AS earlier
+	WHERE earlier.agent_name = config_agent_push_deliveries.agent_name
+	AND earlier.task_id = config_agent_push_deliveries.task_id
+	AND earlier.config_id = config_agent_push_deliveries.config_id
+	AND COALESCE(earlier.registration_hash, '') = COALESCE(config_agent_push_deliveries.registration_hash, '')
+	AND earlier.status = ?
+	AND (earlier.created_at < config_agent_push_deliveries.created_at
+		OR (earlier.created_at = config_agent_push_deliveries.created_at AND earlier.id < config_agent_push_deliveries.id)))`
 
 // ClaimAgentPushDelivery atomically leases one due pending delivery and returns
 // its current persisted state. The exact lease expiry also fences the outcome
@@ -241,6 +308,7 @@ func (s *RDBConfigStore) ClaimAgentPushDelivery(ctx context.Context, id, runnerI
 	}
 	result := s.DB().WithContext(ctx).Model(&tables.TableAgentPushDelivery{}).
 		Where("id = ? AND status = ? AND next_attempt_at <= ? AND (claimed_until IS NULL OR claimed_until < ?)", id, schemas.AgentPushDeliveryStatusPending, now, now).
+		Where(pushDeliveryHeadOfLine, schemas.AgentPushDeliveryStatusPending).
 		Updates(map[string]any{"claimed_by": runnerID, "claimed_until": leaseUntil})
 	if result.Error != nil {
 		return nil, result.Error
@@ -255,17 +323,18 @@ func (s *RDBConfigStore) ClaimAgentPushDelivery(ctx context.Context, id, runnerI
 		return nil, err
 	}
 	return &schemas.AgentPushDelivery{
-		ID:            row.ID,
-		AgentName:     row.AgentName,
-		TaskID:        row.TaskID,
-		ConfigID:      row.ConfigID,
-		Payload:       row.Payload,
-		Status:        row.Status,
-		Attempts:      row.Attempts,
-		NextAttemptAt: row.NextAttemptAt,
-		LastError:     row.LastError,
-		CreatedAt:     row.CreatedAt,
-		UpdatedAt:     row.UpdatedAt,
+		ID:               row.ID,
+		AgentName:        row.AgentName,
+		TaskID:           row.TaskID,
+		ConfigID:         row.ConfigID,
+		RegistrationHash: row.RegistrationHash,
+		Payload:          row.Payload,
+		Status:           row.Status,
+		Attempts:         row.Attempts,
+		NextAttemptAt:    row.NextAttemptAt,
+		LastError:        row.LastError,
+		CreatedAt:        row.CreatedAt,
+		UpdatedAt:        row.UpdatedAt,
 	}, nil
 }
 

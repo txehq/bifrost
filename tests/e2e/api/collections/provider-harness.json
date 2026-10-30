@@ -61,7 +61,7 @@
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
           "// Management API (/api/...) and OAuth (/oauth2/...) responses carry no inference content, so the shape check does not apply to them; those rows assert their own bodies.",
           "// Rows tagged [NO-CONTENT] expect an empty reply (a provider refusal) and assert their own bodies.",
-          "var __skipShape = __rn.indexOf('[NO-CONTENT]') !== -1 || __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
+          "var __skipShape = __rn.indexOf('[NO-CONTENT]') !== -1 || __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/agents/a2a/') !== -1 || __u.indexOf('/push-sink/') !== -1 || __u.indexOf('/control/push') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
@@ -280948,6 +280948,1242 @@
             "header": [],
             "url": "{{baseUrl}}/api/governance/virtual-keys/{{ptvkId}}"
           }
+        }
+      ]
+    },
+    {
+      "name": "266. Agent Gateway push configurations are tenant-scoped and stream replies fail closed (a2a-push-tenancy) [SERIAL]",
+      "description": "TXE-5477 (PR5 preservation group 3a). The gateway stores each client's push callback itself and proxies the rest to the upstream agent; the fixture agent is tests/e2e/api/runners/a2a-push-fixture.mjs on 127.0.0.1:18091 (override with the a2aPushFixtureUrl variable), started by test-provider-harness.sh. Pins: a push configuration belongs to the tenant that registered it (another tenant naming the same task and config ID cannot replace, read, list or delete it; a tenantless request is the empty tenant, not a wildcard); a plain JSON reply to SendStreamingMessage is reframed as one SSE event, while a malformed or oversized one surfaces as an error event instead of an empty or truncated successful stream; a registration created with enabled false reads back disabled. The folder sets a2a_external_client_url for its own rows (reading the current client config first, since PUT /api/config validates the whole object) and clears it at the end, so folder 233's missing-URL rows keep their meaning in a full run. Red on main ff00d1500 at 266.5 (the callback is replaced), 266.6-266.12 (cross-tenant reads, lists and delete), 266.16-266.17 (empty stream) and 266.19 (enabled true); green on this change.",
+      "item": [
+        {
+          "name": "266.1 a2a push tenancy: set a2a_external_client_url so the gateway can mint push callbacks",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {{a2aClientConfig}}}"
+            },
+            "url": "{{baseUrl}}/api/config"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// One fixture agent per run; the registration is deleted at the end of the folder.",
+                  "if (!pm.variables.get('a2aPushAgent')) { pm.variables.set('a2aPushAgent', 'a2a-push-fixture-' + Date.now()); }",
+                  "pm.variables.set('a2aFixtureBase', pm.variables.get('a2aPushFixtureUrl') || 'http://127.0.0.1:18091');",
+                  "// PUT /api/config validates the whole client config, so read the current one and change only the URL.",
+                  "var headers = { 'Accept': 'application/json' };",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "if (setupToken) { headers['X-Bifrost-Setup-Token'] = setupToken; }",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET', header: headers }, function (err, res) {",
+                  "  if (err) { throw err; }",
+                  "  if (res.code !== 200) { throw new Error('GET /api/config returned ' + res.code + ': ' + res.text()); }",
+                  "  var clientConfig = res.json().client_config || {};",
+                  "  // The server reports log_retention_days 0 by default but rejects that on write (as set-raw-override-config.mjs notes).",
+                  "  if (!(clientConfig.log_retention_days >= 1)) { clientConfig.log_retention_days = 1; }",
+                  "  clientConfig.a2a_external_client_url = pm.variables.get('baseUrl');",
+                  "  pm.variables.set('a2aClientConfig', JSON.stringify(clientConfig));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.2 a2a push tenancy: register the offline A2A push fixture agent [EXPECT-201]",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"{{a2aPushAgent}}\", \"agent_card_url\": \"{{a2aFixtureBase}}/.well-known/agent-card.json\", \"enabled\": true, \"allow_by_default\": true, \"forward_accepted_credential\": false, \"forward_accepted_credential_overrides_auth\": false}"
+            },
+            "url": "{{baseUrl}}/api/agents"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(201); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.3 a2a push tenancy: SendMessage through the gateway creates a task on the fixture",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"SendMessage\", \"params\": {\"message\": {\"messageId\": \"m-1\", \"role\": \"ROLE_USER\", \"parts\": [{\"text\": \"start\"}]}}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"SendMessage returns a task\", function () {",
+                  "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.result && body.result.task && body.result.task.id, 'no task id: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.variables.set('a2aPushTask', body.result.task.id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.4 a2a push tenancy: tenant-a registers push config shared-config",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"CreateTaskPushNotificationConfig\", \"params\": {\"tenant\": \"tenant-a\", \"taskId\": \"{{a2aPushTask}}\", \"id\": \"shared-config\", \"url\": \"https://client.example/callback\", \"token\": \"tenant-a-token\"}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"tenant-a's registration is stored and redacted\", function () {",
+                  "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.result.id).to.equal('shared-config');",
+                  "  pm.expect(body.result.tenant).to.equal('tenant-a');",
+                  "  pm.expect(body.result.url).to.equal('https://client.example/callback');",
+                  "  pm.expect(pm.response.text()).not.to.include('tenant-a-token');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.5 a2a push tenancy: tenant-b cannot register the config ID tenant-a holds for the same task",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"CreateTaskPushNotificationConfig\", \"params\": {\"tenant\": \"tenant-b\", \"taskId\": \"{{a2aPushTask}}\", \"id\": \"shared-config\", \"url\": \"https://intruder.example/callback\", \"token\": \"tenant-b-token\"}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"another tenant's registration of the same config ID is refused with invalid params\", function () {",
+                  "  pm.expect(body.error, 'expected a JSON-RPC error, got: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.result, 'a result came back with the error: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.error.code, pm.response.text()).to.equal(-32602);",
+                  "  pm.expect(body.error.message, pm.response.text()).to.include('another tenant');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.6 a2a push tenancy: tenant-b cannot read tenant-a's push config",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"GetTaskPushNotificationConfig\", \"params\": {\"tenant\": \"tenant-b\", \"taskId\": \"{{a2aPushTask}}\", \"id\": \"shared-config\"}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"another tenant's read is refused\", function () {",
+                  "  pm.expect(body.error, 'expected a JSON-RPC error, got: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.result, 'a result came back with the error: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(pm.response.text()).not.to.include('client.example');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.7 a2a push tenancy: a tenantless read is the empty tenant, not a wildcard",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"GetTaskPushNotificationConfig\", \"params\": {\"taskId\": \"{{a2aPushTask}}\", \"id\": \"shared-config\"}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"a tenantless read does not see a named tenant's config\", function () {",
+                  "  pm.expect(body.error, 'expected a JSON-RPC error, got: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.result, 'a result came back with the error: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(pm.response.text()).not.to.include('client.example');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.8 a2a push tenancy: tenant-b's list does not include tenant-a's push config",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"ListTaskPushNotificationConfigs\", \"params\": {\"tenant\": \"tenant-b\", \"taskId\": \"{{a2aPushTask}}\"}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"another tenant's list is empty\", function () {",
+                  "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.result.configs || [], pm.response.text()).to.have.lengthOf(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.9 a2a push tenancy: a tenantless list does not include tenant-a's push config",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"ListTaskPushNotificationConfigs\", \"params\": {\"taskId\": \"{{a2aPushTask}}\"}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"a tenantless list is empty\", function () {",
+                  "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.result.configs || [], pm.response.text()).to.have.lengthOf(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.10 a2a push tenancy: tenant-b's delete leaves tenant-a's record in place",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"DeleteTaskPushNotificationConfig\", \"params\": {\"tenant\": \"tenant-b\", \"taskId\": \"{{a2aPushTask}}\", \"id\": \"shared-config\"}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"another tenant's delete is a no-op for the stored record\", function () {",
+                  "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.11 a2a push tenancy: tenant-a still reads its own push config after tenant-b's delete",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"GetTaskPushNotificationConfig\", \"params\": {\"tenant\": \"tenant-a\", \"taskId\": \"{{a2aPushTask}}\", \"id\": \"shared-config\"}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"tenant-a's config survived another tenant's delete\", function () {",
+                  "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.result.url, pm.response.text()).to.equal('https://client.example/callback');",
+                  "  pm.expect(body.result.tenant).to.equal('tenant-a');",
+                  "  pm.expect(pm.response.text()).not.to.include('tenant-a-token');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.12 a2a push tenancy: tenant-a's list holds exactly its own push config",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"ListTaskPushNotificationConfigs\", \"params\": {\"tenant\": \"tenant-a\", \"taskId\": \"{{a2aPushTask}}\"}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"tenant-a lists one config\", function () {",
+                  "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.result.configs, pm.response.text()).to.have.lengthOf(1);",
+                  "  pm.expect(body.result.configs[0].id).to.equal('shared-config');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.13 a2a push tenancy: tenant-a deletes its own push config",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"DeleteTaskPushNotificationConfig\", \"params\": {\"tenant\": \"tenant-a\", \"taskId\": \"{{a2aPushTask}}\", \"id\": \"shared-config\"}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"tenant-a's delete succeeds\", function () {",
+                  "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.14 a2a push tenancy: tenant-a's push config is gone after its own delete",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"GetTaskPushNotificationConfig\", \"params\": {\"tenant\": \"tenant-a\", \"taskId\": \"{{a2aPushTask}}\", \"id\": \"shared-config\"}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"the deleted config no longer reads\", function () {",
+                  "  pm.expect(body.error, 'expected a JSON-RPC error, got: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.result, 'a result came back with the error: ' + pm.response.text()).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.15 a2a push tenancy stream: a plain JSON error reply to SendStreamingMessage is reframed as one SSE event",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"SendStreamingMessage\", \"params\": {\"message\": {\"messageId\": \"m-stream\", \"role\": \"ROLE_USER\", \"parts\": [{\"text\": \"json-error-reply\"}]}}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"the upstream JSON error reaches the client as an SSE event\", function () {",
+                  "  pm.expect(pm.response.headers.get('Content-Type') || '', pm.response.text()).to.include('text/event-stream');",
+                  "  pm.expect(pm.response.text()).to.include('data:');",
+                  "  pm.expect(pm.response.text()).to.include('fixture-error');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.16 a2a push tenancy stream: a malformed JSON reply to SendStreamingMessage fails closed, never an empty successful stream",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"SendStreamingMessage\", \"params\": {\"message\": {\"messageId\": \"m-stream\", \"role\": \"ROLE_USER\", \"parts\": [{\"text\": \"malformed-json-reply\"}]}}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"a reply that is not JSON surfaces as an error event, not an empty stream\", function () {",
+                  "  pm.expect(pm.response.text().trim(), 'empty stream: ' + pm.response.text()).to.not.equal('');",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.include('\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.17 a2a push tenancy stream: an oversized JSON reply to SendStreamingMessage fails closed, never a truncated stream",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"SendStreamingMessage\", \"params\": {\"message\": {\"messageId\": \"m-stream\", \"role\": \"ROLE_USER\", \"parts\": [{\"text\": \"oversized-json-reply\"}]}}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aPushAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"a reply larger than the reframing buffer surfaces as an error event, not a truncated stream\", function () {",
+                  "  pm.expect(pm.response.text().trim(), 'empty stream: ' + pm.response.text()).to.not.equal('');",
+                  "  pm.expect(pm.response.text(), pm.response.text().slice(0, 400)).to.include('\"error\"');",
+                  "  pm.expect(pm.response.text(), 'the oversized body was passed through').not.to.include('fixture-oversized');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.18 a2a push tenancy: an agent registered disabled is created disabled [EXPECT-201]",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"{{a2aPushAgent}}-disabled\", \"agent_card_url\": \"{{a2aFixtureBase}}/.well-known/agent-card.json\", \"enabled\": false, \"allow_by_default\": false, \"forward_accepted_credential\": false, \"forward_accepted_credential_overrides_auth\": false}"
+            },
+            "url": "{{baseUrl}}/api/agents"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(201); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.19 a2a push tenancy: a registration created disabled reads back disabled",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/agents/{{a2aPushAgent}}-disabled"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test(\"enabled false survives create\", function () {",
+                  "  var body = pm.response.json();",
+                  "  var reg = body.agent || body.registration || body;",
+                  "  pm.expect(reg.enabled, 'a registration created disabled came back enabled: ' + pm.response.text()).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.20 a2a push tenancy: delete the disabled fixture registration [EXPECT-204]",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/agents/{{a2aPushAgent}}-disabled"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 204\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.21 a2a push tenancy: delete the fixture registration [EXPECT-204]",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/agents/{{a2aPushAgent}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 204\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "266.22 a2a push tenancy: clear a2a_external_client_url again",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {{a2aClientConfig}}}"
+            },
+            "url": "{{baseUrl}}/api/config"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// PUT /api/config validates the whole client config, so read the current one and change only the URL.",
+                  "var headers = { 'Accept': 'application/json' };",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "if (setupToken) { headers['X-Bifrost-Setup-Token'] = setupToken; }",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET', header: headers }, function (err, res) {",
+                  "  if (err) { throw err; }",
+                  "  if (res.code !== 200) { throw new Error('GET /api/config returned ' + res.code + ': ' + res.text()); }",
+                  "  var clientConfig = res.json().client_config || {};",
+                  "  // The server reports log_retention_days 0 by default but rejects that on write (as set-raw-override-config.mjs notes).",
+                  "  if (!(clientConfig.log_retention_days >= 1)) { clientConfig.log_retention_days = 1; }",
+                  "  clientConfig.a2a_external_client_url = '';",
+                  "  pm.variables.set('a2aClientConfig', JSON.stringify(clientConfig));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "267. Agent Gateway push deliveries: identical appends are at least once and one registration's deliveries keep their order (a2a-push-delivery) [SERIAL]",
+      "description": "TXE-5477 (PR5 preservation group 3a), the delivery half of folder 266's fixture (tests/e2e/api/runners/a2a-push-fixture.mjs): the fixture is both the upstream agent that pushes to the gateway's ingress with the credential the gateway registered (POST /control/push) and the client's callback that records what the gateway delivers (/push-sink/<run>). The harness gateway must allow private push callbacks (server.a2a_allow_private_push_callbacks, set in the python profile) since the sink is on loopback. Pins on the wire: two identical artifact appends pushed by the upstream are both delivered (an append carries no event identity, so appends are at least once instead of being deduplicated away), and when the sink refuses a replacement once, the append accepted after it waits and is delivered after the retried replacement (one registration's deliveries keep acceptance order). Red on main ff00d1500 at 267.6 (one delivery) and 267.10 (the append overtakes the replacement); green on this change.",
+      "item": [
+        {
+          "name": "267.1 a2a push delivery: set a2a_external_client_url so the gateway can mint push callbacks",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {{a2aClientConfig}}}"
+            },
+            "url": "{{baseUrl}}/api/config"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// One fixture agent and one sink per run; both are torn down at the end of the folder.",
+                  "if (!pm.variables.get('a2aDeliveryAgent')) { pm.variables.set('a2aDeliveryAgent', 'a2a-push-delivery-' + Date.now()); }",
+                  "if (!pm.variables.get('a2aDeliveryRun')) { pm.variables.set('a2aDeliveryRun', 'run-' + Date.now()); }",
+                  "pm.variables.set('a2aFixtureBase', pm.variables.get('a2aPushFixtureUrl') || 'http://127.0.0.1:18091');",
+                  "// PUT /api/config validates the whole client config, so read the current one and change only the URL.",
+                  "var headers = { 'Accept': 'application/json' };",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "if (setupToken) { headers['X-Bifrost-Setup-Token'] = setupToken; }",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET', header: headers }, function (err, res) {",
+                  "  if (err) { throw err; }",
+                  "  if (res.code !== 200) { throw new Error('GET /api/config returned ' + res.code + ': ' + res.text()); }",
+                  "  var clientConfig = res.json().client_config || {};",
+                  "  // The server reports log_retention_days 0 by default but rejects that on write (as set-raw-override-config.mjs notes).",
+                  "  if (!(clientConfig.log_retention_days >= 1)) { clientConfig.log_retention_days = 1; }",
+                  "  clientConfig.a2a_external_client_url = pm.variables.get('baseUrl');",
+                  "  pm.variables.set('a2aClientConfig', JSON.stringify(clientConfig));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "267.2 a2a push delivery: register the offline A2A push fixture agent [EXPECT-201]",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"{{a2aDeliveryAgent}}\", \"agent_card_url\": \"{{a2aFixtureBase}}/.well-known/agent-card.json\", \"enabled\": true, \"allow_by_default\": true, \"forward_accepted_credential\": false, \"forward_accepted_credential_overrides_auth\": false}"
+            },
+            "url": "{{baseUrl}}/api/agents"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 201\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(201); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "267.3 a2a push delivery: SendMessage through the gateway creates a task on the fixture",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"SendMessage\", \"params\": {\"message\": {\"messageId\": \"m-delivery\", \"role\": \"ROLE_USER\", \"parts\": [{\"text\": \"start\"}]}}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aDeliveryAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"SendMessage returns a task\", function () {",
+                  "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.result && body.result.task && body.result.task.id, 'no task id: ' + pm.response.text()).to.be.a('string');",
+                  "  pm.variables.set('a2aDeliveryTask', body.result.task.id);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "267.4 a2a push delivery: the client registers its callback, the fixture's sink, through the gateway",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"CreateTaskPushNotificationConfig\", \"params\": {\"tenant\": \"tenant-a\", \"taskId\": \"{{a2aDeliveryTask}}\", \"id\": \"delivery-config\", \"url\": \"{{a2aFixtureBase}}/push-sink/{{a2aDeliveryRun}}\", \"token\": \"sink-token\"}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aDeliveryAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"the callback is registered and the gateway minted its own ingress credential for the upstream\", function () {",
+                  "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
+                  "  pm.expect(body.result.id).to.equal('delivery-config');",
+                  "  pm.expect(pm.response.text()).not.to.include('sink-token');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "267.5 a2a push delivery: the upstream pushes the same artifact append twice through the gateway's ingress",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"taskId\": \"{{a2aDeliveryTask}}\", \"configId\": \"delivery-config\", \"repeat\": 2, \"event\": {\"artifactUpdate\": {\"taskId\": \"{{a2aDeliveryTask}}\", \"contextId\": \"ctx-delivery\", \"append\": true, \"artifact\": {\"artifactId\": \"artifact-1\", \"parts\": [{\"text\": \"ha\"}]}}}}"
+            },
+            "url": "{{a2aFixtureBase}}/control/push"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"both pushes are accepted by the ingress (202)\", function () {",
+                  "  pm.expect(body.statuses, pm.response.text()).to.deep.equal([202, 202]);",
+                  "  pm.expect(String(body.ingressUrl)).to.include('/push/callback');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "267.6 a2a push delivery: both identical appends reach the client's callback (appends are at least once)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{a2aFixtureBase}}/push-sink/{{a2aDeliveryRun}}/deliveries?min=2&timeoutMs=10000"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"both identical appends are delivered\", function () {",
+                  "  pm.expect(body.deliveries, pm.response.text()).to.have.lengthOf(2);",
+                  "  body.deliveries.forEach(function (d) {",
+                  "    pm.expect(d.token, 'the gateway must present the client token it stored').to.equal('sink-token');",
+                  "    pm.expect(d.event.kind).to.equal('artifactUpdate');",
+                  "    pm.expect(d.event.append).to.equal(true);",
+                  "    pm.expect(d.event.text).to.equal('ha');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "267.7 a2a push delivery: the sink will refuse the next delivery once, so it backs off",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{a2aFixtureBase}}/push-sink/{{a2aDeliveryRun}}/fail-next"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"the sink is armed to fail once\", function () { pm.expect(body.failNext).to.equal(1); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "267.8 a2a push delivery: the upstream pushes an artifact replacement, whose first delivery the sink refuses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"taskId\": \"{{a2aDeliveryTask}}\", \"configId\": \"delivery-config\", \"repeat\": 1, \"event\": {\"artifactUpdate\": {\"taskId\": \"{{a2aDeliveryTask}}\", \"contextId\": \"ctx-delivery\", \"append\": false, \"artifact\": {\"artifactId\": \"artifact-1\", \"parts\": [{\"text\": \"final\"}]}}}}"
+            },
+            "url": "{{a2aFixtureBase}}/control/push"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"the replacement is accepted by the ingress (202)\", function () { pm.expect(body.statuses, pm.response.text()).to.deep.equal([202]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "267.9 a2a push delivery: the upstream then pushes an append that must follow the replacement",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"taskId\": \"{{a2aDeliveryTask}}\", \"configId\": \"delivery-config\", \"repeat\": 1, \"event\": {\"artifactUpdate\": {\"taskId\": \"{{a2aDeliveryTask}}\", \"contextId\": \"ctx-delivery\", \"append\": true, \"artifact\": {\"artifactId\": \"artifact-1\", \"parts\": [{\"text\": \"; more\"}]}}}}"
+            },
+            "url": "{{a2aFixtureBase}}/control/push"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"the append is accepted by the ingress (202)\", function () { pm.expect(body.statuses, pm.response.text()).to.deep.equal([202]); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "267.10 a2a push delivery: the replacement is retried and delivered before the append accepted after it",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{a2aFixtureBase}}/push-sink/{{a2aDeliveryRun}}/deliveries?min=4&timeoutMs=20000"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"the append follows the replacement it was accepted after\", function () {",
+                  "  pm.expect(body.deliveries, pm.response.text()).to.have.lengthOf(4);",
+                  "  pm.expect(body.failures, 'the sink refused the replacement once').to.have.lengthOf(1);",
+                  "  pm.expect(body.failures[0].event.append).to.equal(false);",
+                  "  pm.expect(body.deliveries[2].event.append, 'third delivery must be the replacement (append false): ' + JSON.stringify(body.deliveries)).to.equal(false);",
+                  "  pm.expect(body.deliveries[2].event.text).to.equal('final');",
+                  "  pm.expect(body.deliveries[3].event.append, 'fourth delivery must be the append: ' + JSON.stringify(body.deliveries)).to.equal(true);",
+                  "  pm.expect(body.deliveries[3].event.text).to.equal('; more');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "267.11 a2a push delivery: the client deletes its callback",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"DeleteTaskPushNotificationConfig\", \"params\": {\"tenant\": \"tenant-a\", \"taskId\": \"{{a2aDeliveryTask}}\", \"id\": \"delivery-config\"}}"
+            },
+            "url": "{{baseUrl}}/agents/a2a/{{a2aDeliveryAgent}}/json-rpc"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var body = pm.response.json();",
+                  "pm.test(\"the callback is deleted\", function () {",
+                  "  pm.expect(body.error, 'JSON-RPC error: ' + pm.response.text()).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "267.12 a2a push delivery: delete the fixture registration [EXPECT-204]",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/agents/{{a2aDeliveryAgent}}"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 204\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(204); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "267.13 a2a push delivery: clear a2a_external_client_url again",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"client_config\": {{a2aClientConfig}}}"
+            },
+            "url": "{{baseUrl}}/api/config"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// PUT /api/config validates the whole client config, so read the current one and change only the URL.",
+                  "var headers = { 'Accept': 'application/json' };",
+                  "var setupToken = pm.variables.get('setupToken');",
+                  "if (setupToken) { headers['X-Bifrost-Setup-Token'] = setupToken; }",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET', header: headers }, function (err, res) {",
+                  "  if (err) { throw err; }",
+                  "  if (res.code !== 200) { throw new Error('GET /api/config returned ' + res.code + ': ' + res.text()); }",
+                  "  var clientConfig = res.json().client_config || {};",
+                  "  // The server reports log_retention_days 0 by default but rejects that on write (as set-raw-override-config.mjs notes).",
+                  "  if (!(clientConfig.log_retention_days >= 1)) { clientConfig.log_retention_days = 1; }",
+                  "  clientConfig.a2a_external_client_url = '';",
+                  "  pm.variables.set('a2aClientConfig', JSON.stringify(clientConfig));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status code is 200\", function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

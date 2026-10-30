@@ -1549,7 +1549,8 @@
     ]
   },
   "server": {
-    "read_buffer_size": 65536
+    "read_buffer_size": 65536,
+    "a2a_allow_private_push_callbacks": true
   },
   "client": {
     "allow_per_request_raw_override": true,
@@ -1559,6 +1560,7 @@
     "allowed_origins": ["*"],
     "enable_logging": true,
     "enforce_auth_on_inference": false,
+    "a2a_private_allowlist": ["127.0.0.1"],
     "max_request_body_size_mb": 100,
     "mcp_server_auth_mode": "both",
     "oauth2_server_config": {
