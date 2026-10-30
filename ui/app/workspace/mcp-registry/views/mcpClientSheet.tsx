@@ -470,6 +470,11 @@ export default function MCPClientSheet({
 			if (nextCredentials.changed) {
 				setReplaceCredentials(nextCredentials.credentials);
 				setReplaceCredentialsDirty(true);
+				toast({
+					title: "Some credentials were cleared",
+					description:
+						"Their security schemes changed, or could not be compared with the current document. Enter them again before saving; saving now removes them.",
+				});
 			}
 			setReplacePreview(response);
 			setReplaceFingerprint(specFingerprint(replaceSourceMode, replaceSpecText, replaceSpecUrl, requestedName));

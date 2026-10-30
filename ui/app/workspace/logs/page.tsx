@@ -609,13 +609,17 @@ export default function LogsPage() {
 			const sessionId = log.session_id;
 			// A session can hold more requests than one page, so every page is read.
 			fetchAllPages<LogEntry>(
-				(offset) =>
-					triggerGetSessionMembers({
+				(offset) => {
+					// A reset mid-read drops this expansion, so the remaining pages are not fetched.
+					if (generation !== expansionGeneration.current) return Promise.resolve({ error: "expansion reset" });
+					return triggerGetSessionMembers({
 						filters: { ...filters, session_id: sessionId },
 						pagination: { ...pagination, limit: chainChildrenPageLimit, offset, sort_by: "timestamp", order: "asc" },
 						rootsOnly: true,
 						groupSessions: false,
-					}).then((page) => (page.data ? { logs: page.data.logs } : { error: page.error })),
+						// A failed refetch keeps the cached rows in data, so the error decides.
+					}).then((page) => (page.data && !page.error ? { logs: page.data.logs } : { error: page.error }));
+				},
 				chainChildrenPageLimit,
 			).then((result) => {
 				if (generation !== expansionGeneration.current) return;
