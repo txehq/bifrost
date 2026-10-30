@@ -2445,11 +2445,11 @@ func TestHybrid_UpdateAgentLogBeforeInitialUploadKeepsFullPayload(t *testing.T) 
 
 	found, err := hybrid.FindAgentLog(ctx, entry.ID)
 	require.NoError(t, err)
-	require.NotNil(t, found.RequestBody)
+	require.NotNil(t, found.RequestBody, "the request body was lost")
 	assert.Equal(t, len(requestBody), len(*found.RequestBody), "the request body was truncated to its preview")
 	require.NotNil(t, found.RawRequest, "the raw request was dropped")
 	assert.Equal(t, rawRequest, *found.RawRequest)
-	require.NotNil(t, found.ResponseBody)
+	require.NotNil(t, found.ResponseBody, "the response body was lost")
 	assert.Equal(t, `{"response":"done"}`, *found.ResponseBody)
 }
 
