@@ -2232,6 +2232,13 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 			if err := applyAgentLogBodyUpdate(current, field, value); err != nil {
 				return err
 			}
+		case "status":
+			// The upload is queued under this status and tagged with it; the
+			// worker drops one whose status no longer matches the row.
+			if status := reflect.ValueOf(value); status.Kind() == reflect.String {
+				current.Status = status.String()
+			}
+			dbUpdates[field] = value
 		default:
 			dbUpdates[field] = value
 		}

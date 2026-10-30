@@ -812,6 +812,48 @@ func TestHybrid_UpdateAgentLogOffloadsMergedPayload(t *testing.T) {
 	assert.Equal(t, updatedResponseBody, *found.ResponseBody)
 }
 
+// A body update that also moves the row's status must queue its upload under
+// the new status. The worker drops an upload whose status no longer matches the
+// row, so queueing the old one left has_object false and only the database
+// preview of the updated body.
+func TestHybrid_UpdateAgentLogStatusTransitionUploadsPayload(t *testing.T) {
+	hybrid, inner, _ := newTestHybrid(t)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Date(2026, 7, 20, 13, 14, 15, 0, time.UTC)
+	requestBody := `{"request":"original"}`
+	updatedResponseBody := `{"response":"done"}`
+	entry := &AgentLog{
+		ID: "agent-update-status", Timestamp: ts, RecordKind: "request",
+		Operation: "SendMessage", Status: "processing", AgentName: "fixture", RequestID: "req-agent-update-status",
+		RequestBody: &requestBody,
+	}
+
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject
+	})
+
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{
+		"status":        "success",
+		"response_body": updatedResponseBody,
+	}))
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject
+	})
+	assert.Zero(t, hybrid.DroppedUploads())
+
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "success", found.Status)
+	require.NotNil(t, found.RequestBody)
+	require.NotNil(t, found.ResponseBody)
+	assert.Equal(t, requestBody, *found.RequestBody)
+	assert.Equal(t, updatedResponseBody, *found.ResponseBody)
+}
+
 func TestHybrid_UpdateAgentLogUploadFailureKeepsUpdatedDatabaseFallback(t *testing.T) {
 	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())
