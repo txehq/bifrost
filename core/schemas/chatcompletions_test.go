@@ -285,10 +285,12 @@ func TestBillingTurnsDoNotAliasTheirUsage(t *testing.T) {
 		t.Fatalf("a deep copy shares its turns: %+v", sum.BillingTurns[0])
 	}
 
-	left := AddBillingTurn(sum, &BifrostLLMUsage{PromptTokens: 1, TotalTokens: 1})
-	right := AddBillingTurn(sum, &BifrostLLMUsage{PromptTokens: 2, TotalTokens: 2})
-	if left.BillingTurns[2].PromptTokens != 1 || right.BillingTurns[2].PromptTokens != 2 {
-		t.Fatalf("sums share a backing array: %d, %d", left.BillingTurns[2].PromptTokens, right.BillingTurns[2].PromptTokens)
+	// Three turns leave spare capacity behind an append, which is what two later sums could share.
+	three := AddBillingTurn(sum, &BifrostLLMUsage{PromptTokens: 30, TotalTokens: 30})
+	left := AddBillingTurn(three, &BifrostLLMUsage{PromptTokens: 1, TotalTokens: 1})
+	right := AddBillingTurn(three, &BifrostLLMUsage{PromptTokens: 2, TotalTokens: 2})
+	if left.BillingTurns[3].PromptTokens != 1 || right.BillingTurns[3].PromptTokens != 2 {
+		t.Fatalf("sums share a backing array: %d, %d", left.BillingTurns[3].PromptTokens, right.BillingTurns[3].PromptTokens)
 	}
 }
 
@@ -341,8 +343,8 @@ func BenchmarkAddBillingTurn(b *testing.B) {
 			for range 10 {
 				total = AddBillingTurn(total, turn)
 			}
-			if len(total.BillingTurns) != 10 {
-				b.Fatalf("turns = %d", len(total.BillingTurns))
+			if total.PromptTokens != 1500000 {
+				b.Fatalf("prompt tokens = %d", total.PromptTokens)
 			}
 		}
 	})
