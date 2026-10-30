@@ -282275,10 +282275,10 @@
                   "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
                   "function read(tries) {",
                   "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
-                  "    pm.sendRequest({ url: BASE + '/api/governance/budgets', method: 'GET' }, function (e2, budgets) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
                   "      var rows = logs.json().logs || [];",
                   "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
-                  "      var own = (budgets.json().budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
                   "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
                   "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
                   "        setTimeout(function () { read(tries - 1); }, 300);",
@@ -282369,10 +282369,10 @@
                   "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
                   "function read(tries) {",
                   "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
-                  "    pm.sendRequest({ url: BASE + '/api/governance/budgets', method: 'GET' }, function (e2, budgets) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
                   "      var rows = logs.json().logs || [];",
                   "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
-                  "      var own = (budgets.json().budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
                   "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
                   "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
                   "        setTimeout(function () { read(tries - 1); }, 300);",
@@ -282462,10 +282462,10 @@
                   "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
                   "function read(tries) {",
                   "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
-                  "    pm.sendRequest({ url: BASE + '/api/governance/budgets', method: 'GET' }, function (e2, budgets) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
                   "      var rows = logs.json().logs || [];",
                   "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
-                  "      var own = (budgets.json().budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
                   "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
                   "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
                   "        setTimeout(function () { read(tries - 1); }, 300);",
@@ -282555,10 +282555,10 @@
                   "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
                   "function read(tries) {",
                   "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
-                  "    pm.sendRequest({ url: BASE + '/api/governance/budgets', method: 'GET' }, function (e2, budgets) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
                   "      var rows = logs.json().logs || [];",
                   "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
-                  "      var own = (budgets.json().budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
                   "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
                   "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
                   "        setTimeout(function () { read(tries - 1); }, 300);",
@@ -282649,10 +282649,10 @@
                   "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
                   "function read(tries) {",
                   "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
-                  "    pm.sendRequest({ url: BASE + '/api/governance/budgets', method: 'GET' }, function (e2, budgets) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
                   "      var rows = logs.json().logs || [];",
                   "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
-                  "      var own = (budgets.json().budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
                   "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
                   "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
                   "        setTimeout(function () { read(tries - 1); }, 300);",
@@ -282742,10 +282742,10 @@
                   "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
                   "function read(tries) {",
                   "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
-                  "    pm.sendRequest({ url: BASE + '/api/governance/budgets', method: 'GET' }, function (e2, budgets) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
                   "      var rows = logs.json().logs || [];",
                   "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
-                  "      var own = (budgets.json().budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
                   "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
                   "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
                   "        setTimeout(function () { read(tries - 1); }, 300);",
@@ -282768,7 +282768,7 @@
           ]
         },
         {
-          "name": "chat third turn fails, the two before it bill as two calls - per-call-billing",
+          "name": "[EXPECT-500] chat third turn fails, the two before it bill as two calls - per-call-billing",
           "request": {
             "method": "POST",
             "header": [
@@ -282836,10 +282836,10 @@
                   "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
                   "function read(tries) {",
                   "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
-                  "    pm.sendRequest({ url: BASE + '/api/governance/budgets', method: 'GET' }, function (e2, budgets) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
                   "      var rows = logs.json().logs || [];",
                   "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
-                  "      var own = (budgets.json().budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
                   "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
                   "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
                   "        setTimeout(function () { read(tries - 1); }, 300);",
@@ -282862,7 +282862,7 @@
           ]
         },
         {
-          "name": "chat stream third turn fails, the two before it bill as two calls - per-call-billing",
+          "name": "[EXPECT-500] chat stream third turn fails, the two before it bill as two calls - per-call-billing",
           "request": {
             "method": "POST",
             "header": [
@@ -282930,10 +282930,10 @@
                   "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
                   "function read(tries) {",
                   "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
-                  "    pm.sendRequest({ url: BASE + '/api/governance/budgets', method: 'GET' }, function (e2, budgets) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
                   "      var rows = logs.json().logs || [];",
                   "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
-                  "      var own = (budgets.json().budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
                   "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
                   "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
                   "        setTimeout(function () { read(tries - 1); }, 300);",
@@ -282956,7 +282956,7 @@
           ]
         },
         {
-          "name": "responses third turn fails, the two before it bill as two calls - per-call-billing",
+          "name": "[EXPECT-500] responses third turn fails, the two before it bill as two calls - per-call-billing",
           "request": {
             "method": "POST",
             "header": [
@@ -283023,10 +283023,10 @@
                   "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
                   "function read(tries) {",
                   "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
-                  "    pm.sendRequest({ url: BASE + '/api/governance/budgets', method: 'GET' }, function (e2, budgets) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
                   "      var rows = logs.json().logs || [];",
                   "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
-                  "      var own = (budgets.json().budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
                   "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
                   "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
                   "        setTimeout(function () { read(tries - 1); }, 300);",
@@ -283049,7 +283049,7 @@
           ]
         },
         {
-          "name": "responses stream third turn fails, the two before it bill as two calls - per-call-billing",
+          "name": "[EXPECT-500] responses stream third turn fails, the two before it bill as two calls - per-call-billing",
           "request": {
             "method": "POST",
             "header": [
@@ -283116,10 +283116,10 @@
                   "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
                   "function read(tries) {",
                   "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
-                  "    pm.sendRequest({ url: BASE + '/api/governance/budgets', method: 'GET' }, function (e2, budgets) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
                   "      var rows = logs.json().logs || [];",
                   "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
-                  "      var own = (budgets.json().budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
                   "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
                   "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
                   "        setTimeout(function () { read(tries - 1); }, 300);",
@@ -283142,7 +283142,7 @@
           ]
         },
         {
-          "name": "native decision rejected, billed at its decision rates - per-call-billing",
+          "name": "[EXPECT-500] native decision rejected, billed at its decision rates - per-call-billing",
           "request": {
             "method": "POST",
             "header": [
@@ -283205,14 +283205,14 @@
                 "exec": [
                   "var BASE = pm.variables.get('baseUrl');",
                   "var wantCost = 0.00304, wantRows = 1, wantTokens = 1000;",
-                  "pm.test('the rejected answer reaches the client as an error', function () { pm.expect(pm.response.code, pm.response.text()).to.be.at.least(400); });",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); });",
                   "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
                   "function read(tries) {",
                   "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
-                  "    pm.sendRequest({ url: BASE + '/api/governance/budgets', method: 'GET' }, function (e2, budgets) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
                   "      var rows = logs.json().logs || [];",
                   "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
-                  "      var own = (budgets.json().budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
                   "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
                   "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
                   "        setTimeout(function () { read(tries - 1); }, 300);",
@@ -283235,7 +283235,7 @@
           ]
         },
         {
-          "name": "OpenRouter decision rejected, billed at its reported cost - per-call-billing",
+          "name": "[EXPECT-500] OpenRouter decision rejected, billed at its reported cost - per-call-billing",
           "request": {
             "method": "POST",
             "header": [
@@ -283298,14 +283298,14 @@
                 "exec": [
                   "var BASE = pm.variables.get('baseUrl');",
                   "var wantCost = 0.25, wantRows = 1, wantTokens = 1000;",
-                  "pm.test('the rejected answer reaches the client as an error', function () { pm.expect(pm.response.code, pm.response.text()).to.be.at.least(400); });",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); });",
                   "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
                   "function read(tries) {",
                   "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
-                  "    pm.sendRequest({ url: BASE + '/api/governance/budgets', method: 'GET' }, function (e2, budgets) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
                   "      var rows = logs.json().logs || [];",
                   "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
-                  "      var own = (budgets.json().budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
                   "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
                   "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
                   "        setTimeout(function () { read(tries - 1); }, 300);",
@@ -283328,7 +283328,7 @@
           ]
         },
         {
-          "name": "rejected decision falls back, each attempt billed once - per-call-billing",
+          "name": "[EXPECT-500] rejected decision falls back, each attempt billed once - per-call-billing",
           "request": {
             "method": "POST",
             "header": [
@@ -283391,14 +283391,14 @@
                 "exec": [
                   "var BASE = pm.variables.get('baseUrl');",
                   "var wantCost = 0.25304, wantRows = 2, wantTokens = null;",
-                  "pm.test('the rejected answer reaches the client as an error', function () { pm.expect(pm.response.code, pm.response.text()).to.be.at.least(400); });",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); });",
                   "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
                   "function read(tries) {",
                   "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
-                  "    pm.sendRequest({ url: BASE + '/api/governance/budgets', method: 'GET' }, function (e2, budgets) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
                   "      var rows = logs.json().logs || [];",
                   "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
-                  "      var own = (budgets.json().budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
                   "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
                   "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
                   "        setTimeout(function () { read(tries - 1); }, 300);",
@@ -283421,7 +283421,7 @@
           ]
         },
         {
-          "name": "emulated decision rejected, cached input at the text cache rate - per-call-billing",
+          "name": "[EXPECT-500] emulated decision rejected, cached input at the text cache rate - per-call-billing",
           "request": {
             "method": "POST",
             "header": [
@@ -283488,14 +283488,14 @@
                 "exec": [
                   "var BASE = pm.variables.get('baseUrl');",
                   "var wantCost = 0.0003, wantRows = 1, wantTokens = 1000;",
-                  "pm.test('the rejected answer reaches the client as an error', function () { pm.expect(pm.response.code, pm.response.text()).to.be.at.least(400); });",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); });",
                   "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
                   "function read(tries) {",
                   "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
-                  "    pm.sendRequest({ url: BASE + '/api/governance/budgets', method: 'GET' }, function (e2, budgets) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
                   "      var rows = logs.json().logs || [];",
                   "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
-                  "      var own = (budgets.json().budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
                   "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
                   "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
                   "        setTimeout(function () { read(tries - 1); }, 300);",

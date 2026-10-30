@@ -912,7 +912,15 @@ func TestLiveMeterDrainWithConcurrentFinish(t *testing.T) {
 		}
 	}
 	assert.LessOrEqual(t, billed, 8*20*10)
-	assert.Nil(t, meter.backends["gpt-5.6-luna"].segments, "finish released the segments")
+	for _, id := range []string{"late_1", "late_2"} {
+		meter.onBackendResponse(&schemas.BifrostResponsesResponse{
+			ID: new(id), Model: "gpt-5.6-luna",
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, TotalTokens: 10},
+		}, "", 0)
+	}
+	lane := meter.backends["gpt-5.6-luna"]
+	assert.Nil(t, lane.segments, "finish released the segments, and a late response retains none")
+	assert.Nil(t, lane.usage, "nothing settles a response after finish")
 }
 
 // BenchmarkLiveMeterBackendResponse measures one backend response settling on the request path:
