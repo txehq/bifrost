@@ -138,3 +138,28 @@ test.describe('Provider Management', () => {
     expect(vkExists).toBe(true)
   })
 })
+
+test.describe('Model budgets', () => {
+  test('a model budget accepts a name the catalog does not list', async ({ virtualKeysPage }) => {
+    const page = virtualKeysPage.page
+    await page.route('**/api/providers', (route) =>
+      route.request().method() === 'GET'
+        ? route.fulfill({ json: { providers: [{ name: 'openai', keys: [], status: 'active' }], total: 1 } })
+        : route.continue(),
+    )
+    await virtualKeysPage.goto()
+    await skipIfConfigStoreMissing(virtualKeysPage)
+    await virtualKeysPage.createBtn.click()
+    await expect(virtualKeysPage.sheet).toBeVisible()
+
+    await virtualKeysPage.providerSelect.click()
+    await page.getByRole('option', { name: 'OpenAI', exact: true }).click()
+    await virtualKeysPage.sheet.getByText('Model budgets', { exact: true }).click()
+
+    await page.getByTestId('vk-add-model-budget-0').click()
+    await page.keyboard.type('my-deployment-alias')
+    await page.getByRole('option', { name: 'Use my-deployment-alias' }).click()
+
+    await expect(virtualKeysPage.sheet.getByText('my-deployment-alias')).toBeVisible()
+  })
+})

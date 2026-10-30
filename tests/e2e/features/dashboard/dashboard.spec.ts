@@ -438,3 +438,25 @@ test.describe('Dashboard', () => {
   })
 
 })
+
+test.describe('Provider usage filter', () => {
+  test('clicking the selected provider again goes back to all providers', async ({ dashboardPage }) => {
+    const page = dashboardPage.page
+    const buckets = [{ timestamp: new Date().toISOString(), total_cost: 3, by_provider: { openai: 1, anthropic: 2 } }]
+    await page.route('**/api/logs/histogram/cost/by-provider**', (route) =>
+      route.fulfill({ json: { buckets, bucket_size_seconds: 3600, providers: ['openai', 'anthropic'] } }),
+    )
+    await page.goto('/workspace/dashboard?tab=provider-usage')
+
+    const filter = page.getByTestId('dashboard-provider-cost-filter')
+    await filter.click()
+    await page.getByRole('option', { name: /openai/i }).click()
+    await expect(page.getByTestId('provider-cost-legend-single-trigger')).toBeVisible()
+
+    await filter.click()
+    await page.getByRole('option', { name: /openai/i }).click()
+    await expect(filter).toContainText('All Providers')
+    await expect(page.getByTestId('provider-cost-legend-trigger')).toBeVisible()
+    await expect(page.getByTestId('provider-cost-legend-single-trigger')).toHaveCount(0)
+  })
+})

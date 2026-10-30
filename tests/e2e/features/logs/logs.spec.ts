@@ -686,6 +686,90 @@ test.describe("LLM Logs", () => {
       await expect(page.getByTestId("log-row-kind-session")).toHaveCount(1);
       await expect(page.getByTestId("log-row-kind-chain")).toHaveCount(2);
     });
+
+    test.describe("sessions longer than one page", () => {
+      const pageLimit = 1000;
+      const members = (offset: number, count: number) =>
+        Array.from({ length: count }, (_, i) =>
+          row(`member-${offset + i}`, 1_000, { session_id: "grp-session" }),
+        );
+
+      // Answers the session's member pages after the Grouped View route above.
+      async function mockSessionPages(
+        page: import("@playwright/test").Page,
+        answer: (
+          offset: number,
+        ) => { status: number; logs: ReturnType<typeof members> },
+      ) {
+        const offsets: number[] = [];
+        await page.route(
+          (url) =>
+            url.pathname === "/api/logs" &&
+            url.searchParams.get("session_id") === "grp-session",
+          async (route) => {
+            const offset = Number(
+              new URL(route.request().url()).searchParams.get("offset") ?? 0,
+            );
+            offsets.push(offset);
+            const { status, logs } = answer(offset);
+            if (status !== 200) {
+              return route.fulfill({
+                status,
+                json: { error: { message: "page failed" } },
+              });
+            }
+            await route.fulfill({
+              json: {
+                logs,
+                pagination: {
+                  limit: pageLimit,
+                  offset,
+                  sort_by: "timestamp",
+                  order: "asc",
+                },
+                stats: {},
+                has_logs: true,
+              },
+            });
+          },
+        );
+        return offsets;
+      }
+
+      test("expanding a session lists the members on every page", async ({
+        page,
+      }) => {
+        const offsets = await mockSessionPages(page, (offset) => ({
+          status: 200,
+          logs: offset === 0 ? members(0, pageLimit) : members(pageLimit, 2),
+        }));
+        await page.goto("/workspace/logs?grouped=true");
+        await page.getByTestId("log-session-expand-btn").click();
+
+        await expect(page.getByTestId("log-row-kind-session")).toHaveCount(
+          pageLimit + 2,
+          { timeout: 30000 },
+        );
+        expect(offsets).toEqual([0, pageLimit]);
+      });
+
+      test("a failed later page collapses the session instead of showing part of it", async ({
+        page,
+      }) => {
+        const offsets = await mockSessionPages(page, (offset) =>
+          offset === 0
+            ? { status: 200, logs: members(0, pageLimit) }
+            : { status: 500, logs: [] },
+        );
+        await page.goto("/workspace/logs?grouped=true");
+        const expand = page.getByTestId("log-session-expand-btn");
+        await expand.click();
+
+        await expect.poll(() => offsets).toEqual([0, pageLimit]);
+        await expect(expand).toHaveAttribute("aria-expanded", "false");
+        await expect(page.getByTestId("log-row-kind-session")).toHaveCount(0);
+      });
+    });
   });
 
   test.describe('Decision Logs', () => {
