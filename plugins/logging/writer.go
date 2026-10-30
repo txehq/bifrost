@@ -530,6 +530,7 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 	// handed back with the unwritten rows, and the drain reruns the no-op insert
 	// and the repair.
 	unwrittenLogs = append(unwrittenLogs, p.repairRecentDuplicateBilling(ctx, persistedLogs(logs, unwrittenLogs, droppedLogs))...)
+	p.unpinDroppedLogs(droppedLogs)
 	unwrittenMCP, _ := writeWithRecovery(p, ctx, "MCP tool log", mcpLogs, func(ctx context.Context, chunk []*logstore.MCPToolLog) error {
 		return p.store.BatchCreateMCPToolLogsIfNotExists(ctx, chunk)
 	}, p.insertMCPLogIndividually)
@@ -701,11 +702,19 @@ func mergeMissingLogBilling(dst, src *logstore.Log) {
 		dst.InputCost = src.InputCost
 		dst.OutputCost = src.OutputCost
 		dst.AdditionalCost = src.AdditionalCost
-		if src.TokenUsageParsed != nil && src.TokenUsageParsed.Cost != nil &&
-			dst.TokenUsageParsed != nil && dst.TokenUsageParsed.Cost == nil {
-			usage := *dst.TokenUsageParsed
-			usage.Cost = src.TokenUsageParsed.Cost
-			dst.TokenUsageParsed = &usage
+		if src.TokenUsageParsed != nil && src.TokenUsageParsed.Cost != nil {
+			breakdown := src.TokenUsageParsed.Cost
+			if dst.TokenUsageParsed == nil {
+				// Usage kept only as columns: nothing can carry the breakdown, and a
+				// row not serialized yet has its split on the breakdown alone.
+				dst.InputCost = breakdown.InputCost
+				dst.OutputCost = breakdown.OutputCost
+				dst.AdditionalCost = breakdown.AdditionalCost
+			} else if dst.TokenUsageParsed.Cost == nil {
+				usage := *dst.TokenUsageParsed
+				usage.Cost = breakdown
+				dst.TokenUsageParsed = &usage
+			}
 		}
 	}
 	if logHasUsage(dst) || !logHasUsage(src) {
@@ -801,6 +810,8 @@ func (p *LoggerPlugin) repairRecentDuplicateBilling(ctx context.Context, logs []
 					continue
 				}
 				p.logger.Warn("failed to repair billing fields for duplicate log %s: %v", log.ID, err)
+				// A refusal is final; only an interruption has a retry to wait for.
+				delete(p.recentLogBillingPinned, log.ID)
 				continue
 			}
 		}
@@ -811,7 +822,10 @@ func (p *LoggerPlugin) repairRecentDuplicateBilling(ctx context.Context, logs []
 	}
 
 	// Evict oldest first, skipping a pinned (interrupted) entry: it is kept, in
-	// order, until its retry repairs it.
+	// order, until its retry settles it. Only a ctx that ended pins an entry, so
+	// pins exist only once shutdown has begun. The writer's last batch and the first
+	// drain chunk it interrupts are all that can pin, so at most 2*MaxBatchSize IDs
+	// are held past the cache's own bound, and only until drainPending clears them.
 	if excess := len(p.recentLogBillingOrder) - limit; excess > 0 {
 		kept := p.recentLogBillingOrder[:0]
 		for _, id := range p.recentLogBillingOrder {
@@ -826,6 +840,26 @@ func (p *LoggerPlugin) repairRecentDuplicateBilling(ctx context.Context, logs []
 		p.recentLogBillingOrder = kept
 	}
 	return interrupted
+}
+
+// unpinDroppedLogs lets go of interrupted repairs whose retry the store refused: a
+// dropped row has no further retry coming.
+func (p *LoggerPlugin) unpinDroppedLogs(logs []*logstore.Log) {
+	if len(logs) == 0 {
+		return
+	}
+	p.recentLogBillingMu.Lock()
+	defer p.recentLogBillingMu.Unlock()
+	for _, log := range logs {
+		delete(p.recentLogBillingPinned, log.ID)
+	}
+}
+
+// clearRecentLogBillingPins lets go of interrupted repairs once no retry is left.
+func (p *LoggerPlugin) clearRecentLogBillingPins() {
+	p.recentLogBillingMu.Lock()
+	defer p.recentLogBillingMu.Unlock()
+	p.recentLogBillingPinned = nil
 }
 
 func preferLogForInsert(candidate, current *logstore.Log) bool {
@@ -1054,9 +1088,9 @@ func (p *LoggerPlugin) persistEvictedPartial(key any, pending *PendingLogData) {
 	}
 	partial.ContentHidden = !policy.visible()
 	queued := false
-	if release, ok := p.admitWrite(); ok {
+	if p.admitWrite() {
 		queued = p.tryEnqueueLogEntry(partial, nil)
-		release()
+		p.writeAdmission.RUnlock()
 	}
 	if !queued {
 		// Nothing persisted: keep the entry so its input survives. The next sweep
@@ -1100,14 +1134,10 @@ func (p *LoggerPlugin) claimStaleMCPEntry(key any) (*logstore.MCPToolLog, bool) 
 // If the queue is full, the entry is dropped to prevent Postgres slowness
 // from cascading into request handling goroutines.
 func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry *logstore.Log)) {
-	release, ok := p.admitWrite()
-	if !ok {
+	if !p.admitWrite() {
 		return
 	}
-	defer release()
-	if testHookAfterWriteAdmission != nil {
-		testHookAfterWriteAdmission()
-	}
+	defer p.writeAdmission.RUnlock()
 	// A row whose output-monitor guardrail result is still pending is written
 	// once that result lands (holdForDeferredGuardrail). The result is taken off
 	// the row here, so the row passes straight through when it comes back.
@@ -1130,27 +1160,21 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 // evaluation finishes, which it always does within its own timeout. Cleanup
 // writes rows still held at shutdown as they were built.
 //
-// Parking a row and a callback's claim-then-queue both run under the read side
-// of heldGuardrailMu, and Cleanup's release takes the write side, so a row is
-// always either released by Cleanup or already in the queue before Cleanup
-// drains and closes it.
+// The caller holds writeAdmission, so a row is parked before Cleanup's release or
+// not at all. A callback's claim-then-queue runs under the read side of
+// heldGuardrailMu and the release takes the write side, so a claimed row is in the
+// queue before Cleanup drains and closes it. The callback must not use
+// writeAdmission: OnComplete runs it inline here when the result has already landed.
 func (p *LoggerPlugin) holdForDeferredGuardrail(deferred *schemas.DeferredGuardrailResult, entry *logstore.Log, callback func(entry *logstore.Log)) {
-	p.heldGuardrailMu.RLock()
-	if p.heldGuardrailReleased {
-		// Cleanup's release already ran; nothing would write a row parked now.
-		p.heldGuardrailMu.RUnlock()
-		p.writeHeldRow(entry, callback)
-		return
-	}
 	p.heldGuardrailRows.Store(entry.ID, &writeQueueEntry{log: entry, callback: callback})
-	p.heldGuardrailMu.RUnlock()
-	// Not under the lock: OnComplete runs the callback inline when the result
-	// has already landed, and the callback takes the lock itself.
 	deferred.OnComplete(func(metadata *schemas.BifrostGuardrailMetadata, redaction schemas.RedactionData, pluginLogs []schemas.PluginLogEntry) {
 		p.heldGuardrailMu.RLock()
 		defer p.heldGuardrailMu.RUnlock()
 		if _, held := p.heldGuardrailRows.LoadAndDelete(entry.ID); !held {
 			return // Cleanup already wrote the row.
+		}
+		if p.afterGuardrailClaim != nil {
+			p.afterGuardrailClaim()
 		}
 		entry.GuardrailDebugParsed = metadata
 		entry.PluginLogs = appendPluginLogs(entry.PluginLogs, pluginLogs)
@@ -1164,13 +1188,12 @@ func (p *LoggerPlugin) holdForDeferredGuardrail(deferred *schemas.DeferredGuardr
 
 // releaseHeldGuardrailRows writes every row still waiting on an output-monitor
 // result as it was built, so shutdown loses only the late result, never the row.
-// Cleanup runs it before draining the queue. Holding heldGuardrailMu waits out
-// any callback that has claimed its row but not queued it yet, and marks the
-// release done so no row can be held behind it.
+// Cleanup runs it before draining the queue, holding writeAdmission so no row can
+// be parked behind this pass. Holding heldGuardrailMu waits out any callback that
+// has claimed its row but not queued it yet.
 func (p *LoggerPlugin) releaseHeldGuardrailRows() {
 	p.heldGuardrailMu.Lock()
 	defer p.heldGuardrailMu.Unlock()
-	p.heldGuardrailReleased = true
 	p.heldGuardrailRows.Range(func(key, _ any) bool {
 		if value, held := p.heldGuardrailRows.LoadAndDelete(key); held {
 			row := value.(*writeQueueEntry)
@@ -1182,8 +1205,8 @@ func (p *LoggerPlugin) releaseHeldGuardrailRows() {
 
 // writeHeldRow queues a row that was held before Cleanup set closed. It skips
 // the closed check: the row was accepted before shutdown, and Cleanup drains
-// the queue after releasing held rows. A send racing the final channel close
-// is absorbed, as for any other producer.
+// the queue after releasing held rows. heldGuardrailMu keeps it ahead of that
+// drain; the recover stays as for any other producer.
 func (p *LoggerPlugin) writeHeldRow(entry *logstore.Log, callback func(entry *logstore.Log)) {
 	queued := func() (queued bool) {
 		defer func() {
@@ -1204,32 +1227,31 @@ func (p *LoggerPlugin) writeHeldRow(entry *logstore.Log, callback func(entry *lo
 	}
 }
 
-// testHookAfterWriteAdmission runs right after a log entry is admitted for writing.
-// Nil outside tests; it lets a test land Cleanup between admission and hand-off.
-var testHookAfterWriteAdmission func()
-
 // admitWrite admits one producer hand-off to the writer, or reports closure. An
-// admitted producer holds Cleanup off until it has queued (or parked) its entry, so
-// the final drain sees every entry admitted before closure.
-func (p *LoggerPlugin) admitWrite() (release func(), ok bool) {
+// admitted producer holds writeAdmission's read side and releases it once its entry
+// is queued or parked, which holds Cleanup off, so the final drain sees every entry
+// admitted before closure. The hand-off never blocks, and nothing under the read
+// lock takes it again: a recursive read deadlocks against Cleanup's pending write.
+func (p *LoggerPlugin) admitWrite() bool {
 	p.writeAdmission.RLock()
 	if p.closed.Load() {
 		p.writeAdmission.RUnlock()
-		return nil, false
+		return false
 	}
-	return p.writeAdmission.RUnlock, true
+	if p.afterWriteAdmission != nil {
+		p.afterWriteAdmission()
+	}
+	return true
 }
 
 // tryEnqueueLogEntry pushes a log entry to the write queue without blocking and
 // reports whether it was queued. It neither counts nor logs a failure, so a
-// caller that keeps the entry for a retry does not inflate droppedRequests.
+// caller that keeps the entry for a retry does not inflate droppedRequests. The
+// caller holds writeAdmission: closed is set before Cleanup waits for admitted
+// producers, so checking it here would refuse the rows that wait exists for.
 func (p *LoggerPlugin) tryEnqueueLogEntry(entry *logstore.Log, callback func(entry *logstore.Log)) (queued bool) {
-	if p.closed.Load() {
-		return false
-	}
 	defer func() {
 		if r := recover(); r != nil {
-			// Channel was closed between the check and send.
 			queued = false
 		}
 	}()
@@ -1253,11 +1275,10 @@ func (p *LoggerPlugin) EnqueueLogEntry(entry *logstore.Log) {
 // (the partial persisted at eviction) instead of inserting. A full queue drops
 // the update, matching enqueueLogEntry's backpressure.
 func (p *LoggerPlugin) enqueueLogUpdate(entry *logstore.Log, callback func(entry *logstore.Log)) {
-	release, ok := p.admitWrite()
-	if !ok {
+	if !p.admitWrite() {
 		return
 	}
-	defer release()
+	defer p.writeAdmission.RUnlock()
 	defer func() {
 		if r := recover(); r != nil {
 			p.logger.Error("recovered from a panic %v. dropping log update", r)
@@ -1286,11 +1307,10 @@ func (p *LoggerPlugin) EnqueueMCPToolLogEntry(entry *logstore.MCPToolLog) {
 // If the queue is full, the entry is dropped to prevent store slowness from
 // cascading into request handling goroutines.
 func (p *LoggerPlugin) enqueueMCPToolLogEntry(entry *logstore.MCPToolLog, callback func(entry *logstore.MCPToolLog)) {
-	release, ok := p.admitWrite()
-	if !ok {
+	if !p.admitWrite() {
 		return
 	}
-	defer release()
+	defer p.writeAdmission.RUnlock()
 	defer func() {
 		if r := recover(); r != nil {
 			p.droppedRequests.Add(1)
@@ -1308,11 +1328,10 @@ func (p *LoggerPlugin) enqueueAgentLogEntry(entry *logstore.AgentLog) {
 	if entry == nil {
 		return
 	}
-	release, ok := p.admitWrite()
-	if !ok {
+	if !p.admitWrite() {
 		return
 	}
-	defer release()
+	defer p.writeAdmission.RUnlock()
 	defer func() {
 		if recover() != nil {
 			p.droppedRequests.Add(1)

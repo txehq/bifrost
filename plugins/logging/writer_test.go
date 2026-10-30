@@ -2479,56 +2479,69 @@ func TestReleaseHeldGuardrailRowsWritesRowOnce(t *testing.T) {
 	}
 }
 
+// shutdownWithProducerStopped runs Cleanup while a producer sits at a seam: start
+// reaches the seam, Cleanup gets as far as it can, then the producer resumes. Without
+// the gate under test Cleanup finishes first and closes the queue behind the producer.
+func shutdownWithProducerStopped(t *testing.T, plugin *LoggerPlugin, stopped <-chan struct{}, resume chan<- struct{}, produced <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-stopped:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the producer never reached its seam")
+	}
+	cleaned := make(chan struct{})
+	go func() {
+		defer close(cleaned)
+		_ = plugin.Cleanup()
+	}()
+	waitFor(t, "Cleanup to close admission", plugin.closed.Load)
+	select {
+	case <-cleaned:
+	case <-time.After(500 * time.Millisecond):
+	}
+	close(resume)
+	for name, done := range map[string]<-chan struct{}{"producer": produced, "Cleanup": cleaned} {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s deadlocked during shutdown", name)
+		}
+	}
+}
+
 // TestCleanupWaitsForClaimedGuardrailRow covers a result landing while Cleanup
 // runs: the callback has already taken the held row out of heldGuardrailRows,
 // so the shutdown release no longer sees it, but has not queued it yet. Cleanup
 // must not drain and close the queue until that handoff finishes, or the row of
-// a completed request is lost to the closed channel. The row's large plugin log
-// document keeps the callback between its claim and its send long enough for
-// Cleanup to overtake it.
+// a completed request is lost to the closed channel.
 func TestCleanupWaitsForClaimedGuardrailRow(t *testing.T) {
 	store := newTestStore(t)
 	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-
-	requestLogs := make([]schemas.PluginLogEntry, 200000)
-	for i := range requestLogs {
-		requestLogs[i] = schemas.PluginLogEntry{PluginName: "guardrails", Level: schemas.LogLevelInfo, Message: fmt.Sprintf("[input] rule %d evaluated", i), Timestamp: int64(i)}
+	claimed, resume := make(chan struct{}), make(chan struct{})
+	plugin.afterGuardrailClaim = func() {
+		close(claimed)
+		<-resume
 	}
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	deferred := schemas.NewDeferredGuardrailResult()
-	ctx.SetValue(schemas.BifrostContextKeyDeferredGuardrail, deferred)
-	const id = "req-monitor-claimed"
-	entry := makeTestLog(id)
-	entry.PluginLogs = serializePluginLogs(requestLogs)
-	plugin.storeOrEnqueueEntry(ctx, entry, nil)
-	if _, held := plugin.heldGuardrailRows.Load(id); !held {
+
+	entry, deferred := deferredGuardrailRow(t, plugin)
+	if _, held := plugin.heldGuardrailRows.Load(entry.ID); !held {
 		t.Fatal("row was not held for its guardrail result")
 	}
-
 	completed := make(chan struct{})
 	go func() {
 		defer close(completed)
 		metadata, redaction := monitorGuardrailResult()
-		deferred.Complete(metadata, redaction, []schemas.PluginLogEntry{{PluginName: "guardrails", Level: schemas.LogLevelInfo, Message: "[output-monitor] completed"}})
+		deferred.Complete(metadata, redaction, nil)
 	}()
-	for {
-		if _, held := plugin.heldGuardrailRows.Load(id); !held {
-			break
-		}
-		runtime.Gosched()
-	}
-	if err := plugin.Cleanup(); err != nil {
-		t.Fatalf("Cleanup() error = %v", err)
-	}
-	<-completed
+	shutdownWithProducerStopped(t, plugin, claimed, resume, completed)
 
 	if dropped := plugin.droppedRequests.Load(); dropped != 0 {
 		t.Fatalf("claimed guardrail row was dropped during shutdown (%d drops)", dropped)
 	}
-	got, err := store.FindByID(context.Background(), id)
+	got, err := store.FindByID(context.Background(), entry.ID)
 	if err != nil {
 		t.Fatalf("claimed guardrail row was not written before the queue closed: %v", err)
 	}
@@ -2537,47 +2550,284 @@ func TestCleanupWaitsForClaimedGuardrailRow(t *testing.T) {
 	}
 }
 
-// TestRowAdmittedBeforeShutdownIsWritten pins that a row admitted for writing just
-// before Cleanup still reaches the store: Cleanup waits for the admitted producer to
-// park it, then releases and drains it, instead of closing the queue behind it.
+// admittedRowStore records what each write path received, without storing it.
+type admittedRowStore struct {
+	logstore.LogStore
+	mu      sync.Mutex
+	written map[string]int
+}
+
+func (s *admittedRowStore) record(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.written == nil {
+		s.written = make(map[string]int)
+	}
+	s.written[id]++
+}
+
+func (s *admittedRowStore) writes(id string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.written[id]
+}
+
+func (s *admittedRowStore) distinct() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.written)
+}
+
+func (s *admittedRowStore) BatchCreateIfNotExists(_ context.Context, entries []*logstore.Log) error {
+	for _, entry := range entries {
+		s.record(entry.ID)
+	}
+	return nil
+}
+
+func (s *admittedRowStore) BatchUpdate(_ context.Context, entries []*logstore.Log) error {
+	for _, entry := range entries {
+		s.record(entry.ID)
+	}
+	return nil
+}
+
+func (s *admittedRowStore) BatchCreateMCPToolLogsIfNotExists(_ context.Context, entries []*logstore.MCPToolLog) error {
+	for _, entry := range entries {
+		s.record(entry.ID)
+	}
+	return nil
+}
+
+func (s *admittedRowStore) BatchCreateAgentLogsIfNotExists(_ context.Context, entries []*logstore.AgentLog) ([]string, error) {
+	for _, entry := range entries {
+		s.record(entry.ID)
+	}
+	return nil, nil
+}
+
+func (s *admittedRowStore) ReconcileAgentCorrelation(context.Context, []*logstore.AgentLog) error {
+	return nil
+}
+
+// TestRowAdmittedBeforeShutdownIsWritten pins that every producer admitted just before
+// Cleanup still reaches the store: Cleanup waits for it to queue or park its entry, then
+// releases and drains that entry, instead of closing the queue behind it.
 func TestRowAdmittedBeforeShutdownIsWritten(t *testing.T) {
+	const id = "admitted-row"
+	producers := map[string]func(plugin *LoggerPlugin){
+		"log row": func(plugin *LoggerPlugin) { plugin.enqueueLogEntry(makeTestLog(id), nil) },
+		"row parked for a guardrail result": func(plugin *LoggerPlugin) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyDeferredGuardrail, schemas.NewDeferredGuardrailResult())
+			plugin.storeOrEnqueueEntry(ctx, makeTestLog(id), nil)
+		},
+		"log update": func(plugin *LoggerPlugin) { plugin.enqueueLogUpdate(&logstore.Log{ID: id}, nil) },
+		"MCP tool log": func(plugin *LoggerPlugin) {
+			plugin.enqueueMCPToolLogEntry(&logstore.MCPToolLog{ID: id}, nil)
+		},
+		"agent log": func(plugin *LoggerPlugin) { plugin.enqueueAgentLogEntry(&logstore.AgentLog{ID: id}) },
+		"evicted partial": func(plugin *LoggerPlugin) {
+			pending := &PendingLogData{RequestID: id, InitialData: &InitialLogData{}}
+			plugin.pendingLogsEntries.Store(id, pending)
+			plugin.persistEvictedPartial(id, pending)
+		},
+	}
+	for name, produce := range producers {
+		t.Run(name, func(t *testing.T) {
+			store := &admittedRowStore{LogStore: newTestStore(t)}
+			plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			admitted, resume := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			plugin.afterWriteAdmission = func() {
+				once.Do(func() {
+					close(admitted)
+					<-resume
+				})
+			}
+			produced := make(chan struct{})
+			go func() {
+				defer close(produced)
+				produce(plugin)
+			}()
+			shutdownWithProducerStopped(t, plugin, admitted, resume, produced)
+
+			if n := store.writes(id); n != 1 {
+				t.Fatalf("the row admitted before shutdown reached the store %d times, want once (%d drops)", n, plugin.droppedRequests.Load())
+			}
+			if dropped := plugin.droppedRequests.Load(); dropped != 0 {
+				t.Fatalf("the admitted row was counted dropped %d times", dropped)
+			}
+		})
+	}
+}
+
+// A result that already landed runs its callback inline on the admitted producer, under
+// writeAdmission's read side, while Cleanup waits for the write side. That callback must
+// not need the lock its own producer holds.
+func TestInlineGuardrailResultDuringCleanupDoesNotDeadlock(t *testing.T) {
 	store := newTestStore(t)
 	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	deferred := schemas.NewDeferredGuardrailResult()
+	metadata, redaction := monitorGuardrailResult()
+	deferred.Complete(metadata, redaction, nil)
+	ctx.SetValue(schemas.BifrostContextKeyDeferredGuardrail, deferred)
 
-	admitted, proceed := make(chan struct{}), make(chan struct{})
-	var once sync.Once
-	testHookAfterWriteAdmission = func() {
-		once.Do(func() {
-			close(admitted)
-			<-proceed
-		})
+	admitted, resume := make(chan struct{}), make(chan struct{})
+	plugin.afterWriteAdmission = func() {
+		close(admitted)
+		<-resume
 	}
-	t.Cleanup(func() { testHookAfterWriteAdmission = nil })
-
+	const id = "req-monitor-inline"
 	produced := make(chan struct{})
 	go func() {
 		defer close(produced)
-		deferredGuardrailRow(t, plugin)
+		plugin.storeOrEnqueueEntry(ctx, makeTestLog(id), nil)
 	}()
-	<-admitted
-	cleaned := make(chan struct{})
-	go func() {
-		defer close(cleaned)
-		_ = plugin.Cleanup()
-	}()
-	// Unsynchronized, Cleanup finishes here and the row is handed off behind it.
-	select {
-	case <-cleaned:
-	case <-time.After(200 * time.Millisecond):
-	}
-	close(proceed)
-	<-produced
-	<-cleaned
+	shutdownWithProducerStopped(t, plugin, admitted, resume, produced)
 
-	if _, err := store.FindByID(context.Background(), "req-monitor"); err != nil {
-		t.Fatalf("the row admitted before shutdown was lost: %v", err)
+	got, err := store.FindByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("the row was not written: %v", err)
 	}
+	if got.GuardrailDebugParsed == nil || len(got.GuardrailDebugParsed.Detections) != 2 {
+		t.Fatalf("expected the row written with the landed result, got %+v", got.GuardrailDebugParsed)
+	}
+}
+
+// Full-queue backpressure still holds at shutdown: a released row that cannot be queued
+// is counted and the release returns, it never waits for room.
+func TestReleaseCountsHeldRowWhenTheQueueIsFull(t *testing.T) {
+	plugin := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 1)}
+	entry, _ := deferredGuardrailRow(t, plugin)
+	plugin.writeQueue <- &writeQueueEntry{}
+
+	released := make(chan struct{})
+	go func() {
+		defer close(released)
+		plugin.releaseHeldGuardrailRows()
+	}()
+	select {
+	case <-released:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the release blocked on a full queue")
+	}
+	if dropped := plugin.droppedRequests.Load(); dropped != 1 {
+		t.Fatalf("droppedRequests = %d, want 1", dropped)
+	}
+	if _, held := plugin.heldGuardrailRows.Load(entry.ID); held {
+		t.Fatal("the row stayed held after the release")
+	}
+}
+
+// Under load, with results landing and Cleanup in the middle of it, every row a producer
+// was admitted with reaches the store exactly once. Run under -race.
+func TestProducersRacingCleanupLoseNoAdmittedRow(t *testing.T) {
+	store := &admittedRowStore{LogStore: newTestStore(t)}
+	plugin, err := Init(context.Background(), &Config{Writer: &logstore.WriterConfig{
+		MaxBatchSize: 16, BatchInterval: "1ms", MaxBatchBytes: 1 << 20, WriteQueueCapacity: 100000, DeferredUsageConcurrency: 1,
+	}}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	var admitted atomic.Int64
+	plugin.afterWriteAdmission = func() { admitted.Add(1) }
+
+	const producers, rows = 8, 400
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for producer := range producers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for row := range rows {
+				id := fmt.Sprintf("race-%d-%d", producer, row)
+				if row%2 == 0 {
+					plugin.enqueueLogEntry(makeTestLog(id), nil)
+					continue
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				deferred := schemas.NewDeferredGuardrailResult()
+				ctx.SetValue(schemas.BifrostContextKeyDeferredGuardrail, deferred)
+				plugin.storeOrEnqueueEntry(ctx, makeTestLog(id), nil)
+				if row%4 == 1 {
+					metadata, redaction := monitorGuardrailResult()
+					deferred.Complete(metadata, redaction, nil)
+				} else {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						runtime.Gosched()
+						metadata, redaction := monitorGuardrailResult()
+						deferred.Complete(metadata, redaction, nil)
+					}()
+				}
+			}
+		}()
+	}
+	close(start)
+	waitFor(t, "producers to get going", func() bool { return admitted.Load() >= producers*rows/4 })
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	wg.Wait()
+
+	if dropped := plugin.droppedRequests.Load(); dropped != 0 {
+		t.Fatalf("%d rows dropped during shutdown", dropped)
+	}
+	if got, want := int64(store.distinct()), admitted.Load(); got != want {
+		t.Fatalf("%d rows reached the store, %d were admitted", got, want)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for id, n := range store.written {
+		if n != 1 {
+			t.Fatalf("row %s written %d times", id, n)
+		}
+	}
+}
+
+// BenchmarkEnqueueLogEntry is the one hand-off every request makes to the writer.
+func BenchmarkEnqueueLogEntry(b *testing.B) {
+	plugin := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 1)}
+	entry := &logstore.Log{ID: "bench"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		plugin.enqueueLogEntry(entry, nil)
+		<-plugin.writeQueue
+	}
+}
+
+// BenchmarkEnqueueLogEntryParallel is that hand-off with every core contending for the
+// admission lock's reader count.
+func BenchmarkEnqueueLogEntryParallel(b *testing.B) {
+	plugin := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 1<<16)}
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		for {
+			select {
+			case <-plugin.writeQueue:
+			case <-done:
+				return
+			}
+		}
+	}()
+	entry := &logstore.Log{ID: "bench"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			plugin.enqueueLogEntry(entry, nil)
+		}
+	})
 }

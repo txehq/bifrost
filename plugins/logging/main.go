@@ -1274,8 +1274,7 @@ type LoggerPlugin struct {
 	deferredUsageSem             chan struct{}                  // Limits concurrent deferred usage DB updates
 	deferredUsageWatchSem        chan struct{}                  // Caps goroutines parked on a deferred-usage channel (see scheduleDeferredUsageUpdate)
 	heldGuardrailRows            sync.Map                       // Maps log ID -> *writeQueueEntry held until its output-monitor guardrail result lands (see holdForDeferredGuardrail)
-	heldGuardrailMu              sync.RWMutex                   // Read side: parking a row and a result's claim-then-queue; write side: Cleanup's release
-	heldGuardrailReleased        bool                           // Set by releaseHeldGuardrailRows under heldGuardrailMu; later rows are written, not held
+	heldGuardrailMu              sync.RWMutex                   // Read side: a result's claim-then-queue; write side: Cleanup's release
 	droppedDeferredUsage         atomic.Int64                   // Deferred usage updates dropped because a semaphore was full
 	clusterNodeID                atomic.Value                   // Cluster node ID (string) for log attribution in clustered deployments
 	batchCtx                     context.Context                // Cancelled by Cleanup to stop the batchWriter goroutine before any further DB work
@@ -1299,6 +1298,10 @@ type LoggerPlugin struct {
 	// entry is queued or parked; Cleanup takes it after setting closed, so every
 	// admitted entry is in place before the held rows are released and drained.
 	writeAdmission sync.RWMutex
+	// Test seams, nil outside tests: they land Cleanup between a producer's admission
+	// and its hand-off, and between a guardrail result's claim and its send.
+	afterWriteAdmission func()
+	afterGuardrailClaim func()
 }
 
 // Init creates new logger plugin with given log store. batchStore is the
@@ -2654,8 +2657,8 @@ func (p *LoggerPlugin) Cleanup() error {
 		close(p.done)
 		// p.closed was already set above (it doubles as the sweeper-start guard),
 		// which is what stops new producers before we kill batchWriter so the queue
-		// does not grow while we drain it. Any producer that raced past that check is
-		// absorbed by the enqueue recover path.
+		// does not grow while we drain it; the producers admitted before it finished
+		// under writeAdmission.
 		// Kill batchWriter. Its current in-memory batch is handed back via
 		// p.recoveredBatch; it does not issue any further DB writes.
 		p.batchCancel()
@@ -2689,6 +2692,8 @@ func (p *LoggerPlugin) drainPending() {
 	// by the same wall-clock deadline instead.
 	drainCtx, cancelDrain := context.WithDeadline(p.ctx, deadline)
 	defer cancelDrain()
+	// Nothing retries after the drain, so nothing pinned has a reason to stay.
+	defer p.clearRecentLogBillingPins()
 
 	// Pull everything currently buffered in the channel. Non-blocking — we
 	// only want what is there right now; new sends are already blocked by

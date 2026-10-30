@@ -33,6 +33,16 @@ type liveSessionState struct {
 	costSplit schemas.BifrostCost
 }
 
+// addCostSplit adds one unit's input, output and additional charges to the session's.
+func (s *liveSessionState) addCostSplit(breakdown *schemas.BifrostCost) {
+	if breakdown == nil {
+		return
+	}
+	s.costSplit.InputCost += breakdown.InputCost
+	s.costSplit.OutputCost += breakdown.OutputCost
+	s.costSplit.AdditionalCost += breakdown.AdditionalCost
+}
+
 // foldDelegation adds one billed response to its delegation, or starts the delegation.
 func (s *liveSessionState) foldDelegation(delegation schemas.LiveDelegationLog) {
 	if delegation.DelegationID != "" {
@@ -105,17 +115,10 @@ func (p *LoggerPlugin) postLiveUnit(ctx *schemas.BifrostContext, kind string, re
 	}
 
 	state.mu.Lock()
-	addLiveCostSplit := func() {
-		if breakdown != nil {
-			state.costSplit.InputCost += breakdown.InputCost
-			state.costSplit.OutputCost += breakdown.OutputCost
-			state.costSplit.AdditionalCost += breakdown.AdditionalCost
-		}
-	}
 	switch kind {
 	case "voice":
 		state.voiceCost += cost
-		addLiveCostSplit()
+		state.addCostSplit(breakdown)
 		if result != nil && result.ResponsesResponse != nil && result.ResponsesResponse.Usage != nil && result.ResponsesResponse.Usage.AudioSeconds != nil {
 			state.voiceSeconds += *result.ResponsesResponse.Usage.AudioSeconds
 		} else if result == nil && bifrostErr != nil && bifrostErr.ExtraFields.BilledUsage != nil && bifrostErr.ExtraFields.BilledUsage.AudioSeconds != nil {
@@ -125,7 +128,7 @@ func (p *LoggerPlugin) postLiveUnit(ctx *schemas.BifrostContext, kind string, re
 		// A backend lane's open unit closes empty at session end; only calls that ran are delegations.
 		if delegation, ok := liveDelegation(ctx, result, bifrostErr, cost, contentLoggingEnabled); ok {
 			state.backendCost += cost
-			addLiveCostSplit()
+			state.addCostSplit(breakdown)
 			if delegation.Usage != nil {
 				state.usage = addLLMUsage(state.usage, delegation.Usage)
 			}
@@ -292,6 +295,12 @@ func (p *LoggerPlugin) buildLiveSessionEntry(ctx *schemas.BifrostContext, pendin
 		// additional columns add up to its cost instead of filing it all as input.
 		split := state.costSplit
 		split.TotalCost = total
+		// A unit priced as an opaque total adds nothing to the categories. Beside
+		// units that do, its charge goes to input, as an opaque row's does; with
+		// none, the split stays empty and the row reads as an opaque total.
+		if categorized := split.InputCost + split.OutputCost + split.AdditionalCost; categorized > 0 && total > categorized {
+			split.InputCost += total - categorized
+		}
 		usage.Cost = &split
 	}
 	entry.TokenUsageParsed = usage
