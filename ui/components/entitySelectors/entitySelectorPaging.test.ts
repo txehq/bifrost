@@ -5,6 +5,7 @@ import {
 	hasMoreEntities,
 	loadMoreNeedsRefetch,
 	mergeEntityPage,
+	pageForSearch,
 	shouldAutoLoadMore,
 	type EntityPageEntry,
 } from "./entitySelectorPaging";
@@ -84,5 +85,21 @@ describe("loadMoreNeedsRefetch", () => {
 	it("advances normally when the last page loaded", () => {
 		const pages = mergeEntityPage(EMPTY_ENTITY_PAGES, { search: "", offset: 0, entries: rows(0, 20), total: 40 });
 		expect(loadMoreNeedsRefetch(pages, 0, false)).toBe(false);
+	});
+});
+describe("pageForSearch", () => {
+	it("starts a returning search from the first page instead of reviving its old offset", () => {
+		let page = { search: "", offset: 20 };
+		page = pageForSearch(page, "acme");
+		expect(page).toEqual({ search: "acme", offset: 0 });
+		// Clearing the search goes back to "", whose offset 20 was left behind
+		// when the intervening search's results replaced its pages.
+		page = pageForSearch(page, "");
+		expect(page).toEqual({ search: "", offset: 0 });
+	});
+
+	it("keeps the offset while the search is unchanged", () => {
+		const page = { search: "acme", offset: 40 };
+		expect(pageForSearch(page, "acme")).toBe(page);
 	});
 });

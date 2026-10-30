@@ -29,7 +29,14 @@ import type { Option } from "@/components/ui/multiselectUtils";
 import { SearchSelect } from "@/components/ui/searchSelect";
 import { cn } from "@/lib/utils";
 
-import { EMPTY_ENTITY_PAGES, hasMoreEntities, loadMoreNeedsRefetch, mergeEntityPage, shouldAutoLoadMore } from "./entitySelectorPaging";
+import {
+	EMPTY_ENTITY_PAGES,
+	hasMoreEntities,
+	loadMoreNeedsRefetch,
+	mergeEntityPage,
+	pageForSearch,
+	shouldAutoLoadMore,
+} from "./entitySelectorPaging";
 
 export const ENTITY_SEARCH_DEBOUNCE_MS = 300;
 export const ENTITY_SELECTOR_PAGE_SIZE = 20;
@@ -511,14 +518,17 @@ export function useEntitySelectorSearch() {
 	const [open, setOpenState] = useState(false);
 	const [search, setSearch] = useState("");
 	const [debouncedSearch, setDebouncedSearch] = useState("");
-	// The offset belongs to the search it was scrolled under, so a new search
-	// starts from the first page without an effect to reset it.
+	// The offset belongs to the search it was scrolled under, and is reset in
+	// the same update that changes the debounced search.
 	const [page, setPage] = useState({ search: "", offset: 0 });
 
 	// Deployments can hold far more rows than one page, so pickers search
 	// server-side instead of filtering a capped pre-fetched list.
 	useEffect(() => {
-		const timer = setTimeout(() => setDebouncedSearch(search), ENTITY_SEARCH_DEBOUNCE_MS);
+		const timer = setTimeout(() => {
+			setDebouncedSearch(search);
+			setPage((prev) => pageForSearch(prev, search));
+		}, ENTITY_SEARCH_DEBOUNCE_MS);
 		return () => clearTimeout(timer);
 	}, [search]);
 

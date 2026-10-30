@@ -669,3 +669,44 @@ async function addToolRow(page: Page, row: string, clientName: string, tool: str
   await page.getByTestId(`${row}-tool-option-${tool}`).click();
   await page.getByTestId(`${row}-name`).fill(name);
 }
+
+test.describe("Cloudflare custom provider migration", () => {
+  const custom = (authorization: string) => ({
+    name: "cloudflare",
+    keys: [],
+    status: "active",
+    custom_provider_config: { base_provider_type: "openai", is_key_less: true },
+    network_config: {
+      base_url: "https://api.cloudflare.com/client/v4/accounts/acct123/ai/v1",
+      extra_headers: { Authorization: authorization },
+    },
+    concurrency_and_buffer_size: { concurrency: 10, buffer_size: 100 },
+  });
+
+  async function openPreview(page: Page, authorization: string) {
+    const provider = custom(authorization);
+    await page.route("**/api/providers", (route) =>
+      route.request().method() === "GET"
+        ? route.fulfill({ json: { providers: [provider], total: 1 } })
+        : route.continue(),
+    );
+    await page.route("**/api/providers/cloudflare", (route) =>
+      route.request().method() === "GET" ? route.fulfill({ json: provider }) : route.continue(),
+    );
+    await page.route("**/api/providers/cloudflare/keys", (route) => route.fulfill({ json: { keys: [] } }));
+    await page.goto("/workspace/providers?provider=cloudflare");
+    await page.getByTestId("cloudflare-migration-start").click();
+    await expect(page.getByTestId("cloudflare-migration-preview")).toBeVisible();
+  }
+
+  test("asks for the bare token when the whole Authorization header is a secret reference", async ({ page }) => {
+    await openPreview(page, "env.CF_AUTH");
+    await expect(page.getByTestId("cloudflare-migration-warnings")).toContainText("env.CF_AUTH");
+    await expect(page.getByTestId("cloudflare-migration-confirm")).toBeDisabled();
+  });
+
+  test("keeps a reference to the bare token after Bearer", async ({ page }) => {
+    await openPreview(page, "Bearer env.CF_TOKEN");
+    await expect(page.getByTestId("cloudflare-migration-confirm")).toBeEnabled();
+  });
+});

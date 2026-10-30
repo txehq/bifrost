@@ -106,6 +106,133 @@ test.describe('Warp dock and an in-flight answer', () => {
   })
 })
 
+// Closing the dock unmounts the panel, so anything the panel held dies with it unless the
+// provider-owned session holds it. The chat and history answers are held open by the test, so
+// the order they land in is the test's, not the network's.
+test.describe('Warp state across a panel unmount', () => {
+  test.beforeEach(async ({ dashboardPage }) => {
+    await enableWarpFlag(dashboardPage.page)
+    await dashboardPage.goto()
+    await expect(dashboardPage.pageTitle).toBeVisible()
+    await dashboardPage.page.context().addCookies([
+      {
+        name: 'bifrost_onboarding_remind_at',
+        value: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        url: new URL(dashboardPage.page.url()).origin,
+      },
+    ])
+  })
+
+  test('a follow-up queued behind an answer survives the dock closing and sends when it reopens', async ({ dashboardPage }) => {
+    const page = dashboardPage.page
+    await mockWarpConfig(page)
+    let release!: () => void
+    const dockClosed = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let answered!: () => void
+    const firstAnswered = new Promise<void>((resolve) => {
+      answered = resolve
+    })
+    const sent: string[] = []
+    await page.route('**/api/warp/chat', async (route) => {
+      const body = route.request().postData() ?? ''
+      sent.push(body)
+      if (sent.length === 1) {
+        await dockClosed
+        await route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse('First answer.') })
+        answered()
+        return
+      }
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse('Follow-up answer.') })
+    })
+    await page.reload()
+
+    await page.getByTestId('topbar-warp-btn').click()
+    const composer = page.getByTestId('warp-composer-input')
+    await composer.fill('first question')
+    await composer.press('Enter')
+    await expect(page.getByTestId('warp-stop-btn')).toBeVisible()
+    await composer.fill('and by model?')
+    await composer.press('Enter')
+    await expect(page.getByTestId('warp-queued-item')).toHaveCount(1)
+
+    await page.getByTestId('warp-close-btn').click()
+    await expect(page.getByTestId('warp-panel')).toHaveCount(0)
+    release()
+    await firstAnswered
+    // The answer finished with no panel to drain the queue, so nothing is sent yet.
+    expect(sent).toHaveLength(1)
+
+    await page.getByTestId('topbar-warp-btn').click()
+    await expect(page.getByTestId('warp-message-assistant')).toHaveCount(2)
+    await expect(page.getByTestId('warp-message-assistant').last()).toContainText('Follow-up answer.')
+    await expect(page.getByTestId('warp-queued-item')).toHaveCount(0)
+    expect(sent).toHaveLength(2)
+    expect(sent[1]).toContain('and by model?')
+  })
+
+  test('a history load that lands after its panel unmounted leaves the newer conversation alone', async ({ dashboardPage }) => {
+    const page = dashboardPage.page
+    await mockWarpConfig(page)
+    const stored = {
+      id: '00000000-0000-4000-8000-000000000009',
+      title: 'Stored thread',
+      message_count: 2,
+      total_tokens: 0,
+      total_cost: 0,
+      created_at: '2026-10-01T00:00:00Z',
+      updated_at: '2026-10-01T00:00:00Z',
+    }
+    await page.route('**/api/warp/conversations?**', (route) => route.fulfill({ json: { conversations: [stored] } }))
+    await page.route('**/api/warp/conversations', (route) => route.fulfill({ json: { conversations: [stored] } }))
+    let release!: () => void
+    const newerAnswerShown = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let landed!: () => void
+    const historyLanded = new Promise<void>((resolve) => {
+      landed = resolve
+    })
+    await page.route(`**/api/warp/conversations/${stored.id}`, async (route) => {
+      await newerAnswerShown
+      await route.fulfill({
+        json: {
+          ...stored,
+          messages: [
+            { role: 'user', content: 'stored question' },
+            { role: 'assistant', content: 'Stored answer.' },
+          ],
+        },
+      })
+      landed()
+    })
+    await page.route('**/api/warp/chat', (route) =>
+      route.fulfill({ status: 200, contentType: 'text/event-stream', body: sse('Newer answer.') }),
+    )
+    await page.reload()
+
+    await page.getByTestId('topbar-warp-btn').click()
+    await page.getByTestId('warp-history-btn').click()
+    await page.getByTestId(`warp-history-item-${stored.id}`).click()
+    await page.getByTestId('warp-close-btn').click()
+    await expect(page.getByTestId('warp-panel')).toHaveCount(0)
+
+    await page.getByTestId('topbar-warp-btn').click()
+    const composer = page.getByTestId('warp-composer-input')
+    await composer.fill('newer question')
+    await composer.press('Enter')
+    await expect(page.getByTestId('warp-message-assistant')).toContainText('Newer answer.')
+
+    release()
+    await historyLanded
+    // Give a stale load's state updates the chance to render before asserting they did not.
+    await page.waitForTimeout(250)
+    await expect(page.getByTestId('warp-message-user')).toHaveText('newer question')
+    await expect(page.getByTestId('warp-message-assistant')).toHaveText(/Newer answer\./)
+  })
+})
+
 // Warp ran on exactly one model, and the composer's model chip was a link to
 // the settings page for whoever was looking at it. An administrator can now
 // expose several models: the chip switches between them, the request names the

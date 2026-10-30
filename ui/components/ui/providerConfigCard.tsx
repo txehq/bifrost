@@ -485,6 +485,8 @@ export function ProviderConfigCard({
 										<ModelSelector
 											hideSearchIcon
 											contentWidth={360}
+											// Deployment aliases and uncatalogued models take budgets too.
+											allowCustomModel
 											data-testid={`${tid}-add-model-budget-${index}`}
 											provider={value.providerName}
 											value=""

@@ -30,6 +30,7 @@ import { Check, ChevronLeft, ChevronRight, Copy, Info, MoreHorizontal, PencilIco
 import { useState, type ReactNode } from "react";
 import AgentSheet from "./agentSheet";
 import { AgentsEmptyState } from "./agentsEmptyState";
+import { agentToggleRequest } from "./agentsTable.utils";
 
 function AgentActionsMenu({
 	agent,
@@ -223,25 +224,10 @@ export default function AgentsTable({
 		}
 	};
 
-	// PUT is a full replacement, so the toggle resubmits every field — including
-	// virtual_key_ids — with only `enabled` changed. Masked credential secrets
-	// round-trip verbatim and the backend keeps the stored values.
 	const handleToggleEnabled = async (agent: AgentRegistrationView, enabled: boolean) => {
 		setTogglingAgents((prev) => new Set(prev).add(agent.name));
 		try {
-			await updateAgent({
-				name: agent.name,
-				data: {
-					agent_card_url: agent.agent_card_url,
-					enabled,
-					allow_by_default: agent.allow_by_default,
-					forward_accepted_credential: agent.forward_accepted_credential,
-					forward_accepted_credential_overrides_auth: agent.forward_accepted_credential_overrides_auth,
-					discovery_auth: agent.discovery_auth,
-					runtime_auth: agent.runtime_auth,
-					virtual_key_ids: agent.virtual_key_ids ?? [],
-				},
-			}).unwrap();
+			await updateAgent({ name: agent.name, data: agentToggleRequest(agent, enabled) }).unwrap();
 			toast({ title: `Agent ${enabled ? "enabled" : "disabled"} successfully` });
 			refetch?.();
 		} catch (error) {

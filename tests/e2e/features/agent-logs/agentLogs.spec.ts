@@ -130,3 +130,121 @@ test.describe("Agent log context grouping", () => {
   });
 
 });
+
+// The history is mocked: the recent probe, the selected range and each hydrated operation are
+// answered independently, so an empty probe can sit beside a range that has rows.
+test.describe("Agent log history state", () => {
+  const log = (id: string, input: string) => ({
+    id,
+    timestamp: "2026-10-12T00:00:00Z",
+    record_kind: "request",
+    operation: "SendMessage",
+    status: "success",
+    agent_name: "state-test-agent",
+    request_id: `request-${id}`,
+    input,
+    session_child_count: 0,
+  });
+  const alpha = log("op-alpha", "alpha input");
+  const beta = log("op-beta", "beta input");
+
+  async function mockHistory(
+    page: import("@playwright/test").Page,
+    rows: Record<string, unknown>[],
+    {
+      probeRows = rows,
+      operation = (id) => ({ status: 200, json: { ...alpha, id, events: [] } }),
+    }: {
+      probeRows?: Record<string, unknown>[];
+      operation?: (id: string) => { status: number; json: unknown };
+    } = {},
+  ) {
+    const deleted: string[][] = [];
+    await page.route("**/api/agents/history**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (request.method() === "DELETE") {
+        deleted.push((request.postDataJSON() as { ids: string[] }).ids);
+        return route.fulfill({ json: { message: "deleted" } });
+      }
+      if (url.pathname.endsWith("/stats"))
+        return route.fulfill({ json: { total_entries: rows.length, success_count: rows.length, error_count: 0, success_rate: 100, average_latency: 0 } });
+      if (url.pathname.endsWith("/histogram")) return route.fulfill({ json: { buckets: [], bucket_size_seconds: 60 } });
+      if (url.pathname.endsWith("/filterdata") || url.pathname.endsWith("/top-agents")) return route.fulfill({ json: {} });
+      if (!url.pathname.endsWith("/history")) {
+        const { status, json } = operation(decodeURIComponent(url.pathname.split("/").pop() ?? ""));
+        return route.fulfill({ status, json });
+      }
+      const params = url.searchParams;
+      // The probe is the only one-row request; a period reaches the server as timestamps.
+      const probe = params.get("limit") === "1";
+      const logs = probe ? probeRows : rows;
+      await route.fulfill({
+        json: {
+          logs,
+          pagination: { limit: Number(params.get("limit")), offset: 0, sort_by: "timestamp", order: "desc", total_count: logs.length },
+        },
+      });
+    });
+    return deleted;
+  }
+
+  test("keeps the history view when the 30-day probe is empty but the selected range has rows", async ({ page }) => {
+    await mockHistory(page, [alpha], { probeRows: [] });
+    await page.goto("/workspace/agent-logs?polling=false&period=this_month");
+    await expect(page.getByTestId("agent-logs-header-group-btn")).toBeVisible();
+    await expect(page.getByText("alpha input")).toBeVisible();
+  });
+
+  test("an empty absolute range keeps its date controls", async ({ page }) => {
+    await mockHistory(page, []);
+    await page.goto("/workspace/agent-logs?polling=false&period=&start_time=1700000000&end_time=1700003600");
+    await expect(page.getByTestId("agent-logs-header-group-btn")).toBeVisible();
+  });
+
+  test("a failed detail fetch shows the selected operation and Delete removes that one", async ({ page }) => {
+    const deleted = await mockHistory(page, [alpha, beta], {
+      operation: (id) =>
+        id === alpha.id ? { status: 200, json: { ...alpha, events: [] } } : { status: 500, json: { error: { message: "boom" } } },
+    });
+    await page.goto(`/workspace/agent-logs?polling=false&period=30d&selected_log=${alpha.id}`);
+    await expect(page.getByRole("button", { name: "Log actions" })).toBeVisible();
+    await page.keyboard.press("ArrowDown");
+    await expect(page).toHaveURL(new RegExp(`selected_log=${beta.id}`));
+
+    await page.getByRole("button", { name: "Log actions" }).click();
+    await page.getByRole("menuitem", { name: "Delete log" }).click();
+    await page.getByRole("alertdialog").getByRole("button", { name: /delete/i }).click();
+
+    await expect.poll(() => deleted).toEqual([[beta.id]]);
+  });
+
+  test("assembles the artifacts of a streamed task snapshot in the session view", async ({ page }) => {
+    const operation = {
+      ...alpha,
+      id: "op-stream",
+      operation: "SendStreamingMessage",
+      task_id: "task-1",
+      context_id: "context-1",
+      events: [
+        {
+          ...alpha,
+          id: "event-1",
+          record_kind: "event",
+          task_id: "task-1",
+          context_id: "context-1",
+          event_sequence: 0,
+          event_body: JSON.stringify({
+            id: "task-1",
+            contextId: "context-1",
+            status: { state: "completed" },
+            artifacts: [{ artifactId: "report", name: "Report", parts: [{ text: "final answer" }] }],
+          }),
+        },
+      ],
+    };
+    await mockHistory(page, [operation]);
+    await page.goto("/workspace/agent-logs?polling=false&period=30d&selected_session=context-1");
+    await expect(page.getByText("final answer")).toBeVisible();
+  });
+});

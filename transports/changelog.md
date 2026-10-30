@@ -18,6 +18,10 @@
 - **Stored A2A push configurations belong to the tenant that registered them** - the gateway's record of a client's push callback is keyed by agent, task and configuration ID without the tenant, so two tenants naming the same IDs replaced each other's callback and ingress token, and each could read, list or delete the other's. A request now reaches only the configurations its own tenant registered (a request naming no tenant is the empty tenant, not a wildcard), registering an ID another tenant holds for the task is refused with invalid params before any upstream call, and the store's upsert and the embedded-config bind never replace another tenant's row
 - **Queued push deliveries stay with the registration that accepted them** - a delivery records the ingress token of the registration it was accepted for (new `registration_hash` column on the outbox); if that registration is deleted and the same agent/task/configuration is registered again, by any tenant, the queued payload is dead-lettered instead of being sent to the new callback. Rows queued before the column existed keep the previous behaviour
 - **Two pushes racing to bind one pending embedded configuration cannot both queue** - the configuration is read back after the bind, and a push whose task the row is not bound to is refused rather than queued under another task's configuration
+- **A security scheme that changed drops the credentials it no longer fits** - replacing an MCP OpenAPI document clears a stored credential whose same-named scheme moved location or type, or whose scheme was removed, so a key that moved to the query string is not sent in URLs; when the previous schemes cannot be compared, none is kept, and a toast says what was cleared
+- **Agent log Delete acts on the selected operation** - a failed detail fetch shows the selected row's summary, so Delete can no longer remove the previously opened operation
+- **Toggling an agent keeps its approved credential origins** - the enable and disable switch resends them with the rest of the registration, so re-enabling still reaches an approved runtime endpoint
+- **A Cloudflare migration asks for the bare token when the whole header is a reference** - such a reference resolves to `Bearer <token>`, which the native provider would have sent as `Bearer Bearer <token>`
 
 ## 🐞 Fixed
 
@@ -34,6 +38,15 @@
 - Two equal artifact-append events pushed by an upstream agent are both delivered (an append carries no event identity, so appends are at least once); every other event keeps its content-digest deduplication
 - An agent registered with `enabled: false` stays disabled across a reload; the column default no longer turns an explicit false into true on create
 - An Agent log update that lands before the log's initial object upload finished builds on the queued full payload, so the stored object keeps the untruncated bodies and raw fields; and a body update that also changes the row's status queues its upload under the new status instead of being dropped
+- Fetching an agent card keeps OAuth settings the card does not describe (resource, discovery URL, provider URL) and the client credentials, and in manual mode a refetch shows the card without replacing the operator's configuration
+- The Agent logs page keeps the history view when the 30-day probe is empty but the selected range has rows, and an explicit range keeps its date controls when empty
+- The Agent session view assembles the artifacts of a streamed task snapshot instead of reading it as a status update
+- Clicking the selected provider in a dashboard filter returns to All Providers, and the charts aggregate every provider again
+- Expanding a session in the logs lists every member past the first page; a failed page collapses the session rather than showing part of it, and a reset stops the read
+- An unchanged stored OpenAPI document keeps the URL it was read from when saved back, and its relative servers resolve against that URL in the preview
+- Entity pickers start from the first page after a search is cleared, instead of reviving the offset left behind before it
+- Model budgets accept names the catalog does not list, such as deployment aliases
+- Warp follow-ups queued behind an answer survive the dock closing and send when it reopens, and a history load that lands after its panel unmounted no longer replaces a newer conversation
 
 ## 🗄️ Database Migrations
 
@@ -41,8 +54,8 @@
 
 ## 🍴 Fork changes (txehq/bifrost)
 
-- chore: v2.3.3-sync.7 is a prerelease on top of v2.3.2 carrying the network and destination-policy fixes from the PR5 preservation audit (TXE-5374, in v2.3.3-sync.1), the proxied MCP OAuth and catalog URL check pinning (TXE-5377, in v2.3.3-sync.2) the PR5 credential-reference and destination-change fixes (TXE-5411), the queue lease-loss reporting fix (TXE-5407), the provider-key secret-reference check (TXE-4989, in v2.3.3-sync.4), the PR5 content-redaction fixes for logs and traces (TXE-5431, in v2.3.3-sync.5) the PR5 passthrough tuning and method-override refusals (TXE-5023, in v2.3.3-sync.6) and the PR5 Agent Gateway push tenancy, delivery ordering and stream fixes (TXE-5477); v2.3.2 stays the stable release and `latest`
+- chore: v2.3.3-sync.8 is a prerelease on top of v2.3.2 carrying the network and destination-policy fixes from the PR5 preservation audit (TXE-5374, in v2.3.3-sync.1), the proxied MCP OAuth and catalog URL check pinning (TXE-5377, in v2.3.3-sync.2) the PR5 credential-reference and destination-change fixes (TXE-5411), the queue lease-loss reporting fix (TXE-5407), the provider-key secret-reference check (TXE-4989, in v2.3.3-sync.4), the PR5 content-redaction fixes for logs and traces (TXE-5431, in v2.3.3-sync.5) the PR5 passthrough tuning and method-override refusals (TXE-5023, in v2.3.3-sync.6) the PR5 Agent Gateway push tenancy, delivery ordering and stream fixes (TXE-5477, in v2.3.3-sync.7) and the PR5 UI credential, pagination and stale-state fixes (TXE-5496); v2.3.2 stays the stable release and `latest`
 - note: module versions. This fork publishes no core, framework or plugin module versions: their module paths stay `github.com/capsohq/bifrost/...`, their version files and the transport's requires are unchanged, and the workspace builds them from source
 - preserved: everything v2.3.2 listed under Fork changes
-- chore: the Helm chart is 2.1.49-sync.7, a prerelease; `appVersion` is 2.3.3-sync.7, `image.tag` stays required, and `networkConfig.extra_headers` values may be structured secret references (since 2.1.49-sync.3)
+- chore: the Helm chart is 2.1.49-sync.8, a prerelease; `appVersion` is 2.3.3-sync.8, `image.tag` stays required, and `networkConfig.extra_headers` values may be structured secret references (since 2.1.49-sync.3)
 - note: the CLI changes (every stored credential of a context is cleared when its gateway URL changes) ship with the next CLI release, not with this transport

@@ -30,9 +30,11 @@ import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
 import { getLiveToggleState } from "@/lib/utils/timeRange";
 import { parseAsBoolean, parseAsFloat, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { fetchAllPages, pageFromQuery } from "./logs.page.utils";
 
 // A fallback chain is a handful of attempts, so one page covers every realistic
-// chain. Capped at the list endpoint's own maximum.
+// chain. Capped at the list endpoint's own maximum. A session can be longer, so
+// its members are read page by page at this size.
 const chainChildrenPageLimit = 1000;
 
 export default function LogsPage() {
@@ -604,24 +606,33 @@ export default function LogsPage() {
 			if (sessionMembers[log.id] || loadingSessionIds.has(log.id)) return;
 			const generation = expansionGeneration.current;
 			setLoadingSessionIds((prev) => new Set(prev).add(log.id));
-			triggerGetSessionMembers({
-				filters: { ...filters, session_id: log.session_id },
-				pagination: { ...pagination, limit: chainChildrenPageLimit, offset: 0, sort_by: "timestamp", order: "asc" },
-				rootsOnly: true,
-				groupSessions: false,
-			}).then((result) => {
+			const sessionId = log.session_id;
+			// A session can hold more requests than one page, so every page is read.
+			fetchAllPages<LogEntry>(
+				(offset) => {
+					// A reset mid-read drops this expansion, so the remaining pages are not fetched.
+					if (generation !== expansionGeneration.current) return Promise.resolve({ error: "expansion reset" });
+					return triggerGetSessionMembers({
+						filters: { ...filters, session_id: sessionId },
+						pagination: { ...pagination, limit: chainChildrenPageLimit, offset, sort_by: "timestamp", order: "asc" },
+						rootsOnly: true,
+						groupSessions: false,
+					}).then(pageFromQuery);
+				},
+				chainChildrenPageLimit,
+			).then((result) => {
 				if (generation !== expansionGeneration.current) return;
 				setLoadingSessionIds((prev) => {
 					const next = new Set(prev);
 					next.delete(log.id);
 					return next;
 				});
-				if (result.data) {
+				if ("logs" in result) {
 					// The root is one of the session's roots, and it is already on
 					// screen as the row being expanded.
-					const members = result.data.logs.filter((member) => member.id !== log.id);
+					const members = result.logs.filter((member) => member.id !== log.id);
 					setSessionMembers((prevCache) => ({ ...prevCache, [log.id]: members }));
-				} else if (result.error) {
+				} else {
 					setExpandedSessionIds((prev) => {
 						const next = new Set(prev);
 						next.delete(log.id);

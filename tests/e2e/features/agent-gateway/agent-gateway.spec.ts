@@ -198,3 +198,147 @@ test.describe("Agent Gateway", () => {
     await agentGatewayPage.expectSheetClosed();
   });
 });
+
+// What the card describes follows the card, and what only the operator can supply survives a
+// refetch. The registration and the card are mocked, so these need no running upstream or
+// identity provider: the PUT body is what the gateway would have stored.
+test.describe("Agent Gateway settings the operator owns", () => {
+  const name = "oauth-agent";
+  const registration = (advanced: boolean) => ({
+    name,
+    agent_card_url: "https://agent.example.test/.well-known/agent-card.json",
+    enabled: true,
+    allow_by_default: false,
+    forward_accepted_credential: false,
+    forward_accepted_credential_overrides_auth: false,
+    runtime_auth: {
+      type: "oauth",
+      advanced: advanced || undefined,
+      security_schemes: ["oidc"],
+      oauth: {
+        token_url: "https://operator.example.test/token",
+        client_id: { value: "<REDACTED>", ref: "" },
+        client_secret: { value: "<REDACTED>", ref: "" },
+        scopes: ["operator.scope"],
+        resource: "https://api.example.test/agents",
+        discovery_url: "https://idp.example.test/.well-known/openid-configuration",
+      },
+    },
+    credential_origins: ["https://runtime.example.test"],
+    virtual_key_ids: [],
+    created_at: "2026-10-01T00:00:00Z",
+    updated_at: "2026-10-01T00:00:00Z",
+  });
+  const inspectedCard = {
+    name: "mock-agent",
+    capabilities: {},
+    signature_count: 0,
+    security_schemes: [{ name: "oidc", type: "oauth2", token_url: "https://card.example.test/token", scopes: ["agent.read"] }],
+    security_requirements: [["oidc"]],
+  };
+
+  async function mockRegistration(page: import("@playwright/test").Page, agent: ReturnType<typeof registration>) {
+    const saved: Record<string, any>[] = [];
+    await page.route("**/api/agents", (route) =>
+      route.request().method() === "GET" ? route.fulfill({ json: { agents: [agent], count: 1, total_count: 1 } }) : route.continue(),
+    );
+    await page.route("**/api/agents/inspect", (route) => route.fulfill({ json: inspectedCard }));
+    await page.route(`**/api/agents/${name}`, async (route) => {
+      if (route.request().method() !== "PUT") return route.continue();
+      saved.push(route.request().postDataJSON());
+      await route.fulfill({ json: agent });
+    });
+    return saved;
+  }
+
+  test.beforeEach(async ({ context, baseURL }) => {
+    await context.addCookies([
+      {
+        name: "bifrost_onboarding_remind_at",
+        value: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        url: baseURL ?? "http://localhost:3000",
+      },
+    ]);
+  });
+
+  test("a card refetch takes the token URL and scopes from the card and keeps the operator's OAuth settings", async ({
+    agentGatewayPage,
+  }) => {
+    const saved = await mockRegistration(agentGatewayPage.page, registration(false));
+    await agentGatewayPage.goto();
+    await agentGatewayPage.openEditSheet(name);
+    await agentGatewayPage.fetchCardBtn.first().click();
+    await expect(agentGatewayPage.inspection).toContainText("mock-agent");
+    await agentGatewayPage.save();
+
+    await expect.poll(() => saved.length).toBe(1);
+    const oauth = saved[0].runtime_auth.oauth;
+    expect(oauth.token_url).toBe("https://card.example.test/token");
+    expect(oauth.scopes).toEqual(["agent.read"]);
+    expect(oauth.resource).toBe("https://api.example.test/agents");
+    expect(oauth.discovery_url).toBe("https://idp.example.test/.well-known/openid-configuration");
+    expect(oauth.client_id.value).toBe("<REDACTED>");
+    expect(oauth.client_secret.value).toBe("<REDACTED>");
+  });
+
+  test("a card refetch shows the card without replacing a manual configuration", async ({ agentGatewayPage }) => {
+    const agent = registration(true);
+    const saved = await mockRegistration(agentGatewayPage.page, agent);
+    await agentGatewayPage.goto();
+    await agentGatewayPage.openEditSheet(name);
+    await agentGatewayPage.fetchCardBtn.first().click();
+    await expect(agentGatewayPage.inspection).toContainText("mock-agent");
+    await agentGatewayPage.save();
+
+    await expect.poll(() => saved.length).toBe(1);
+    expect(saved[0].runtime_auth.advanced).toBe(true);
+    expect(saved[0].runtime_auth.oauth).toEqual(agent.runtime_auth.oauth);
+  });
+
+  test("toggling an agent keeps its approved credential origins", async ({ agentGatewayPage }) => {
+    const saved = await mockRegistration(agentGatewayPage.page, registration(false));
+    await agentGatewayPage.goto();
+    await agentGatewayPage.page.getByTestId(`agent-enabled-switch-${name}`).click();
+
+    await expect.poll(() => saved.length).toBe(1);
+    expect(saved[0].enabled).toBe(false);
+    expect(saved[0].credential_origins).toEqual(["https://runtime.example.test"]);
+  });
+
+  // The picker's pages belong to the search they were read under: 45 keys, 20 to a page.
+  test("clearing a search reads the first page again, not the offset scrolled to before it", async ({ agentGatewayPage }) => {
+    const page = agentGatewayPage.page;
+    const keys = Array.from({ length: 45 }, (_, i) => ({ id: `vk-${i}`, name: `key-${String(i).padStart(2, "0")}`, value: "<REDACTED>" }));
+    const requested: { offset: number; search: string }[] = [];
+    await page.route("**/api/governance/virtual-keys?**", async (route) => {
+      const params = new URL(route.request().url()).searchParams;
+      const offset = Number(params.get("offset") ?? 0);
+      const limit = Number(params.get("limit") ?? 20);
+      const search = params.get("search") ?? "";
+      if (limit === 20) requested.push({ offset, search });
+      const matching = search ? [{ id: "vk-acme", name: "acme-key", value: "<REDACTED>" }] : keys;
+      await route.fulfill({
+        json: { virtual_keys: matching.slice(offset, offset + limit), count: matching.length, total_count: matching.length, limit, offset },
+      });
+    });
+    await agentGatewayPage.goto();
+    await agentGatewayPage.openCreateSheet();
+    await agentGatewayPage.addVirtualKeyBtn.click();
+
+    const list = page.getByRole("listbox");
+    await expect(list.getByRole("option", { name: "key-00" })).toBeVisible();
+    await list.evaluate((node) => {
+      node.scrollTop = node.scrollHeight;
+    });
+    await expect(list.getByRole("option", { name: "key-20" })).toBeAttached();
+
+    const search = page.getByPlaceholder(/search/i).last();
+    await search.fill("acme");
+    await expect(list.getByRole("option", { name: "acme-key" })).toBeVisible();
+    await search.fill("");
+
+    await expect(list.getByRole("option", { name: "key-00" })).toBeVisible();
+    await expect(list.getByRole("option", { name: "acme-key" })).toHaveCount(0);
+    expect(requested.filter((request) => request.search === "acme").every((request) => request.offset === 0)).toBe(true);
+  });
+});

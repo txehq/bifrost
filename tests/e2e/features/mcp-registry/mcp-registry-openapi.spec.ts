@@ -614,6 +614,178 @@ test.describe("MCP Registry - OpenAPI servers", () => {
     });
   });
 
+  // The client is created over the API so it can carry a stored secret and a stored document
+  // URL; no tool list reaches the sheet that way, so each test picks its operation. The
+  // document is parsed by the real preview endpoint. Only the final PUT is
+  // mocked: its body is what the server would have stored.
+  test.describe("Replacing the document: credentials and provenance", () => {
+    const document = (location: "header" | "query", server = "/v1") =>
+      JSON.stringify({
+        openapi: "3.0.3",
+        info: { title: `Scheme in ${location}`, version: "1.0.0" },
+        servers: [{ url: server }],
+        security: [{ KeyAuth: [] }],
+        components: {
+          securitySchemes: {
+            KeyAuth: {
+              type: "apiKey",
+              in: location,
+              name: location === "header" ? "X-API-Key" : "key",
+            },
+          },
+        },
+        paths: {
+          "/pets": {
+            get: {
+              operationId: "listPets",
+              responses: { "200": { description: "ok" } },
+            },
+          },
+        },
+      });
+    const specUrl = "https://docs.example.test/api/openapi.json";
+
+    async function createStoredClient(
+      mcpRegistryPage: {
+        page: import("@playwright/test").Page;
+      },
+      name: string,
+    ) {
+      const response = await mcpRegistryPage.page.request.post(
+        "/api/mcp/client",
+        {
+          data: {
+            name,
+            connection_type: "openapi",
+            auth_type: "none",
+            tools_to_execute: ["*"],
+            openapi_config: {
+              spec: document("header"),
+              spec_url: specUrl,
+              security_credentials: {
+                KeyAuth: { value: { value: "stored-secret", ref: "" } },
+              },
+            },
+          },
+        },
+      );
+      expect(response.ok(), await response.text()).toBe(true);
+      createdClients.push(name);
+    }
+
+    async function captureSave(page: import("@playwright/test").Page) {
+      const saved: Record<string, any>[] = [];
+      await page.route("**/api/mcp/client/*", async (route) => {
+        if (route.request().method() !== "PUT") return route.continue();
+        saved.push(route.request().postDataJSON());
+        await route.fulfill({ json: { status: "success" } });
+      });
+      return saved;
+    }
+
+    test("clears a stored key whose scheme moved to the query string, even when the stored preview lands last", async ({
+      mcpRegistryPage,
+    }) => {
+      const page = mcpRegistryPage.page;
+      const name = `openapi_moved_scheme_${Date.now()}`;
+      await createStoredClient(mcpRegistryPage, name);
+      const saved = await captureSave(page);
+      // The first preview is the stored document's. It is held until the replacement's own
+      // parse is in, which is the order that has no schemes to compare against yet.
+      let releaseBaseline!: () => void;
+      const replacementParsed = new Promise<void>((resolve) => {
+        releaseBaseline = resolve;
+      });
+      let previews = 0;
+      await page.route("**/mcp/openapi/preview", async (route) => {
+        previews += 1;
+        if (previews === 1) await replacementParsed;
+        await route.continue();
+      });
+      await page.reload();
+      await mcpRegistryPage.viewClientDetails(name);
+      await mcpRegistryPage.openReplaceSpec();
+
+      const panel = mcpRegistryPage.detailSheet.getByTestId(
+        "openapi-replace-spec-panel",
+      );
+      await panel.getByTestId("openapi-spec-source-tab-paste").click();
+      const editor = panel.getByTestId("openapi-spec-paste-editor");
+      await editor
+        .locator("textarea.inputarea")
+        .waitFor({ state: "attached", timeout: 10000 });
+      await editor.locator(".monaco-editor").first().click();
+      await page.keyboard.press(
+        process.platform === "darwin" ? "Meta+A" : "Control+A",
+      );
+      await page.keyboard.press("Backspace");
+      // A pasted document is a new source, so its server has to be absolute.
+      await page.keyboard.insertText(
+        document("query", "https://api.example.test/v1"),
+      );
+      await expect.poll(() => previews).toBeGreaterThan(1);
+      releaseBaseline();
+
+      await expect(panel.getByTestId("openapi-preview-title")).toHaveText(
+        "Scheme in query",
+        { timeout: 30000 },
+      );
+      await expect(
+        panel.getByTestId("openapi-security-KeyAuth-input"),
+      ).toHaveValue("");
+      await expect(page.getByText("Some credentials were cleared")).toBeVisible();
+      await panel.getByTestId("openapi-tool-checkbox-listPets").check();
+
+      await mcpRegistryPage.detailSheet
+        .getByTestId("mcpclient-save-btn")
+        .click();
+      await expect.poll(() => saved.length).toBe(1);
+      expect(saved[0].openapi_config.security_credentials).toEqual({});
+    });
+
+    test("saving the stored document unchanged keeps the URL it was read from", async ({
+      mcpRegistryPage,
+    }) => {
+      const page = mcpRegistryPage.page;
+      const name = `openapi_provenance_${Date.now()}`;
+      await createStoredClient(mcpRegistryPage, name);
+      const saved = await captureSave(page);
+      const previewBodies: Record<string, any>[] = [];
+      page.on("request", (request) => {
+        if (request.url().includes("/mcp/openapi/preview"))
+          previewBodies.push(request.postDataJSON());
+      });
+      await page.reload();
+      await mcpRegistryPage.viewClientDetails(name);
+      await mcpRegistryPage.openReplaceSpec();
+
+      const panel = mcpRegistryPage.detailSheet.getByTestId(
+        "openapi-replace-spec-panel",
+      );
+      await expect(panel.getByTestId("openapi-preview-title")).toHaveText(
+        "Scheme in header",
+        { timeout: 30000 },
+      );
+      // Both previews read the stored document, so its relative server has a base.
+      expect(previewBodies.length).toBeGreaterThan(0);
+      for (const body of previewBodies) expect(body.spec_url).toBe(specUrl);
+      await panel.getByTestId("openapi-tool-checkbox-listPets").check();
+
+      // A rename makes the parse stale, so Save waits for the one it starts.
+      const reparsed = page.waitForResponse("**/mcp/openapi/preview");
+      await mcpRegistryPage.detailSheet
+        .getByLabel(/Name/i)
+        .first()
+        .fill(`${name}_renamed`);
+      await reparsed;
+      await mcpRegistryPage.detailSheet
+        .getByTestId("mcpclient-save-btn")
+        .click();
+      await expect.poll(() => saved.length).toBe(1);
+      expect(saved[0].openapi_config.spec_url).toBe(specUrl);
+    });
+  });
+
   test.describe("Replacing the document: base URL", () => {
     test("shows an invalid custom base URL at the input and does not save", async ({
       mcpRegistryPage,
