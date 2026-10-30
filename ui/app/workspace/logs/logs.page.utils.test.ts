@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fetchAllPages } from "./logs.page.utils";
+import { fetchAllPages, pageFromQuery } from "./logs.page.utils";
 
 const pagedSource = (total: number) => {
 	const offsets: number[] = [];
@@ -36,5 +36,19 @@ describe("fetchAllPages", () => {
 		}, 1_000);
 		expect(result).toEqual({ error: "boom" });
 		expect(calls).toBe(2);
+	});
+});
+
+describe("pageFromQuery", () => {
+	it("reads the rows of a successful page", () => {
+		expect(pageFromQuery({ data: { logs: [1, 2] } })).toEqual({ logs: [1, 2] });
+	});
+
+	it("reports a failed refetch even though the cache still holds rows", () => {
+		expect(pageFromQuery({ data: { logs: [1] }, error: "boom" })).toEqual({ error: "boom" });
+	});
+
+	it("reports a result with neither rows nor an error as a failure", () => {
+		expect("error" in pageFromQuery({})).toBe(true);
 	});
 });

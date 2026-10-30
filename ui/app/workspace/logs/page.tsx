@@ -30,7 +30,7 @@ import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
 import { getLiveToggleState } from "@/lib/utils/timeRange";
 import { parseAsBoolean, parseAsFloat, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchAllPages } from "./logs.page.utils";
+import { fetchAllPages, pageFromQuery } from "./logs.page.utils";
 
 // A fallback chain is a handful of attempts, so one page covers every realistic
 // chain. Capped at the list endpoint's own maximum. A session can be longer, so
@@ -617,8 +617,7 @@ export default function LogsPage() {
 						pagination: { ...pagination, limit: chainChildrenPageLimit, offset, sort_by: "timestamp", order: "asc" },
 						rootsOnly: true,
 						groupSessions: false,
-						// A failed refetch keeps the cached rows in data, so the error decides.
-					}).then((page) => (page.data && !page.error ? { logs: page.data.logs } : { error: page.error }));
+					}).then(pageFromQuery);
 				},
 				chainChildrenPageLimit,
 			).then((result) => {
