@@ -2431,3 +2431,67 @@ func TestHybrid_UpdateAgentLogBeforeInitialUploadKeepsFullPayload(t *testing.T) 
 	require.NotNil(t, found.ResponseBody)
 	assert.Equal(t, `{"response":"done"}`, *found.ResponseBody)
 }
+
+// TestHybrid_UpdateAgentLogBodyBeforeInitialUploadKeepsFullPayload is the body-only
+// variant of TestHybrid_UpdateAgentLogBeforeInitialUploadKeepsFullPayload: with no
+// status change the initial upload still lands, but the replacement queued behind
+// it must be built on the queued full payload, not on the row's previews, or it
+// overwrites the full object with truncated bodies.
+func TestHybrid_UpdateAgentLogBodyBeforeInitialUploadKeepsFullPayload(t *testing.T) {
+	gate := &gatedObjectStore{ObjectStore: objectstore.NewInMemoryObjectStore(), release: make(chan struct{})}
+	hybrid, inner := newTestHybridWithObjects(t, gate)
+	defer hybrid.Close(context.Background())
+	ctx := context.Background()
+	requestBody := `{"request":"` + strings.Repeat("x", 3*maxA2APayloadPreviewRunes) + `"}`
+	rawRequest := `{"raw":"request"}`
+	entry := &AgentLog{
+		ID: "agent-early-body-update", Timestamp: time.Now().UTC(), RecordKind: "request",
+		Operation: "SendMessage", Status: "processing", AgentName: "fixture", RequestID: "req-agent-early-body-update",
+		RequestBody: &requestBody, RawRequest: &rawRequest,
+	}
+	require.NoError(t, agentLogsCreateError(hybrid.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{entry})))
+
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{
+		"response_body": `{"response":"partial"}`,
+	}))
+	close(gate.release)
+	waitForUploads(t, func() bool {
+		row, err := inner.FindAgentLog(ctx, entry.ID)
+		return err == nil && row.HasObject && hybrid.queuedUploads() == 0
+	})
+
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.RequestBody)
+	assert.Equal(t, len(requestBody), len(*found.RequestBody), "the request body was truncated to its preview")
+	require.NotNil(t, found.RawRequest, "the raw request was dropped")
+	assert.Equal(t, rawRequest, *found.RawRequest)
+	require.NotNil(t, found.ResponseBody)
+	assert.Equal(t, `{"response":"partial"}`, *found.ResponseBody)
+}
+
+// BenchmarkPendingAgentUploadTracking measures what the queued-upload record adds
+// to an enqueue: a mutex-guarded map write and delete for an Agent log, and only a
+// kind check for every other upload.
+func BenchmarkPendingAgentUploadTracking(b *testing.B) {
+	h := &HybridLogStore{}
+	agentWork := &uploadWork{logID: "agent-bench", kind: uploadKindAgent, payload: []byte(`{"request":"x"}`)}
+	b.Run("agent", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			h.trackPendingAgentUpload(agentWork)
+			if h.pendingAgentPayload("agent-bench") == nil {
+				b.Fatal("queued payload not found")
+			}
+			h.settlePendingAgentUpload(agentWork)
+		}
+	})
+	logWork := &uploadWork{logID: "log-bench", kind: uploadKindLog}
+	b.Run("other_kind", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			h.trackPendingAgentUpload(logWork)
+			h.settlePendingAgentUpload(logWork)
+		}
+	})
+}

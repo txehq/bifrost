@@ -3699,3 +3699,35 @@ func TestWrapJSONStreamErrorRefusesRepliesItCannotFrame(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "data: {\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"boom\"}}\n\n", string(framed))
 }
+
+// TestCredentialTransportRefusesJSONStreamRepliesItCannotFrame: a JSON reply to a
+// streaming request that is larger than the reframing buffer, or that is not JSON,
+// must surface from the transport as an error, never as a truncated or empty
+// successful stream. This is the transport-level view of
+// TestWrapJSONStreamErrorRefusesRepliesItCannotFrame.
+func TestCredentialTransportRefusesJSONStreamRepliesItCannotFrame(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"oversized", `{"jsonrpc":"2.0","error":{"code":-32603,"message":"` + strings.Repeat("x", maxWrappedStreamErrorBody) + `"}}`},
+		{"malformed", `{"jsonrpc":"2.0","error":`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": {"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(tc.body)),
+				}, nil
+			})
+			req := httptest.NewRequest(http.MethodPost, "http://upstream/", nil)
+			req.Header.Set("Accept", "text/event-stream")
+			resp, err := (&credentialTransport{base: base}).RoundTrip(req)
+			if err == nil {
+				framed, readErr := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				require.NoError(t, readErr)
+				t.Logf("the transport returned a %d-byte %s body", len(framed), resp.Header.Get("Content-Type"))
+			}
+			require.Error(t, err, "a reply that cannot be framed must not become a truncated or empty stream")
+		})
+	}
+}

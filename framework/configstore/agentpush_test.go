@@ -469,3 +469,51 @@ func TestAgentPushDeliveriesStayInOrderPerRegistration(t *testing.T) {
 	}
 	require.ElementsMatch(t, []string{"append", "other-config"}, ids)
 }
+
+// TestSaveAgentPushConfigKeepsAnotherTenantsRow: the upsert that re-registers a
+// callback must leave a row another tenant holds under the same (agent, task,
+// config) key untouched and report the attempt as an error.
+func TestSaveAgentPushConfigKeepsAnotherTenantsRow(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	owned := &schemas.AgentPushConfig{AgentName: "fixture", TaskID: "task-1", ConfigID: "cfg-1", Tenant: "tenant-a", URL: "https://a.example/callback", IngressTokenHash: "hash-a", CreatedAt: now, UpdatedAt: now}
+	require.NoError(t, store.SaveAgentPushConfig(ctx, owned))
+
+	intruder := *owned
+	intruder.Tenant, intruder.URL, intruder.IngressTokenHash = "tenant-b", "https://b.example/callback", "hash-b"
+	require.Error(t, store.SaveAgentPushConfig(ctx, &intruder), "another tenant's registration must be refused")
+	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Equal(t, "tenant-a", got.Tenant)
+	require.Equal(t, "https://a.example/callback", got.URL, "another tenant's registration replaced the stored callback")
+	require.Equal(t, "hash-a", got.IngressTokenHash)
+}
+
+// TestBindAgentPushConfigTaskReplacesSameTenantRegistration: binding a pending
+// embedded config to a task that already holds the same config ID for the same
+// tenant replaces that registration and rotates its ingress token, instead of
+// failing on the (agent, task, config) key.
+func TestBindAgentPushConfigTaskReplacesSameTenantRegistration(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	createPushFixtureAgent(t, store)
+	now := time.Now().UTC()
+	save := func(taskID, url, hash string) {
+		t.Helper()
+		require.NoError(t, store.SaveAgentPushConfig(ctx, &schemas.AgentPushConfig{AgentName: "fixture", TaskID: taskID, ConfigID: "cfg-1", Tenant: "tenant-a", URL: url, IngressTokenHash: hash, CreatedAt: now, UpdatedAt: now}))
+	}
+	save("task-1", "https://a.example/first", "hash-old")
+	save("__bifrost_pending__:one", "https://a.example/second", "hash-new")
+
+	require.NoError(t, store.BindAgentPushConfigTask(ctx, "fixture", "hash-new", "__bifrost_pending__:one", "task-1"), "a follow-up send embedding the task's config ID must re-register it")
+	got, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, "https://a.example/second", got.URL)
+	require.Equal(t, "hash-new", got.IngressTokenHash)
+	stale, err := store.GetAgentPushConfigByIngressTokenHash(ctx, "fixture", "hash-old")
+	require.NoError(t, err)
+	require.Nil(t, stale, "the replaced registration's ingress token must stop authenticating")
+}
