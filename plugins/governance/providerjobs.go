@@ -422,7 +422,8 @@ var passthroughTuningCollections = [...]string{
 // or tuned model on any provider (see passthroughTuningCollections, plus OpenAI's fine-tuned
 // models/ft:...). None records which key created a job or tuned model, so a virtual key can
 // neither manage its own nor be kept from another's: a list, read or cancel would reach other
-// keys' jobs, and a create may name another key's tuned model as its base. Every method is
+// keys' jobs, and a create may name another key's tuned model as its base. Inference on one Gemini
+// tuned model stays open (see tunedModelInference). Every method is
 // matched, so neither the method nor a method-override header changes the answer. The path
 // is matched as it will be sent, as in passthroughObjectRefs: BuildPassthroughURL re-encodes
 // every literal %, so the provider reads exactly these segments. Segments are folded and cut
@@ -451,10 +452,42 @@ func passthroughReachesTuning(r *schemas.BifrostPassthroughRequest) bool {
 			name = name[:i]
 		}
 		afterModels = strings.EqualFold(name, "models")
+		// Inference on one Gemini tuned model (tunedModels/<id>:generateContent and the other
+		// operations genAIInferencePath forwards) is governed by the key's model allow-list, as on
+		// every other route; only that exact last-segment shape is exempt.
+		if segment == name && strings.EqualFold(name, "tunedModels") && tunedModelInference(rest) {
+			return false
+		}
 		for _, collection := range passthroughTuningCollections {
 			if strings.EqualFold(name, collection) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// tunedModelInferenceOperations are the GenAI operations that run a model rather than manage it,
+// as transports' genAIInferencePath lists them.
+var tunedModelInferenceOperations = [...]string{
+	"generateContent", "streamGenerateContent", "countTokens", "embedContent", "batchEmbedContents",
+	"predict", "rawPredict", "streamRawPredict",
+}
+
+// tunedModelInference reports whether the path after a tunedModels segment is exactly one
+// "<id>:<operation>" segment naming an inference operation (matched exactly, unlike the
+// collection names, so a spelling the exemption does not know stays refused).
+func tunedModelInference(rest string) bool {
+	if rest == "" || strings.ContainsAny(rest, "/;") {
+		return false
+	}
+	id, operation, ok := strings.Cut(rest, ":")
+	if !ok || id == "" {
+		return false
+	}
+	for _, op := range tunedModelInferenceOperations {
+		if operation == op {
+			return true
 		}
 	}
 	return false

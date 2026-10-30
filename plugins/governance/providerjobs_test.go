@@ -1528,6 +1528,15 @@ func TestPassthroughTuningIsRefusedForVirtualKeysOnEveryRoute(t *testing.T) {
 		{schemas.Gemini, "GET", "/v1beta/tunedModels"},
 		{schemas.Gemini, "DELETE", "/v1beta/tunedModels/other-model"},
 		{schemas.Gemini, "POST", "/v1beta/tunedModels/other-model:transferOwnership"},
+		{schemas.Gemini, "GET", "/v1beta/tunedModels/other-model"},
+		{schemas.Gemini, "GET", "/v1beta/tunedModels/other-model/permissions"},
+		// Only the exact inference shape is exempt: a trailing segment, an empty id, a ';'
+		// parameter or another spelling of the operation stays refused.
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/other-model:generateContent/x"},
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/:generateContent"},
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/other-model:generateContent;x=1"},
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/other-model:GenerateContent"},
+		{schemas.Gemini, "POST", "/v1beta/tunedModels:generateContent"},
 		{schemas.Vertex, "GET", "/v1/projects/p/locations/us-central1/tuningJobs"},
 		{schemas.Vertex, "POST", "/v1/projects/p/locations/us-central1/tuningJobs/123:cancel"},
 		{schemas.Bedrock, "GET", "/model-customization-jobs"},
@@ -1606,6 +1615,10 @@ func TestPassthroughInferenceStaysOpenForVirtualKeys(t *testing.T) {
 		// The key's own objects stay reachable.
 		{schemas.OpenAI, "GET", "/v1/files/file-own", ""},
 		{schemas.Gemini, "POST", "/v1beta/models/gemini-2.5-flash:generateContent", `{"contents":[{"parts":[{"text":"hi"}]}]}`},
+		// Inference on a Gemini tuned model, as genAIInferencePath forwards it.
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/my-tuned-1:generateContent", `{"contents":[{"parts":[{"text":"hi"}]}]}`},
+		{schemas.Gemini, "POST", "/v1beta/tunedModels/my-tuned-1:streamGenerateContent", `{"contents":[{"parts":[{"text":"hi"}]}]}`},
+		{schemas.Gemini, "POST", "/v1beta/TunedModels/my-tuned-1:countTokens", `{"contents":[{"parts":[{"text":"hi"}]}]}`},
 		{schemas.Vertex, "POST", "/v1/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash:generateContent", `{"contents":[{"parts":[{"text":"hi"}]}]}`},
 		{schemas.Azure, "POST", "/openai/deployments/gpt-4o/chat/completions", `{"messages":[{"role":"user","content":"hi"}]}`},
 		{schemas.Bedrock, "POST", "/agents/a/agentAliases/b/sessions/s/text", `{"inputText":"hi"}`},
@@ -1649,6 +1662,7 @@ func TestPassthroughReachesTuningAllocatesOnlyToNormalizePaths(t *testing.T) {
 		{"/v1beta/models/gemini-2.5-flash:generateContent", false, 0},
 		{"/v1/fine_tuning/jobs", true, 0},
 		{"/v1/models/ft:gpt-4o-mini:org::other", true, 0},
+		{"/v1beta/tunedModels/my-tuned-1:generateContent", false, 0},
 		{"", false, 0},
 		{"/", false, 0},
 	} {
