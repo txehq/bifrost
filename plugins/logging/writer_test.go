@@ -2661,6 +2661,19 @@ func TestRowAdmittedBeforeShutdownIsWritten(t *testing.T) {
 			if dropped := plugin.droppedRequests.Load(); dropped != 0 {
 				t.Fatalf("the admitted row was counted dropped %d times", dropped)
 			}
+
+			// The same producer after closure is refused at admission: nothing new is
+			// written, parked or counted.
+			produce(plugin)
+			if n := store.writes(id); n != 1 {
+				t.Fatalf("a producer after closure reached the store: %d writes", n)
+			}
+			if _, held := plugin.heldGuardrailRows.Load(id); held {
+				t.Fatal("a producer after closure parked its row")
+			}
+			if dropped := plugin.droppedRequests.Load(); dropped != 0 {
+				t.Fatalf("a producer after closure was counted dropped %d times", dropped)
+			}
 		})
 	}
 }

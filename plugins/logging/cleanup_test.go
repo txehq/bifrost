@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"reflect"
 	"strconv"
@@ -798,8 +799,11 @@ func TestInterruptedRepairRetriesOnPostgres(t *testing.T) {
 	if got.TotalTokens != 42 || got.TokenUsageParsed == nil || got.TokenUsageParsed.TotalTokens != 42 {
 		t.Fatalf("stored usage = %d/%+v, want 42 total tokens", got.TotalTokens, got.TokenUsageParsed)
 	}
-	if got.Cost == nil || *got.Cost != cost || got.InputCost != cost*0.6 || got.OutputCost != cost*0.4 {
-		t.Fatalf("stored cost = %v split %g/%g, want %v split %g/%g", got.Cost, got.InputCost, got.OutputCost, cost, cost*0.6, cost*0.4)
+	if got.Cost == nil || math.Abs(*got.Cost-cost) > 1e-12 {
+		t.Fatalf("stored cost = %v, want %v", got.Cost, cost)
+	}
+	if math.Abs(got.InputCost-cost*0.6) > 1e-12 || math.Abs(got.OutputCost-cost*0.4) > 1e-12 {
+		t.Fatalf("stored split %g/%g, want %g/%g", got.InputCost, got.OutputCost, cost*0.6, cost*0.4)
 	}
 	if len(plugin.recentLogBillingPinned) != 0 {
 		t.Fatalf("pin outlived the retry: %v", plugin.recentLogBillingPinned)
