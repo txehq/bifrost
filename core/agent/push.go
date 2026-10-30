@@ -677,7 +677,12 @@ func (m *Manager) AcceptPushCallback(ctx context.Context, agentName, token strin
 	// upstream retransmission of the same event deduplicates without colliding
 	// with an identical config ID and payload from another Agent. An artifact
 	// append carries no event identity and is not idempotent: two equal appends
-	// are two increments, so each gets a unique ID instead of a digest.
+	// are two increments, so each gets a unique ID instead of a digest. Appends
+	// are therefore delivered at least once: A2A gives nothing that tells an
+	// upstream retransmission (after a lost ingress response) from a genuine
+	// repeat, and dropping a repeat silently corrupts the artifact, while a
+	// retransmitted append is only ever duplicated. Every other event is
+	// idempotent and keeps the digest, so its retransmissions still collapse.
 	identity := agentName + "\x00" + config.ConfigID + "\x00" + payload
 	if appendsArtifact {
 		identity += "\x00" + uuid.NewString()

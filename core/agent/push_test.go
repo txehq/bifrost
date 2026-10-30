@@ -1174,8 +1174,21 @@ func TestAcceptPushCallbackKeepsRepeatedArtifactAppends(t *testing.T) {
 		require.Equal(t, http.StatusAccepted, status)
 	}
 	store.pushMu.Lock()
-	defer store.pushMu.Unlock()
 	require.Len(t, store.deliveries, 2, "each accepted append must be delivered")
+	store.pushMu.Unlock()
+
+	// A replacement (append false) is idempotent, so a retransmission of it still
+	// collapses into the delivery already recorded.
+	replaceEvent, err := json.Marshal(a2a.StreamResponse{Event: &a2a.TaskArtifactUpdateEvent{TaskID: "task-1", ContextID: "ctx-1", Artifact: &a2a.Artifact{ID: "artifact-1", Parts: []*a2a.Part{a2a.NewTextPart("final")}}}})
+	require.NoError(t, err)
+	for range 2 {
+		status, err := m.AcceptPushCallback(context.Background(), "fixture", token, replaceEvent)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusAccepted, status)
+	}
+	store.pushMu.Lock()
+	defer store.pushMu.Unlock()
+	require.Len(t, store.deliveries, 3, "a retransmitted idempotent event must not be delivered twice")
 }
 
 func TestPushDeliveryBlocksPrivateDestination(t *testing.T) {
