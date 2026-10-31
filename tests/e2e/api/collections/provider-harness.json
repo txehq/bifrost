@@ -287480,6 +287480,160 @@
           ]
         },
         {
+          "name": "/genai generateContent keeps code execution signatures - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\": [{\"role\": \"user\", \"parts\": [{\"text\": \"run it\"}]}], \"tools\": [{\"codeExecution\": {}}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/pp-gemini:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "pp-gemini:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "var text = pm.response.text();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('the code execution reached the client', function () { pm.expect(text).to.include('print(1)'); });",
+                  "pm.test('the signature on the code part survives', function () { pm.expect(text).to.include('c2lnLWNvZGU='); });",
+                  "pm.test('the signature on the result part survives', function () { pm.expect(text).to.include('c2lnLXJlc3VsdA=='); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "/genai streamGenerateContent keeps code execution signatures - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\": [{\"role\": \"user\", \"parts\": [{\"text\": \"run it\"}]}], \"tools\": [{\"codeExecution\": {}}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/pp-gemini:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "pp-gemini:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "var text = pm.response.text();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('the code execution reached the client', function () { pm.expect(text).to.include('print(1)'); });",
+                  "pm.test('the signature on the code part survives', function () { pm.expect(text).to.include('c2lnLWNvZGU='); });",
+                  "pm.test('the signature on the result part survives', function () { pm.expect(text).to.include('c2lnLXJlc3VsdA=='); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "a compacted tool addition keeps its programmatic caller restriction - provider-preservation",
           "protocolProfileBehavior": {
             "followRedirects": false,
