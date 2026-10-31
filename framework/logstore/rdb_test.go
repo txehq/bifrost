@@ -1706,6 +1706,33 @@ func exerciseHiddenUpdates(t *testing.T, store LogStore, columns func(t *testing
 		assert.Empty(t, columns(t, "hide-then-visible", "content_summary"))
 	})
 
+	t.Run("reading the row back recovers nothing, and a later visible update keeps only its own output", func(t *testing.T) {
+		seed(t, "hide-later")
+		require.NoError(t, store.BatchUpdate(ctx, []*Log{{ID: "hide-later", Status: "success", ContentHidden: true}}))
+		hidden, err := store.FindByID(ctx, "hide-later")
+		require.NoError(t, err)
+		assert.Empty(t, hidden.InputHistoryParsed, "no input comes back through the store")
+		assert.Nil(t, hidden.OutputMessageParsed, "no output comes back through the store")
+		assert.Empty(t, hidden.ContentSummary)
+		assert.Empty(t, hidden.RawRequest)
+
+		later := "visible again"
+		require.NoError(t, store.BatchUpdate(ctx, []*Log{{
+			ID: "hide-later", Status: "success",
+			OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &later}},
+		}}))
+		found, err := store.FindByID(ctx, "hide-later")
+		require.NoError(t, err)
+		assert.False(t, found.ContentHidden, "a later final decision clears the flag")
+		assert.Contains(t, columns(t, "hide-later", "output_message"), later)
+		assert.NotContains(t, columns(t, "hide-later", "output_message"), hiddenTestAnswer)
+		assert.Empty(t, columns(t, "hide-later", "input_history"), "what the hidden update emptied stays empty")
+		assert.Empty(t, columns(t, "hide-later", "raw_request"))
+		require.NotNil(t, found.TokenUsageParsed)
+		assert.Equal(t, 15, found.TokenUsageParsed.TotalTokens, "usage survives both updates")
+		assert.Equal(t, `{"cache_hit":false}`, columns(t, "hide-later", "cache_debug"))
+	})
+
 	t.Run("a hidden update of a missing row is skipped", func(t *testing.T) {
 		require.NoError(t, store.BatchUpdate(ctx, []*Log{{ID: "hide-missing", Status: "success", ContentHidden: true}}))
 		_, err := store.FindByID(ctx, "hide-missing")
@@ -1732,7 +1759,7 @@ func TestBatchUpdateHidingALogClearsItsContent(t *testing.T) {
 	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "hide.db")}, testLogger{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close(ctx) })
-	exerciseHiddenUpdates(t, store, sqlColumnReader(store.(*RDBLogStore).db))
+	exerciseHiddenUpdates(t, store, sqlColumnReader(store.db))
 }
 
 // TestBatchUpdateHidingALogClearsItsContentPostgres runs the same cases on the

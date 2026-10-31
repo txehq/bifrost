@@ -1776,6 +1776,11 @@ func TestHybrid_BatchUpdateHidingALogClearsDBContent(t *testing.T) {
 	assert.Empty(t, row.RawRequest)
 	assert.Empty(t, row.ContentSummary)
 	assert.NotEmpty(t, row.TokenUsage, "pricing metadata stays in the row")
+
+	read, err := h.FindByID(ctx, "hybrid-hide")
+	require.NoError(t, err)
+	assert.Empty(t, read.InputHistoryParsed, "the hybrid read recovers no content")
+	assert.Nil(t, read.OutputMessageParsed, "the hybrid read recovers no content")
 }
 
 func TestHybrid_BatchUpdateMergesOutputIntoStoredObject(t *testing.T) {

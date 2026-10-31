@@ -421,4 +421,14 @@ func TestGetTokenHistogramMatViewTrimsBoundaryBuckets(t *testing.T) {
 	gridStart, gridEnd := day.Add(10*time.Hour), day.Add(12*time.Hour)
 	prompt, _, _, _, _ = sum(SearchFilters{StartTime: &gridStart, EndTime: &gridEnd}, 3600)
 	assert.Equal(t, int64(20), prompt, "both rows of the 10:00 hour, in the matview interior")
+
+	// The raw rows of the interior hour go, the view keeps them: the interior comes
+	// from the matview, the slivers from the raw table, each exactly once.
+	require.NoError(t, db.Exec("DELETE FROM logs WHERE timestamp >= ? AND timestamp < ?", day.Add(18*time.Hour), day.Add(19*time.Hour)).Error)
+	prompt, _, _, cachedRead, _ = sum(SearchFilters{StartTime: &start, EndTime: &end}, 3600)
+	assert.Equal(t, int64(40), prompt, "the interior is served by the matview, not by a raw fallback")
+	assert.Equal(t, int64(12), cachedRead)
+	require.NoError(t, db.Exec("DELETE FROM logs WHERE timestamp >= ? AND timestamp < ?", day.Add(10*time.Hour), day.Add(11*time.Hour)).Error)
+	prompt, _, _, _, _ = sum(SearchFilters{StartTime: &start, EndTime: &end}, 3600)
+	assert.Equal(t, int64(30), prompt, "the head sliver is served by the raw table")
 }
