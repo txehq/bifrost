@@ -5361,7 +5361,7 @@ func TestTracingMiddleware_CapturesTraceState(t *testing.T) {
 // TestLimitedBodyReader_Boundary pins limit-1, limit and limit+1 for every way a reader
 // may hand over its last byte: with io.EOF in the same call, in a call of its own, or a
 // byte at a time. Past the limit the reader fails, whichever way the byte arrived, and it
-// takes at most one byte more than the limit from the source.
+// hands over at most one byte more than the limit.
 func TestLimitedBodyReader_Boundary(t *testing.T) {
 	const limit = 16
 	for name, wrap := range map[string]func(io.Reader) io.Reader{
@@ -5392,8 +5392,8 @@ func TestLimitedBodyReader_Boundary(t *testing.T) {
 				if !errors.Is(err, errRequestBodyTooLarge) {
 					t.Fatalf("got %d bytes, err %v, want errRequestBodyTooLarge", len(got), err)
 				}
-				if read := tc.size - source.Len(); read > limit+1 {
-					t.Fatalf("read %d bytes from the source, want at most %d", read, limit+1)
+				if len(got) > limit+1 {
+					t.Fatalf("handed over %d bytes, want at most %d", len(got), limit+1)
 				}
 			})
 		}
