@@ -143,6 +143,7 @@ func BenchmarkNormalizeBase64TextSources(b *testing.B) {
 	media := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0xff}, 1<<20))
 	image := `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + media + `"}}`
 	for name, blocks := range map[string]string{
+		"plain text":       `{"type":"text","text":"describe the weather in Perth"}`,
 		"no text document": image,
 		"normalized text":  image + `,{"type":"document","source":{"type":"text","media_type":"text/plain","data":"notes"}}`,
 		"base64 text":      image + `,{"type":"document","source":{"type":"base64","media_type":"text/plain","data":"aGVsbG8="}}`,

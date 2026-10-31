@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -30,10 +31,11 @@ func inlineTextDataURL(data string) *AnthropicSource {
 
 // normalizeBase64TextSources preserves base64 transport while adapting text documents to Anthropic's text source wire type.
 func normalizeBase64TextSources(body []byte) ([]byte, error) {
-	// Only the base64 sources' media types are copied out here, so image/PDF-only requests
-	// and already-normalized text sources return without duplicating their payloads.
+	// A request with no base64 source costs one scan and no allocation. Past that, only the
+	// base64 sources' media types are copied out, so image/PDF-only requests and
+	// already-normalized text sources return without duplicating their payloads.
 	// Pinned by TestNormalizeBase64TextSources_UnmatchedPayloadNotCopied.
-	if !hasTextDocumentMediaType(gjson.GetBytes(body, `messages.#.content.#(source.type=="base64")#.source.media_type`)) {
+	if !bytes.Contains(body, []byte("base64")) || !hasTextDocumentMediaType(gjson.GetBytes(body, `messages.#.content.#(source.type=="base64")#.source.media_type`)) {
 		return body, nil
 	}
 	messages := gjson.GetBytes(body, "messages")
