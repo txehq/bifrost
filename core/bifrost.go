@@ -5652,6 +5652,12 @@ func (bifrost *Bifrost) shouldTryFallbacks(ctx *schemas.BifrostContext, req *sch
 		return false
 	}
 
+	if injectedToolsRan(ctx) {
+		bifrost.logger.Debug("primary ran a provider-injected tool, not trying %d fallbacks", len(fallbacks))
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Primary ran a provider-injected tool before failing (%s); skipping %d fallback(s) so its side effects are not repeated", routingErrorSummary(primaryErr), len(fallbacks)))
+		return false
+	}
+
 	if fallbacks[0].Inferred && !isNoKeySupportsModel(primaryErr) && ClassifyFailure(primaryErr) == schemas.FailureClassCallerFault {
 		bifrost.logger.Debug("primary refused the request itself, not trying %d inferred fallbacks", len(fallbacks))
 		if ctx != nil {
@@ -5662,6 +5668,18 @@ func (bifrost *Bifrost) shouldTryFallbacks(ctx *schemas.BifrostContext, req *sch
 
 	// Should proceed with fallbacks
 	return true
+}
+
+// injectedToolsRan reports whether the attempt that just ended ran a provider-injected
+// tool. A fallback restarts from the original request without that tool's results and
+// would repeat its side effects, the same reason executeRequestWithRetries does not
+// retry such an attempt.
+func injectedToolsRan(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	executed, _ := ctx.Value(schemas.BifrostContextKeyInjectedToolsExecuted).(bool)
+	return executed
 }
 
 // isNoKeySupportsModel reports whether the error is the key pool's refusal for a model none of
@@ -6018,6 +6036,10 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s failed (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr
 		}
+		if injectedToolsRan(ctx) {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s ran a provider-injected tool before failing (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
+			return nil, fallbackErr
+		}
 
 		lastErr = fallbackErr
 	}
@@ -6249,6 +6271,10 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 		// Check if we should continue with more fallbacks
 		if !bifrost.shouldContinueWithFallbacks(fallback, fallbackErr) {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s failed (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
+			return nil, fallbackErr
+		}
+		if injectedToolsRan(ctx) {
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelError, fmt.Sprintf("Fallback %s/%s ran a provider-injected tool before failing (%s); halting further fallbacks", fallback.Provider, fallback.Model, routingErrorSummary(fallbackErr)))
 			return nil, fallbackErr
 		}
 

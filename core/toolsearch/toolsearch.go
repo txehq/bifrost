@@ -35,7 +35,9 @@ const (
 )
 
 // Candidate reports whether req defers function tools without bringing any search of
-// its own: no tool_search tool, no namespace, and no client search function. Requests
+// its own: no tool_search tool, no namespace, and no client search function. A request
+// that already declares a tool named ToolName is not one either: the injected search
+// would replace that tool and consume the calls meant for the caller. Requests
 // backed by provider-side state are never candidates, and their deferred tools go out
 // eagerly instead: a previous_response_id continuation sends only new input, so the
 // session could not see which deferred tools were already loaded, and a conversation
@@ -49,6 +51,9 @@ func Candidate(req *schemas.BifrostResponsesRequest) bool {
 	hasDeferred := false
 	for i := range req.Params.Tools {
 		tool := &req.Params.Tools[i]
+		if tool.Name != nil && *tool.Name == ToolName {
+			return false
+		}
 		switch tool.Type {
 		case schemas.ResponsesToolTypeToolSearch, schemas.ResponsesToolTypeNamespace:
 			return false

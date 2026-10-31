@@ -90,6 +90,14 @@ func TestCandidate(t *testing.T) {
 	clientSearch.Params.Tools = append(clientSearch.Params.Tools, functionTool("ToolSearch", "search", false))
 	assert.False(t, Candidate(clientSearch), "the client runs its own search")
 
+	// The gateway search would replace a caller function of the same name and consume
+	// its calls, so a collision declines and the deferred tools go out eagerly instead.
+	for _, deferLoading := range []bool{false, true} {
+		collision := deferredRequest()
+		collision.Params.Tools = append(collision.Params.Tools, functionTool(ToolName, "the caller's own function", deferLoading))
+		assert.False(t, Candidate(collision), "the caller declares %s (deferred=%v)", ToolName, deferLoading)
+	}
+
 	assert.False(t, Candidate(&schemas.BifrostResponsesRequest{}))
 
 	// A continuation only sends new input, so the tools the conversation already

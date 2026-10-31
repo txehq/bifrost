@@ -70,8 +70,21 @@ type injectedChatStream struct {
 	turnTier  *schemas.BifrostServiceTier // what served the turn, reported by whichever chunk carries it
 	turnSpeed *string
 	turnGeo   *string
-	turnModel *string // the server-side fallback that served the turn
-	more      bool    // set on the turn's final chunk: injected calls are pending
+	turnModel *string             // the server-side fallback that served the turn
+	more      bool                // set on the turn's final chunk: injected calls are pending
+	others    map[int]*heldChoice // choices other than the first, by upstream index
+}
+
+// heldChoice buffers one choice other than the first for the current turn. A request
+// asking for n > 1 is refused before it gets here (injectedToolsForStream), so this is
+// an upstream that sends other choices unasked. The first choice drives the loop, as in
+// runInjectedChatLoop: another choice reaches the client, under its own index and minus
+// injected calls, only from the turn that ends the stream; a turn that is re-asked
+// discards it.
+type heldChoice struct {
+	deltas []*schemas.ChatStreamResponseChoiceDelta
+	calls  map[uint16]*streamedCall
+	finish *string
 }
 
 func newInjectedChatStream(set *injectedToolSet) *injectedChatStream {
@@ -92,8 +105,11 @@ func (s *injectedChatStream) onChunk(resp *schemas.BifrostChatResponse, final bo
 	s.turnGeo = cmp.Or(resp.InferenceGeo, s.turnGeo)
 	s.turnModel = cmp.Or(resp.ExtraFields.RoutingInfo.ServerSideFallbackModel, s.turnModel)
 	var visible *schemas.ChatStreamResponseChoiceDelta
-	if len(resp.Choices) > 0 {
-		choice := resp.Choices[0]
+	for _, choice := range resp.Choices {
+		if choice.Index != 0 {
+			s.holdChoice(choice)
+			continue
+		}
 		if choice.FinishReason != nil {
 			s.finish = choice.FinishReason
 		}
@@ -126,6 +142,7 @@ func (s *injectedChatStream) onChunk(resp *schemas.BifrostChatResponse, final bo
 	}
 	s.more = false
 
+	emits = append(emits, s.releaseOtherChoices(resp)...)
 	finish := s.finish
 	if len(injected) > 0 && len(client) == 0 {
 		finish = new(string(schemas.BifrostFinishReasonStop))
@@ -166,21 +183,94 @@ func (s *injectedChatStream) absorbDelta(delta *schemas.ChatStreamResponseChoice
 		}
 		s.roleSent = true
 	}
-	if visible.Role == nil && visible.Content == nil && visible.Refusal == nil && visible.Audio == nil &&
-		visible.Reasoning == nil && len(visible.ReasoningDetails) == 0 && len(visible.Annotations) == 0 && len(visible.ExtraContent) == 0 {
+	if emptyStreamDelta(&visible) {
 		return nil
 	}
 	return &visible
+}
+
+// emptyStreamDelta reports whether a delta, with its tool calls removed, carries
+// nothing the client should see.
+func emptyStreamDelta(d *schemas.ChatStreamResponseChoiceDelta) bool {
+	return d.Role == nil && d.Content == nil && d.Refusal == nil && d.Audio == nil &&
+		d.Reasoning == nil && len(d.ReasoningDetails) == 0 && len(d.Annotations) == 0 && len(d.ExtraContent) == 0
 }
 
 func (s *injectedChatStream) absorbCall(delta schemas.ChatAssistantMessageToolCall) {
 	if s.calls == nil {
 		s.calls = make(map[uint16]*streamedCall)
 	}
-	call, ok := s.calls[delta.Index]
+	absorbCallInto(s.calls, delta)
+}
+
+// holdChoice records one chunk of a choice other than the first.
+func (s *injectedChatStream) holdChoice(choice schemas.BifrostResponseChoice) {
+	if s.others == nil {
+		s.others = make(map[int]*heldChoice)
+	}
+	held, ok := s.others[choice.Index]
+	if !ok {
+		held = &heldChoice{calls: make(map[uint16]*streamedCall)}
+		s.others[choice.Index] = held
+	}
+	if choice.FinishReason != nil {
+		held.finish = choice.FinishReason
+	}
+	if choice.ChatStreamResponseChoice == nil || choice.Delta == nil {
+		return
+	}
+	for _, call := range choice.Delta.ToolCalls {
+		absorbCallInto(held.calls, call)
+	}
+	visible := *choice.Delta
+	visible.ToolCalls = nil
+	if !emptyStreamDelta(&visible) {
+		held.deltas = append(held.deltas, &visible)
+	}
+}
+
+// releaseOtherChoices emits the held choices other than the first, in index order,
+// each ending with its client calls and finish reason. Injected calls are dropped:
+// the client cannot run them, and a choice left with none ends with stop.
+func (s *injectedChatStream) releaseOtherChoices(upstream *schemas.BifrostChatResponse) []streamEmit {
+	indexes := make([]int, 0, len(s.others))
+	for index := range s.others {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	var emits []streamEmit
+	for _, index := range indexes {
+		held := s.others[index]
+		for _, delta := range held.deltas {
+			emits = append(emits, streamEmit{resp: s.clientChunkAt(upstream, index, delta, nil)})
+		}
+		var client []schemas.ChatAssistantMessageToolCall
+		injected := false
+		for _, call := range sortedCalls(held.calls) {
+			if call.name != nil && s.set.isInjected(*call.name) {
+				injected = true
+			} else {
+				client = append(client, call.toolCall())
+			}
+		}
+		finish := held.finish
+		if injected && len(client) == 0 {
+			finish = new(string(schemas.BifrostFinishReasonStop))
+		}
+		if finish != nil || len(client) > 0 {
+			emits = append(emits, streamEmit{resp: s.clientChunkAt(upstream, index, &schemas.ChatStreamResponseChoiceDelta{ToolCalls: client}, finish)})
+		}
+	}
+	s.others = nil
+	return emits
+}
+
+// absorbCallInto merges one tool call delta into the call it continues.
+func absorbCallInto(calls map[uint16]*streamedCall, delta schemas.ChatAssistantMessageToolCall) {
+	call, ok := calls[delta.Index]
 	if !ok {
 		call = &streamedCall{index: delta.Index}
-		s.calls[delta.Index] = call
+		calls[delta.Index] = call
 	}
 	if delta.ID != nil && *delta.ID != "" {
 		call.id = delta.ID
@@ -234,8 +324,12 @@ func (s *injectedChatStream) absorbReasoningDetail(fragment schemas.ChatReasonin
 }
 
 func (s *injectedChatStream) orderedCalls() []*streamedCall {
-	calls := make([]*streamedCall, 0, len(s.calls))
-	for _, call := range s.calls {
+	return sortedCalls(s.calls)
+}
+
+func sortedCalls(byIndex map[uint16]*streamedCall) []*streamedCall {
+	calls := make([]*streamedCall, 0, len(byIndex))
+	for _, call := range byIndex {
 		calls = append(calls, call)
 	}
 	sort.Slice(calls, func(i, j int) bool { return calls[i].index < calls[j].index })
@@ -245,6 +339,11 @@ func (s *injectedChatStream) orderedCalls() []*streamedCall {
 // clientChunk builds a client chunk from an upstream one: the first turn's id and
 // creation time, the running chunk index, and the given delta and finish reason.
 func (s *injectedChatStream) clientChunk(upstream *schemas.BifrostChatResponse, delta *schemas.ChatStreamResponseChoiceDelta, finish *string) *schemas.BifrostChatResponse {
+	return s.clientChunkAt(upstream, 0, delta, finish)
+}
+
+// clientChunkAt is clientChunk for the choice at index.
+func (s *injectedChatStream) clientChunkAt(upstream *schemas.BifrostChatResponse, index int, delta *schemas.ChatStreamResponseChoiceDelta, finish *string) *schemas.BifrostChatResponse {
 	out := *upstream
 	out.ID = s.id
 	out.Created = s.created
@@ -253,6 +352,7 @@ func (s *injectedChatStream) clientChunk(upstream *schemas.BifrostChatResponse, 
 	out.ExtraFields.RawResponse = nil
 	s.chunkIndex++
 	out.Choices = []schemas.BifrostResponseChoice{{
+		Index:                    index,
 		FinishReason:             finish,
 		ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: delta},
 	}}
@@ -299,6 +399,7 @@ func (s *injectedChatStream) endTurn() (schemas.ChatMessage, []schemas.ChatAssis
 	s.reasoning.Reset()
 	s.details = nil
 	s.calls = nil
+	s.others = nil
 	s.finish = nil
 	s.turnUsage = nil
 	s.more = false
@@ -727,9 +828,9 @@ func (s *injectedResponsesStream) routeOf(ev *schemas.BifrostResponsesStreamResp
 	if ev.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded && ev.OutputIndex != nil && ev.Item != nil {
 		index := *ev.OutputIndex
 		route := routeVisible
-		if isFunctionCall(*ev.Item) {
+		if isToolCallItem(*ev.Item) {
 			switch {
-			case ev.Item.Name != nil && s.set.isInjected(*ev.Item.Name):
+			case isFunctionCall(*ev.Item) && ev.Item.Name != nil && s.set.isInjected(*ev.Item.Name):
 				route = routeInjected
 			case s.hasInjected:
 				route = routeDropped

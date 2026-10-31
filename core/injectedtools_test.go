@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/core/toolsearch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -634,6 +635,122 @@ func responsesText(text string) schemas.ResponsesMessage {
 		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
 		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
 		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(text)},
+	}
+}
+
+func responsesCustomToolCall(callID, name string) schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		ID:   schemas.Ptr("ctc_" + callID),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeCustomToolCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr(callID), Name: schemas.Ptr(name),
+			ResponsesCustomToolCall: &schemas.ResponsesCustomToolCall{Input: "print(1)"},
+		},
+	}
+}
+
+// A client custom tool call is client-executed like a client function call: in a
+// turn that also calls an injected tool it is never answered, so it must not be
+// replayed into the next turn (which would lack its output) or reach the client.
+func TestRunInjectedResponsesLoop_DropsClientCustomCallInInjectedTurn(t *testing.T) {
+	set := testInjectedSet(t)
+	var sent []*schemas.BifrostResponsesRequest
+	scripted := []*schemas.BifrostResponsesResponse{
+		{Output: []schemas.ResponsesMessage{responsesCustomToolCall("c0", "code_exec"), responsesFunctionCall("c1", "web_search")}},
+		{Output: []schemas.ResponsesMessage{responsesText("Done.")}},
+	}
+	dispatch := func(req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		sent = append(sent, req)
+		resp := scripted[0]
+		scripted = scripted[1:]
+		return resp, nil
+	}
+
+	resp, err := runInjectedResponsesLoop(&schemas.BifrostResponsesRequest{Model: "m"}, set, dispatch, searchResult)
+
+	require.Nil(t, err)
+	require.Len(t, sent, 2)
+	for _, item := range sent[1].Input {
+		assert.NotEqual(t, schemas.ResponsesMessageTypeCustomToolCall, *item.Type, "an unanswered client custom call must not be replayed")
+	}
+	require.Len(t, resp.Output, 1)
+	assert.Equal(t, "Done.", *resp.Output[0].Content.ContentStr)
+}
+
+// A custom tool call in the turn that ends the loop is the client's to answer: it stays
+// in the response, once, after the text of the turns before it.
+func TestRunInjectedResponsesLoop_HandsFinalCustomCallToClient(t *testing.T) {
+	set := testInjectedSet(t)
+	scripted := []*schemas.BifrostResponsesResponse{
+		{Output: []schemas.ResponsesMessage{responsesText("Looking."), responsesFunctionCall("c1", "web_search")}},
+		{Output: []schemas.ResponsesMessage{responsesCustomToolCall("c2", "code_exec")}},
+	}
+	dispatch := func(*schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		resp := scripted[0]
+		scripted = scripted[1:]
+		return resp, nil
+	}
+
+	resp, err := runInjectedResponsesLoop(&schemas.BifrostResponsesRequest{Model: "m"}, set, dispatch, searchResult)
+
+	require.Nil(t, err)
+	require.Len(t, resp.Output, 2)
+	assert.Equal(t, "Looking.", *resp.Output[0].Content.ContentStr)
+	assert.Equal(t, schemas.ResponsesMessageTypeCustomToolCall, *resp.Output[1].Type)
+	assert.Equal(t, "c2", *resp.Output[1].CallID)
+}
+
+func TestIsToolCallItem(t *testing.T) {
+	typed := func(kind schemas.ResponsesMessageType) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Type: &kind, ResponsesToolMessage: &schemas.ResponsesToolMessage{}}
+	}
+	for _, kind := range []schemas.ResponsesMessageType{
+		schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesMessageTypeCustomToolCall, schemas.ResponsesMessageTypeComputerCall,
+		schemas.ResponsesMessageTypeShellCall, schemas.ResponsesMessageTypeLocalShellCall, schemas.ResponsesMessageTypeApplyPatchCall,
+	} {
+		assert.True(t, isToolCallItem(typed(kind)), "%s waits for the client's output", kind)
+	}
+	// Server-run calls and plain items replay as they are.
+	for _, kind := range []schemas.ResponsesMessageType{
+		schemas.ResponsesMessageTypeMessage, schemas.ResponsesMessageTypeReasoning, schemas.ResponsesMessageTypeWebSearchCall,
+		schemas.ResponsesMessageTypeCodeInterpreterCall, schemas.ResponsesMessageTypeFunctionCallOutput,
+	} {
+		assert.False(t, isToolCallItem(typed(kind)), "%s needs no client output", kind)
+	}
+	assert.False(t, isToolCallItem(schemas.ResponsesMessage{}), "an untyped item is not a call")
+	functionType := schemas.ResponsesMessageTypeFunctionCall
+	assert.False(t, isToolCallItem(schemas.ResponsesMessage{Type: &functionType}), "a function call needs its tool fields")
+}
+
+// An injected tool the operator named after the gateway search keeps the name: the
+// search is not added, so the model never sees two tools with one name.
+func TestWithGatewayToolSearch_InjectedToolKeepsItsName(t *testing.T) {
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+			{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("get_weather"), DeferLoading: schemas.Ptr(true)},
+		}}},
+	}
+	set := &injectedToolSet{
+		targets:  map[string]injectedTarget{toolsearch.ToolName: {clientName: "c", toolName: "c-search"}},
+		mcpNames: map[string]string{"c-search": toolsearch.ToolName},
+		tools:    []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: toolsearch.ToolName}}},
+		maxDepth: 5,
+	}
+
+	got := withGatewayToolSearch(set, req, schemas.OpenAI, "gpt-4o")
+
+	require.Same(t, set, got)
+	assert.Nil(t, got.search, "the operator's tool is not replaced")
+	assert.Len(t, got.tools, 1, "one declaration under the name")
+}
+
+// BenchmarkReplayFilterIsToolCallItem measures the check each output item pays per turn.
+func BenchmarkReplayFilterIsToolCallItem(b *testing.B) {
+	item := responsesText("hello")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = isToolCallItem(item)
 	}
 }
 

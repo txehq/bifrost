@@ -427,7 +427,21 @@ func (m *MCPManager) CloseAndMarkNeedsReauth(id string) (retErr error) {
 //
 // Returns:
 //   - error: Any error that occurred during reconnection
-func (m *MCPManager) ReconnectClient(id string) (retErr error) {
+func (m *MCPManager) ReconnectClient(id string) error {
+	return m.reconnectClient(id, nil)
+}
+
+// reconnectClientAtGeneration is ReconnectClient for a reconnect owed to a failed
+// check of the connection at generation. The generation is rechecked after the
+// exclusive slot is taken, so a reconnect that installed a successor between the
+// caller's own check and this admission is not torn down: the failure only proved
+// the replaced connection dead. Disabled and NeedsReauth are refused for the same
+// reason the connection checker refuses them. A refused attempt returns nil.
+func (m *MCPManager) reconnectClientAtGeneration(id string, generation uint64) error {
+	return m.reconnectClient(id, &generation)
+}
+
+func (m *MCPManager) reconnectClient(id string, expectedGeneration *uint64) (retErr error) {
 	// Acquire per-client reconnect/update guard before reading config snapshot.
 	finish, ok := m.beginExclusiveClientOp(id)
 	if !ok {
@@ -440,6 +454,13 @@ func (m *MCPManager) ReconnectClient(id string) (retErr error) {
 	if !ok {
 		m.mu.Unlock()
 		return fmt.Errorf("client %s not found", id)
+	}
+	if expectedGeneration != nil && (client.ConnGeneration != *expectedGeneration ||
+		client.State == schemas.MCPConnectionStateDisabled ||
+		client.State == schemas.MCPConnectionStateNeedsReauth) {
+		m.mu.Unlock()
+		m.logger.Debug("%s Skipping reconnect for %s: the connection was replaced before the reconnect was admitted, or the client is no longer reconnectable", MCPLogPrefix, id)
+		return nil
 	}
 	// Per-call clients have no persistent upstream connection to reconnect —
 	// this covers both genuine per-user auth types (always per-call, auth

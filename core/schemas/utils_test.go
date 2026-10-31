@@ -300,3 +300,33 @@ func TestIsOllamaDecisionModel(t *testing.T) {
 		assert.False(t, IsOllamaDecisionModel(model), model)
 	}
 }
+
+// TestDeepCopyResponsesMessagePreservesOutputConfig verifies a system item's per-message
+// effort override survives the copy prompt-cache injection makes, without aliasing it.
+func TestDeepCopyResponsesMessagePreservesOutputConfig(t *testing.T) {
+	original := ResponsesMessage{
+		Role:         Ptr(ResponsesInputMessageRoleSystem),
+		Content:      &ResponsesMessageContent{ContentStr: Ptr("You are terse.")},
+		OutputConfig: &ResponsesMessageOutputConfig{Effort: Ptr("low")},
+	}
+
+	copied := DeepCopyResponsesMessage(original)
+	if copied.OutputConfig == nil || copied.OutputConfig.Effort == nil || *copied.OutputConfig.Effort != "low" {
+		t.Fatalf("deep copy output_config = %#v, want effort %q", copied.OutputConfig, "low")
+	}
+	if copied.OutputConfig == original.OutputConfig || copied.OutputConfig.Effort == original.OutputConfig.Effort {
+		t.Fatal("deep copy aliases the original output_config")
+	}
+}
+
+// TestDeepCopyResponsesMessageOutputConfigKeepsNil verifies an absent override stays
+// absent, and an override with no effort stays one.
+func TestDeepCopyResponsesMessageOutputConfigKeepsNil(t *testing.T) {
+	if copied := DeepCopyResponsesMessage(ResponsesMessage{}); copied.OutputConfig != nil {
+		t.Fatalf("output_config = %#v, want nil", copied.OutputConfig)
+	}
+	copied := DeepCopyResponsesMessage(ResponsesMessage{OutputConfig: &ResponsesMessageOutputConfig{}})
+	if copied.OutputConfig == nil || copied.OutputConfig.Effort != nil {
+		t.Fatalf("output_config = %#v, want present with nil effort", copied.OutputConfig)
+	}
+}

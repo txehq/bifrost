@@ -531,6 +531,59 @@ func TestAbandonDeliveryDefersTraceBeforePublishing(t *testing.T) {
 	}
 }
 
+// TestAbandonDeliveryDeferralCoversEveryWorkerLoss races the two sides of the handoff.
+// PR5 closed this window with a transitional state; main installs the deferral before
+// the CAS, so a worker that loses the claim always finds the deferral in place, and a
+// worker that wins leaves no marker behind to skip the transport's own flush.
+func TestAbandonDeliveryDeferralCoversEveryWorkerLoss(t *testing.T) {
+	t.Parallel()
+	for range 2000 {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		probe := &deferralCountTracer{NoOpTracer: &schemas.NoOpTracer{}}
+		ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(probe))
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-race")
+		msg := &ChannelMessage{Context: ctx}
+
+		var wg sync.WaitGroup
+		var abandoned, claimed, markedAtLoss atomic.Bool
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			abandoned.Store(msg.abandonDelivery())
+		}()
+		go func() {
+			defer wg.Done()
+			won := msg.claimDelivery()
+			claimed.Store(won)
+			markedAtLoss.Store(!won && probe.marked.Load() == 1)
+		}()
+		wg.Wait()
+
+		if abandoned.Load() == claimed.Load() {
+			t.Fatalf("exactly one side must own the value: abandoned=%v claimed=%v", abandoned.Load(), claimed.Load())
+		}
+		if abandoned.Load() {
+			if !markedAtLoss.Load() {
+				t.Fatal("the worker lost the claim before the deferral was installed")
+			}
+			if probe.marked.Load() != 1 {
+				t.Fatal("a won abandon must leave the deferral for the worker")
+			}
+		} else if probe.marked.Load() != 0 {
+			t.Fatal("a lost abandon must not leave a deferral, or the transport skips its flush and the trace never ends")
+		}
+	}
+}
+
+// deferralCountTracer counts the deferrals currently installed.
+type deferralCountTracer struct {
+	*schemas.NoOpTracer
+	marked atomic.Int32
+}
+
+func (d *deferralCountTracer) DeferTraceCompletion(string)         { d.marked.Add(1) }
+func (d *deferralCountTracer) ClearTraceCompletionDeferral(string) { d.marked.Add(-1) }
+
 // TestRequestWorkerBillsAbandonedKeySelectionError covers the errors the worker
 // produces before any provider call (here: no key serves the model). They are
 // sent on the same channel as terminal errors and must obey the same ownership

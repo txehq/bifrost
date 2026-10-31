@@ -1796,6 +1796,31 @@ type ChatToResponsesStreamState struct {
 	ServiceTier           *BifrostServiceTier // Served tier from the latest chunk that carried one
 	Speed                 *string             // Served speed from the latest chunk that carried one
 	InferenceGeo          *string             // Served inference geo from the latest chunk that carried one
+
+	closedTextItems []closedChatTextItem // Message items a tool call closed before later text opened another
+	pendingText     string               // Whitespace-only text held after a tool call closed the text item
+}
+
+// closedChatTextItem is a finished message item kept for the terminal response's output.
+type closedChatTextItem struct {
+	itemID      string
+	outputIndex int
+	text        string
+}
+
+// maxPooledClosedTextItems bounds the closed-item capacity a pooled state keeps, so one
+// stream that alternates text and tool calls many times does not pin its slice for good.
+const maxPooledClosedTextItems = 64
+
+// resetClosedTextItems empties the closed items, clearing the elements first: truncating
+// alone would keep the previous stream's text reachable through the backing array.
+func (state *ChatToResponsesStreamState) resetClosedTextItems() {
+	if cap(state.closedTextItems) > maxPooledClosedTextItems {
+		state.closedTextItems = nil
+		return
+	}
+	clear(state.closedTextItems)
+	state.closedTextItems = state.closedTextItems[:0]
 }
 
 // chatToResponsesStreamStatePool provides a pool for ChatToResponsesStreamState objects.
@@ -1862,6 +1887,8 @@ func AcquireChatToResponsesStreamState() *ChatToResponsesStreamState {
 	state.TextItemHasContent = false
 	state.TextBuffer = strings.Builder{}
 	state.TextOutputIndex = 0
+	state.resetClosedTextItems()
+	state.pendingText = ""
 	state.ReasoningItemAdded = false
 	state.ReasoningItemClosed = false
 	state.ReasoningOutputIndex = 0
@@ -1904,6 +1931,8 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 		state.TextItemHasContent = false
 		state.TextBuffer = strings.Builder{}
 		state.TextOutputIndex = 0
+		state.resetClosedTextItems()
+		state.pendingText = ""
 		state.ReasoningItemAdded = false
 		state.ReasoningItemClosed = false
 		state.ReasoningOutputIndex = 0
@@ -2095,9 +2124,33 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	}
 
 	// Text content delta. Reasoning (if any) is closed first so blocks never overlap.
-	// Content that arrives after a tool call closed the text item is dropped: that item
-	// already sent output_item.done, so another delta on it is a malformed stream.
-	if hasContent && !state.TextItemClosed {
+	// A tool call closes the text item (output_item.done), so another delta on it would be
+	// a malformed stream: text arriving after that opens a new message item instead.
+	// Whitespace alone (SGLang's qwen3_coder parser emits "\n" beside the closing tool-call
+	// arguments) is held until substantive text follows, so it never opens an item.
+	var contentDelta string
+	if hasContent {
+		contentDelta = *delta.Content
+		if state.TextItemClosed {
+			if strings.TrimSpace(contentDelta) == "" {
+				state.pendingText += contentDelta
+				contentDelta = ""
+			} else {
+				state.closedTextItems = append(state.closedTextItems, closedChatTextItem{
+					itemID:      state.ItemIDs["text"],
+					outputIndex: state.TextOutputIndex,
+					text:        state.TextBuffer.String(),
+				})
+				state.TextItemAdded = false
+				state.TextItemClosed = false
+				state.TextItemHasContent = false
+				state.TextBuffer = strings.Builder{}
+				contentDelta = state.pendingText + contentDelta
+				state.pendingText = ""
+			}
+		}
+	}
+	if contentDelta != "" {
 		closeReasoningItem()
 
 		if !state.TextItemAdded {
@@ -2159,7 +2212,6 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 		}
 
 		itemID := state.ItemIDs["text"]
-		contentDelta := *delta.Content
 		state.TextBuffer.WriteString(contentDelta)
 
 		response := &BifrostResponsesStreamResponse{
@@ -2542,13 +2594,27 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			allOutput = append(allOutput, rMsg)
 		}
 
+		// Message and tool call items follow in output-index (stream) order.
+		type outputEntry struct {
+			outputIndex int
+			message     ResponsesMessage
+		}
+		var outputEntries []outputEntry
+		textItems := state.closedTextItems
 		if state.TextItemAdded {
+			textItems = append(textItems[:len(textItems):len(textItems)], closedChatTextItem{
+				itemID:      state.ItemIDs["text"],
+				outputIndex: state.TextOutputIndex,
+				text:        state.TextBuffer.String(),
+			})
+		}
+		for _, textItem := range textItems {
 			statusFinal := terminalStatus
 			messageType := ResponsesMessageTypeMessage
 			role := ResponsesInputMessageRoleAssistant
 			textType := ResponsesOutputMessageContentTypeText
-			finalText := state.TextBuffer.String()
-			itemID := state.ItemIDs["text"]
+			finalText := textItem.text
+			itemID := textItem.itemID
 
 			msg := ResponsesMessage{
 				Type:   &messageType,
@@ -2570,24 +2636,10 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			if itemID != "" {
 				msg.ID = &itemID
 			}
-			allOutput = append(allOutput, msg)
+			outputEntries = append(outputEntries, outputEntry{outputIndex: textItem.outputIndex, message: msg})
 		}
 
-		// Collect tool call IDs sorted by outputIndex for deterministic order
-		type toolCallEntry struct {
-			toolCallID  string
-			outputIndex int
-		}
-		var toolCallEntries []toolCallEntry
 		for toolCallID, outputIndex := range state.ToolCallOutputIndices {
-			toolCallEntries = append(toolCallEntries, toolCallEntry{toolCallID: toolCallID, outputIndex: outputIndex})
-		}
-		sort.Slice(toolCallEntries, func(i, j int) bool {
-			return toolCallEntries[i].outputIndex < toolCallEntries[j].outputIndex
-		})
-
-		for _, entry := range toolCallEntries {
-			toolCallID := entry.toolCallID
 			statusFinal := terminalStatus
 			messageType := ResponsesMessageTypeFunctionCall
 			callName, hasName := state.ToolCallNames[toolCallID]
@@ -2609,7 +2661,13 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			if itemID != "" {
 				fcMsg.ID = &itemID
 			}
-			allOutput = append(allOutput, fcMsg)
+			outputEntries = append(outputEntries, outputEntry{outputIndex: outputIndex, message: fcMsg})
+		}
+		sort.SliceStable(outputEntries, func(i, j int) bool {
+			return outputEntries[i].outputIndex < outputEntries[j].outputIndex
+		})
+		for _, entry := range outputEntries {
+			allOutput = append(allOutput, entry.message)
 		}
 
 		if len(allOutput) > 0 {
