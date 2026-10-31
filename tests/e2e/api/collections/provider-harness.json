@@ -283531,6 +283531,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{thwVk}}"
               }
             ],
             "body": {
@@ -283565,7 +283569,20 @@
                   "}",
                   "// Both rows must fall in one hour bucket, or the boundary has nothing to trim.",
                   "var left = 3600000 - (Date.now() % 3600000);",
-                  "if (left < 120000) { setTimeout(function () {}, left + 1000); }"
+                  "if (left < 120000) { setTimeout(function () {}, left + 1000); }",
+                  "// A run-scoped virtual key: the log and histogram queries read this run's rows only, on a store earlier runs share.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-token-histogram-window-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('thwVk', 'missing');",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }] }) } }, function (err, res) {",
+                  "  pm.test('token-histogram-window: setup created the virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  var vk = res.json().virtual_key;",
+                  "  pm.collectionVariables.set('thwVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+                  "  pm.collectionVariables.set('thwVkId', vk.id);",
+                  "});"
                 ]
               }
             },
@@ -283578,7 +283595,7 @@
                   "pm.test('token-histogram-window: the provider call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "// The log row settles after the response, and the window must start after it.",
                   "function read(tries) {",
-                  "  pm.sendRequest({ url: BASE + '/api/logs?models=upstream-cached-tokens&status=success&limit=10', method: 'GET' }, function (err, res) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + pm.collectionVariables.get('thwVkId') + '&status=success&limit=10', method: 'GET' }, function (err, res) {",
                   "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
                   "    if (rows.length < 1 && tries > 0) { setTimeout(function () { read(tries - 1); }, 250); return; }",
                   "    pm.test('token-histogram-window: request 1 is logged', function () { pm.expect(rows.length, err ? String(err) : res.text()).to.equal(1); });",
@@ -283602,6 +283619,10 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{thwVk}}"
               }
             ],
             "body": {
@@ -283647,7 +283668,7 @@
                   "pm.test('token-histogram-window: the provider call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "// The log row settles after the response, and the window must start after it.",
                   "function read(tries) {",
-                  "  pm.sendRequest({ url: BASE + '/api/logs?models=upstream-cached-tokens&status=success&limit=10', method: 'GET' }, function (err, res) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + pm.collectionVariables.get('thwVkId') + '&status=success&limit=10', method: 'GET' }, function (err, res) {",
                   "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
                   "    if (rows.length < 2 && tries > 0) { setTimeout(function () { read(tries - 1); }, 250); return; }",
                   "    pm.test('token-histogram-window: request 2 is logged', function () { pm.expect(rows.length, err ? String(err) : res.text()).to.equal(2); });",
@@ -283665,7 +283686,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/logs/histogram/tokens?models=upstream-cached-tokens&start_time={{thwGridStart}}&end_time={{thwGridEnd}}",
+              "raw": "{{baseUrl}}/api/logs/histogram/tokens?virtual_key_ids={{thwVkId}}&start_time={{thwGridStart}}&end_time={{thwGridEnd}}",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -283674,6 +283695,20 @@
                 "logs",
                 "histogram",
                 "tokens"
+              ],
+              "query": [
+                {
+                  "key": "virtual_key_ids",
+                  "value": "{{thwVkId}}"
+                },
+                {
+                  "key": "start_time",
+                  "value": "{{thwGridStart}}"
+                },
+                {
+                  "key": "end_time",
+                  "value": "{{thwGridEnd}}"
+                }
               ]
             }
           },
@@ -283701,7 +283736,7 @@
                   "var BASE = pm.variables.get('baseUrl');",
                   "pm.test('token-histogram-window: the status is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "// On the hour grid this window has no raw boundary, so only a refreshed matview answers it.",
-                  "var url = BASE + '/api/logs/histogram/tokens?models=upstream-cached-tokens&start_time=' + encodeURIComponent(pm.collectionVariables.get('thwGridStart')) + '&end_time=' + encodeURIComponent(pm.collectionVariables.get('thwGridEnd'));",
+                  "var url = BASE + '/api/logs/histogram/tokens?virtual_key_ids=' + pm.collectionVariables.get('thwVkId') + '&start_time=' + encodeURIComponent(pm.collectionVariables.get('thwGridStart')) + '&end_time=' + encodeURIComponent(pm.collectionVariables.get('thwGridEnd'));",
                   "function read(tries) {",
                   "  pm.sendRequest({ url: url, method: 'GET' }, function (err, res) {",
                   "    var buckets = (!err && res.code === 200) ? res.json().buckets : [];",
@@ -283730,7 +283765,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/logs/histogram/tokens?models=upstream-cached-tokens&start_time={{thwBoundary}}&end_time={{thwHeadEnd}}",
+              "raw": "{{baseUrl}}/api/logs/histogram/tokens?virtual_key_ids={{thwVkId}}&start_time={{thwBoundary}}&end_time={{thwHeadEnd}}",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -283739,6 +283774,20 @@
                 "logs",
                 "histogram",
                 "tokens"
+              ],
+              "query": [
+                {
+                  "key": "virtual_key_ids",
+                  "value": "{{thwVkId}}"
+                },
+                {
+                  "key": "start_time",
+                  "value": "{{thwBoundary}}"
+                },
+                {
+                  "key": "end_time",
+                  "value": "{{thwHeadEnd}}"
+                }
               ]
             }
           },
@@ -283763,6 +283812,7 @@
                   "function sum(buckets, key) { return (buckets || []).reduce(function (n, b) { return n + (b[key] || 0); }, 0); }",
                   "pm.test('token-histogram-window: the status is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var buckets = pm.response.json().buckets;",
+                  "pm.test('token-histogram-window: the window produced hourly bars', function () { pm.expect(buckets.length, pm.response.text()).to.be.above(20); pm.expect(pm.response.json().bucket_size_seconds).to.equal(3600); });",
                   "pm.test('token-histogram-window: bars sum to the second row', function () {",
                   "  pm.expect(sum(buckets, 'prompt_tokens'), pm.response.text()).to.equal(20);",
                   "  pm.expect(sum(buckets, 'completion_tokens'), pm.response.text()).to.equal(2);",
@@ -283780,7 +283830,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/logs/histogram/tokens?models=upstream-cached-tokens&start_time={{thwTailStart}}&end_time={{thwBoundary}}",
+              "raw": "{{baseUrl}}/api/logs/histogram/tokens?virtual_key_ids={{thwVkId}}&start_time={{thwTailStart}}&end_time={{thwBoundary}}",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -283789,6 +283839,20 @@
                 "logs",
                 "histogram",
                 "tokens"
+              ],
+              "query": [
+                {
+                  "key": "virtual_key_ids",
+                  "value": "{{thwVkId}}"
+                },
+                {
+                  "key": "start_time",
+                  "value": "{{thwTailStart}}"
+                },
+                {
+                  "key": "end_time",
+                  "value": "{{thwBoundary}}"
+                }
               ]
             }
           },
@@ -283813,11 +283877,13 @@
                   "function sum(buckets, key) { return (buckets || []).reduce(function (n, b) { return n + (b[key] || 0); }, 0); }",
                   "pm.test('token-histogram-window: the status is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var buckets = pm.response.json().buckets;",
+                  "pm.test('token-histogram-window: the window produced hourly bars', function () { pm.expect(buckets.length, pm.response.text()).to.be.above(20); pm.expect(pm.response.json().bucket_size_seconds).to.equal(3600); });",
                   "pm.test('token-histogram-window: bars sum to the first row', function () {",
                   "  pm.expect(sum(buckets, 'prompt_tokens'), pm.response.text()).to.equal(20);",
                   "  pm.expect(sum(buckets, 'total_tokens'), pm.response.text()).to.equal(22);",
                   "});",
-                  "pm.test('token-histogram-window: cached reads sum to the first row', function () { pm.expect(sum(buckets, 'cached_read_tokens'), pm.response.text()).to.equal(7); });"
+                  "pm.test('token-histogram-window: cached reads sum to the first row', function () { pm.expect(sum(buckets, 'cached_read_tokens'), pm.response.text()).to.equal(7); });",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + pm.collectionVariables.get('thwVkId'), method: 'DELETE' }, function () {});"
                 ]
               }
             }
