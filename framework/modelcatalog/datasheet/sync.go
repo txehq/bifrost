@@ -10,8 +10,6 @@ import (
 	"os"
 	"time"
 
-	bifrost "github.com/capsohq/bifrost/core"
-	"github.com/capsohq/bifrost/core/network"
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
 )
 
@@ -191,12 +189,12 @@ func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error
 			return nil, fmt.Errorf("failed to read pricing file: %w", err)
 		}
 	} else {
-		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+		if err := ValidateFetchURL(rawURL); err != nil {
 			return nil, fmt.Errorf("pricing URL validation failed: %w", err)
 		}
 		// ValidateExternalURL screens the configured host once; the guarded
 		// client holds every connection and redirect hop to the same policy.
-		client := network.NewPrivateNetworkHTTPClient(DefaultPricingTimeout)
+		client := NewFetchClient(DefaultPricingTimeout)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL(), nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)

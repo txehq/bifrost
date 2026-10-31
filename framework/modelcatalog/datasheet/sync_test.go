@@ -2,14 +2,19 @@ package datasheet
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/framework/configstore/tables"
@@ -94,5 +99,73 @@ func TestLoadFromURLRefusesRedirectToLinkLocal(t *testing.T) {
 	_, err = store.loadModelParametersFromURL(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "link-local") {
 		t.Fatalf("model parameters: expected link-local refusal, got %v", err)
+	}
+}
+
+// Outside tests a catalog fetch is the guarded client, policy on every hop.
+func TestNewFetchClientIsTheGuardedClient(t *testing.T) {
+	guarded := network.NewPrivateNetworkHTTPClient(time.Second)
+	client := NewFetchClient(time.Second)
+	if reflect.TypeOf(client.Transport) != reflect.TypeOf(guarded.Transport) {
+		t.Fatalf("transport = %T, want the guarded %T", client.Transport, guarded.Transport)
+	}
+	if client.CheckRedirect == nil {
+		t.Fatal("the fetch client lost its redirect policy")
+	}
+	if _, err := client.Get("http://169.254.169.254/latest/meta-data"); err == nil {
+		t.Fatal("the fetch client reached a metadata address")
+	}
+}
+
+type recordingTransport struct{ hits atomic.Int32 }
+
+func (rt *recordingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	rt.hits.Add(1)
+	return nil, errors.New("recorded")
+}
+
+type fixedLookup struct{ hits atomic.Int32 }
+
+func (l *fixedLookup) LookupIP(context.Context, string, string) ([]net.IP, error) {
+	l.hits.Add(1)
+	return []net.IP{net.ParseIP("203.0.113.10")}, nil
+}
+
+// The seam covers both places a fetch touches the network, applies to clients built
+// after it is set, keeps the redirect policy and validation, and restores cleanly.
+func TestSetFetchSeamForTestWrapsAndRestores(t *testing.T) {
+	recorder, lookup := &recordingTransport{}, &fixedLookup{}
+	restore := SetFetchSeamForTest(func(http.RoundTripper) http.RoundTripper { return recorder }, lookup)
+	if err := ValidateFetchURL("https://catalog.example/feed"); err != nil || lookup.hits.Load() != 1 {
+		t.Fatalf("validation did not use the seam's resolver: err=%v lookups=%d", err, lookup.hits.Load())
+	}
+	if err := ValidateFetchURL("ftp://catalog.example/feed"); err == nil {
+		t.Fatal("the seam skipped the URL policy")
+	}
+	client := NewFetchClient(time.Second)
+	if client.CheckRedirect == nil {
+		t.Fatal("the seam dropped the redirect policy")
+	}
+	if _, err := client.Get("https://example.com/"); err == nil || recorder.hits.Load() != 1 {
+		t.Fatalf("the wrapped transport was not used: err=%v hits=%d", err, recorder.hits.Load())
+	}
+	restore()
+	if activeFetchTestSeam.Load() != nil {
+		t.Fatal("restore left the seam installed")
+	}
+	if _, ok := NewFetchClient(time.Second).Transport.(*recordingTransport); ok {
+		t.Fatal("a client built after restore still uses the test transport")
+	}
+}
+
+// A nil wrap clears the seam rather than panicking on the next fetch.
+func TestSetFetchSeamForTestNilClearsTheSeam(t *testing.T) {
+	restore := SetFetchSeamForTest(nil, nil)
+	t.Cleanup(restore)
+	if activeFetchTestSeam.Load() != nil {
+		t.Fatal("a nil wrap left the seam installed")
+	}
+	if client := NewFetchClient(time.Second); client.CheckRedirect == nil {
+		t.Fatal("the fetch client lost its redirect policy")
 	}
 }

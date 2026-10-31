@@ -12,8 +12,6 @@ import (
 	"slices"
 	"strings"
 
-	bifrost "github.com/capsohq/bifrost/core"
-	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
@@ -136,10 +134,10 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 			return nil, fmt.Errorf("failed to read model parameters file: %w", err)
 		}
 	} else {
-		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+		if err := ValidateFetchURL(rawURL); err != nil {
 			return nil, fmt.Errorf("model parameters URL validation failed: %w", err)
 		}
-		client := network.NewPrivateNetworkHTTPClient(DefaultModelParametersTimeout)
+		client := NewFetchClient(DefaultModelParametersTimeout)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
