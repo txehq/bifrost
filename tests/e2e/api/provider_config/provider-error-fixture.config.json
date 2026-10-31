@@ -1,4 +1,7 @@
 {
+  "client": {
+    "allow_per_request_raw_override": true
+  },
   "framework": {
     "pricing": {
       "pricing_url": "http://127.0.0.1:8791/pricing.json",
@@ -15,7 +18,9 @@
         "name": "fixture_mcp",
         "connection_type": "http",
         "connection_string": "http://127.0.0.1:8791/mcp",
-        "tools_to_execute": ["web_search"]
+        "tools_to_execute": [
+          "web_search"
+        ]
       },
       {
         "name": "fixture_openapi",
@@ -23,7 +28,9 @@
         "openapi_config": {
           "spec_url": "http://127.0.0.1:8791/openapi-fixture/docs/no-servers.json"
         },
-        "tools_to_execute": ["*"],
+        "tools_to_execute": [
+          "*"
+        ],
         "max_instructions_length": 48
       }
     ]
@@ -45,7 +52,10 @@
             "upstream-fixed-length-ok",
             "gpt-5-pro",
             "gpt-6-luna",
-            "decision-emulated"
+            "decision-emulated",
+            "pp-custom-legacy",
+            "pp-embedding",
+            "gpt-6-pp-search"
           ],
           "weight": 1
         }
@@ -120,6 +130,133 @@
           "tool_name": "web_search"
         }
       ]
+    },
+    "xai": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/xai",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/anthropic",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "gemini": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/gemini",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "cloudflare": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1,
+          "cloudflare_key_config": {
+            "account_id": "acct-1"
+          }
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/cloudflare",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "volcengine": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/volcengine",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "pp_cohere": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "cohere"
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/cohere",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "databricks": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1,
+          "databricks_key_config": {
+            "workspace_url": "127.0.0.1:8791"
+          }
+        }
+      ],
+      "network_config": {
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
     }
   }
 }

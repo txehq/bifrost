@@ -7077,29 +7077,42 @@ func prepareInlineToolDefinitions(input []schemas.ResponsesMessage, tools []sche
 		return nil, fmt.Errorf("a tool added mid-conversation is restricted to programmatic callers, which needs code execution version %s; declare it on the code_interpreter tool", emitVersion)
 	}
 
-	rewritten := slices.Clone(input)
-	for i := range rewritten {
-		if rewritten[i].Content == nil {
-			continue
-		}
-		changed := false
-		for _, block := range rewritten[i].Content.ContentBlocks {
+	// Compaction tool_changes are validated recursively above, so they are rewritten the
+	// same way; DeepCopyResponsesMessage copies their definitions, so the caller's input is
+	// never mutated.
+	var needsRewrite func(blocks []schemas.ResponsesMessageContentBlock) bool
+	needsRewrite = func(blocks []schemas.ResponsesMessageContentBlock) bool {
+		for _, block := range blocks {
 			if block.ToolChange != nil && block.ToolChange.Definition != nil && hasProgrammaticCaller(block.ToolChange.Definition.AllowedCallers) {
-				changed = true
-				break
+				return true
+			}
+			if cmp := block.ResponsesOutputMessageContentCompaction; cmp != nil && needsRewrite(cmp.ToolChanges) {
+				return true
 			}
 		}
-		if !changed {
-			continue
-		}
-		msg := schemas.DeepCopyResponsesMessage(rewritten[i])
-		for j := range msg.Content.ContentBlocks {
-			block := &msg.Content.ContentBlocks[j]
+		return false
+	}
+	var rewrite func(blocks []schemas.ResponsesMessageContentBlock)
+	rewrite = func(blocks []schemas.ResponsesMessageContentBlock) {
+		for j := range blocks {
+			block := &blocks[j]
+			if cmp := block.ResponsesOutputMessageContentCompaction; cmp != nil {
+				rewrite(cmp.ToolChanges)
+			}
 			if block.ToolChange == nil || block.ToolChange.Definition == nil || !hasProgrammaticCaller(block.ToolChange.Definition.AllowedCallers) {
 				continue
 			}
 			block.ToolChange.Definition.AllowedCallers = anthropicAllowedCallers(block.ToolChange.Definition.AllowedCallers, caller)
 		}
+	}
+
+	rewritten := slices.Clone(input)
+	for i := range rewritten {
+		if rewritten[i].Content == nil || !needsRewrite(rewritten[i].Content.ContentBlocks) {
+			continue
+		}
+		msg := schemas.DeepCopyResponsesMessage(rewritten[i])
+		rewrite(msg.Content.ContentBlocks)
 		rewritten[i] = msg
 	}
 	return rewritten, nil

@@ -272,6 +272,16 @@ func restoreCustomToolCall(item *schemas.ResponsesMessage, names map[string]stru
 }
 
 // restoreCustomToolCalls applies restoreCustomToolCall to every output item.
+// restoreCustomToolResponse restores resp's custom tool calls and marks its raw
+// upstream bytes as no longer the wire body, since the typed output now differs.
+func restoreCustomToolResponse(resp *schemas.BifrostResponsesResponse, names map[string]struct{}) {
+	if resp == nil || names == nil {
+		return
+	}
+	restoreCustomToolCalls(resp.Output, names)
+	resp.ExtraFields.RawResponseIsNotWire = true
+}
+
 func restoreCustomToolCalls(output []schemas.ResponsesMessage, names map[string]struct{}) {
 	for i := range output {
 		restoreCustomToolCall(&output[i], names)
@@ -302,6 +312,9 @@ func (r *customToolStreamRestorer) restore(event *schemas.BifrostResponsesStream
 	if r == nil || event == nil {
 		return nil, false
 	}
+	// Restoring shifts sequence numbers and retypes items, so no event of this
+	// stream matches its raw upstream frame any more.
+	event.ExtraFields.RawResponseIsNotWire = true
 	event.SequenceNumber += r.shift
 	switch event.Type {
 	case schemas.ResponsesStreamResponseTypeOutputItemAdded, schemas.ResponsesStreamResponseTypeOutputItemDone:

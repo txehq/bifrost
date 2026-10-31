@@ -504,3 +504,40 @@ func TestStripCompactionItemSummary_AllocationScaling(t *testing.T) {
 		stripCompactionItemSummary(body, itemsByLen[len(body)])
 	})
 }
+
+// TestStripCompactionItemSummary_NoCompactionItemsReturnsInputWithoutAllocating pins that
+// an ordinary history (no compaction item) is returned as-is without parsing or copying
+// each serialized item.
+func TestStripCompactionItemSummary_NoCompactionItemsReturnsInputWithoutAllocating(t *testing.T) {
+	messageType := schemas.ResponsesMessageTypeMessage
+	items := make([]schemas.ResponsesMessage, 50)
+	var b bytes.Buffer
+	b.WriteByte('[')
+	for i := range items {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"type":"message","role":"user","content":"`)
+		b.WriteString(strings.Repeat("x", 400))
+		b.WriteString(`"}`)
+		items[i] = schemas.ResponsesMessage{Type: &messageType}
+	}
+	b.WriteByte(']')
+	data := b.Bytes()
+
+	if got := stripCompactionItemSummary(data, items); !bytes.Equal(got, data) {
+		t.Fatalf("ordinary history changed: %s", got)
+	}
+	if allocs := testing.AllocsPerRun(20, func() { stripCompactionItemSummary(data, items) }); allocs != 0 {
+		t.Fatalf("ordinary history allocated %v times, want 0", allocs)
+	}
+}
+
+func BenchmarkStripCompactionItemSummary(b *testing.B) {
+	data := []byte(`[{"type":"message","role":"user","content":"` + strings.Repeat("a", 1<<20) + `"}]`)
+	items := []schemas.ResponsesMessage{{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage)}}
+	b.ReportAllocs()
+	for b.Loop() {
+		stripCompactionItemSummary(data, items)
+	}
+}

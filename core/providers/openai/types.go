@@ -1110,6 +1110,13 @@ func stripCompactionItemSummary(data []byte, items []schemas.ResponsesMessage) [
 	// back once. Deleting "<i>.summary" through the whole array would reserialise it per
 	// compaction item, making this O(items x payload).
 	// Pinned by TestStripCompactionItemSummary_AllocationScaling.
+	// Ordinary histories carry no compaction item, so check the typed items first and
+	// return the bytes untouched without parsing or copying them.
+	if !slices.ContainsFunc(items, func(msg schemas.ResponsesMessage) bool {
+		return msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeCompaction
+	}) {
+		return data
+	}
 	parsed := gjson.ParseBytes(data)
 	if !parsed.IsArray() {
 		return data
@@ -1183,6 +1190,38 @@ func hasAnthropicOnlyResponsesToolFlags(t schemas.ResponsesTool, keepDeferLoadin
 		t.EagerInputStreaming != nil ||
 		(t.ResponsesToolCodeInterpreter != nil && t.ResponsesToolCodeInterpreter.Version != nil) ||
 		hasAnthropicMCPToolsetConfig(t)
+}
+
+// openAIResponsesTool returns tool with the Anthropic-only fields OpenAI rejects
+// stripped (see hasAnthropicOnlyResponsesToolFlags). An already-clean tool is returned
+// unchanged; otherwise a copy is modified, so the caller's tool is untouched.
+func openAIResponsesTool(tool schemas.ResponsesTool, keepDeferLoading bool) schemas.ResponsesTool {
+	if tool.CacheControl == nil && !hasAnthropicOnlyResponsesToolFlags(tool, keepDeferLoading) {
+		return tool
+	}
+	tool.CacheControl = nil
+	if !keepDeferLoading {
+		tool.DeferLoading = nil
+	}
+	if !responsesToolSupportsAllowedCallers(tool.Type) {
+		tool.AllowedCallers = nil
+	} else if len(tool.AllowedCallers) > 0 {
+		tool.AllowedCallers = openAIAllowedCallers(tool.AllowedCallers)
+	}
+	tool.InputExamples = nil
+	tool.EagerInputStreaming = nil
+	if hasAnthropicMCPToolsetConfig(tool) {
+		mcpCopy := *tool.ResponsesToolMCP
+		mcpCopy.DefaultConfig = nil
+		mcpCopy.ToolConfigs = nil
+		tool.ResponsesToolMCP = &mcpCopy
+	}
+	if tool.ResponsesToolCodeInterpreter != nil && tool.ResponsesToolCodeInterpreter.Version != nil {
+		ciCopy := *tool.ResponsesToolCodeInterpreter
+		ciCopy.Version = nil
+		tool.ResponsesToolCodeInterpreter = &ciCopy
+	}
+	return tool
 }
 
 // hasAnthropicMCPToolsetConfig reports whether an MCP tool carries the Anthropic mcp_toolset
@@ -1522,34 +1561,7 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 					// Drop — OpenAI Responses has no web_fetch or memory.
 					continue
 				}
-				if tool.CacheControl == nil && !hasAnthropicOnlyResponsesToolFlags(tool, resp.keepDeferLoading) {
-					processedTools = append(processedTools, tool)
-					continue
-				}
-				toolCopy := tool
-				toolCopy.CacheControl = nil
-				if !resp.keepDeferLoading {
-					toolCopy.DeferLoading = nil
-				}
-				if !responsesToolSupportsAllowedCallers(toolCopy.Type) {
-					toolCopy.AllowedCallers = nil
-				} else if len(toolCopy.AllowedCallers) > 0 {
-					toolCopy.AllowedCallers = openAIAllowedCallers(toolCopy.AllowedCallers)
-				}
-				toolCopy.InputExamples = nil
-				toolCopy.EagerInputStreaming = nil
-				if hasAnthropicMCPToolsetConfig(toolCopy) {
-					mcpCopy := *toolCopy.ResponsesToolMCP
-					mcpCopy.DefaultConfig = nil
-					mcpCopy.ToolConfigs = nil
-					toolCopy.ResponsesToolMCP = &mcpCopy
-				}
-				if toolCopy.ResponsesToolCodeInterpreter != nil && toolCopy.ResponsesToolCodeInterpreter.Version != nil {
-					ciCopy := *toolCopy.ResponsesToolCodeInterpreter
-					ciCopy.Version = nil
-					toolCopy.ResponsesToolCodeInterpreter = &ciCopy
-				}
-				processedTools = append(processedTools, toolCopy)
+				processedTools = append(processedTools, openAIResponsesTool(tool, resp.keepDeferLoading))
 			}
 		} else {
 			processedTools = resp.Tools

@@ -265,6 +265,75 @@ const fixturePricing = {
 	"gpt-6-luna": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, input_cost_per_token_decisions: 0.000003, output_cost_per_token_decisions: 0.000004, supports_decisions: true },
 	"typesafe/jev-1.13": { provider: "openrouter", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
 	"decision-emulated": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, cache_read_input_token_cost: 0.0000001 },
+	"pp-custom-legacy": { provider: "openai", mode: "responses", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
+};
+
+// Provider wire capture, TXE-5539. The config points each provider these rows use at /pp/<provider>, so one fixture
+// plays them all; the bytes that arrive are kept for the row to compare, and GET /__wire returns them. Nothing here
+// keeps a header, so no key reaches a report.
+const wireCalls = [];
+const anthropicMessage = (model) => ({
+	id: "msg_fixture", type: "message", role: "assistant", model,
+	content: [{ type: "text", text: "hello" }],
+	stop_reason: "end_turn", stop_sequence: null, usage: { input_tokens: 12, output_tokens: 3 },
+});
+const sse = (events) => events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join("");
+const anthropicMessageStream = (model) => sse([
+	{ type: "message_start", message: { ...anthropicMessage(model), content: [], stop_reason: null } },
+	{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+	{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello" } },
+	{ type: "content_block_stop", index: 0 },
+	{ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 3 } },
+	{ type: "message_stop" },
+]);
+// Code execution with a thoughtSignature on both of its parts: dropping one breaks the next turn.
+const geminiCodeExecution = {
+	candidates: [{
+		index: 0, finishReason: "STOP",
+		content: { role: "model", parts: [
+			{ executableCode: { language: "PYTHON", code: "print(1)" }, thoughtSignature: "c2lnLWNvZGU=" },
+			{ codeExecutionResult: { outcome: "OUTCOME_OK", output: "1\n" }, thoughtSignature: "c2lnLXJlc3VsdA==" },
+			{ text: "done" },
+		] },
+	}],
+	usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 2, totalTokenCount: 7 },
+	modelVersion: "pp-gemini",
+};
+const clefAnswer = { result: { model: "clef-flash", answers: { is_red: { type: "noul", noul: 0.97 } }, usage: { input_tokens: 210, output_tokens: 0 } }, success: true, errors: [], messages: [] };
+const embeddingAnswer = { object: "list", model: "pp-embedding", data: [{ object: "embedding", index: 0, embedding: [0.1, 0.2] }], usage: { prompt_tokens: 1, total_tokens: 1 } };
+// A function_call answer for a custom tool the gateway sent as a function tool, for a model the datasheet marks as
+// rejecting custom tools. x_fixture_raw exists only in these bytes, so a relay of them is recognisable.
+const legacyCustomToolResponse = (model) => ({
+	id: "resp_pp", object: "response", created_at: 1, status: "completed", model, x_fixture_raw: true,
+	output: [{ id: "fc_pp", type: "function_call", status: "completed", call_id: "call_pp", name: "apply_patch", arguments: JSON.stringify({ input: "*** patch" }) }],
+	usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 },
+});
+const legacyCustomToolStream = (model) => {
+	const response = legacyCustomToolResponse(model);
+	const item = response.output[0];
+	let sequence_number = 0;
+	const event = (e) => ({ ...e, sequence_number: sequence_number++ });
+	return sse([
+		event({ type: "response.created", response: { ...response, status: "in_progress", output: [] } }),
+		event({ type: "response.output_item.added", output_index: 0, item: { ...item, status: "in_progress", arguments: "" } }),
+		event({ type: "response.function_call_arguments.delta", output_index: 0, item_id: item.id, delta: item.arguments }),
+		event({ type: "response.function_call_arguments.done", output_index: 0, item_id: item.id, arguments: item.arguments }),
+		event({ type: "response.output_item.done", output_index: 0, item }),
+		event({ type: "response.completed", response }),
+	]);
+};
+const wireAnswer = (path, body) => {
+	if (path === "/pp/xai/v1/messages" || path === "/pp/anthropic/v1/messages") {
+		if (body.model === "pp-fail") return { status: 400, body: JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "fixture refused" } }) };
+		if (body.stream === true) return { status: 200, stream: anthropicMessageStream(body.model) };
+		return { status: 200, body: JSON.stringify(anthropicMessage(body.model)) };
+	}
+	if (path.endsWith(":generateContent")) return { status: 200, body: JSON.stringify(geminiCodeExecution) };
+	if (path.endsWith(":streamGenerateContent")) return { status: 200, stream: `data: ${JSON.stringify(geminiCodeExecution)}\n\n` };
+	if (path === "/pp/cloudflare/accounts/acct-1/ai/run/@cf/cloudflare/clef-flash") return { status: 200, body: JSON.stringify(clefAnswer) };
+	if (path === "/v1/embeddings" || path === "/pp/volcengine/embeddings") return { status: 200, body: JSON.stringify(embeddingAnswer) };
+	if (path === "/pp/volcengine/embeddings/multimodal") return { status: 200, body: JSON.stringify({ id: "emb_pp", object: "list", model: body.model, data: { embedding: [0.1, 0.2] }, usage: { prompt_tokens: 1, total_tokens: 1 } }) };
+	return { status: 500, body: errorBody("the fixture has no answer here", "server_error", "internal_error") };
 };
 
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
@@ -284,11 +353,15 @@ const server = http.createServer((req, res) => {
 	}
 	if (req.method === "GET" && path === "/model-parameters.json") {
 		// supported_endpoints/mode feed the catalog's per-model request types: gpt-5-pro answers on /v1/responses only.
-		return send(200, {}, JSON.stringify({ "gpt-5-pro": { provider: "openai", mode: "responses", supported_endpoints: ["/v1/responses"] } }));
+		return send(200, {}, JSON.stringify({
+			"gpt-5-pro": { provider: "openai", mode: "responses", supported_endpoints: ["/v1/responses"] },
+			"pp-custom-legacy": { provider: "openai", mode: "responses", supported_endpoints: ["/v1/responses"], supports_custom_tools: false, supports_function_calling: true },
+		}));
 	}
 	if (req.method === "POST" && path === "/__reset") {
 		for (const k of Object.keys(hits)) delete hits[k];
 		openAPICalls.length = 0;
+		wireCalls.length = 0;
 		return send(200, {}, JSON.stringify({ data: [{ reset: true }] }));
 	}
 	if (req.method === "GET" && path === "/openapi-fixture/docs/no-servers.json") {
@@ -303,6 +376,26 @@ const server = http.createServer((req, res) => {
 		req.on("end", () => {
 			openAPICalls.push({ method: req.method, path, body: Buffer.concat(body).toString("utf8") });
 			send(200, {}, JSON.stringify({ ok: true }));
+		});
+		return undefined;
+	}
+	if (req.method === "GET" && path === "/__wire") {
+		return send(200, {}, JSON.stringify({ data: [{ calls: wireCalls }] }));
+	}
+	if (req.method === "POST" && (path.startsWith("/pp/") || path === "/v1/embeddings")) {
+		const body = [];
+		req.on("data", (c) => body.push(c));
+		req.on("end", () => {
+			const bytes = Buffer.concat(body).toString("utf8");
+			wireCalls.push({ path, query: new URL(req.url, "http://localhost").search, body: bytes });
+			let parsed = {};
+			try { parsed = JSON.parse(bytes) || {}; } catch {}
+			const answer = wireAnswer(path, parsed);
+			if (answer.stream !== undefined) {
+				res.writeHead(answer.status, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+				return res.end(answer.stream);
+			}
+			send(answer.status, {}, answer.body);
 		});
 		return undefined;
 	}
@@ -393,6 +486,15 @@ const server = http.createServer((req, res) => {
 		}
 		if (path === "/alpha/decisions") {
 			return send(200, {}, JSON.stringify(openRouterDecisionAnswer()));
+		}
+		if (path === "/v1/responses" && model === "pp-custom-legacy") {
+			wireCalls.push({ path, query: "", body: Buffer.concat(chunks).toString("utf8") });
+			if (parsed.stream !== true) return send(200, {}, JSON.stringify(legacyCustomToolResponse(model)));
+			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+			return res.end(legacyCustomToolStream(model));
+		}
+		if (path === "/v1/responses" && model === "gpt-6-pp-search") {
+			wireCalls.push({ path, query: "", body: Buffer.concat(chunks).toString("utf8") });
 		}
 		if (path === "/v1/responses" && model === "decision-emulated") {
 			return send(200, {}, JSON.stringify({

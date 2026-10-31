@@ -301,6 +301,23 @@ func TestParseCustomProviderBaseType(t *testing.T) {
 	checkAnthropicMessages(t, r)
 }
 
+// xAI's native Messages surface speaks the Anthropic wire format, so its passthrough rows are typed
+// and parsed like Anthropic's; xAI paths outside /v1/messages have no typed equivalent.
+func TestParseXAINativeMessages(t *testing.T) {
+	r, err := Parse(Input{Provider: schemas.XAI, Model: "grok-4.5", Method: "POST", Path: "/v1/messages", StatusCode: 200, RequestBody: []byte(anthropicMessagesRequest), ResponseBody: []byte(anthropicMessagesResponse)})
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	require.Equal(t, schemas.ResponsesRequest, r.RequestType)
+	checkAnthropicMessages(t, r)
+	require.Equal(t, schemas.ResponsesStreamRequest, InferRequestType(schemas.XAI, "grok-4.5", "POST", "/v1/messages", true))
+
+	for _, path := range []string{"/v1/messages/count_tokens", "/v1/chat/completions", "/v1/models"} {
+		r, err := Parse(Input{Provider: schemas.XAI, Method: "POST", Path: path, StatusCode: 200, RequestBody: []byte(anthropicCountRequest)})
+		require.NoError(t, err)
+		require.Nil(t, r, path)
+	}
+}
+
 func TestParseKeepsTheSideThatDecoded(t *testing.T) {
 	r, err := Parse(Input{Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: "/v1/chat/completions", StatusCode: 200, RequestBody: []byte(`{"messages": [`), ResponseBody: []byte(openAIChatResponse)})
 	require.Error(t, err)

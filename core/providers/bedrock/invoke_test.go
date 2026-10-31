@@ -1846,6 +1846,56 @@ func TestToBedrockInvokeMessagesStreamResponse_ToolSearchNotToolUse(t *testing.T
 			"content_block_stop must close the block content_block_start opened: start=%s stop=%s", string(startRaw), string(stopRaw))
 	})
 
+	t.Run("tool_search_call done replays the paired tool_search_tool_result", func(t *testing.T) {
+		// Anthropic requires the server_tool_use to be followed by its result block, and
+		// both to be echoed back unchanged. A client assembling the assistant turn from
+		// this stream must therefore see the query, the result block, and the
+		// discovered references, at the indices the native stream used.
+		streamCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		_, _, err := ToBedrockInvokeMessagesStreamResponse(streamCtx, added(schemas.ResponsesMessageTypeToolSearchCall, searchID, "tool_search_tool_regex"))
+		require.NoError(t, err)
+
+		done := &schemas.BifrostResponsesStreamResponse{
+			Type:         schemas.ResponsesStreamResponseTypeOutputItemDone,
+			ContentIndex: schemas.Ptr(1),
+			Item: &schemas.ResponsesMessage{
+				ID:   schemas.Ptr(searchID),
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:                  schemas.Ptr(searchID),
+					Name:                    schemas.Ptr("tool_search_tool_regex"),
+					Arguments:               schemas.Ptr(`{"pattern":"weather"}`),
+					ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: []string{"get_weather"}},
+				},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{ResolvedModelUsed: "us.anthropic.claude-sonnet-4-6-v1:0"},
+		}
+		_, event, err := ToBedrockInvokeMessagesStreamResponse(streamCtx, done)
+		require.NoError(t, err)
+		bedrockEvent, ok := event.(*BedrockStreamEvent)
+		require.True(t, ok, "expected a BedrockStreamEvent, got %T", event)
+
+		var types []string
+		var result []byte
+		for _, raw := range bedrockEvent.InvokeModelRawChunks {
+			eventType := gjson.GetBytes(raw, "type").String()
+			types = append(types, eventType+"@"+gjson.GetBytes(raw, "index").String())
+			switch {
+			case eventType == "content_block_delta":
+				assert.Equal(t, `{"pattern":"weather"}`, gjson.GetBytes(raw, "delta.partial_json").String(),
+					"server_tool_use.input must carry the query: %s", string(raw))
+			case eventType == "content_block_start":
+				result = raw
+			}
+		}
+		require.Equal(t, []string{"content_block_delta@0", "content_block_stop@0", "content_block_start@1", "content_block_stop@1"}, types,
+			"the search must close its query block and replay its result block")
+		assert.Equal(t, "tool_search_tool_result", gjson.GetBytes(result, "content_block.type").String(), "result=%s", string(result))
+		assert.Equal(t, searchID, gjson.GetBytes(result, "content_block.tool_use_id").String(), "result=%s", string(result))
+		assert.Equal(t, "tool_search_tool_search_result", gjson.GetBytes(result, "content_block.content.type").String(), "result=%s", string(result))
+		assert.Equal(t, "get_weather", gjson.GetBytes(result, "content_block.content.tool_references.0.tool_name").String(), "result=%s", string(result))
+	})
+
 	t.Run("an item with no recorded start keeps its own content index", func(t *testing.T) {
 		streamCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		done := &schemas.BifrostResponsesStreamResponse{

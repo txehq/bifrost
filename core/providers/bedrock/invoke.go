@@ -64,7 +64,7 @@ var bedrockInvokeRequestKnownFields = map[string]bool{
 	"normalize": true, "dimensions": true,
 	"embedding_types": true, "embeddingTypes": true,
 	"output_dimension": true, "inputs": true,
-	"inputImage": true, "embeddingConfig": true,
+	"inputImage": true, "embeddingConfig": true, "singleEmbeddingParams": true,
 	// Internal
 	"stream": true, "extra_params": true,
 }

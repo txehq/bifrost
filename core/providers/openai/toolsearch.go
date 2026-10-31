@@ -231,7 +231,9 @@ func (req *OpenAIResponsesRequest) toolSearchOutputItem(callID *string, executio
 		if idx < 0 {
 			continue
 		}
-		tool := req.Tools[idx]
+		// The embedded definition is serialized verbatim, so it needs the same
+		// sanitizing the top-level tools get in OpenAIResponsesRequest.MarshalJSON.
+		tool := openAIResponsesTool(req.Tools[idx], true)
 		tool.DeferLoading = schemas.Ptr(true)
 		loaded = append(loaded, tool)
 	}

@@ -306,7 +306,7 @@ func forwardAzureDeploymentChatFields(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 // text through chat, Responses through chat) carries the other API's raw bytes, so
 // the Bifrost response is serialized instead.
 func openAIRawPassthrough(extra *schemas.BifrostResponseExtraFields) bool {
-	return extra.Provider == schemas.OpenAI && extra.RawResponse != nil && extra.ConvertedRequestType == ""
+	return extra.Provider == schemas.OpenAI && extra.RawResponse != nil && extra.ConvertedRequestType == "" && !extra.RawResponseIsNotWire
 }
 
 // openAIResponsesWireConverter maps a Bifrost responses payload to the OpenAI wire JSON shape.

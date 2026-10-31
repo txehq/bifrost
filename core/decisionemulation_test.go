@@ -398,6 +398,56 @@ func TestEmulateDecisionCarriesServedTier(t *testing.T) {
 	}
 }
 
+// TestEmulateDecisionToolChoiceForCustomProviders pins that a custom provider
+// wrapping Cohere or Bedrock Mantle gets its base provider's tool_choice default,
+// while a capability record under the custom name still overrides it.
+func TestEmulateDecisionToolChoiceForCustomProviders(t *testing.T) {
+	args := `{
+		"approve":  {"value": 0.9, "confidence": 0.8},
+		"category": {"choice": "billing", "confidence": 0.7, "probabilities": {"billing": 0.7, "bug": 0.1, "support": 0.1, "other": 0.1}},
+		"urgency":  {"value": 2, "confidence": 0.6, "probabilities": {"0": 0.1, "1": 0.1, "2": 0.8}}
+	}`
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider == "my-cohere" && model == "command-a-03-2025" {
+			return &schemas.ModelCapabilities{SupportsToolChoice: schemas.Ptr(false)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	cases := []struct {
+		provider, base schemas.ModelProvider
+		model          string
+		want           schemas.ResponsesToolChoiceType
+	}{
+		{"my-cohere", schemas.Cohere, "command-a-reasoning-08-2025", ""},
+		{"my-cohere", schemas.Cohere, "command-a-03-2025", ""},
+		{"my-mantle", schemas.BedrockMantle, "openai.gpt-oss-120b", schemas.ResponsesToolChoiceTypeAuto},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			provider := &decisionEmulationProvider{response: emulationFunctionCallResponse(args)}
+			req := structuredDecisionRequest()
+			req.Provider, req.Model = tc.provider, tc.model
+			ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, schemas.BifrostContextKeyBaseProviderType, tc.base)
+
+			var b Bifrost
+			if _, bifrostErr := b.emulateDecisionViaResponses(ctx, provider, schemas.Key{}, req); bifrostErr != nil {
+				t.Fatalf("unexpected error: %v", bifrostErr)
+			}
+			choice := provider.lastRequest.Params.ToolChoice
+			if tc.want == "" {
+				if choice != nil {
+					t.Errorf("tool_choice = %+v, want it omitted", choice)
+				}
+				return
+			}
+			if choice == nil || choice.ResponsesToolChoiceStr == nil || *choice.ResponsesToolChoiceStr != string(tc.want) {
+				t.Errorf("tool_choice = %+v, want %q", choice, tc.want)
+			}
+		})
+	}
+}
+
 // TestEmulateDecisionRefusesPassthroughExtensions pins #7599's "never text-only"
 // rule: when native extensions (e.g. images) were asked to reach the wire, an
 // emulating chat model refuses instead of silently answering without them.

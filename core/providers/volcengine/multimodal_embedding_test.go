@@ -834,3 +834,89 @@ func flatInput(entries ...schemas.MultiModalEmbeddingInput) []schemas.EmbeddingI
 func textInput(text string) []schemas.EmbeddingInputItem {
 	return []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}}
 }
+
+// TestMultiModalEmbedding_VisionMultipleTextPartsUseMultimodalEndpoint pins that one input
+// item with several text parts to a vision model stays on /embeddings/multimodal, for
+// Volcengine and ModelArk alike: /embeddings would join the parts and drop instructions
+// and sparse_embedding.
+func TestMultiModalEmbedding_VisionMultipleTextPartsUseMultimodalEndpoint(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct {
+		provider schemas.ModelProvider
+		model    string
+	}{
+		"volcengine": {provider: schemas.Volcengine, model: "doubao-embedding-vision-251215"},
+		"modelark":   {provider: schemas.ModelArk, model: "skylark-embedding-vision-251215"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			type sentBody struct {
+				Model string `json:"model"`
+				Input []struct {
+					Type string  `json:"type"`
+					Text *string `json:"text,omitempty"`
+				} `json:"input"`
+				Instructions    *string                `json:"instructions"`
+				SparseEmbedding map[string]interface{} `json:"sparse_embedding"`
+			}
+			sent := make(chan struct {
+				path string
+				body sentBody
+			}, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body sentBody
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				sent <- struct {
+					path string
+					body sentBody
+				}{r.URL.Path, body}
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/embeddings/multimodal" {
+					fmt.Fprintf(w, `{"data":{"embedding":[0.1,0.2],"sparse_embedding":[{"index":1,"value":0.5}]},"model":%q,"object":"list","usage":{"prompt_tokens":5,"total_tokens":5}}`, tc.model)
+					return
+				}
+				fmt.Fprintf(w, `{"data":[{"index":0,"object":"embedding","embedding":[0.1,0.2]}],"model":%q,"object":"list","usage":{"prompt_tokens":5,"total_tokens":5}}`, tc.model)
+			}))
+			defer server.Close()
+
+			provider := newTestVolcengineCompatibleProvider(server.URL, tc.provider)
+			first, second := "the sky", "is blue"
+			instructions := "Target_modality: text.\nInstruction:Retrieve semantically similar text\nQuery:"
+			request := &schemas.BifrostEmbeddingRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
+					{Type: schemas.EmbeddingContentPartTypeText, Text: &first},
+					{Type: schemas.EmbeddingContentPartTypeText, Text: &second},
+				}}},
+				Params: &schemas.EmbeddingParameters{
+					Instructions:    &instructions,
+					SparseEmbedding: map[string]interface{}{"type": "enabled"},
+				},
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.Embedding(ctx, schemas.Key{Value: *schemas.NewSecretVar("key")}, request)
+			if bifrostErr != nil {
+				t.Fatalf("Embedding returned error: %v", bifrostErr.Error)
+			}
+			got := <-sent
+			if got.path != "/embeddings/multimodal" {
+				t.Fatalf("path = %s, want /embeddings/multimodal for a single vision input with two text parts", got.path)
+			}
+			if len(got.body.Input) != 2 || got.body.Input[0].Text == nil || *got.body.Input[0].Text != first ||
+				got.body.Input[1].Text == nil || *got.body.Input[1].Text != second {
+				t.Errorf("input = %+v, want both text parts in order", got.body.Input)
+			}
+			if got.body.Instructions == nil || *got.body.Instructions != instructions {
+				t.Errorf("instructions = %v, want them forwarded", got.body.Instructions)
+			}
+			if got.body.SparseEmbedding["type"] != "enabled" {
+				t.Errorf("sparse_embedding = %v, want it forwarded", got.body.SparseEmbedding)
+			}
+		})
+	}
+}
