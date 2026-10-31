@@ -185,7 +185,50 @@ func (c *ClientConfig) HasInferenceAuthSetting() bool { return c.inferenceAuthPr
 // GenerateClientConfigHash generates a SHA256 hash of the client configuration.
 // This is used to detect changes between config.json and database config.
 func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
+	current, _, err := c.generateClientConfigHashes(false)
+	return current, err
+}
+
+// GeneratePriorFormatClientConfigHash is GenerateClientConfigHash as the fork's releases
+// before v2.3.0 computed it. v2.3.0 and later hash fields those releases did not,
+// compat.azure_deepseek even at its default, so an unchanged config.json no longer matches
+// the checkpoint they stored; the loader recognizes that checkpoint with this hash and
+// advances it instead of letting the file overwrite dashboard settings.
+//
+// unchanged is false when c sets one of those newer fields away from its default. The hash
+// cannot see that, and such a file was not the one the checkpoint was stored for: it is a
+// real edit, so the checkpoint must not match it even when the hash does.
+//
+// compat.azure_deepseek false writes nothing in the current format, so the current hash of
+// such a file equals the prior hash of the same file without the key. On such a match the
+// loader takes this one field from the file; a file adding the key at an upgrade still reads
+// as an unchanged current checkpoint, and applies on its next edit.
+func (c *ClientConfig) GeneratePriorFormatClientConfigHash() (hash string, unchanged bool, err error) {
+	hash, added, err := c.generateClientConfigHashes(true)
+	if err != nil {
+		return "", false, err
+	}
+	var defaults ClientConfig
+	if err := defaults.UnmarshalJSON([]byte("{}")); err != nil {
+		return "", false, err
+	}
+	_, defaultAdded, err := defaults.generateClientConfigHashes(true)
+	if err != nil {
+		return "", false, err
+	}
+	return hash, added == defaultAdded, nil
+}
+
+// generateClientConfigHashes computes the client config hash. Every field v2.3.0 and later
+// added to it is written through added: in the current format that is the hash itself, and
+// with prior set it is a separate hash, returned so the caller can tell whether any of them
+// left its default. hash then equals what the releases before v2.3.0 computed.
+func (c *ClientConfig) generateClientConfigHashes(prior bool) (string, string, error) {
 	hash := sha256.New()
+	added := hash
+	if prior {
+		added = sha256.New()
+	}
 
 	// Hash boolean fields
 	if c.DropExcessRequests {
@@ -225,7 +268,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.ExtraFieldsPlacement != "" && c.ExtraFieldsPlacement != tables.ExtraFieldsPlacementBody {
-		hash.Write([]byte("extraFieldsPlacement:" + string(c.ExtraFieldsPlacement)))
+		added.Write([]byte("extraFieldsPlacement:" + string(c.ExtraFieldsPlacement)))
 	}
 
 	if c.Compat.ConvertTextToChat {
@@ -241,13 +284,13 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("compatShouldConvertParams:true"))
 	}
 	if c.Compat.AzureDeepseek {
-		hash.Write([]byte("compatAzureDeepseek:true"))
+		added.Write([]byte("compatAzureDeepseek:true"))
 	}
 	if !c.Compat.ForceReasoningOnlyModelsToResponses {
-		hash.Write([]byte("compatForceReasoningOnlyModelsToResponses:false"))
+		added.Write([]byte("compatForceReasoningOnlyModelsToResponses:false"))
 	}
 	if c.Compat.ConvertDecisionToResponses {
-		hash.Write([]byte("compatConvertDecisionToResponses:true"))
+		added.Write([]byte("compatConvertDecisionToResponses:true"))
 	}
 
 	// Only hash non-default value to avoid legacy config hash churn.
@@ -255,11 +298,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("hideDeletedVirtualKeysInFilters:true"))
 	}
 	if c.DeleteExpiredVirtualKeys {
-		hash.Write([]byte("deleteExpiredVirtualKeys:true"))
+		added.Write([]byte("deleteExpiredVirtualKeys:true"))
 	}
 	// Default is true; only hash the opt-out to avoid config hash churn on upgrade.
 	if !c.EnforceVKObjectOwnership {
-		hash.Write([]byte("enforceVKObjectOwnership:false"))
+		added.Write([]byte("enforceVKObjectOwnership:false"))
 	}
 
 	// Always hash when non-zero — explicitly setting the default (10) is a meaningful
@@ -277,10 +320,10 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	// No else: 0 is the default, so writing ":0" would change every existing config's hash.
 	if c.MCPMaxInstructionsPerClient > 0 {
-		hash.Write([]byte("mcpMaxInstructionsPerClient:" + strconv.Itoa(c.MCPMaxInstructionsPerClient)))
+		added.Write([]byte("mcpMaxInstructionsPerClient:" + strconv.Itoa(c.MCPMaxInstructionsPerClient)))
 	}
 	if c.MCPMaxInstructionsTotal > 0 {
-		hash.Write([]byte("mcpMaxInstructionsTotal:" + strconv.Itoa(c.MCPMaxInstructionsTotal)))
+		added.Write([]byte("mcpMaxInstructionsTotal:" + strconv.Itoa(c.MCPMaxInstructionsTotal)))
 	}
 
 	if c.MCPToolExecutionTimeout > 0 {
@@ -352,10 +395,10 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	if c.MCPCodeModeLimits != nil {
 		data, err := sonic.Marshal(c.MCPCodeModeLimits)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		hash.Write([]byte("mcpCodeModeLimits:"))
-		hash.Write(data)
+		added.Write([]byte("mcpCodeModeLimits:"))
+		added.Write(data)
 	}
 
 	// Only hash when present to avoid legacy config hash churn on upgrade. An explicit
@@ -363,25 +406,25 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	if c.MCPOAuthPrivateAllowlist != nil {
 		data, err := sortedStringsJSON(c.MCPOAuthPrivateAllowlist)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		hash.Write([]byte("mcpOAuthPrivateAllowlist:"))
-		hash.Write(data)
+		added.Write([]byte("mcpOAuthPrivateAllowlist:"))
+		added.Write(data)
 	}
 	if c.A2APrivateAllowlist != nil {
 		data, err := sortedStringsJSON(c.A2APrivateAllowlist)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		hash.Write([]byte("a2aPrivateAllowlist:"))
-		hash.Write(data)
+		added.Write([]byte("a2aPrivateAllowlist:"))
+		added.Write(data)
 	}
 
 	// Only hash when present to avoid legacy config hash churn on upgrade.
 	if c.WebhookConfig != nil {
 		data, err := sonic.Marshal(c.WebhookConfig)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		hash.Write([]byte("webhookConfig:"))
 		hash.Write(data)
@@ -390,19 +433,19 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Hash integer fields
 	data, err := sonic.Marshal(c.InitialPoolSize)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	hash.Write(data)
 
 	data, err = sonic.Marshal(c.LogRetentionDays)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	hash.Write(data)
 
 	data, err = sonic.Marshal(c.MaxRequestBodySizeMB)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	hash.Write(data)
 
@@ -413,7 +456,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		sort.Strings(sortedLabels)
 		data, err := sonic.Marshal(sortedLabels)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		hash.Write(data)
 	}
@@ -425,7 +468,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		sort.Strings(sortedOrigins)
 		data, err := sonic.Marshal(sortedOrigins)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		hash.Write(data)
 	}
@@ -437,7 +480,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		sort.Strings(sortedHeaders)
 		data, err := sonic.Marshal(sortedHeaders)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		hash.Write(data)
 	}
@@ -449,7 +492,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		sort.Strings(sortedLogging)
 		data, err := sonic.Marshal(sortedLogging)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		hash.Write([]byte("loggingHeaders:"))
 		hash.Write(data)
@@ -463,7 +506,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		sort.Strings(sortedHidden)
 		data, err := sonic.Marshal(sortedHidden)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		hash.Write([]byte("hiddenRequestTypes:"))
 		hash.Write(data)
@@ -476,7 +519,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		sort.Strings(sortedRequired)
 		data, err := sonic.Marshal(sortedRequired)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		hash.Write([]byte("requiredHeaders:"))
 		hash.Write(data)
@@ -489,7 +532,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		sort.Strings(sortedRoutes)
 		data, err := sonic.Marshal(sortedRoutes)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		hash.Write([]byte("whitelistedRoutes:"))
 		hash.Write(data)
@@ -504,7 +547,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			sort.Strings(sortedAllowlist)
 			data, err := sonic.Marshal(sortedAllowlist)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			hash.Write([]byte("headerFilterConfig.allowlist:"))
 			hash.Write(data)
@@ -516,7 +559,7 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			sort.Strings(sortedDenylist)
 			data, err := sonic.Marshal(sortedDenylist)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			hash.Write([]byte("headerFilterConfig.denylist:"))
 			hash.Write(data)
@@ -532,21 +575,21 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	if c.SkillsExternalClientURL != nil {
 		if c.SkillsExternalClientURL.IsFromSecret() {
-			hash.Write([]byte("skillsExternalClientURL:ref:" + c.SkillsExternalClientURL.GetRawRef()))
+			added.Write([]byte("skillsExternalClientURL:ref:" + c.SkillsExternalClientURL.GetRawRef()))
 		} else {
-			hash.Write([]byte("skillsExternalClientURL:val:" + c.SkillsExternalClientURL.GetValue()))
+			added.Write([]byte("skillsExternalClientURL:val:" + c.SkillsExternalClientURL.GetValue()))
 		}
 	}
 
 	// Only hashed when set to avoid hash churn on existing configs that predate the field.
 	if c.A2AStoreRawRequestResponse {
-		hash.Write([]byte("a2aStoreRawRequestResponse:true"))
+		added.Write([]byte("a2aStoreRawRequestResponse:true"))
 	}
 	if c.A2AExternalClientURL != nil {
 		if c.A2AExternalClientURL.IsFromSecret() {
-			hash.Write([]byte("a2aExternalClientURL:ref:" + c.A2AExternalClientURL.GetRawRef()))
+			added.Write([]byte("a2aExternalClientURL:ref:" + c.A2AExternalClientURL.GetRawRef()))
 		} else {
-			hash.Write([]byte("a2aExternalClientURL:val:" + c.A2AExternalClientURL.GetValue()))
+			added.Write([]byte("a2aExternalClientURL:val:" + c.A2AExternalClientURL.GetValue()))
 		}
 	}
 
@@ -571,14 +614,14 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		// Unset policy fields contribute nothing so rows stored before they were
 		// hashed keep their hash; once set, a file edit must win over the DB row.
 		for _, uri := range oc.AllowedRedirectURIs {
-			hash.Write([]byte("oauth2AllowedRedirectURI:" + uri))
+			added.Write([]byte("oauth2AllowedRedirectURI:" + uri))
 		}
 		if oc.DisableVKIdentity {
-			hash.Write([]byte("oauth2DisableVKIdentity:true"))
+			added.Write([]byte("oauth2DisableVKIdentity:true"))
 		}
 	}
 
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	return hex.EncodeToString(hash.Sum(nil)), hex.EncodeToString(added.Sum(nil)), nil
 }
 
 // GenerateClientConfigHashWithToolManager extends GenerateClientConfigHash to also cover
@@ -589,6 +632,30 @@ func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPTo
 	if err != nil || tm == nil {
 		return base, err
 	}
+	return extendClientConfigHashWithToolManager(base, tm, false)
+}
+
+// GeneratePriorFormatClientConfigHashWithToolManager is
+// GenerateClientConfigHashWithToolManager in the prior format, with unchanged as in
+// GeneratePriorFormatClientConfigHash: it also needs tm to set no field v2.3.0 added.
+func (c *ClientConfig) GeneratePriorFormatClientConfigHashWithToolManager(tm *schemas.MCPToolManagerConfig) (hash string, unchanged bool, err error) {
+	base, unchanged, err := c.GeneratePriorFormatClientConfigHash()
+	if err != nil || tm == nil {
+		return base, unchanged, err
+	}
+	hash, err = extendClientConfigHashWithToolManager(base, tm, true)
+	return hash, unchanged && !toolManagerSetsPostPriorFormatFields(tm), err
+}
+
+// toolManagerSetsPostPriorFormatFields reports whether tm sets a field the prior hash format
+// leaves out. The file holding such a tm cannot be the one a prior checkpoint was stored for.
+func toolManagerSetsPostPriorFormatFields(tm *schemas.MCPToolManagerConfig) bool {
+	return tm != nil && (tm.CodeModeLimits != nil || tm.OAuthPrivateAllowlist != nil)
+}
+
+// extendClientConfigHashWithToolManager mixes tm into a client config hash. With prior set it
+// leaves out the fields toolManagerSetsPostPriorFormatFields names.
+func extendClientConfigHashWithToolManager(base string, tm *schemas.MCPToolManagerConfig, prior bool) (string, error) {
 	h := sha256.New()
 	h.Write([]byte(base))
 	h.Write([]byte("toolMgrAgentDepth:" + strconv.Itoa(tm.MaxAgentDepth)))
@@ -598,6 +665,9 @@ func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPTo
 		h.Write([]byte("toolMgrDisableAutoInject:true"))
 	} else {
 		h.Write([]byte("toolMgrDisableAutoInject:false"))
+	}
+	if prior {
+		return hex.EncodeToString(h.Sum(nil)), nil
 	}
 	// Only hash a non-default value, so a config written before this field existed keeps
 	// producing the same hash on upgrade.

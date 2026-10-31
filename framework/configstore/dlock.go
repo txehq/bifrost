@@ -150,14 +150,17 @@ func (m *DistributedLockManager) NewLockWithTTL(lockKey string, ttl time.Duratio
 //
 // The lease is renewed every third of its TTL for as long as it is held, so a
 // section that runs long keeps the lock instead of silently sharing it. If the
-// lease is lost anyway - the store was unreachable past the TTL and another
-// holder took the key - the returned context is cancelled with ErrLockLost, so
-// the caller stops rather than keep writing unprotected.
+// lease is lost anyway - the store refused a renewal, or no renewal was confirmed
+// before the lease the store last confirmed ran out - the returned context is
+// cancelled with ErrLockLost, so the caller stops rather than keep writing
+// unprotected.
 //
 // Release stops the renewal and waits for it before unlocking, and is safe to
 // call more than once. It runs on a context detached from ctx's cancellation:
 // a request cancelled mid-write must still give the lock back, not leave every
-// other instance waiting out the TTL.
+// other instance waiting out the TTL. Both are bounded by the confirmed lease:
+// past it the row is any holder's to take, so release never touches it and never
+// holds its caller longer, whatever the store is doing.
 func (m *DistributedLockManager) Acquire(ctx context.Context, key string) (context.Context, func(), error) {
 	lock, err := m.NewLock(key)
 	if err != nil {
@@ -168,10 +171,25 @@ func (m *DistributedLockManager) Acquire(ctx context.Context, key string) (conte
 	}
 	detached := context.WithoutCancel(ctx)
 	held, lose := context.WithCancelCause(ctx)
+	if lock.store == nil {
+		// No store, no lease to renew or lose: Lock was a no-op.
+		return held, func() { lose(context.Canceled) }, nil
+	}
 	stop := make(chan struct{})
 	renewed := make(chan struct{})
+	expired := make(chan struct{})
+	var expiredOnce sync.Once
+	// The lease is only as good as the last expiry the store confirmed. Past it
+	// another holder may have the key whatever a pending renewal later returns, so
+	// it is enforced on its own timer rather than by the result of a store call
+	// that may never come back.
+	expiry := time.AfterFunc(time.Until(lock.expiresAt), func() {
+		lose(ErrLockLost)
+		expiredOnce.Do(func() { close(expired) })
+	})
 	go func() {
 		defer close(renewed)
+		defer expiry.Stop()
 		ticker := time.NewTicker(max(lock.ttl/3, time.Millisecond))
 		defer ticker.Stop()
 		for {
@@ -180,19 +198,32 @@ func (m *DistributedLockManager) Acquire(ctx context.Context, key string) (conte
 				return
 			case <-ticker.C:
 			}
-			// Bounded by the TTL: past it the lease is gone whatever this call
-			// returns, and a hung store must not hang the release behind it.
-			extendCtx, cancel := context.WithTimeout(detached, lock.ttl)
+			// Bounded by the confirmed lease: past it the lease is gone whatever
+			// this call returns, and a hung store must not hang the release
+			// behind it.
+			extendCtx, cancel := context.WithDeadline(detached, lock.expiresAt)
 			err := lock.Extend(extendCtx)
 			cancel()
 			if errors.Is(err, ErrLockNotHeld) {
 				lose(ErrLockLost)
 				return
 			}
-			// Anything else is transient: the next tick tries again, and if the
-			// lease expires meanwhile that attempt reports it as lost.
-			if err != nil && m.logger != nil {
+			if err == nil {
+				// A renewal that lands after the expiry timer fired is too late:
+				// the holder has already been told to stop.
+				if !expiry.Reset(time.Until(lock.expiresAt)) {
+					return
+				}
+				continue
+			}
+			// Anything else is transient: the next tick tries again while the
+			// confirmed lease lasts, and the expiry timer reports it lost after.
+			if m.logger != nil {
 				m.logger.Warn("failed to renew distributed lock %s: %v", key, err)
+			}
+			if !time.Now().Before(lock.expiresAt) {
+				lose(ErrLockLost)
+				return
 			}
 		}
 	}()
@@ -200,11 +231,29 @@ func (m *DistributedLockManager) Acquire(ctx context.Context, key string) (conte
 	release := func() {
 		once.Do(func() {
 			close(stop)
-			<-renewed
-			// ErrLockNotHeld here means the lease was already lost, which the
-			// held context has reported; there is nothing left to release.
-			if err := lock.Unlock(detached); err != nil && !errors.Is(err, ErrLockNotHeld) && m.logger != nil {
-				m.logger.Warn("failed to release distributed lock %s: %v", key, err)
+			select {
+			case <-renewed:
+			case <-expired:
+				// The lease is over. A renewal still inside a store that ignored its
+				// deadline must not hold the caller, and owns the lock's state until
+				// it comes back, so it is left to finish on its own.
+				select {
+				case <-renewed:
+				default:
+					return
+				}
+			}
+			// Bounded by the confirmed lease, like a renewal: past it the row is any
+			// holder's to take, so a store blocked on row contention must not hold
+			// the caller beyond it.
+			if time.Now().Before(lock.expiresAt) {
+				unlockCtx, cancel := context.WithDeadline(detached, lock.expiresAt)
+				// ErrLockNotHeld here means the lease was already lost, which the
+				// held context has reported; there is nothing left to release.
+				if err := lock.Unlock(unlockCtx); err != nil && !errors.Is(err, ErrLockNotHeld) && m.logger != nil {
+					m.logger.Warn("failed to release distributed lock %s: %v", key, err)
+				}
+				cancel()
 			}
 			lose(context.Canceled)
 		})
@@ -229,6 +278,9 @@ type DistributedLock struct {
 	retryInterval time.Duration
 	maxRetries    int
 	acquired      bool
+	// expiresAt is the lease expiry the store last confirmed, computed before
+	// the write that set it, so it never runs past the stored one.
+	expiresAt time.Time
 }
 
 // Lock acquires the lock, blocking until it's available or the context is cancelled.
@@ -330,6 +382,7 @@ func (l *DistributedLock) TryLock(ctx context.Context) (bool, error) {
 
 	if acquired {
 		l.acquired = true
+		l.expiresAt = lock.ExpiresAt
 		l.logger.Debug("acquired lock %s with holder %s", l.lockKey, l.holderID)
 	}
 
@@ -387,6 +440,7 @@ func (l *DistributedLock) Extend(ctx context.Context) error {
 		return fmt.Errorf("error extending lock: %w", err)
 	}
 
+	l.expiresAt = newExpiresAt
 	l.logger.Debug("extended lock %s to %v", l.lockKey, newExpiresAt)
 	return nil
 }
