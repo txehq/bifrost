@@ -173,6 +173,11 @@ NOT_DIALLED_HOSTS = {
     "dbx-fixture-workspace.invalid": "reserved .invalid TLD; the Databricks OAuth row asserts the token request fails",
     "harness-credential-guard.example.invalid": "reserved .invalid TLD; a token_url inside the credential-guard row's refused external_account body",
     "harness-plugin-guard.example.invalid": "reserved .invalid TLD; the plugin-guard row asserts the refused collector_url is never stored",
+    "docs.openapi.example": "reserved .example TLD; a spec_url beside the inline documents of the 272 openapi-preservation previews, which are never fetched",
+    "self.openapi.example": "reserved .example TLD; $self in a 272 openapi-preservation inline document, previewed and never dialled",
+    "pinned.openapi.example": "reserved .example TLD; a base_url override in a 272 openapi-preservation preview, never dialled",
+    "api.openapi.example": "reserved .example TLD; an operation server in a 272 openapi-preservation inline document, previewed and never dialled",
+    "server.openapi.example": "reserved .example TLD; a server in the 272 openapi-preservation inline documents, previewed and never dialled",
     "idp.example": "reserved .example TLD; oauth_key_config token_url in the OAuth-minted key rows, never resolves",
     # Documentation links inside descriptions and comments.
     "anthropic.com": "doc link in a folder description",

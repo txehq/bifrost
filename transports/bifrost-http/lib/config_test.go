@@ -24145,6 +24145,73 @@ func TestMCPClientConfigToTable_RejectsNegativeToolSyncInterval(t *testing.T) {
 	assert.Contains(t, err.Error(), "tool_sync_interval must be 0")
 }
 
+// TestMCPClientConfigToTable_KeepsMaxInstructionsLength pins that a config.json
+// client's per-client instruction cap reaches the stored row instead of resetting
+// to the global cap, and that a negative one is refused as the store's update does.
+func TestMCPClientConfigToTable_KeepsMaxInstructionsLength(t *testing.T) {
+	row, err := mcpClientConfigToTable(&schemas.MCPClientConfig{ID: "cap", Name: "cap", MaxInstructionsLength: 2048})
+	require.NoError(t, err)
+	assert.Equal(t, 2048, row.MaxInstructionsLength)
+
+	row, err = mcpClientConfigToTable(&schemas.MCPClientConfig{ID: "cap", Name: "cap"})
+	require.NoError(t, err)
+	assert.Zero(t, row.MaxInstructionsLength, "0 keeps meaning the global cap")
+
+	_, err = mcpClientConfigToTable(&schemas.MCPClientConfig{ID: "cap", Name: "cap", MaxInstructionsLength: -1})
+	require.ErrorContains(t, err, "max_instructions_length")
+}
+
+// TestMergeMCPConfig_InstructionCapReconciliation runs the merge a boot runs: a
+// limit-only edit in config.json updates the row with the new cap, a file that
+// never mentions a cap leaves one saved through the API alone, and a negative cap
+// is warned about and leaves the row untouched.
+func TestMergeMCPConfig_InstructionCapReconciliation(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	stored := func(fileCap, rowCap int) *schemas.MCPClientConfig {
+		row, err := mcpClientConfigToTable(&schemas.MCPClientConfig{Name: "capped", ConnectionType: schemas.MCPConnectionTypeHTTP, ToolsToExecute: schemas.WhiteList{"*"}, MaxInstructionsLength: fileCap})
+		require.NoError(t, err)
+		hash, err := configstore.GenerateMCPClientHash(row)
+		require.NoError(t, err)
+		return &schemas.MCPClientConfig{ID: "row-id", Name: "capped", ConnectionType: schemas.MCPConnectionTypeHTTP, ToolsToExecute: schemas.WhiteList{"*"}, MaxInstructionsLength: rowCap, ConfigHash: hash}
+	}
+	file := func(limit int) *ConfigData {
+		return &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{Name: "capped", ConnectionType: schemas.MCPConnectionTypeHTTP, ToolsToExecute: schemas.WhiteList{"*"}, MaxInstructionsLength: limit}}}}
+	}
+	cases := []struct {
+		name        string
+		existing    *schemas.MCPClientConfig
+		fileCap     int
+		wantUpdates int
+		wantCap     int
+	}{
+		{name: "setting a cap", existing: stored(0, 0), fileCap: 512, wantUpdates: 1, wantCap: 512},
+		{name: "changing a cap", existing: stored(512, 512), fileCap: 1024, wantUpdates: 1, wantCap: 1024},
+		{name: "removing a cap", existing: stored(512, 512), fileCap: 0, wantUpdates: 1, wantCap: 0},
+		{name: "an unchanged cap", existing: stored(512, 512), fileCap: 512},
+		{name: "unset keeps a cap saved through the API", existing: stored(0, 700), fileCap: 0},
+		{name: "a negative cap", existing: stored(512, 512), fileCap: -1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := NewMockConfigStore()
+			store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{tc.existing}}
+			want := tc.existing.MaxInstructionsLength
+			cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			// The loaded config is its own slice, as it is at boot: the mock's update rewrites its own entries.
+			loaded := &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{tc.existing}}
+			mergeMCPConfig(ctx, cfg, file(tc.fileCap), loaded)
+			require.Len(t, store.mcpClientConfigUpdates, tc.wantUpdates)
+			if tc.wantUpdates == 0 {
+				assert.Equal(t, want, cfg.MCPConfig.ClientConfigs[0].MaxInstructionsLength)
+				return
+			}
+			assert.Equal(t, tc.wantCap, store.mcpClientConfigUpdates[0].Config.MaxInstructionsLength)
+			assert.Equal(t, tc.wantCap, cfg.MCPConfig.ClientConfigs[0].MaxInstructionsLength, "the runtime client takes it too")
+		})
+	}
+}
+
 // TestUpdateMCPClientConfig_RejectsNegativeToolSyncInterval pins the store's
 // update path, which used to let a negative through while create rejected it.
 func TestUpdateMCPClientConfig_RejectsNegativeToolSyncInterval(t *testing.T) {

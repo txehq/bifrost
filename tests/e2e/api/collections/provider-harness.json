@@ -285056,6 +285056,1168 @@
           ]
         }
       ]
+    },
+    {
+      "name": "272. OpenAPI documents keep their default server, $ref sibling data and whole allOf bodies (openapi-preservation) [SERIAL]",
+      "description": "TXE-5533 regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. That config declares fixture_openapi, a hosted OpenAPI 3.0 document without servers, so the client connects only if the implied \"/\" server resolves to the document's host. Rows read tools/list, call tools and read what reached the fixture. Previews with a spec_url beside an inline document are never fetched, so their hosts need not exist. The setup token authenticates these calls, so the public-target gate for an unauthenticated caller is pinned by the Go test TestAddMCPClient_OpenAPI_DefaultServerIsTargetChecked, not here. A limit-only edit of the file's instruction cap needs a restart, so it is not a row here. Run the whole folder in order.",
+      "item": [
+        {
+          "name": "a hosted document without servers previews at the host that served it - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"paths\\\": {\\\"/a\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://docs.openapi.example/v2/openapi.json\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('openapi-preservation: the default is the host, not the folder of the document', function () { pm.expect(j.base_url, pm.response.text()).to.equal('https://docs.openapi.example'); });",
+                  "pm.test('openapi-preservation: it is listed, so a form pins nothing', function () { pm.expect(j.servers, pm.response.text()).to.eql(['https://docs.openapi.example']); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "empty servers in 3.1 take the same default - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.1.0\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"servers\\\": [], \\\"paths\\\": {\\\"/a\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://docs.openapi.example/openapi.json\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('openapi-preservation: the default applies to an empty list', function () { pm.expect(j.base_url, pm.response.text()).to.equal('https://docs.openapi.example'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "$self decides the default before the spec URL - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.2.0\\\", \\\"$self\\\": \\\"https://self.openapi.example/specs/openapi.json\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"paths\\\": {\\\"/a\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://docs.openapi.example/openapi.json\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('openapi-preservation: $self wins', function () { pm.expect(j.base_url, pm.response.text()).to.equal('https://self.openapi.example'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "an explicit base URL wins over the default - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"paths\\\": {\\\"/a\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://docs.openapi.example/openapi.json\", \"base_url\": \"https://pinned.openapi.example\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('openapi-preservation: the override is the base', function () { pm.expect(j.base_url, pm.response.text()).to.equal('https://pinned.openapi.example'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "with nothing to resolve against it still asks for a base URL - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"paths\\\": {\\\"/a\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('openapi-preservation: no base and a warning', function () { pm.expect(j.base_url || '', pm.response.text()).to.equal(''); pm.expect((j.warnings || []).join(' '), pm.response.text()).to.include('set openapi_config.base_url'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "spec_url userinfo never reaches the default - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"paths\\\": {\\\"/a\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://reader:hp-s3cret@docs.openapi.example/openapi.json\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('openapi-preservation: the credential is dropped', function () { pm.expect(j.base_url, pm.response.text()).to.equal('https://docs.openapi.example'); pm.expect(JSON.stringify(j.servers)).to.not.include('hp-s3cret'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "an operation server at another origin keeps asking for a base URL - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"paths\\\": {\\\"/a\\\": {\\\"servers\\\": [{\\\"url\\\": \\\"https://api.openapi.example\\\"}], \\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://docs.openapi.example/openapi.json\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('openapi-preservation: no default', function () { pm.expect(j.base_url || '', pm.response.text()).to.equal(''); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a create from a hosted document keeps the document's own server and pins nothing - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"hp_hosted\", \"connection_type\": \"openapi\", \"auth_type\": \"none\", \"tools_to_execute\": [\"*\"], \"openapi_config\": {\"spec_url\": \"{{providerErrorFixtureUrl}}/openapi-fixture/docs/no-servers.json\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the created client is connected with no base URL stored - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var client = pm.response.json().clients.find(function (c) { return c.config.name === 'hp_hosted'; });",
+                  "pm.test('openapi-preservation: the client is listed', function () { pm.expect(client, pm.response.text()).to.be.an('object'); });",
+                  "pm.collectionVariables.set('opClientId', client ? client.config.client_id : 'hp-hosted-was-not-created');",
+                  "pm.test('openapi-preservation: nothing was pinned', function () { pm.expect(client, pm.response.text()).to.be.an('object'); pm.expect(client.config.openapi_config.base_url || '', pm.response.text()).to.equal(''); });",
+                  "pm.test('openapi-preservation: it connected through the default', function () { pm.expect((client || {}).state, pm.response.text()).to.equal('healthy'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the created client goes - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{opClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{opClientId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.1 data beside a $ref is data - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.1.0\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"servers\\\": [{\\\"url\\\": \\\"https://server.openapi.example\\\"}], \\\"paths\\\": {\\\"/docs\\\": {\\\"post\\\": {\\\"operationId\\\": \\\"saveDoc\\\", \\\"requestBody\\\": {\\\"required\\\": true, \\\"content\\\": {\\\"application/json\\\": {\\\"schema\\\": {\\\"$ref\\\": \\\"#/components/schemas/Base\\\", \\\"default\\\": {\\\"$ref\\\": \\\"https://example.com/not-a-schema\\\"}, \\\"properties\\\": {\\\"$ref\\\": {\\\"type\\\": \\\"string\\\"}}}}}}, \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}, \\\"components\\\": {\\\"schemas\\\": {\\\"Base\\\": {\\\"type\\\": \\\"object\\\", \\\"properties\\\": {\\\"id\\\": {\\\"type\\\": \\\"integer\\\"}}}}}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('openapi-preservation: the operation survives', function () { pm.expect((j.unsupported || []).length, pm.response.text()).to.equal(0); pm.expect(j.tools.map(function (t) { return t.name; })).to.eql(['saveDoc']); });",
+                  "pm.test('openapi-preservation: the property named $ref is kept', function () { var tool = (j.tools || [])[0] || {}; var props = (tool.input_schema || {}).properties || {}; pm.expect(props, pm.response.text()).to.have.property('$ref'); pm.expect(props).to.have.property('id'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3.0 still ignores the siblings - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"servers\\\": [{\\\"url\\\": \\\"https://server.openapi.example\\\"}], \\\"paths\\\": {\\\"/docs\\\": {\\\"post\\\": {\\\"operationId\\\": \\\"saveDoc\\\", \\\"requestBody\\\": {\\\"required\\\": true, \\\"content\\\": {\\\"application/json\\\": {\\\"schema\\\": {\\\"$ref\\\": \\\"#/components/schemas/Base\\\", \\\"default\\\": {\\\"$ref\\\": \\\"https://example.com/not-a-schema\\\"}, \\\"properties\\\": {\\\"$ref\\\": {\\\"type\\\": \\\"string\\\"}}}}}}, \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}, \\\"components\\\": {\\\"schemas\\\": {\\\"Base\\\": {\\\"type\\\": \\\"object\\\", \\\"properties\\\": {\\\"id\\\": {\\\"type\\\": \\\"integer\\\"}}}}}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('openapi-preservation: the operation survives on the target alone', function () { pm.expect((j.unsupported || []).length, pm.response.text()).to.equal(0); var props = j.tools[0].input_schema.properties; pm.expect(props).to.have.property('id'); pm.expect(props).to.not.have.property('$ref'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "an unmerged allOf travels whole with its required names - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/openapi/preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "openapi",
+                "preview"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"servers\\\": [{\\\"url\\\": \\\"https://server.openapi.example\\\"}], \\\"paths\\\": {\\\"/profiles\\\": {\\\"post\\\": {\\\"operationId\\\": \\\"createProfile\\\", \\\"requestBody\\\": {\\\"required\\\": true, \\\"content\\\": {\\\"application/json\\\": {\\\"schema\\\": {\\\"type\\\": \\\"object\\\", \\\"required\\\": [\\\"id\\\", \\\"email\\\"], \\\"properties\\\": {\\\"id\\\": {\\\"type\\\": \\\"string\\\"}}, \\\"allOf\\\": [{\\\"oneOf\\\": [{\\\"type\\\": \\\"object\\\", \\\"properties\\\": {\\\"email\\\": {\\\"type\\\": \\\"string\\\"}}}, {\\\"type\\\": \\\"object\\\", \\\"properties\\\": {\\\"phone\\\": {\\\"type\\\": \\\"string\\\"}}}]}]}}}}, \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('openapi-preservation: one body argument', function () { var props = j.tools[0].input_schema.properties; pm.expect(Object.keys(props), pm.response.text()).to.eql(['body']); pm.expect(props.body).to.have.property('allOf'); });",
+                  "pm.test('openapi-preservation: required keeps the name declared in the allOf', function () { var body = j.tools[0].input_schema.properties.body || {}; pm.expect(body.required || [], pm.response.text()).to.have.members(['id', 'email']); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the config.json OpenAPI client connected at the document's own host - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var client = pm.response.json().clients.find(function (c) { return c.config.name === 'fixture_openapi'; });",
+                  "pm.test('openapi-preservation: the client is connected', function () { pm.expect(client && client.state, pm.response.text()).to.equal('healthy'); });",
+                  "pm.test('openapi-preservation: the cap from config.json is stored', function () { pm.expect(client.config.max_instructions_length, pm.response.text()).to.equal(48); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the fixture's call record starts empty - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__reset",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__reset"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "tools/list tells a client a PUT overwrites and can be repeated - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": \"tools/list\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var tools = (pm.response.json().result || {}).tools || [];",
+                  "var find = function (n) { return tools.find(function (t) { return t.name === 'fixture_openapi-' + n; }); };",
+                  "pm.test('openapi-preservation: PUT is destructive and idempotent', function () { var put = find('putItem'); pm.expect(put, pm.response.text()).to.be.an('object'); pm.expect(put.annotations.destructiveHint).to.equal(true); pm.expect(put.annotations.idempotentHint).to.equal(true); pm.expect(put.annotations.readOnlyHint).to.equal(false); });",
+                  "pm.test('openapi-preservation: the unmerged allOf is one body argument', function () { var make = find('createProfile'); pm.expect(make, pm.response.text()).to.be.an('object'); pm.expect(Object.keys(make.inputSchema.properties)).to.eql(['body']); pm.expect(make.inputSchema.properties.body.required).to.have.members(['id', 'email']); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "tools/call sends the PUT to the document's host - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 2, \"method\": \"tools/call\", \"params\": {\"name\": \"fixture_openapi-putItem\", \"arguments\": {\"id\": \"7\", \"name\": \"n\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('openapi-preservation: the call succeeded', function () { var r = pm.response.json().result; pm.expect(r, pm.response.text()).to.be.an('object'); pm.expect(r.isError || false, pm.response.text()).to.equal(false); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "tools/call sends an allOf body whole - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 3, \"method\": \"tools/call\", \"params\": {\"name\": \"fixture_openapi-createProfile\", \"arguments\": {\"body\": {\"id\": \"abc\", \"email\": \"e@example.com\"}}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('openapi-preservation: the call succeeded', function () { var r = pm.response.json().result; pm.expect(r, pm.response.text()).to.be.an('object'); pm.expect(r.isError || false, pm.response.text()).to.equal(false); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the upstream received exactly those two calls - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__openapi-calls",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__openapi-calls"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var calls = pm.response.json().data[0].calls;",
+                  "pm.test('openapi-preservation: both arrived in order with their bodies', function () { pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), pm.response.text()).to.eql(['PUT /fixture-api/items/7', 'POST /fixture-api/profiles']); pm.expect(JSON.parse(calls[0].body)).to.eql({ name: 'n' }); pm.expect(JSON.parse(calls[1].body)).to.eql({ id: 'abc', email: 'e@example.com' }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "initialize carries the capped multibyte instructions whole - openapi-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\": \"2.0\", \"id\": 4, \"method\": \"initialize\", \"params\": {\"protocolVersion\": \"2025-03-26\", \"capabilities\": {}, \"clientInfo\": {\"name\": \"harness\", \"version\": \"1\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var text = ((pm.response.json().result || {}).instructions) || '';",
+                  "pm.test('openapi-preservation: the block of the server is present and cut', function () { pm.expect(text, pm.response.text()).to.include('fixture_openapi'); pm.expect(text).to.include('truncated'); });",
+                  "pm.test('openapi-preservation: the cap holds and no character is split', function () { var body = text.split('fixture_openapi').slice(1).join(''); pm.expect(body).to.not.include('\\ufffd'); pm.expect(text.length).to.be.below(600); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

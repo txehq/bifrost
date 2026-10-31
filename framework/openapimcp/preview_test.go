@@ -39,6 +39,86 @@ func TestResolveBaseURL(t *testing.T) {
 	require.ErrorContains(t, err, "set openapi_config.base_url")
 	_, _, err = ResolveBaseURL(nil, nil, "")
 	require.Error(t, err)
+
+	// OpenAPI 3 without servers defaults to "/", resolved against the spec's URL.
+	base, _, err = ResolveBaseURL(&Document{OpenAPIVersion: "3.0.3"}, nil, "https://host.example.com/docs/openapi.json")
+	require.NoError(t, err)
+	assert.Equal(t, "https://host.example.com", base)
+	_, _, err = ResolveBaseURL(&Document{OpenAPIVersion: "3.1.0"}, nil, "")
+	require.ErrorContains(t, err, "set openapi_config.base_url", "nothing to resolve the default against")
+}
+
+// TestResolveBaseURL_DefaultServer pins when OpenAPI 3's implied "/" server stands
+// in for a missing base URL, and that it is never broader than a declared one.
+func TestResolveBaseURL_DefaultServer(t *testing.T) {
+	const specURL = "https://docs.example.com/v2/openapi.json?rev=7#top"
+	opAt := func(server string) []Operation {
+		return []Operation{{Method: "GET", Path: "/a", Servers: []string{server}}}
+	}
+	cases := []struct {
+		name string
+		doc  *Document
+		spec string
+		want string // "" expects the refusal asking for a base URL
+	}{
+		{name: "3.0 absent", doc: &Document{OpenAPIVersion: "3.0.3"}, spec: specURL, want: "https://docs.example.com"},
+		{name: "3.1 empty", doc: &Document{OpenAPIVersion: "3.1.0", Servers: []string{}}, spec: specURL, want: "https://docs.example.com"},
+		{name: "$self before the spec URL", doc: &Document{OpenAPIVersion: "3.2.0", Self: "https://self.example.com/a/b.json"}, spec: specURL, want: "https://self.example.com"},
+		{name: "a relative $self falls to the spec URL", doc: &Document{OpenAPIVersion: "3.2.0", Self: "/a/b.json"}, spec: specURL, want: "https://docs.example.com"},
+		{name: "swagger has no such default", doc: &Document{OpenAPIVersion: "2.0"}, spec: specURL},
+		{name: "a declared server that resolves to nothing is not replaced", doc: &Document{OpenAPIVersion: "3.0.3", Servers: []string{"ftp://files.example.com"}}, spec: specURL},
+		{name: "userinfo in the spec URL stays out", doc: &Document{OpenAPIVersion: "3.0.3"}, spec: "https://reader:s3cret@docs.example.com/openapi.json", want: "https://docs.example.com"},
+		{name: "userinfo in $self stays out", doc: &Document{OpenAPIVersion: "3.2.0", Self: "https://reader:s3cret@self.example.com/a.json"}, want: "https://self.example.com"},
+		{name: "a non-http spec URL resolves nothing", doc: &Document{OpenAPIVersion: "3.0.3"}, spec: "file:///etc/openapi.json"},
+		{name: "operation server at the same origin", doc: &Document{OpenAPIVersion: "3.0.3", Operations: opAt("https://docs.example.com:443/svc")}, spec: specURL, want: "https://docs.example.com"},
+		{name: "operation server at another origin keeps asking", doc: &Document{OpenAPIVersion: "3.0.3", Operations: opAt("https://api.example.com/svc")}, spec: specURL},
+		{name: "operation server on another scheme keeps asking", doc: &Document{OpenAPIVersion: "3.0.3", Operations: opAt("http://docs.example.com/svc")}, spec: specURL},
+		{name: "an operation server carrying inherited userinfo keeps asking", doc: &Document{OpenAPIVersion: "3.0.3", Operations: opAt("https://reader:s3cret@docs.example.com/svc")}, spec: "https://reader:s3cret@docs.example.com/openapi.json"},
+		{name: "an unresolved relative operation server is the executor's refusal", doc: &Document{OpenAPIVersion: "3.0.3", Operations: opAt("/svc")}, spec: specURL, want: "https://docs.example.com"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base, explicit, err := ResolveBaseURL(tc.doc, nil, tc.spec)
+			if tc.want == "" {
+				require.ErrorContains(t, err, "set openapi_config.base_url")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, base)
+			assert.False(t, explicit, "a default is not an admin pin: operation servers keep applying")
+		})
+	}
+
+	base, explicit, err := ResolveBaseURL(&Document{OpenAPIVersion: "3.0.3"}, str("https://pinned.example.com/"), specURL)
+	require.NoError(t, err)
+	assert.Equal(t, "https://pinned.example.com", base)
+	assert.True(t, explicit, "an explicit base_url wins over the default")
+}
+
+// TestPreview_DefaultServerIsListedWithoutItsCredential: the form saves no
+// override for a server the document owns, so the default is listed as one, and
+// neither the listing nor the base URL repeats spec_url's userinfo.
+func TestPreview_DefaultServerIsListedWithoutItsCredential(t *testing.T) {
+	spec := []byte(`{"openapi":"3.0.3","info":{"title":"t","version":"1"},"paths":{"/a":{"get":{"operationId":"getA","responses":{"200":{"description":"ok"}}}}}}`)
+	result, _, err := Preview(spec, ParseOptions{SpecURL: "https://reader:s3cret@docs.example.com/openapi.json"}, SynthesizeOptions{ClientName: "t"}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "https://docs.example.com", result.BaseURL)
+	assert.Equal(t, []string{"https://docs.example.com"}, result.Servers)
+	encoded, err := json.Marshal(result)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "s3cret")
+
+	result, _, err = Preview(spec, ParseOptions{SpecURL: "https://docs.example.com/openapi.json"}, SynthesizeOptions{ClientName: "t"}, str("https://pinned.example.com"))
+	require.NoError(t, err)
+	assert.Equal(t, "https://pinned.example.com", result.BaseURL)
+	assert.Equal(t, []string{"https://docs.example.com"}, result.Servers, "the picker keeps the document's server beside an override")
+
+	result, _, err = Preview(spec, ParseOptions{}, SynthesizeOptions{ClientName: "t"}, nil)
+	require.NoError(t, err)
+	assert.Empty(t, result.BaseURL)
+	assert.Empty(t, result.Servers)
+	require.NotEmpty(t, result.Warnings)
+	assert.Contains(t, result.Warnings[len(result.Warnings)-1], "set openapi_config.base_url")
 }
 
 func TestPreview(t *testing.T) {
@@ -165,4 +245,21 @@ func TestPreview_ReusedPathItemTextIsCappedPerTool(t *testing.T) {
 
 	_, _, err = Preview(spec(strings.Repeat("o", 256<<10)), ParseOptions{}, SynthesizeOptions{ClientName: "t"}, nil)
 	require.ErrorContains(t, err, "operationId")
+}
+
+// BenchmarkResolveBaseURL_DefaultServer runs at config time, per save and connect,
+// never per tool call: the most a document can make it do is compare one origin
+// per operation, up to maxOperations.
+func BenchmarkResolveBaseURL_DefaultServer(b *testing.B) {
+	ops := make([]Operation, maxOperations)
+	for i := range ops {
+		ops[i] = Operation{Method: "GET", Path: "/a", Servers: []string{"https://docs.example.com/svc"}}
+	}
+	doc := &Document{OpenAPIVersion: "3.0.3", Operations: ops}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, _, err := ResolveBaseURL(doc, nil, "https://docs.example.com/openapi.json"); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

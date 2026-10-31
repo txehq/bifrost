@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -620,6 +621,35 @@ func TestAddMCPClient_OpenAPI_OperationServersNeedABaseURL(t *testing.T) {
 	})
 	status, respBody = doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(private), "", true)
 	assert.Equal(t, fasthttp.StatusForbidden, status, respBody)
+}
+
+// TestAddMCPClient_OpenAPI_DefaultServerIsTargetChecked: a document without
+// servers gets its base from spec_url or $self, which the request or the document
+// chose, so an unauthenticated caller meets the public-target gate for it, and an
+// inline document is never fetched to find out.
+func TestAddMCPClient_OpenAPI_DefaultServerIsTargetChecked(t *testing.T) {
+	var fetched atomic.Int32
+	private := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { fetched.Add(1) }))
+	t.Cleanup(private.Close)
+	const noServers = `"info":{"title":"t","version":"1"},"paths":{"/a":{"get":{"operationId":"getA","responses":{"200":{"description":"ok"}}}}}}`
+	create := func(name string, cfg map[string]any, bypassed bool) (int, string) {
+		h, _ := newOpenAPITestHandler(t)
+		body, _ := json.Marshal(map[string]any{"name": name, "connection_type": "openapi", "auth_type": "none", "tools_to_execute": []string{"getA"}, "openapi_config": cfg})
+		return doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", bypassed)
+	}
+
+	status, respBody := create("viaurl", map[string]any{"spec": `{"openapi":"3.0.3",` + noServers, "spec_url": private.URL + "/openapi.json"}, true)
+	assert.Equal(t, fasthttp.StatusForbidden, status, respBody)
+	status, respBody = create("viaself", map[string]any{"spec": `{"openapi":"3.2.0","$self":"` + private.URL + `/openapi.json",` + noServers}, true)
+	assert.Equal(t, fasthttp.StatusForbidden, status, respBody)
+
+	status, respBody = create("admin", map[string]any{"spec": `{"openapi":"3.0.3",` + noServers, "spec_url": private.URL + "/openapi.json"}, false)
+	assert.Equal(t, fasthttp.StatusOK, status, respBody)
+
+	status, respBody = create("nowhere", map[string]any{"spec": `{"openapi":"3.0.3",` + noServers}, true)
+	assert.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+	assert.Contains(t, respBody, "base_url")
+	assert.Zero(t, fetched.Load(), "an inline document is never fetched")
 }
 
 // createPerUserHeadersOpenAPIClient registers an openapi client that collects

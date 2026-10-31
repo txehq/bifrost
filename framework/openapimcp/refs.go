@@ -326,14 +326,26 @@ func (r *resolver) mergeRefSiblings(target, ref map[string]any, stack []string, 
 	for k, val := range target {
 		out[k] = val
 	}
-	for _, k := range sortedKeys(ref) {
+	// The siblings are resolved as one object, so the same keyword rules apply as
+	// anywhere else: data under default, examples or enum, and property names under
+	// properties, are never read as references.
+	siblings := make(map[string]any, len(ref))
+	for k, val := range ref {
 		if k == "$ref" || (!r.siblingsApply && k != "description" && k != "summary") {
 			continue
 		}
-		val, err := r.resolveAt(ref[k], stack, depth)
-		if err != nil {
-			return nil, err
-		}
+		siblings[k] = val
+	}
+	if len(siblings) == 0 {
+		return out, nil
+	}
+	resolvedSiblings, err := r.resolveAt(siblings, stack, depth)
+	if err != nil {
+		return nil, err
+	}
+	resolved := asMap(resolvedSiblings)
+	for _, k := range sortedKeys(siblings) {
+		val := resolved[k]
 		switch k {
 		case "properties":
 			if err := r.charge(len(asMap(out["properties"])) + len(asMap(val))); err != nil {

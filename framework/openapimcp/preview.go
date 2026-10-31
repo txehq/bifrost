@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -12,8 +13,8 @@ import (
 
 // ResolveBaseURL decides the upstream base: an explicit override wins, else the
 // spec's first absolute server, else a relative server resolved against the
-// spec URL. explicit reports whether the admin override was used (op-level
-// servers are then ignored by the executor).
+// spec URL, else OpenAPI 3's default server. explicit reports whether the admin
+// override was used (op-level servers are then ignored by the executor).
 func ResolveBaseURL(doc *Document, override *string, specURL string) (base string, explicit bool, err error) {
 	if override != nil && strings.TrimSpace(*override) != "" {
 		base = strings.TrimSpace(*override)
@@ -31,14 +32,75 @@ func ResolveBaseURL(doc *Document, override *string, specURL string) (base strin
 				return strings.TrimSuffix(resolved, "/"), false, nil
 			}
 		}
+		if server := defaultServerURL(doc, specURL); server != "" {
+			return server, false, nil
+		}
 	}
 	return "", false, errors.New("the spec declares no absolute server URL; set openapi_config.base_url")
+}
+
+// defaultServerURL is the server OpenAPI 3 implies when servers is absent or
+// empty: "/", resolved against $self or the URL the document came from. It is ""
+// when that default does not apply or nothing resolves it.
+//
+// The default is an inference, so it stays narrower than a declared server. An
+// operation's own server at another origin would be refused on every call, and
+// such a document keeps asking for a base URL when it is saved instead. Userinfo
+// is dropped: a credential for reading the document is not one for calling the
+// API, and the resolved URL is shown in previews. For the same reason an operation
+// server that carries userinfo, which a relative one inherits from the document's
+// URL, keeps asking too: the executor would send it to the API.
+func defaultServerURL(doc *Document, specURL string) string {
+	if len(doc.Servers) > 0 || !strings.HasPrefix(doc.OpenAPIVersion, "3") {
+		return ""
+	}
+	resolved := resolveRelativeURL("/", doc.Self, specURL)
+	if !isAbsoluteHTTPURL(resolved) {
+		return ""
+	}
+	parsed, err := url.Parse(resolved)
+	if err != nil {
+		return ""
+	}
+	parsed.User = nil
+	server := strings.TrimSuffix(parsed.String(), "/")
+	origin, ok := urlOrigin(server)
+	if !ok {
+		return ""
+	}
+	for i := range doc.Operations {
+		servers := doc.Operations[i].Servers
+		if len(servers) == 0 || !isAbsoluteHTTPURL(servers[0]) {
+			continue
+		}
+		if opOrigin, ok := urlOrigin(servers[0]); !ok || opOrigin != origin || hasUserinfo(servers[0]) {
+			return ""
+		}
+	}
+	return server
+}
+
+func hasUserinfo(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err != nil || parsed.User != nil
+}
+
+// previewServers lists the document's servers. The default server is listed
+// when it applies, so a form shows it as the document's own and saves no
+// override, and a later change of spec_url keeps deciding the base.
+func previewServers(doc *Document, specURL string) []string {
+	servers := append([]string{}, doc.Servers...)
+	if server := defaultServerURL(doc, specURL); server != "" {
+		servers = append(servers, server)
+	}
+	return servers
 }
 
 // ResolveServingBaseURL is ResolveBaseURL for a spec about to be served.
 // Operation-level servers never stand in for a missing base URL: the executor
 // uses them only at the base URL's origin, so a spec that declares servers only
-// on its operations needs an explicit openapi_config.base_url.
+// on its operations needs an explicit openapi_config.base_url unless they share
+// the origin of OpenAPI 3's default server.
 func ResolveServingBaseURL(doc *Document, _ *Synthesis, override *string, specURL string) (base string, explicit bool, err error) {
 	return ResolveBaseURL(doc, override, specURL)
 }
@@ -65,7 +127,7 @@ func Preview(data []byte, parseOpts ParseOptions, synthOpts SynthesizeOptions, b
 		Version:         doc.Version,
 		OpenAPIVersion:  doc.OpenAPIVersion,
 		Description:     doc.Description,
-		Servers:         append([]string{}, doc.Servers...),
+		Servers:         previewServers(doc, parseOpts.SpecURL),
 		SecuritySchemes: make([]SecurityScheme, 0, len(doc.SecuritySchemes)),
 		Tools:           make([]ToolSummary, 0, len(syn.Tools)),
 		Unsupported:     make([]UnsupportedOperation, 0, len(syn.Unsupported)),

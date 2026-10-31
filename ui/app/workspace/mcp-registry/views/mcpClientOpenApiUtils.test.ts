@@ -186,6 +186,18 @@ describe("securitySchemeToInputs", () => {
 	});
 });
 
+describe("a document's implied default server", () => {
+	it("is the document's own: nothing is pinned and the form asks for no base URL", () => {
+		const hosted: MCPOpenAPIPreviewResponse = { ...preview, servers: ["https://docs.example.com"], base_url: "https://docs.example.com" };
+		const state = applyParsedPreview({ selection: [], baseUrl: "", baseUrlChoice: "server", credentials: {} }, null, hosted);
+		expect(state.baseUrlChoice).toBe("server");
+		expect(state.baseUrl).toBe("https://docs.example.com");
+		expect(openAPIBaseUrlRequired(state.baseUrlChoice, hosted)).toBe(false);
+		const payload = buildOpenAPIConfigPayload({ spec: "", spec_url: "https://docs.example.com/openapi.json", base_url: state.baseUrl }, "url", hosted, state.baseUrlChoice);
+		expect(payload).toHaveProperty("base_url", "");
+	});
+});
+
 describe("pruneCredentials and buildOpenAPIConfigPayload", () => {
 	it("keeps a scheme named __proto__ like any other name", () => {
 		const creds = JSON.parse('{"__proto__": {"value": {"value": "k"}}}');

@@ -137,6 +137,19 @@ test("the MCP endpoint serves the tool the turns models call", async (t) => {
   assert.equal((await post({ jsonrpc: "2.0", method: "notifications/initialized" }, "/mcp")).status, 202);
 });
 
+test("the OpenAPI document declares no servers and its operations are recorded", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  const doc = await (await fetch(`${base}/openapi-fixture/docs/no-servers.json`)).json();
+  assert.equal(doc.servers, undefined);
+  assert.equal(doc.paths["/fixture-api/items/{id}"].put.operationId, "putItem");
+  await fetch(`${base}/fixture-api/items/7`, { method: "PUT", body: "{\"name\":\"n\"}" });
+  const calls = async () => (await (await fetch(`${base}/__openapi-calls`)).json()).data[0].calls;
+  assert.deepEqual(await calls(), [{ method: "PUT", path: "/fixture-api/items/7", body: "{\"name\":\"n\"}" }]);
+  await fetch(`${base}/__reset`, { method: "POST" });
+  assert.deepEqual(await calls(), []);
+});
+
 test("decision routes reject their answers but report usage", async (t) => {
   const post = await startFixture(t);
   const native = await (await post({ model: "gpt-6-luna" }, "/v1/decisions")).json();

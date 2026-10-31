@@ -2094,6 +2094,13 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		hash.Write([]byte("endpoint_slug:" + Slugify(m.EndpointSlug)))
 	}
 
+	// Hash a per-client instruction cap so editing only it in config.json drifts the hash.
+	// Zero (use the global cap) contributes nothing, so entries that omit it keep matching
+	// hashes stored before the field was hashed.
+	if m.MaxInstructionsLength != 0 {
+		hash.Write([]byte("max_instructions_length:" + strconv.Itoa(m.MaxInstructionsLength)))
+	}
+
 	// Hash NeedsSessionStickiness so toggling it in config.json drifts the
 	// hash and triggers reconciliation — without this, editing only this
 	// field would leave the row's migration-backfilled (or nil-defaulted)
