@@ -71,6 +71,7 @@ type PendingLogData struct {
 	Live             *liveSessionState
 	ProvisionalInput bool           // Input captured before the virtual key's content decision was known
 	ContentPolicy    *contentPolicy // Content policy resolved in PreLLMHook; nil means the global policy
+	VirtualKeyID     string         // Virtual key the request was admitted under; a persisted partial carries it so only that key finishes the row
 	EvictionAttempts int            // Sweeps that could not queue this entry's partial row
 	EvictedPartial   bool           // PostLLMHook stub for an already-evicted request; reconciles by UPDATE
 }
@@ -1081,6 +1082,9 @@ func (p *LoggerPlugin) persistEvictedPartial(key any, pending *PendingLogData) {
 	// reconcile writes none, so the partial row must carry it.
 	partial.MetadataParsed = pending.InitialData.Metadata
 	partial.Status = logStatusProcessing
+	if pending.VirtualKeyID != "" {
+		partial.VirtualKeyID = &pending.VirtualKeyID
+	}
 	partial.CreatedAt = time.Now().UTC()
 	policy := p.resolveContentPolicy(nil)
 	if pending.ContentPolicy != nil {

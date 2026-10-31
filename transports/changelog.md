@@ -22,7 +22,7 @@
 - **Agent log Delete acts on the selected operation** - a failed detail fetch shows the selected row's summary, so Delete can no longer remove the previously opened operation
 - **Toggling an agent keeps its approved credential origins** - the enable and disable switch resends them with the rest of the registration, so re-enabling still reaches an approved runtime endpoint
 - **A log hidden by an update loses the content it was saved with** - a request whose final decision hides content empties the row's input, output and other payload columns and its content summary in SQLite, Postgres and ClickHouse, where the row used to keep them under `content_hidden`; token usage and cache metadata stay for pricing
-- **A request cannot finish another caller's log row** - request IDs are caller-supplied, so a request with no pending log entry reconciled onto any row carrying its ID; it now reconciles only onto a partial row that is still processing and belongs to its own virtual key
+- **A request cannot finish another caller's log row** - request IDs are caller-supplied, so a request with no pending log entry reconciled onto any row carrying its ID; a partial row now carries its virtual key, and a late completion applies only while the row is that same key's and still processing, checked again by the write itself
 - **A Cloudflare migration asks for the bare token when the whole header is a reference** - such a reference resolves to `Bearer <token>`, which the native provider would have sent as `Bearer Bearer <token>`
 
 ## 🐞 Fixed

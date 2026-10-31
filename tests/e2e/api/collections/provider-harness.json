@@ -283890,6 +283890,224 @@
           ]
         }
       ]
+    },
+    {
+      "name": "270. A request cannot finish another caller's log row by reusing its request ID (log-row-ownership) [SERIAL]",
+      "description": "TXE-5522 security regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. x-request-id is caller-supplied. One key logs a visible row; a second key with content logging off then sends two overlapping calls under the same ID, so the second to finish has no pending entry and looks for a row with its ID. It must leave a row that is not its own unfinished partial alone. Before the fix it reconciled onto the owner's row, took over its key and hid it.",
+      "item": [
+        {
+          "name": "the owner's visible row is logged - log-row-ownership",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{lroOwnerVk}}"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{lroRequestId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/upstream-ok\", \"messages\": [{\"role\": \"user\", \"content\": \"the owner's question\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// One key for the row's owner, one with content logging off for the caller who reuses its request ID.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-log-row-ownership-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('lroRequestId', run);",
+                  "pm.collectionVariables.set('lroOwnerVk', 'missing');",
+                  "function key(name, extra, done) {",
+                  "  var body = Object.assign({ name: name, provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }] }, extra);",
+                  "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify(body) } }, function (err, res) {",
+                  "    pm.test('log-row-ownership: setup created ' + name.slice(-5), function () {",
+                  "      pm.expect(err, String(err)).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.eql(200);",
+                  "    });",
+                  "    done(res.json().virtual_key);",
+                  "  });",
+                  "}",
+                  "function value(vk) { return (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value; }",
+                  "key(run + '-own', {}, function (own) {",
+                  "  pm.collectionVariables.set('lroOwnerVk', value(own));",
+                  "  pm.collectionVariables.set('lroOwnerId', own.id);",
+                  "  key(run + '-oth', { disable_content_logging: true }, function (other) {",
+                  "    pm.collectionVariables.set('lroOtherVk', value(other));",
+                  "    pm.collectionVariables.set('lroOtherId', other.id);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "pm.test('log-row-ownership: the owner\\'s call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var id = pm.collectionVariables.get('lroRequestId');",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs/' + id, method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : {};",
+                  "    if (row.status !== 'success' && tries > 0) { setTimeout(function () { read(tries - 1); }, 250); return; }",
+                  "    pm.test('log-row-ownership: the owner\\'s row is logged', function () {",
+                  "      pm.expect(row.status, err ? String(err) : res.text()).to.equal('success');",
+                  "      pm.expect(row.virtual_key_id, res.text()).to.equal(pm.collectionVariables.get('lroOwnerId'));",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(80);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a second key sends two overlapping calls under that request ID - log-row-ownership",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs?limit=1&offset=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "1"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// Two overlapping calls under one request ID: the first to finish takes the single pending entry, and the",
+                  "// second finishes with none, the path that looks for a row carrying its ID.",
+                  "var left = 2, codes = [];",
+                  "function call() {",
+                  "  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json', 'x-bf-vk': pm.collectionVariables.get('lroOtherVk'), 'x-request-id': pm.collectionVariables.get('lroRequestId') }, body: { mode: 'raw', raw: JSON.stringify({ model: 'openai/upstream-slow', messages: [{ role: 'user', content: 'another caller' }] }) } }, function (err, res) {",
+                  "    codes.push(err ? String(err) : res.code);",
+                  "    left -= 1;",
+                  "    if (left === 0) {",
+                  "      pm.test('log-row-ownership: both overlapping calls were answered', function () { pm.expect(codes).to.eql([200, 200]); });",
+                  "    }",
+                  "  });",
+                  "}",
+                  "call();",
+                  "call();"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the owner's row is unchanged - log-row-ownership",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/{{lroRequestId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "{{lroRequestId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// The log writer flushes in the background.",
+                  "setTimeout(function () {}, 2500);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "pm.test('log-row-ownership: the row reads back', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var row = pm.response.json();",
+                  "pm.test('log-row-ownership: the row stays the owner\\'s', function () { pm.expect(row.virtual_key_id, pm.response.text()).to.equal(pm.collectionVariables.get('lroOwnerId')); });",
+                  "pm.test('log-row-ownership: the row stays visible', function () { pm.expect(!!row.content_hidden, pm.response.text()).to.equal(false); });",
+                  "pm.test('log-row-ownership: the row keeps the owner\\'s input', function () { pm.expect(JSON.stringify(row.input_history || row.content_summary || ''), pm.response.text()).to.contain('the owner\\'s question'); });",
+                  "['lroOwnerId', 'lroOtherId'].forEach(function (name) {",
+                  "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + pm.collectionVariables.get(name), method: 'DELETE' }, function () {});",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

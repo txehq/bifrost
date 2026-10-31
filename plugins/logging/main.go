@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -1913,6 +1914,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		Status:             logStatusProcessing,
 		ProvisionalInput:   captureProvisional,
 		ContentPolicy:      &requestContentPolicy,
+		VirtualKeyID:       bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID),
 	}
 	if liveUnit != "" {
 		pending.Live = &liveSessionState{}
@@ -2555,11 +2557,11 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 }
 
 // holdsPartialRow reports whether a request with no pending entry may reconcile
-// onto the row with its ID. marked is the in-memory eviction marker: the row it
-// stands for may still be queued, so a failed lookup does not refuse it. Without
-// the marker the row must exist. A row found must still be a partial, and must not
-// be another virtual key's: request IDs are caller-supplied, and reconciling
-// overwrites the row's output and, for a hidden request, empties its content.
+// onto the row with its ID. Request IDs are caller-supplied, and reconciling
+// overwrites the row's output and, for a hidden request, empties its content, so
+// the row must be this virtual key's and unfinished. marked is the in-memory
+// eviction marker: the row it stands for may still be queued, so only a definite
+// not-found leaves it standing. The store checks again when it writes (PartialOwner).
 func (p *LoggerPlugin) holdsPartialRow(probeCtx context.Context, ctx *schemas.BifrostContext, requestID string, marked bool) bool {
 	if !marked {
 		if ok, err := p.store.IsLogEntryPresent(probeCtx, requestID); err != nil || !ok {
@@ -2568,13 +2570,9 @@ func (p *LoggerPlugin) holdsPartialRow(probeCtx context.Context, ctx *schemas.Bi
 	}
 	row, err := p.store.FindByID(probeCtx, requestID)
 	if err != nil {
-		return marked
+		return marked && errors.Is(err, logstore.ErrNotFound)
 	}
-	if row.Status != logStatusProcessing {
-		return false
-	}
-	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
-	return row.VirtualKeyID == nil || *row.VirtualKeyID == "" || *row.VirtualKeyID == virtualKeyID
+	return row.IsPartialOf(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID))
 }
 
 // persistCompletedEntry writes a completed log entry. The normal path inserts it
@@ -2593,6 +2591,8 @@ func (p *LoggerPlugin) persistCompletedEntry(ctx *schemas.BifrostContext, entry 
 	policy := p.resolveContentPolicy(ctx)
 	entry.ContentHidden = !policy.visible()
 	attachLogRedactionData(ctx, entry, policy.visible())
+	owner := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
+	entry.PartialOwner = &owner
 	p.enqueueLogUpdate(entry, p.makeReconcileCallback())
 }
 

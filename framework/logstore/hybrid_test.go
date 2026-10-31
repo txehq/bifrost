@@ -1781,6 +1781,16 @@ func TestHybrid_BatchUpdateHidingALogClearsDBContent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, read.InputHistoryParsed, "the hybrid read recovers no content")
 	assert.Nil(t, read.OutputMessageParsed, "the hybrid read recovers no content")
+
+	// A partial's finish that may not touch a row writes nothing to its object either.
+	owner := "vk-other"
+	require.NoError(t, h.CreateIfNotExists(ctx, hiddenUpdateTestLog("hybrid-visible", time.Now().UTC())))
+	require.NoError(t, h.BatchUpdate(ctx, []*Log{{ID: "hybrid-visible", Status: "success", ContentHidden: true, PartialOwner: &owner}}))
+	kept, err := inner.FindByID(ctx, "hybrid-visible")
+	require.NoError(t, err)
+	assert.False(t, kept.ContentHidden)
+	assert.Equal(t, "processing", kept.Status)
+	assert.NotEmpty(t, kept.InputHistory)
 }
 
 func TestHybrid_BatchUpdateMergesOutputIntoStoredObject(t *testing.T) {

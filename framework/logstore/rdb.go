@@ -865,11 +865,22 @@ func (s *RDBLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
 			if err != nil {
 				return err
 			}
+			// A partial's finish applies only while the row is still that owner's
+			// partial. Checked by the UPDATE itself, so a completion landing after the
+			// caller's own check cannot be overwritten or emptied.
+			row := tx.Model(&Log{}).Where("id = ?", entry.ID)
+			if entry.PartialOwner != nil {
+				row = row.Where("status = ? AND COALESCE(virtual_key_id, '') = ?", partialRowStatus, *entry.PartialOwner)
+			}
 			// content_summary is omitted: SerializeFields regenerates it from the
 			// entry's own payload, and an output-only entry would otherwise replace
 			// the input summary already on the row.
-			if err := tx.Model(&Log{}).Where("id = ?", entry.ID).Omit("content_summary").Updates(serialized).Error; err != nil {
-				return err
+			updated := row.Omit("content_summary").Updates(serialized)
+			if updated.Error != nil {
+				return updated.Error
+			}
+			if entry.PartialOwner != nil && updated.RowsAffected == 0 {
+				continue
 			}
 			// Updates skips zero values, so a final "visible" (false) decision
 			// would never clear a hidden flag saved earlier; write it explicitly.

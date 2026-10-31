@@ -719,6 +719,10 @@ func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) er
 		}
 		for _, r := range rows {
 			for _, src := range byID[r.ID] {
+				// Read under the row's RMW lock; see the RDB store.
+				if src.PartialOwner != nil && !r.IsPartialOf(*src.PartialOwner) {
+					continue
+				}
 				if err := src.SerializeFields(); err != nil {
 					return err
 				}

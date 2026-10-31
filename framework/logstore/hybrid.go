@@ -1424,6 +1424,10 @@ func (h *HybridLogStore) BatchUpdate(ctx context.Context, entries []*Log) error 
 		if row == nil {
 			continue
 		}
+		// Nothing of a partial's finish reaches the object of a row it may not touch.
+		if entry.PartialOwner != nil && !row.IsPartialOf(*entry.PartialOwner) {
+			continue
+		}
 		// The entry carries the request's final visibility decision, which may
 		// clear a hidden flag the row was saved with before that decision existed.
 		hidden := entry.ContentHidden

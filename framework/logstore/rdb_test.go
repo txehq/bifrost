@@ -1735,6 +1735,45 @@ func exerciseHiddenUpdates(t *testing.T, store LogStore, columns func(t *testing
 		assert.Equal(t, `{"cache_hit":false}`, columns(t, "hide-later", "cache_debug"))
 	})
 
+	t.Run("a partial's finish applies only to that owner's unfinished row", func(t *testing.T) {
+		owner, other, none := "vk-own", "vk-other", ""
+		finish := func(id string, partialOwner *string) []*Log {
+			return []*Log{{ID: id, Status: "success", ContentHidden: true, PartialOwner: partialOwner}}
+		}
+		for id, seedRow := range map[string]struct {
+			status       string
+			virtualKey   *string
+			partialOwner *string
+			applies      bool
+		}{
+			"partial-own":              {"processing", &owner, &owner, true},
+			"partial-keyless":          {"processing", nil, &none, true},
+			"partial-other-key":        {"processing", &other, &owner, false},
+			"partial-keyless-row":      {"processing", nil, &owner, false},
+			"partial-keyless-caller":   {"processing", &other, &none, false},
+			"partial-completed":        {"success", &owner, &owner, false},
+			"partial-failed":           {"error", &owner, &owner, false},
+			"partial-completed-noneid": {"success", nil, &none, false},
+		} {
+			row := hiddenUpdateTestLog(id, now)
+			row.Status, row.VirtualKeyID = seedRow.status, seedRow.virtualKey
+			require.NoError(t, store.CreateIfNotExists(ctx, row))
+			require.NoError(t, store.BatchUpdate(ctx, finish(id, seedRow.partialOwner)))
+			found, err := store.FindByID(ctx, id)
+			require.NoError(t, err)
+			if seedRow.applies {
+				assert.True(t, found.ContentHidden, id)
+				assert.Equal(t, "success", found.Status, id)
+				assert.Empty(t, columns(t, id, "input_history"), id)
+				continue
+			}
+			assert.False(t, found.ContentHidden, id)
+			assert.Equal(t, seedRow.status, found.Status, id)
+			assert.Contains(t, columns(t, id, "input_history"), hiddenTestContent, id)
+			assert.Contains(t, columns(t, id, "output_message"), hiddenTestAnswer, id)
+		}
+	})
+
 	t.Run("a hidden update of a missing row is skipped", func(t *testing.T) {
 		require.NoError(t, store.BatchUpdate(ctx, []*Log{{ID: "hide-missing", Status: "success", ContentHidden: true}}))
 		_, err := store.FindByID(ctx, "hide-missing")

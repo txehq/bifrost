@@ -31,6 +31,7 @@
             "upstream-429-ms",
             "upstream-ok",
             "upstream-cached-tokens",
+            "upstream-slow",
             "upstream-fixed-length-short",
             "upstream-fixed-length-ok",
             "gpt-5-pro",
