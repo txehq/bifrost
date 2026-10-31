@@ -2,6 +2,7 @@ package tracing
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"sync"
 	"testing"
@@ -1624,9 +1625,9 @@ func TestTracer_ExpiredTraceStampsTheHeldRootError(t *testing.T) {
 	}
 }
 
-// The exported root goes through redaction after the held error is stamped, so
-// holding the error does not move it past the replacements.
-func TestTracer_HeldRootErrorIsRedactedOnExport(t *testing.T) {
+// The connector reads the held error on the exported root, on the normal
+// completion path. Stamped before the snapshot, it needs no connector change.
+func TestTracer_HeldRootErrorReachesTheExportedRoot(t *testing.T) {
 	store := NewTraceStore(5*time.Minute, nil)
 	t.Cleanup(store.Stop)
 	tracer := NewTracer(store, nil, nil)
@@ -1635,13 +1636,13 @@ func TestTracer_HeldRootErrorIsRedactedOnExport(t *testing.T) {
 	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
 
 	traceID, ctx, _ := rootErrorTrace(t, tracer, "")
-	failAttempt(t, tracer, ctx, "refused alice@example.com", 400)
-	store.GetTrace(traceID).SetRedactionReplacements(schemas.RedactionPhaseOutput, map[string]string{"alice@example.com": "[EMAIL]"})
+	failAttempt(t, tracer, ctx, "upstream connect error", 503)
 	tracer.CompleteAndFlushTrace(traceID)
 
 	select {
 	case attrs := <-plugin.got:
-		require.Equal(t, "refused [EMAIL]", attrs[schemas.AttrError])
+		require.Equal(t, "upstream connect error", attrs[schemas.AttrError])
+		require.Equal(t, 503, attrs[schemas.AttrHTTPResponseStatusCode])
 	case <-time.After(5 * time.Second):
 		t.Fatal("the trace never reached the connector")
 	}
@@ -1656,7 +1657,8 @@ type rootErrorCapturePlugin struct {
 func (p *rootErrorCapturePlugin) GetName() string { return "root-error-capture" }
 
 func (p *rootErrorCapturePlugin) Inject(_ context.Context, trace *schemas.Trace) error {
-	p.got <- trace.RootSpan.Attributes
+	// A copy: the snapshot's attribute map is recycled once Inject returns.
+	p.got <- maps.Clone(trace.RootSpan.Attributes)
 	return nil
 }
 
