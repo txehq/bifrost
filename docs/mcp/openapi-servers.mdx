@@ -27,10 +27,10 @@ Supported documents: **Swagger 2.0**, **OpenAPI 3.0**, **3.1** and **3.2**, as J
 | `summary` and `description` | Tool description, followed by `METHOD /path`. |
 | Path, query, header and cookie parameters | Top-level properties of the tool's input schema, each annotated with its location and encoded in its declared `style` (`form`, `deepObject`, `label`, `matrix`, ...). Header parameters named `Accept`, `Content-Type` or `Authorization` are ignored, as OpenAPI specifies; credentials come from the server's configuration, not from the model. |
 | Request body (JSON, including `+json` types, `application/x-www-form-urlencoded`, `text/plain`) | Object bodies with named properties are flattened into top-level properties. An object that allows extra keys (`additionalProperties`), has no named properties, carries a `oneOf`/`anyOf` or may be `null` as a whole, and any array, primitive or `text/plain` body, becomes one `body` property. A parameter that collides with a body property is suffixed `__query`, `__path`, and so on (with `_2`, `_3` if that name is taken too). The body is sent with its declared media type. |
-| HTTP method | MCP annotations: `GET`/`HEAD`/`QUERY` are read-only and idempotent, `PUT` idempotent, `DELETE` destructive, `POST`/`PATCH` destructive and non-idempotent. |
+| HTTP method | MCP annotations: `GET`/`HEAD`/`QUERY` are read-only and idempotent, `PUT` and `DELETE` destructive and idempotent, `POST`/`PATCH` destructive and non-idempotent. |
 | Response | Returned to the model as text (JSON and other textual bodies verbatim, capped at 64 KiB by default). Non-2xx responses are returned as tool errors with the status and body. |
 
-Schemas are normalized to the dialect model providers accept: 3.1 `type: [..., "null"]` becomes `nullable`, `allOf` of objects is merged, `readOnly` properties are dropped from inputs, and keywords such as `xml`, `externalDocs`, `discriminator` and examples are removed.
+Schemas are normalized to the dialect model providers accept: 3.1 `type: [..., "null"]` becomes `nullable`, `allOf` of objects is merged (a body with an `allOf` that cannot be merged travels whole as one `body` argument), `readOnly` properties are dropped from inputs, and keywords such as `xml`, `externalDocs`, `discriminator` and examples are removed.
 
 ### What is not exposed
 
@@ -45,7 +45,7 @@ Security schemes of type `oauth2`, `openIdConnect` and `mutualTLS` cannot be sat
 
 ## Base URL
 
-The upstream defaults to the first `servers` entry of the document (server variables take their default value; relative URLs are resolved against the document's URL or 3.2 `$self`). Pick another server or type a custom base URL in the preview. A document with no absolute top-level server needs a custom base URL, even when every operation (or its path) declares an absolute server of its own.
+The upstream defaults to the first `servers` entry of the document (server variables take their default value; relative URLs are resolved against the document's URL or 3.2 `$self`). Pick another server or type a custom base URL in the preview. An OpenAPI 3 document with `servers` absent or empty defaults to a server at `/`, resolved the same way, so a document read from `https://api.example.com/docs/openapi.json` calls `https://api.example.com`; credentials embedded in the URL are not carried over. Any other document with no absolute top-level server needs a custom base URL, even when every operation (or its path) declares an absolute server of its own, and so does one whose operations declare a server at another origin than that default.
 
 An operation's own server is used only when it shares the base URL's origin (scheme, host and port). A call to an operation server at another origin is refused with an error before any request is sent, with or without credentials: the document is untrusted input, and the preview shows the base URL, not every operation's server, so an imported document cannot point a tool at a host you did not review. To call such an API, set a custom base URL; an explicit base URL sends every operation to it.
 

@@ -435,6 +435,114 @@ func TestFlattenInputSchema_AllOfMemberChoicesStayWhole(t *testing.T) {
 	}
 }
 
+// TestFlattenInputSchema_RootPropertiesWithUnmergedAllOfStayWhole: a body
+// naming its own properties beside an allOf that cannot be merged would
+// flatten to the root properties alone, so fields supplied for the allOf
+// branch were never sent.
+func TestFlattenInputSchema_RootPropertiesWithUnmergedAllOfStayWhole(t *testing.T) {
+	contact := map[string]any{"type": "object", "oneOf": []any{
+		map[string]any{"type": "object", "properties": map[string]any{"email": map[string]any{"type": "string"}}},
+		map[string]any{"type": "object", "properties": map[string]any{"phone": map[string]any{"type": "string"}}},
+	}}
+	schema := map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"id": map[string]any{"type": "string"}},
+		"allOf":      []any{contact},
+	}
+	require.Contains(t, NormalizeSchema(schema), "allOf", "fixture: the allOf must survive normalization unmerged")
+	op := Operation{Method: "POST", Path: "/x", Body: &RequestBody{ContentType: ContentTypeJSON, Schema: schema}}
+	_, _, body, _, err := FlattenInputSchema(op)
+	require.NoError(t, err)
+	assert.Equal(t, "single", body.Mode)
+}
+
+// partialAllOfSchema is a body whose allOf cannot be merged: required names a
+// field declared only inside it, one declared in a choice inside it, one that is
+// readOnly there, and a nested member repeats the shape one level down.
+func partialAllOfSchema() map[string]any {
+	choice := map[string]any{"oneOf": []any{
+		map[string]any{"type": "object", "properties": map[string]any{"email": map[string]any{"type": "string", "format": "email", "maxLength": 254.0}}},
+		map[string]any{"type": "object", "properties": map[string]any{"phone": map[string]any{"type": "string", "pattern": "^[0-9]+$"}}},
+	}}
+	return map[string]any{
+		"type":     "object",
+		"required": []any{"id", "name", "nested", "email", "server_side"},
+		"properties": map[string]any{
+			"id": map[string]any{"type": "string", "minLength": 3.0},
+		},
+		"allOf": []any{
+			map[string]any{"type": "object", "properties": map[string]any{
+				"name":        map[string]any{"type": "string", "maxLength": 40.0},
+				"server_side": map[string]any{"type": "string", "readOnly": true},
+			}},
+			map[string]any{"allOf": []any{
+				map[string]any{"type": "object", "properties": map[string]any{"nested": map[string]any{"type": "integer", "minimum": 1.0}}},
+				choice,
+			}},
+		},
+	}
+}
+
+// TestNormalizeSchema_PartialAllOfKeepsItsDeclarations: what normalization
+// could not merge stays with every constraint, and a required name declared
+// inside the kept allOf is not "gone", while a readOnly one is.
+func TestNormalizeSchema_PartialAllOfKeepsItsDeclarations(t *testing.T) {
+	stored := partialAllOfSchema()
+	got := NormalizeSchema(stored)
+	assert.Equal(t, partialAllOfSchema(), stored, "normalizing must not write to the stored schema")
+
+	assert.Equal(t, []any{"id", "name", "nested", "email"}, got["required"])
+	assert.Equal(t, 3.0, got["properties"].(map[string]any)["id"].(map[string]any)["minLength"])
+	members := got["allOf"].([]any)
+	require.Len(t, members, 2)
+	first := members[0].(map[string]any)["properties"].(map[string]any)
+	assert.Equal(t, 40.0, first["name"].(map[string]any)["maxLength"])
+	assert.NotContains(t, first, "server_side")
+	nested := members[1].(map[string]any)["allOf"].([]any)
+	require.Len(t, nested, 2)
+	assert.Equal(t, 1.0, nested[0].(map[string]any)["properties"].(map[string]any)["nested"].(map[string]any)["minimum"])
+	branches := nested[1].(map[string]any)["oneOf"].([]any)
+	assert.Equal(t, "email", branches[0].(map[string]any)["properties"].(map[string]any)["email"].(map[string]any)["format"])
+	assert.Equal(t, "^[0-9]+$", branches[1].(map[string]any)["properties"].(map[string]any)["phone"].(map[string]any)["pattern"])
+
+	wrapped := NormalizeSchema(map[string]any{"type": "object", "properties": map[string]any{"item": partialAllOfSchema()}})
+	inner := wrapped["properties"].(map[string]any)["item"].(map[string]any)
+	assert.Equal(t, []any{"id", "name", "nested", "email"}, inner["required"], "a nested schema keeps them too")
+	assert.Contains(t, inner, "allOf")
+}
+
+// TestFlattenInputSchema_PartialAllOfArgumentNamesStayDistinct: the whole body
+// takes the "body" argument, so a parameter of that name is suffixed rather than
+// shadowing it, and the tool's schema is the whole allOf.
+func TestFlattenInputSchema_PartialAllOfArgumentNamesStayDistinct(t *testing.T) {
+	stored := partialAllOfSchema()
+	op := Operation{Method: "POST", Path: "/x", Body: &RequestBody{Required: true, ContentType: ContentTypeJSON, Schema: stored},
+		Params: []Parameter{{Name: "body", In: InQuery, Schema: map[string]any{"type": "string"}}}}
+	raw, args, body, _, err := FlattenInputSchema(op)
+	require.NoError(t, err)
+	assert.Equal(t, partialAllOfSchema(), stored)
+	assert.Equal(t, "single", body.Mode)
+	assert.Equal(t, "body", body.SingleArg)
+	require.Len(t, args, 1)
+	assert.Equal(t, "body__query", args[0].ArgName)
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(raw, &schema))
+	whole := schema["properties"].(map[string]any)["body"].(map[string]any)
+	assert.Contains(t, whole, "allOf")
+	assert.Equal(t, []any{"id", "name", "nested", "email"}, whole["required"])
+	assert.Equal(t, []any{"body"}, schema["required"])
+}
+
+// TestMergeAllOf_MemberWithItsOwnUnmergedAllOfStaysWhole: merging such a member
+// would keep only its named properties and lose the allOf beside them.
+func TestMergeAllOf_MemberWithItsOwnUnmergedAllOfStaysWhole(t *testing.T) {
+	member := map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}},
+		"allOf": []any{map[string]any{"oneOf": []any{map[string]any{"type": "object"}, map[string]any{"type": "string"}}}}}
+	got := NormalizeSchema(map[string]any{"allOf": []any{member, map[string]any{"type": "object", "properties": map[string]any{"b": map[string]any{"type": "string"}}}}})
+	require.Contains(t, got, "allOf")
+	assert.Contains(t, got["allOf"].([]any)[0], "allOf")
+}
+
 // TestSelectBodyContent_BooleanSchemas: OpenAPI 3.1 `schema: true` accepts any
 // value, so it is not narrowed to an object; `schema: false` accepts nothing.
 func TestSelectBodyContent_BooleanSchemas(t *testing.T) {
@@ -527,4 +635,14 @@ func TestSelectBodyContent_FallsBackToAUsableMediaType(t *testing.T) {
 	_, _, ok, reason = SelectBodyContent(map[string]any{"application/json": map[string]any{"schema": false}})
 	assert.False(t, ok)
 	assert.Contains(t, reason, "schema: false")
+}
+
+// BenchmarkNormalizeSchema_PartialAllOf: normalization runs at config time, never
+// per tool call.
+func BenchmarkNormalizeSchema_PartialAllOf(b *testing.B) {
+	schema := partialAllOfSchema()
+	b.ReportAllocs()
+	for b.Loop() {
+		NormalizeSchema(schema)
+	}
 }

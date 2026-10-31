@@ -720,6 +720,118 @@ func TestParse_RefSiblingsApplyIn31(t *testing.T) {
 	assert.NotContains(t, schema30["properties"], "extra")
 }
 
+// TestParse_RefSiblingDataIsNotAReference pins that keywords beside a $ref in 3.1
+// follow the same rules as anywhere else: a default whose data holds a "$ref" key,
+// and a property named "$ref", are not references, so the operation stays usable.
+func TestParse_RefSiblingDataIsNotAReference(t *testing.T) {
+	spec := `{"openapi":"3.1.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{"/docs":{"post":{"operationId":"putDoc","requestBody":{"required":true,"content":{"application/json":{"schema":{
+  "$ref":"#/components/schemas/Base",
+  "default":{"$ref":"https://example.com/not-a-schema"},
+  "enum":[{"$ref":"#/missing"}],
+  "const":{"$ref":"#/missing"},
+  "properties":{"$ref":{"type":"string"}},
+  "x-note":{"$ref":"#/missing"}}}}},"responses":{"200":{"description":"ok"}}}}},
+"components":{"schemas":{"Base":{"type":"object","properties":{"id":{"type":"integer"}}}}}}`
+	syn := synthesizeSpec(t, spec)
+	require.Empty(t, syn.Unsupported, "literal data beside a $ref must not cost the operation")
+	tool := findTool(t, syn, "putDoc")
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(tool.InputSchema, &schema))
+	props := schema["properties"].(map[string]any)
+	assert.Contains(t, props, "id")
+	assert.Contains(t, props, "$ref", "a property named $ref is a property")
+
+	op := syn.Tools[0].Operation
+	assert.Equal(t, map[string]any{"$ref": "https://example.com/not-a-schema"}, op.Body.Schema["default"], "literal data keeps its $ref key")
+	assert.Equal(t, []any{map[string]any{"$ref": "#/missing"}}, op.Body.Schema["enum"])
+}
+
+// TestParse_RefSiblingSchemasStillResolve: a reference inside a schema keyword
+// beside a $ref is a reference, and one that cannot be followed fails the
+// operation, not the document, as it does anywhere else.
+func TestParse_RefSiblingSchemasStillResolve(t *testing.T) {
+	spec := func(version, sibling string) string {
+		return `{"openapi":"` + version + `","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{"/ok":{"post":{"operationId":"okOp","responses":{"200":{"description":"ok"}}}},
+"/docs":{"post":{"operationId":"sibOp","requestBody":{"required":true,"content":{"application/json":{"schema":{
+  "$ref":"#/components/schemas/Base",` + sibling + `}}}},"responses":{"200":{"description":"ok"}}}}},
+"components":{"schemas":{"Base":{"type":"object","description":"base","required":["id"],"properties":{"id":{"type":"integer"}}},
+"Extra":{"type":"string","minLength":2}}}}`
+	}
+	siblingProp := `"properties":{"extra":{"$ref":"#/components/schemas/Extra"}},"required":["extra"]`
+
+	syn := synthesizeSpec(t, spec("3.1.0", siblingProp))
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal(findTool(t, syn, "sibOp").InputSchema, &schema))
+	props := schema["properties"].(map[string]any)
+	assert.Equal(t, "string", props["extra"].(map[string]any)["type"], "a nested reference in a sibling resolves")
+	assert.EqualValues(t, 2, props["extra"].(map[string]any)["minLength"])
+	assert.ElementsMatch(t, []any{"id", "extra"}, schema["required"], "required is unioned with the target's")
+
+	syn = synthesizeSpec(t, spec("3.0.3", siblingProp+`,"description":"mine"`))
+	schema = nil
+	require.NoError(t, json.Unmarshal(findTool(t, syn, "sibOp").InputSchema, &schema))
+	assert.NotContains(t, schema["properties"], "extra", "3.0 ignores siblings other than summary and description")
+	assert.Equal(t, []any{"id"}, schema["required"])
+
+	syn = synthesizeSpec(t, spec("3.1.0", `"properties":{"extra":{"$ref":"https://example.com/remote"}}`))
+	require.Len(t, syn.Unsupported, 1, "an external reference in a sibling costs that operation only")
+	assert.Equal(t, "/docs", syn.Unsupported[0].Path)
+	assert.Contains(t, syn.Unsupported[0].Reason, "external $ref")
+	findTool(t, syn, "okOp")
+}
+
+// TestParse_RefSiblingCycleIsCut: a schema reaching itself through a sibling of
+// its own $ref ends at the cycle cut, not in the depth or work budgets.
+func TestParse_RefSiblingCycleIsCut(t *testing.T) {
+	spec := `{"openapi":"3.1.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{"/n":{"post":{"operationId":"nodeOp","requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Node"}}}},"responses":{"200":{"description":"ok"}}}}},
+"components":{"schemas":{"Base":{"type":"object","properties":{"id":{"type":"integer"}}},
+"Node":{"$ref":"#/components/schemas/Base","properties":{"next":{"$ref":"#/components/schemas/Node"}}}}}}`
+	doc, err := Parse([]byte(spec), ParseOptions{})
+	require.NoError(t, err)
+	require.Len(t, doc.Operations, 1)
+	assert.Empty(t, doc.Operations[0].Unsupported)
+	joined := strings.Join(doc.Warnings, "\n")
+	assert.Contains(t, joined, "recursive $ref #/components/schemas/Node cut at its point of re-entry")
+}
+
+// TestParse_RefSiblingDataIsChargedToTheDocumentBudgets: resolving the siblings
+// together must not lose the charges a literal value paid on its own. Every
+// operation hands out its own copy of the same sibling default, so the encoded
+// bytes of those copies trip the document budget, and a reference nested deeper
+// than the chain limit still fails its operation.
+func TestParse_RefSiblingDataIsChargedToTheDocumentBudgets(t *testing.T) {
+	big := strings.Repeat("x", maxDocumentResolvedBytes/40)
+	var paths strings.Builder
+	for i := 0; i < 50; i++ {
+		if i > 0 {
+			paths.WriteByte(',')
+		}
+		fmt.Fprintf(&paths, `"/p%d":{"post":{"operationId":"op%d","requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Shared"}}}},"responses":{"200":{"description":"ok"}}}}`, i, i)
+	}
+	spec := `{"openapi":"3.1.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],"paths":{` + paths.String() + `},
+"components":{"schemas":{"Base":{"type":"object","properties":{"id":{"type":"integer"}}},
+"Shared":{"$ref":"#/components/schemas/Base","default":{"note":"` + big + `"}}}}}`
+	require.Less(t, len(spec), MaxSpecBytes, "fixture: the document itself is within the size limit")
+	_, res, err := parse([]byte(spec), ParseOptions{})
+	require.ErrorContains(t, err, "document budget", "the sibling's literal data is paid for per use")
+	assert.Greater(t, res.bytes, maxDocumentResolvedBytes)
+	assert.Less(t, res.bytes, maxDocumentResolvedBytes+len(big)+64, "resolving stops at the first use past the budget")
+
+	var chain strings.Builder
+	for i := 0; i < maxRefDepth+2; i++ {
+		fmt.Fprintf(&chain, `"S%d":{"$ref":"#/components/schemas/S%d","properties":{"x%d":{"type":"string"}}},`, i, i+1, i)
+	}
+	deep := `{"openapi":"3.1.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{"/d":{"post":{"operationId":"deepOp","requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/S0"}}}},"responses":{"200":{"description":"ok"}}}}},
+"components":{"schemas":{` + chain.String() + `"End":{"type":"object"}}}}`
+	doc, err := Parse([]byte(deep), ParseOptions{})
+	require.NoError(t, err)
+	assert.Contains(t, doc.Operations[0].Unsupported, "deeper than", "a sibling chain stays bounded by the depth limit")
+}
+
 // TestParse_IgnoredHeaderParameters: OpenAPI says header parameters named
 // Accept, Content-Type or Authorization are ignored. Exposing them would make
 // the model supply the token and override the configured credential.
@@ -857,4 +969,19 @@ func TestParse_LiteralRefInInstanceDataIsNotAReference(t *testing.T) {
 "responses":{"200":{"description":"ok"}}}}}}`), ParseOptions{})
 	require.NoError(t, err)
 	assert.Empty(t, findOp(t, doc, "POST", "/s").Unsupported)
+}
+
+// BenchmarkParse_RefSiblings: parsing runs at config time, never per tool call.
+func BenchmarkParse_RefSiblings(b *testing.B) {
+	spec := []byte(`{"openapi":"3.1.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://a"}],
+"paths":{"/docs":{"post":{"operationId":"putDoc","requestBody":{"required":true,"content":{"application/json":{"schema":{
+  "$ref":"#/components/schemas/Base","default":{"$ref":"https://example.com/x"},"required":["id"],
+  "properties":{"$ref":{"type":"string"},"extra":{"$ref":"#/components/schemas/Extra"}}}}}},"responses":{"200":{"description":"ok"}}}}},
+"components":{"schemas":{"Base":{"type":"object","properties":{"id":{"type":"integer"}}},"Extra":{"type":"string"}}}}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := Parse(spec, ParseOptions{}); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

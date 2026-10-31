@@ -160,8 +160,10 @@ func annotationsFor(method string) mcp.ToolAnnotation {
 		ann.DestructiveHint = b(false)
 		ann.IdempotentHint = b(true)
 	case "PUT":
+		// Replacing a resource can overwrite what was there, which MCP defines as a
+		// destructive update (false promises additive-only), so clients keep confirming it.
 		ann.ReadOnlyHint = b(false)
-		ann.DestructiveHint = b(false)
+		ann.DestructiveHint = b(true)
 		ann.IdempotentHint = b(true)
 	case "DELETE":
 		ann.ReadOnlyHint = b(false)

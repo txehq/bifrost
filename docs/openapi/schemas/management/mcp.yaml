@@ -637,7 +637,7 @@ MCPOpenAPIPreviewResponse:
         type: string
     base_url:
       type: string
-      description: Resolved upstream base URL (override, else the first absolute server). Empty when none could be resolved, with a warning, or when operation_servers is true.
+      description: Resolved upstream base URL (override, else the first absolute server, else OpenAPI 3's default server at the document's origin). Empty when none could be resolved, with a warning, or when operation_servers is true.
     operation_servers:
       type: boolean
       description: True when the document has no usable top-level server but every operation declares its own absolute server; no base URL is needed and each call goes to its operation's server.

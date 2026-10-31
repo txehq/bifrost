@@ -16,6 +16,15 @@
         "connection_type": "http",
         "connection_string": "http://127.0.0.1:8791/mcp",
         "tools_to_execute": ["web_search"]
+      },
+      {
+        "name": "fixture_openapi",
+        "connection_type": "openapi",
+        "openapi_config": {
+          "spec_url": "http://127.0.0.1:8791/openapi-fixture/docs/no-servers.json"
+        },
+        "tools_to_execute": ["*"],
+        "max_instructions_length": 48
       }
     ]
   },

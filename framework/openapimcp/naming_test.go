@@ -129,8 +129,8 @@ func TestAnnotationsFor(t *testing.T) {
 
 	put := annotationsFor("PUT")
 	assert.False(t, *put.ReadOnlyHint)
-	assert.False(t, *put.DestructiveHint)
-	assert.True(t, *put.IdempotentHint)
+	assert.True(t, *put.DestructiveHint, "a replacement can overwrite data: not additive-only")
+	assert.True(t, *put.IdempotentHint, "and idempotent, so the gateway's auth-failure retry still applies")
 
 	del := annotationsFor("DELETE")
 	assert.True(t, *del.DestructiveHint)

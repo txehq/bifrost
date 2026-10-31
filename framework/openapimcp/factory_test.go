@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	coremcp "github.com/capsohq/bifrost/core/mcp"
@@ -206,6 +208,71 @@ func TestFactory_OperationLevelServersNeedAnExplicitBaseURL(t *testing.T) {
 	_, err = Factory()(context.Background(), &schemas.MCPClientConfig{Name: "mixed", OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: mixed}}, schemas.InProcessServerDeps{})
 	require.ErrorIs(t, err, schemas.ErrMCPOpenAPIConfigInvalid)
 	assert.Contains(t, err.Error(), "base_url")
+}
+
+// TestFactory_DefaultServerCallsTheHostThatServedTheDocument runs a hosted
+// document without servers from fetch to tool call: the calls go to the document's
+// origin, a PUT tool says it is destructive and idempotent, and a body with an
+// unmerged allOf arrives whole.
+func TestFactory_DefaultServerCallsTheHostThatServedTheDocument(t *testing.T) {
+	const spec = `{"openapi":"3.0.3","info":{"title":"t","version":"1"},
+"paths":{"/items/{id}":{"put":{"operationId":"putItem","parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string"}}],
+"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","required":["name","email"],"properties":{"name":{"type":"string"}},
+"allOf":[{"oneOf":[{"type":"object","properties":{"email":{"type":"string"}}},{"type":"object","properties":{"phone":{"type":"string"}}}]}]}}}},
+"responses":{"200":{"description":"ok"}}}}}}`
+	var path, body string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/docs/v1/openapi.json" {
+			_, _ = w.Write([]byte(spec))
+			return
+		}
+		raw, _ := io.ReadAll(r.Body)
+		path, body = r.Method+" "+r.URL.Path, string(raw)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(ts.Close)
+	specURL := ts.URL + "/docs/v1/openapi.json"
+	srv, err := Factory()(context.Background(), &schemas.MCPClientConfig{Name: "hosted", OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecURL: &specURL}}, schemas.InProcessServerDeps{HTTPClient: ts.Client()})
+	require.NoError(t, err)
+	c, err := client.NewInProcessClient(srv)
+	require.NoError(t, err)
+	require.NoError(t, c.Start(context.Background()))
+	_, err = c.Initialize(context.Background(), mcp.InitializeRequest{Params: mcp.InitializeParams{ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION}})
+	require.NoError(t, err)
+
+	tools, err := c.ListTools(context.Background(), mcp.ListToolsRequest{})
+	require.NoError(t, err)
+	require.Len(t, tools.Tools, 1)
+	ann := tools.Tools[0].Annotations
+	require.NotNil(t, ann.DestructiveHint)
+	require.NotNil(t, ann.IdempotentHint)
+	assert.True(t, *ann.DestructiveHint)
+	assert.True(t, *ann.IdempotentHint)
+
+	req := mcp.CallToolRequest{}
+	req.Params.Name = "putItem"
+	req.Params.Arguments = map[string]any{"id": "7", "body": map[string]any{"name": "n", "email": "e@example.com"}}
+	res, err := c.CallTool(context.Background(), req)
+	require.NoError(t, err)
+	assert.False(t, res.IsError)
+	assert.Equal(t, "PUT /items/7", path)
+	assert.JSONEq(t, `{"name":"n","email":"e@example.com"}`, body)
+}
+
+// TestFactory_DefaultServerLeavesCrossOriginOperationServersRefused: an operation
+// naming another origin keeps needing a base URL, and when it has one, the
+// operation's server stays unused: the default opens no new destination.
+func TestFactory_DefaultServerLeavesCrossOriginOperationServersRefused(t *testing.T) {
+	var other atomic.Int32
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { other.Add(1) }))
+	t.Cleanup(elsewhere.Close)
+	spec := `{"openapi":"3.0.3","info":{"title":"t","version":"1"},
+"paths":{"/a":{"servers":[{"url":"` + elsewhere.URL + `"}],"get":{"operationId":"getA","responses":{"200":{"description":"ok"}}}}}}`
+	specURL := "https://docs.example.com/openapi.json"
+	_, err := Factory()(context.Background(), &schemas.MCPClientConfig{Name: "cross", OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: spec, SpecURL: &specURL}}, schemas.InProcessServerDeps{HTTPClient: elsewhere.Client()})
+	require.ErrorIs(t, err, schemas.ErrMCPOpenAPIConfigInvalid)
+	assert.Contains(t, err.Error(), "base_url")
+	assert.Zero(t, other.Load())
 }
 
 // TestFactory_RedirectedSpecURLResolvesServersAgainstTheDocument: a spec_url

@@ -272,11 +272,12 @@ func normalizeNode(v any, depth int) any {
 				out["type"] = "object"
 			}
 		}
-		// Drop required entries whose property no longer exists (e.g. readOnly).
+		// Drop required entries whose property no longer exists (e.g. readOnly). A
+		// name declared inside an allOf that stayed unmerged still exists there.
 		if req := asStringSlice(out["required"]); req != nil {
 			kept := make([]any, 0, len(req))
 			for _, name := range req {
-				if _, exists := props[name]; exists {
+				if _, exists := props[name]; exists || allOfDeclares(out["allOf"], name) {
 					kept = append(kept, name)
 				}
 			}
@@ -288,6 +289,21 @@ func normalizeNode(v any, depth int) any {
 		}
 	}
 	return out
+}
+
+// allOfDeclares reports whether a normalized allOf list names a property,
+// directly or through what a member kept unmerged: its own allOf and the choices
+// that stopped it merging. Normalization has already removed readOnly properties
+// from the members.
+func allOfDeclares(allOf any, name string) bool {
+	for _, member := range asSlice(allOf) {
+		m := asMap(member)
+		if _, declared := asMap(m["properties"])[name]; declared ||
+			allOfDeclares(m["allOf"], name) || allOfDeclares(m["oneOf"], name) || allOfDeclares(m["anyOf"], name) {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeAllOf folds allOf members that are all object schemas into one object:
@@ -350,8 +366,8 @@ func isObjectSchema(s map[string]any) bool {
 // path/query/header/cookie parameters and the request body's properties are all
 // top-level properties. The body keeps plain names; a parameter whose name
 // collides with a body property or another parameter is suffixed "__<in>".
-// Non-object bodies (arrays, primitives, oneOf/anyOf, text) travel as one
-// "body" property.
+// Non-object bodies (arrays, primitives, oneOf/anyOf, an unmerged allOf, text)
+// travel as one "body" property.
 func FlattenInputSchema(op Operation) (json.RawMessage, []ArgBinding, *BodyBinding, []string, error) {
 	props := map[string]any{}
 	requiredSet := map[string]bool{}
@@ -551,17 +567,19 @@ func flattenQuerystring(p Parameter, props map[string]any, requiredSet map[strin
 	return args, warnings, nil
 }
 
-// hasFreeFormOnly reports an object schema with additionalProperties but whose
-// named properties are all absent, i.e. a dictionary body.
 // hasFreeFormOnly reports whether an object body cannot be flattened into its
 // named properties without losing something: it allows keys beyond the ones it
 // names (or names none), carries a oneOf/anyOf whose members define more
-// fields, or may be null as a whole. Such a body travels as one `body`.
+// fields, keeps an allOf that normalization could not merge, or may be null as
+// a whole. Such a body travels as one `body`.
 func hasFreeFormOnly(schema map[string]any) bool {
 	if _, choice := schema["oneOf"]; choice {
 		return true
 	}
 	if _, choice := schema["anyOf"]; choice {
+		return true
+	}
+	if _, unmerged := schema["allOf"]; unmerged {
 		return true
 	}
 	if asBool(schema["nullable"]) {

@@ -198,6 +198,53 @@ const mcpAnswer = (message) => {
 	}
 };
 
+// An OpenAPI document with no servers, TXE-5533: its operations are served here, so the gateway's default server has
+// to be this origin. fixture_openapi in provider-error-fixture.config.json reads it. The description is long and
+// multibyte so the client's instruction cap cuts inside a character unless the cut respects them.
+const openAPIDocument = {
+	openapi: "3.0.3",
+	info: { title: "Fixture API", version: "1.0.0", description: "déjà vu ".repeat(40).trim() },
+	paths: {
+		"/fixture-api/items/{id}": {
+			put: {
+				operationId: "putItem",
+				parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+				requestBody: { required: true, content: { "application/json": { schema: { type: "object", properties: { name: { type: "string" } } } } } },
+				responses: { 200: { description: "ok" } },
+			},
+		},
+		"/fixture-api/profiles": {
+			post: {
+				operationId: "createProfile",
+				requestBody: {
+					required: true,
+					content: {
+						"application/json": {
+							schema: {
+								type: "object",
+								required: ["id", "email"],
+								properties: { id: { type: "string", minLength: 3 } },
+								allOf: [
+									{
+										oneOf: [
+											{ type: "object", properties: { email: { type: "string", format: "email" } } },
+											{ type: "object", properties: { phone: { type: "string", pattern: "^[0-9]+$" } } },
+										],
+									},
+								],
+							},
+						},
+					},
+				},
+				responses: { 200: { description: "ok" } },
+			},
+		},
+	},
+};
+
+// What reached the document's operations, in order; POST /__reset clears it.
+const openAPICalls = [];
+
 // Decision answers the conversion rejects, TXE-5518: no answers for the question asked, though the model ran and
 // reported usage. OpenRouter also reports what it billed.
 const decisionUsage = { input_tokens: 1000, output_tokens: 10, total_tokens: 1010 };
@@ -241,7 +288,23 @@ const server = http.createServer((req, res) => {
 	}
 	if (req.method === "POST" && path === "/__reset") {
 		for (const k of Object.keys(hits)) delete hits[k];
+		openAPICalls.length = 0;
 		return send(200, {}, JSON.stringify({ data: [{ reset: true }] }));
+	}
+	if (req.method === "GET" && path === "/openapi-fixture/docs/no-servers.json") {
+		return send(200, {}, JSON.stringify(openAPIDocument));
+	}
+	if (req.method === "GET" && path === "/__openapi-calls") {
+		return send(200, {}, JSON.stringify({ data: [{ calls: openAPICalls }] }));
+	}
+	if (path.startsWith("/fixture-api/")) {
+		const body = [];
+		req.on("data", (c) => body.push(c));
+		req.on("end", () => {
+			openAPICalls.push({ method: req.method, path, body: Buffer.concat(body).toString("utf8") });
+			send(200, {}, JSON.stringify({ ok: true }));
+		});
+		return undefined;
 	}
 	if (req.method === "GET" && path === "/__hits") {
 		return send(200, {}, JSON.stringify({ data: [{ hits: { ...hits } }] }));

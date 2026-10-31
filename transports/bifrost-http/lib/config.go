@@ -2898,6 +2898,12 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 			clientConfig.ToolExecutionTimeout.String(),
 		)
 	}
+	if clientConfig.MaxInstructionsLength < 0 {
+		return configstoreTables.TableMCPClient{}, fmt.Errorf(
+			"max_instructions_length must be 0 (use the global setting) or positive, got %d",
+			clientConfig.MaxInstructionsLength,
+		)
+	}
 	authType := string(clientConfig.AuthType)
 	if authType == "" {
 		authType = string(schemas.MCPAuthTypeHeaders)
@@ -2921,6 +2927,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		RequirePublicTarget:       clientConfig.RequirePublicTarget,
 		ToolSyncInterval:          int(clientConfig.ToolSyncInterval / time.Second),
 		ToolExecutionTimeout:      int(math.Ceil(clientConfig.ToolExecutionTimeout.Seconds())),
+		MaxInstructionsLength:     clientConfig.MaxInstructionsLength,
 		ToolPricing:               clientConfig.ToolPricing,
 		AllowByDefault:            clientConfig.AllowByDefault,
 		Disabled:                  clientConfig.Disabled,
