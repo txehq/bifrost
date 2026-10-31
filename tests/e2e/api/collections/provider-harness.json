@@ -287778,6 +287778,1329 @@
           ]
         }
       ]
+    },
+    {
+      "name": "274. Injected tools, fallbacks and stream state keep what the client is owed (core-preservation) [SERIAL]",
+      "description": "TXE-5540 regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream and as the real MCP server behind the injected web_search: the rows read back the bytes that reached it from /__wire and the tools/call count from /__hits. A client's custom tool call is held in a turn that is re-asked and handed over from the turn that ends the loop, an upstream's other choice keeps its index, an attempt that ran an injected tool is neither retried nor followed by a fallback while one that ran none still falls back, chat n=2 serves both choices with no injected tools and keeps its stream refusal and unary contract with them, text after a tool call reaches the client once in stream order, and a caller tool named like the gateway search stays the caller's. Reconnect admission, trace deferral, pooled state and schema copies have no wire shape and are pinned in Go.",
+      "item": [
+        {
+          "name": "[held] responses client custom call beside an injected call - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_injected/cp-custom\", \"input\": \"Hi\", \"tools\": [{\"type\": \"custom\", \"name\": \"code_exec\", \"description\": \"Run code\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('the client sees the final message and no dropped call', function () { pm.expect(types(pm.response.json().output)).to.eql(['message']); });",
+                  "state(function (calls, tools) { pm.test('the injected tool ran once and the turn was re-asked once', function () { pm.expect(tools).to.equal(1); pm.expect(calls.length).to.equal(2); });",
+                  " pm.test('the unanswered client custom call is not replayed', function () { pm.expect(types(calls[1].body.input)).to.not.include('custom_tool_call'); });",
+                  " pm.test('the injected call and its output are replayed', function () { var t = types(calls[1].body.input); pm.expect(t).to.include('function_call'); pm.expect(t).to.include('function_call_output'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[held] responses stream client custom call beside an injected call - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_injected/cp-custom\", \"input\": \"Hi\", \"tools\": [{\"type\": \"custom\", \"name\": \"code_exec\", \"description\": \"Run code\"}], \"stream\": true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var events = sse();",
+                  "pm.test('no event carries the dropped custom call', function () { pm.expect(pm.response.text()).to.not.include('call_client'); });",
+                  "var done = events.filter(function (e) { return e.type === 'response.completed'; });",
+                  "pm.test('one terminal event with the final message', function () { pm.expect(done.length).to.equal(1); pm.expect(types(done[0].response.output)).to.eql(['message']); });",
+                  "state(function (calls, tools) { pm.test('the injected tool ran once and the turn was re-asked once', function () { pm.expect(tools).to.equal(1); pm.expect(calls.length).to.equal(2); });",
+                  " pm.test('the unanswered client custom call is not replayed', function () { pm.expect(types(calls[1].body.input)).to.not.include('custom_tool_call'); });",
+                  " pm.test('the injected call and its output are replayed', function () { var t = types(calls[1].body.input); pm.expect(t).to.include('function_call'); pm.expect(t).to.include('function_call_output'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[handoff] responses final custom call reaches the client - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_injected/cp-custom-final\", \"input\": \"Hi\", \"tools\": [{\"type\": \"custom\", \"name\": \"code_exec\", \"description\": \"Run code\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('the client gets its custom call once', function () { var o = pm.response.json().output; pm.expect(types(o)).to.eql(['custom_tool_call']); pm.expect(o[0].call_id).to.equal('call_client'); });",
+                  "state(function (calls, tools) { pm.test('the injected tool ran once, two turns', function () { pm.expect(tools).to.equal(1); pm.expect(calls.length).to.equal(2); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[handoff] responses stream final custom call reaches the client - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_injected/cp-custom-final\", \"input\": \"Hi\", \"tools\": [{\"type\": \"custom\", \"name\": \"code_exec\", \"description\": \"Run code\"}], \"stream\": true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var events = sse();",
+                  "var added = events.filter(function (e) { return e.type === 'response.output_item.added' && e.item.call_id === 'call_client'; });",
+                  "var done = events.filter(function (e) { return e.type === 'response.completed'; });",
+                  "pm.test('the client gets its custom call once', function () { pm.expect(added.length).to.equal(1); pm.expect(done.length).to.equal(1); pm.expect(types(done[0].response.output)).to.eql(['custom_tool_call']); });",
+                  "state(function (calls, tools) { pm.test('the injected tool ran once, two turns', function () { pm.expect(tools).to.equal(1); pm.expect(calls.length).to.equal(2); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[choices] chat stream upstream choice keeps its index - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_injected/cp-other-choice\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather?\"}], \"stream\": true, \"stream_options\": {\"include_usage\": true}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var text = {}, finish = {}, terminal = 0;",
+                  "sse().forEach(function (c) { (c.choices || []).forEach(function (o) { var i = o.index || 0; if (o.delta && o.delta.content) text[i] = (text[i] || '') + o.delta.content; if (o.finish_reason) { finish[i] = o.finish_reason; terminal++; } }); });",
+                  "pm.test('each choice keeps its own text', function () { pm.expect(text[0]).to.equal('Sunny.'); pm.expect(text[1]).to.equal('Cloudy.'); });",
+                  "pm.test('each choice keeps its own finish reason, once', function () { pm.expect(finish[0]).to.equal('stop'); pm.expect(finish[1]).to.equal('length'); pm.expect(terminal).to.equal(2); });",
+                  "state(function (calls, tools) { pm.test('the tool ran once', function () { pm.expect(tools).to.equal(1); pm.expect(calls.length).to.equal(2); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-503] [fallback] chat turn fails after the tool ran - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_injected/cp-fail\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather?\"}], \"fallbacks\": [\"cp_plain/cp-fallback-target\"]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 503', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(503); });",
+                  "state(function (calls, tools) {",
+                  " pm.test('no retry repeats the tool: it ran once', function () { pm.expect(tools).to.equal(1); });",
+                  " pm.test('the failed turn is the last provider call', function () { pm.expect(calls.length).to.equal(2); });",
+                  " pm.test('the fallback is never called', function () { pm.expect(calls.map(function (c) { return c.body.model; })).to.not.include('cp-fallback-target'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-503] [fallback] chat stream turn fails after the tool ran - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_injected/cp-fail\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather?\"}], \"fallbacks\": [\"cp_plain/cp-fallback-target\"], \"stream\": true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 503', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(503); });",
+                  "state(function (calls, tools) {",
+                  " pm.test('no retry repeats the tool: it ran once', function () { pm.expect(tools).to.equal(1); });",
+                  " pm.test('the failed turn is the last provider call', function () { pm.expect(calls.length).to.equal(2); });",
+                  " pm.test('the fallback is never called', function () { pm.expect(calls.map(function (c) { return c.body.model; })).to.not.include('cp-fallback-target'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-503] [fallback] responses turn fails after the tool ran - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_injected/cp-fail\", \"input\": \"Hi\", \"fallbacks\": [\"cp_plain/cp-fallback-target\"]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 503', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(503); });",
+                  "state(function (calls, tools) {",
+                  " pm.test('no retry repeats the tool: it ran once', function () { pm.expect(tools).to.equal(1); });",
+                  " pm.test('the failed turn is the last provider call', function () { pm.expect(calls.length).to.equal(2); });",
+                  " pm.test('the fallback is never called', function () { pm.expect(calls.map(function (c) { return c.body.model; })).to.not.include('cp-fallback-target'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-503] [fallback] responses stream turn fails after the tool ran - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_injected/cp-fail\", \"input\": \"Hi\", \"fallbacks\": [\"cp_plain/cp-fallback-target\"], \"stream\": true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 503', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(503); });",
+                  "state(function (calls, tools) {",
+                  " pm.test('no retry repeats the tool: it ran once', function () { pm.expect(tools).to.equal(1); });",
+                  " pm.test('the failed turn is the last provider call', function () { pm.expect(calls.length).to.equal(2); });",
+                  " pm.test('the fallback is never called', function () { pm.expect(calls.map(function (c) { return c.body.model; })).to.not.include('cp-fallback-target'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[fallback] control chat failure before any tool still falls back - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_injected/cp-fail-first\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather?\"}], \"fallbacks\": [\"cp_plain/cp-fallback-target\"]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('the fallback answers', function () { pm.expect(pm.response.json().choices[0].message.content).to.equal('Served by the fallback.'); });",
+                  "state(function (calls, tools) { pm.test('no tool ran', function () { pm.expect(tools).to.equal(0); });",
+                  " pm.test('the fallback served the request', function () { pm.expect(calls[calls.length - 1].body.model).to.equal('cp-fallback-target'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[fallback] control chat stream failure before any tool still falls back - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_injected/cp-fail-first\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather?\"}], \"fallbacks\": [\"cp_plain/cp-fallback-target\"], \"stream\": true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('the fallback answers', function () { pm.expect(pm.response.text()).to.include('Served by the fallback.'); });",
+                  "state(function (calls, tools) { pm.test('no tool ran', function () { pm.expect(tools).to.equal(0); });",
+                  " pm.test('the fallback served the request', function () { pm.expect(calls[calls.length - 1].body.model).to.equal('cp-fallback-target'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[n] chat n=2 without injected tools keeps both choices - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_plain/cp-two-choices\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather?\"}], \"n\": 2}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('both choices keep index, text and finish', function () { var c = pm.response.json().choices; pm.expect(c.length).to.equal(2); pm.expect(c[0].message.content).to.equal('First.'); pm.expect(c[1].index).to.equal(1); pm.expect(c[1].message.content).to.equal('Second.'); pm.expect(c[1].finish_reason).to.equal('length'); });",
+                  "state(function (calls, tools) { pm.test('one provider call, no tool', function () { pm.expect(calls.length).to.equal(1); pm.expect(tools).to.equal(0); pm.expect(calls[0].body.n).to.equal(2); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[n] chat stream n=2 without injected tools keeps both choices - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_plain/cp-two-choices\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather?\"}], \"n\": 2, \"stream\": true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var text = {};",
+                  "sse().forEach(function (c) { (c.choices || []).forEach(function (o) { var i = o.index || 0; if (o.delta && o.delta.content) text[i] = (text[i] || '') + o.delta.content; }); });",
+                  "pm.test('both choices keep index and text', function () { pm.expect(text[0]).to.equal('First.'); pm.expect(text[1]).to.equal('Second.'); });",
+                  "state(function (calls, tools) { pm.test('one provider call, no tool', function () { pm.expect(calls.length).to.equal(1); pm.expect(tools).to.equal(0); pm.expect(calls[0].body.n).to.equal(2); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] [n] chat stream n=2 with injected tools stays refused - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_injected/cp-two-choices\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather?\"}], \"n\": 2, \"stream\": true, \"fallbacks\": [\"cp_plain/cp-fallback-target\"]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('the refusal names the combination', function () { pm.expect(pm.response.text()).to.include('n > 1'); });",
+                  "state(function (calls, tools) { pm.test('nothing reached a provider or the tool', function () { pm.expect(calls.length).to.equal(0); pm.expect(tools).to.equal(0); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[n] chat n=2 with injected tools keeps its unary contract (TXE-5209) - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_injected/cp-injected-on-other\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather?\"}], \"n\": 2}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('choice one is stripped of the injected call and ends stop', function () { var c = pm.response.json().choices; pm.expect(c.length).to.equal(2); pm.expect(c[0].message.content).to.equal('First.'); pm.expect(c[1].message.tool_calls || []).to.eql([]); pm.expect(c[1].finish_reason).to.equal('stop'); });",
+                  "state(function (calls, tools) { pm.test('the stripped call never ran: the gap TXE-5209 records', function () { pm.expect(calls.length).to.equal(1); pm.expect(tools).to.equal(0); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[text] responses stream text after a tool call is delivered once - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cloudflare/cp-post-tool-text\", \"input\": \"Hi\", \"stream\": true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var events = sse();",
+                  "var deltas = events.filter(function (e) { return e.type === 'response.output_text.delta'; });",
+                  "pm.test('both texts stream, the held newline leading the second', function () { pm.expect(deltas.map(function (d) { return d.delta; })).to.eql(['Before.', '\\nAfter.']); });",
+                  "pm.test('the second text is its own item, not a delta on a finished one', function () { pm.expect(deltas[0].item_id).to.not.equal(deltas[1].item_id); });",
+                  "var done = events.filter(function (e) { return e.type === 'response.completed'; });",
+                  "pm.test('the terminal output follows stream order', function () { pm.expect(done.length).to.equal(1); pm.expect(types(done[0].response.output)).to.eql(['message', 'function_call', 'message']); pm.expect(done[0].response.output[2].content[0].text).to.equal('\\nAfter.'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[search] responses caller tool named like the gateway search - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_plain/cp-search-collision\", \"input\": \"Hi\", \"tools\": [{\"type\": \"function\", \"name\": \"bifrost_tool_search\", \"description\": \"The caller's own search\", \"parameters\": {\"type\": \"object\", \"properties\": {\"topic\": {\"type\": \"string\"}}}}, {\"type\": \"function\", \"name\": \"get_weather\", \"description\": \"Weather\", \"parameters\": {\"type\": \"object\", \"properties\": {}}, \"defer_loading\": true}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('the client gets its own call', function () { var o = pm.response.json().output; pm.expect(types(o)).to.eql(['function_call']); pm.expect(o[0].call_id).to.equal('call_search'); });",
+                  "state(function (calls) { pm.test('one provider call: the gateway did not run the caller tool', function () { pm.expect(calls.length).to.equal(1); });",
+                  " var tools = calls[0].body.tools || [];",
+                  " var own = tools.filter(function (t) { return t.name === 'bifrost_tool_search'; });",
+                  " pm.test('the caller tool reaches the provider once, as declared', function () { pm.expect(own.length).to.equal(1); pm.expect(own[0].description).to.equal(\"The caller's own search\"); });",
+                  " pm.test('the deferred tool goes out eagerly', function () { pm.expect(tools.map(function (t) { return t.name; })).to.include('get_weather'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[search] responses stream caller tool named like the gateway search - core-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cp_plain/cp-search-collision\", \"input\": \"Hi\", \"tools\": [{\"type\": \"function\", \"name\": \"bifrost_tool_search\", \"description\": \"The caller's own search\", \"parameters\": {\"type\": \"object\", \"properties\": {\"topic\": {\"type\": \"string\"}}}}, {\"type\": \"function\", \"name\": \"get_weather\", \"description\": \"Weather\", \"parameters\": {\"type\": \"object\", \"properties\": {}}, \"defer_loading\": true}], \"stream\": true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('core-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// state: the requests that reached the fixture, bytes as they arrived, and the MCP tool calls it answered.",
+                  "function state(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (e1, w) { pm.sendRequest({ url: FX + '/__hits', method: 'GET' }, function (e2, h) { pm.test('the fixture answered', function () { pm.expect(e1, String(e1)).to.equal(null); pm.expect(e2, String(e2)).to.equal(null); }); cb(w.json().data[0].calls.map(function (c) { return { path: c.path, body: JSON.parse(c.body) }; }), h.json().data[0].hits.__mcp_tool_calls || 0); }); }); }",
+                  "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
+                  "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var done = sse().filter(function (e) { return e.type === 'response.completed'; });",
+                  "pm.test('the client gets its own call', function () { pm.expect(done.length).to.equal(1); pm.expect(done[0].response.output[0].call_id).to.equal('call_search'); });",
+                  "state(function (calls) { pm.test('one provider call: the gateway did not run the caller tool', function () { pm.expect(calls.length).to.equal(1); });",
+                  " var tools = calls[0].body.tools || [];",
+                  " var own = tools.filter(function (t) { return t.name === 'bifrost_tool_search'; });",
+                  " pm.test('the caller tool reaches the provider once, as declared', function () { pm.expect(own.length).to.equal(1); pm.expect(own[0].description).to.equal(\"The caller's own search\"); });",
+                  " pm.test('the deferred tool goes out eagerly', function () { pm.expect(tools.map(function (t) { return t.name; })).to.include('get_weather'); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

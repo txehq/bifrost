@@ -131,6 +131,55 @@
         }
       ]
     },
+    "cp_injected": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai"
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/cp",
+        "max_retries": 1,
+        "retry_backoff_initial": 10,
+        "retry_backoff_max": 20,
+        "default_request_timeout_in_seconds": 10
+      },
+      "injected_tools": [
+        {
+          "name": "web_search",
+          "mcp_client_name": "fixture_mcp",
+          "tool_name": "web_search"
+        }
+      ]
+    },
+    "cp_plain": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai"
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/cp",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "xai": {
       "keys": [
         {

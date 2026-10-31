@@ -192,6 +192,7 @@ const mcpAnswer = (message) => {
 		case "tools/list":
 			return reply({ tools: [{ name: "web_search", description: "Search the web.", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } }] });
 		case "tools/call":
+			hits.__mcp_tool_calls = (hits.__mcp_tool_calls || 0) + 1;
 			return reply({ content: [{ type: "text", text: "Sunny." }], isError: false });
 		default:
 			return { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "method not found" } };
@@ -322,7 +323,91 @@ const legacyCustomToolStream = (model) => {
 		event({ type: "response.completed", response }),
 	]);
 };
+// Core preservation, TXE-5540. The cp_injected provider injects the fixture's web_search; cp_plain injects nothing and
+// is the fallback target. A model answers by how many tool results its request already carries, so a replayed turn is
+// visible on the wire. cp-fail* fail with 503: cp-fail after a tool ran, cp-fail-first before any did.
+const webSearchCall = { id: "fc_cp", type: "function_call", status: "completed", call_id: "call_cp", name: "web_search", arguments: "{\"query\":\"weather\"}" };
+const clientCustomCall = { id: "ctc_cp", type: "custom_tool_call", status: "completed", call_id: "call_client", name: "code_exec", input: "print(1)" };
+const cpMessage = (text) => ({ id: "msg_cp", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text, annotations: [] }] });
+const cpResponses = {
+	"cp-custom": (done) => (done ? [cpMessage("Done.")] : [clientCustomCall, webSearchCall]),
+	"cp-custom-final": (done) => (done ? [clientCustomCall] : [webSearchCall]),
+	"cp-fail": () => [webSearchCall],
+	"cp-fallback-target": () => [cpMessage("Served by the fallback.")],
+};
+const cpResponse = (model, output) => ({ id: `resp_${model}`, object: "response", created_at: 1, status: "completed", model, output, usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 } });
+const cpResponseStream = (response) => {
+	let sequence_number = 0;
+	const event = (e) => ({ ...e, sequence_number: sequence_number++ });
+	const items = response.output.flatMap((item, output_index) => [
+		event({ type: "response.output_item.added", output_index, item }),
+		event({ type: "response.output_item.done", output_index, item }),
+	]);
+	return sse([event({ type: "response.created", response: { ...response, status: "in_progress", output: [], usage: null } }), ...items, event({ type: "response.completed", response })]);
+};
+const cpChatCompletion = (model, choices) => ({ id: `chatcmpl-${model}`, object: "chat.completion", created: 1, model, choices, usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } });
+const cpChatToolCall = { id: "call_cp", type: "function", function: { name: "web_search", arguments: "{\"query\":\"weather\"}" } };
+const cpChatAnswer = (text) => ({ role: "assistant", content: text });
+const cpChatToolTurn = { role: "assistant", content: null, tool_calls: [cpChatToolCall] };
+// Each entry is one upstream chunk's choices, so a chunk can carry several choices or only another one.
+const cpChunks = (model, usage, ...chunkChoices) => {
+	const base = { id: `chatcmpl-${model}`, object: "chat.completion.chunk", created: 1, model };
+	const chunks = [...chunkChoices.map((choices) => ({ ...base, choices })), { ...base, choices: [], usage }];
+	return chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n";
+};
+const cpUsage = { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 };
+const cpDelta = (index, delta, finish_reason = null) => ({ index, delta, finish_reason });
+const cpChatAnswerFor = (body) => {
+	const done = chatTurnsDone(body) > 0;
+	const stream = body.stream === true;
+	const reply = (choices) => ({ status: 200, body: JSON.stringify(cpChatCompletion(body.model, choices)) });
+	const failed = { status: 503, body: errorBody("service unavailable", "server_error", "unavailable") };
+	switch (body.model) {
+		case "cp-fail":
+			if (done) return failed;
+			return stream
+				? { status: 200, stream: cpChunks(body.model, cpUsage, [cpDelta(0, { role: "assistant", tool_calls: [{ index: 0, ...cpChatToolCall }] })], [cpDelta(0, {}, "tool_calls")]) }
+				: reply([{ index: 0, message: cpChatToolTurn, finish_reason: "tool_calls" }]);
+		case "cp-fail-first":
+			return failed;
+		case "cp-other-choice":
+			return done
+				? { status: 200, stream: cpChunks(body.model, cpUsage, [cpDelta(0, { role: "assistant", content: "Sunny." }), cpDelta(1, { role: "assistant", content: "Cloudy." })], [cpDelta(1, {}, "length")], [cpDelta(0, {}, "stop")]) }
+				: { status: 200, stream: cpChunks(body.model, cpUsage, [cpDelta(1, { role: "assistant", content: "Discarded draft." })], [cpDelta(0, { role: "assistant", tool_calls: [{ index: 0, ...cpChatToolCall }] })], [cpDelta(1, {}, "stop")], [cpDelta(0, {}, "tool_calls")]) };
+		case "cp-two-choices":
+			if (stream) return { status: 200, stream: cpChunks(body.model, cpUsage, [cpDelta(0, { role: "assistant", content: "First." }), cpDelta(1, { role: "assistant", content: "Second." })], [cpDelta(0, {}, "stop"), cpDelta(1, {}, "length")]) };
+			return reply([{ index: 0, message: cpChatAnswer("First."), finish_reason: "stop" }, { index: 1, message: cpChatAnswer("Second."), finish_reason: "length" }]);
+		case "cp-injected-on-other":
+			return reply([{ index: 0, message: cpChatAnswer("First."), finish_reason: "stop" }, { index: 1, message: cpChatToolTurn, finish_reason: "tool_calls" }]);
+		default:
+			return stream
+				? { status: 200, stream: cpChunks(body.model, cpUsage, [cpDelta(0, { role: "assistant", content: "Served by the fallback." })], [cpDelta(0, {}, "stop")]) }
+				: reply([{ index: 0, message: cpChatAnswer("Served by the fallback."), finish_reason: "stop" }]);
+	}
+};
+const cpResponsesAnswerFor = (body) => {
+	const done = responsesTurnsDone(body) > 0;
+	if (body.model === "cp-fail-first" || (body.model === "cp-fail" && done)) return { status: 503, body: errorBody("service unavailable", "server_error", "unavailable") };
+	if (body.model === "cp-search-collision") {
+		const response = cpResponse(body.model, [{ id: "fc_search", type: "function_call", status: "completed", call_id: "call_search", name: "bifrost_tool_search", arguments: "{\"topic\":\"weather\"}" }]);
+		return body.stream === true ? { status: 200, stream: cpResponseStream(response) } : { status: 200, body: JSON.stringify(response) };
+	}
+	const script = Object.hasOwn(cpResponses, body.model) ? cpResponses[body.model] : cpResponses["cp-fallback-target"];
+	const response = cpResponse(body.model, script(done));
+	return body.stream === true ? { status: 200, stream: cpResponseStream(response) } : { status: 200, body: JSON.stringify(response) };
+};
+// Text after a tool call on a provider that answers Responses through chat completions.
+const cpCloudflareChat = (body) => ({ status: 200, stream: cpChunks(body.model, cpUsage,
+	[cpDelta(0, { role: "assistant", content: "Before." })],
+	[cpDelta(0, { tool_calls: [{ index: 0, ...cpChatToolCall }] })],
+	[cpDelta(0, { content: "\n" })],
+	[cpDelta(0, { content: "After." })],
+	[cpDelta(0, {}, "tool_calls")]) });
+
 const wireAnswer = (path, body) => {
+	if (path === "/pp/cp/v1/chat/completions") return cpChatAnswerFor(body);
+	if (path === "/pp/cp/v1/responses") return cpResponsesAnswerFor(body);
+	if (path === "/pp/cloudflare/accounts/acct-1/ai/v1/chat/completions") return cpCloudflareChat(body);
 	if (path === "/pp/xai/v1/messages" || path === "/pp/anthropic/v1/messages") {
 		if (body.model === "pp-fail") return { status: 400, body: JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "fixture refused" } }) };
 		if (body.stream === true) return { status: 200, stream: anthropicMessageStream(body.model) };
