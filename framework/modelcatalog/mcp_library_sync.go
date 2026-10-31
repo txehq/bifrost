@@ -11,8 +11,6 @@ import (
 	"strings"
 	"time"
 
-	bifrost "github.com/capsohq/bifrost/core"
-	"github.com/capsohq/bifrost/core/network"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
@@ -275,10 +273,10 @@ func fetchMCPLibrary(ctx context.Context, rawURL string) ([]MCPLibraryEntry, err
 			return nil, fmt.Errorf("MCP library file exceeds %d bytes", maxMCPLibraryBodyBytes)
 		}
 	} else {
-		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
+		if err := datasheet.ValidateFetchURL(rawURL); err != nil {
 			return nil, fmt.Errorf("MCP library URL validation failed: %w", err)
 		}
-		client := network.NewPrivateNetworkHTTPClient(DefaultMCPLibraryTimeout)
+		client := datasheet.NewFetchClient(DefaultMCPLibraryTimeout)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)

@@ -2,6 +2,8 @@ package lib
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,6 +74,11 @@ func buildTemplateConfigDB() {
 	for _, path := range sidecars {
 		contents, err := os.ReadFile(path)
 		if err != nil {
+			// SQLite removes the sidecars when the last connection closes, which can
+			// land between the glob and this read. Gone means checkpointed.
+			if path != basePath && errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
 			templateConfigDBErr = err
 			return
 		}
