@@ -345,3 +345,82 @@ func BenchmarkGenerateMCPClientHash(b *testing.B) {
 		}
 	}
 }
+
+// priorHashVectors are the hashes the fork's last release before the v2.3 hash format,
+// transports/v2.2.6 (b5eb6c82c), computed with its own code for these client sections, with
+// and without a tool manager section, plus the hash transports/v2.3.3-sync.13 (dd07d6c03)
+// computes for the same section with one. The prior ones pin the checkpoint an upgrade meets;
+// the current ones pin that this change moved no deployment's hash.
+var priorHashVectors = []struct{ raw, base, withToolManager, current string }{
+	{`{}`, "PIN_0_BASE", "PIN_0_TM", "PIN_0_CUR"},
+	{`{"drop_excess_requests":true,"log_retention_days":7,"prometheus_labels":["team"]}`, "PIN_1_BASE", "PIN_1_TM", "PIN_1_CUR"},
+	{`{"enable_logging":true,"compat":{"convert_text_to_chat":false},"max_request_body_size_mb":50}`, "PIN_2_BASE", "PIN_2_TM", "PIN_2_CUR"},
+}
+
+func TestPriorFormatClientConfigHashMatchesPreviousRelease(t *testing.T) {
+	for _, tc := range priorHashVectors {
+		var c ClientConfig
+		require.NoError(t, sonic.Unmarshal([]byte(tc.raw), &c))
+		tm := &schemas.MCPToolManagerConfig{MaxAgentDepth: 5}
+
+		base, unchanged, err := c.GeneratePriorFormatClientConfigHash()
+		require.NoError(t, err)
+		assert.Equal(t, tc.base, base, tc.raw)
+		assert.True(t, unchanged, tc.raw)
+		withToolManager, unchanged, err := c.GeneratePriorFormatClientConfigHashWithToolManager(tm)
+		require.NoError(t, err)
+		assert.Equal(t, tc.withToolManager, withToolManager, tc.raw)
+		assert.True(t, unchanged, tc.raw)
+
+		current, err := c.GenerateClientConfigHashWithToolManager(tm)
+		require.NoError(t, err)
+		assert.Equal(t, tc.current, current, tc.raw)
+		assert.NotEqual(t, tc.withToolManager, current, "the current format hashes compat.azure_deepseek even at its default")
+	}
+}
+
+// A file that sets a field the prior format cannot see is not the file the checkpoint was
+// stored for, even though both hash the same. An explicit default sets nothing new.
+func TestPriorFormatClientConfigHashSeesFieldsItLeavesOut(t *testing.T) {
+	var plain ClientConfig
+	require.NoError(t, sonic.Unmarshal([]byte(`{}`), &plain))
+	plainHash, _, err := plain.GeneratePriorFormatClientConfigHash()
+	require.NoError(t, err)
+
+	for raw, wantUnchanged := range map[string]bool{
+		`{"compat":{"azure_deepseek":true,"force_reasoning_only_models_to_responses":true,"convert_decision_to_responses":false}}`: true,
+		`{"enforce_vk_object_ownership":true,"extra_fields_placement":"body"}`:                                                     true,
+		`{"compat":{"azure_deepseek":false}}`:                                                                                      false,
+		`{"compat":{"force_reasoning_only_models_to_responses":false}}`:                                                            false,
+		`{"compat":{"convert_decision_to_responses":true}}`:                                                                        false,
+		`{"extra_fields_placement":"headers"}`:                                                                                     false,
+		`{"delete_expired_virtual_keys":true}`:                                                                                     false,
+		`{"enforce_vk_object_ownership":false}`:                                                                                    false,
+		`{"mcp_max_instructions_per_client":100}`:                                                                                  false,
+		`{"mcp_max_instructions_total":100}`:                                                                                       false,
+		`{"mcp_code_mode_limits":{"max_tool_calls":3}}`:                                                                            false,
+		`{"mcp_oauth_private_allowlist":[]}`:                                                                                       false,
+		`{"a2a_private_allowlist":["10.0.0.0/8"]}`:                                                                                 false,
+		`{"a2a_store_raw_request_response":true}`:                                                                                  false,
+		`{"a2a_external_client_url":"https://a2a.example.com"}`:                                                                    false,
+		`{"skills_external_client_url":"https://skills.example.com"}`:                                                              false,
+	} {
+		var c ClientConfig
+		require.NoError(t, sonic.Unmarshal([]byte(raw), &c), raw)
+		hash, unchanged, err := c.GeneratePriorFormatClientConfigHash()
+		require.NoError(t, err)
+		assert.Equal(t, plainHash, hash, "%s: the prior format must not see this field", raw)
+		assert.Equal(t, wantUnchanged, unchanged, raw)
+	}
+
+	var c ClientConfig
+	require.NoError(t, sonic.Unmarshal([]byte(`{}`), &c))
+	for name, tm := range map[string]*schemas.MCPToolManagerConfig{
+		"code mode limits": {MaxAgentDepth: 5, CodeModeLimits: &schemas.MCPCodeModeLimits{}},
+		"oauth allowlist":  {MaxAgentDepth: 5, OAuthPrivateAllowlist: []string{}},
+	} {
+		_, unchanged, err := c.GeneratePriorFormatClientConfigHashWithToolManager(tm)
+		require.NoError(t, err)
+		assert.False(t, unchanged, name)
+	}
+}

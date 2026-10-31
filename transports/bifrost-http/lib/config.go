@@ -1628,7 +1628,8 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	// Hash file input before resolving an omitted setting against the database.
 	// Mark new secure defaults so adding explicit false is a detectable file change,
 	// even though both decode to the same boolean. Preserve legacy hashes on upgrade.
-	var fileHash, baseHash string
+	var fileHash, baseHash, priorFileHash, priorBaseHash string
+	var priorFileUnchanged, priorBaseUnchanged bool
 	if configData.Client != nil {
 		fileHash, err = configData.Client.GenerateClientConfigHashWithToolManager(toolManagerFromFile)
 		if err != nil {
@@ -1638,10 +1639,20 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		if err != nil {
 			return fmt.Errorf("failed to hash client config: %w", err)
 		}
+		priorFileHash, priorFileUnchanged, err = configData.Client.GeneratePriorFormatClientConfigHashWithToolManager(toolManagerFromFile)
+		if err != nil {
+			return fmt.Errorf("failed to hash client config: %w", err)
+		}
+		priorBaseHash, priorBaseUnchanged, err = configData.Client.GeneratePriorFormatClientConfigHash()
+		if err != nil {
+			return fmt.Errorf("failed to hash client config: %w", err)
+		}
 		const defaultMarker = ":inference-auth-default"
 		if !fileInferenceAuthProvided && (firstAdmin || clientConfig == nil ||
 			strings.HasSuffix(clientConfig.ConfigHash, defaultMarker)) {
 			fileHash += defaultMarker
+			// Those releases marked the hash the same way.
+			priorFileHash += defaultMarker
 		}
 	}
 	// An omitted enforce_auth_on_inference resolves to true for a first admin and for a
@@ -1703,6 +1714,20 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 			logger.Debug("mcp.tool_manager_config unchanged, keeping DB config")
 			return nil
 		}
+		priorTMHash, _, hashErr := priorToolManagerOnlyHash(toolManagerFromFile)
+		if hashErr != nil {
+			return fmt.Errorf("failed to hash mcp.tool_manager_config: %w", hashErr)
+		}
+		if !forceToolManagerSync && clientConfig.ConfigHash == priorTMHash &&
+			!configstore.ToolManagerSetsPostPriorFormatFields(toolManagerFromFile) {
+			// The checkpoint a release before v2.3.0 stored, for this same file: see Case 2b.
+			logger.Info("mcp.tool_manager_config unchanged since the previous release's checkpoint; keeping DB config and upgrading its hash format")
+			config.ClientConfig.ConfigHash = tmHash
+			if err = persistReconciledClientConfig(ctx, config); err != nil {
+				return err
+			}
+			return nil
+		}
 		logger.Info("mcp.tool_manager_config was updated in config.json, syncing. Note that: file config takes precedence.")
 		applyToolManagerToClientConfig(config.ClientConfig, toolManagerFromFile)
 		config.ClientConfig.ConfigHash = tmHash
@@ -1721,8 +1746,16 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	if !firstAdmin && !forceClientSync && clientConfig.ConfigHash == fileHash {
 		// Hash matches - keep DB config (preserves UI changes to both client and tool manager settings)
 		logger.Debug("client config hash matches, keeping DB config")
-	} else if !firstAdmin && !forceClientSync &&
-		clientConfig.ConfigHash == baseHash && toolManagerFromFile != nil {
+	} else if !firstAdmin && !forceClientSync && priorFileUnchanged && clientConfig.ConfigHash == priorFileHash {
+		// The checkpoint a release before v2.3.0 stored, for this same file: the file is
+		// unchanged, so dashboard settings stay and only the checkpoint moves to the new format.
+		logger.Info("client config unchanged since the previous release's checkpoint; keeping DB config and upgrading its hash format")
+		config.ClientConfig.ConfigHash = fileHash
+		if err = persistReconciledClientConfig(ctx, config); err != nil {
+			return err
+		}
+	} else if !firstAdmin && !forceClientSync && toolManagerFromFile != nil &&
+		(clientConfig.ConfigHash == baseHash || (priorBaseUnchanged && clientConfig.ConfigHash == priorBaseHash)) {
 		// Legacy hash match (pre-upgrade): the stored hash covers only the client section and
 		// matches the file, meaning the client section is unchanged. Only apply the tool manager
 		// settings from the file so that client-section UI changes survive the upgrade.
@@ -1771,6 +1804,14 @@ func toolManagerOnlyHash(tm *schemas.MCPToolManagerConfig) (string, error) {
 	cc := new(DefaultClientConfig)
 	applyToolManagerToClientConfig(cc, tm)
 	return cc.GenerateClientConfigHashWithToolManager(tm)
+}
+
+// priorToolManagerOnlyHash is toolManagerOnlyHash in the prior format: what a release before
+// v2.3.0 stored as the checkpoint of a file with no client section.
+func priorToolManagerOnlyHash(tm *schemas.MCPToolManagerConfig) (string, bool, error) {
+	cc := new(DefaultClientConfig)
+	applyToolManagerToClientConfig(cc, tm)
+	return cc.GeneratePriorFormatClientConfigHashWithToolManager(tm)
 }
 
 // applyToolManagerToClientConfig copies tool manager settings from the file into ClientConfig.

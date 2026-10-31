@@ -5687,6 +5687,188 @@ func TestMigrationMoveConfigJSONVKLimitsToModelConfigs(t *testing.T) {
 	assert.Equal(t, tiersBefore, tiersAfter, "a re-run created another tier")
 }
 
+// trySetupPostgresGovernanceDB returns a fresh Postgres schema of its own for a
+// governance limits migration test, dropped again on cleanup. It returns nil when
+// Postgres is unavailable.
+func trySetupPostgresGovernanceDB(t *testing.T, suffix string) *gorm.DB {
+	t.Helper()
+	schema := pgTestSchema + "_" + suffix
+	dsn := strings.Replace(postgresDSN, "search_path="+pgTestSchema, "search_path="+schema, 1)
+	// Model configs and budgets reference each other, which Postgres cannot create in
+	// one pass; the limits migrations read rows, not constraints.
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
+		Logger:                                   logger.Default.LogMode(logger.Silent),
+		DisableForeignKeyConstraintWhenMigrating: true,
+	})
+	if err != nil {
+		return nil
+	}
+	if sqlDB, err := db.DB(); err != nil || sqlDB.Ping() != nil {
+		return nil
+	}
+	require.NoError(t, db.Exec("DROP SCHEMA IF EXISTS "+schema+" CASCADE").Error)
+	require.NoError(t, db.Exec("CREATE SCHEMA "+schema).Error)
+	t.Cleanup(func() { db.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE") })
+	return db
+}
+
+// forEachGovernanceBackend runs fn on SQLite and on a Postgres schema of its own.
+func forEachGovernanceBackend(t *testing.T, suffix string, fn func(t *testing.T, db *gorm.DB)) {
+	t.Helper()
+	t.Run("sqlite", func(t *testing.T) { fn(t, setupTestDB(t)) })
+	t.Run("postgres", func(t *testing.T) {
+		db := trySetupPostgresGovernanceDB(t, suffix)
+		if db == nil {
+			t.Skip("postgres unavailable")
+		}
+		fn(t, db)
+	})
+}
+
+// A limit resets by its owner's calendar alignment. The standalone-limits cleanup runs before
+// move_config_json_vk_limits_to_model_configs and mints the key's all-models tier itself, and the
+// later migration reuses that tier as found, so a tier the first one got wrong stays wrong. Usage
+// and window start survive the move, and a tier already aligned differently keeps out of it.
+func TestMigrationVKStandaloneLimitsKeepCalendarAlignment(t *testing.T) {
+	forEachGovernanceBackend(t, "vk_limits", func(t *testing.T, db *gorm.DB) {
+		ctx := context.Background()
+		require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}, &tables.TableVirtualKeyProviderConfig{},
+			&tables.TableBudget{}, &tables.TableRateLimit{}, &tables.TableModelConfig{}))
+
+		lastReset := time.Date(2026, 10, 14, 15, 4, 5, 0, time.UTC)
+		tokenMax, tokenDur := int64(100), "1d"
+		for _, id := range []string{"rl-budgeted", "rl-only", "rl-mismatch"} {
+			require.NoError(t, db.Create(&tables.TableRateLimit{ID: id, TokenMaxLimit: &tokenMax, TokenResetDuration: &tokenDur,
+				TokenCurrentUsage: 42, TokenLastReset: lastReset}).Error)
+		}
+		key := func(id string, aligned bool, rateLimitID *string) *tables.TableVirtualKey {
+			return &tables.TableVirtualKey{ID: id, Name: id, Value: *schemas.NewSecretVar("sk-bf-" + id), CalendarAligned: aligned, RateLimitID: rateLimitID}
+		}
+		budget := func(id, vkID string) *tables.TableBudget {
+			return &tables.TableBudget{ID: id, MaxLimit: 10, ResetDuration: "1M", CurrentUsage: 7.5, LastReset: lastReset, VirtualKeyID: schemas.Ptr(vkID)}
+		}
+		// Part 1: a directly owned budget, plus a direct rate limit.
+		require.NoError(t, db.Create(key("vk-budgeted", true, schemas.Ptr("rl-budgeted"))).Error)
+		require.NoError(t, db.Create(budget("b-budgeted", "vk-budgeted")).Error)
+		// Part 3: only a direct rate limit.
+		require.NoError(t, db.Create(key("vk-only", true, schemas.Ptr("rl-only"))).Error)
+		// A rolling key stays rolling.
+		require.NoError(t, db.Create(key("vk-rolling", false, nil)).Error)
+		require.NoError(t, db.Create(budget("b-rolling", "vk-rolling")).Error)
+		// An aligned key whose tier is not: moving its limits would move their reset boundary.
+		require.NoError(t, db.Create(key("vk-mismatch", true, schemas.Ptr("rl-mismatch"))).Error)
+		require.NoError(t, db.Create(budget("b-mismatch", "vk-mismatch")).Error)
+		require.NoError(t, db.Create(&tables.TableModelConfig{ID: "mc-mismatch", ModelName: tables.ModelConfigAllModels,
+			Scope: tables.ModelConfigScopeVirtualKey, ScopeID: schemas.Ptr("vk-mismatch")}).Error)
+
+		// Registered order.
+		require.NoError(t, migrationMigrateVKStandaloneLimitsToModelConfigs(ctx, db, testMigrationLogger))
+
+		now := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+		for vkID, aligned := range map[string]bool{"vk-budgeted": true, "vk-only": true, "vk-rolling": false} {
+			var rows []tables.TableModelConfig
+			require.NoError(t, db.Preload("Budgets").Where("scope = ? AND scope_id = ? AND model_name = ? AND provider IS NULL",
+				tables.ModelConfigScopeVirtualKey, vkID, tables.ModelConfigAllModels).Find(&rows).Error)
+			require.Len(t, rows, 1, "expected exactly one all-models tier for %s", vkID)
+			assert.Equal(t, aligned, rows[0].CalendarAligned, "tier of %s lost the key's calendar alignment", vkID)
+			for i := range rows[0].Budgets {
+				b := &rows[0].Budgets[i]
+				assert.Equal(t, 7.5, b.CurrentUsage, "%s: usage must survive the move", vkID)
+				assert.True(t, b.LastReset.Equal(lastReset), "%s: the window start must survive the move", vkID)
+				monthStart := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+				if aligned {
+					assert.True(t, b.WindowStart(now).Equal(monthStart), "%s: the budget left the calendar grid", vkID)
+				} else {
+					assert.False(t, b.WindowStart(now).Equal(monthStart), "%s: a rolling budget moved onto the calendar", vkID)
+				}
+			}
+		}
+		var rl tables.TableRateLimit
+		require.NoError(t, db.First(&rl, "id = ?", "rl-only").Error)
+		assert.EqualValues(t, 42, rl.TokenCurrentUsage)
+		assert.True(t, rl.TokenLastReset.Equal(lastReset))
+
+		var moved, kept tables.TableBudget
+		require.NoError(t, db.First(&moved, "id = ?", "b-budgeted").Error)
+		require.NotNil(t, moved.ModelConfigID)
+		assert.Nil(t, moved.VirtualKeyID)
+		require.NoError(t, db.First(&kept, "id = ?", "b-mismatch").Error)
+		require.NotNil(t, kept.VirtualKeyID, "a budget whose destination is aligned differently stays with its key")
+		assert.Nil(t, kept.ModelConfigID)
+		var vk tables.TableVirtualKey
+		require.NoError(t, db.First(&vk, "id = ?", "vk-mismatch").Error)
+		assert.NotNil(t, vk.RateLimitID, "so does its rate limit")
+	})
+}
+
+// When two provider configs of one key and provider hold different rate limits, the tier takes
+// one and only that reference is cleared: the other stays on its provider config instead of
+// being orphaned. Two configs sharing the moved limit both let go of it, the key's other
+// provider and the key's own reference are separate tiers, and a re-run moves nothing more.
+func TestMigrationMoveConfigJSONVKLimitsKeepsUnmovedRateLimitReferences(t *testing.T) {
+	forEachGovernanceBackend(t, "vk_tier_refs", func(t *testing.T, db *gorm.DB) {
+		ctx := context.Background()
+		require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}, &tables.TableVirtualKeyProviderConfig{},
+			&tables.TableBudget{}, &tables.TableRateLimit{}, &tables.TableModelConfig{}))
+		tokenMax, tokenDur := int64(100), "1d"
+		for _, id := range []string{"rl-a", "rl-b", "rl-shared", "rl-other", "rl-key"} {
+			require.NoError(t, db.Create(&tables.TableRateLimit{ID: id, TokenMaxLimit: &tokenMax, TokenResetDuration: &tokenDur}).Error)
+		}
+		key := &tables.TableVirtualKey{ID: "vk-dup", Name: "vk-dup", Value: *schemas.NewSecretVar("sk-bf-dup"), RateLimitID: schemas.Ptr("rl-key")}
+		require.NoError(t, db.Create(key).Error)
+		for _, pc := range []struct{ provider, rateLimitID string }{
+			{"openai", "rl-a"}, {"openai", "rl-b"},
+			{"anthropic", "rl-shared"}, {"anthropic", "rl-shared"},
+			{"gemini", "rl-other"},
+		} {
+			require.NoError(t, db.Create(&tables.TableVirtualKeyProviderConfig{VirtualKeyID: "vk-dup", Provider: pc.provider,
+				RateLimitID: schemas.Ptr(pc.rateLimitID)}).Error)
+		}
+		referencesOf := func(provider string) []string {
+			var refs []string
+			require.NoError(t, db.Table("governance_virtual_key_provider_configs").
+				Where("virtual_key_id = ? AND provider = ? AND rate_limit_id IS NOT NULL", "vk-dup", provider).
+				Pluck("rate_limit_id", &refs).Error)
+			return refs
+		}
+		tierRateLimit := func(provider string) string {
+			var tier tables.TableModelConfig
+			require.NoError(t, db.Where("scope = ? AND scope_id = ? AND model_name = ? AND provider = ?",
+				tables.ModelConfigScopeVirtualKey, "vk-dup", tables.ModelConfigAllModels, provider).First(&tier).Error)
+			require.NotNil(t, tier.RateLimitID)
+			return *tier.RateLimitID
+		}
+
+		require.NoError(t, migrationMoveConfigJSONVKLimitsToModelConfigs(ctx, db, testMigrationLogger))
+
+		moved := tierRateLimit("openai")
+		require.Contains(t, []string{"rl-a", "rl-b"}, moved)
+		remaining := referencesOf("openai")
+		require.Len(t, remaining, 1, "the rate limit the tier did not take must keep its owner")
+		assert.NotEqual(t, moved, remaining[0])
+		assert.Equal(t, "rl-shared", tierRateLimit("anthropic"))
+		assert.Empty(t, referencesOf("anthropic"), "every reference to the moved limit goes")
+		assert.Equal(t, "rl-other", tierRateLimit("gemini"))
+		assert.Empty(t, referencesOf("gemini"))
+		var vk tables.TableVirtualKey
+		require.NoError(t, db.First(&vk, "id = ?", "vk-dup").Error)
+		assert.Nil(t, vk.RateLimitID)
+
+		// The migrator skips a recorded ID; the moves themselves must also hold still.
+		var rerun int
+		require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+			mcID, err := ensureVKLimitModelConfig(tx, "vk-dup", schemas.Ptr("openai"))
+			if err != nil {
+				return err
+			}
+			rerun, err = moveVKTierRateLimit(tx, "vk-dup", schemas.Ptr("openai"), mcID)
+			return err
+		}))
+		assert.Zero(t, rerun)
+		assert.Equal(t, remaining, referencesOf("openai"), "a tier that has a limit keeps it and leaves the other one alone")
+	})
+}
+
 // TestEnsureVKLimitModelConfigSkipsAMissingKey: the tier is scoped to the key by a column with no
 // foreign key, so a key that is gone must yield no tier rather than an orphan the delete cannot reach.
 func TestEnsureVKLimitModelConfigSkipsAMissingKey(t *testing.T) {

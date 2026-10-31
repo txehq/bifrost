@@ -2,13 +2,20 @@ package configstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -1301,5 +1308,391 @@ func TestDistributedLockManager_AcquireReportsLeaseLoss(t *testing.T) {
 		require.ErrorIs(t, context.Cause(held), ErrLockLost)
 	case <-time.After(2 * time.Second):
 		t.Fatal("losing the lease did not cancel the held context")
+	}
+}
+
+// faultyLockStore is one holder's view of a real store: its renewals and releases can
+// fail, block or land late, while other holders reach the same rows normally.
+type faultyLockStore struct {
+	LockStore
+	renew    func(ctx context.Context, next func(context.Context) error) error
+	release  func(ctx context.Context, next func(context.Context) (bool, error)) (bool, error)
+	renewals atomic.Int32
+	releases atomic.Int32
+}
+
+func (s *faultyLockStore) UpdateLockExpiry(ctx context.Context, lockKey, holderID string, expiresAt time.Time) error {
+	s.renewals.Add(1)
+	next := func(c context.Context) error { return s.LockStore.UpdateLockExpiry(c, lockKey, holderID, expiresAt) }
+	if s.renew == nil {
+		return next(ctx)
+	}
+	return s.renew(ctx, next)
+}
+
+func (s *faultyLockStore) ReleaseLock(ctx context.Context, lockKey, holderID string) (bool, error) {
+	s.releases.Add(1)
+	next := func(c context.Context) (bool, error) { return s.LockStore.ReleaseLock(c, lockKey, holderID) }
+	if s.release == nil {
+		return next(ctx)
+	}
+	return s.release(ctx, next)
+}
+
+// forEachLockBackend runs fn on each database the lock runs on. open returns a store on
+// its own connections, so two stores are two replicas of one deployment.
+func forEachLockBackend(t *testing.T, fn func(t *testing.T, open func() *RDBConfigStore)) {
+	t.Helper()
+	t.Run("sqlite", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "locks.db") + "?_journal_mode=WAL&_busy_timeout=5000"
+		fn(t, func() *RDBConfigStore { return openLockTestStore(t, sqlite.Open(path)) })
+	})
+	t.Run("postgres", func(t *testing.T) { fn(t, postgresLockTestStores(t)) })
+}
+
+// postgresLockTestStores returns an opener of stores on a Postgres schema of the test's own.
+func postgresLockTestStores(t *testing.T) func() *RDBConfigStore {
+	t.Helper()
+	admin, err := gorm.Open(postgres.Open(postgresDSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Skip("postgres unavailable")
+	}
+	sqlDB, err := admin.DB()
+	if err != nil || sqlDB.Ping() != nil {
+		t.Skip("postgres unavailable")
+	}
+	schema := "dlock_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	require.NoError(t, admin.Exec("CREATE SCHEMA "+schema).Error)
+	t.Cleanup(func() {
+		admin.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE")
+		sqlDB.Close()
+	})
+	dsn := strings.Replace(postgresDSN, "search_path="+pgTestSchema, "search_path="+schema, 1)
+	return func() *RDBConfigStore { return openLockTestStore(t, postgres.Open(dsn)) }
+}
+
+func openLockTestStore(t *testing.T, dialector gorm.Dialector) *RDBConfigStore {
+	t.Helper()
+	db, err := gorm.Open(dialector, &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { sqlDB.Close() })
+	require.NoError(t, db.AutoMigrate(&tables.TableDistributedLock{}))
+	s := &RDBConfigStore{logger: newMockLogger()}
+	s.db.Store(db)
+	return s
+}
+
+func newLockTestManager(store LockStore, ttl time.Duration) *DistributedLockManager {
+	return NewDistributedLockManager(store, newMockLogger(), WithDefaultTTL(ttl),
+		WithRetryInterval(5*time.Millisecond), WithMaxRetries(2000))
+}
+
+// Whatever renewal does, the lease is over at the expiry the store last confirmed. The
+// holder is stopped then, the next holder gets the key no earlier, and the first holder's
+// release leaves the second holder's row alone and returns even from a wedged store.
+func TestDistributedLockManager_NextHolderNeverOverlapsAStoppedHolder(t *testing.T) {
+	forEachLockBackend(t, func(t *testing.T, open func() *RDBConfigStore) {
+		ctx := context.Background()
+		const ttl = 400 * time.Millisecond
+		wedged := make(chan struct{})
+		t.Cleanup(func() { close(wedged) })
+		for name, renew := range map[string]func(context.Context, func(context.Context) error) error{
+			"renewal fails": func(context.Context, func(context.Context) error) error {
+				return errors.New("config store unreachable")
+			},
+			"renewal blocks": func(c context.Context, _ func(context.Context) error) error {
+				<-c.Done()
+				return c.Err()
+			},
+			"renewal ignores its deadline": func(context.Context, func(context.Context) error) error {
+				<-wedged
+				return errors.New("config store unreachable")
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				key := strings.ReplaceAll(t.Name(), "/", "-")
+				store := open()
+				first := &faultyLockStore{LockStore: store, renew: renew}
+				held, release, err := newLockTestManager(first, ttl).Acquire(ctx, key)
+				require.NoError(t, err)
+				row, err := store.GetLock(ctx, key)
+				require.NoError(t, err)
+				require.NotNil(t, row)
+
+				type acquired struct {
+					at      time.Time
+					held    context.Context
+					release func()
+					err     error
+				}
+				next := make(chan acquired, 1)
+				secondStore := open()
+				go func() {
+					h, r, err := newLockTestManager(secondStore, ttl).Acquire(ctx, key)
+					next <- acquired{time.Now(), h, r, err}
+				}()
+
+				select {
+				case <-held.Done():
+				case <-time.After(5 * time.Second):
+					t.Fatal("the holder outlived its confirmed lease")
+				}
+				stoppedAt := time.Now()
+				require.ErrorIs(t, context.Cause(held), ErrLockLost)
+				assert.WithinDuration(t, row.ExpiresAt, stoppedAt, ttl/2, "the holder must stop at the confirmed expiry")
+
+				var second acquired
+				select {
+				case second = <-next:
+				case <-time.After(5 * time.Second):
+					t.Fatal("the next holder never got the key")
+				}
+				require.NoError(t, second.err)
+				defer second.release()
+				assert.False(t, second.at.Before(row.ExpiresAt), "the next holder got the key before the first lease ended")
+
+				released := make(chan struct{})
+				go func() { release(); close(released) }()
+				select {
+				case <-released:
+				case <-time.After(2 * time.Second):
+					t.Fatal("release hung behind a renewal that never returned")
+				}
+				assert.Zero(t, first.releases.Load(), "a lease that is over has nothing to release")
+
+				time.Sleep(2 * ttl)
+				require.NoError(t, second.held.Err(), "the next holder must keep the key through the first holder's release")
+				current, err := store.GetLock(ctx, key)
+				require.NoError(t, err)
+				require.NotNil(t, current)
+				assert.NotEqual(t, row.HolderID, current.HolderID)
+			})
+		}
+	})
+}
+
+// A request cancelled mid-write is not a lost lease: the lock still goes back at once,
+// so the next holder does not wait out the TTL.
+func TestDistributedLockManager_CancelledHolderGivesTheLockBack(t *testing.T) {
+	forEachLockBackend(t, func(t *testing.T, open func() *RDBConfigStore) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		const ttl = 30 * time.Second
+		held, release, err := newLockTestManager(open(), ttl).Acquire(ctx, "cancelled-key")
+		require.NoError(t, err)
+		cancel()
+		<-held.Done()
+		require.ErrorIs(t, context.Cause(held), context.Canceled)
+		release()
+
+		start := time.Now()
+		_, next, err := newLockTestManager(open(), ttl).Acquire(context.Background(), "cancelled-key")
+		require.NoError(t, err)
+		defer next()
+		assert.Less(t, time.Since(start), ttl/2, "a cancelled holder left the next one waiting out the TTL")
+	})
+}
+
+// A renewal that reaches the store but whose answer arrives after the lease ran out cannot
+// bring the holder back: it stays stopped and renews no more, and the key is free once the
+// row that renewal extended has run out.
+func TestDistributedLockManager_LateRenewalDoesNotReviveTheHolder(t *testing.T) {
+	forEachLockBackend(t, func(t *testing.T, open func() *RDBConfigStore) {
+		ctx := context.Background()
+		const ttl = 300 * time.Millisecond
+		answered := make(chan struct{})
+		first := &faultyLockStore{LockStore: open()}
+		var once sync.Once
+		first.renew = func(_ context.Context, next func(context.Context) error) error {
+			err := next(ctx)
+			time.Sleep(ttl + 100*time.Millisecond)
+			once.Do(func() { close(answered) })
+			return err
+		}
+		held, release, err := newLockTestManager(first, ttl).Acquire(ctx, "late-key")
+		require.NoError(t, err)
+
+		<-held.Done()
+		require.ErrorIs(t, context.Cause(held), ErrLockLost)
+		<-answered
+		time.Sleep(2 * ttl)
+		assert.EqualValues(t, 1, first.renewals.Load(), "a stopped holder kept renewing")
+		require.ErrorIs(t, context.Cause(held), ErrLockLost)
+		release()
+
+		_, next, err := newLockTestManager(open(), ttl).Acquire(ctx, "late-key")
+		require.NoError(t, err)
+		next()
+	})
+}
+
+// contendedReleaseStore blocks every release until its context ends, the way a
+// PostgreSQL DELETE waits on a row another transaction holds.
+type contendedReleaseStore struct {
+	LockStore
+}
+
+func (s *contendedReleaseStore) ReleaseLock(ctx context.Context, lockKey, holderID string) (bool, error) {
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
+// A release whose DELETE is blocked must return by the end of the confirmed lease,
+// past which the row is any holder's to take, instead of hanging its caller.
+func TestDistributedLockManager_ReleaseIsBoundedByTheLease(t *testing.T) {
+	store := &contendedReleaseStore{LockStore: setupLockTestStore(t)}
+	ttl := 200 * time.Millisecond
+	manager := NewDistributedLockManager(store, newMockLogger(), WithDefaultTTL(ttl), WithRetryInterval(10*time.Millisecond))
+
+	_, release, err := manager.Acquire(context.Background(), "contended-key")
+	require.NoError(t, err)
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		release()
+		close(done)
+	}()
+	select {
+	case <-done:
+		require.LessOrEqual(t, time.Since(start), ttl+200*time.Millisecond)
+	case <-time.After(3 * time.Second):
+		t.Fatal("a release blocked in the store outlived the lease")
+	}
+}
+
+// The real contention: another transaction holds the row, so both the renewal's UPDATE and
+// the release's DELETE wait on it in Postgres. Neither may outlast the lease, and the next
+// holder gets the key once the row is free.
+func TestDistributedLockManager_ReleaseBlockedOnAPostgresRowLock(t *testing.T) {
+	open := postgresLockTestStores(t)
+	ctx := context.Background()
+	const ttl = 400 * time.Millisecond
+	held, release, err := newLockTestManager(open(), ttl).Acquire(ctx, "row-lock-key")
+	require.NoError(t, err)
+
+	tx := open().DB().Begin()
+	require.NoError(t, tx.Error)
+	defer tx.Rollback()
+	require.NoError(t, tx.Exec("SELECT 1 FROM "+(tables.TableDistributedLock{}).TableName()+" WHERE lock_key = ? FOR UPDATE", "row-lock-key").Error)
+
+	start := time.Now()
+	done := make(chan struct{})
+	go func() { release(); close(done) }()
+	select {
+	case <-done:
+		assert.LessOrEqual(t, time.Since(start), ttl+300*time.Millisecond)
+	case <-time.After(5 * time.Second):
+		t.Fatal("a release blocked on a row lock outlived the lease")
+	}
+	<-held.Done()
+	require.NoError(t, tx.Rollback().Error)
+
+	_, next, err := newLockTestManager(open(), ttl).Acquire(ctx, "row-lock-key")
+	require.NoError(t, err)
+	next()
+}
+
+// Renewal ends by itself once the lease is over, with or without a release, and one
+// wedged store call stays one call: failing stores cost no goroutine per tick or per lock.
+func TestDistributedLockManager_StoppedHoldersLeaveNoWorkBehind(t *testing.T) {
+	store := setupLockTestStore(t)
+	ctx := context.Background()
+	const ttl = 100 * time.Millisecond
+	const holders = 40
+	wedged := make(chan struct{})
+
+	for name, renew := range map[string]func(context.Context, func(context.Context) error) error{
+		"failing": func(context.Context, func(context.Context) error) error { return errors.New("config store unreachable") },
+		"wedged": func(context.Context, func(context.Context) error) error {
+			<-wedged
+			return errors.New("config store unreachable")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			faulty := &faultyLockStore{LockStore: store, renew: renew}
+			manager := newLockTestManager(faulty, ttl)
+			before := runtime.NumGoroutine()
+			for i := range holders {
+				_, _, err := manager.Acquire(ctx, fmt.Sprintf("%s-%d", name, i))
+				require.NoError(t, err)
+			}
+			time.Sleep(3 * ttl)
+			if name == "wedged" {
+				assert.EqualValues(t, holders, faulty.renewals.Load(), "a wedged renewal must stay one call per lock")
+				close(wedged)
+			}
+			require.Eventually(t, func() bool { return runtime.NumGoroutine() <= before+2 }, 2*time.Second, 10*time.Millisecond,
+				"renewal goroutines outlived the lease they renewed")
+		})
+	}
+}
+
+// Renewals racing release, on healthy stores, never put two holders in the section at
+// once and never strand a row. Run with -race.
+func TestDistributedLockManager_ContendedHoldersStayExclusive(t *testing.T) {
+	forEachLockBackend(t, func(t *testing.T, open func() *RDBConfigStore) {
+		ctx := context.Background()
+		const ttl = 200 * time.Millisecond
+		var inside, entries atomic.Int32
+		var wg sync.WaitGroup
+		for range 4 {
+			store := open()
+			wg.Go(func() {
+				manager := newLockTestManager(store, ttl)
+				for range 8 {
+					held, release, err := manager.Acquire(ctx, "contended-holders")
+					if !assert.NoError(t, err) {
+						return
+					}
+					assert.EqualValues(t, 1, inside.Add(1), "two holders in the critical section")
+					entries.Add(1)
+					// Long enough for a renewal tick to race the release.
+					time.Sleep(ttl/3 + 5*time.Millisecond)
+					assert.NoError(t, held.Err())
+					inside.Add(-1)
+					release()
+				}
+			})
+		}
+		wg.Wait()
+		assert.EqualValues(t, 32, entries.Load())
+		row, err := open().GetLock(ctx, "contended-holders")
+		require.NoError(t, err)
+		assert.Nil(t, row, "a released lock left its row behind")
+	})
+}
+
+// A manager with no store takes no lease, so nothing may report one lost.
+func TestDistributedLockManager_AcquireWithoutStore(t *testing.T) {
+	held, release, err := NewDistributedLockManager(nil, newMockLogger(), WithDefaultTTL(time.Millisecond)).
+		Acquire(context.Background(), "no-store-key")
+	require.NoError(t, err)
+	time.Sleep(20 * time.Millisecond)
+	require.NoError(t, held.Err())
+	release()
+	release()
+	require.ErrorIs(t, context.Cause(held), context.Canceled)
+}
+
+// BenchmarkDistributedLockManager_AcquireRelease covers the lock's control path: a lock
+// round trip on SQLite with the lease timer armed and stopped.
+func BenchmarkDistributedLockManager_AcquireRelease(b *testing.B) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(b, err)
+	sqlDB, err := db.DB()
+	require.NoError(b, err)
+	sqlDB.SetMaxOpenConns(1)
+	require.NoError(b, db.AutoMigrate(&tables.TableDistributedLock{}))
+	store := &RDBConfigStore{logger: newMockLogger()}
+	store.db.Store(db)
+	manager := NewDistributedLockManager(store, newMockLogger())
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		_, release, err := manager.Acquire(ctx, "bench-key")
+		require.NoError(b, err)
+		release()
 	}
 }
