@@ -286221,7 +286221,7 @@
     },
     {
       "name": "273. Provider conversions keep what the wire needs, and refused models never leave the gateway (provider-preservation) [SERIAL]",
-      "description": "TXE-5539 regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream: the rows read back the bytes that reached it from /__wire. A restored custom tool is relayed from the typed response, a repeated embedding input embeds the last one, xAI's native Messages are forwarded unchanged but for the model prefix and logged as Anthropic, a Cloudflare decision model cannot leave the decision endpoint, text documents reach Anthropic decoded, Gemini code execution keeps its thought signatures, vision embeddings stay on the multimodal endpoint, a custom Cohere provider gets Cohere's tool_choice default, and a Databricks decision with an image asset is refused rather than decided without the image. Run the whole folder in order.",
+      "description": "TXE-5539 regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream: the rows read back the bytes that reached it from /__wire. A restored custom tool is relayed from the typed response, a repeated embedding input embeds the last one, xAI's native Messages are forwarded unchanged but for the model prefix and logged as Anthropic, a Cloudflare decision model cannot leave the decision endpoint, text documents reach Anthropic decoded, Gemini code execution keeps its thought signatures, vision embeddings stay on the multimodal endpoint, a custom Cohere provider gets Cohere's tool_choice default, a Databricks decision with an image asset is refused rather than decided without the image, a compacted tool addition keeps its programmatic caller restriction, and a tool search replay embeds sanitized definitions. Run the whole folder in order.",
       "item": [
         {
           "name": "a custom tool answer is relayed restored, not as its raw function call - provider-preservation",
@@ -287474,6 +287474,150 @@
                   "// wire: the requests that reached the fixture, bytes as they arrived.",
                   "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
                   "pm.test('the gateway refuses the asset itself, since ai_decide would decide without the image', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); pm.expect(pm.response.text()).to.include('cannot read'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a compacted tool addition keeps its programmatic caller restriction - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"anthropic/claude-sonnet-5-5\", \"max_output_tokens\": 64, \"tools\": [{\"type\": \"code_interpreter\", \"container\": {\"type\": \"auto\"}, \"code_execution_version\": \"code_execution_20260120\"}], \"input\": [{\"role\": \"user\", \"content\": \"hi\"}, {\"role\": \"assistant\", \"content\": [{\"type\": \"compaction\", \"summary\": \"earlier turns\", \"tool_changes\": [{\"type\": \"tool_addition\", \"tool\": {\"type\": \"tool_definition\", \"definition\": {\"type\": \"function\", \"name\": \"automation_update\", \"parameters\": {\"type\": \"object\"}, \"allowed_callers\": [\"programmatic\"]}}}]}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "wire(function (calls) { pm.test('the definition stayed restricted to code execution', function () { pm.expect(calls).to.have.length(1); pm.expect(calls[0].body).to.include('automation_update'); var callers = /\"automation_update\"[^}]*?\"allowed_callers\":(\\[[^\\]]*\\])|\"allowed_callers\":(\\[[^\\]]*\\])[^}]*?\"automation_update\"/.exec(calls[0].body); pm.expect(callers, calls[0].body).to.not.equal(null); pm.expect(JSON.parse(callers[1] || callers[2])).to.eql(['code_execution_20260120']); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a tool search replay embeds sanitized definitions - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-6-pp-search\", \"tools\": [{\"type\": \"function\", \"name\": \"tool_search\", \"description\": \"Find tools\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}}}}, {\"type\": \"function\", \"name\": \"lookup\", \"description\": \"Look it up\", \"defer_loading\": true, \"cache_control\": {\"type\": \"ephemeral\"}, \"input_examples\": [{\"q\": \"x\"}], \"parameters\": {\"type\": \"object\", \"properties\": {\"q\": {\"type\": \"string\"}}}}], \"input\": [{\"role\": \"user\", \"content\": \"find it\"}, {\"type\": \"function_call\", \"call_id\": \"call_ts\", \"name\": \"tool_search\", \"arguments\": \"{\\\"query\\\":\\\"lookup\\\"}\"}, {\"type\": \"function_call_output\", \"call_id\": \"call_ts\", \"output\": [{\"type\": \"tool_reference\", \"tool_name\": \"lookup\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "wire(function (calls) { pm.test('the loaded definition keeps defer_loading and drops what OpenAI rejects', function () {",
+                  "  pm.expect(calls).to.have.length(1);",
+                  "  var output = JSON.parse(calls[0].body).input.filter(function (i) { return i.type === 'tool_search_output'; })[0];",
+                  "  pm.expect(output, calls[0].body).to.be.an('object');",
+                  "  pm.expect(output.tools[0].name).to.equal('lookup');",
+                  "  pm.expect(output.tools[0].defer_loading).to.equal(true);",
+                  "  pm.expect(output.tools[0].cache_control).to.equal(undefined);",
+                  "  pm.expect(output.tools[0].input_examples).to.equal(undefined);",
+                  "}); });"
                 ]
               }
             }

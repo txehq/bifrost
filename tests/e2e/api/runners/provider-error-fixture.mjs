@@ -493,6 +493,9 @@ const server = http.createServer((req, res) => {
 			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
 			return res.end(legacyCustomToolStream(model));
 		}
+		if (path === "/v1/responses" && model === "gpt-6-pp-search") {
+			wireCalls.push({ path, query: "", body: Buffer.concat(chunks).toString("utf8") });
+		}
 		if (path === "/v1/responses" && model === "decision-emulated") {
 			return send(200, {}, JSON.stringify({
 				id: "resp_decision_emulated", object: "response", created_at: 1, status: "completed", model: "decision-emulated-2026",

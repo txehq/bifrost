@@ -54,7 +54,8 @@
             "gpt-6-luna",
             "decision-emulated",
             "pp-custom-legacy",
-            "pp-embedding"
+            "pp-embedding",
+            "gpt-6-pp-search"
           ],
           "weight": 1
         }
