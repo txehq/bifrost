@@ -2554,8 +2554,12 @@ func TestProviderKeyWrites_BypassedSecretReferenceEveryField(t *testing.T) {
 		if err != nil {
 			t.Fatalf("site %v: marshal: %v", site, err)
 		}
-		// The decoder takes a case-variant field name, so that spelling reaches the same guard.
-		for spelling, body := range map[string][]byte{"exact": exact, "upper": upperTopLevelNames(t, exact)} {
+		// The decoder takes these spellings of a field name, so they reach the same guard.
+		for spelling, body := range map[string][]byte{
+			"exact":  exact,
+			"upper":  renameTopLevelFields(t, exact, strings.ToUpper),
+			"kelvin": renameTopLevelFields(t, exact, func(name string) string { return strings.Replace(name, "k", "\u212a", 1) }),
+		} {
 			for _, create := range []bool{true, false} {
 				name := fmt.Sprintf("%v/%s/update", site, spelling)
 				if create {
@@ -2596,22 +2600,74 @@ func TestProviderKeyWrites_BypassedSecretReferenceEveryField(t *testing.T) {
 	}
 }
 
-// upperTopLevelNames rewrites a JSON object with its top-level names in upper case.
-func upperTopLevelNames(t *testing.T, body []byte) []byte {
+// renameTopLevelFields rewrites a JSON object with rename applied to its top-level names.
+func renameTopLevelFields(t *testing.T, body []byte, rename func(string) string) []byte {
 	t.Helper()
 	var fields map[string]json.RawMessage
 	if err := sonic.Unmarshal(body, &fields); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	upper := make(map[string]json.RawMessage, len(fields))
+	renamed := make(map[string]json.RawMessage, len(fields))
 	for name, value := range fields {
-		upper[strings.ToUpper(name)] = value
+		renamed[rename(name)] = value
 	}
-	out, err := sonic.Marshal(upper)
+	out, err := sonic.Marshal(renamed)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
 	return out
+}
+
+// TestUpdateProviderKey_RepeatedSpellingsReachTheGuardsAsDecoded: a body that names a field in
+// several spellings is judged by what the decoder made of it, whichever spelling came last, so
+// no order can carry a server secret reference or a new dial target past the bypass guards.
+func TestUpdateProviderKey_RepeatedSpellingsReachTheGuardsAsDecoded(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	t.Setenv(txe4989SecretEnv, txe4989Secret)
+	ref := "env." + txe4989SecretEnv
+	const literal = "sk-another-literal-0123456789"
+
+	for _, tc := range []struct {
+		name       string
+		body       string
+		wantStatus int
+		wantValue  string
+	}{
+		{"reference after a literal", `{"value":"` + literal + `","VALUE":"` + ref + `"}`, fasthttp.StatusForbidden, "sk-stored-literal"},
+		{"structured reference after a literal", `{"value":"` + literal + `","VALUE":{"ref":"` + txe4989SecretEnv + `","type":"env"}}`, fasthttp.StatusForbidden, "sk-stored-literal"},
+		{"literal after a reference", `{"VALUE":"` + ref + `","value":"` + literal + `"}`, fasthttp.StatusOK, literal},
+		{"reference in a later block", `{"azure_key_config":{"endpoint":"https://azure.example.com"},"AZURE_KEY_CONFIG":{"endpoint":"https://azure.example.com","client_secret":"` + ref + `"}}`, fasthttp.StatusForbidden, "sk-stored-literal"},
+		{"reference in the earlier block of two that merge", `{"AZURE_KEY_CONFIG":{"endpoint":"https://azure.example.com","client_secret":"` + ref + `"},"azure_\u212aey_config":{"tenant_id":"tenant"}}`, fasthttp.StatusForbidden, "sk-stored-literal"},
+		{"dial target in a later spelling", `{"sgl_key_config":{"url":"http://stored:30000"},"SGL_KEY_CONFIG":{"url":"http://169.254.169.254/"}}`, fasthttp.StatusForbidden, "sk-stored-literal"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stored := schemas.Key{
+				ID: "key-1", Name: "stored", Value: *schemas.NewSecretVar("sk-stored-literal"), Weight: 1,
+				SGLKeyConfig: &schemas.SGLKeyConfig{URL: *schemas.NewSecretVar("http://stored:30000")},
+			}
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {Keys: []schemas.Key{stored}}}},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("provider", string(schemas.OpenAI))
+			ctx.SetUserValue("key_id", "key-1")
+			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			h.updateProviderKey(ctx)
+			if got := ctx.Response.StatusCode(); got != tc.wantStatus {
+				t.Fatalf("status %d, want %d (%d-byte body)", got, tc.wantStatus, len(ctx.Response.Body()))
+			}
+			if strings.Contains(string(ctx.Response.Body()), txe4989Secret) {
+				t.Fatalf("the response disclosed the resolved server secret")
+			}
+			keys := h.inMemoryStore.Providers[schemas.OpenAI].Keys
+			if len(keys) != 1 || len(keySecretRefs(&keys[0])) != 0 || keys[0].Value.GetValue() != tc.wantValue {
+				t.Fatalf("stored key after the update: value %q, %d references", keys[0].Value.GetValue(), len(keySecretRefs(&keys[0])))
+			}
+		})
+	}
 }
 
 // errorMessage returns the decoded message of an error response, so a path holding quotes
