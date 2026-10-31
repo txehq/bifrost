@@ -2633,36 +2633,39 @@ func TestUpdateProviderKey_RepeatedSpellingsReachTheGuardsAsDecoded(t *testing.T
 		body       string
 		wantStatus int
 		wantValue  string
+		provider   schemas.ModelProvider
 	}{
-		{"reference after a literal", `{"value":"` + literal + `","VALUE":"` + ref + `"}`, fasthttp.StatusForbidden, "sk-stored-literal"},
-		{"structured reference after a literal", `{"value":"` + literal + `","VALUE":{"ref":"` + txe4989SecretEnv + `","type":"env"}}`, fasthttp.StatusForbidden, "sk-stored-literal"},
-		{"literal after a reference", `{"VALUE":"` + ref + `","value":"` + literal + `"}`, fasthttp.StatusOK, literal},
-		{"reference in a later block", `{"azure_key_config":{"endpoint":"https://azure.example.com"},"AZURE_KEY_CONFIG":{"endpoint":"https://azure.example.com","client_secret":"` + ref + `"}}`, fasthttp.StatusForbidden, "sk-stored-literal"},
-		{"reference in the earlier block of two that merge", `{"AZURE_KEY_CONFIG":{"endpoint":"https://azure.example.com","client_secret":"` + ref + `"},"azure_\u212aey_config":{"tenant_id":"tenant"}}`, fasthttp.StatusForbidden, "sk-stored-literal"},
-		{"dial target in a later spelling", `{"sgl_key_config":{"url":"http://stored:30000"},"SGL_KEY_CONFIG":{"url":"http://169.254.169.254/"}}`, fasthttp.StatusForbidden, "sk-stored-literal"},
+		{"reference after a literal", `{"value":"` + literal + `","VALUE":"` + ref + `"}`, fasthttp.StatusForbidden, "sk-stored-literal", ""},
+		{"structured reference after a literal", `{"value":"` + literal + `","VALUE":{"ref":"` + txe4989SecretEnv + `","type":"env"}}`, fasthttp.StatusForbidden, "sk-stored-literal", ""},
+		{"literal after a reference", `{"VALUE":"` + ref + `","value":"` + literal + `"}`, fasthttp.StatusOK, literal, ""},
+		{"reference in a later block", `{"azure_key_config":{"endpoint":"https://azure.example.com"},"AZURE_KEY_CONFIG":{"endpoint":"https://azure.example.com","client_secret":"` + ref + `"}}`, fasthttp.StatusForbidden, "sk-stored-literal", ""},
+		{"reference in the earlier block of two that merge", `{"AZURE_KEY_CONFIG":{"endpoint":"https://azure.example.com","client_secret":"` + ref + `"},"azure_\u212aey_config":{"tenant_id":"tenant"}}`, fasthttp.StatusForbidden, "sk-stored-literal", ""},
+		{"dial target in a later spelling", `{"sgl_key_config":{"url":"http://stored:30000"},"SGL_KEY_CONFIG":{"url":"http://169.254.169.254/"}}`, fasthttp.StatusForbidden, "sk-stored-literal", schemas.SGL},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			stored := schemas.Key{
-				ID: "key-1", Name: "stored", Value: *schemas.NewSecretVar("sk-stored-literal"), Weight: 1,
-				SGLKeyConfig: &schemas.SGLKeyConfig{URL: *schemas.NewSecretVar("http://stored:30000")},
+			stored := schemas.Key{ID: "key-1", Name: "stored", Value: *schemas.NewSecretVar("sk-stored-literal"), Weight: 1}
+			provider := schemas.OpenAI
+			if tc.provider != "" {
+				provider = tc.provider
+				stored.SGLKeyConfig = &schemas.SGLKeyConfig{URL: *schemas.NewSecretVar("http://stored:30000")}
 			}
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {Keys: []schemas.Key{stored}}}},
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{provider: {Keys: []schemas.Key{stored}}}},
 				modelsManager: &mockModelsManager{},
 			}
 			attachBifrostClient(t, h.inMemoryStore)
 			ctx := newTestRequestCtx(tc.body)
-			ctx.SetUserValue("provider", string(schemas.OpenAI))
+			ctx.SetUserValue("provider", string(provider))
 			ctx.SetUserValue("key_id", "key-1")
 			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
 			h.updateProviderKey(ctx)
-			if got := ctx.Response.StatusCode(); got != tc.wantStatus {
-				t.Fatalf("status %d, want %d (%d-byte body)", got, tc.wantStatus, len(ctx.Response.Body()))
-			}
 			if strings.Contains(string(ctx.Response.Body()), txe4989Secret) {
 				t.Fatalf("the response disclosed the resolved server secret")
 			}
-			keys := h.inMemoryStore.Providers[schemas.OpenAI].Keys
+			if got := ctx.Response.StatusCode(); got != tc.wantStatus {
+				t.Fatalf("status %d, want %d: %s", got, tc.wantStatus, ctx.Response.Body())
+			}
+			keys := h.inMemoryStore.Providers[provider].Keys
 			if len(keys) != 1 || len(keySecretRefs(&keys[0])) != 0 || keys[0].Value.GetValue() != tc.wantValue {
 				t.Fatalf("stored key after the update: value %q, %d references", keys[0].Value.GetValue(), len(keySecretRefs(&keys[0])))
 			}

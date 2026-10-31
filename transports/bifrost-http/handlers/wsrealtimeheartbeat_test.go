@@ -592,7 +592,6 @@ func TestTranscriptionUpgradeKeepsMiddlewareValuesPastTheHandler(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			SetLogger(&mockLogger{})
 			upstreamAuth := make(chan string, 1)
 			upgrader := ws.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

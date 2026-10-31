@@ -284267,6 +284267,8 @@
                   "  pm.test('handler-preservation: the config was read', function () { pm.expect(res && res.code, err ? String(err) : res.text()).to.equal(200); });",
                   "  var cfg = res.json();",
                   "  pm.collectionVariables.set('hpPricingUrl', cfg.framework_config.pricing_url);",
+                  "  // log_retention_days reads 0 when config.json leaves it out, and a save refuses 0: the form fills in its default.",
+                  "  cfg.client_config.log_retention_days = cfg.client_config.log_retention_days || 30;",
                   "  edit(cfg);",
                   "  pm.collectionVariables.set('hpConfigBody', JSON.stringify({ client_config: cfg.client_config, framework_config: cfg.framework_config }));",
                   "});"
@@ -284344,6 +284346,8 @@
                   "  pm.test('handler-preservation: the config was read', function () { pm.expect(res && res.code, err ? String(err) : res.text()).to.equal(200); });",
                   "  var cfg = res.json();",
                   "  pm.collectionVariables.set('hpPricingUrl', cfg.framework_config.pricing_url);",
+                  "  // log_retention_days reads 0 when config.json leaves it out, and a save refuses 0: the form fills in its default.",
+                  "  cfg.client_config.log_retention_days = cfg.client_config.log_retention_days || 30;",
                   "  edit(cfg);",
                   "  pm.collectionVariables.set('hpConfigBody', JSON.stringify({ client_config: cfg.client_config, framework_config: cfg.framework_config }));",
                   "});"
@@ -284418,6 +284422,8 @@
                   "  pm.test('handler-preservation: the config was read', function () { pm.expect(res && res.code, err ? String(err) : res.text()).to.equal(200); });",
                   "  var cfg = res.json();",
                   "  pm.collectionVariables.set('hpPricingUrl', cfg.framework_config.pricing_url);",
+                  "  // log_retention_days reads 0 when config.json leaves it out, and a save refuses 0: the form fills in its default.",
+                  "  cfg.client_config.log_retention_days = cfg.client_config.log_retention_days || 30;",
                   "  edit(cfg);",
                   "  pm.collectionVariables.set('hpConfigBody', JSON.stringify({ client_config: cfg.client_config, framework_config: cfg.framework_config }));",
                   "});"
@@ -284492,6 +284498,8 @@
                   "  pm.test('handler-preservation: the config was read', function () { pm.expect(res && res.code, err ? String(err) : res.text()).to.equal(200); });",
                   "  var cfg = res.json();",
                   "  pm.collectionVariables.set('hpPricingUrl', cfg.framework_config.pricing_url);",
+                  "  // log_retention_days reads 0 when config.json leaves it out, and a save refuses 0: the form fills in its default.",
+                  "  cfg.client_config.log_retention_days = cfg.client_config.log_retention_days || 30;",
                   "  edit(cfg);",
                   "  pm.collectionVariables.set('hpConfigBody', JSON.stringify({ client_config: cfg.client_config, framework_config: cfg.framework_config }));",
                   "});"
