@@ -47,7 +47,9 @@ func ResolveBaseURL(doc *Document, override *string, specURL string) (base strin
 // operation's own server at another origin would be refused on every call, and
 // such a document keeps asking for a base URL when it is saved instead. Userinfo
 // is dropped: a credential for reading the document is not one for calling the
-// API, and the resolved URL is shown in previews.
+// API, and the resolved URL is shown in previews. For the same reason an operation
+// server that carries userinfo, which a relative one inherits from the document's
+// URL, keeps asking too: the executor would send it to the API.
 func defaultServerURL(doc *Document, specURL string) string {
 	if len(doc.Servers) > 0 || !strings.HasPrefix(doc.OpenAPIVersion, "3") {
 		return ""
@@ -71,11 +73,16 @@ func defaultServerURL(doc *Document, specURL string) string {
 		if len(servers) == 0 || !isAbsoluteHTTPURL(servers[0]) {
 			continue
 		}
-		if opOrigin, ok := urlOrigin(servers[0]); !ok || opOrigin != origin {
+		if opOrigin, ok := urlOrigin(servers[0]); !ok || opOrigin != origin || hasUserinfo(servers[0]) {
 			return ""
 		}
 	}
 	return server
+}
+
+func hasUserinfo(raw string) bool {
+	parsed, err := url.Parse(raw)
+	return err != nil || parsed.User != nil
 }
 
 // previewServers lists the document's servers. The default server is listed

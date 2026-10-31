@@ -73,6 +73,7 @@ func TestResolveBaseURL_DefaultServer(t *testing.T) {
 		{name: "operation server at the same origin", doc: &Document{OpenAPIVersion: "3.0.3", Operations: opAt("https://docs.example.com:443/svc")}, spec: specURL, want: "https://docs.example.com"},
 		{name: "operation server at another origin keeps asking", doc: &Document{OpenAPIVersion: "3.0.3", Operations: opAt("https://api.example.com/svc")}, spec: specURL},
 		{name: "operation server on another scheme keeps asking", doc: &Document{OpenAPIVersion: "3.0.3", Operations: opAt("http://docs.example.com/svc")}, spec: specURL},
+		{name: "an operation server carrying inherited userinfo keeps asking", doc: &Document{OpenAPIVersion: "3.0.3", Operations: opAt("https://reader:s3cret@docs.example.com/svc")}, spec: "https://reader:s3cret@docs.example.com/openapi.json"},
 		{name: "an unresolved relative operation server is the executor's refusal", doc: &Document{OpenAPIVersion: "3.0.3", Operations: opAt("/svc")}, spec: specURL, want: "https://docs.example.com"},
 	}
 	for _, tc := range cases {

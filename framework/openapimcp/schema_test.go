@@ -511,6 +511,40 @@ func TestNormalizeSchema_PartialAllOfKeepsItsDeclarations(t *testing.T) {
 	assert.Contains(t, inner, "allOf")
 }
 
+// TestNormalizeSchema_LongRequiredBesideLongAllOf is the shape that made a walk
+// per required name quadratic: names nothing declares beside members that declare
+// nothing. It must finish and drop them; each member is read once by construction of the index.
+func TestNormalizeSchema_LongRequiredBesideLongAllOf(t *testing.T) {
+	const n = 50_000
+	required := make([]any, 0, n+1)
+	for i := 0; i < n; i++ {
+		required = append(required, fmt.Sprintf("missing%d", i))
+	}
+	required = append(required, "found")
+	members := make([]any, 0, n+1)
+	for i := 0; i < n; i++ {
+		members = append(members, map[string]any{"oneOf": []any{map[string]any{"type": "object"}}})
+	}
+	members = append(members, map[string]any{"oneOf": []any{map[string]any{"type": "object", "properties": map[string]any{"found": map[string]any{"type": "string"}}}}})
+	got := NormalizeSchema(map[string]any{"type": "object", "required": required, "properties": map[string]any{"id": map[string]any{"type": "string"}}, "allOf": members})
+	assert.Equal(t, []any{"found"}, got["required"])
+}
+
+// TestCollectAllOfProperties_StopsAtTheNormalizationDepth: below that depth a
+// schema is left as written, so a name there is not one normalization kept.
+func TestCollectAllOfProperties_StopsAtTheNormalizationDepth(t *testing.T) {
+	var node any = []any{map[string]any{"properties": map[string]any{"deep": map[string]any{}}}}
+	for i := 0; i < maxRefDepth*2; i++ {
+		node = []any{map[string]any{"allOf": node}}
+	}
+	names := map[string]bool{}
+	collectAllOfProperties(node, 0, names)
+	assert.Contains(t, names, "deep", "the last level normalization reaches is read")
+	names = map[string]bool{}
+	collectAllOfProperties([]any{map[string]any{"allOf": node}}, 0, names)
+	assert.Empty(t, names)
+}
+
 // TestFlattenInputSchema_PartialAllOfArgumentNamesStayDistinct: the whole body
 // takes the "body" argument, so a parameter of that name is suffixed rather than
 // shadowing it, and the tool's schema is the whole allOf.

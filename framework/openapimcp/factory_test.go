@@ -275,6 +275,24 @@ func TestFactory_DefaultServerLeavesCrossOriginOperationServersRefused(t *testin
 	assert.Zero(t, other.Load())
 }
 
+// TestFactory_DefaultServerNeverSendsDocumentCredentials: a relative operation
+// server resolves against spec_url and inherits its userinfo. That document keeps
+// asking for a base URL, so no call can carry the credential for reading it.
+func TestFactory_DefaultServerNeverSendsDocumentCredentials(t *testing.T) {
+	const spec = `{"openapi":"3.0.3","info":{"title":"t","version":"1"},
+"paths":{"/a":{"servers":[{"url":"/svc"}],"get":{"operationId":"getA","responses":{"200":{"description":"ok"}}}}}}`
+	specURL := "https://reader:s3cret@docs.example.com/openapi.json"
+	_, err := Factory()(context.Background(), &schemas.MCPClientConfig{Name: "cred", OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: spec, SpecURL: &specURL}}, schemas.InProcessServerDeps{HTTPClient: http.DefaultClient})
+	require.ErrorIs(t, err, schemas.ErrMCPOpenAPIConfigInvalid)
+	assert.Contains(t, err.Error(), "base_url")
+	assert.NotContains(t, err.Error(), "s3cret")
+
+	result, _, err := Preview([]byte(spec), ParseOptions{SpecURL: specURL}, SynthesizeOptions{ClientName: "cred"}, nil)
+	require.NoError(t, err)
+	assert.Empty(t, result.BaseURL)
+	assert.Empty(t, result.Servers)
+}
+
 // TestFactory_RedirectedSpecURLResolvesServersAgainstTheDocument: a spec_url
 // that redirects is resolved against the document's final URL, so a relative
 // server calls the API next to the document, not next to the typed URL.

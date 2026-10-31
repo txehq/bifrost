@@ -273,11 +273,21 @@ func normalizeNode(v any, depth int) any {
 			}
 		}
 		// Drop required entries whose property no longer exists (e.g. readOnly). A
-		// name declared inside an allOf that stayed unmerged still exists there.
+		// name declared inside an allOf that stayed unmerged still exists there. The
+		// list comes from the document, so that allOf is indexed once, not per name.
 		if req := asStringSlice(out["required"]); req != nil {
 			kept := make([]any, 0, len(req))
+			var inAllOf map[string]bool
 			for _, name := range req {
-				if _, exists := props[name]; exists || allOfDeclares(out["allOf"], name) {
+				_, exists := props[name]
+				if !exists {
+					if inAllOf == nil {
+						inAllOf = map[string]bool{}
+						collectAllOfProperties(out["allOf"], depth, inAllOf)
+					}
+					exists = inAllOf[name]
+				}
+				if exists {
 					kept = append(kept, name)
 				}
 			}
@@ -291,19 +301,24 @@ func normalizeNode(v any, depth int) any {
 	return out
 }
 
-// allOfDeclares reports whether a normalized allOf list names a property,
-// directly or through what a member kept unmerged: its own allOf and the choices
-// that stopped it merging. Normalization has already removed readOnly properties
-// from the members.
-func allOfDeclares(allOf any, name string) bool {
-	for _, member := range asSlice(allOf) {
+// collectAllOfProperties adds the property names a normalized allOf list
+// declares, directly or through what a member kept unmerged: its own allOf and
+// the choices that stopped it merging. Normalization has already removed readOnly
+// properties from the members. It visits each member once and stops at the depth
+// normalization stops at, below which a schema is left as written.
+func collectAllOfProperties(list any, depth int, names map[string]bool) {
+	if depth > maxRefDepth*2 {
+		return
+	}
+	for _, member := range asSlice(list) {
 		m := asMap(member)
-		if _, declared := asMap(m["properties"])[name]; declared ||
-			allOfDeclares(m["allOf"], name) || allOfDeclares(m["oneOf"], name) || allOfDeclares(m["anyOf"], name) {
-			return true
+		for name := range asMap(m["properties"]) {
+			names[name] = true
+		}
+		for _, keyword := range []string{"allOf", "oneOf", "anyOf"} {
+			collectAllOfProperties(m[keyword], depth+1, names)
 		}
 	}
-	return false
 }
 
 // mergeAllOf folds allOf members that are all object schemas into one object:

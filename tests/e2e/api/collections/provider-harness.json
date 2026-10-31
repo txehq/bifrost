@@ -285089,7 +285089,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"paths\\\": {\\\"/a\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://docs.example.com/v2/openapi.json\"}",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"paths\\\": {\\\"/a\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://docs.openapi.example/v2/openapi.json\"}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -285116,8 +285116,8 @@
                 "exec": [
                   "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var j = pm.response.json();",
-                  "pm.test('openapi-preservation: the default is the host, not the folder of the document', function () { pm.expect(j.base_url, pm.response.text()).to.equal('https://docs.example.com'); });",
-                  "pm.test('openapi-preservation: it is listed, so a form pins nothing', function () { pm.expect(j.servers, pm.response.text()).to.eql(['https://docs.example.com']); });"
+                  "pm.test('openapi-preservation: the default is the host, not the folder of the document', function () { pm.expect(j.base_url, pm.response.text()).to.equal('https://docs.openapi.example'); });",
+                  "pm.test('openapi-preservation: it is listed, so a form pins nothing', function () { pm.expect(j.servers, pm.response.text()).to.eql(['https://docs.openapi.example']); });"
                 ]
               }
             }
@@ -285151,7 +285151,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.1.0\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"servers\\\": [], \\\"paths\\\": {\\\"/a\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://docs.example.com/openapi.json\"}",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.1.0\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"servers\\\": [], \\\"paths\\\": {\\\"/a\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://docs.openapi.example/openapi.json\"}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -285178,7 +285178,7 @@
                 "exec": [
                   "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var j = pm.response.json();",
-                  "pm.test('openapi-preservation: the default applies to an empty list', function () { pm.expect(j.base_url, pm.response.text()).to.equal('https://docs.example.com'); });"
+                  "pm.test('openapi-preservation: the default applies to an empty list', function () { pm.expect(j.base_url, pm.response.text()).to.equal('https://docs.openapi.example'); });"
                 ]
               }
             }
@@ -285212,7 +285212,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.2.0\\\", \\\"$self\\\": \\\"https://self.example.com/specs/openapi.json\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"paths\\\": {\\\"/a\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://docs.example.com/openapi.json\"}",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.2.0\\\", \\\"$self\\\": \\\"https://self.openapi.example/specs/openapi.json\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"paths\\\": {\\\"/a\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://docs.openapi.example/openapi.json\"}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -285239,7 +285239,7 @@
                 "exec": [
                   "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var j = pm.response.json();",
-                  "pm.test('openapi-preservation: $self wins', function () { pm.expect(j.base_url, pm.response.text()).to.equal('https://self.example.com'); });"
+                  "pm.test('openapi-preservation: $self wins', function () { pm.expect(j.base_url, pm.response.text()).to.equal('https://self.openapi.example'); });"
                 ]
               }
             }
@@ -285273,7 +285273,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"paths\\\": {\\\"/a\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://docs.example.com/openapi.json\", \"base_url\": \"https://pinned.example.com\"}",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"paths\\\": {\\\"/a\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://docs.openapi.example/openapi.json\", \"base_url\": \"https://pinned.openapi.example\"}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -285300,7 +285300,7 @@
                 "exec": [
                   "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var j = pm.response.json();",
-                  "pm.test('openapi-preservation: the override is the base', function () { pm.expect(j.base_url, pm.response.text()).to.equal('https://pinned.example.com'); });"
+                  "pm.test('openapi-preservation: the override is the base', function () { pm.expect(j.base_url, pm.response.text()).to.equal('https://pinned.openapi.example'); });"
                 ]
               }
             }
@@ -285395,7 +285395,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"paths\\\": {\\\"/a\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://reader:hp-s3cret@docs.example.com/openapi.json\"}",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"paths\\\": {\\\"/a\\\": {\\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://reader:hp-s3cret@docs.openapi.example/openapi.json\"}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -285422,7 +285422,7 @@
                 "exec": [
                   "pm.test('openapi-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var j = pm.response.json();",
-                  "pm.test('openapi-preservation: the credential is dropped', function () { pm.expect(j.base_url, pm.response.text()).to.equal('https://docs.example.com'); pm.expect(JSON.stringify(j.servers)).to.not.include('hp-s3cret'); });"
+                  "pm.test('openapi-preservation: the credential is dropped', function () { pm.expect(j.base_url, pm.response.text()).to.equal('https://docs.openapi.example'); pm.expect(JSON.stringify(j.servers)).to.not.include('hp-s3cret'); });"
                 ]
               }
             }
@@ -285456,7 +285456,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"paths\\\": {\\\"/a\\\": {\\\"servers\\\": [{\\\"url\\\": \\\"https://api.example.com\\\"}], \\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://docs.example.com/openapi.json\"}",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"paths\\\": {\\\"/a\\\": {\\\"servers\\\": [{\\\"url\\\": \\\"https://api.openapi.example\\\"}], \\\"get\\\": {\\\"operationId\\\": \\\"getA\\\", \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\", \"spec_url\": \"https://docs.openapi.example/openapi.json\"}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -285679,7 +285679,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.1.0\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"servers\\\": [{\\\"url\\\": \\\"https://a.example.com\\\"}], \\\"paths\\\": {\\\"/docs\\\": {\\\"post\\\": {\\\"operationId\\\": \\\"saveDoc\\\", \\\"requestBody\\\": {\\\"required\\\": true, \\\"content\\\": {\\\"application/json\\\": {\\\"schema\\\": {\\\"$ref\\\": \\\"#/components/schemas/Base\\\", \\\"default\\\": {\\\"$ref\\\": \\\"https://example.com/not-a-schema\\\"}, \\\"properties\\\": {\\\"$ref\\\": {\\\"type\\\": \\\"string\\\"}}}}}}, \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}, \\\"components\\\": {\\\"schemas\\\": {\\\"Base\\\": {\\\"type\\\": \\\"object\\\", \\\"properties\\\": {\\\"id\\\": {\\\"type\\\": \\\"integer\\\"}}}}}}\"}",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.1.0\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"servers\\\": [{\\\"url\\\": \\\"https://server.openapi.example\\\"}], \\\"paths\\\": {\\\"/docs\\\": {\\\"post\\\": {\\\"operationId\\\": \\\"saveDoc\\\", \\\"requestBody\\\": {\\\"required\\\": true, \\\"content\\\": {\\\"application/json\\\": {\\\"schema\\\": {\\\"$ref\\\": \\\"#/components/schemas/Base\\\", \\\"default\\\": {\\\"$ref\\\": \\\"https://example.com/not-a-schema\\\"}, \\\"properties\\\": {\\\"$ref\\\": {\\\"type\\\": \\\"string\\\"}}}}}}, \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}, \\\"components\\\": {\\\"schemas\\\": {\\\"Base\\\": {\\\"type\\\": \\\"object\\\", \\\"properties\\\": {\\\"id\\\": {\\\"type\\\": \\\"integer\\\"}}}}}}\"}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -285741,7 +285741,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"servers\\\": [{\\\"url\\\": \\\"https://a.example.com\\\"}], \\\"paths\\\": {\\\"/docs\\\": {\\\"post\\\": {\\\"operationId\\\": \\\"saveDoc\\\", \\\"requestBody\\\": {\\\"required\\\": true, \\\"content\\\": {\\\"application/json\\\": {\\\"schema\\\": {\\\"$ref\\\": \\\"#/components/schemas/Base\\\", \\\"default\\\": {\\\"$ref\\\": \\\"https://example.com/not-a-schema\\\"}, \\\"properties\\\": {\\\"$ref\\\": {\\\"type\\\": \\\"string\\\"}}}}}}, \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}, \\\"components\\\": {\\\"schemas\\\": {\\\"Base\\\": {\\\"type\\\": \\\"object\\\", \\\"properties\\\": {\\\"id\\\": {\\\"type\\\": \\\"integer\\\"}}}}}}\"}",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"servers\\\": [{\\\"url\\\": \\\"https://server.openapi.example\\\"}], \\\"paths\\\": {\\\"/docs\\\": {\\\"post\\\": {\\\"operationId\\\": \\\"saveDoc\\\", \\\"requestBody\\\": {\\\"required\\\": true, \\\"content\\\": {\\\"application/json\\\": {\\\"schema\\\": {\\\"$ref\\\": \\\"#/components/schemas/Base\\\", \\\"default\\\": {\\\"$ref\\\": \\\"https://example.com/not-a-schema\\\"}, \\\"properties\\\": {\\\"$ref\\\": {\\\"type\\\": \\\"string\\\"}}}}}}, \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}, \\\"components\\\": {\\\"schemas\\\": {\\\"Base\\\": {\\\"type\\\": \\\"object\\\", \\\"properties\\\": {\\\"id\\\": {\\\"type\\\": \\\"integer\\\"}}}}}}\"}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -285802,7 +285802,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"servers\\\": [{\\\"url\\\": \\\"https://a.example.com\\\"}], \\\"paths\\\": {\\\"/profiles\\\": {\\\"post\\\": {\\\"operationId\\\": \\\"createProfile\\\", \\\"requestBody\\\": {\\\"required\\\": true, \\\"content\\\": {\\\"application/json\\\": {\\\"schema\\\": {\\\"type\\\": \\\"object\\\", \\\"required\\\": [\\\"id\\\", \\\"email\\\"], \\\"properties\\\": {\\\"id\\\": {\\\"type\\\": \\\"string\\\"}}, \\\"allOf\\\": [{\\\"oneOf\\\": [{\\\"type\\\": \\\"object\\\", \\\"properties\\\": {\\\"email\\\": {\\\"type\\\": \\\"string\\\"}}}, {\\\"type\\\": \\\"object\\\", \\\"properties\\\": {\\\"phone\\\": {\\\"type\\\": \\\"string\\\"}}}]}]}}}}, \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\"}",
+              "raw": "{\"spec\": \"{\\\"openapi\\\": \\\"3.0.3\\\", \\\"info\\\": {\\\"title\\\": \\\"t\\\", \\\"version\\\": \\\"1\\\"}, \\\"servers\\\": [{\\\"url\\\": \\\"https://server.openapi.example\\\"}], \\\"paths\\\": {\\\"/profiles\\\": {\\\"post\\\": {\\\"operationId\\\": \\\"createProfile\\\", \\\"requestBody\\\": {\\\"required\\\": true, \\\"content\\\": {\\\"application/json\\\": {\\\"schema\\\": {\\\"type\\\": \\\"object\\\", \\\"required\\\": [\\\"id\\\", \\\"email\\\"], \\\"properties\\\": {\\\"id\\\": {\\\"type\\\": \\\"string\\\"}}, \\\"allOf\\\": [{\\\"oneOf\\\": [{\\\"type\\\": \\\"object\\\", \\\"properties\\\": {\\\"email\\\": {\\\"type\\\": \\\"string\\\"}}}, {\\\"type\\\": \\\"object\\\", \\\"properties\\\": {\\\"phone\\\": {\\\"type\\\": \\\"string\\\"}}}]}]}}}}, \\\"responses\\\": {\\\"200\\\": {\\\"description\\\": \\\"ok\\\"}}}}}}\"}",
               "options": {
                 "raw": {
                   "language": "json"
