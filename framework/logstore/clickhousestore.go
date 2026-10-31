@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"reflect"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -53,6 +54,9 @@ type ClickHouseLogStore struct {
 	// covers this process. Nil means single-instance behaviour. Set once at
 	// startup, before any Warp write, so it is read without synchronization.
 	warpLocker DistributedLocker
+	// beforePartialWrite, in tests, runs after a partial's finish has read its row
+	// and before it writes, standing in for another instance's write in that gap.
+	beforePartialWrite func()
 }
 
 // warpHistoryLockKey is the shared lock for one owner's Warp history. Hashed
@@ -682,6 +686,29 @@ func (s *ClickHouseLogStore) BulkUpdateCost(ctx context.Context, updates map[str
 	return nil
 }
 
+// chVersionedLog re-inserts a row at a chosen ReplacingMergeTree version.
+type chVersionedLog struct {
+	Log
+	Ver time.Time `gorm:"column:ver"`
+}
+
+// chLogVersions reads the current version of each id, FINAL under the
+// connection-level final=1.
+func (s *ClickHouseLogStore) chLogVersions(ctx context.Context, ids []string) (map[string]time.Time, error) {
+	var rows []struct {
+		ID  string
+		Ver time.Time
+	}
+	if err := s.db.WithContext(ctx).Raw("SELECT id, ver FROM logs WHERE id IN ?", ids).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	versions := make(map[string]time.Time, len(rows))
+	for _, r := range rows {
+		versions[r.ID] = r.Ver
+	}
+	return versions, nil
+}
+
 // BatchUpdate overlays each entry's non-zero fields onto its existing row via
 // read-modify-write and re-insert, one chunk at a time under the RMW locks.
 // It overrides the embedded RDB implementation, whose GORM UPDATE would be a
@@ -689,6 +716,17 @@ func (s *ClickHouseLogStore) BulkUpdateCost(ctx context.Context, updates map[str
 // id are applied in batch order, as the RDB store applies them. Missing ids are
 // skipped, matching the RDB semantics. content_summary is left as the row has
 // it: the entry's own serialization would regenerate it from output only.
+//
+// rmwLocks cover one process and ClickHouse has no conditional write, so unlike the
+// SQL stores a PartialOwner entry is not atomic here. It is written one tick above
+// the version read before the row, so a later write whose now64 is higher outranks
+// it in either arrival order, and a finish that reads back as outranked is marked
+// PartialRefused. That is ordering, not a fence: a writer whose server clock sits at
+// or below the finish's version loses or ties undetected, and one landing after the
+// read-back goes unseen. What holds whatever the order is who can get this far: the
+// row's owner never changes, IsPartialOf refuses every other identity before any
+// write, and a partial evicted before its key was known holds no input
+// (dropCapturedInput), so racing writers of one row are all of one key.
 func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
 	byID := make(map[string][]*Log, len(entries))
 	ids := make([]string, 0, len(entries))
@@ -710,6 +748,16 @@ func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) er
 	}
 	return forEachRMWChunk(ids, func(chunk []string) error {
 		defer s.lockRMWBatch("logs", chunk)()
+		var read map[string]time.Time
+		for _, id := range chunk {
+			if slices.ContainsFunc(byID[id], func(e *Log) bool { return e.PartialOwner != nil }) {
+				var err error
+				if read, err = s.chLogVersions(ctx, chunk); err != nil {
+					return err
+				}
+				break
+			}
+		}
 		var rows []*Log
 		if err := s.db.WithContext(ctx).Where("id IN ?", chunk).Find(&rows).Error; err != nil {
 			return err
@@ -717,8 +765,18 @@ func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) er
 		if len(rows) == 0 {
 			return nil
 		}
+		plain := make([]*Log, 0, len(rows))
+		var fenced []*chVersionedLog
 		for _, r := range rows {
+			touched, finishesPartial := false, false
 			for _, src := range byID[r.ID] {
+				if src.PartialOwner != nil {
+					if _, versioned := read[r.ID]; !versioned || !r.IsPartialOf(*src.PartialOwner) {
+						src.PartialRefused = true
+						continue
+					}
+					finishesPartial = true
+				}
 				if err := src.SerializeFields(); err != nil {
 					return err
 				}
@@ -728,9 +786,54 @@ func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) er
 				}
 				// The overlay skips zero values; the final visibility is always written.
 				r.ContentHidden = src.ContentHidden
+				// A row that becomes hidden must not keep the content it was saved with.
+				// Per entry, as the RDB store clears it, so a later entry of the same
+				// batch cannot bring the row's earlier content back.
+				if r.ContentHidden {
+					clearHiddenContent(r)
+				}
+				touched = true
+			}
+			switch {
+			case finishesPartial:
+				fenced = append(fenced, &chVersionedLog{Log: *r, Ver: read[r.ID].Add(time.Nanosecond)})
+			case touched:
+				plain = append(plain, r)
 			}
 		}
-		return s.chReinsert(ctx, &rows)
+		if s.beforePartialWrite != nil {
+			s.beforePartialWrite()
+		}
+		if len(plain) > 0 {
+			if err := s.chReinsert(ctx, &plain); err != nil {
+				return err
+			}
+		}
+		if len(fenced) == 0 {
+			return nil
+		}
+		if err := s.chReinsert(ctx, &fenced); err != nil {
+			return err
+		}
+		written := make([]string, 0, len(fenced))
+		for _, f := range fenced {
+			written = append(written, f.ID)
+		}
+		current, err := s.chLogVersions(ctx, written)
+		if err != nil {
+			return err
+		}
+		for _, f := range fenced {
+			if current[f.ID].Equal(f.Ver) {
+				continue
+			}
+			for _, src := range byID[f.ID] {
+				if src.PartialOwner != nil {
+					src.PartialRefused = true
+				}
+			}
+		}
+		return nil
 	})
 }
 
@@ -861,6 +964,41 @@ func (s *ClickHouseLogStore) chDeleteWhere(ctx context.Context, table, where str
 	return count, nil
 }
 
+// chDeleteByLogicalIDsBatch bounds the id list of one lightweight delete, and so
+// the ids a sweep holds at a time.
+const chDeleteByLogicalIDsBatch = 1000
+
+// chDeleteLogicalWhere deletes every physical version of the logical rows
+// matching where. A lightweight delete matches physical rows, so a predicate
+// on a column that changes across ReplacingMergeTree versions (status,
+// expires_at) removes only the newest version and, until a merge collapses
+// them, hands the superseded ones back to FINAL reads. The ids are therefore
+// selected under the connection-level final=1 and deleted by id, a page at a
+// time. The page is keyed on id rather than repeated from the start, so a read
+// that still sees a deleted row cannot keep the sweep from finishing.
+func (s *ClickHouseLogStore) chDeleteLogicalWhere(ctx context.Context, table, where string, args ...any) (int64, error) {
+	stmt := fmt.Sprintf("SELECT id FROM `%s` WHERE (%s) AND id > ? ORDER BY id LIMIT %d", chEscapeIdentifier(table), where, chDeleteByLogicalIDsBatch)
+	var deleted int64
+	after := ""
+	for {
+		var ids []string
+		if err := s.db.WithContext(ctx).Raw(stmt, append(args[:len(args):len(args)], after)...).Scan(&ids).Error; err != nil {
+			return deleted, err
+		}
+		if len(ids) == 0 {
+			return deleted, nil
+		}
+		if err := s.chLightweightDelete(ctx, table, "id IN ?", ids); err != nil {
+			return deleted, err
+		}
+		deleted += int64(len(ids))
+		if len(ids) < chDeleteByLogicalIDsBatch {
+			return deleted, nil
+		}
+		after = ids[len(ids)-1]
+	}
+}
+
 // chFlushProcessing removes rows still marked processing that were created
 // before since. It probes first so the once-a-minute sweep from the logging
 // plugin issues no mutation on an idle table (the issue counted ~1,440
@@ -971,21 +1109,23 @@ func (s *ClickHouseLogStore) FlushAgentLogs(ctx context.Context, since time.Time
 	return nil
 }
 
-// DeleteExpiredAsyncJobs deletes async jobs whose expiry has passed with one
-// lightweight delete; the count is selected first because mutations never
-// report rows affected.
+// DeleteExpiredAsyncJobs deletes async jobs whose expiry has passed. Only the
+// completed version of a job carries expires_at, so the job is deleted by id
+// (see chDeleteLogicalWhere); the count is the selected ids because mutations
+// never report rows affected.
 func (s *ClickHouseLogStore) DeleteExpiredAsyncJobs(ctx context.Context) (int64, error) {
-	return s.chDeleteWhere(ctx, "async_jobs", "expires_at IS NOT NULL AND expires_at < ?", time.Now().UTC())
+	return s.chDeleteLogicalWhere(ctx, "async_jobs", "expires_at IS NOT NULL AND expires_at < ?", time.Now().UTC())
 }
 
-// DeleteStaleAsyncJobs deletes processing jobs created before staleSince.
-// See DeleteExpiredAsyncJobs.
+// DeleteStaleAsyncJobs deletes processing jobs created before staleSince, with
+// their pending version. See DeleteExpiredAsyncJobs.
 func (s *ClickHouseLogStore) DeleteStaleAsyncJobs(ctx context.Context, staleSince time.Time) (int64, error) {
-	return s.chDeleteWhere(ctx, "async_jobs", "status = 'processing' AND created_at < ?", staleSince)
+	return s.chDeleteLogicalWhere(ctx, "async_jobs", "status = 'processing' AND created_at < ?", staleSince)
 }
 
-// DeleteExpiredWebhookDeliveries deletes webhook delivery history whose
-// expiry has passed. See DeleteExpiredAsyncJobs.
+// DeleteExpiredWebhookDeliveries deletes webhook delivery history whose expiry
+// has passed. Delivery rows are insert-only, so unlike a job a row has one
+// version and one lightweight delete removes it; the count is selected first.
 func (s *ClickHouseLogStore) DeleteExpiredWebhookDeliveries(ctx context.Context) (int64, error) {
 	return s.chDeleteWhere(ctx, "webhook_deliveries", "expires_at IS NOT NULL AND expires_at < ?", time.Now().UTC())
 }
@@ -1204,8 +1344,12 @@ func (s *ClickHouseLogStore) PruneWarpConversations(ctx context.Context, ownerID
 		}
 	}
 	defer s.lockRMWBatch("warp_conversations", ids)()
+	// Bound in milliseconds: a bound time.Time is sent at whole seconds, which
+	// left a stale thread whose updated_at had a fractional second undeleted on
+	// every pass.
+	placeholder, bound := timestampBound("clickhouse", newest, upperTimeBound)
 	deleted, err := s.chDeleteWhere(ctx, "warp_conversations",
-		"id IN ? AND owner_id = ? AND updated_at <= ?", ids, ownerID, newest)
+		"id IN ? AND owner_id = ? AND updated_at <= "+placeholder, ids, ownerID, bound)
 	if err != nil {
 		return 0, err
 	}

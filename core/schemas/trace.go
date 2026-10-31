@@ -22,7 +22,8 @@ type Trace struct {
 	RequestHeaders        map[string]string // Lowercased request headers, populated only when a connector opts in
 	PluginLogs            []PluginLogEntry  // Plugin log entries accumulated during request processing
 	redactionReplacements RedactionMapsByPhase
-	mu                    sync.Mutex // Mutex for thread-safe span operations
+	pendingRootError      map[string]any // Error attributes of the latest LLM attempt, for the root span when the trace ends; see HoldRootError
+	mu                    sync.Mutex     // Mutex for thread-safe span operations
 }
 
 // Trace-level attribute keys. Unlike span attributes, trace attributes are never
@@ -495,10 +496,42 @@ func (t *Trace) Reset() {
 	t.Attributes = nil
 	t.RequestHeaders = nil
 	t.redactionReplacements = RedactionMapsByPhase{}
+	t.pendingRootError = nil
 	for i := range t.PluginLogs {
 		t.PluginLogs[i] = PluginLogEntry{}
 	}
 	t.PluginLogs = t.PluginLogs[:0]
+}
+
+// HoldRootError records the error attributes the root span gets if the latest LLM
+// attempt is the request's outcome, replacing any an earlier attempt left; nil
+// attrs mean the latest attempt succeeded. A fallback reuses the trace and a span
+// cannot drop an attribute once it is set, so a failed attempt is not stamped
+// until the trace ends. internalID guards the pooled trace, as the IfMatch span
+// setters do: a writer still holding it after a release changes nothing.
+func (t *Trace) HoldRootError(internalID string, attrs map[string]any) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.InternalID == internalID {
+		t.pendingRootError = attrs
+	}
+}
+
+// ApplyHeldRootError stamps the error HoldRootError left on the root span. A key
+// the root already carries is kept: the transport records there the status and
+// failure the client actually received.
+func (t *Trace) ApplyHeldRootError() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	attrs, root := t.pendingRootError, t.RootSpan
+	t.pendingRootError = nil
+	t.mu.Unlock()
+	root.setMissingAttributes(attrs)
 }
 
 // AppendPluginLogs appends plugin log entries to the trace in a thread-safe manner.
@@ -648,6 +681,25 @@ func (s *Span) SetAttributes(attrs map[string]any) {
 	}
 	for k, v := range attrs {
 		if v == nil {
+			continue
+		}
+		s.Attributes[k] = v
+	}
+}
+
+// setMissingAttributes merges attrs into the span under one lock, keeping every
+// key it already has. Nil values are skipped, matching SetAttribute.
+func (s *Span) setMissingAttributes(attrs map[string]any) {
+	if s == nil || len(attrs) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Attributes == nil {
+		s.Attributes = make(map[string]any, len(attrs))
+	}
+	for k, v := range attrs {
+		if _, present := s.Attributes[k]; present || v == nil {
 			continue
 		}
 		s.Attributes[k] = v

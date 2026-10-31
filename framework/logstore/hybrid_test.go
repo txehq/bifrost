@@ -1754,6 +1754,160 @@ func TestHybrid_BatchUpdateKeepsDBRowContentFree(t *testing.T) {
 // input is already in object storage, so the late output must be merged into
 // that object (for hidden and visible rows alike) while the DB row stays
 // content-free, exactly as an insert would have left it.
+// A row an excluded request type saved with its content in the DB, then hidden
+// by an update, ends content-free in the DB while the read side refuses to
+// hydrate the object: the inner store's clearing reaches the hybrid path.
+func TestHybrid_BatchUpdateHidingALogClearsDBContent(t *testing.T) {
+	h, inner, _ := newTestHybrid(t)
+	ctx := context.Background()
+	h.excludedRequestTypes = map[string]struct{}{"chat.completion": {}}
+	require.NoError(t, h.CreateIfNotExists(ctx, hiddenUpdateTestLog("hybrid-hide", time.Now().UTC())))
+	before, err := inner.FindByID(ctx, "hybrid-hide")
+	require.NoError(t, err)
+	require.NotEmpty(t, before.InputHistory, "the excluded type keeps its content in the row")
+
+	require.NoError(t, h.BatchUpdate(ctx, []*Log{{ID: "hybrid-hide", Status: "success", ContentHidden: true}}))
+
+	row, err := inner.FindByID(ctx, "hybrid-hide")
+	require.NoError(t, err)
+	require.True(t, row.ContentHidden)
+	assert.Empty(t, row.InputHistory)
+	assert.Empty(t, row.OutputMessage)
+	assert.Empty(t, row.RawRequest)
+	assert.Empty(t, row.ContentSummary)
+	assert.NotEmpty(t, row.TokenUsage, "pricing metadata stays in the row")
+
+	read, err := h.FindByID(ctx, "hybrid-hide")
+	require.NoError(t, err)
+	assert.Empty(t, read.InputHistoryParsed, "the hybrid read recovers no content")
+	assert.Nil(t, read.OutputMessageParsed, "the hybrid read recovers no content")
+
+}
+
+// A partial's finish that may not touch a row writes neither the row nor its object.
+func TestHybrid_BatchUpdateSkipsARowThePartialOwnerDoesNotHold(t *testing.T) {
+	h, inner, objects := newTestHybrid(t)
+	ctx := context.Background()
+	h.excludedRequestTypes = map[string]struct{}{"chat.completion": {}}
+	require.NoError(t, h.CreateIfNotExists(ctx, hiddenUpdateTestLog("hybrid-visible", time.Now().UTC())))
+
+	owner := "vk-other"
+	require.NoError(t, h.BatchUpdate(ctx, []*Log{{ID: "hybrid-visible", Status: "success", ContentHidden: true, PartialOwner: &owner}}))
+
+	kept, err := inner.FindByID(ctx, "hybrid-visible")
+	require.NoError(t, err)
+	assert.False(t, kept.ContentHidden)
+	assert.Equal(t, "processing", kept.Status)
+	assert.NotEmpty(t, kept.InputHistory)
+	assert.Never(t, func() bool {
+		keys, err := objects.ListByPrefix(ctx, "")
+		return err == nil && len(keys) > 0
+	}, 300*time.Millisecond, 20*time.Millisecond, "the skipped update uploaded an object")
+}
+
+// completesAfterReadStore is an inner store whose row completes right after the
+// hybrid store has read it, as a concurrent request's completion would.
+type completesAfterReadStore struct {
+	*RDBLogStore
+	afterRead func()
+}
+
+// completesAfterWriteStore is an inner store whose row completes right after a
+// partial's finish was accepted, before the hybrid store's upload runs.
+type completesAfterWriteStore struct {
+	*RDBLogStore
+	afterWrite func()
+}
+
+func (s *completesAfterWriteStore) BatchUpdate(ctx context.Context, entries []*Log) error {
+	err := s.RDBLogStore.BatchUpdate(ctx, entries)
+	if s.afterWrite != nil {
+		s.afterWrite()
+		s.afterWrite = nil
+	}
+	return err
+}
+
+// An accepted finish can be overtaken before its upload. Nothing tells the upload,
+// so this is not fenced: output is last writer wins. It cannot be destructive,
+// though: the merge lays non-empty fields over the object, so the input survives
+// for the row the other writer completed.
+func TestHybrid_OvertakenFinishCannotEraseTheObject(t *testing.T) {
+	h, inner, objects := newTestHybrid(t)
+	defer h.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Now().UTC()
+	question := "the question"
+	require.NoError(t, h.CreateIfNotExists(ctx, &Log{
+		ID: "hybrid-overtaken", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing",
+		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &question}}},
+	}))
+	waitForOffload(t, inner, "hybrid-overtaken")
+
+	rdb := inner.(*RDBLogStore)
+	h.inner = &completesAfterWriteStore{RDBLogStore: rdb, afterWrite: func() {
+		require.NoError(t, rdb.BatchUpdate(ctx, []*Log{{ID: "hybrid-overtaken", Status: "error"}}))
+	}}
+	owner, answer := "", "a finish that was overtaken"
+	finish := &Log{
+		ID: "hybrid-overtaken", Status: "success", ContentHidden: true, PartialOwner: &owner,
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &answer}},
+	}
+	require.NoError(t, h.BatchUpdate(ctx, []*Log{finish}))
+	assert.False(t, finish.PartialRefused, "the store accepted it; the overtaking write came later")
+
+	key := ObjectKey("test", ts, "hybrid-overtaken")
+	waitForUploads(t, func() bool {
+		data, err := objects.Get(ctx, key)
+		return err == nil && strings.Contains(string(data), answer)
+	})
+	data, err := objects.Get(ctx, key)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), question, "the merge erased the object's input")
+}
+
+func (s *completesAfterReadStore) FindByID(ctx context.Context, id string) (*Log, error) {
+	row, err := s.RDBLogStore.FindByID(ctx, id)
+	if s.afterRead != nil {
+		s.afterRead()
+		s.afterRead = nil
+	}
+	return row, err
+}
+
+// The hybrid store's own read of the row can go stale. The inner store refuses the
+// finish, and that refusal must reach the upload: no object for a row it lost.
+func TestHybrid_BatchUpdateDropsTheUploadOfARefusedFinish(t *testing.T) {
+	h, inner, objects := newTestHybrid(t)
+	ctx := context.Background()
+	h.excludedRequestTypes = map[string]struct{}{"chat.completion": {}}
+	require.NoError(t, h.CreateIfNotExists(ctx, hiddenUpdateTestLog("hybrid-race", time.Now().UTC())))
+	h.excludedRequestTypes = nil
+
+	rdb := inner.(*RDBLogStore)
+	h.inner = &completesAfterReadStore{RDBLogStore: rdb, afterRead: func() {
+		require.NoError(t, rdb.BatchUpdate(ctx, []*Log{{ID: "hybrid-race", Status: "success"}}))
+	}}
+	owner := ""
+	answer := "a stale finish's output"
+	finish := &Log{
+		ID: "hybrid-race", Status: "error", ContentHidden: true, PartialOwner: &owner,
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &answer}},
+	}
+	require.NoError(t, h.BatchUpdate(ctx, []*Log{finish}))
+	assert.True(t, finish.PartialRefused, "the caller's entry learns the store refused the copy")
+
+	row, err := rdb.FindByID(ctx, "hybrid-race")
+	require.NoError(t, err)
+	assert.False(t, row.ContentHidden)
+	assert.Equal(t, "success", row.Status)
+	assert.NotEmpty(t, row.InputHistory)
+	assert.Never(t, func() bool {
+		keys, err := objects.ListByPrefix(ctx, "")
+		return err == nil && len(keys) > 0
+	}, 300*time.Millisecond, 20*time.Millisecond, "the refused finish uploaded an object")
+}
+
 func TestHybrid_BatchUpdateMergesOutputIntoStoredObject(t *testing.T) {
 	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())

@@ -267,6 +267,56 @@ func TestMatViewRefreshRecordFailedRefreshStaysDue(t *testing.T) {
 	require.True(t, record["mv_logs_hourly"].Success.Valid)
 }
 
+// TestMatViewRefreshSkippedViewsKeepPendingActivity pins that a pass which skips
+// views as recently refreshed does not advance the activity baseline: those views
+// may predate the writes the counter has seen, and recording the counter as
+// refreshed would gate every later tick until the safety interval once writes stop.
+func TestMatViewRefreshSkippedViewsKeepPendingActivity(t *testing.T) {
+	replicaA, _ := setupMatViewRecord(t)
+	refreshAsReplica(t, replicaA, time.Minute)
+
+	ctx := context.Background()
+	at := time.Now().UTC().Truncate(time.Hour).Add(-2 * time.Hour)
+	require.NoError(t, replicaA.Exec(`
+		INSERT INTO logs (id, timestamp, object_type, provider, model, status,
+			created_at, latency, cost, prompt_tokens, completion_tokens, total_tokens)
+		VALUES ('pending-activity', ?, 'chat_completion', 'openai', 'gpt-4', 'success', ?, 100, 0.01, 10, 5, 15)
+	`, at, at).Error)
+
+	sqlDB, err := replicaA.DB()
+	require.NoError(t, err)
+	conn, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	current, ok := logsActivityCounter(ctx, conn)
+	require.NoError(t, conn.Close())
+	require.True(t, ok)
+	// The write landed after that pass: the baseline trails the counter, whatever
+	// the stat collector has reported so far.
+	refreshGate.mu.Lock()
+	refreshGate.lastActivity, refreshGate.lastForcedAt, refreshGate.initialized = current-1, time.Now(), true
+	refreshGate.mu.Unlock()
+
+	viewRows := func() int64 {
+		t.Helper()
+		var rows int64
+		require.NoError(t, replicaA.Raw("SELECT COALESCE(SUM(count), 0) FROM mv_logs_hourly").Scan(&rows).Error)
+		return rows
+	}
+	before := readMatViewRecord(t, replicaA)
+	require.NoError(t, refreshMatViews(ctx, replicaA, time.Minute))
+	for view, r := range readMatViewRecord(t, replicaA) {
+		require.Equal(t, before[view].Started.Time, r.Started.Time, "%s is inside the gap and must be skipped", view)
+	}
+	require.Zero(t, viewRows(), "the skipped pass must not have refreshed the view")
+	require.False(t, refreshGate.shouldSkip(current, true),
+		"a pass that skipped every view as fresh recorded the pending activity as refreshed")
+
+	// Once the gap has passed the next tick still sees the activity and refreshes.
+	require.NoError(t, refreshMatViews(ctx, replicaA, time.Nanosecond))
+	require.EqualValues(t, 1, viewRows(), "the pending write never reached the view")
+	require.True(t, refreshGate.shouldSkip(current, true), "a complete pass records the activity it covered")
+}
+
 // TestMatViewRepairForgetsRefreshRecord pins that a view dropped and rebuilt by
 // the shape repair in ensureMatViews loses its record, so the rebuilt view is not
 // skipped because the view it replaced was refreshed recently.

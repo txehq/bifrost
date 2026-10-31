@@ -207,9 +207,9 @@ func TestClickHouseLeasesUseDatabaseClock(t *testing.T) {
 }
 
 // TestClickHousePurgeDeletesTombstonesAndDead checks the janitor's
-// deletions: acked tombstones at once, dead rows DeadRetention after they
-// died, then the messages nothing refers to any more, every version at once,
-// and nothing comes back.
+// deletions: dead rows DeadRetention after they died, the messages nothing
+// refers to any more, then the acked tombstones of those messages, every
+// version at once, and nothing comes back.
 func TestClickHousePurgeDeletesTombstonesAndDead(t *testing.T) {
 	env := setupClickHouse(t)
 	s := env.store(t, NewProcessLocker())
@@ -859,6 +859,88 @@ func TestClickHouseLateRetryLosesToTakeover(t *testing.T) {
 	held, err := ackOne(ctx, b, cs[0])
 	require.NoError(t, err)
 	assert.True(t, held, "the new holder's claim was overwritten")
+}
+
+// purgedAckRetry starts a Retry that reads a live lease and pauses before it
+// writes, lets the lease expire, has another instance claim and acknowledge the
+// delivery, runs the janitor with policy, then lets the late write land. It
+// returns the instance that took over and the acknowledged delivery.
+func purgedAckRetry(t *testing.T, env clickhouseTestEnv, topic string, policy PurgePolicy) (*clickhouseStore, *Claimed) {
+	t.Helper()
+	locker := NewProcessLocker()
+	a, b := env.store(t, locker), env.store(t, locker)
+	ctx := context.Background()
+	mustGroup(t, a, topic, "g", StartFromLatest)
+	mustAppend(t, a, newMsg(topic, "", "x"))
+	const lease = 500 * time.Millisecond
+	old := mustClaim(t, a, topic, "g", 1, lease)
+	require.Len(t, old, 1)
+
+	hook, paused, release := pauseAt("INSERT INTO queue_deliveries")
+	defer release()
+	retried := make(chan error, 1)
+	go func() {
+		_, err := a.Retry(withCHHook(ctx, hook), old[0], 0, "slow handler")
+		retried <- err
+	}()
+	<-paused
+	time.Sleep(lease + 200*time.Millisecond)
+	cs := mustClaim(t, b, topic, "g", 1, longLease)
+	require.Len(t, cs, 1)
+	held, err := ackOne(ctx, b, cs[0])
+	require.NoError(t, err)
+	require.True(t, held)
+	time.Sleep(20 * time.Millisecond)
+	_, err = b.Purge(ctx, policy, 100)
+	require.NoError(t, err)
+	release()
+	require.NoError(t, <-retried)
+	return b, cs[0]
+}
+
+// TestClickHousePurgedAckFencesLateRetry: the late write is versioned under the
+// acknowledgement, so it may only land on top of the tombstone. With the
+// tombstone purged while the message is still retained, it was the delivery's
+// only row and the delivery ran again.
+func TestClickHousePurgedAckFencesLateRetry(t *testing.T) {
+	env := setupClickHouse(t)
+	// The message is still retained for groups that start from the earliest.
+	b, acked := purgedAckRetry(t, env, "purged-ack", PurgePolicy{DeadRetention: time.Hour, AckedRetention: time.Hour})
+
+	var status string
+	require.NoError(t, env.db.Raw("SELECT status FROM queue_deliveries FINAL WHERE id = ?", acked.DeliveryID).Scan(&status).Error)
+	assert.Equal(t, chStatusAcked, status, "the tombstone outlives the janitor while its message is retained")
+	assert.Empty(t, mustClaim(t, b, "purged-ack", "g", 10, longLease), "an acknowledged delivery ran again")
+	st, err := b.Stats(context.Background(), "purged-ack", "g")
+	require.NoError(t, err)
+	assert.Equal(t, Stats{}, st)
+}
+
+// TestClickHouseTombstoneGoesWithItsMessage is the other side of the retention
+// boundary: once the message is past AckedRetention both go in one pass. A late
+// write landing after that has no message to run, so the delivery cannot be
+// claimed, and the abandoned-publish sweep removes the row it left.
+func TestClickHouseTombstoneGoesWithItsMessage(t *testing.T) {
+	env := setupClickHouse(t)
+	policy := PurgePolicy{DeadRetention: time.Hour, AckedRetention: time.Millisecond}
+	b, acked := purgedAckRetry(t, env, "purged-both", policy)
+
+	var messages int64
+	require.NoError(t, env.db.Raw("SELECT count() FROM queue_messages WHERE id = ?", acked.Message.ID).Scan(&messages).Error)
+	require.Zero(t, messages, "the message is past AckedRetention")
+	var statuses []string
+	require.NoError(t, env.db.Raw("SELECT status FROM queue_deliveries FINAL WHERE id = ?", acked.DeliveryID).Scan(&statuses).Error)
+	require.Equal(t, []string{statusPending}, statuses, "only the late write is left of the delivery")
+	assert.Empty(t, mustClaim(t, b, "purged-both", "g", 10, longLease), "a delivery without its message ran")
+
+	b.abandoned = 0
+	time.Sleep(20 * time.Millisecond)
+	n, err := b.Purge(context.Background(), policy, 100)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n, "the abandoned-publish sweep removes the late row")
+	var rows int64
+	require.NoError(t, env.db.Raw("SELECT count() FROM queue_deliveries WHERE id = ?", acked.DeliveryID).Scan(&rows).Error)
+	assert.Zero(t, rows, "every version of the delivery is gone")
 }
 
 // TestClickHouseLateAckLosesToTakeover pauses an acknowledgement between

@@ -2,7 +2,9 @@ package tracing
 
 import (
 	"context"
+	"maps"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -775,7 +777,9 @@ func TestTracer_PopulateLLMResponseAttributesStampsErrorType(t *testing.T) {
 			Error: &schemas.ErrorField{Type: schemas.Ptr("invalid_request_error")},
 		})
 
-		got := store.GetTrace(traceID).RootSpan.Attributes[schemas.AttrBifrostErrorType]
+		root := store.GetTrace(traceID).RootSpan
+		require.NotNil(t, tracer.EndTrace(traceID))
+		got, _ := root.GetAttribute(schemas.AttrBifrostErrorType)
 		if got != string(schemas.ErrorTypeCallerModelUnknown) {
 			t.Errorf("attribute %s = %v, want %q", schemas.AttrBifrostErrorType, got, schemas.ErrorTypeCallerModelUnknown)
 		}
@@ -788,7 +792,9 @@ func TestTracer_PopulateLLMResponseAttributesStampsErrorType(t *testing.T) {
 		bifrostErr.ExtraFields.ErrorType = schemas.ErrorTypePolicyModelBlocked
 		tracer.PopulateLLMResponseAttributes(ctx, handle, nil, bifrostErr)
 
-		got := store.GetTrace(traceID).RootSpan.Attributes[schemas.AttrBifrostErrorType]
+		root := store.GetTrace(traceID).RootSpan
+		require.NotNil(t, tracer.EndTrace(traceID))
+		got, _ := root.GetAttribute(schemas.AttrBifrostErrorType)
 		if got != string(schemas.ErrorTypePolicyModelBlocked) {
 			t.Errorf("attribute %s = %v, want %q", schemas.AttrBifrostErrorType, got, schemas.ErrorTypePolicyModelBlocked)
 		}
@@ -798,7 +804,9 @@ func TestTracer_PopulateLLMResponseAttributesStampsErrorType(t *testing.T) {
 		tracer, store, traceID, handle, ctx := newSpan(t, schemas.ChatCompletionRequest)
 		tracer.PopulateLLMResponseAttributes(ctx, handle, nil, nil)
 
-		if _, ok := store.GetTrace(traceID).RootSpan.Attributes[schemas.AttrBifrostErrorType]; ok {
+		root := store.GetTrace(traceID).RootSpan
+		require.NotNil(t, tracer.EndTrace(traceID))
+		if _, ok := root.GetAttribute(schemas.AttrBifrostErrorType); ok {
 			t.Errorf("attribute %s present on a successful span", schemas.AttrBifrostErrorType)
 		}
 	})
@@ -1400,9 +1408,11 @@ func TestTracer_PopulateLLMResponseAttributesPropagatesErrorToRootSpan(t *testin
 	})
 
 	root := tracer.SpanFromHandle(rootHandle)
-	if root.SpanID == tracer.SpanFromHandle(llmHandle).SpanID {
+	llm := tracer.SpanFromHandle(llmHandle)
+	if root.SpanID == llm.SpanID {
 		t.Fatal("root and llm.call resolved to the same span, so this would pass without any propagation")
 	}
+	require.NotNil(t, tracer.EndTrace(traceID))
 	for key, want := range map[string]any{
 		schemas.AttrError:         "upstream connect error",
 		schemas.AttrErrorTypeSpec: "connection_error",
@@ -1416,7 +1426,7 @@ func TestTracer_PopulateLLMResponseAttributesPropagatesErrorToRootSpan(t *testin
 		t.Errorf("root span %s = %v, want %q", schemas.AttrBifrostErrorType, got, schemas.ErrorTypeProviderOverloaded)
 	}
 	// Same failure, same classification on both spans.
-	llmType, _ := tracer.SpanFromHandle(llmHandle).GetAttribute(schemas.AttrBifrostErrorType)
+	llmType, _ := llm.GetAttribute(schemas.AttrBifrostErrorType)
 	rootType, _ := root.GetAttribute(schemas.AttrBifrostErrorType)
 	if llmType != rootType {
 		t.Errorf("llm.call and root disagree on %s: %v vs %v", schemas.AttrBifrostErrorType, llmType, rootType)
@@ -1439,6 +1449,7 @@ func TestTracer_PopulateLLMResponseAttributesLeavesRootSpanCleanOnSuccess(t *tes
 	tracer.PopulateLLMResponseAttributes(ctx, llmHandle, nil, nil)
 
 	root := tracer.SpanFromHandle(rootHandle)
+	require.NotNil(t, tracer.EndTrace(traceID))
 	for _, key := range []string{schemas.AttrError, schemas.AttrErrorTypeSpec, schemas.AttrBifrostErrorType} {
 		if got, ok := root.GetAttribute(key); ok {
 			t.Errorf("root span carries %s = %v on a successful response", key, got)
@@ -1493,4 +1504,230 @@ func TestTracer_StampsTimeToFirstTokenFromRequestReceipt(t *testing.T) {
 	if after, _ := root.GetAttribute(schemas.AttrBifrostTimeToFirstTokenMs); after != before {
 		t.Errorf("%s moved from %v to %v on a later chunk", schemas.AttrBifrostTimeToFirstTokenMs, before, after)
 	}
+}
+
+// rootErrorTrace starts a trace with a root span and the context its LLM spans use.
+func rootErrorTrace(t *testing.T, tracer *Tracer, inherited string) (string, *schemas.BifrostContext, *schemas.Span) {
+	t.Helper()
+	traceID := tracer.CreateTrace(inherited)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	_, rootHandle := tracer.StartSpan(ctx, "/v1/chat/completions", schemas.SpanKindHTTPRequest)
+	return traceID, ctx, tracer.SpanFromHandle(rootHandle)
+}
+
+// failAttempt runs one failed LLM attempt in the trace and returns its span.
+func failAttempt(t *testing.T, tracer *Tracer, ctx *schemas.BifrostContext, message string, status int) *schemas.Span {
+	t.Helper()
+	_, handle := tracer.StartSpan(ctx, "chat", schemas.SpanKindLLMCall)
+	tracer.SpanFromHandle(handle).SetAttribute(schemas.AttrLegacyRequestType, string(schemas.ChatCompletionRequest))
+	tracer.PopulateLLMResponseAttributes(ctx, handle, nil, &schemas.BifrostError{
+		StatusCode: &status,
+		Error:      &schemas.ErrorField{Message: message, Type: schemas.Ptr("connection_error")},
+	})
+	return tracer.SpanFromHandle(handle)
+}
+
+// A fallback shares its primary attempt's trace. The primary's 503 was stamped
+// on the request root, and the successful fallback after it left that there,
+// so a request that succeeded exported as a failure. The root carries the
+// final attempt's outcome.
+func TestTracer_SuccessfulFallbackClearsTheRootSpanError(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+
+	traceID, ctx, root := rootErrorTrace(t, tracer, "")
+	primary := failAttempt(t, tracer, ctx, "upstream connect error", 503)
+	_, fallback := tracer.StartSpan(ctx, "chat claude-sonnet", schemas.SpanKindLLMCall)
+	tracer.PopulateLLMResponseAttributes(ctx, fallback, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Model: "claude-sonnet"}}, nil)
+
+	require.NotNil(t, tracer.EndTrace(traceID))
+	for _, key := range []string{schemas.AttrError, schemas.AttrErrorTypeSpec, schemas.AttrBifrostErrorType, schemas.AttrHTTPResponseStatusCode} {
+		if got, ok := root.GetAttribute(key); ok {
+			t.Errorf("root span carries %s = %v after the fallback succeeded", key, got)
+		}
+	}
+	if got, ok := primary.GetAttribute(schemas.AttrError); !ok || got != "upstream connect error" {
+		t.Errorf("the failed attempt's own span keeps its error, got %v", got)
+	}
+}
+
+// When every attempt fails the root reports the last one, whether the trace ID
+// is the store's own or one inherited from a W3C traceparent. The store's key
+// differs from the exported ID in the second case.
+func TestTracer_LastFailedAttemptIsTheRootSpanError(t *testing.T) {
+	for name, inherited := range map[string]string{"own trace ID": "", "inherited trace ID": "0af7651916cd43dd8448eb211c80319c"} {
+		t.Run(name, func(t *testing.T) {
+			store := NewTraceStore(5*time.Minute, nil)
+			t.Cleanup(store.Stop)
+			tracer := NewTracer(store, nil, nil)
+			t.Cleanup(tracer.Stop)
+
+			traceID, ctx, root := rootErrorTrace(t, tracer, inherited)
+			failAttempt(t, tracer, ctx, "primary failed", 503)
+			failAttempt(t, tracer, ctx, "fallback failed", 429)
+			require.NotNil(t, tracer.EndTrace(traceID))
+
+			got, _ := root.GetAttribute(schemas.AttrError)
+			require.Equal(t, "fallback failed", got)
+			status, _ := root.GetAttribute(schemas.AttrHTTPResponseStatusCode)
+			require.Equal(t, 429, status)
+		})
+	}
+}
+
+// The transport records on the root what the client actually received. A held
+// attempt error fills in what is missing and overwrites none of it.
+func TestTracer_HeldRootErrorKeepsTransportAttributes(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+
+	traceID, ctx, root := rootErrorTrace(t, tracer, "")
+	// A stream's handler returned 200 before the stream failed.
+	root.SetAttribute(schemas.AttrHTTPResponseStatusCode, 200)
+	root.SetAttribute(schemas.AttrError, "the transport's own error")
+	failAttempt(t, tracer, ctx, "upstream connect error", 503)
+	require.NotNil(t, tracer.EndTrace(traceID))
+
+	got, _ := root.GetAttribute(schemas.AttrHTTPResponseStatusCode)
+	require.Equal(t, 200, got)
+	got, _ = root.GetAttribute(schemas.AttrError)
+	require.Equal(t, "the transport's own error", got)
+	got, _ = root.GetAttribute(schemas.AttrErrorTypeSpec)
+	require.Equal(t, "connection_error", got, "a key the transport did not set is still filled in")
+}
+
+// A trace that ends without a completion still reports its error: the sweep
+// exports it, and the connector must see what EndTrace would have stamped.
+func TestTracer_ExpiredTraceStampsTheHeldRootError(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+	plugin := &rootErrorCapturePlugin{got: make(chan map[string]any, 1)}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
+
+	traceID, ctx, _ := rootErrorTrace(t, tracer, "")
+	failAttempt(t, tracer, ctx, "upstream connect error", 503)
+	trace := store.GetTrace(traceID)
+	store.traces.Delete(traceID)
+	tracer.FlushExpiredTrace(trace)
+
+	select {
+	case attrs := <-plugin.got:
+		require.Equal(t, "upstream connect error", attrs[schemas.AttrError])
+	case <-time.After(5 * time.Second):
+		t.Fatal("the expired trace never reached the connector")
+	}
+}
+
+// The connector reads the held error on the exported root, on the normal
+// completion path. Stamped before the snapshot, it needs no connector change.
+func TestTracer_HeldRootErrorReachesTheExportedRoot(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+	plugin := &rootErrorCapturePlugin{got: make(chan map[string]any, 1)}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
+
+	traceID, ctx, _ := rootErrorTrace(t, tracer, "")
+	failAttempt(t, tracer, ctx, "upstream connect error", 503)
+	tracer.CompleteAndFlushTrace(traceID)
+
+	select {
+	case attrs := <-plugin.got:
+		require.Equal(t, "upstream connect error", attrs[schemas.AttrError])
+		require.Equal(t, 503, attrs[schemas.AttrHTTPResponseStatusCode])
+	case <-time.After(5 * time.Second):
+		t.Fatal("the trace never reached the connector")
+	}
+}
+
+// rootErrorCapturePlugin hands the exported root span's attributes to the test.
+type rootErrorCapturePlugin struct {
+	benchObsPlugin
+	got chan map[string]any
+}
+
+func (p *rootErrorCapturePlugin) GetName() string { return "root-error-capture" }
+
+func (p *rootErrorCapturePlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	// A copy: the snapshot's attribute map is recycled once Inject returns.
+	p.got <- maps.Clone(trace.RootSpan.Attributes)
+	return nil
+}
+
+// A failed attempt racing the end of its trace must neither panic nor leave its
+// error on the pooled trace for the next request. Skipped under -race like
+// TestPopulateLLMResponseAttributes_RacesReleaseTrace: the tracer's own recycling
+// races are still open. The held error's own locking is raced in core/schemas.
+func TestHeldRootErrorNeverReachesThePooledTrace(t *testing.T) {
+	if raceEnabled() {
+		t.Skip("trace recycling races are still open; this guards the outcome in non-race builds")
+	}
+	store := NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+
+	for range 200 {
+		traceID, ctx, _ := rootErrorTrace(t, tracer, "")
+		_, handle := tracer.StartSpan(ctx, "chat", schemas.SpanKindLLMCall)
+		status := 503
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			tracer.PopulateLLMResponseAttributes(ctx, handle, nil, &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "stale"}})
+		})
+		wg.Go(func() {
+			if trace := tracer.EndTrace(traceID); trace != nil {
+				tracer.ReleaseTrace(trace)
+			}
+		})
+		wg.Wait()
+
+		next, nextCtx, nextRoot := rootErrorTrace(t, tracer, "")
+		_, nextHandle := tracer.StartSpan(nextCtx, "chat", schemas.SpanKindLLMCall)
+		tracer.PopulateLLMResponseAttributes(nextCtx, nextHandle, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Model: "m"}}, nil)
+		completed := tracer.EndTrace(next)
+		require.NotNil(t, completed)
+		_, leaked := nextRoot.GetAttribute(schemas.AttrError)
+		require.False(t, leaked, "the next request inherited a released trace's error")
+		tracer.ReleaseTrace(completed)
+	}
+}
+
+// BenchmarkPopulateLLMResponseRootError measures the root-error step on the
+// successful path every request takes, and on the failed attempt that holds an
+// error. No connector is registered, so the typed render is not what is measured.
+func BenchmarkPopulateLLMResponseRootError(b *testing.B) {
+	store := NewTraceStore(5*time.Minute, nil)
+	b.Cleanup(store.Stop)
+	tracer := NewTracer(store, nil, nil)
+	b.Cleanup(tracer.Stop)
+	traceID := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	tracer.StartSpan(ctx, "root", schemas.SpanKindHTTPRequest)
+	_, handle := tracer.StartSpan(ctx, "chat", schemas.SpanKindLLMCall)
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Model: "m"}}
+	status := 503
+	bifrostErr := &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "failed"}}
+
+	b.Run("success", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			tracer.PopulateLLMResponseAttributes(ctx, handle, resp, nil)
+		}
+	})
+	b.Run("failed attempt", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			tracer.PopulateLLMResponseAttributes(ctx, handle, nil, bifrostErr)
+		}
+	})
 }

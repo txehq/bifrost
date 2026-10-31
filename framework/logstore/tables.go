@@ -440,6 +440,8 @@ type Log struct {
 	DeferredGuardrail *schemas.DeferredGuardrailResult `gorm:"-" json:"-"` // Transient: pending output-monitor guardrail result; the writer holds the row until it completes
 
 	RedactionData            *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
+	PartialOwner             *string                       `gorm:"-" json:"-"`                           // Set on a BatchUpdate entry that finishes an evicted partial row: the virtual key that row must carry ("" for none). The entry applies only while the row is that owner's and still processing
+	PartialRefused           bool                          `gorm:"-" json:"-"`                           // Set by BatchUpdate on a PartialOwner entry that wrote nothing, or lost to another write: nothing else may follow from it
 	PassthroughParseFormat   schemas.ModelProvider         `gorm:"-" json:"-"`                           // Transient: base provider whose wire format the log writer parses passthrough bodies with; empty skips parsing
 	PassthroughParseMaxBytes int64                         `gorm:"-" json:"-"`                           // Transient: large-payload request threshold applied to media parsed from passthrough bodies; 0 keeps everything
 	RedactionMapping         string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
@@ -2434,6 +2436,22 @@ type MCPToolLogStats struct {
 	SuccessRate     float64 `json:"success_rate"`
 	AverageLatency  float64 `json:"average_latency"`
 	TotalCost       float64 `json:"total_cost"` // Total cost in dollars
+}
+
+// partialRowStatus is the status of a row a request has not finished.
+const partialRowStatus = "processing"
+
+// IsPartialOf reports whether the row is still unfinished and carries exactly the
+// given virtual key, "" meaning none. Missing identity matches only missing
+// identity: a key never takes over a row without one, nor the reverse.
+func (l *Log) IsPartialOf(owner string) bool {
+	if l.Status != partialRowStatus {
+		return false
+	}
+	if l.VirtualKeyID == nil {
+		return owner == ""
+	}
+	return *l.VirtualKeyID == owner
 }
 
 // BuildContentSummary creates a searchable text summary

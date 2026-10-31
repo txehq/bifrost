@@ -1379,7 +1379,7 @@ func TestResumedStreamChunksAccumulateAfterEviction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	plugin.evictedPartials.Store("req-resumed", time.Now())
+	plugin.evictedPartials.Store("req-resumed", evictedPartialMarker{at: time.Now()})
 
 	tracer := &chunkCountingTracer{}
 	chunk := &schemas.BifrostResponse{
@@ -1620,6 +1620,321 @@ func TestPostLLMHookReconcilesEvictedPartialRowSuccess(t *testing.T) {
 	// fields only, leaving input columns intact).
 	if len(row.InputHistoryParsed) != 1 {
 		t.Fatalf("expected input history preserved through reconcile, got %d messages", len(row.InputHistoryParsed))
+	}
+}
+
+// seedOwnedRow seeds a partial row, then gives it an owner and a status.
+func seedOwnedRow(t *testing.T, store logstore.LogStore, id, status, virtualKeyID string) {
+	t.Helper()
+	seedProcessingRow(t, store, id, time.Now().Add(-time.Hour))
+	updates := map[string]any{"status": status}
+	if virtualKeyID != "" {
+		updates["virtual_key_id"] = virtualKeyID
+	}
+	if err := store.Update(context.Background(), id, updates); err != nil {
+		t.Fatalf("seed Update() error = %v", err)
+	}
+}
+
+// racingFindStore lets a test act between the plugin's read of a row and the write
+// that follows it, or fail that read.
+type racingFindStore struct {
+	logstore.LogStore
+	afterFind func()
+	findErr   error
+}
+
+func (s *racingFindStore) FindByID(ctx context.Context, id string) (*logstore.Log, error) {
+	if s.findErr != nil {
+		return nil, s.findErr
+	}
+	row, err := s.LogStore.FindByID(ctx, id)
+	if s.afterFind != nil {
+		s.afterFind()
+		s.afterFind = nil
+	}
+	return row, err
+}
+
+// countingUpdateStore counts the rows that reach the store's update path, where the
+// version and the object payload of a finish are written.
+type countingUpdateStore struct {
+	logstore.LogStore
+	updates atomic.Int32
+}
+
+func (s *countingUpdateStore) BatchUpdate(ctx context.Context, entries []*logstore.Log) error {
+	s.updates.Add(int32(len(entries)))
+	return s.LogStore.BatchUpdate(ctx, entries)
+}
+
+// requireRowUntouched checks a row a request with its ID may not finish.
+func requireRowUntouched(t *testing.T, store logstore.LogStore, id, status string) {
+	t.Helper()
+	row, err := store.FindByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if row.ContentHidden || row.Status != status {
+		t.Fatalf("another row was changed: hidden=%v status=%q, want visible %q", row.ContentHidden, row.Status, status)
+	}
+	if len(row.InputHistoryParsed) != 1 || row.ContentSummary == "" {
+		t.Fatalf("another row lost its content: %d messages, summary %q", len(row.InputHistoryParsed), row.ContentSummary)
+	}
+	if strings.Contains(row.OutputMessage, "attacker output") {
+		t.Fatalf("another row took this request's output: %q", row.OutputMessage)
+	}
+}
+
+// keyedCtx is a request that presented virtualKeyID's key, with the ID stamped as it
+// is by PostLLMHook time. "" is a request with no key.
+func keyedCtx(id, virtualKeyID string) *schemas.BifrostContext {
+	ctx := evictionRequestCtx(id)
+	if virtualKeyID != "" {
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "presented-"+virtualKeyID)
+		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, virtualKeyID)
+	}
+	return ctx
+}
+
+// hiddenFinishCtx is a request of the given key whose content is hidden.
+func hiddenFinishCtx(id, virtualKeyID string) *schemas.BifrostContext {
+	ctx := keyedCtx(id, virtualKeyID)
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+	return ctx
+}
+
+// markerFor is the eviction marker of a partial row carrying owner, evicted from a
+// request that presented presentedBy's key.
+func markerFor(owner, presentedBy string) evictedPartialMarker {
+	marker := evictedPartialMarker{at: time.Now(), owner: owner}
+	if presentedBy != "" {
+		marker.presented = presentedKeyRef("presented-" + presentedBy)
+	}
+	return marker
+}
+
+// TestPostLLMHookReconcilesOnlyItsOwnPartialRow: request IDs are caller-supplied,
+// so a hidden request that lands on the no-pending path with another row's ID must
+// not reconcile onto it, which would overwrite that row and empty its content. With
+// a marker the request must present the key the marker records; without one the row
+// must be unfinished and carry exactly the request's key, a missing key matching only
+// a missing key. The own row is hidden for real: nothing of its input comes back.
+func TestPostLLMHookReconcilesOnlyItsOwnPartialRow(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status, owner, caller, evictedFrom string
+		marked, reconciled                 bool
+	}{
+		"completed row, probe path":               {status: "success", owner: "vk-victim", caller: "vk-attacker"},
+		"completed row, same key":                 {status: "success", owner: "vk-victim", caller: "vk-victim"},
+		"completed row without a key":             {status: "success"},
+		"completed row, another key's marker":     {status: "success", owner: "vk-victim", caller: "vk-attacker", evictedFrom: "vk-victim", marked: true},
+		"completed row, own marker":               {status: "success", owner: "vk-own", caller: "vk-own", evictedFrom: "vk-own", marked: true},
+		"failed row, same key":                    {status: "error", owner: "vk-victim", caller: "vk-victim"},
+		"cancelled row, own marker":               {status: "cancelled", owner: "vk-own", caller: "vk-own", evictedFrom: "vk-own", marked: true},
+		"another key's partial, probe path":       {status: "processing", owner: "vk-victim", caller: "vk-attacker"},
+		"another key's partial, its marker":       {status: "processing", owner: "vk-victim", caller: "vk-attacker", evictedFrom: "vk-victim", marked: true},
+		"a keyed partial, a caller with no key":   {status: "processing", owner: "vk-victim"},
+		"a keyless partial, a keyed probe":        {status: "processing", caller: "vk-attacker"},
+		"a keyless marker, a keyed caller":        {status: "processing", caller: "vk-attacker", marked: true},
+		"a keyed marker, a keyless caller":        {status: "processing", evictedFrom: "vk-victim", marked: true},
+		"a late-stamped partial, another key":     {status: "processing", caller: "vk-attacker", evictedFrom: "vk-own", marked: true},
+		"own stamped partial, probe path":         {status: "processing", owner: "vk-own", caller: "vk-own", reconciled: true},
+		"own stamped partial, marker":             {status: "processing", owner: "vk-own", caller: "vk-own", evictedFrom: "vk-own", marked: true, reconciled: true},
+		"own late-stamped partial, keyless row":   {status: "processing", caller: "vk-own", evictedFrom: "vk-own", marked: true, reconciled: true},
+		"keyless partial, keyless caller":         {status: "processing", reconciled: true},
+		"keyless partial, marker, keyless caller": {status: "processing", marked: true, reconciled: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := &countingUpdateStore{LogStore: newTestStore(t)}
+			plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			const id = "req-shared-id"
+			seedOwnedRow(t, store, id, tc.status, tc.owner)
+			if tc.marked {
+				plugin.evictedPartials.Store(id, markerFor(tc.owner, tc.evictedFrom))
+			}
+			if _, _, err := plugin.PostLLMHook(hiddenFinishCtx(id, tc.caller), evictionChatResult("attacker output"), nil); err != nil {
+				t.Fatalf("PostLLMHook() error = %v", err)
+			}
+			if err := plugin.Cleanup(); err != nil {
+				t.Fatalf("Cleanup() error = %v", err)
+			}
+			if !tc.reconciled {
+				requireRowUntouched(t, store, id, tc.status)
+				// Not refused at the write: never sent, so no version or object payload exists.
+				if n := store.updates.Load(); n != 0 {
+					t.Fatalf("a refused request reached the store's update path %d times", n)
+				}
+				return
+			}
+			row, err := store.FindByID(context.Background(), id)
+			if err != nil {
+				t.Fatalf("FindByID() error = %v", err)
+			}
+			if !row.ContentHidden || row.Status != "success" {
+				t.Fatalf("the request's own partial was not finished as hidden: hidden=%v status=%q", row.ContentHidden, row.Status)
+			}
+			if len(row.InputHistoryParsed) != 0 || row.InputHistory != "" || row.ContentSummary != "" {
+				t.Fatalf("a hidden reconcile left content on its own row: %q %q", row.InputHistory, row.ContentSummary)
+			}
+		})
+	}
+}
+
+// Another caller reusing the request ID must not use up the marker: the request it
+// belongs to still finishes its row afterwards.
+func TestForeignRequestLeavesTheEvictionMarkerStanding(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	const id = "req-marker-kept"
+	seedOwnedRow(t, store, id, "processing", "")
+	plugin.evictedPartials.Store(id, markerFor("", "vk-own"))
+
+	if _, _, err := plugin.PostLLMHook(hiddenFinishCtx(id, "vk-attacker"), evictionChatResult("attacker output"), nil); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if _, kept := plugin.evictedPartials.Load(id); !kept {
+		t.Fatal("a foreign request consumed the eviction marker")
+	}
+	if _, _, err := plugin.PostLLMHook(keyedCtx(id, "vk-own"), evictionChatResult("the answer"), nil); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	row, err := store.FindByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if row.Status != "success" || !strings.Contains(row.OutputMessage, "the answer") {
+		t.Fatalf("the owner did not finish its row: status=%q output=%q", row.Status, row.OutputMessage)
+	}
+}
+
+// A row that completes between the plugin's read and the queued write is no longer
+// a partial: the store's own check refuses the write, so the check cannot go stale,
+// and a refused finish announces nothing to log subscribers.
+func TestPostLLMHookReconcileLosesToACompletionAfterItsRead(t *testing.T) {
+	inner := newTestStore(t)
+	const id = "req-completes-after-read"
+	seedOwnedRow(t, inner, id, "processing", "vk-own")
+	store := &racingFindStore{LogStore: inner, afterFind: func() {
+		if err := inner.Update(context.Background(), id, map[string]any{"status": "success"}); err != nil {
+			t.Errorf("complete the row: %v", err)
+		}
+	}}
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	var announced atomic.Int32
+	plugin.SetLogCallback(func(context.Context, *logstore.Log) { announced.Add(1) })
+	if _, _, err := plugin.PostLLMHook(hiddenFinishCtx(id, "vk-own"), evictionChatResult("attacker output"), nil); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	requireRowUntouched(t, inner, id, "success")
+	time.Sleep(100 * time.Millisecond)
+	if n := announced.Load(); n != 0 {
+		t.Fatalf("a refused finish notified log subscribers %d times", n)
+	}
+}
+
+// A lookup that fails decides nothing, even for the marker's own key: a row that
+// cannot be read cannot be shown to be still unfinished.
+func TestPostLLMHookReconcileFailsClosedOnLookupError(t *testing.T) {
+	for name, marked := range map[string]bool{"probe path": false, "own eviction marker": true} {
+		t.Run(name, func(t *testing.T) {
+			inner := newTestStore(t)
+			const id = "req-unreadable"
+			seedOwnedRow(t, inner, id, "processing", "vk-own")
+			store := &racingFindStore{LogStore: inner, findErr: errors.New("connection reset")}
+			plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			if marked {
+				plugin.evictedPartials.Store(id, markerFor("vk-own", "vk-own"))
+			}
+			if _, _, err := plugin.PostLLMHook(hiddenFinishCtx(id, "vk-own"), evictionChatResult("attacker output"), nil); err != nil {
+				t.Fatalf("PostLLMHook() error = %v", err)
+			}
+			if err := plugin.Cleanup(); err != nil {
+				t.Fatalf("Cleanup() error = %v", err)
+			}
+			requireRowUntouched(t, inner, id, "processing")
+		})
+	}
+}
+
+// The real flow, in the real order: logging's PreLLMHook runs before governance
+// stamps the key, so the partial row carries none and the marker holds the proof.
+// The request that presented the key finishes the row after it has landed; a request
+// with the same ID and another key, or none, does not.
+func TestEvictedPartialIsFinishedByThePresentedKey(t *testing.T) {
+	for name, tc := range map[string]struct {
+		caller     string
+		reconciled bool
+	}{
+		"the same key finishes it":  {caller: "vk-own", reconciled: true},
+		"another key does not":      {caller: "vk-attacker"},
+		"a keyless caller does not": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newTestStore(t)
+			plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			const id = "req-evicted-owned"
+			content := "hello from input"
+			// Presented, not stamped yet.
+			preCtx := evictionRequestCtx(id)
+			preCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "presented-vk-own")
+			if _, _, err := plugin.PreLLMHook(preCtx, &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-4o",
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}}},
+					Params:   &schemas.ChatParameters{},
+				},
+			}); err != nil {
+				t.Fatalf("PreLLMHook() error = %v", err)
+			}
+			pendingVal, ok := plugin.pendingLogsEntries.Load(id)
+			if !ok {
+				t.Fatal("expected pending entry after PreLLMHook")
+			}
+			plugin.persistEvictedPartial(id, pendingVal.(*PendingLogData))
+			if _, _, err := plugin.PostLLMHook(keyedCtx(id, tc.caller), evictionChatResult("the answer"), nil); err != nil {
+				t.Fatalf("PostLLMHook() error = %v", err)
+			}
+			if err := plugin.Cleanup(); err != nil {
+				t.Fatalf("Cleanup() error = %v", err)
+			}
+			row, err := store.FindByID(context.Background(), id)
+			if err != nil {
+				t.Fatalf("FindByID() error = %v", err)
+			}
+			if tc.reconciled {
+				if row.Status != "success" || row.VirtualKeyID == nil || *row.VirtualKeyID != "vk-own" {
+					t.Fatalf("the owner did not finish its partial: status=%q key=%v", row.Status, row.VirtualKeyID)
+				}
+				return
+			}
+			if row.Status != "processing" || strings.Contains(row.OutputMessage, "the answer") {
+				t.Fatalf("another caller finished the partial: status=%q output=%q", row.Status, row.OutputMessage)
+			}
+		})
 	}
 }
 
@@ -2061,8 +2376,8 @@ func TestEvictedPartialMarkerExpires(t *testing.T) {
 		t.Fatalf("Init() error = %v", err)
 	}
 
-	plugin.evictedPartials.Store("req-old", time.Now().Add(-pendingLogTTL-time.Minute))
-	plugin.evictedPartials.Store("req-fresh", time.Now())
+	plugin.evictedPartials.Store("req-old", evictedPartialMarker{at: time.Now().Add(-pendingLogTTL - time.Minute)})
+	plugin.evictedPartials.Store("req-fresh", evictedPartialMarker{at: time.Now()})
 	plugin.cleanupStalePendingLogs()
 	if _, ok := plugin.evictedPartials.Load("req-old"); ok {
 		t.Fatal("expected stale marker pruned")

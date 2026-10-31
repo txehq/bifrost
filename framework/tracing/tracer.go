@@ -310,6 +310,7 @@ func (t *Tracer) EndTrace(traceID string) *schemas.Trace {
 	if trace == nil {
 		return nil
 	}
+	trace.ApplyHeldRootError()
 	// Note: Caller is responsible for releasing the trace after plugin processing
 	// by calling ReleaseTrace on the store or letting GC handle it
 	return trace
@@ -746,7 +747,10 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 			rootSpan.SetAttribute(schemas.AttrFinishReasons, v)
 		}
 		// Only an HTTP status here cannot tell a model refusal from a provider outage.
-		rootSpan.SetAttributes(schemas.RootSpanErrorAttributes(err, errorType))
+		// Held until the trace ends rather than stamped now: a fallback runs in this
+		// same trace, so a failed attempt is the request's outcome only if no later
+		// attempt succeeds.
+		trace.HoldRootError(h.traceID, schemas.RootSpanErrorAttributes(err, errorType))
 	}
 }
 
@@ -1353,6 +1357,7 @@ func (t *Tracer) FlushExpiredTrace(trace *schemas.Trace) {
 		return
 	}
 	t.deferredCompletions.Delete(trace.TraceID)
+	trace.ApplyHeldRootError()
 	// Spans left open would export with a zero EndTime, so close them as timed out.
 	now := time.Now()
 	if trace.EndTime.IsZero() {

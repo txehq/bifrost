@@ -864,23 +864,30 @@ func (s *clickhouseStore) Release(ctx context.Context, cs []*Claimed) error {
 // Purge deletes, by id so every version of a row goes at once and no older
 // version can resurface:
 //
-//   - acked tombstones, which no write changes again;
 //   - dead deliveries DeadRetention after they died (dead_at);
 //   - messages no pending, leased or dead delivery refers to, AckedRetention
 //     after they were published or became due, whichever is later;
+//   - acked tombstones once their message is gone;
 //   - deliveries whose message never landed after chAbandonedPublishAge,
 //     left by a publish that failed half way and was not retried.
 //
-// The last two are re-checked and deleted under the topic lock, so an Earliest
-// backfill or a publish retry on the topic cannot interleave with them.
-// Undelivered backlog expires with the table TTL.
+// A tombstone is kept while its message is: it is what fences a write from a
+// holder whose lease ran out before the delivery was taken over and
+// acknowledged (see update). That write is versioned under the tombstone, so
+// it loses while the tombstone exists; with the tombstone gone it would be the
+// delivery's only row and the delivery would run again. Once the message is
+// gone such a row cannot be claimed, and the abandoned-publish sweep removes it.
+//
+// The last three are re-checked and deleted under the topic lock, so an
+// Earliest backfill or a publish retry on the topic cannot interleave with
+// them. Undelivered backlog expires with the table TTL.
 func (s *clickhouseStore) Purge(ctx context.Context, policy PurgePolicy, batch int) (int64, error) {
 	var finished []struct {
 		Topic string
 		ID    string
 	}
-	if err := s.readRows(ctx, &finished, chTopicIDColumns, "SELECT topic, id FROM queue_deliveries FINAL WHERE status = ? OR (status = ? AND dead_at < "+chNowMicros+" - ?) LIMIT ?",
-		chStatusAcked, statusDead, policy.DeadRetention.Microseconds(), batch); err != nil {
+	if err := s.readRows(ctx, &finished, chTopicIDColumns, "SELECT topic, id FROM queue_deliveries FINAL WHERE status = ? AND dead_at < "+chNowMicros+" - ? LIMIT ?",
+		statusDead, policy.DeadRetention.Microseconds(), batch); err != nil {
 		return 0, fmt.Errorf("purge scan: %w", err)
 	}
 	var topics, ids []string
@@ -901,6 +908,15 @@ func (s *clickhouseStore) Purge(ctx context.Context, policy PurgePolicy, batch i
 		"id NOT IN (SELECT message_id FROM queue_deliveries FINAL WHERE status IN ('pending', 'leased', 'dead')) LIMIT ?",
 		[]any{policy.AckedRetention.Microseconds(), batch}, unneeded)
 	n += msgs
+	if err != nil {
+		return n, err
+	}
+
+	messageGone := "status = '" + chStatusAcked + "' AND message_id NOT IN (SELECT id FROM queue_messages FINAL WHERE topic = ?)"
+	tombstones, err := s.purgeByTopic(ctx, "queue_deliveries", "SELECT topic, id FROM queue_deliveries FINAL WHERE status = ? AND "+
+		"message_id NOT IN (SELECT id FROM queue_messages FINAL) LIMIT ?",
+		[]any{chStatusAcked, batch}, messageGone)
+	n += tombstones
 	if err != nil {
 		return n, err
 	}

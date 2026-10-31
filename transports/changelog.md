@@ -21,6 +21,8 @@
 - **A security scheme that changed drops the credentials it no longer fits** - replacing an MCP OpenAPI document clears a stored credential whose same-named scheme moved location or type, or whose scheme was removed, so a key that moved to the query string is not sent in URLs; when the previous schemes cannot be compared, none is kept, and a toast says what was cleared
 - **Agent log Delete acts on the selected operation** - a failed detail fetch shows the selected row's summary, so Delete can no longer remove the previously opened operation
 - **Toggling an agent keeps its approved credential origins** - the enable and disable switch resends them with the rest of the registration, so re-enabling still reaches an approved runtime endpoint
+- **A log hidden by an update loses the content it was saved with** - a request whose final decision hides content empties the row's input, output and other payload columns and its content summary in SQLite, Postgres and ClickHouse, where the row used to keep them under `content_hidden`; token usage and cache metadata stay for pricing
+- **A request cannot finish another caller's log row** - request IDs are caller-supplied, so a request with no pending log entry reconciled onto any row carrying its ID; a late completion now applies only to a still-processing partial row of the key the request presented, enforced in the write itself on each store
 - **A Cloudflare migration asks for the bare token when the whole header is a reference** - such a reference resolves to `Bearer <token>`, which the native provider would have sent as `Bearer Bearer <token>`
 
 ## 🐞 Fixed
@@ -56,6 +58,10 @@
 - Responses that drain onto one live billing unit after a refused renewal are priced one by one, and a settled live response's service tier no longer prices the next one
 - A request whose provider injects a tool is charged to its budgets: the tool call no longer replaces the limits the attempt answers to, or claims the inference's billing
 - Decision answers OpenAI rejects carry the reported usage, and OpenRouter's carry its billed cost, so governance and logging charge them instead of recording them free
+- A failed attempt's error stays off the trace's root span when a fallback succeeds: the root reports the final attempt's outcome when the trace ends, and never overwrites what the transport recorded there
+- The token histogram on Postgres trims a window's partial boundary hours as the request histogram does, so a window opening or closing mid-hour counts only its own tokens, cached reads included
+- A matview pass that skips views as recently refreshed no longer records the pending log activity as refreshed, so those writes reach the views on the next tick instead of waiting for the safety interval
+- ClickHouse: expiry and stale-job sweeps delete every version of an async job, so an older version no longer comes back; a queue's acknowledged tombstone lives as long as its message, so a late retry cannot run a delivered message again; Warp conversation pruning bounds in milliseconds, so a stale thread with a fractional second is deleted
 
 ## 🗄️ Database Migrations
 
@@ -63,8 +69,8 @@
 
 ## 🍴 Fork changes (txehq/bifrost)
 
-- chore: v2.3.3-sync.10 is a prerelease on top of v2.3.2 carrying the network and destination-policy fixes from the PR5 preservation audit (TXE-5374, in v2.3.3-sync.1), the proxied MCP OAuth and catalog URL check pinning (TXE-5377, in v2.3.3-sync.2) the PR5 credential-reference and destination-change fixes (TXE-5411), the queue lease-loss reporting fix (TXE-5407), the provider-key secret-reference check (TXE-4989, in v2.3.3-sync.4), the PR5 content-redaction fixes for logs and traces (TXE-5431, in v2.3.3-sync.5) the PR5 passthrough tuning and method-override refusals (TXE-5023, in v2.3.3-sync.6) the PR5 Agent Gateway push tenancy, delivery ordering and stream fixes (TXE-5477, in v2.3.3-sync.7) the PR5 UI credential, pagination and stale-state fixes (TXE-5496, in v2.3.3-sync.8) the PR5 logging billing repair, shutdown and cost-split fixes (TXE-5515, in v2.3.3-sync.9) and the PR5 per-call and rejected-decision pricing fixes (TXE-5518); v2.3.2 stays the stable release and `latest`
+- chore: v2.3.3-sync.11 is a prerelease on top of v2.3.2 carrying the network and destination-policy fixes from the PR5 preservation audit (TXE-5374, in v2.3.3-sync.1), the proxied MCP OAuth and catalog URL check pinning (TXE-5377, in v2.3.3-sync.2) the PR5 credential-reference and destination-change fixes (TXE-5411), the queue lease-loss reporting fix (TXE-5407), the provider-key secret-reference check (TXE-4989, in v2.3.3-sync.4), the PR5 content-redaction fixes for logs and traces (TXE-5431, in v2.3.3-sync.5) the PR5 passthrough tuning and method-override refusals (TXE-5023, in v2.3.3-sync.6) the PR5 Agent Gateway push tenancy, delivery ordering and stream fixes (TXE-5477, in v2.3.3-sync.7) the PR5 UI credential, pagination and stale-state fixes (TXE-5496, in v2.3.3-sync.8) the PR5 logging billing repair, shutdown and cost-split fixes (TXE-5515, in v2.3.3-sync.9) the PR5 per-call and rejected-decision pricing fixes (TXE-5518, in v2.3.3-sync.10) and the PR5 log-store, queue and trace lifecycle fixes (TXE-5522); v2.3.2 stays the stable release and `latest`
 - note: module versions. This fork publishes no core, framework or plugin module versions: their module paths stay `github.com/capsohq/bifrost/...`, their version files and the transport's requires are unchanged, and the workspace builds them from source
 - preserved: everything v2.3.2 listed under Fork changes
-- chore: the Helm chart is 2.1.49-sync.10, a prerelease; `appVersion` is 2.3.3-sync.10, `image.tag` stays required, and `networkConfig.extra_headers` values may be structured secret references (since 2.1.49-sync.3)
+- chore: the Helm chart is 2.1.49-sync.11, a prerelease; `appVersion` is 2.3.3-sync.11, `image.tag` stays required, and `networkConfig.extra_headers` values may be structured secret references (since 2.1.49-sync.3)
 - note: the CLI changes (every stored credential of a context is cleared when its gateway URL changes) ship with the next CLI release, not with this transport

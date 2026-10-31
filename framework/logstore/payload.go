@@ -212,6 +212,33 @@ func ReleaseBillingPayloads(logs []*Log) {
 	}
 }
 
+// hiddenContentColumns maps the logs columns a hidden row must hold empty to
+// their empty value: every payload column except the pricing metadata (token
+// usage, cache debug), plus the content summary. It is the set a hidden insert
+// leaves empty, written explicitly because column updates skip zero values.
+func hiddenContentColumns() map[string]any {
+	columns := make(map[string]any, len(payloadFields)+1)
+	for _, field := range payloadFields {
+		if field == "token_usage" || field == "cache_debug" {
+			continue
+		}
+		columns[field] = ""
+	}
+	columns["content_summary"] = ""
+	return columns
+}
+
+// clearHiddenContent empties a hidden row's content in place, as a hidden insert
+// would have left it, keeping the pricing metadata that is not content.
+func clearHiddenContent(l *Log) {
+	tokenUsage, cacheDebug := l.TokenUsage, l.CacheDebug
+	tokenUsageParsed, cacheDebugParsed := l.TokenUsageParsed, l.CacheDebugParsed
+	ClearPayload(l)
+	l.TokenUsage, l.CacheDebug = tokenUsage, cacheDebug
+	l.TokenUsageParsed, l.CacheDebugParsed = tokenUsageParsed, cacheDebugParsed
+	l.ContentSummary = ""
+}
+
 func ClearPayload(l *Log) {
 	// Clear serialized TEXT columns.
 	l.InputHistory = ""

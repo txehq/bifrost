@@ -7,6 +7,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1442,6 +1443,100 @@ func TestClickHouseAsyncJobs(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// An async job is written as pending, processing and completed versions of one
+// id. Until ClickHouse merges them, a delete that matches only the version
+// carrying expires_at (or status='processing') must not hand the older versions
+// back to FINAL reads: the expired job would come back as processing, and the
+// stale one as pending, which no sweep ever removes.
+func TestClickHouseAsyncJobCleanupDeletesEveryVersion(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	// A background merge collapsing the versions would hide the resurrection. SYSTEM
+	// STOP MERGES cannot keep them apart here: mutations stop with it, so the deletes
+	// would hang (see TestClickHouseFinalAfterLightweightDelete). A one-byte merge
+	// size leaves no part mergeable and lets the mutations run.
+	const noMerges = "max_bytes_to_merge_at_max_space_in_pool = 1, max_bytes_to_merge_at_min_space_in_pool = 1"
+	require.NoError(t, store.db.Exec("ALTER TABLE async_jobs MODIFY SETTING "+noMerges).Error)
+	t.Cleanup(func() {
+		require.NoError(t, store.db.Exec("ALTER TABLE async_jobs RESET SETTING max_bytes_to_merge_at_max_space_in_pool, max_bytes_to_merge_at_min_space_in_pool").Error)
+	})
+
+	expiredAt := now.Add(-time.Hour)
+	require.NoError(t, store.CreateAsyncJob(ctx, &AsyncJob{
+		ID: "ch-job-versions-expired", Status: schemas.AsyncJobStatusPending,
+		RequestType: schemas.ChatCompletionRequest, CreatedAt: now.Add(-2 * time.Hour),
+	}))
+	require.NoError(t, store.UpdateAsyncJob(ctx, "ch-job-versions-expired", map[string]interface{}{
+		"status": string(schemas.AsyncJobStatusProcessing),
+	}))
+	require.NoError(t, store.UpdateAsyncJob(ctx, "ch-job-versions-expired", map[string]interface{}{
+		"status": string(schemas.AsyncJobStatusCompleted), "completed_at": expiredAt, "expires_at": expiredAt,
+	}))
+	require.NoError(t, store.CreateAsyncJob(ctx, &AsyncJob{
+		ID: "ch-job-versions-stale", Status: schemas.AsyncJobStatusPending,
+		RequestType: schemas.ChatCompletionRequest, CreatedAt: now.Add(-48 * time.Hour),
+	}))
+	require.NoError(t, store.UpdateAsyncJob(ctx, "ch-job-versions-stale", map[string]interface{}{
+		"status": string(schemas.AsyncJobStatusProcessing),
+	}))
+	// Neither sweep may touch a job that is not due, in any of its versions.
+	require.NoError(t, store.CreateAsyncJob(ctx, &AsyncJob{
+		ID: "ch-job-versions-live", Status: schemas.AsyncJobStatusPending,
+		RequestType: schemas.ChatCompletionRequest, CreatedAt: now,
+	}))
+	require.NoError(t, store.UpdateAsyncJob(ctx, "ch-job-versions-live", map[string]interface{}{
+		"status": string(schemas.AsyncJobStatusProcessing),
+	}))
+	require.EqualValues(t, 3, chCountIDsNoFinal(t, store, "async_jobs", []string{"ch-job-versions-expired"}),
+		"expected every lifecycle version on disk, or the resurrection case is not exercised")
+	require.EqualValues(t, 2, chCountIDsNoFinal(t, store, "async_jobs", []string{"ch-job-versions-stale"}))
+
+	deleted, err := store.DeleteExpiredAsyncJobs(ctx)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, deleted)
+	found, err := store.FindAsyncJobByID(ctx, "ch-job-versions-expired")
+	require.Error(t, err, "expired job came back as %+v", found)
+
+	deleted, err = store.DeleteStaleAsyncJobs(ctx, now.Add(-24*time.Hour))
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, deleted)
+	found, err = store.FindAsyncJobByID(ctx, "ch-job-versions-stale")
+	require.Error(t, err, "stale job came back as %+v", found)
+
+	assert.Zero(t, chCountIDsNoFinal(t, store, "async_jobs", []string{"ch-job-versions-expired", "ch-job-versions-stale"}),
+		"every physical version of both jobs is gone")
+	live, err := store.FindAsyncJobByID(ctx, "ch-job-versions-live")
+	require.NoError(t, err)
+	assert.Equal(t, schemas.AsyncJobStatusProcessing, live.Status)
+	assert.EqualValues(t, 2, chCountIDsNoFinal(t, store, "async_jobs", []string{"ch-job-versions-live"}))
+}
+
+// A sweep larger than one delete's id list runs in pages and removes every job.
+func TestClickHouseAsyncJobCleanupPagesThroughABacklog(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	expiredAt := now.Add(-time.Hour)
+	total := chDeleteByLogicalIDsBatch + 3
+	jobs := make([]*AsyncJob, 0, total)
+	for i := range total {
+		jobs = append(jobs, &AsyncJob{
+			ID: fmt.Sprintf("ch-job-page-%05d", i), Status: schemas.AsyncJobStatusCompleted,
+			RequestType: schemas.ChatCompletionRequest, CreatedAt: now.Add(-2 * time.Hour), ExpiresAt: &expiredAt,
+		})
+	}
+	require.NoError(t, store.chReinsert(ctx, &jobs))
+
+	deleted, err := store.DeleteExpiredAsyncJobs(ctx)
+	require.NoError(t, err)
+	assert.EqualValues(t, total, deleted)
+	count, err := store.chCountWhere(ctx, "async_jobs", "1 = 1")
+	require.NoError(t, err)
+	assert.Zero(t, count)
+}
+
 func TestClickHouseHistograms(t *testing.T) {
 	store := trySetupClickHouseStore(t)
 	ctx := context.Background()
@@ -1712,4 +1807,120 @@ func TestClickHouseBatchUpdate(t *testing.T) {
 
 	_, err = store.FindByID(ctx, "ch-upd-missing")
 	require.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestClickHouseBatchUpdateHidingALogClearsItsContent runs the shared cases on
+// ClickHouse's read-modify-write update, whose overlay also skips zero values.
+// The reads go through FINAL, so a surviving older version would fail them too.
+func TestClickHouseBatchUpdateHidingALogClearsItsContent(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	exerciseHiddenUpdates(t, store, sqlColumnReader(store.db))
+}
+
+// TestClickHouseWarpPruneDeletesThreadsWithFractionalSeconds pins that pruning
+// removes stale threads whose updated_at falls inside a second: bound at whole
+// seconds, the newest of them was never deleted.
+func TestClickHouseWarpPruneDeletesThreadsWithFractionalSeconds(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	owner := fmt.Sprintf("user:prune-ms-%d", time.Now().UnixNano())
+	base := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	for i, offset := range []time.Duration{250 * time.Millisecond, 750 * time.Millisecond, 2*time.Second + 500*time.Millisecond} {
+		at := base.Add(offset)
+		require.NoError(t, store.CreateWarpConversation(ctx, &WarpConversation{ID: fmt.Sprintf("%s-%d", owner, i), OwnerID: owner, Title: "t", CreatedAt: at, UpdatedAt: at}))
+	}
+	deleted, err := store.PruneWarpConversations(ctx, owner, 1)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), deleted, "both stale threads go, the newer one inside its second included")
+	list, err := store.ListWarpConversations(ctx, owner, 10)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Equal(t, owner+"-2", list[0].ID)
+}
+
+// TestClickHousePartialFinishLosesToAnotherInstance: rmwLocks cover one process, so
+// a completion from another instance can land between a partial finish's read and
+// its write. The finish is versioned just above what it read, so that completion
+// outranks it in either arrival order, and a hidden finish erases nothing.
+func TestClickHousePartialFinishLosesToAnotherInstance(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	other, err := newClickHouseLogStore(ctx, clickhouseTestConfig(), 0, testLogger{})
+	require.NoError(t, err)
+	otherInstance := other.(*ClickHouseLogStore)
+	t.Cleanup(func() { _ = otherInstance.Close(context.Background()) })
+
+	require.NoError(t, store.CreateIfNotExists(ctx, hiddenUpdateTestLog("ch-partial-race", time.Now().UTC().Truncate(time.Millisecond))))
+	otherAnswer := "the other instance's answer"
+	store.beforePartialWrite = func() {
+		store.beforePartialWrite = nil
+		require.NoError(t, otherInstance.BatchUpdate(ctx, []*Log{{
+			ID: "ch-partial-race", Status: "success",
+			OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &otherAnswer}},
+		}}))
+	}
+
+	owner := ""
+	finish := &Log{ID: "ch-partial-race", Status: "error", ContentHidden: true, PartialOwner: &owner}
+	require.NoError(t, store.BatchUpdate(ctx, []*Log{finish}))
+	require.True(t, finish.PartialRefused, "the finish lost and must say so, or the hybrid store would still merge its object")
+
+	found, err := store.FindByID(ctx, "ch-partial-race")
+	require.NoError(t, err)
+	assert.False(t, found.ContentHidden)
+	assert.Equal(t, "success", found.Status)
+	assert.Contains(t, found.OutputMessage, otherAnswer)
+	assert.Contains(t, found.InputHistory, hiddenTestContent, "the row the other instance completed lost its content")
+	assert.Equal(t, hiddenTestContent, found.ContentSummary)
+	assert.NotEmpty(t, found.TokenUsage)
+}
+
+// Version order is not a fence. A write from a server whose clock sits at or below
+// the finish's version is not outranking it, and the read-back sees nothing wrong.
+// This pins the limit BatchUpdate documents, in both the skewed and the tied case:
+// the store cannot report these, which is why identity is settled before any write.
+func TestClickHousePartialFinishCannotDetectAWriterAtOrBelowItsVersion(t *testing.T) {
+	for name, offset := range map[string]time.Duration{"a clock behind the row": 0, "a tie with the finish": time.Nanosecond} {
+		t.Run(name, func(t *testing.T) {
+			store := trySetupClickHouseStore(t)
+			ctx := context.Background()
+			id := "ch-partial-skew-" + strconv.FormatInt(int64(offset), 10)
+			require.NoError(t, store.CreateIfNotExists(ctx, hiddenUpdateTestLog(id, time.Now().UTC().Truncate(time.Millisecond))))
+			store.beforePartialWrite = func() {
+				store.beforePartialWrite = nil
+				versions, err := store.chLogVersions(ctx, []string{id})
+				require.NoError(t, err)
+				row, err := store.FindByID(ctx, id)
+				require.NoError(t, err)
+				row.Status = "success"
+				skewed := []*chVersionedLog{{Log: *row, Ver: versions[id].Add(offset)}}
+				require.NoError(t, store.chReinsert(ctx, &skewed))
+			}
+			owner := ""
+			finish := &Log{ID: id, Status: "error", ContentHidden: true, PartialOwner: &owner}
+			require.NoError(t, store.BatchUpdate(ctx, []*Log{finish}))
+			assert.False(t, finish.PartialRefused, "a writer at or below the finish's version goes unreported")
+		})
+	}
+}
+
+// Identity needs no version order: a finish for any other owner is refused from the
+// row it reads, whichever instance writes first, and writes nothing to overtake.
+func TestClickHousePartialFinishForAnotherOwnerWritesNothing(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	victim := "vk-victim"
+	row := hiddenUpdateTestLog("ch-partial-foreign", time.Now().UTC().Truncate(time.Millisecond))
+	row.VirtualKeyID = &victim
+	require.NoError(t, store.CreateIfNotExists(ctx, row))
+	before, err := store.chLogVersions(ctx, []string{row.ID})
+	require.NoError(t, err)
+
+	attacker := "vk-attacker"
+	finish := &Log{ID: row.ID, Status: "success", ContentHidden: true, PartialOwner: &attacker}
+	require.NoError(t, store.BatchUpdate(ctx, []*Log{finish}))
+	assert.True(t, finish.PartialRefused)
+	after, err := store.chLogVersions(ctx, []string{row.ID})
+	require.NoError(t, err)
+	assert.True(t, before[row.ID].Equal(after[row.ID]), "a refused finish must write no version at all")
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1400,6 +1401,8 @@ func (h *HybridLogStore) BatchUpdate(ctx context.Context, entries []*Log) error 
 		payload   map[string]string
 		tagRow    *Log // the saved row with every entry's non-zero fields applied, in batch order
 	}
+	type partialFinish struct{ source, written *Log }
+	var partialFinishes []partialFinish
 	uploadsByID := make(map[string]*pendingUpload)
 	var uploadOrder []string
 	rowsByID := make(map[string]*Log)
@@ -1423,6 +1426,15 @@ func (h *HybridLogStore) BatchUpdate(ctx context.Context, entries []*Log) error 
 		}
 		if row == nil {
 			continue
+		}
+		// Nothing of a partial's finish reaches the object of a row it may not touch.
+		if entry.PartialOwner != nil {
+			if !row.IsPartialOf(*entry.PartialOwner) {
+				entry.PartialRefused = true
+				continue
+			}
+			// Finished as far as a later entry of this batch can tell.
+			row.Status = entry.Status
 		}
 		// The entry carries the request's final visibility decision, which may
 		// clear a hidden flag the row was saved with before that decision existed.
@@ -1463,6 +1475,9 @@ func (h *HybridLogStore) BatchUpdate(ctx context.Context, entries []*Log) error 
 		// key, routing rule and stream flag only arrive with the completion.
 		overlayNonZeroFields(upload.tagRow, entry)
 		dbEntries = append(dbEntries, &dbEntry)
+		if entry.PartialOwner != nil {
+			partialFinishes = append(partialFinishes, partialFinish{source: entry, written: &dbEntry})
+		}
 	}
 	if len(dbEntries) == 0 {
 		return nil
@@ -1470,7 +1485,24 @@ func (h *HybridLogStore) BatchUpdate(ctx context.Context, entries []*Log) error 
 	if err := h.inner.BatchUpdate(ctx, dbEntries); err != nil {
 		return err
 	}
+	// The row was read above; the store decides who won it. A finish it refused
+	// leaves the object of a row that finish no longer holds alone. One accepted here
+	// can still be overtaken before its upload runs: the merge lays non-empty fields
+	// over the object, so it cannot erase, and output is last writer wins, among
+	// writers of one key (see ClickHouseLogStore.BatchUpdate).
+	finished := make(map[string]struct{})
+	for _, f := range partialFinishes {
+		f.source.PartialRefused = f.written.PartialRefused
+		if !f.written.PartialRefused {
+			finished[f.written.ID] = struct{}{}
+		}
+	}
 	for _, id := range uploadOrder {
+		if slices.ContainsFunc(partialFinishes, func(f partialFinish) bool { return f.written.ID == id }) {
+			if _, ok := finished[id]; !ok {
+				continue
+			}
+		}
 		u := uploadsByID[id]
 		if isPayloadEmpty(u.payload) {
 			continue

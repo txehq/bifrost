@@ -6,7 +6,9 @@ package logging
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -275,6 +277,40 @@ func virtualKeyStampPending(ctx *schemas.BifrostContext) bool {
 	}
 	presented, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
 	return presented != ""
+}
+
+// presentedVirtualKey returns the virtual key the request presented, read the way
+// virtualKeyStampPending reads it. Logging's PreLLMHook runs before governance stamps
+// the key's ID, so this is the only identity a request has that early.
+func presentedVirtualKey(ctx *schemas.BifrostContext) string {
+	if ctx == nil {
+		return ""
+	}
+	if grant := ctx.Grant(); grant != nil {
+		if identity := grant.Identity(); identity != nil && identity.Credential().Kind == string(schemas.EntityVirtualKey) {
+			return identity.Credential().Value
+		}
+	}
+	presented, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
+	return presented
+}
+
+// evictedPartialMarker records a partial row persisted at eviction: who may finish
+// it. owner is the virtual key ID the row carries, usually none, since the key is
+// rarely stamped by then; presented hashes the key the request presented, so the
+// marker keeps no secret. A request finishes the row only by presenting that key.
+type evictedPartialMarker struct {
+	at        time.Time
+	owner     string
+	presented [sha256.Size]byte
+}
+
+// presentedKeyRef hashes a presented key for comparison; no key hashes to zero.
+func presentedKeyRef(presented string) [sha256.Size]byte {
+	if presented == "" {
+		return [sha256.Size]byte{}
+	}
+	return sha256.Sum256([]byte(presented))
 }
 
 // applyMCPGovernanceFieldsToEntry stamps MCP log ownership from the request context. Every dimension,
@@ -1261,7 +1297,7 @@ type LoggerPlugin struct {
 	logMsgPool                   sync.Pool                      // Pool for reusing LogMessage structs
 	updateDataPool               sync.Pool                      // Pool for reusing UpdateLogData structs
 	pendingLogsEntries           sync.Map                       // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
-	evictedPartials              sync.Map                       // Maps requestID -> time.Time: partial rows persisted at eviction, awaiting reconcile in PostLLMHook
+	evictedPartials              sync.Map                       // Maps requestID -> evictedPartialMarker: partial rows persisted at eviction, awaiting reconcile in PostLLMHook
 	pendingClaimLocks            [pendingClaimShards]sync.Mutex // Striped by requestID; serializes eviction vs terminal PostLLMHook claiming a pending entry
 	pendingLogsToInject          sync.Map                       // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
 	pendingMCPLogsToInject       sync.Map                       // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
@@ -1913,6 +1949,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		Status:             logStatusProcessing,
 		ProvisionalInput:   captureProvisional,
 		ContentPolicy:      &requestContentPolicy,
+		VirtualKeyID:       bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID),
+		presentedKey:       presentedVirtualKey(ctx),
 	}
 	if liveUnit != "" {
 		pending.Live = &liveSessionState{}
@@ -1983,14 +2021,24 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// under the request's claim lock together with the eviction marker, so the
 	// stale sweep can never interleave between the two (see persistEvictedPartial).
 	var pendingVal any
-	var hasPending, evicted bool
+	var hasPending, evicted, foreignMarker bool
+	var marker evictedPartialMarker
 	isTerminal := !bifrost.IsStreamRequestType(requestType) || isFinalChunk || bifrostErr != nil
 	if isTerminal {
 		lock := p.pendingClaimLock(requestID)
 		lock.Lock()
 		pendingVal, hasPending = p.pendingLogsEntries.LoadAndDelete(requestID)
 		if !hasPending {
-			_, evicted = p.evictedPartials.LoadAndDelete(requestID)
+			if value, ok := p.evictedPartials.Load(requestID); ok {
+				// Taken only by the key that may finish the row: another caller reusing
+				// the request ID must not use the marker up.
+				marker = value.(evictedPartialMarker)
+				evicted = marker.presented == presentedKeyRef(presentedVirtualKey(ctx))
+				foreignMarker = !evicted
+				if evicted {
+					p.evictedPartials.Delete(requestID)
+				}
+			}
 		}
 		lock.Unlock()
 	} else {
@@ -2021,17 +2069,16 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// was queued, so it is reliable even while that insert is still in flight);
 	// only a miss, e.g. a row persisted by a previous process, falls back to a
 	// bounded DB probe on p.ctx, since the request ctx may already be cancelled on
-	// timeout.
-	if !hasPending && isTerminal {
-		present := evicted
-		if !present {
-			probeCtx, cancelProbe := context.WithTimeout(p.ctx, evictedPartialProbeTimeout)
-			ok, perr := p.store.IsLogEntryPresent(probeCtx, requestID)
-			cancelProbe()
-			if perr == nil && ok {
-				present = true
-			}
+	// timeout. Either way the row must be this request's own partial: the request
+	// ID is caller-supplied, so a row that only shares it stays untouched.
+	if !hasPending && isTerminal && !foreignMarker {
+		owner := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
+		if evicted {
+			owner = marker.owner
 		}
+		probeCtx, cancelProbe := context.WithTimeout(p.ctx, evictedPartialProbeTimeout)
+		present := p.holdsPartialRow(probeCtx, requestID, owner, evicted)
+		cancelProbe()
 		if present {
 			p.logger.Warn("no pending log data found for request %s, reconciling output onto persisted partial row", requestID)
 			// Object/Provider/Model are rewritten with the values the row already
@@ -2041,6 +2088,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				RequestID:      requestID,
 				CreatedAt:      time.Now(),
 				EvictedPartial: true,
+				VirtualKeyID:   owner,
 				InitialData: &InitialLogData{
 					Object:   string(requestType),
 					Provider: string(provider),
@@ -2346,7 +2394,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
 		p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
-		p.persistCompletedEntry(ctx, entry, pending.EvictedPartial)
+		p.persistCompletedEntry(ctx, entry, pending)
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
 	}
@@ -2450,7 +2498,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		// Attach the per-category cost split to the accumulated stream usage so
 		// log detail views can surface input / output / cache costs.
 		p.attachCostBreakdown(ctx, entry, result)
-		p.persistCompletedEntry(ctx, entry, pending.EvictedPartial)
+		p.persistCompletedEntry(ctx, entry, pending)
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
 	}
@@ -2554,9 +2602,31 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			Name: *entry.RoutingRuleName,
 		}
 	}
-	p.persistCompletedEntry(ctx, entry, pending.EvictedPartial)
+	p.persistCompletedEntry(ctx, entry, pending)
 	p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 	return result, bifrostErr, nil
+}
+
+// holdsPartialRow reports whether a request with no pending entry may reconcile
+// onto the row with its ID, as the row's owner. Request IDs are caller-supplied, and
+// reconciling overwrites the row's output and, for a hidden request, empties its
+// content, so the row must be that owner's and unfinished. marked means the request
+// presented the key its eviction marker records; the row that marker stands for may
+// still be queued, so only a definite not-found leaves it standing. Without a marker
+// the owner is the request's own stamped key, and a keyless row is refused to it: a
+// row from a previous process cannot show which key it was. The store checks again
+// when it writes (PartialOwner).
+func (p *LoggerPlugin) holdsPartialRow(probeCtx context.Context, requestID, owner string, marked bool) bool {
+	if !marked {
+		if ok, err := p.store.IsLogEntryPresent(probeCtx, requestID); err != nil || !ok {
+			return false
+		}
+	}
+	row, err := p.store.FindByID(probeCtx, requestID)
+	if err != nil {
+		return marked && errors.Is(err, logstore.ErrNotFound)
+	}
+	return row.IsPartialOf(owner)
 }
 
 // persistCompletedEntry writes a completed log entry. The normal path inserts it
@@ -2567,14 +2637,15 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 // against the existing row and lose the output. The content policy is applied
 // here since storeOrEnqueueEntry is skipped; Inject's plugin-log and overhead
 // backfill is not available on this path.
-func (p *LoggerPlugin) persistCompletedEntry(ctx *schemas.BifrostContext, entry *logstore.Log, reconcileFromPartial bool) {
-	if !reconcileFromPartial {
+func (p *LoggerPlugin) persistCompletedEntry(ctx *schemas.BifrostContext, entry *logstore.Log, pending *PendingLogData) {
+	if !pending.EvictedPartial {
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		return
 	}
 	policy := p.resolveContentPolicy(ctx)
 	entry.ContentHidden = !policy.visible()
 	attachLogRedactionData(ctx, entry, policy.visible())
+	entry.PartialOwner = &pending.VirtualKeyID
 	p.enqueueLogUpdate(entry, p.makeReconcileCallback())
 }
 
@@ -2588,7 +2659,8 @@ func (p *LoggerPlugin) persistCompletedEntry(ctx *schemas.BifrostContext, entry 
 // the fallback when the read fails.
 func (p *LoggerPlugin) makeReconcileCallback() func(entry *logstore.Log) {
 	return func(entry *logstore.Log) {
-		if entry == nil {
+		// A refused finish wrote nothing, and the row is someone else's to announce.
+		if entry == nil || entry.PartialRefused {
 			return
 		}
 		full, err := p.store.FindByID(p.ctx, entry.ID)

@@ -283518,6 +283518,596 @@
           ]
         }
       ]
+    },
+    {
+      "name": "269. A token histogram window that starts or ends mid-hour counts only the tokens inside it (token-histogram-window) [SERIAL]",
+      "description": "TXE-5522 (PR5 preservation group 4c). Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json with a Postgres logs_store and matview_refresh_interval 5s (the hourly matview exists only on Postgres), and tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream and pricing source. Two calls of upstream-cached-tokens (20 input of which 7 cached, 2 output) land in one hour with the window boundary between them. Over the whole hours the matview serves both; over a window opening or closing between them the bars sum to exactly one call, cached reads included, because the partial boundary hours come from the raw table. Before the fix the matview's whole hour was counted and each window read both calls.",
+      "item": [
+        {
+          "name": "first request, before the window boundary - token-histogram-window",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{thwVk}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/upstream-cached-tokens\", \"messages\": [{\"role\": \"user\", \"content\": \"count my tokens\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// Both rows must fall in one hour bucket, or the boundary has nothing to trim.",
+                  "var left = 3600000 - (Date.now() % 3600000);",
+                  "if (left < 120000) { setTimeout(function () {}, left + 1000); }",
+                  "// A run-scoped virtual key: the log and histogram queries read this run's rows only, on a store earlier runs share.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-token-histogram-window-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('thwVk', 'missing');",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }] }) } }, function (err, res) {",
+                  "  pm.test('token-histogram-window: setup created the virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  var vk = res.json().virtual_key;",
+                  "  pm.collectionVariables.set('thwVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+                  "  pm.collectionVariables.set('thwVkId', vk.id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "pm.test('token-histogram-window: the provider call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "// The log row settles after the response, and the window must start after it.",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + pm.collectionVariables.get('thwVkId') + '&status=success&limit=10', method: 'GET' }, function (err, res) {",
+                  "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+                  "    if (rows.length < 1 && tries > 0) { setTimeout(function () { read(tries - 1); }, 250); return; }",
+                  "    pm.test('token-histogram-window: request 1 is logged', function () { pm.expect(rows.length, err ? String(err) : res.text()).to.equal(1); });",
+                  "    var at = new Date(rows[0].timestamp);",
+                  "    pm.collectionVariables.set('thwHour', String(Math.floor(at.getTime() / 3600000) * 3600000));",
+                  "    // After the first row settled and before the second is sent: the mid-hour boundary.",
+                  "    pm.collectionVariables.set('thwBoundary', new Date().toISOString());",
+                  "  });",
+                  "}",
+                  "read(80);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "second request, after the window boundary - token-histogram-window",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{thwVk}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/upstream-cached-tokens\", \"messages\": [{\"role\": \"user\", \"content\": \"count my tokens\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "setTimeout(function () {}, 50);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "pm.test('token-histogram-window: the provider call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "// The log row settles after the response, and the window must start after it.",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + pm.collectionVariables.get('thwVkId') + '&status=success&limit=10', method: 'GET' }, function (err, res) {",
+                  "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+                  "    if (rows.length < 2 && tries > 0) { setTimeout(function () { read(tries - 1); }, 250); return; }",
+                  "    pm.test('token-histogram-window: request 2 is logged', function () { pm.expect(rows.length, err ? String(err) : res.text()).to.equal(2); });",
+                  "  });",
+                  "}",
+                  "read(80);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the matview holds both rows - token-histogram-window",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/histogram/tokens?virtual_key_ids={{thwVkId}}&start_time={{thwGridStart}}&end_time={{thwGridEnd}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "tokens"
+              ],
+              "query": [
+                {
+                  "key": "virtual_key_ids",
+                  "value": "{{thwVkId}}"
+                },
+                {
+                  "key": "start_time",
+                  "value": "{{thwGridStart}}"
+                },
+                {
+                  "key": "end_time",
+                  "value": "{{thwGridEnd}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var hour = Number(pm.collectionVariables.get('thwHour'));",
+                  "pm.collectionVariables.set('thwGridStart', new Date(hour - 24 * 3600000).toISOString());",
+                  "pm.collectionVariables.set('thwGridEnd', new Date(hour + 3600000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function sum(buckets, key) { return (buckets || []).reduce(function (n, b) { return n + (b[key] || 0); }, 0); }",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "pm.test('token-histogram-window: the status is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "// On the hour grid this window has no raw boundary, so only a refreshed matview answers it.",
+                  "var url = BASE + '/api/logs/histogram/tokens?virtual_key_ids=' + pm.collectionVariables.get('thwVkId') + '&start_time=' + encodeURIComponent(pm.collectionVariables.get('thwGridStart')) + '&end_time=' + encodeURIComponent(pm.collectionVariables.get('thwGridEnd'));",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: url, method: 'GET' }, function (err, res) {",
+                  "    var buckets = (!err && res.code === 200) ? res.json().buckets : [];",
+                  "    if (sum(buckets, 'prompt_tokens') < 40 && tries > 0) {",
+                  "      // Fresh activity for every poll, so a refresh pass is never gated out while the rows are pending.",
+                  "      pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ model: 'openai/upstream-ok', messages: [{ role: 'user', content: 'activity' }] }) } }, function () {",
+                  "        setTimeout(function () { read(tries - 1); }, 1000);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    pm.test('token-histogram-window: the refreshed matview holds both rows', function () {",
+                  "      pm.expect(sum(buckets, 'prompt_tokens'), err ? String(err) : res.text()).to.equal(40);",
+                  "      pm.expect(sum(buckets, 'cached_read_tokens'), err ? String(err) : res.text()).to.equal(14);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(60);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a window opening mid-hour counts only the row inside it - token-histogram-window",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/histogram/tokens?virtual_key_ids={{thwVkId}}&start_time={{thwBoundary}}&end_time={{thwHeadEnd}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "tokens"
+              ],
+              "query": [
+                {
+                  "key": "virtual_key_ids",
+                  "value": "{{thwVkId}}"
+                },
+                {
+                  "key": "start_time",
+                  "value": "{{thwBoundary}}"
+                },
+                {
+                  "key": "end_time",
+                  "value": "{{thwHeadEnd}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.collectionVariables.set('thwHeadEnd', new Date(Number(pm.collectionVariables.get('thwHour')) + 25 * 3600000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function sum(buckets, key) { return (buckets || []).reduce(function (n, b) { return n + (b[key] || 0); }, 0); }",
+                  "pm.test('token-histogram-window: the status is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var buckets = pm.response.json().buckets;",
+                  "pm.test('token-histogram-window: the window produced hourly bars', function () { pm.expect(buckets.length, pm.response.text()).to.be.above(20); pm.expect(pm.response.json().bucket_size_seconds).to.equal(3600); });",
+                  "pm.test('token-histogram-window: bars sum to the second row', function () {",
+                  "  pm.expect(sum(buckets, 'prompt_tokens'), pm.response.text()).to.equal(20);",
+                  "  pm.expect(sum(buckets, 'completion_tokens'), pm.response.text()).to.equal(2);",
+                  "  pm.expect(sum(buckets, 'total_tokens'), pm.response.text()).to.equal(22);",
+                  "});",
+                  "pm.test('token-histogram-window: cached reads sum to the second row', function () { pm.expect(sum(buckets, 'cached_read_tokens'), pm.response.text()).to.equal(7); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a window closing mid-hour counts only the row inside it - token-histogram-window",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/histogram/tokens?virtual_key_ids={{thwVkId}}&start_time={{thwTailStart}}&end_time={{thwBoundary}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "tokens"
+              ],
+              "query": [
+                {
+                  "key": "virtual_key_ids",
+                  "value": "{{thwVkId}}"
+                },
+                {
+                  "key": "start_time",
+                  "value": "{{thwTailStart}}"
+                },
+                {
+                  "key": "end_time",
+                  "value": "{{thwBoundary}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.collectionVariables.set('thwTailStart', new Date(Number(pm.collectionVariables.get('thwHour')) - 25 * 3600000 + 300000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function sum(buckets, key) { return (buckets || []).reduce(function (n, b) { return n + (b[key] || 0); }, 0); }",
+                  "pm.test('token-histogram-window: the status is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var buckets = pm.response.json().buckets;",
+                  "pm.test('token-histogram-window: the window produced hourly bars', function () { pm.expect(buckets.length, pm.response.text()).to.be.above(20); pm.expect(pm.response.json().bucket_size_seconds).to.equal(3600); });",
+                  "pm.test('token-histogram-window: bars sum to the first row', function () {",
+                  "  pm.expect(sum(buckets, 'prompt_tokens'), pm.response.text()).to.equal(20);",
+                  "  pm.expect(sum(buckets, 'total_tokens'), pm.response.text()).to.equal(22);",
+                  "});",
+                  "pm.test('token-histogram-window: cached reads sum to the first row', function () { pm.expect(sum(buckets, 'cached_read_tokens'), pm.response.text()).to.equal(7); });",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + pm.collectionVariables.get('thwVkId'), method: 'DELETE' }, function () {});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "270. A request cannot finish another caller's log row by reusing its request ID (log-row-ownership) [SERIAL]",
+      "description": "TXE-5522 security regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. x-request-id is caller-supplied. One key logs a visible row; a second key with content logging off then sends two overlapping calls under the same ID, so the second to finish has no pending entry and looks for a row with its ID. It must leave a row that is not its own unfinished partial alone. Before the fix it reconciled onto the owner's row, took over its key and hid it.",
+      "item": [
+        {
+          "name": "the owner's visible row is logged - log-row-ownership",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{lroOwnerVk}}"
+              },
+              {
+                "key": "x-request-id",
+                "value": "{{lroRequestId}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/upstream-ok\", \"messages\": [{\"role\": \"user\", \"content\": \"the owner's question\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// One key for the row's owner, one with content logging off for the caller who reuses its request ID.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-log-row-ownership-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('lroRequestId', run);",
+                  "pm.collectionVariables.set('lroOwnerVk', 'missing');",
+                  "function key(name, extra, done) {",
+                  "  var body = Object.assign({ name: name, provider_configs: [{ provider: 'openai', allowed_models: ['*'], key_ids: ['*'], weight: 1 }] }, extra);",
+                  "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify(body) } }, function (err, res) {",
+                  "    pm.test('log-row-ownership: setup created ' + name.slice(-5), function () {",
+                  "      pm.expect(err, String(err)).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.eql(200);",
+                  "    });",
+                  "    done(res.json().virtual_key);",
+                  "  });",
+                  "}",
+                  "function value(vk) { return (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value; }",
+                  "key(run + '-own', {}, function (own) {",
+                  "  pm.collectionVariables.set('lroOwnerVk', value(own));",
+                  "  pm.collectionVariables.set('lroOwnerId', own.id);",
+                  "  key(run + '-oth', { disable_content_logging: true }, function (other) {",
+                  "    pm.collectionVariables.set('lroOtherVk', value(other));",
+                  "    pm.collectionVariables.set('lroOtherId', other.id);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "pm.test('log-row-ownership: the owner\\'s call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var id = pm.collectionVariables.get('lroRequestId');",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs/' + id, method: 'GET' }, function (err, res) {",
+                  "    var row = (!err && res.code === 200) ? res.json() : {};",
+                  "    if (row.status !== 'success' && tries > 0) { setTimeout(function () { read(tries - 1); }, 250); return; }",
+                  "    pm.test('log-row-ownership: the owner\\'s row is logged', function () {",
+                  "      pm.expect(row.status, err ? String(err) : res.text()).to.equal('success');",
+                  "      pm.expect(row.virtual_key_id, res.text()).to.equal(pm.collectionVariables.get('lroOwnerId'));",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(80);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a second key sends two overlapping calls under that request ID - log-row-ownership",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs?limit=1&offset=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "1"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// Two overlapping calls under one request ID: the first to finish takes the single pending entry, and the",
+                  "// second finishes with none, the path that looks for a row carrying its ID.",
+                  "var left = 2, codes = [];",
+                  "function call() {",
+                  "  pm.sendRequest({ url: BASE + '/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json', 'x-bf-vk': pm.collectionVariables.get('lroOtherVk'), 'x-request-id': pm.collectionVariables.get('lroRequestId') }, body: { mode: 'raw', raw: JSON.stringify({ model: 'openai/upstream-slow', messages: [{ role: 'user', content: 'another caller' }] }) } }, function (err, res) {",
+                  "    codes.push(err ? String(err) : res.code);",
+                  "    left -= 1;",
+                  "    if (left === 0) {",
+                  "      pm.test('log-row-ownership: both overlapping calls were answered', function () { pm.expect(codes).to.eql([200, 200]); });",
+                  "    }",
+                  "  });",
+                  "}",
+                  "call();",
+                  "call();"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the owner's row is unchanged - log-row-ownership",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/{{lroRequestId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "{{lroRequestId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// The log writer flushes every 5s: a reconcile must have landed before the row can be judged unchanged.",
+                  "setTimeout(function () {}, 6500);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "pm.test('log-row-ownership: the row reads back', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var row = pm.response.json();",
+                  "pm.test('log-row-ownership: the row stays the owner\\'s', function () { pm.expect(row.virtual_key_id, pm.response.text()).to.equal(pm.collectionVariables.get('lroOwnerId')); });",
+                  "pm.test('log-row-ownership: the row stays visible', function () { pm.expect(!!row.content_hidden, pm.response.text()).to.equal(false); });",
+                  "pm.test('log-row-ownership: the row keeps the owner\\'s input', function () { pm.expect(JSON.stringify(row.input_history || row.content_summary || ''), pm.response.text()).to.contain('the owner\\'s question'); });",
+                  "['lroOwnerId', 'lroOtherId'].forEach(function (name) {",
+                  "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + pm.collectionVariables.get(name), method: 'DELETE' }, function () {});",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
