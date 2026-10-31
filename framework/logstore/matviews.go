@@ -983,8 +983,10 @@ func refreshMatViews(ctx context.Context, db *gorm.DB, minGap time.Duration) err
 	// the record cannot be read every view is refreshed and nothing is recorded.
 	fresh, recordOK := recentlyRefreshedMatViews(ctx, conn, minGap)
 	var refreshErrs []error
+	skippedFresh := false
 	for _, view := range matViewRefreshOrder() {
 		if fresh[view] {
+			skippedFresh = true
 			continue
 		}
 		if recordOK {
@@ -1004,6 +1006,13 @@ func refreshMatViews(ctx context.Context, db *gorm.DB, minGap time.Duration) err
 	}
 	if len(refreshErrs) > 0 {
 		return errors.Join(refreshErrs...)
+	}
+	// A view skipped as fresh may have been refreshed before the writes this
+	// pass's counter includes. Recording the counter would gate those writes out
+	// until the safety interval if traffic stopped now, so the baseline stays put
+	// and the next tick looks again; it skips the view until the gap has passed.
+	if skippedFresh {
+		return nil
 	}
 	refreshGate.markRefreshed(activityAtStart, activityOK)
 	return nil
@@ -1704,43 +1713,97 @@ func (s *RDBLogStore) getHistogramFromMatView(ctx context.Context, filters Searc
 // getTokenHistogramFromMatView returns time-bucketed token usage (prompt,
 // completion, total, cached) from mv_logs_hourly.
 func (s *RDBLogStore) getTokenHistogramFromMatView(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*TokenHistogramResult, error) {
-	var results []struct {
+	type tokenAgg struct {
 		BucketTimestamp  int64 `gorm:"column:bucket_timestamp"`
 		PromptTokens     int64 `gorm:"column:prompt_tokens"`
 		CompletionTokens int64 `gorm:"column:completion_tokens"`
 		TotalTokens      int64 `gorm:"column:total_tkns"`
 		CachedReadTokens int64 `gorm:"column:cached_read_tokens"`
 	}
-	q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
-	q = s.applyMatViewFilters(q, filters)
-	if err := q.Select(fmt.Sprintf(`
-		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
-		SUM(total_prompt_tokens) AS prompt_tokens,
-		SUM(total_completion_tokens) AS completion_tokens,
-		SUM(total_tokens) AS total_tkns,
-		SUM(total_cached_read_tokens) AS cached_read_tokens
-	`, bucketSizeSeconds, bucketSizeSeconds)).
-		Group("bucket_timestamp").
-		Order("bucket_timestamp ASC").
-		Find(&results).Error; err != nil {
-		return nil, err
+
+	// The same exact-range hybrid as getHistogramFromMatView: whole hours from
+	// mv_logs_hourly, the partial boundary hours from the raw table, so a window
+	// that starts or ends mid-hour does not count tokens outside it. Time
+	// predicates are applied explicitly; strip them so the filter helpers only
+	// contribute dimension predicates.
+	dimFilters := filters
+	dimFilters.StartTime, dimFilters.EndTime = nil, nil
+
+	acc := make(map[int64]*tokenAgg)
+	merge := func(rows []tokenAgg) {
+		for _, r := range rows {
+			b, ok := acc[r.BucketTimestamp]
+			if !ok {
+				b = &tokenAgg{BucketTimestamp: r.BucketTimestamp}
+				acc[r.BucketTimestamp] = b
+			}
+			b.PromptTokens += r.PromptTokens
+			b.CompletionTokens += r.CompletionTokens
+			b.TotalTokens += r.TotalTokens
+			b.CachedReadTokens += r.CachedReadTokens
+		}
 	}
 
-	resultMap := make(map[int64]int, len(results))
-	for i, r := range results {
-		resultMap[r.BucketTimestamp] = i
+	rawBucketed := func(timePredicate string, timeArgs ...any) ([]tokenAgg, error) {
+		var rows []tokenAgg
+		q := s.scopedLogsDB(ctx).Model(&Log{})
+		q = s.applyFilters(q, dimFilters)
+		q = q.Where(timePredicate, timeArgs...)
+		q = q.Where("status IN ?", terminalLogStatuses)
+		err := q.Select(fmt.Sprintf(`
+			%s AS bucket_timestamp,
+			COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+			COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+			COALESCE(SUM(total_tokens), 0) AS total_tkns,
+			COALESCE(SUM(cached_read_tokens), 0) AS cached_read_tokens
+		`, unixBucketExpr("postgres", bucketSizeSeconds))).
+			Group("bucket_timestamp").
+			Find(&rows).Error
+		return rows, err
+	}
+
+	if isDegenerateHybridWindow(filters.StartTime, filters.EndTime) {
+		rows, err := rawBucketed("timestamp >= ? AND timestamp <= ?", *filters.StartTime, *filters.EndTime)
+		if err != nil {
+			return nil, err
+		}
+		merge(rows)
+	} else {
+		var results []tokenAgg
+		q := s.scopedLogsDB(ctx).Table("mv_logs_hourly")
+		q = s.applyMatViewFilters(q, dimFilters)
+		q = applyInteriorBucketWindow(q, filters.StartTime, filters.EndTime)
+		if err := q.Select(fmt.Sprintf(`
+			CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
+			SUM(total_prompt_tokens) AS prompt_tokens,
+			SUM(total_completion_tokens) AS completion_tokens,
+			SUM(total_tokens) AS total_tkns,
+			SUM(total_cached_read_tokens) AS cached_read_tokens
+		`, bucketSizeSeconds, bucketSizeSeconds)).
+			Group("bucket_timestamp").
+			Find(&results).Error; err != nil {
+			return nil, err
+		}
+		merge(results)
+
+		if sliverSQL, sliverArgs := boundarySliverWhere(filters.StartTime, filters.EndTime); sliverSQL != "" {
+			rows, err := rawBucketed(sliverSQL, sliverArgs...)
+			if err != nil {
+				return nil, err
+			}
+			merge(rows)
+		}
 	}
 
 	allTimestamps := generateBucketTimestamps(filters.StartTime, filters.EndTime, bucketSizeSeconds)
 	buckets := make([]TokenHistogramBucket, 0, len(allTimestamps))
 	for _, ts := range allTimestamps {
 		b := TokenHistogramBucket{Timestamp: time.Unix(ts, 0).UTC()}
-		if idx, ok := resultMap[ts]; ok {
-			r := results[idx]
-			b.PromptTokens = r.PromptTokens
-			b.CompletionTokens = r.CompletionTokens
-			b.TotalTokens = r.TotalTokens
-			b.CachedReadTokens = r.CachedReadTokens
+		if a, ok := acc[ts]; ok {
+			b.PromptTokens = a.PromptTokens
+			b.CompletionTokens = a.CompletionTokens
+			b.TotalTokens = a.TotalTokens
+			b.CachedReadTokens = a.CachedReadTokens
 		}
 		buckets = append(buckets, b)
 	}

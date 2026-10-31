@@ -1442,6 +1442,99 @@ func TestClickHouseAsyncJobs(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// An async job is written as pending, processing and completed versions of one
+// id. Until ClickHouse merges them, a delete that matches only the version
+// carrying expires_at (or status='processing') must not hand the older versions
+// back to FINAL reads: the expired job would come back as processing, and the
+// stale one as pending, which no sweep ever removes.
+func TestClickHouseAsyncJobCleanupDeletesEveryVersion(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+
+	// See TestClickHouseFinalAfterLightweightDelete: merges are stopped while
+	// the versions are written and counted, and restarted before the deletes.
+	require.NoError(t, store.db.Exec("SYSTEM STOP MERGES async_jobs").Error)
+	startMerges := sync.OnceFunc(func() {
+		require.NoError(t, store.db.Exec("SYSTEM START MERGES async_jobs").Error)
+	})
+	t.Cleanup(startMerges)
+
+	expiredAt := now.Add(-time.Hour)
+	require.NoError(t, store.CreateAsyncJob(ctx, &AsyncJob{
+		ID: "ch-job-versions-expired", Status: schemas.AsyncJobStatusPending,
+		RequestType: schemas.ChatCompletionRequest, CreatedAt: now.Add(-2 * time.Hour),
+	}))
+	require.NoError(t, store.UpdateAsyncJob(ctx, "ch-job-versions-expired", map[string]interface{}{
+		"status": string(schemas.AsyncJobStatusProcessing),
+	}))
+	require.NoError(t, store.UpdateAsyncJob(ctx, "ch-job-versions-expired", map[string]interface{}{
+		"status": string(schemas.AsyncJobStatusCompleted), "completed_at": expiredAt, "expires_at": expiredAt,
+	}))
+	require.NoError(t, store.CreateAsyncJob(ctx, &AsyncJob{
+		ID: "ch-job-versions-stale", Status: schemas.AsyncJobStatusPending,
+		RequestType: schemas.ChatCompletionRequest, CreatedAt: now.Add(-48 * time.Hour),
+	}))
+	require.NoError(t, store.UpdateAsyncJob(ctx, "ch-job-versions-stale", map[string]interface{}{
+		"status": string(schemas.AsyncJobStatusProcessing),
+	}))
+	// Neither sweep may touch a job that is not due, in any of its versions.
+	require.NoError(t, store.CreateAsyncJob(ctx, &AsyncJob{
+		ID: "ch-job-versions-live", Status: schemas.AsyncJobStatusPending,
+		RequestType: schemas.ChatCompletionRequest, CreatedAt: now,
+	}))
+	require.NoError(t, store.UpdateAsyncJob(ctx, "ch-job-versions-live", map[string]interface{}{
+		"status": string(schemas.AsyncJobStatusProcessing),
+	}))
+	require.EqualValues(t, 3, chCountIDsNoFinal(t, store, "async_jobs", []string{"ch-job-versions-expired"}),
+		"expected every lifecycle version on disk, or the resurrection case is not exercised")
+	require.EqualValues(t, 2, chCountIDsNoFinal(t, store, "async_jobs", []string{"ch-job-versions-stale"}))
+	startMerges()
+
+	deleted, err := store.DeleteExpiredAsyncJobs(ctx)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, deleted)
+	found, err := store.FindAsyncJobByID(ctx, "ch-job-versions-expired")
+	require.Error(t, err, "expired job came back as %+v", found)
+
+	deleted, err = store.DeleteStaleAsyncJobs(ctx, now.Add(-24*time.Hour))
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, deleted)
+	found, err = store.FindAsyncJobByID(ctx, "ch-job-versions-stale")
+	require.Error(t, err, "stale job came back as %+v", found)
+
+	assert.Zero(t, chCountIDsNoFinal(t, store, "async_jobs", []string{"ch-job-versions-expired", "ch-job-versions-stale"}),
+		"every physical version of both jobs is gone")
+	live, err := store.FindAsyncJobByID(ctx, "ch-job-versions-live")
+	require.NoError(t, err)
+	assert.Equal(t, schemas.AsyncJobStatusProcessing, live.Status)
+	assert.EqualValues(t, 2, chCountIDsNoFinal(t, store, "async_jobs", []string{"ch-job-versions-live"}))
+}
+
+// A sweep larger than one delete's id list runs in pages and removes every job.
+func TestClickHouseAsyncJobCleanupPagesThroughABacklog(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	expiredAt := now.Add(-time.Hour)
+	total := chDeleteByLogicalIDsBatch + 3
+	jobs := make([]*AsyncJob, 0, total)
+	for i := range total {
+		jobs = append(jobs, &AsyncJob{
+			ID: fmt.Sprintf("ch-job-page-%05d", i), Status: schemas.AsyncJobStatusCompleted,
+			RequestType: schemas.ChatCompletionRequest, CreatedAt: now.Add(-2 * time.Hour), ExpiresAt: &expiredAt,
+		})
+	}
+	require.NoError(t, store.chReinsert(ctx, &jobs))
+
+	deleted, err := store.DeleteExpiredAsyncJobs(ctx)
+	require.NoError(t, err)
+	assert.EqualValues(t, total, deleted)
+	count, err := store.chCountWhere(ctx, "async_jobs", "1 = 1")
+	require.NoError(t, err)
+	assert.Zero(t, count)
+}
+
 func TestClickHouseHistograms(t *testing.T) {
 	store := trySetupClickHouseStore(t)
 	ctx := context.Background()
@@ -1712,4 +1805,33 @@ func TestClickHouseBatchUpdate(t *testing.T) {
 
 	_, err = store.FindByID(ctx, "ch-upd-missing")
 	require.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestClickHouseBatchUpdateHidingALogClearsItsContent runs the shared cases on
+// ClickHouse's read-modify-write update, whose overlay also skips zero values.
+// The reads go through FINAL, so a surviving older version would fail them too.
+func TestClickHouseBatchUpdateHidingALogClearsItsContent(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	exerciseHiddenUpdates(t, store, sqlColumnReader(store.db))
+}
+
+// TestClickHouseWarpPruneDeletesThreadsWithFractionalSeconds pins that pruning
+// removes stale threads whose updated_at falls inside a second: bound at whole
+// seconds, the newest of them was never deleted.
+func TestClickHouseWarpPruneDeletesThreadsWithFractionalSeconds(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	owner := fmt.Sprintf("user:prune-ms-%d", time.Now().UnixNano())
+	base := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	for i, offset := range []time.Duration{250 * time.Millisecond, 750 * time.Millisecond, 2*time.Second + 500*time.Millisecond} {
+		at := base.Add(offset)
+		require.NoError(t, store.CreateWarpConversation(ctx, &WarpConversation{ID: fmt.Sprintf("%s-%d", owner, i), OwnerID: owner, Title: "t", CreatedAt: at, UpdatedAt: at}))
+	}
+	deleted, err := store.PruneWarpConversations(ctx, owner, 1)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), deleted, "both stale threads go, the newer one inside its second included")
+	list, err := store.ListWarpConversations(ctx, owner, 10)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Equal(t, owner+"-2", list[0].ID)
 }

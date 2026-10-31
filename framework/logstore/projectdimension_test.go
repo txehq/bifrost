@@ -360,3 +360,68 @@ func TestHourlyMatView_FiltersByProject(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 3, stats.TotalRequests, "several projects union; the unattributed request stays out")
 }
+
+// MCP tool logs carry team, customer and business-unit attribution in JSON arrays
+// beside the scalar ids, as LLM logs do, so their filters must match either: a row
+// attributed to team-a and team-b is team-b's too, and a value that only contains
+// a member's text is not a member.
+func exerciseMCPOwnershipFilters(t *testing.T, store *RDBLogStore, db *gorm.DB) {
+	t.Helper()
+	ctx := context.Background()
+	teamA, customerA, buA := "team-a", "cust-a", "bu-a"
+	teams, customers, bus := `["team-a","team-b"]`, `["cust-a","cust-b"]`, `["bu-a","bu-b"]`
+	now := time.Now().UTC()
+	create := func(row MCPToolLog) {
+		t.Helper()
+		row.LLMRequestID, row.ToolName, row.Timestamp, row.CreatedAt, row.Status = schemas.Ptr("r"), "tool", now, now, "success"
+		require.NoError(t, store.CreateMCPToolLog(ctx, &row))
+	}
+	create(MCPToolLog{
+		ID: "mcp-multi", TeamID: &teamA, TeamIDs: &teams, CustomerID: &customerA, CustomerIDs: &customers,
+		BusinessUnitID: &buA, BusinessUnitIDs: &bus,
+	})
+	create(MCPToolLog{ID: "mcp-scalar", TeamID: &teamA})
+	// The array path alone: the enterprise path may leave the scalar NULL.
+	arrayOnly := `["team-z"]`
+	create(MCPToolLog{ID: "mcp-array", TeamIDs: &arrayOnly})
+	create(MCPToolLog{ID: "mcp-none"})
+
+	ids := func(filters MCPToolLogSearchFilters) []string {
+		t.Helper()
+		out := []string{}
+		require.NoError(t, store.applyMCPFilters(db.Model(&MCPToolLog{}), filters).Order("id").Pluck("id", &out).Error)
+		return out
+	}
+	assert.Equal(t, []string{"mcp-multi"}, ids(MCPToolLogSearchFilters{TeamIDs: []string{"team-b"}}))
+	assert.Equal(t, []string{"mcp-multi"}, ids(MCPToolLogSearchFilters{CustomerIDs: []string{"cust-b"}}))
+	assert.Equal(t, []string{"mcp-multi"}, ids(MCPToolLogSearchFilters{BusinessUnitIDs: []string{"bu-b"}}))
+	assert.Equal(t, []string{"mcp-multi", "mcp-scalar"}, ids(MCPToolLogSearchFilters{TeamIDs: []string{"team-a"}}))
+	assert.Equal(t, []string{"mcp-array"}, ids(MCPToolLogSearchFilters{TeamIDs: []string{"team-z"}}))
+	assert.Equal(t, []string{"mcp-array", "mcp-multi"}, ids(MCPToolLogSearchFilters{TeamIDs: []string{"team-b", "team-z"}}))
+	// Negatives: another owner's id, a partial id, and one dimension's id on another.
+	assert.Empty(t, ids(MCPToolLogSearchFilters{TeamIDs: []string{"team-c"}}))
+	assert.Empty(t, ids(MCPToolLogSearchFilters{TeamIDs: []string{"team"}}))
+	assert.Empty(t, ids(MCPToolLogSearchFilters{TeamIDs: []string{`team-a","team-b`}}))
+	assert.Empty(t, ids(MCPToolLogSearchFilters{CustomerIDs: []string{"team-a"}}))
+	assert.Empty(t, ids(MCPToolLogSearchFilters{BusinessUnitIDs: []string{"cust-a"}}))
+	// Dimensions intersect.
+	assert.Empty(t, ids(MCPToolLogSearchFilters{TeamIDs: []string{"team-z"}, CustomerIDs: []string{"cust-a"}}))
+}
+
+func TestMCPOwnershipFiltersMatchMultiValuedAttribution(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&MCPToolLog{}))
+	exerciseMCPOwnershipFilters(t, &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}, db)
+}
+
+func TestMCPOwnershipFiltersMatchMultiValuedAttributionPostgres(t *testing.T) {
+	store, db := setupPerfTestDB(t)
+	store.logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
+	exerciseMCPOwnershipFilters(t, store, db)
+}
+
+func TestClickHouseMCPOwnershipFiltersMatchMultiValuedAttribution(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	exerciseMCPOwnershipFilters(t, store.RDBLogStore, store.db)
+}

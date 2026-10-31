@@ -876,6 +876,13 @@ func (s *RDBLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
 			if err := tx.Model(&Log{}).Where("id = ?", entry.ID).UpdateColumn("content_hidden", entry.ContentHidden).Error; err != nil {
 				return err
 			}
+			// A row that becomes hidden must not keep the content it was saved with:
+			// clearing the entry alone writes nothing, so the columns are emptied here.
+			if entry.ContentHidden {
+				if err := tx.Model(&Log{}).Where("id = ?", entry.ID).UpdateColumns(hiddenContentColumns()).Error; err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	})

@@ -1754,6 +1754,30 @@ func TestHybrid_BatchUpdateKeepsDBRowContentFree(t *testing.T) {
 // input is already in object storage, so the late output must be merged into
 // that object (for hidden and visible rows alike) while the DB row stays
 // content-free, exactly as an insert would have left it.
+// A row an excluded request type saved with its content in the DB, then hidden
+// by an update, ends content-free in the DB while the read side refuses to
+// hydrate the object: the inner store's clearing reaches the hybrid path.
+func TestHybrid_BatchUpdateHidingALogClearsDBContent(t *testing.T) {
+	h, inner, _ := newTestHybrid(t)
+	ctx := context.Background()
+	h.excludedRequestTypes = map[string]struct{}{"chat.completion": {}}
+	require.NoError(t, h.CreateIfNotExists(ctx, hiddenUpdateTestLog("hybrid-hide", time.Now().UTC())))
+	before, err := inner.FindByID(ctx, "hybrid-hide")
+	require.NoError(t, err)
+	require.NotEmpty(t, before.InputHistory, "the excluded type keeps its content in the row")
+
+	require.NoError(t, h.BatchUpdate(ctx, []*Log{{ID: "hybrid-hide", Status: "success", ContentHidden: true}}))
+
+	row, err := inner.FindByID(ctx, "hybrid-hide")
+	require.NoError(t, err)
+	require.True(t, row.ContentHidden)
+	assert.Empty(t, row.InputHistory)
+	assert.Empty(t, row.OutputMessage)
+	assert.Empty(t, row.RawRequest)
+	assert.Empty(t, row.ContentSummary)
+	assert.NotEmpty(t, row.TokenUsage, "pricing metadata stays in the row")
+}
+
 func TestHybrid_BatchUpdateMergesOutputIntoStoredObject(t *testing.T) {
 	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())

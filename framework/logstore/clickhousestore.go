@@ -728,6 +728,12 @@ func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) er
 				}
 				// The overlay skips zero values; the final visibility is always written.
 				r.ContentHidden = src.ContentHidden
+				// A row that becomes hidden must not keep the content it was saved with.
+				// Per entry, as the RDB store clears it, so a later entry of the same
+				// batch cannot bring the row's earlier content back.
+				if r.ContentHidden {
+					clearHiddenContent(r)
+				}
 			}
 		}
 		return s.chReinsert(ctx, &rows)
@@ -861,6 +867,41 @@ func (s *ClickHouseLogStore) chDeleteWhere(ctx context.Context, table, where str
 	return count, nil
 }
 
+// chDeleteByLogicalIDsBatch bounds the id list of one lightweight delete, and so
+// the ids a sweep holds at a time.
+const chDeleteByLogicalIDsBatch = 1000
+
+// chDeleteLogicalWhere deletes every physical version of the logical rows
+// matching where. A lightweight delete matches physical rows, so a predicate
+// on a column that changes across ReplacingMergeTree versions (status,
+// expires_at) removes only the newest version and, until a merge collapses
+// them, hands the superseded ones back to FINAL reads. The ids are therefore
+// selected under the connection-level final=1 and deleted by id, a page at a
+// time. The page is keyed on id rather than repeated from the start, so a read
+// that still sees a deleted row cannot keep the sweep from finishing.
+func (s *ClickHouseLogStore) chDeleteLogicalWhere(ctx context.Context, table, where string, args ...any) (int64, error) {
+	stmt := fmt.Sprintf("SELECT id FROM `%s` WHERE (%s) AND id > ? ORDER BY id LIMIT %d", chEscapeIdentifier(table), where, chDeleteByLogicalIDsBatch)
+	var deleted int64
+	after := ""
+	for {
+		var ids []string
+		if err := s.db.WithContext(ctx).Raw(stmt, append(args[:len(args):len(args)], after)...).Scan(&ids).Error; err != nil {
+			return deleted, err
+		}
+		if len(ids) == 0 {
+			return deleted, nil
+		}
+		if err := s.chLightweightDelete(ctx, table, "id IN ?", ids); err != nil {
+			return deleted, err
+		}
+		deleted += int64(len(ids))
+		if len(ids) < chDeleteByLogicalIDsBatch {
+			return deleted, nil
+		}
+		after = ids[len(ids)-1]
+	}
+}
+
 // chFlushProcessing removes rows still marked processing that were created
 // before since. It probes first so the once-a-minute sweep from the logging
 // plugin issues no mutation on an idle table (the issue counted ~1,440
@@ -971,21 +1012,23 @@ func (s *ClickHouseLogStore) FlushAgentLogs(ctx context.Context, since time.Time
 	return nil
 }
 
-// DeleteExpiredAsyncJobs deletes async jobs whose expiry has passed with one
-// lightweight delete; the count is selected first because mutations never
-// report rows affected.
+// DeleteExpiredAsyncJobs deletes async jobs whose expiry has passed. Only the
+// completed version of a job carries expires_at, so the job is deleted by id
+// (see chDeleteLogicalWhere); the count is the selected ids because mutations
+// never report rows affected.
 func (s *ClickHouseLogStore) DeleteExpiredAsyncJobs(ctx context.Context) (int64, error) {
-	return s.chDeleteWhere(ctx, "async_jobs", "expires_at IS NOT NULL AND expires_at < ?", time.Now().UTC())
+	return s.chDeleteLogicalWhere(ctx, "async_jobs", "expires_at IS NOT NULL AND expires_at < ?", time.Now().UTC())
 }
 
-// DeleteStaleAsyncJobs deletes processing jobs created before staleSince.
-// See DeleteExpiredAsyncJobs.
+// DeleteStaleAsyncJobs deletes processing jobs created before staleSince, with
+// their pending version. See DeleteExpiredAsyncJobs.
 func (s *ClickHouseLogStore) DeleteStaleAsyncJobs(ctx context.Context, staleSince time.Time) (int64, error) {
-	return s.chDeleteWhere(ctx, "async_jobs", "status = 'processing' AND created_at < ?", staleSince)
+	return s.chDeleteLogicalWhere(ctx, "async_jobs", "status = 'processing' AND created_at < ?", staleSince)
 }
 
-// DeleteExpiredWebhookDeliveries deletes webhook delivery history whose
-// expiry has passed. See DeleteExpiredAsyncJobs.
+// DeleteExpiredWebhookDeliveries deletes webhook delivery history whose expiry
+// has passed. Delivery rows are insert-only, so unlike a job a row has one
+// version and one lightweight delete removes it; the count is selected first.
 func (s *ClickHouseLogStore) DeleteExpiredWebhookDeliveries(ctx context.Context) (int64, error) {
 	return s.chDeleteWhere(ctx, "webhook_deliveries", "expires_at IS NOT NULL AND expires_at < ?", time.Now().UTC())
 }
@@ -1204,8 +1247,12 @@ func (s *ClickHouseLogStore) PruneWarpConversations(ctx context.Context, ownerID
 		}
 	}
 	defer s.lockRMWBatch("warp_conversations", ids)()
+	// Bound in milliseconds: a bound time.Time is sent at whole seconds, which
+	// left a stale thread whose updated_at had a fractional second undeleted on
+	// every pass.
+	placeholder, bound := timestampBound("clickhouse", newest, upperTimeBound)
 	deleted, err := s.chDeleteWhere(ctx, "warp_conversations",
-		"id IN ? AND owner_id = ? AND updated_at <= ?", ids, ownerID, newest)
+		"id IN ? AND owner_id = ? AND updated_at <= "+placeholder, ids, ownerID, bound)
 	if err != nil {
 		return 0, err
 	}

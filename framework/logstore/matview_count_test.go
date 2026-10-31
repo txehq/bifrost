@@ -344,3 +344,81 @@ func TestGetStatsMatViewCacheHitsHybrid(t *testing.T) {
 	assert.Equal(t, int64(0), *stats.DirectCacheHits)
 	assert.Equal(t, int64(0), *stats.SemanticCacheHits)
 }
+
+// TestGetTokenHistogramMatViewTrimsBoundaryBuckets: like the request histogram,
+// the token histogram's matview path must not count the parts of its boundary
+// hours that fall outside a mid-hour window, so its bars sum to the tokens of
+// the terminal logs inside [start, end], cached-read tokens included.
+func TestGetTokenHistogramMatViewTrimsBoundaryBuckets(t *testing.T) {
+	store, db := setupPerfTestDB(t)
+	ctx := context.Background()
+
+	day := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	start := day.Add(10*time.Hour + 30*time.Minute)
+	end := day.Add(35*time.Hour + 45*time.Minute)
+	insert := func(ts time.Time, status, provider string) {
+		t.Helper()
+		require.NoError(t, db.Exec(`
+			INSERT INTO logs (id, timestamp, object_type, provider, model, status,
+				created_at, latency, cost, prompt_tokens, completion_tokens, total_tokens, cached_read_tokens)
+			VALUES (?, ?, 'chat_completion', ?, 'gpt-4', ?, ?, 100, 0.01, 10, 5, 15, 3)
+		`, uuid.New().String(), ts, provider, status, ts).Error)
+	}
+	insert(day.Add(10*time.Hour+15*time.Minute), "success", "openai")    // before start -> must not count
+	insert(day.Add(10*time.Hour+45*time.Minute), "success", "openai")    // head sliver
+	insert(day.Add(18*time.Hour), "error", "openai")                     // interior
+	insert(day.Add(18*time.Hour+10*time.Minute), "success", "anthropic") // interior, other provider
+	insert(day.Add(35*time.Hour+30*time.Minute), "success", "openai")    // tail sliver
+	insert(day.Add(35*time.Hour+50*time.Minute), "success", "openai")    // after end -> must not count
+	insert(day.Add(18*time.Hour+5*time.Minute), "processing", "openai")  // in-flight -> terminal-only
+
+	refreshTestMatViews(t, db)
+	store.matViewsReady.Store(true)
+
+	sum := func(filters SearchFilters, bucket int64) (prompt, completion, total, cachedRead int64, byBucket map[int64]int64) {
+		t.Helper()
+		require.True(t, store.canUseMatView(ctx, filters), "filters must take the matview histogram path")
+		hist, err := store.GetTokenHistogram(ctx, filters, bucket)
+		require.NoError(t, err)
+		byBucket = make(map[int64]int64, len(hist.Buckets))
+		for _, b := range hist.Buckets {
+			prompt += b.PromptTokens
+			completion += b.CompletionTokens
+			total += b.TotalTokens
+			cachedRead += b.CachedReadTokens
+			byBucket[b.Timestamp.Unix()] = b.PromptTokens
+		}
+		return prompt, completion, total, cachedRead, byBucket
+	}
+
+	prompt, completion, total, cachedRead, byBucket := sum(SearchFilters{StartTime: &start, EndTime: &end}, 3600)
+	assert.Equal(t, int64(40), prompt, "bars must sum to the terminal logs inside [start, end] only")
+	assert.Equal(t, int64(20), completion)
+	assert.Equal(t, int64(60), total)
+	assert.Equal(t, int64(12), cachedRead)
+	assert.Equal(t, int64(10), byBucket[day.Add(10*time.Hour).Unix()], "first bar holds only the in-window sliver row")
+	assert.Equal(t, int64(20), byBucket[day.Add(18*time.Hour).Unix()], "an interior hour comes whole from the matview")
+	assert.Equal(t, int64(10), byBucket[day.Add(35*time.Hour).Unix()], "last bar holds only the in-window sliver row")
+
+	// A dimension filter reaches both halves of the hybrid.
+	prompt, _, _, cachedRead, _ = sum(SearchFilters{StartTime: &start, EndTime: &end, Providers: []string{"openai"}}, 3600)
+	assert.Equal(t, int64(30), prompt, "the anthropic row is filtered out of the interior")
+	assert.Equal(t, int64(9), cachedRead)
+
+	// Wider bars merge the raw and matview halves into one bucket.
+	prompt, _, total, cachedRead, _ = sum(SearchFilters{StartTime: &start, EndTime: &end}, 86400)
+	assert.Equal(t, int64(40), prompt)
+	assert.Equal(t, int64(60), total)
+	assert.Equal(t, int64(12), cachedRead)
+
+	// A window under two hours has no interior: it is aggregated from the raw table.
+	shortStart, shortEnd := day.Add(10*time.Hour+40*time.Minute), day.Add(10*time.Hour+50*time.Minute)
+	prompt, _, _, cachedRead, _ = sum(SearchFilters{StartTime: &shortStart, EndTime: &shortEnd}, 3600)
+	assert.Equal(t, int64(10), prompt)
+	assert.Equal(t, int64(3), cachedRead)
+
+	// A window on the hour grid is matview only and loses nothing at its edges.
+	gridStart, gridEnd := day.Add(10*time.Hour), day.Add(12*time.Hour)
+	prompt, _, _, _, _ = sum(SearchFilters{StartTime: &gridStart, EndTime: &gridEnd}, 3600)
+	assert.Equal(t, int64(20), prompt, "both rows of the 10:00 hour, in the matview interior")
+}

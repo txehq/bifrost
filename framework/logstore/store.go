@@ -139,7 +139,8 @@ type LogStore interface {
 	// with that ID; rows that do not exist are skipped, never inserted.
 	// content_hidden is the exception: it is always written from the entry, since
 	// it carries the request's final visibility decision and must be able to
-	// clear a flag saved earlier.
+	// clear a flag saved earlier. An entry that hides a row also empties the
+	// content the row holds, keeping its pricing metadata (token usage, cache debug).
 	BatchUpdate(ctx context.Context, entries []*Log) error
 	BulkUpdateCost(ctx context.Context, updates map[string]CostUpdate) error
 	Flush(ctx context.Context, since time.Time) error

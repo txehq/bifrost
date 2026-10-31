@@ -1614,3 +1614,131 @@ func TestHybrid_GuardrailDebugStaysQueryable(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, found.Logs, 1)
 }
+
+const (
+	hiddenTestContent = "what is my balance?"
+	hiddenTestAnswer  = "your balance is 42"
+)
+
+// hiddenUpdateTestLog is a visible log row that carries content and pricing
+// metadata, for the tests that hide it with an update.
+func hiddenUpdateTestLog(id string, now time.Time) *Log {
+	question, answer := hiddenTestContent, hiddenTestAnswer
+	return &Log{
+		ID: id, Timestamp: now, CreatedAt: now, Object: "chat.completion", Provider: "openai", Model: "gpt-4o",
+		Status: "processing", ContentSummary: question,
+		InputHistoryParsed:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &question}}},
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &answer}},
+		TokenUsageParsed:    &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		CacheDebug:          `{"cache_hit":false}`,
+		RawRequest:          `{"raw":"what is my balance?"}`,
+		ErrorDetails:        `{"error":{"message":"your balance is 42"}}`,
+		RoutingEngineLogs:   "routed on what is my balance?",
+	}
+}
+
+// requireHiddenColumnsEmpty reads the row's raw columns the update must have
+// handled, not the parsed view of them, so a column FindByID leaves out counts.
+func requireHiddenColumnsEmpty(t *testing.T, read func(column string) string) {
+	t.Helper()
+	for column := range hiddenContentColumns() {
+		assert.Empty(t, read(column), "column %s survived the hidden update", column)
+	}
+	assert.Contains(t, read("token_usage"), `"prompt_tokens":10`, "pricing metadata is not content and stays")
+	assert.Equal(t, `{"cache_hit":false}`, read("cache_debug"), "pricing metadata is not content and stays")
+}
+
+// exerciseHiddenUpdates runs the shared cases on one store, each on its own row.
+// columns reads one raw column of one row.
+func exerciseHiddenUpdates(t *testing.T, store LogStore, columns func(t *testing.T, id, column string) string) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	seed := func(t *testing.T, id string) {
+		t.Helper()
+		require.NoError(t, store.CreateIfNotExists(ctx, hiddenUpdateTestLog(id, now)))
+		require.Contains(t, columns(t, id, "input_history"), hiddenTestContent, "the fixture must start with stored content")
+		require.Equal(t, hiddenTestContent, columns(t, id, "content_summary"))
+		require.Contains(t, columns(t, id, "raw_request"), hiddenTestContent)
+	}
+
+	t.Run("an update that hides the row empties its content", func(t *testing.T) {
+		seed(t, "hide-plain")
+		require.NoError(t, store.BatchUpdate(ctx, []*Log{{ID: "hide-plain", Status: "success", ContentHidden: true}}))
+		found, err := store.FindByID(ctx, "hide-plain")
+		require.NoError(t, err)
+		require.True(t, found.ContentHidden)
+		assert.Equal(t, "success", found.Status)
+		require.NotNil(t, found.TokenUsageParsed, "token usage must survive for pricing")
+		assert.Equal(t, 15, found.TokenUsageParsed.TotalTokens)
+		requireHiddenColumnsEmpty(t, func(column string) string { return columns(t, "hide-plain", column) })
+	})
+
+	t.Run("output the hiding entry carries is not stored either", func(t *testing.T) {
+		seed(t, "hide-carrying")
+		answer := "late output"
+		require.NoError(t, store.BatchUpdate(ctx, []*Log{{
+			ID: "hide-carrying", Status: "success", ContentHidden: true,
+			OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &answer}},
+		}}))
+		requireHiddenColumnsEmpty(t, func(column string) string { return columns(t, "hide-carrying", column) })
+	})
+
+	t.Run("a visible update keeps the content", func(t *testing.T) {
+		seed(t, "hide-negative")
+		require.NoError(t, store.BatchUpdate(ctx, []*Log{{ID: "hide-negative", Status: "success"}}))
+		assert.Contains(t, columns(t, "hide-negative", "input_history"), hiddenTestContent)
+		assert.Equal(t, hiddenTestContent, columns(t, "hide-negative", "content_summary"))
+		assert.Contains(t, columns(t, "hide-negative", "output_message"), hiddenTestAnswer)
+		assert.Contains(t, columns(t, "hide-negative", "raw_request"), hiddenTestContent)
+	})
+
+	t.Run("a later visible entry in the batch does not bring it back", func(t *testing.T) {
+		seed(t, "hide-then-visible")
+		require.NoError(t, store.BatchUpdate(ctx, []*Log{
+			{ID: "hide-then-visible", Status: "success", ContentHidden: true},
+			{ID: "hide-then-visible", Status: "success"},
+		}))
+		found, err := store.FindByID(ctx, "hide-then-visible")
+		require.NoError(t, err)
+		assert.False(t, found.ContentHidden, "the last entry's decision is the row's flag")
+		assert.Empty(t, columns(t, "hide-then-visible", "input_history"), "cleared content stays cleared")
+		assert.Empty(t, columns(t, "hide-then-visible", "content_summary"))
+	})
+
+	t.Run("a hidden update of a missing row is skipped", func(t *testing.T) {
+		require.NoError(t, store.BatchUpdate(ctx, []*Log{{ID: "hide-missing", Status: "success", ContentHidden: true}}))
+		_, err := store.FindByID(ctx, "hide-missing")
+		require.ErrorIs(t, err, ErrNotFound)
+	})
+}
+
+// sqlColumnReader reads one raw column of a logs row. COALESCE because a column
+// a row never set is NULL, which is as empty as the update leaves it.
+func sqlColumnReader(db *gorm.DB) func(t *testing.T, id, column string) string {
+	return func(t *testing.T, id, column string) string {
+		t.Helper()
+		var value string
+		require.NoError(t, db.Raw("SELECT COALESCE("+column+", '') FROM logs WHERE id = ?", id).Scan(&value).Error)
+		return value
+	}
+}
+
+// TestBatchUpdateHidingALogClearsItsContent: an update that makes a log hidden
+// must remove the content the row already holds. Updates skip zero values, so
+// clearing only the update entry would leave the stored content in place.
+func TestBatchUpdateHidingALogClearsItsContent(t *testing.T) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "hide.db")}, testLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(ctx) })
+	exerciseHiddenUpdates(t, store, sqlColumnReader(store.(*RDBLogStore).db))
+}
+
+// TestBatchUpdateHidingALogClearsItsContentPostgres runs the same cases on the
+// migrated Postgres schema, whose column types the empty strings must fit.
+func TestBatchUpdateHidingALogClearsItsContentPostgres(t *testing.T) {
+	store, db := setupPerfTestDB(t)
+	store.logger = testLogger{}
+	exerciseHiddenUpdates(t, store, sqlColumnReader(db))
+}

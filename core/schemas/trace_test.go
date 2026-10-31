@@ -276,3 +276,56 @@ func TestTraceTraceStateAccessor(t *testing.T) {
 		t.Errorf("TraceTraceState() with a non-string = %q, want empty", got)
 	}
 }
+
+// A writer that still holds a pooled trace after it was released and handed to
+// another request must not leave its error on that request's root.
+func TestHoldRootErrorIgnoresARecycledTrace(t *testing.T) {
+	root := &Span{SpanID: "root"}
+	trace := &Trace{InternalID: "second-request", RootSpan: root}
+	trace.HoldRootError("first-request", map[string]any{AttrError: "stale"})
+	trace.ApplyHeldRootError()
+	if _, ok := root.GetAttribute(AttrError); ok {
+		t.Fatal("a released trace's error reached the next request's root span")
+	}
+}
+
+func TestHeldRootErrorIsDroppedByResetAndAppliesOnce(t *testing.T) {
+	root := &Span{SpanID: "root"}
+	trace := &Trace{InternalID: "id", RootSpan: root}
+	trace.HoldRootError("id", map[string]any{AttrError: "first"})
+	trace.ApplyHeldRootError()
+	if got, _ := root.GetAttribute(AttrError); got != "first" {
+		t.Fatalf("root error = %v, want first", got)
+	}
+	root.SetAttribute(AttrError, "later")
+	trace.ApplyHeldRootError()
+	if got, _ := root.GetAttribute(AttrError); got != "later" {
+		t.Fatalf("a second apply changed the root error to %v", got)
+	}
+
+	other := &Span{SpanID: "other"}
+	trace.HoldRootError("id", map[string]any{AttrError: "held"})
+	trace.Reset()
+	trace.InternalID, trace.RootSpan = "next", other
+	trace.ApplyHeldRootError()
+	if _, ok := other.GetAttribute(AttrError); ok {
+		t.Fatal("Reset left a held error on the pooled trace")
+	}
+}
+
+func TestHeldRootErrorNilClearsAndTraceWithoutRootIsSafe(t *testing.T) {
+	root := &Span{SpanID: "root"}
+	trace := &Trace{InternalID: "id", RootSpan: root}
+	trace.HoldRootError("id", map[string]any{AttrError: "failed attempt"})
+	trace.HoldRootError("id", nil)
+	trace.ApplyHeldRootError()
+	if _, ok := root.GetAttribute(AttrError); ok {
+		t.Fatal("a successful attempt did not clear the held error")
+	}
+	bare := &Trace{InternalID: "id"}
+	bare.HoldRootError("id", map[string]any{AttrError: "x"})
+	bare.ApplyHeldRootError()
+	var none *Trace
+	none.HoldRootError("id", nil)
+	none.ApplyHeldRootError()
+}
