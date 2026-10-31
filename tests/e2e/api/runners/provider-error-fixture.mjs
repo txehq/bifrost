@@ -38,6 +38,19 @@ const behaviours = {
 			usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
 		}),
 	}),
+	// upstream-ok with a cached part of the input, for the rows that read token totals back.
+	"upstream-cached-tokens": () => ({
+		status: 200,
+		headers: {},
+		body: JSON.stringify({
+			id: "chatcmpl-upstream-cached-tokens",
+			object: "chat.completion",
+			created: 1,
+			model: "upstream-cached-tokens",
+			choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+			usage: { prompt_tokens: 20, completion_tokens: 2, total_tokens: 22, prompt_tokens_details: { cached_tokens: 7 } },
+		}),
+	}),
 };
 // upstream-slow answers as upstream-ok does, after SLOW_MS.
 behaviours["upstream-slow"] = () => ({ ...behaviours["upstream-ok"](), delayMs: SLOW_MS });

@@ -283518,6 +283518,307 @@
           ]
         }
       ]
+    },
+    {
+      "name": "269. A token histogram window that starts or ends mid-hour counts only the tokens inside it (token-histogram-window) [SERIAL]",
+      "description": "TXE-5522 (PR5 preservation group 4c). Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json with a Postgres logs_store and matview_refresh_interval 5s (the hourly matview exists only on Postgres), and tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream and pricing source. Two calls of upstream-cached-tokens (20 input of which 7 cached, 2 output) land in one hour with the window boundary between them. Over the whole hours the matview serves both; over a window opening or closing between them the bars sum to exactly one call, cached reads included, because the partial boundary hours come from the raw table. Before the fix the matview's whole hour was counted and each window read both calls.",
+      "item": [
+        {
+          "name": "first request, before the window boundary - token-histogram-window",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/upstream-cached-tokens\", \"messages\": [{\"role\": \"user\", \"content\": \"count my tokens\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// Both rows must fall in one hour bucket, or the boundary has nothing to trim.",
+                  "var left = 3600000 - (Date.now() % 3600000);",
+                  "if (left < 120000) { setTimeout(function () {}, left + 1000); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "pm.test('token-histogram-window: the provider call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "// The log row settles after the response, and the window must start after it.",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?models=upstream-cached-tokens&status=success&limit=10', method: 'GET' }, function (err, res) {",
+                  "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+                  "    if (rows.length < 1 && tries > 0) { setTimeout(function () { read(tries - 1); }, 250); return; }",
+                  "    pm.test('token-histogram-window: request 1 is logged', function () { pm.expect(rows.length, err ? String(err) : res.text()).to.equal(1); });",
+                  "    var at = new Date(rows[0].timestamp);",
+                  "    pm.collectionVariables.set('thwHour', String(Math.floor(at.getTime() / 3600000) * 3600000));",
+                  "    // A moment after the first row and before the second: the mid-hour boundary.",
+                  "    setTimeout(function () { pm.collectionVariables.set('thwBoundary', new Date().toISOString()); }, 50);",
+                  "    setTimeout(function () {}, 150);",
+                  "  });",
+                  "}",
+                  "read(80);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "second request, after the window boundary - token-histogram-window",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/upstream-cached-tokens\", \"messages\": [{\"role\": \"user\", \"content\": \"count my tokens\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "setTimeout(function () {}, 50);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "pm.test('token-histogram-window: the provider call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "// The log row settles after the response, and the window must start after it.",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?models=upstream-cached-tokens&status=success&limit=10', method: 'GET' }, function (err, res) {",
+                  "    var rows = (!err && res.code === 200) ? (res.json().logs || []) : [];",
+                  "    if (rows.length < 2 && tries > 0) { setTimeout(function () { read(tries - 1); }, 250); return; }",
+                  "    pm.test('token-histogram-window: request 2 is logged', function () { pm.expect(rows.length, err ? String(err) : res.text()).to.equal(2); });",
+                  "  });",
+                  "}",
+                  "read(80);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the matview holds both rows - token-histogram-window",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/histogram/tokens?models=upstream-cached-tokens&start_time={{thwGridStart}}&end_time={{thwGridEnd}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "tokens"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var hour = Number(pm.collectionVariables.get('thwHour'));",
+                  "pm.collectionVariables.set('thwGridStart', new Date(hour - 24 * 3600000).toISOString());",
+                  "pm.collectionVariables.set('thwGridEnd', new Date(hour + 3600000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function sum(buckets, key) { return (buckets || []).reduce(function (n, b) { return n + (b[key] || 0); }, 0); }",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "pm.test('token-histogram-window: the status is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "// On the hour grid this window has no raw boundary, so only a refreshed matview answers it.",
+                  "var url = BASE + '/api/logs/histogram/tokens?models=upstream-cached-tokens&start_time=' + encodeURIComponent(pm.collectionVariables.get('thwGridStart')) + '&end_time=' + encodeURIComponent(pm.collectionVariables.get('thwGridEnd'));",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: url, method: 'GET' }, function (err, res) {",
+                  "    var buckets = (!err && res.code === 200) ? res.json().buckets : [];",
+                  "    if (sum(buckets, 'prompt_tokens') < 40 && tries > 0) { setTimeout(function () { read(tries - 1); }, 1000); return; }",
+                  "    pm.test('token-histogram-window: the refreshed matview holds both rows', function () {",
+                  "      pm.expect(sum(buckets, 'prompt_tokens'), err ? String(err) : res.text()).to.equal(40);",
+                  "      pm.expect(sum(buckets, 'cached_read_tokens'), err ? String(err) : res.text()).to.equal(14);",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(60);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a window opening mid-hour counts only the row inside it - token-histogram-window",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/histogram/tokens?models=upstream-cached-tokens&start_time={{thwBoundary}}&end_time={{thwHeadEnd}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "tokens"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.collectionVariables.set('thwHeadEnd', new Date(Number(pm.collectionVariables.get('thwHour')) + 25 * 3600000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function sum(buckets, key) { return (buckets || []).reduce(function (n, b) { return n + (b[key] || 0); }, 0); }",
+                  "pm.test('token-histogram-window: the status is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var buckets = pm.response.json().buckets;",
+                  "pm.test('token-histogram-window: bars sum to the second row', function () {",
+                  "  pm.expect(sum(buckets, 'prompt_tokens'), pm.response.text()).to.equal(20);",
+                  "  pm.expect(sum(buckets, 'completion_tokens'), pm.response.text()).to.equal(2);",
+                  "  pm.expect(sum(buckets, 'total_tokens'), pm.response.text()).to.equal(22);",
+                  "});",
+                  "pm.test('token-histogram-window: cached reads sum to the second row', function () { pm.expect(sum(buckets, 'cached_read_tokens'), pm.response.text()).to.equal(7); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a window closing mid-hour counts only the row inside it - token-histogram-window",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/histogram/tokens?models=upstream-cached-tokens&start_time={{thwTailStart}}&end_time={{thwBoundary}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram",
+                "tokens"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.collectionVariables.set('thwTailStart', new Date(Number(pm.collectionVariables.get('thwHour')) - 25 * 3600000 + 300000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function sum(buckets, key) { return (buckets || []).reduce(function (n, b) { return n + (b[key] || 0); }, 0); }",
+                  "pm.test('token-histogram-window: the status is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var buckets = pm.response.json().buckets;",
+                  "pm.test('token-histogram-window: bars sum to the first row', function () {",
+                  "  pm.expect(sum(buckets, 'prompt_tokens'), pm.response.text()).to.equal(20);",
+                  "  pm.expect(sum(buckets, 'total_tokens'), pm.response.text()).to.equal(22);",
+                  "});",
+                  "pm.test('token-histogram-window: cached reads sum to the first row', function () { pm.expect(sum(buckets, 'cached_read_tokens'), pm.response.text()).to.equal(7); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
