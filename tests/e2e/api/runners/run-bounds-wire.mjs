@@ -164,19 +164,24 @@ const peakMemoryKiB = () => {
 
 async function checkBootstrap() {
 	const REFUSED = 1009;
-	const closedTooBig = async (name, send) => {
+	// The refusal comes from the frame header. With nothing more to send the client reads close 1009;
+	// a client still writing its payload is reset, which can drop that close frame from its receive
+	// buffer, so there the refusal is 1009 or a reset with nothing read. Reading the whole message and
+	// answering in text, as an after-the-fact check does, is what fails.
+	const refused = async (name, send, { payloadInFlight }) => {
 		const conn = await openRealtime();
 		send(conn);
-		const closed = await settled(conn, () => conn.closeCode !== null || conn.ended, 3000);
-		row(name, closed && conn.closeCode === REFUSED, `close ${conn.closeCode}, texts ${conn.texts.length}`);
+		const closed = await settled(conn, () => conn.closeCode !== null || conn.ended || conn.texts.length > 0, 3000);
+		const reset = payloadInFlight && conn.ended && conn.texts.length === 0;
+		row(name, closed && (conn.closeCode === REFUSED || reset), `close ${conn.closeCode}, texts ${conn.texts.length}, ended ${conn.ended}`);
 		conn.socket.destroy();
 	};
-	await closedTooBig("bootstrap frame header over the allowance, no payload sent", (c) => c.socket.write(frameHeader(2 ** 40)));
-	await closedTooBig("bootstrap one message limit+1", (c) => sendFrame(c, textFrame(BOOTSTRAP_LIMIT + 1, true)));
-	await closedTooBig("bootstrap two reads limit+1", (c) => {
+	await refused("bootstrap frame header over the allowance, no payload sent", (c) => c.socket.write(frameHeader(2 ** 40)), { payloadInFlight: false });
+	await refused("bootstrap one message limit+1", (c) => sendFrame(c, textFrame(BOOTSTRAP_LIMIT + 1, true)), { payloadInFlight: true });
+	await refused("bootstrap two reads limit+1", (c) => {
 		sendFrame(c, textFrame(400 << 10, false));
 		sendFrame(c, textFrame(BOOTSTRAP_LIMIT - (400 << 10) + 1, true));
-	});
+	}, { payloadInFlight: true });
 
 	// At the limit the model is read and bootstrap hands over; the fixture has no realtime endpoint,
 	// so what ends the session is the upstream, not the allowance.
@@ -190,8 +195,7 @@ async function checkBootstrap() {
 	atLimit.socket.destroy();
 
 	const spent = await openRealtime();
-	sendFrame(spent, textFrame(BOOTSTRAP_LIMIT, false));
-	sendFrame(spent, textFrame(64, false));
+	sendFrame(spent, textFrame(BOOTSTRAP_LIMIT, false)); // and nothing more: the spent allowance ends it, not a later frame
 	await settled(spent, () => spent.texts.length > 0 || spent.closeCode !== null, 5000);
 	row("bootstrap spent allowance reports the limit", spent.texts.join("").includes("exceeded 1 MiB"), spent.texts.join("").slice(0, 160));
 	spent.socket.destroy();
