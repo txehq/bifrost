@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -670,10 +669,21 @@ func TestReconnectAfterFailedCheck_SuccessorInstalledBeforeAdmission(t *testing.
 	require.True(t, ok)
 	failedGeneration := before.ConnGeneration
 
-	m.mu.Lock()
+	checker := NewClientConnectionChecker(m, config.ID, time.Minute, false, &MockLogger{})
+	// The read lock parks the reconnect's goroutine at its admission (it needs the write
+	// lock) until the successor below is in, whatever the scheduler does.
+	m.mu.RLock()
+	checker.reconnectAfterFailedCheck(config.Name, failedGeneration)
 	m.clientMap[config.ID].ConnGeneration = failedGeneration + 1 // a concurrent reconnect installed a successor
-	m.mu.Unlock()
-	require.NoError(t, m.reconnectClientAtGeneration(config.ID, failedGeneration))
+	m.mu.RUnlock()
+
+	require.Eventually(t, func() bool {
+		_, admitted := m.reconnectingClients.Load(config.ID)
+		return admitted
+	}, 5*time.Second, 5*time.Millisecond, "the checker's reconnect must still reach the exclusive slot")
+	finished, err := m.AwaitReconnect(config.ID, 10*time.Second)
+	require.True(t, finished)
+	require.NoError(t, err)
 
 	after, ok := snapshotClientState(m, config.ID)
 	require.True(t, ok)
@@ -727,15 +737,13 @@ func TestPerformCheck_NilConn_SuccessorInstalledBeforeAdmission(t *testing.T) {
 	m.mu.Unlock()
 
 	checker := NewClientConnectionChecker(m, config.ID, time.Minute, false, &MockLogger{})
-	// One P: the tick's reconnect goroutine cannot run until this one blocks, so the
-	// successor below lands between the tick's read and the admission.
-	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	// As above: the read lock holds the tick's reconnect at its admission.
+	m.mu.RLock()
 	checker.performCheck()
-	m.mu.Lock()
 	m.clientMap[config.ID].Conn = before.Conn
 	m.clientMap[config.ID].State = schemas.MCPConnectionStateHealthy
 	m.clientMap[config.ID].ConnGeneration = before.ConnGeneration + 1
-	m.mu.Unlock()
+	m.mu.RUnlock()
 
 	require.Eventually(t, func() bool {
 		_, admitted := m.reconnectingClients.Load(config.ID)
