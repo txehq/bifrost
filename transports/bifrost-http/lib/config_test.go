@@ -24028,6 +24028,211 @@ func TestLoadClientConfig_ToolManagerOnlyFileReconciles(t *testing.T) {
 	assert.Equal(t, 9, unchanged.MCPAgentDepth, "an unchanged file must keep dashboard edits")
 }
 
+// TestLoadClientConfig_PriorReleaseCheckpoint pins the upgrade from the fork's releases
+// before v2.3.0: their stored checkpoint is the prior-format hash of the same config.json,
+// so an unchanged file keeps dashboard edits and only the checkpoint moves to the new
+// format, while a real edit, including one setting a field those releases never hashed,
+// still wins.
+func TestLoadClientConfig_PriorReleaseCheckpoint(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	const marker = ":inference-auth-default"
+	tm := &schemas.MCPToolManagerConfig{MaxAgentDepth: 5}
+	fileData := func(t *testing.T, client string) *ConfigData {
+		t.Helper()
+		var data ConfigData
+		require.NoError(t, json.Unmarshal([]byte(`{"client":`+client+`}`), &data))
+		data.MCP = &schemas.MCPConfig{ToolManagerConfig: tm}
+		return &data
+	}
+	const explicit = `{"drop_excess_requests":true,"log_retention_days":7,"enforce_auth_on_inference":false}`
+	const omitted = `{"drop_excess_requests":true,"log_retention_days":7}`
+
+	// seed leaves what a prior release left: file client's checkpoint in the prior format
+	// and a dashboard edit.
+	seed := func(t *testing.T, client, suffix string) configstore.ConfigStore {
+		t.Helper()
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		first := fileData(t, explicit)
+		require.NoError(t, loadClientConfig(ctx, &Config{ConfigStore: store}, first))
+		stored, err := store.GetClientConfig(ctx)
+		require.NoError(t, err)
+		prior, _, err := fileData(t, client).Client.GeneratePriorFormatClientConfigHashWithToolManager(tm)
+		require.NoError(t, err)
+		stored.ConfigHash = prior + suffix
+		stored.LogRetentionDays = 30
+		require.NoError(t, store.UpdateClientConfig(ctx, stored))
+		return store
+	}
+	start := func(t *testing.T, store configstore.ConfigStore, data *ConfigData) *configstore.ClientConfig {
+		t.Helper()
+		require.NoError(t, loadClientConfig(ctx, &Config{ConfigStore: store}, data))
+		stored, err := store.GetClientConfig(ctx)
+		require.NoError(t, err)
+		return stored
+	}
+
+	t.Run("an unchanged file keeps dashboard edits and moves the checkpoint", func(t *testing.T) {
+		store := seed(t, explicit, "")
+		upgraded := start(t, store, fileData(t, explicit))
+		assert.Equal(t, 30, upgraded.LogRetentionDays)
+		current, err := fileData(t, explicit).Client.GenerateClientConfigHashWithToolManager(tm)
+		require.NoError(t, err)
+		assert.Equal(t, current, upgraded.ConfigHash)
+
+		// From here on it is an ordinary checkpoint.
+		upgraded.LogRetentionDays = 31
+		require.NoError(t, store.UpdateClientConfig(ctx, upgraded))
+		assert.Equal(t, 31, start(t, store, fileData(t, explicit)).LogRetentionDays)
+		edited := strings.Replace(explicit, `"log_retention_days":7`, `"log_retention_days":14`, 1)
+		assert.Equal(t, 14, start(t, store, fileData(t, edited)).LogRetentionDays)
+	})
+
+	t.Run("a marked checkpoint of a file that omits inference auth is the same file", func(t *testing.T) {
+		upgraded := start(t, seed(t, omitted, marker), fileData(t, omitted))
+		assert.Equal(t, 30, upgraded.LogRetentionDays)
+		assert.True(t, strings.HasSuffix(upgraded.ConfigHash, marker), "the marker stays, or adding the setting later goes unseen")
+	})
+
+	t.Run("adding inference auth to a marked checkpoint's file is an edit", func(t *testing.T) {
+		upgraded := start(t, seed(t, omitted, marker), fileData(t, explicit))
+		assert.Equal(t, 7, upgraded.LogRetentionDays)
+	})
+
+	t.Run("a current checkpoint that hashes like a prior one is not mistaken for it", func(t *testing.T) {
+		// compat.azure_deepseek false adds nothing to the current hash, so this file's current
+		// checkpoint equals the prior hash of the same file at the default.
+		const off = `{"drop_excess_requests":true,"log_retention_days":7,"enforce_auth_on_inference":false,"compat":{"azure_deepseek":false}}`
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		first := start(t, store, fileData(t, off))
+		require.False(t, first.Compat.AzureDeepseek)
+		first.LogRetentionDays = 30
+		require.NoError(t, store.UpdateClientConfig(ctx, first))
+		prior, _, err := fileData(t, explicit).Client.GeneratePriorFormatClientConfigHashWithToolManager(tm)
+		require.NoError(t, err)
+		require.Equal(t, prior, first.ConfigHash, "the collision this case exists for")
+
+		restored := start(t, store, fileData(t, explicit))
+		assert.True(t, restored.Compat.AzureDeepseek, "restoring the default in the file must apply")
+		assert.Equal(t, 30, restored.LogRetentionDays, "it is the only thing the match cannot speak for")
+		current, err := fileData(t, explicit).Client.GenerateClientConfigHashWithToolManager(tm)
+		require.NoError(t, err)
+		assert.Equal(t, current, restored.ConfigHash)
+	})
+
+	t.Run("an edit to a field the prior format hashes wins", func(t *testing.T) {
+		edited := strings.Replace(explicit, `"log_retention_days":7`, `"log_retention_days":14`, 1)
+		assert.Equal(t, 14, start(t, seed(t, explicit, ""), fileData(t, edited)).LogRetentionDays)
+	})
+
+	t.Run("setting a field the prior format leaves out wins", func(t *testing.T) {
+		const added = `{"drop_excess_requests":true,"log_retention_days":7,"enforce_auth_on_inference":false,"compat":{"convert_decision_to_responses":true}}`
+		upgraded := start(t, seed(t, explicit, ""), fileData(t, added))
+		assert.True(t, upgraded.Compat.ConvertDecisionToResponses, "the new setting must be applied")
+		assert.Equal(t, 7, upgraded.LogRetentionDays)
+	})
+
+	t.Run("a tool manager field the prior format leaves out wins", func(t *testing.T) {
+		store := seed(t, explicit, "")
+		data := fileData(t, explicit)
+		data.MCP = &schemas.MCPConfig{ToolManagerConfig: &schemas.MCPToolManagerConfig{MaxAgentDepth: 5, OAuthPrivateAllowlist: []string{"10.0.0.0/8"}}}
+		upgraded := start(t, store, data)
+		assert.Equal(t, []string{"10.0.0.0/8"}, upgraded.MCPOAuthPrivateAllowlist)
+		assert.Equal(t, 7, upgraded.LogRetentionDays)
+	})
+
+	t.Run("a config_json source of truth overrides the checkpoint", func(t *testing.T) {
+		data := fileData(t, explicit)
+		data.SourceOfTruth = SourceOfTruthConfigJSON
+		assert.Equal(t, 7, start(t, seed(t, explicit, ""), data).LogRetentionDays)
+	})
+
+	t.Run("an unset checkpoint proves nothing", func(t *testing.T) {
+		store := seed(t, explicit, "")
+		stored, err := store.GetClientConfig(ctx)
+		require.NoError(t, err)
+		stored.ConfigHash = ""
+		require.NoError(t, store.UpdateClientConfig(ctx, stored))
+		assert.Equal(t, 7, start(t, store, fileData(t, explicit)).LogRetentionDays)
+
+		// Even for a file whose prior comparison is refused outright.
+		const added = `{"log_retention_days":7,"enforce_auth_on_inference":false,"compat":{"azure_deepseek":false}}`
+		cleared := seed(t, explicit, "")
+		stored, err = cleared.GetClientConfig(ctx)
+		require.NoError(t, err)
+		stored.ConfigHash = ""
+		require.NoError(t, cleared.UpdateClientConfig(ctx, stored))
+		assert.Equal(t, 7, start(t, cleared, fileData(t, added)).LogRetentionDays)
+	})
+
+	t.Run("a checkpoint from before the tool manager was hashed applies only the tool manager", func(t *testing.T) {
+		store := seed(t, explicit, "")
+		stored, err := store.GetClientConfig(ctx)
+		require.NoError(t, err)
+		base, _, err := fileData(t, explicit).Client.GeneratePriorFormatClientConfigHash()
+		require.NoError(t, err)
+		stored.ConfigHash = base
+		stored.MCPAgentDepth = 9
+		require.NoError(t, store.UpdateClientConfig(ctx, stored))
+
+		upgraded := start(t, store, fileData(t, explicit))
+		assert.Equal(t, 30, upgraded.LogRetentionDays, "client edits survive")
+		assert.Equal(t, 5, upgraded.MCPAgentDepth, "the tool manager section is what the checkpoint never covered")
+
+		const added = `{"drop_excess_requests":true,"log_retention_days":7,"enforce_auth_on_inference":false,"compat":{"convert_decision_to_responses":true}}`
+		stored, err = store.GetClientConfig(ctx)
+		require.NoError(t, err)
+		stored.ConfigHash, stored.LogRetentionDays = base, 30
+		require.NoError(t, store.UpdateClientConfig(ctx, stored))
+		edited := start(t, store, fileData(t, added))
+		assert.True(t, edited.Compat.ConvertDecisionToResponses, "a file setting a new field is an edit here too")
+		assert.Equal(t, 7, edited.LogRetentionDays)
+	})
+}
+
+// A file with a tool manager section and no client section: a release before v2.3.0 stored the
+// default config's prior-format hash for it. The default config sets none of the fields that
+// format leaves out, so that hash is also the current one and no upgrade path is needed.
+func TestLoadClientConfig_PriorReleaseToolManagerOnlyCheckpoint(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	seed := func(t *testing.T, tm *schemas.MCPToolManagerConfig) configstore.ConfigStore {
+		t.Helper()
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		require.NoError(t, loadClientConfig(ctx, &Config{ConfigStore: store}, &ConfigData{MCP: &schemas.MCPConfig{ToolManagerConfig: tm}}))
+		stored, err := store.GetClientConfig(ctx)
+		require.NoError(t, err)
+		cc := new(DefaultClientConfig)
+		applyToolManagerToClientConfig(cc, tm)
+		stored.ConfigHash, _, err = cc.GeneratePriorFormatClientConfigHashWithToolManager(tm)
+		require.NoError(t, err)
+		stored.MCPAgentDepth = 9
+		require.NoError(t, store.UpdateClientConfig(ctx, stored))
+		return store
+	}
+	start := func(t *testing.T, store configstore.ConfigStore, tm *schemas.MCPToolManagerConfig) *configstore.ClientConfig {
+		t.Helper()
+		require.NoError(t, loadClientConfig(ctx, &Config{ConfigStore: store}, &ConfigData{MCP: &schemas.MCPConfig{ToolManagerConfig: tm}}))
+		stored, err := store.GetClientConfig(ctx)
+		require.NoError(t, err)
+		return stored
+	}
+	tm := &schemas.MCPToolManagerConfig{MaxAgentDepth: 5}
+
+	upgraded := start(t, seed(t, tm), tm)
+	assert.Equal(t, 9, upgraded.MCPAgentDepth, "an unchanged file keeps dashboard edits")
+	current, err := toolManagerOnlyHash(tm)
+	require.NoError(t, err)
+	assert.Equal(t, current, upgraded.ConfigHash, "the checkpoint moves to the new format")
+
+	assert.Equal(t, 7, start(t, seed(t, tm), &schemas.MCPToolManagerConfig{MaxAgentDepth: 7}).MCPAgentDepth, "an edited file wins")
+
+	added := &schemas.MCPToolManagerConfig{MaxAgentDepth: 5, OAuthPrivateAllowlist: []string{"10.0.0.0/8"}}
+	withAdded := start(t, seed(t, tm), added)
+	assert.Equal(t, []string{"10.0.0.0/8"}, withAdded.MCPOAuthPrivateAllowlist, "a field the prior format leaves out is an edit")
+	assert.Equal(t, 5, withAdded.MCPAgentDepth)
+}
+
 // TestLoadClientConfig_InvalidAllowlistIsNeverPersisted pins that client config
 // reconciliation validates before it writes: an invalid oauth_private_allowlist
 // in config.json fails startup without reaching the store, so fixing the file
