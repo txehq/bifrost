@@ -1720,12 +1720,21 @@ func processGeminiPart(part *Part, state *GeminiResponsesStreamState, sequenceNu
 		responses = append(responses, processGeminiThoughtSignaturePart(part, state, sequenceNumber)...)
 
 	case part.ExecutableCode != nil:
-		// Server-side code execution: Google runs it and reports the code it ran.
-		responses = append(responses, processGeminiExecutableCodePart(part, state, sequenceNumber)...)
+		// Server-side code execution: Google runs it and reports the code it ran. A
+		// thoughtSignature on the part still has to reach the client, ahead of the call
+		// it was attached to.
+		if len(part.ThoughtSignature) > 0 {
+			responses = append(responses, processGeminiThoughtSignaturePart(part, state, sequenceNumber)...)
+		}
+		responses = append(responses, processGeminiExecutableCodePart(part, state, sequenceNumber+len(responses))...)
 
 	case part.CodeExecutionResult != nil:
-		// Result of the code above; closes the call item it belongs to.
+		// Result of the code above; closes the call item it belongs to, then carries on
+		// any thoughtSignature the part had.
 		responses = append(responses, processGeminiCodeExecutionResultPart(part, state, sequenceNumber)...)
+		if len(part.ThoughtSignature) > 0 {
+			responses = append(responses, processGeminiThoughtSignaturePart(part, state, sequenceNumber+len(responses))...)
+		}
 
 	case part.FunctionResponse != nil:
 		// Function response (tool result)
@@ -4110,12 +4119,21 @@ func convertGeminiCandidatesToResponsesOutput(candidates []*Candidate) []schemas
 
 			case part.CodeExecutionResult != nil:
 				// Always follows the executableCode part it belongs to, so fold it onto
-				// that open call rather than emitting a second item.
+				// that open call rather than emitting a second item. The part's
+				// thoughtSignature still becomes the reasoning item the thoughtSignature
+				// case below would have produced.
 				if !attachGeminiCodeExecutionResult(messages, part.CodeExecutionResult) {
 					messages = append(messages, newGeminiCodeInterpreterCall(nil, part.CodeExecutionResult))
 				}
+				if msg, ok := reasoningFromThoughtSignature(part); ok {
+					messages = append(messages, msg)
+				}
 
 			case part.ExecutableCode != nil:
+				// As for the result, a thoughtSignature on the code is kept, ahead of its call.
+				if msg, ok := reasoningFromThoughtSignature(part); ok {
+					messages = append(messages, msg)
+				}
 				messages = append(messages, newGeminiCodeInterpreterCall(part.ExecutableCode, nil))
 			case part.ToolCall != nil:
 				// Server-side tool invocation (Google executed it; we only report it).

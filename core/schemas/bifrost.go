@@ -1971,6 +1971,11 @@ type BifrostResponseExtraFields struct {
 	ChunkIndex      int         `json:"chunk_index"` // used for streaming responses to identify the chunk index, will be 0 for non-streaming responses
 	RawRequest      interface{} `json:"raw_request,omitempty"`
 	RawResponse     interface{} `json:"raw_response,omitempty"`
+	// RawResponseIsNotWire marks a response the provider rewrote after decoding it
+	// (OpenAI restoring custom tools it sent as function tools), so RawResponse no
+	// longer matches the typed response and must not be relayed as the wire body.
+	// RawResponse itself is kept for logging and plugins.
+	RawResponseIsNotWire bool `json:"-"`
 	// Debug spelling is retained for the cache and guardrail Go/JSON contracts.
 	CacheDebug                *BifrostCacheMetadata     `json:"cache_debug,omitempty"`
 	RoutingMetadata           *BifrostRoutingMetadata   `json:"routing_metadata,omitempty"`

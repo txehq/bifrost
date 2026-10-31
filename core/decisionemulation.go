@@ -168,18 +168,21 @@ func decisionAnswerError(cause error, resp *schemas.BifrostResponsesResponse) *s
 // datasheet record, or a Cohere reasoning model when there is no record) gets
 // nil, so the field is omitted and the call rests on the system prompt the same
 // way.
+//
+// A custom provider takes these defaults from the built-in provider it wraps,
+// while a capability record under its own name still decides.
 func decisionToolChoice(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) *schemas.ResponsesToolChoice {
 	canonicalModel := schemas.ResolveCanonicalModel(ctx, model)
+	base := schemas.ResolveBaseProvider(ctx, provider)
 	fallback := true
-	if provider == schemas.Cohere {
+	if base == schemas.Cohere {
 		fallback = cohere.DefaultSupportsToolChoice(canonicalModel)
 	}
 	if !schemas.ResolveModelCaps(provider, canonicalModel).SupportsToolChoice(fallback) {
 		return nil
 	}
 	choice := string(schemas.ResponsesToolChoiceTypeRequired)
-	// A custom provider wrapping Bedrock Mantle gets Mantle's default.
-	if schemas.ResolveBaseProvider(ctx, provider) == schemas.BedrockMantle && !schemas.IsAnthropicModelFamily(ctx, model) {
+	if base == schemas.BedrockMantle && !schemas.IsAnthropicModelFamily(ctx, model) {
 		choice = string(schemas.ResponsesToolChoiceTypeAuto)
 	}
 	return &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &choice}

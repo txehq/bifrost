@@ -210,6 +210,9 @@ func newFetchClient(proxyConfig *schemas.ProxyConfig) *http.Client {
 		MaxIdleConnDuration:      30 * time.Second,
 		MaxResponseBodySize:      int(maxFetchBytes) + 1,
 		NoDefaultUserAgentHeader: true,
+		// The path is sent byte for byte: repeated or escaped slashes in an object key
+		// are covered by a pre-signed URL's signature and select the object.
+		DisablePathNormalizing: true,
 	}
 	proxied := false
 	// Dial address -> request scheme, so the environment proxy is chosen by the

@@ -159,3 +159,18 @@ test("decision routes reject their answers but report usage", async (t) => {
   assert.equal(routed.usage.cost, 0.25);
 });
 
+test("a /pp/ provider call is kept byte for byte until a reset", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  const sent = '{ "model":"grok",   "max_tokens": 1 }';
+  const answer = await fetch(`${base}/pp/xai/v1/messages?beta=1`, { method: "POST", body: sent });
+  assert.equal(answer.status, 200);
+  assert.equal((await answer.json()).content[0].text, "hello");
+  const refused = await fetch(`${base}/pp/cloudflare/accounts/other/ai/run/x`, { method: "POST", body: "{}" });
+  assert.equal(refused.status, 500, "a path the fixture has no answer for must not look like a success");
+  const wire = async () => (await (await fetch(`${base}/__wire`)).json()).data[0].calls;
+  assert.deepEqual((await wire())[0], { path: "/pp/xai/v1/messages", query: "?beta=1", body: sent });
+  assert.equal((await wire()).length, 2);
+  await fetch(`${base}/__reset`, { method: "POST" });
+  assert.deepEqual(await wire(), []);
+});

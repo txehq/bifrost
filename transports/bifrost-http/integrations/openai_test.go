@@ -801,3 +801,30 @@ func TestOpenAIRawPassthroughSkipsConvertedRequests(t *testing.T) {
 	}
 	require.Positive(t, checked, "no OpenAI chat/text/responses converters found")
 }
+
+// A response the provider rewrote after decoding (custom tools restored from the
+// function tools they were sent as) no longer matches its raw upstream bytes, so
+// the raw passthrough must relay the typed response instead, on every OpenAI
+// route, unary and streaming.
+func TestOpenAIRawPassthroughSkipsRewrittenResponses(t *testing.T) {
+	raw := `{"output":[{"type":"function_call","name":"apply_patch"}]}`
+	extra := schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, RawResponse: raw, RawResponseIsNotWire: true}
+	checked := 0
+	for _, prefix := range []string{"", "/openai"} {
+		for _, route := range CreateOpenAIRouteConfigs(prefix, &mockHandlerStore{}) {
+			if route.ResponsesResponseConverter != nil {
+				got, err := route.ResponsesResponseConverter(nil, &schemas.BifrostResponsesResponse{ExtraFields: extra})
+				require.NoError(t, err)
+				require.NotEqual(t, raw, got, "%s: rewritten response relayed its raw bytes", route.Path)
+				checked++
+			}
+			if sc := route.StreamConfig; sc != nil && sc.ResponsesStreamResponseConverter != nil {
+				_, got, err := sc.ResponsesStreamResponseConverter(nil, &schemas.BifrostResponsesStreamResponse{ExtraFields: extra})
+				require.NoError(t, err)
+				require.NotEqual(t, raw, got, "%s stream: rewritten event relayed its raw bytes", route.Path)
+				checked++
+			}
+		}
+	}
+	require.NotZero(t, checked)
+}

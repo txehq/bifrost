@@ -678,10 +678,12 @@ func (r *BedrockNovaEmbeddingResponse) ToBifrostEmbeddingResponse() (*schemas.Bi
 		return nil, fmt.Errorf("nil Bedrock Nova embedding response")
 	}
 
+	// SINGLE_EMBEDDING carries exactly one input, so every vector belongs to input 0;
+	// the separate video mode's AUDIO and VIDEO vectors differ by Modality, not Index.
 	bifrostResponse := &schemas.BifrostEmbeddingResponse{Object: "list"}
-	for i, embedding := range r.Embeddings {
+	for _, embedding := range r.Embeddings {
 		bifrostResponse.Data = append(bifrostResponse.Data, schemas.EmbeddingData{
-			Index:     i,
+			Index:     0,
 			Object:    "embedding",
 			Modality:  novaEmbeddingModalities[embedding.EmbeddingType],
 			Embedding: schemas.EmbeddingStruct{EmbeddingArray: embedding.Embedding},

@@ -609,3 +609,35 @@ func TestListModels_MatchesAllowListAgainstCloudflareIDs(t *testing.T) {
 		t.Fatalf("models = %+v, want only Clef under its Cloudflare ID", resp.Data)
 	}
 }
+
+// TestDecision_RefusesModelNamesThatLeaveTheDecisionEndpoint: the model is joined
+// into the authenticated request path, so a name with traversal, separators,
+// queries, fragments or escapes is refused before anything is sent.
+func TestDecision_RefusesModelNamesThatLeaveTheDecisionEndpoint(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, clefDecisionResponseBody)
+	}))
+	defer server.Close()
+	provider := newTestProvider(t, server.URL)
+	for _, model := range []string{
+		"../../../../accounts/acct-2/ai/run/@cf/meta/llama-3",
+		"@cf/cloudflare/../../admin",
+		"clef/extra",
+		"clef?x=1",
+		"clef#frag",
+		"clef%2F..%2Fadmin",
+		"",
+		"..",
+	} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := provider.Decision(ctx, newTestKey("acct-1"), newDecisionRequest(model, schemas.DecisionInput{Text: schemas.Ptr("hi")})); bifrostErr == nil {
+			t.Errorf("model %q was accepted", model)
+		}
+	}
+	if requests != 0 {
+		t.Fatalf("%d requests reached the provider for refused model names", requests)
+	}
+}

@@ -273,12 +273,21 @@ func (provider *CloudflareProvider) Embedding(ctx *schemas.BifrostContext, key s
 }
 
 // Decision runs a Clef decision on Workers AI. Clef binds the model to the URL and requires
-// the same bare name in the body. Every model is sent as is; Workers AI rejects one it does
-// not serve, and that error is passed through.
+// the same bare name in the body. A plain model name is sent as is; Workers AI rejects one it
+// does not serve, and that error is passed through. Any other name is refused before the call.
 func (provider *CloudflareProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 	accountURL, bifrostErr := provider.accountURLOrError(key)
 	if bifrostErr != nil {
 		return nil, bifrostErr
+	}
+	// The model is joined into the authenticated request path, so it must be one
+	// plain resource name: anything else could leave the decision endpoint.
+	if !isClefModelName(clefModelName(request.Model)) {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			StatusCode:     schemas.Ptr(fasthttp.StatusBadRequest),
+			Error:          &schemas.ErrorField{Message: fmt.Sprintf("invalid Cloudflare decision model %q", request.Model)},
+		}
 	}
 
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(

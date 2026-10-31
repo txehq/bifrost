@@ -21,6 +21,23 @@ func clefModelName(model string) string {
 	return strings.TrimPrefix(model, cloudflareModelNamespace)
 }
 
+// isClefModelName reports whether name is one plain model identifier that is safe
+// to join into the decision path: letters, digits, '.', '_' and '-', and not a
+// dot segment. Separators, queries, fragments and escapes are refused.
+func isClefModelName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // ToCloudflareDecisionRequest converts a normalized decision request into Clef's body:
 // input_image parts become images, and the rest goes through Typesafe's converter, so
 // questions validate exactly as they do on Typesafe. The request is not modified.

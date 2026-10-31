@@ -286218,6 +286218,1201 @@
           ]
         }
       ]
+    },
+    {
+      "name": "273. Provider conversions keep what the wire needs, and refused models never leave the gateway (provider-preservation) [SERIAL]",
+      "description": "TXE-5539 regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream: the rows read back the bytes that reached it from /__wire. A restored custom tool is relayed from the typed response, a repeated embedding input embeds the last one, xAI's native Messages are forwarded unchanged but for the model prefix and logged as Anthropic, a Cloudflare decision model cannot leave the decision endpoint, text documents reach Anthropic decoded, Gemini code execution keeps its thought signatures, vision embeddings stay on the multimodal endpoint, and a custom Cohere provider gets Cohere's tool_choice default. Run the whole folder in order.",
+      "item": [
+        {
+          "name": "a custom tool answer is relayed restored, not as its raw function call - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"pp-custom-legacy\", \"input\": \"patch it\", \"tools\": [{\"type\": \"custom\", \"name\": \"apply_patch\", \"description\": \"Apply a patch\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('the item is the custom_tool_call the client declared', function () { pm.expect(body.output[0].type).to.equal('custom_tool_call'); pm.expect(body.output[0].input).to.equal('*** patch'); });",
+                  "pm.test('the upstream bytes were not relayed', function () { pm.expect(body.x_fixture_raw, 'x_fixture_raw exists only in the raw body').to.equal(undefined); });",
+                  "wire(function (calls) { pm.test('the custom tool left the gateway as a function tool', function () { pm.expect(calls).to.have.length(1); pm.expect((JSON.parse(calls[0].body).tools || [{}])[0].type, calls[0].body).to.equal('function'); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a streamed custom tool answer is relayed restored, not as raw frames - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"pp-custom-legacy\", \"input\": \"patch it\", \"tools\": [{\"type\": \"custom\", \"name\": \"apply_patch\", \"description\": \"Apply a patch\"}], \"stream\": true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "var text = pm.response.text();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('the stream carries the custom tool input', function () { pm.expect(text).to.include('response.custom_tool_call_input.done'); pm.expect(text).to.include('*** patch'); });",
+                  "// extra_fields.raw_response repeats the provider's frame on request; what counts is the frame the client acts on.",
+                  "var types = text.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)).type; });",
+                  "pm.test('no raw function_call frame reached the client', function () { pm.expect(types).to.include('response.custom_tool_call_input.done'); pm.expect(types).to.not.include('response.function_call_arguments.done'); });",
+                  "pm.test('sequence numbers stay unique', function () { var seen = {}; text.split('\\n').forEach(function (l) { if (l.indexOf('data: {') !== 0) return; var n = JSON.parse(l.slice(6)).sequence_number; pm.expect(seen[n], 'sequence_number ' + n).to.equal(undefined); seen[n] = true; }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a response nothing rewrote is still relayed as its raw bytes - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"pp-custom-legacy\", \"input\": \"no tools here\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('the upstream bytes reached the client', function () { pm.expect(body.x_fixture_raw).to.equal(true); pm.expect(body.output[0].type).to.equal('function_call'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a repeated embedding input embeds the last one - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/pp-embedding\", \"input\": \"first\", \"input\": [\"second\"]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "wire(function (calls) {",
+                  "  pm.test('one embedding request of the last input reached the provider', function () {",
+                  "    pm.expect(calls).to.have.length(1);",
+                  "    pm.expect(JSON.parse(calls[0].body).input).to.equal('second');",
+                  "    pm.expect(calls[0].body).to.not.include('first');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "xAI native Messages are forwarded unchanged and logged as Anthropic - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"model\":\"xai/grok-pp-unary\",   \"max_tokens\": 20, \"metadata\": {\"user_id\": \"12345678901234567890\"},\n  \"system\": [{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=1\"}], \"messages\":[{\"role\":\"user\",\"content\":\"hi\"}] }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var sent = pm.request.body.raw;",
+                  "var model = JSON.parse(sent).model;",
+                  "pm.test('the client gets the provider\\'s Anthropic answer', function () { pm.expect(pm.response.text()).to.include('hello'); });",
+                  "wire(function (calls) {",
+                  "  pm.test('the body reached xAI byte for byte but for the model prefix', function () {",
+                  "    pm.expect(calls).to.have.length(1);",
+                  "    pm.expect(calls[0].path).to.equal('/pp/xai/v1/messages');",
+                  "    pm.expect(calls[0].body).to.equal(sent.replace(model, model.slice('xai/'.length)));",
+                  "  });",
+                  "});",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?models=' + encodeURIComponent(model.slice('xai/'.length)) + '&limit=5', method: 'GET' }, function (err, res) {",
+                  "    var rows = ((res && res.json().logs) || []).filter(function (r) { return r.status !== 'processing'; });",
+                  "    if (!rows.length) {",
+                  "      if (tries > 0) { return setTimeout(function () { read(tries - 1); }, 250); }",
+                  "      return pm.test('the log row settled', function () { pm.expect.fail('no settled row'); });",
+                  "    }",
+                  "    pm.sendRequest({ url: BASE + '/api/logs/' + rows[0].id, method: 'GET' }, function (e, detail) {",
+                  "      var row = detail.json();",
+                  "      if (!row.responses_output && tries > 0) { return setTimeout(function () { read(tries - 1); }, 250); }",
+                  "      pm.test('the log row is typed and parsed as Anthropic Messages', function () {",
+                  "        pm.expect(row.object).to.equal('responses');",
+                  "        pm.expect(row.is_passthrough).to.equal(true);",
+                  "        pm.expect(JSON.stringify(row.responses_output || null)).to.include('hello');",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(24);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "streamed xAI native Messages are forwarded unchanged and logged as Anthropic - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"model\":\"xai/grok-pp-stream\",   \"max_tokens\": 20, \"metadata\": {\"user_id\": \"12345678901234567890\"},\n  \"system\": [{\"type\":\"text\",\"text\":\"x-anthropic-billing-header: cc_version=1\"}], \"messages\":[{\"role\":\"user\",\"content\":\"hi\"}], \"stream\": true }",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var sent = pm.request.body.raw;",
+                  "var model = JSON.parse(sent).model;",
+                  "pm.test('the client gets the provider\\'s Anthropic answer', function () { pm.expect(pm.response.text()).to.include('hello'); });",
+                  "wire(function (calls) {",
+                  "  pm.test('the body reached xAI byte for byte but for the model prefix', function () {",
+                  "    pm.expect(calls).to.have.length(1);",
+                  "    pm.expect(calls[0].path).to.equal('/pp/xai/v1/messages');",
+                  "    pm.expect(calls[0].body).to.equal(sent.replace(model, model.slice('xai/'.length)));",
+                  "  });",
+                  "});",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?models=' + encodeURIComponent(model.slice('xai/'.length)) + '&limit=5', method: 'GET' }, function (err, res) {",
+                  "    var rows = ((res && res.json().logs) || []).filter(function (r) { return r.status !== 'processing'; });",
+                  "    if (!rows.length) {",
+                  "      if (tries > 0) { return setTimeout(function () { read(tries - 1); }, 250); }",
+                  "      return pm.test('the log row settled', function () { pm.expect.fail('no settled row'); });",
+                  "    }",
+                  "    pm.sendRequest({ url: BASE + '/api/logs/' + rows[0].id, method: 'GET' }, function (e, detail) {",
+                  "      var row = detail.json();",
+                  "      if (!row.responses_output && tries > 0) { return setTimeout(function () { read(tries - 1); }, 250); }",
+                  "      pm.test('the log row is typed and parsed as Anthropic Messages', function () {",
+                  "        pm.expect(row.object).to.equal('responses_stream');",
+                  "        pm.expect(row.is_passthrough).to.equal(true);",
+                  "        pm.expect(JSON.stringify(row.responses_output || null)).to.include('hello');",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(24);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] xAI's error reaches the client as it sent it - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"xai/pp-fail\", \"max_tokens\": 20, \"messages\": [{\"role\": \"user\", \"content\": \"hi\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "pm.test('the provider\\'s status and error reach the client', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); pm.expect(pm.response.json().error.message).to.equal('fixture refused'); });",
+                  "wire(function (calls) { pm.test('one request reached xAI', function () { pm.expect(calls).to.have.length(1); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] a Cloudflare decision model cannot leave the decision endpoint - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cloudflare/../../../accounts/other/ai/run/@cf/meta/llama\", \"input\": \"Is the sky red?\", \"questions\": [{\"type\": \"predicate\", \"name\": \"is_red\", \"instructions\": \"Is it red?\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "pm.test('the gateway refuses the model itself', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); pm.expect(pm.response.text()).to.include('invalid Cloudflare decision model'); });",
+                  "wire(function (calls) { pm.test('nothing left the gateway, so the key went nowhere', function () { pm.expect(calls.map(function (c) { return c.path; })).to.eql([]); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] an escaped Cloudflare decision model is refused too - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cloudflare/..%2F..%2Fother%3Fx=1\", \"input\": \"Is the sky red?\", \"questions\": [{\"type\": \"predicate\", \"name\": \"is_red\", \"instructions\": \"Is it red?\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "pm.test('the gateway refuses the model itself', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); pm.expect(pm.response.text()).to.include('invalid Cloudflare decision model'); });",
+                  "wire(function (calls) { pm.test('nothing left the gateway, so the key went nowhere', function () { pm.expect(calls.map(function (c) { return c.path; })).to.eql([]); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a plain Cloudflare decision model reaches its endpoint - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"cloudflare/clef-flash\", \"input\": \"Is the sky red?\", \"questions\": [{\"type\": \"predicate\", \"name\": \"is_red\", \"instructions\": \"Is it red?\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "wire(function (calls) { pm.test('it reached the decision endpoint with the bare name', function () { pm.expect(calls).to.have.length(1); pm.expect(calls[0].path).to.equal('/pp/cloudflare/accounts/acct-1/ai/run/@cf/cloudflare/clef-flash'); pm.expect(JSON.parse(calls[0].body).model).to.equal('clef-flash'); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a base64 text document reaches Anthropic as a text source - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"anthropic/claude-pp\", \"max_tokens\": 20, \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"file\", \"file\": {\"filename\": \"a.txt\", \"file_data\": \"data:text/plain;base64,aGVsbG8=\"}}, {\"type\": \"text\", \"text\": \"summarise\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "wire(function (calls) { pm.test('the document arrived decoded', function () { pm.expect(calls).to.have.length(1); var doc = JSON.parse(calls[0].body).messages[0].content.filter(function (b) { return b.type === 'document'; })[0]; pm.expect(doc.source).to.eql({ type: 'text', media_type: 'text/plain', data: 'hello' }); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-500] a malformed text document never reaches Anthropic - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"anthropic/claude-pp\", \"max_tokens\": 20, \"messages\": [{\"role\": \"user\", \"content\": [{\"type\": \"file\", \"file\": {\"filename\": \"a.txt\", \"file_data\": \"data:text/plain;base64,!!!\"}}, {\"type\": \"text\", \"text\": \"summarise\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "pm.test('the gateway refuses the document', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); pm.expect(pm.response.text()).to.include('invalid base64 UTF-8 text document'); });",
+                  "wire(function (calls) { pm.test('nothing reached Anthropic', function () { pm.expect(calls.map(function (c) { return c.path; })).to.eql([]); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Gemini code execution keeps its thought signatures - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gemini/pp-gemini\", \"input\": \"run it\", \"tools\": [{\"type\": \"code_interpreter\", \"container\": {\"type\": \"auto\"}}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "var text = pm.response.text();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('the code execution reached the client', function () { pm.expect(text).to.include('print(1)'); });",
+                  "pm.test('the signature on the code part survives', function () { pm.expect(text).to.include('c2lnLWNvZGU='); });",
+                  "pm.test('the signature on the result part survives', function () { pm.expect(text).to.include('c2lnLXJlc3VsdA=='); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "streamed Gemini code execution keeps its thought signatures - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gemini/pp-gemini\", \"input\": \"run it\", \"tools\": [{\"type\": \"code_interpreter\", \"container\": {\"type\": \"auto\"}}], \"stream\": true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "var text = pm.response.text();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, text).to.equal(200); });",
+                  "pm.test('the code execution reached the client', function () { pm.expect(text).to.include('print(1)'); });",
+                  "pm.test('the signature on the code part survives', function () { pm.expect(text).to.include('c2lnLWNvZGU='); });",
+                  "pm.test('the signature on the result part survives', function () { pm.expect(text).to.include('c2lnLXJlc3VsdA=='); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "several text parts to a vision embedding stay on the multimodal endpoint - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"volcengine/doubao-embedding-vision-251215\", \"input\": [{\"type\": \"text\", \"text\": \"a\"}, {\"type\": \"text\", \"text\": \"b\"}], \"instructions\": \"describe\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "wire(function (calls) { pm.test('both parts reached /embeddings/multimodal', function () { pm.expect(calls).to.have.length(1); pm.expect(calls[0].path).to.equal('/pp/volcengine/embeddings/multimodal'); pm.expect(JSON.parse(calls[0].body).input.map(function (p) { return p.text; })).to.eql(['a', 'b']); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-500] a custom Cohere provider sends no tool_choice for a reasoning model - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"pp_cohere/command-a-reasoning-08-2025\", \"input\": \"Is the sky red?\", \"questions\": [{\"type\": \"predicate\", \"name\": \"is_red\", \"instructions\": \"Is it red?\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "pm.test('the fixture\\'s failure reaches the client', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); });",
+                  "wire(function (calls) { pm.test('the emulated call rests on the system prompt', function () { pm.expect(calls).to.have.length(1); pm.expect(calls[0].path).to.equal('/pp/cohere/v2/chat'); pm.expect(JSON.parse(calls[0].body).tool_choice, 'Cohere reasoning models reject a required tool_choice').to.equal(undefined); }); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

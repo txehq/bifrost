@@ -16,6 +16,7 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestBedrockEmbeddingEncodingInvokeRoundTrip(t *testing.T) {
@@ -1214,11 +1215,26 @@ func TestBedrockNovaEmbeddingResponse(t *testing.T) {
 		assert.Equal(t, schemas.EmbeddingModalityAudio, converted.Data[0].Modality)
 		assert.Equal(t, 0, converted.Data[0].Index)
 		assert.Equal(t, schemas.EmbeddingModalityVideo, converted.Data[1].Modality)
-		assert.Equal(t, 1, converted.Data[1].Index)
+		assert.Equal(t, 0, converted.Data[1].Index)
 		assert.Equal(t, []float64{0.3, 0.4}, converted.Data[1].Embedding.EmbeddingArray)
 		// Nova reports its token count in a response header only, so Usage stays nil
 		// here and the provider backfills it from X-Amzn-Bedrock-Input-Token-Count.
 		assert.Nil(t, converted.Usage)
+	})
+
+	t.Run("separate audio and video vectors share their single input's index", func(t *testing.T) {
+		// SINGLE_EMBEDDING takes exactly one input, so every vector it returns belongs to
+		// input 0; Modality, not Index, tells the AUDIO_VIDEO_SEPARATE pair apart. Index
+		// 1 would name a second input that was never sent.
+		converted, err := (&BedrockNovaEmbeddingResponse{Embeddings: []BedrockNovaEmbedding{
+			{Embedding: []float64{0.1}, EmbeddingType: "AUDIO"},
+			{Embedding: []float64{0.2}, EmbeddingType: "VIDEO"},
+		}}).ToBifrostEmbeddingResponse()
+		require.NoError(t, err)
+		require.Len(t, converted.Data, 2)
+		for _, d := range converted.Data {
+			assert.Equal(t, 0, d.Index, "modality %s points at input %d of a one-input request", d.Modality, d.Index)
+		}
 	})
 
 	t.Run("a combined audio-video vector is labelled as such", func(t *testing.T) {
@@ -1465,6 +1481,32 @@ func TestToBedrockNovaEmbeddingRequestDetailLevel(t *testing.T) {
 	})
 }
 
+// TestBedrockNovaInvokeExtrasNeverOverwriteNormalizedParams pins the final wire body
+// with extra-params passthrough on: singleEmbeddingParams is a typed field, so the
+// native copy must not also ride along as an extra that the merge writes back over
+// the normalized one (restoring "3gp", which the API rejects).
+func TestBedrockNovaInvokeExtrasNeverOverwriteNormalizedParams(t *testing.T) {
+	var invokeRequest BedrockInvokeRequest
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"taskType": "SINGLE_EMBEDDING",
+		"singleEmbeddingParams": {
+			"embeddingPurpose": "GENERIC_INDEX",
+			"video": {"format": "3gp", "embeddingMode": "AUDIO_VIDEO_COMBINED", "source": {"bytes": "AA=="}}
+		}
+	}`), &invokeRequest))
+	invokeRequest.ModelID = "bedrock/amazon.nova-2-multimodal-embeddings-v1:0"
+
+	converted, err := invokeRequest.ToBifrostEmbeddingRequest(testBedrockCtx())
+	require.NoError(t, err)
+	outbound, err := ToBedrockNovaEmbeddingRequest(converted)
+	require.NoError(t, err)
+	body, err := providerUtils.MarshalProviderRequest(outbound)
+	require.NoError(t, err)
+	body, err = providerUtils.MergeExtraParamsIntoJSON(body, outbound.GetExtraParams())
+	require.NoError(t, err)
+	assert.Equal(t, "three_gp", gjson.GetBytes(body, "singleEmbeddingParams.video.format").String(), "wire body: %s", body)
+}
+
 // AWS's own reference documents video.format "3gp", which the API rejects in favour of
 // "three_gp" (and accepts "mpg" as a synonym for "mpeg"). A native body copied from the
 // reference must normalize to the spelling that works, and nothing may ever put "3gp" on
@@ -1629,4 +1671,51 @@ func TestBedrockEmbeddingCapturesRawRequestAndResponse(t *testing.T) {
 			})
 		}
 	})
+}
+
+// TestBedrockNovaInvokeWireThroughTheProvider runs a native Nova invoke body through the
+// provider against a fake AWS endpoint, with extra-params passthrough on: the bytes that
+// leave are the normalized ones, and the separate audio and video vectors that come back
+// both name the one input that was sent. Fake credentials only; nothing leaves loopback.
+func TestBedrockNovaInvokeWireThroughTheProvider(t *testing.T) {
+	sent := make(chan []byte, 1)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		sent <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"embeddings":[{"embeddingType":"AUDIO","embedding":[0.1]},{"embeddingType":"VIDEO","embedding":[0.2]}]}`)
+	}))
+	defer server.Close()
+	provider := &BedrockProvider{client: server.Client(), logger: noopLogger{}}
+	host := strings.TrimPrefix(server.URL, "https://")
+	key := schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{
+		AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+		SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+		Region:    schemas.NewSecretVar("us-east-1"),
+		Endpoints: &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar(host)},
+	}}
+
+	var invokeRequest BedrockInvokeRequest
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"taskType": "SINGLE_EMBEDDING",
+		"singleEmbeddingParams": {
+			"embeddingPurpose": "GENERIC_INDEX",
+			"video": {"format": "3gp", "embeddingMode": "AUDIO_VIDEO_SEPARATE", "source": {"bytes": "AA=="}}
+		}
+	}`), &invokeRequest))
+	invokeRequest.ModelID = "bedrock/amazon.nova-2-multimodal-embeddings-v1:0"
+	ctx := testBedrockCtx()
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	request, err := invokeRequest.ToBifrostEmbeddingRequest(ctx)
+	require.NoError(t, err)
+
+	response, bifrostErr := provider.Embedding(ctx, key, request)
+	require.Nil(t, bifrostErr)
+	body := <-sent
+	assert.Equal(t, "three_gp", gjson.GetBytes(body, "singleEmbeddingParams.video.format").String(), "wire body: %s", body)
+	assert.NotContains(t, string(body), `"3gp"`)
+	require.Len(t, response.Data, 2)
+	for _, data := range response.Data {
+		assert.Equal(t, 0, data.Index, "modality %s points at input %d of a one-input request", data.Modality, data.Index)
+	}
 }

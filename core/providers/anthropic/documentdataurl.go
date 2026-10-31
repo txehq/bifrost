@@ -30,6 +30,12 @@ func inlineTextDataURL(data string) *AnthropicSource {
 
 // normalizeBase64TextSources preserves base64 transport while adapting text documents to Anthropic's text source wire type.
 func normalizeBase64TextSources(body []byte) ([]byte, error) {
+	// Only the base64 sources' media types are copied out here, so image/PDF-only requests
+	// and already-normalized text sources return without duplicating their payloads.
+	// Pinned by TestNormalizeBase64TextSources_UnmatchedPayloadNotCopied.
+	if !hasTextDocumentMediaType(gjson.GetBytes(body, `messages.#.content.#(source.type=="base64")#.source.media_type`)) {
+		return body, nil
+	}
 	messages := gjson.GetBytes(body, "messages")
 	if !messages.IsArray() {
 		return body, nil
@@ -112,6 +118,20 @@ func normalizeBase64TextSources(body []byte) ([]byte, error) {
 		return nil, err
 	}
 	return updated, nil
+}
+
+// hasTextDocumentMediaType reports whether a (possibly nested) array of media types names a text document.
+func hasTextDocumentMediaType(mediaTypes gjson.Result) bool {
+	found := false
+	mediaTypes.ForEach(func(_, value gjson.Result) bool {
+		if value.IsArray() {
+			found = hasTextDocumentMediaType(value)
+		} else {
+			found = isTextDocumentMediaType(value.String())
+		}
+		return !found
+	})
+	return found
 }
 
 // isTextDocumentMediaType recognizes textual document formats that Anthropic accepts as text sources.

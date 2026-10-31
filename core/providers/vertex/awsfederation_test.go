@@ -672,13 +672,26 @@ func TestAWSSubjectTokenSupplier_AssumeRoleHopUsesConfiguredRegion(t *testing.T)
 type recordingTransport struct {
 	mu    sync.Mutex
 	paths []string
+	hosts []string
 }
 
 func (r *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	r.mu.Lock()
 	r.paths = append(r.paths, req.URL.Path)
+	r.hosts = append(r.hosts, req.URL.Host)
 	r.mu.Unlock()
 	return http.DefaultTransport.RoundTrip(req)
+}
+
+func (r *recordingTransport) sawHost(host string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, h := range r.hosts {
+		if h == host {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *recordingTransport) sawSuffix(suffix string) bool {
@@ -761,4 +774,76 @@ func TestNewAWSFederatedTokenSourceFromJSON_RefusesNonGoogleEndpoints(t *testing
 	require.NoError(t, checkGoogleFederationEndpoint("service_account_impersonation_url",
 		"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/a@b.iam.gserviceaccount.com:generateAccessToken",
 		gcpIAMCredentialsBaseURL, "iamcredentials.googleapis.com", "/v1/projects/-/serviceAccounts/"))
+}
+
+// TestGetAuthTokenSource_AWSFederationSTSUsesAuthHTTPClient pins that the AWS STS calls
+// that acquire the workload's credentials (IRSA's AssumeRoleWithWebIdentity and the
+// optional aws_role_arn AssumeRole hop) also go through provider.authHTTPClient, so a
+// deployment that reaches AWS STS only through proxy_config can federate at all.
+func TestGetAuthTokenSource_AWSFederationSTSUsesAuthHTTPClient(t *testing.T) {
+	routes := []struct {
+		name   string
+		setup  func(t *testing.T) *fakeAWSSTS
+		cfg    func() *schemas.VertexAWSWorkloadIdentityConfig
+		action string
+	}{
+		{
+			name:   "irsa web identity",
+			setup:  setIRSAEnvironment,
+			cfg:    func() *schemas.VertexAWSWorkloadIdentityConfig { return wifConfig(testWIFAudience, testWIFSAEmail) },
+			action: "AssumeRoleWithWebIdentity",
+		},
+		{
+			name: "aws_role_arn hop",
+			setup: func(t *testing.T) *fakeAWSSTS {
+				isolateAWSEnvironment(t)
+				t.Setenv("AWS_ACCESS_KEY_ID", "AKIABASE")
+				t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+				t.Setenv("AWS_REGION", "us-east-1")
+				return newFakeAWSSTS(t, "ASIAHOP")
+			},
+			cfg: func() *schemas.VertexAWSWorkloadIdentityConfig {
+				cfg := wifConfig(testWIFAudience, testWIFSAEmail)
+				cfg.AWSRoleARN = schemas.NewSecretVar("arn:aws:iam::123456789012:role/VertexHop")
+				return cfg
+			},
+			action: "AssumeRole",
+		},
+		{
+			name: "shared profile role_arn",
+			setup: func(t *testing.T) *fakeAWSSTS {
+				isolateAWSEnvironment(t)
+				configFile := filepath.Join(t.TempDir(), "config")
+				require.NoError(t, os.WriteFile(configFile, []byte(
+					"[profile vertex]\nrole_arn = arn:aws:iam::123456789012:role/Shared\nsource_profile = base\nregion = us-east-1\n"+
+						"[profile base]\naws_access_key_id = AKIABASE\naws_secret_access_key = secret\n"), 0o600))
+				t.Setenv("AWS_CONFIG_FILE", configFile)
+				t.Setenv("AWS_PROFILE", "vertex")
+				return newFakeAWSSTS(t, "ASIASHARED")
+			},
+			cfg:    func() *schemas.VertexAWSWorkloadIdentityConfig { return wifConfig(testWIFAudience, testWIFSAEmail) },
+			action: "AssumeRole",
+		},
+	}
+	for _, route := range routes {
+		t.Run(route.name, func(t *testing.T) {
+			awsSTS := route.setup(t)
+			newFakeGCP(t)
+			recorder := &recordingTransport{}
+			provider := &VertexProvider{authHTTPClient: &http.Client{Transport: recorder}}
+			key := wifKey(route.cfg(), "")
+			t.Cleanup(func() { provider.removeVertexClient(key) })
+
+			ts, err := provider.getAuthTokenSource(key)
+			require.NoError(t, err)
+			token, err := ts.Token()
+			require.NoError(t, err)
+			assert.Equal(t, "sa-token", token.AccessToken)
+			assert.Equal(t, route.action, awsSTS.form().Get("Action"))
+
+			stsURL, err := url.Parse(awsSTS.server.URL)
+			require.NoError(t, err)
+			assert.True(t, recorder.sawHost(stsURL.Host), "the AWS STS %s call bypassed authHTTPClient; saw hosts %v", route.action, recorder.hosts)
+		})
+	}
 }

@@ -1555,8 +1555,9 @@ func TestDatabricksDecisionSendsAIDecideBody(t *testing.T) {
 
 // TestDatabricksDecisionRejectsLocally pins the requests answered without calling Databricks:
 // a model other than ai_decide is unsupported (compat emulates it), an empty input is a 400
-// because ai_decide answers a null state with no answers, and an image part is a 400 because
-// ai_decide reads it as JSON text.
+// because ai_decide answers a null state with no answers, an image part is a 400 because
+// ai_decide reads it as JSON text, and an asset part is a 400 because ai_decide has no assets
+// field, so sending the rest would decide without the image.
 func TestDatabricksDecisionRejectsLocally(t *testing.T) {
 	t.Parallel()
 
@@ -1564,6 +1565,15 @@ func TestDatabricksDecisionRejectsLocally(t *testing.T) {
 		Role: "user",
 		Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
 			{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,AAAA")},
+		}},
+	}}}
+	// An asset part is an image sent by ID with its bytes, which Typesafe's converter
+	// moves out of the state into an assets map ai_decide has no field for.
+	asset := schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{
+		Role: "user",
+		Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("Is the damage in img_1 covered?")},
+			{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("img_1"), Data: []byte("\x89PNG\r\n\x1a\n")},
 		}},
 	}}}
 	cases := map[string]struct {
@@ -1574,6 +1584,7 @@ func TestDatabricksDecisionRejectsLocally(t *testing.T) {
 		"serving endpoint model": {model: "databricks-claude-sonnet-4", input: schemas.DecisionInput{Text: schemas.Ptr("hi")}},
 		"empty input":            {model: "ai_decide", wantStatus: http.StatusBadRequest},
 		"image part":             {model: "ai_decide", input: image, wantStatus: http.StatusBadRequest},
+		"asset part":             {model: "ai_decide", input: asset, wantStatus: http.StatusBadRequest},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -493,3 +493,24 @@ func TestRestoreCustomToolCall_MatchesNamespace(t *testing.T) {
 	require.Equal(t, schemas.ResponsesMessageTypeFunctionCall, *function.Type)
 	require.Equal(t, `{"input":"ls"}`, *function.Arguments)
 }
+
+// Restoring custom tools rewrites the typed response, so its raw upstream bytes
+// must be marked as no longer the wire body, unary and streaming.
+func TestCustomToolRestoreMarksRawResponseNotWire(t *testing.T) {
+	names := map[string]struct{}{"apply_patch": {}}
+	resp := &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: schemas.Ptr("apply_patch"), Arguments: schemas.Ptr(`{"input":"x"}`)},
+	}}}
+	restoreCustomToolResponse(resp, names)
+	require.True(t, resp.ExtraFields.RawResponseIsNotWire)
+
+	untouched := &schemas.BifrostResponsesResponse{}
+	restoreCustomToolResponse(untouched, nil)
+	require.False(t, untouched.ExtraFields.RawResponseIsNotWire)
+
+	r := newCustomToolStreamRestorer(names)
+	event := &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCreated}
+	r.restore(event)
+	require.True(t, event.ExtraFields.RawResponseIsNotWire, "every event of a restored stream carries the mark")
+}

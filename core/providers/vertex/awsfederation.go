@@ -134,6 +134,10 @@ type awsSubjectTokenSupplier struct {
 
 // newAWSSubjectTokenSupplier resolves AWS credentials through the SDK default chain, optionally
 // assumes cfg.AWSRoleARN on top, and prepares region resolution.
+//
+// An oauth2.HTTPClient on ctx (the provider's proxy-aware auth client) also carries the AWS STS
+// calls: IRSA's AssumeRoleWithWebIdentity and the aws_role_arn hop. Only STS gets it; IMDS and
+// container-credential endpoints keep the SDK's own clients and short timeouts.
 func newAWSSubjectTokenSupplier(ctx context.Context, cfg *schemas.VertexAWSWorkloadIdentityConfig) (*awsSubjectTokenSupplier, error) {
 	// A configured aws_region must reach the SDK clients too (the optional AssumeRole hop, the IMDS
 	// probe), not only the final signature: without an ambient region STS cannot resolve an endpoint.
@@ -141,14 +145,42 @@ func newAWSSubjectTokenSupplier(ctx context.Context, cfg *schemas.VertexAWSWorkl
 	if region := cfg.AWSRegion.GetValue(); region != "" {
 		loadOpts = append(loadOpts, config.WithRegion(region))
 	}
+	authClient, _ := ctx.Value(oauth2.HTTPClient).(*http.Client)
+	var stsOpts []func(*sts.Options)
+	// The chain's web-identity STS client is built inside LoadDefaultConfig, before the resolved
+	// config exists, so it is handed a client that is filled in once that returns. Credentials are
+	// retrieved lazily (SubjectToken), never during LoadDefaultConfig. The call is unsigned, so the
+	// client gets anonymous credentials rather than the chain it is part of.
+	var webIdentitySTS *deferredWebIdentitySTSClient
+	if authClient != nil {
+		stsOpts = append(stsOpts, func(o *sts.Options) { o.HTTPClient = authClient })
+		webIdentitySTS = &deferredWebIdentitySTSClient{}
+		loadOpts = append(loadOpts, config.WithWebIdentityRoleCredentialOptions(func(o *stscreds.WebIdentityRoleOptions) {
+			o.Client = webIdentitySTS
+		}))
+		// A shared profile's role_arn/source_profile AssumeRole uses an STS client the chain
+		// builds from the source profile's credentials; only its HTTP client is swapped, so
+		// the call keeps that signing and reaches STS through the provider's proxy. Metadata
+		// and container-credential endpoints keep the SDK's own clients.
+		loadOpts = append(loadOpts, config.WithAssumeRoleCredentialOptions(func(o *stscreds.AssumeRoleOptions) {
+			if client, ok := o.Client.(*sts.Client); ok {
+				o.Client = sts.New(client.Options(), func(so *sts.Options) { so.HTTPClient = authClient })
+			}
+		}))
+	}
 	awsCfg, err := config.LoadDefaultConfig(ctx, loadOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("vertex aws federation: aws credentials: %w", err)
 	}
+	if webIdentitySTS != nil {
+		webIdentitySTS.client = sts.NewFromConfig(awsCfg, append(stsOpts, func(o *sts.Options) {
+			o.Credentials = aws.AnonymousCredentials{}
+		})...)
+	}
 	creds := awsCfg.Credentials
 	if roleARN := cfg.AWSRoleARN.GetValue(); roleARN != "" {
 		creds = aws.NewCredentialsCache(stscreds.NewAssumeRoleProvider(
-			sts.NewFromConfig(awsCfg), roleARN,
+			sts.NewFromConfig(awsCfg, stsOpts...), roleARN,
 			func(o *stscreds.AssumeRoleOptions) { o.RoleSessionName = awsFederationSessionName },
 		))
 	}
@@ -165,6 +197,20 @@ func newAWSSubjectTokenSupplier(ctx context.Context, cfg *schemas.VertexAWSWorkl
 		return out.Region, nil
 	}
 	return s, nil
+}
+
+// deferredWebIdentitySTSClient is the STS client handed to the SDK default chain's web-identity
+// provider. client is set right after LoadDefaultConfig returns and before any credentials are
+// retrieved.
+type deferredWebIdentitySTSClient struct {
+	client *sts.Client
+}
+
+func (d *deferredWebIdentitySTSClient) AssumeRoleWithWebIdentity(ctx context.Context, in *sts.AssumeRoleWithWebIdentityInput, optFns ...func(*sts.Options)) (*sts.AssumeRoleWithWebIdentityOutput, error) {
+	if d.client == nil {
+		return nil, fmt.Errorf("vertex aws federation: sts client is not initialized")
+	}
+	return d.client.AssumeRoleWithWebIdentity(ctx, in, optFns...)
 }
 
 // newAWSSubjectTokenSupplierWithCredentials builds a supplier around explicit credentials and region.

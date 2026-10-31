@@ -19,6 +19,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/providers/anthropic"
+	"github.com/capsohq/bifrost/core/providers/anthropicmsg"
 	"github.com/capsohq/bifrost/core/providers/gemini"
 	"github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
@@ -168,6 +169,13 @@ func classify(in Input) (wireFormat, schemas.RequestType) {
 		return wireAnthropic, anthropic.ClassifyPassthroughPath(in.Path)
 	case schemas.Gemini:
 		return wireGemini, gemini.ClassifyPassthroughPath(in.Path)
+	case schemas.XAI:
+		// xAI's chat and Responses routes are typed requests; its native Anthropic-compatible
+		// /v1/messages is the only passthrough route it serves (anthropicmsg).
+		if anthropicmsg.IsMessagesPath(in.Path) {
+			return wireAnthropic, anthropic.ClassifyPassthroughPath(in.Path)
+		}
+		return wireUnknown, ""
 	case schemas.Azure:
 		// Azure fronts both OpenAI and Anthropic (Foundry) models; the Anthropic ones are served
 		// under /anthropic/ and carry Anthropic model names.

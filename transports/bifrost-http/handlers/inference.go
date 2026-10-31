@@ -594,6 +594,10 @@ type EmbeddingRequestInput struct {
 }
 
 func (e *EmbeddingRequestInput) UnmarshalJSON(data []byte) error {
+	// A body repeating "input" decodes into the same receiver again: start clean, so
+	// the last value is the one embedded, as every other field reads it, rather than
+	// an earlier shape that toEmbeddingInput would check first.
+	*e = EmbeddingRequestInput{}
 	var str string
 	if err := sonic.Unmarshal(data, &str); err == nil {
 		e.Str = &str

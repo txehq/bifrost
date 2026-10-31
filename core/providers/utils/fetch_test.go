@@ -440,3 +440,54 @@ func (d *dialSchemes) size() int {
 	defer d.mu.Unlock()
 	return len(d.entries)
 }
+
+// TestFetchAndEncodeURL_PreservesPathBytes pins that the fetch sends the resource path
+// exactly as given: repeated slashes and escaped slashes in an object key are part of
+// what a pre-signed URL's signature covers and of which object is selected, so the
+// client must not normalize them, on the first request or after a redirect.
+func TestFetchAndEncodeURL_PreservesPathBytes(t *testing.T) {
+	const signedPath = "/bucket//dir%2Fkey.png"
+	const redirectedPath = "/bucket//moved%2Fkey.png"
+	var mu sync.Mutex
+	var seen []string
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.RequestURI)
+		mu.Unlock()
+		switch r.RequestURI {
+		case "/redirect":
+			// Not http.Redirect: it path.Cleans a relative Location itself.
+			w.Header().Set("Location", redirectedPath+"?X-Amz-Signature=def")
+			w.WriteHeader(http.StatusFound)
+		case signedPath + "?X-Amz-Signature=abc", redirectedPath + "?X-Amz-Signature=def":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("PNGDATA"))
+		default:
+			http.Error(w, "unexpected request URI "+r.RequestURI, http.StatusForbidden)
+		}
+	})
+	proxyCtx := func(t *testing.T) context.Context {
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+		t.Cleanup(cancel)
+		return context.WithValue(ctx, schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{
+			Type: schemas.HTTPProxy,
+			URL:  schemas.NewSecretVar(proxy.URL),
+		})
+	}
+
+	for name, resource := range map[string]string{
+		"direct":         "http://203.0.113.10" + signedPath + "?X-Amz-Signature=abc",
+		"after redirect": "http://203.0.113.10/redirect",
+	} {
+		t.Run(name, func(t *testing.T) {
+			mu.Lock()
+			seen = nil
+			mu.Unlock()
+			if _, _, err := FetchAndEncodeURL(proxyCtx(t), resource); err != nil {
+				mu.Lock()
+				defer mu.Unlock()
+				t.Fatalf("fetch failed: %v; upstream saw request URIs %v", err, seen)
+			}
+		})
+	}
+}
