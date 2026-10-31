@@ -1812,6 +1812,60 @@ type completesAfterReadStore struct {
 	afterRead func()
 }
 
+// completesAfterWriteStore is an inner store whose row completes right after a
+// partial's finish was accepted, before the hybrid store's upload runs.
+type completesAfterWriteStore struct {
+	*RDBLogStore
+	afterWrite func()
+}
+
+func (s *completesAfterWriteStore) BatchUpdate(ctx context.Context, entries []*Log) error {
+	err := s.RDBLogStore.BatchUpdate(ctx, entries)
+	if s.afterWrite != nil {
+		s.afterWrite()
+		s.afterWrite = nil
+	}
+	return err
+}
+
+// An accepted finish can be overtaken before its upload. Nothing tells the upload,
+// so this is not fenced: output is last writer wins. It cannot be destructive,
+// though: the merge lays non-empty fields over the object, so the input survives
+// for the row the other writer completed.
+func TestHybrid_OvertakenFinishCannotEraseTheObject(t *testing.T) {
+	h, inner, objects := newTestHybrid(t)
+	defer h.Close(context.Background())
+	ctx := context.Background()
+	ts := time.Now().UTC()
+	question := "the question"
+	require.NoError(t, h.CreateIfNotExists(ctx, &Log{
+		ID: "hybrid-overtaken", Timestamp: ts, CreatedAt: ts, Object: "chat.completion", Provider: "openai", Model: "gpt-4o", Status: "processing",
+		InputHistoryParsed: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &question}}},
+	}))
+	waitForOffload(t, inner, "hybrid-overtaken")
+
+	rdb := inner.(*RDBLogStore)
+	h.inner = &completesAfterWriteStore{RDBLogStore: rdb, afterWrite: func() {
+		require.NoError(t, rdb.BatchUpdate(ctx, []*Log{{ID: "hybrid-overtaken", Status: "error"}}))
+	}}
+	owner, answer := "", "a finish that was overtaken"
+	finish := &Log{
+		ID: "hybrid-overtaken", Status: "success", ContentHidden: true, PartialOwner: &owner,
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &answer}},
+	}
+	require.NoError(t, h.BatchUpdate(ctx, []*Log{finish}))
+	assert.False(t, finish.PartialRefused, "the store accepted it; the overtaking write came later")
+
+	key := ObjectKey("test", ts, "hybrid-overtaken")
+	waitForUploads(t, func() bool {
+		data, err := objects.Get(ctx, key)
+		return err == nil && strings.Contains(string(data), answer)
+	})
+	data, err := objects.Get(ctx, key)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), question, "the merge erased the object's input")
+}
+
 func (s *completesAfterReadStore) FindByID(ctx context.Context, id string) (*Log, error) {
 	row, err := s.RDBLogStore.FindByID(ctx, id)
 	if s.afterRead != nil {

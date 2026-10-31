@@ -7,6 +7,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1872,4 +1873,54 @@ func TestClickHousePartialFinishLosesToAnotherInstance(t *testing.T) {
 	assert.Contains(t, found.InputHistory, hiddenTestContent, "the row the other instance completed lost its content")
 	assert.Equal(t, hiddenTestContent, found.ContentSummary)
 	assert.NotEmpty(t, found.TokenUsage)
+}
+
+// Version order is not a fence. A write from a server whose clock sits at or below
+// the finish's version is not outranking it, and the read-back sees nothing wrong.
+// This pins the limit BatchUpdate documents, in both the skewed and the tied case:
+// the store cannot report these, which is why identity is settled before any write.
+func TestClickHousePartialFinishCannotDetectAWriterAtOrBelowItsVersion(t *testing.T) {
+	for name, offset := range map[string]time.Duration{"a clock behind the row": 0, "a tie with the finish": time.Nanosecond} {
+		t.Run(name, func(t *testing.T) {
+			store := trySetupClickHouseStore(t)
+			ctx := context.Background()
+			id := "ch-partial-skew-" + strconv.FormatInt(int64(offset), 10)
+			require.NoError(t, store.CreateIfNotExists(ctx, hiddenUpdateTestLog(id, time.Now().UTC().Truncate(time.Millisecond))))
+			store.beforePartialWrite = func() {
+				store.beforePartialWrite = nil
+				versions, err := store.chLogVersions(ctx, []string{id})
+				require.NoError(t, err)
+				row, err := store.FindByID(ctx, id)
+				require.NoError(t, err)
+				row.Status = "success"
+				skewed := []*chVersionedLog{{Log: *row, Ver: versions[id].Add(offset)}}
+				require.NoError(t, store.chReinsert(ctx, &skewed))
+			}
+			owner := ""
+			finish := &Log{ID: id, Status: "error", ContentHidden: true, PartialOwner: &owner}
+			require.NoError(t, store.BatchUpdate(ctx, []*Log{finish}))
+			assert.False(t, finish.PartialRefused, "a writer at or below the finish's version goes unreported")
+		})
+	}
+}
+
+// Identity needs no version order: a finish for any other owner is refused from the
+// row it reads, whichever instance writes first, and writes nothing to overtake.
+func TestClickHousePartialFinishForAnotherOwnerWritesNothing(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	victim := "vk-victim"
+	row := hiddenUpdateTestLog("ch-partial-foreign", time.Now().UTC().Truncate(time.Millisecond))
+	row.VirtualKeyID = &victim
+	require.NoError(t, store.CreateIfNotExists(ctx, row))
+	before, err := store.chLogVersions(ctx, []string{row.ID})
+	require.NoError(t, err)
+
+	attacker := "vk-attacker"
+	finish := &Log{ID: row.ID, Status: "success", ContentHidden: true, PartialOwner: &attacker}
+	require.NoError(t, store.BatchUpdate(ctx, []*Log{finish}))
+	assert.True(t, finish.PartialRefused)
+	after, err := store.chLogVersions(ctx, []string{row.ID})
+	require.NoError(t, err)
+	assert.True(t, before[row.ID].Equal(after[row.ID]), "a refused finish must write no version at all")
 }

@@ -717,13 +717,16 @@ func (s *ClickHouseLogStore) chLogVersions(ctx context.Context, ids []string) (m
 // skipped, matching the RDB semantics. content_summary is left as the row has
 // it: the entry's own serialization would regenerate it from output only.
 //
-// rmwLocks cover one process and ClickHouse has no conditional write, so a
-// PartialOwner entry is fenced by its version, as the queue store fences a lease
-// holder: it is written one tick above the version read before the row, so a write
-// from any instance that lands after that read outranks it, in whichever order the
-// two arrive. The version is read first, or a completion landing between the reads
-// could sit below the fence. A finish that lost is read back and marked
-// PartialRefused, so the hybrid store leaves the row's object alone.
+// rmwLocks cover one process and ClickHouse has no conditional write, so unlike the
+// SQL stores a PartialOwner entry is not atomic here. It is written one tick above
+// the version read before the row, so a later write whose now64 is higher outranks
+// it in either arrival order, and a finish that reads back as outranked is marked
+// PartialRefused. That is ordering, not a fence: a writer whose server clock sits at
+// or below the finish's version loses or ties undetected, and one landing after the
+// read-back goes unseen. What holds whatever the order is who can get this far: the
+// row's owner never changes, IsPartialOf refuses every other identity before any
+// write, and a partial evicted before its key was known holds no input
+// (dropCapturedInput), so racing writers of one row are all of one key.
 func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
 	byID := make(map[string][]*Log, len(entries))
 	ids := make([]string, 0, len(entries))

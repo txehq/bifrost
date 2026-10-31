@@ -1486,7 +1486,10 @@ func (h *HybridLogStore) BatchUpdate(ctx context.Context, entries []*Log) error 
 		return err
 	}
 	// The row was read above; the store decides who won it. A finish it refused
-	// leaves the object of a row that finish no longer holds alone.
+	// leaves the object of a row that finish no longer holds alone. One accepted here
+	// can still be overtaken before its upload runs: the merge lays non-empty fields
+	// over the object, so it cannot erase, and output is last writer wins, among
+	// writers of one key (see ClickHouseLogStore.BatchUpdate).
 	finished := make(map[string]struct{})
 	for _, f := range partialFinishes {
 		f.source.PartialRefused = f.written.PartialRefused
