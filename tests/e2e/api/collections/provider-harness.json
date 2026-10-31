@@ -287541,7 +287541,7 @@
                   "// wire: the requests that reached the fixture, bytes as they arrived.",
                   "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
                   "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
-                  "wire(function (calls) { pm.test('the definition stayed restricted to code execution', function () { pm.expect(calls).to.have.length(1); pm.expect(calls[0].body).to.include('automation_update'); var callers = /\"automation_update\"[^}]*?\"allowed_callers\":(\\[[^\\]]*\\])|\"allowed_callers\":(\\[[^\\]]*\\])[^}]*?\"automation_update\"/.exec(calls[0].body); pm.expect(callers, calls[0].body).to.not.equal(null); pm.expect(JSON.parse(callers[1] || callers[2])).to.eql(['code_execution_20260120']); }); });"
+                  "wire(function (calls) { pm.test('the definition stayed restricted to code execution', function () { pm.expect(calls).to.have.length(1); var change = JSON.parse(calls[0].body).messages[1].content[0].tool_changes[0]; pm.expect(change.tool.definition.name).to.equal('automation_update'); pm.expect(change.tool.definition.allowed_callers, calls[0].body).to.eql(['code_execution_20260120']); }); });"
                 ]
               }
             }
