@@ -1604,7 +1604,13 @@ func TestDistributedLockManager_StoppedHoldersLeaveNoWorkBehind(t *testing.T) {
 	wedged := make(chan struct{})
 
 	for name, renew := range map[string]func(context.Context, func(context.Context) error) error{
-		"failing": func(context.Context, func(context.Context) error) error { return errors.New("config store unreachable") },
+		"failing": func(context.Context, func(context.Context) error) error {
+			return errors.New("config store unreachable")
+		},
+		"blocked": func(c context.Context, _ func(context.Context) error) error {
+			<-c.Done()
+			return c.Err()
+		},
 		"wedged": func(context.Context, func(context.Context) error) error {
 			<-wedged
 			return errors.New("config store unreachable")

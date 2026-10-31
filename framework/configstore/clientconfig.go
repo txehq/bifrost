@@ -198,6 +198,10 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 // unchanged is false when c sets one of those newer fields away from its default. The hash
 // cannot see that, and such a file was not the one the checkpoint was stored for: it is a
 // real edit, so the checkpoint must not match it even when the hash does.
+//
+// One case stays out of reach: compat.azure_deepseek false writes nothing in the current
+// format, so the current hash of such a file equals the prior hash of the same file without
+// the key, and it reads as an unchanged current checkpoint before this comparison is reached.
 func (c *ClientConfig) GeneratePriorFormatClientConfigHash() (hash string, unchanged bool, err error) {
 	hash, added, err := c.generateClientConfigHashes(true)
 	if err != nil {

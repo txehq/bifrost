@@ -352,9 +352,9 @@ func BenchmarkGenerateMCPClientHash(b *testing.B) {
 // computes for the same section with one. The prior ones pin the checkpoint an upgrade meets;
 // the current ones pin that this change moved no deployment's hash.
 var priorHashVectors = []struct{ raw, base, withToolManager, current string }{
-	{`{}`, "PIN_0_BASE", "PIN_0_TM", "PIN_0_CUR"},
-	{`{"drop_excess_requests":true,"log_retention_days":7,"prometheus_labels":["team"]}`, "PIN_1_BASE", "PIN_1_TM", "PIN_1_CUR"},
-	{`{"enable_logging":true,"compat":{"convert_text_to_chat":false},"max_request_body_size_mb":50}`, "PIN_2_BASE", "PIN_2_TM", "PIN_2_CUR"},
+	{`{}`, "6c65f7281c21ca16330ad2307ab4149fff41dfb742d192ea9f4512b0b57e2ec3", "3ddd19f0972c3bfcc841953ed61fd4efaf134b41c292005f865deeb725387fb0", "6ce97dc82ca646dd80694861e2b974c014df3e66c0c279fddc17474aa0cbf1c8"},
+	{`{"drop_excess_requests":true,"log_retention_days":7,"prometheus_labels":["team"]}`, "62fc57f0c78ca9153e018d4c1d7a1e22c94ea0460fcaa15048897830322c52aa", "43524267e5c1ed64abea5ca0c30b42d8f72c6a88358848eb044c02e2d1921397", "07d751f25f3cbace9264801e3a9cba478d40a9eeb6ea2410a6950994e4737982"},
+	{`{"enable_logging":true,"compat":{"convert_text_to_chat":false},"max_request_body_size_mb":50}`, "e7262fe51e023aa2ce89ad3d0d479a4f013286a70bec904d3391906d28c6155f", "2f5a2ec8bddd47bfeec73a47e3588f9d23a0ecc564ac93813bf965e42d0422fd", "f2e8c9fa3cfed780b8087aa158d6f658e8505f4fa1bb5442cbde9621aab9574d"},
 }
 
 func TestPriorFormatClientConfigHashMatchesPreviousRelease(t *testing.T) {
@@ -390,20 +390,20 @@ func TestPriorFormatClientConfigHashSeesFieldsItLeavesOut(t *testing.T) {
 	for raw, wantUnchanged := range map[string]bool{
 		`{"compat":{"azure_deepseek":true,"force_reasoning_only_models_to_responses":true,"convert_decision_to_responses":false}}`: true,
 		`{"enforce_vk_object_ownership":true,"extra_fields_placement":"body"}`:                                                     true,
-		`{"compat":{"azure_deepseek":false}}`:                                                                                      false,
-		`{"compat":{"force_reasoning_only_models_to_responses":false}}`:                                                            false,
-		`{"compat":{"convert_decision_to_responses":true}}`:                                                                        false,
-		`{"extra_fields_placement":"headers"}`:                                                                                     false,
-		`{"delete_expired_virtual_keys":true}`:                                                                                     false,
-		`{"enforce_vk_object_ownership":false}`:                                                                                    false,
-		`{"mcp_max_instructions_per_client":100}`:                                                                                  false,
-		`{"mcp_max_instructions_total":100}`:                                                                                       false,
-		`{"mcp_code_mode_limits":{"max_tool_calls":3}}`:                                                                            false,
-		`{"mcp_oauth_private_allowlist":[]}`:                                                                                       false,
-		`{"a2a_private_allowlist":["10.0.0.0/8"]}`:                                                                                 false,
-		`{"a2a_store_raw_request_response":true}`:                                                                                  false,
-		`{"a2a_external_client_url":"https://a2a.example.com"}`:                                                                    false,
-		`{"skills_external_client_url":"https://skills.example.com"}`:                                                              false,
+		`{"compat":{"azure_deepseek":false}}`:                           false,
+		`{"compat":{"force_reasoning_only_models_to_responses":false}}`: false,
+		`{"compat":{"convert_decision_to_responses":true}}`:             false,
+		`{"extra_fields_placement":"headers"}`:                          false,
+		`{"delete_expired_virtual_keys":true}`:                          false,
+		`{"enforce_vk_object_ownership":false}`:                         false,
+		`{"mcp_max_instructions_per_client":100}`:                       false,
+		`{"mcp_max_instructions_total":100}`:                            false,
+		`{"mcp_code_mode_limits":{"max_tool_calls":3}}`:                 false,
+		`{"mcp_oauth_private_allowlist":[]}`:                            false,
+		`{"a2a_private_allowlist":["10.0.0.0/8"]}`:                      false,
+		`{"a2a_store_raw_request_response":true}`:                       false,
+		`{"a2a_external_client_url":"https://a2a.example.com"}`:         false,
+		`{"skills_external_client_url":"https://skills.example.com"}`:   false,
 	} {
 		var c ClientConfig
 		require.NoError(t, sonic.Unmarshal([]byte(raw), &c), raw)
@@ -415,12 +415,15 @@ func TestPriorFormatClientConfigHashSeesFieldsItLeavesOut(t *testing.T) {
 
 	var c ClientConfig
 	require.NoError(t, sonic.Unmarshal([]byte(`{}`), &c))
+	plainToolManagerHash, _, err := c.GeneratePriorFormatClientConfigHashWithToolManager(&schemas.MCPToolManagerConfig{MaxAgentDepth: 5})
+	require.NoError(t, err)
 	for name, tm := range map[string]*schemas.MCPToolManagerConfig{
 		"code mode limits": {MaxAgentDepth: 5, CodeModeLimits: &schemas.MCPCodeModeLimits{}},
 		"oauth allowlist":  {MaxAgentDepth: 5, OAuthPrivateAllowlist: []string{}},
 	} {
-		_, unchanged, err := c.GeneratePriorFormatClientConfigHashWithToolManager(tm)
+		hash, unchanged, err := c.GeneratePriorFormatClientConfigHashWithToolManager(tm)
 		require.NoError(t, err)
+		assert.Equal(t, plainToolManagerHash, hash, "%s: the prior format must not see this field", name)
 		assert.False(t, unchanged, name)
 	}
 }

@@ -24158,13 +24158,13 @@ func TestLoadClientConfig_PriorReleaseCheckpoint(t *testing.T) {
 		assert.Equal(t, 30, upgraded.LogRetentionDays, "client edits survive")
 		assert.Equal(t, 5, upgraded.MCPAgentDepth, "the tool manager section is what the checkpoint never covered")
 
-		const added = `{"drop_excess_requests":true,"log_retention_days":7,"enforce_auth_on_inference":false,"compat":{"azure_deepseek":false}}`
+		const added = `{"drop_excess_requests":true,"log_retention_days":7,"enforce_auth_on_inference":false,"compat":{"convert_decision_to_responses":true}}`
 		stored, err = store.GetClientConfig(ctx)
 		require.NoError(t, err)
 		stored.ConfigHash, stored.LogRetentionDays = base, 30
 		require.NoError(t, store.UpdateClientConfig(ctx, stored))
 		edited := start(t, store, fileData(t, added))
-		assert.False(t, edited.Compat.AzureDeepseek, "a file setting a new field is an edit here too")
+		assert.True(t, edited.Compat.ConvertDecisionToResponses, "a file setting a new field is an edit here too")
 		assert.Equal(t, 7, edited.LogRetentionDays)
 	})
 }
