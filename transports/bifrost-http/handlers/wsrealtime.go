@@ -383,23 +383,33 @@ func (h *WSRealtimeHandler) handleTranscriptionUpgrade(
 }
 
 // bufferRealtimeTranscriptionBootstrap retains bounded bootstrap frames until the transcription model is known.
+// Each read is limited to what remains of the aggregate allowance, so a client cannot
+// make the gateway buffer an oversized message before the limit is applied; bootstrap
+// holds no provider session yet, so the bound is what keeps an idle connection cheap.
 func bufferRealtimeTranscriptionBootstrap(clientConn *realtimeClientConn) ([]realtimeWebSocketFrame, string, error) {
 	if err := clientConn.conn.SetReadDeadline(time.Now().Add(realtimeTranscriptionBootstrapTimeout)); err != nil {
 		return nil, "", err
 	}
 	defer clientConn.refreshReadDeadline()
+	// Realtime sessions set no read limit of their own; lift the bootstrap one after.
+	defer clientConn.conn.SetReadLimit(0)
 
 	frames := make([]realtimeWebSocketFrame, 0, realtimeTranscriptionBootstrapMaxFrames)
 	totalBytes := 0
 	for len(frames) < realtimeTranscriptionBootstrapMaxFrames {
+		remaining := realtimeTranscriptionBootstrapMaxBytes - totalBytes
+		if remaining <= 0 {
+			return nil, "", errors.New("transcription bootstrap exceeded 1 MiB")
+		}
+		clientConn.conn.SetReadLimit(int64(remaining))
 		messageType, message, err := clientConn.conn.ReadMessage()
 		if err != nil {
+			if errors.Is(err, ws.ErrReadLimit) {
+				return nil, "", fmt.Errorf("transcription bootstrap exceeded 1 MiB: %w", err)
+			}
 			return nil, "", fmt.Errorf("transcription session.update model was not received within bootstrap limits (pass ?model= to open the session without one): %w", err)
 		}
 		totalBytes += len(message)
-		if totalBytes > realtimeTranscriptionBootstrapMaxBytes {
-			return nil, "", errors.New("transcription bootstrap exceeded 1 MiB")
-		}
 		frame := realtimeWebSocketFrame{messageType: messageType, data: append([]byte(nil), message...)}
 		frames = append(frames, frame)
 		if messageType == ws.TextMessage {

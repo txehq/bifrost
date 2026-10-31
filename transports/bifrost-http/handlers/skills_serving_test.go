@@ -3,12 +3,14 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -688,4 +690,142 @@ func BenchmarkSkillsMarketplaceURLGate(b *testing.B) {
 	for b.Loop() {
 		handler(ctx)
 	}
+}
+
+// TestSkillsGitRepoCacheLeaseOutlivesExpiryAndEviction: an export a request is serving
+// stays on disk through its TTL and past the cap, and goes with the last release. The
+// repository's next request builds its own export instead of sharing the expired one.
+func TestSkillsGitRepoCacheLeaseOutlivesExpiryAndEviction(t *testing.T) {
+	cache := newSkillsGitRepoCache()
+	root := t.TempDir()
+	build := func() (string, error) { return os.MkdirTemp(root, "export") }
+
+	leased, release, err := cache.acquire("leased", "v1", build)
+	require.NoError(t, err)
+	cache.mu.Lock()
+	cache.entries["leased"].builtAt = time.Now().Add(-2 * skillsGitRepoCacheTTL)
+	cache.mu.Unlock()
+
+	for i := range skillsGitRepoCacheMaxEntries + 8 {
+		_, releaseOther, err := cache.acquire(fmt.Sprintf("host-%d", i), "v1", build)
+		require.NoError(t, err)
+		releaseOther()
+	}
+	cache.mu.Lock()
+	held := len(cache.entries)
+	cache.mu.Unlock()
+	require.LessOrEqual(t, held, skillsGitRepoCacheMaxEntries)
+	require.DirExists(t, leased, "an export being served was removed")
+
+	fresh, releaseFresh, err := cache.acquire("leased", "v1", build)
+	require.NoError(t, err)
+	require.NotEqual(t, leased, fresh, "an expired export was reused")
+	releaseFresh()
+	require.DirExists(t, leased, "another request's release removed an export still being served")
+
+	release()
+	require.NoDirExists(t, leased, "the last release must remove a dropped export")
+	cache.purge()
+	assertNoSkillExports(t, root)
+}
+
+// TestSkillsGitRepoCacheConcurrentFetches churns repositories, versions and expiry under
+// concurrent requests. Each one reads a file from the export it holds, so an export
+// removed under a reader fails here, and the count stays bounded at every step.
+func TestSkillsGitRepoCacheConcurrentFetches(t *testing.T) {
+	cache := newSkillsGitRepoCache()
+	root := t.TempDir()
+	build := func() (string, error) {
+		dir, err := os.MkdirTemp(root, "export")
+		if err != nil {
+			return "", err
+		}
+		return dir, os.WriteFile(filepath.Join(dir, "HEAD"), []byte("ref"), 0o600)
+	}
+
+	const workers, rounds = skillsCorpusServeConcurrency, 400
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for worker := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for round := range rounds {
+				version := fmt.Sprintf("v%d", round/100)
+				key := fmt.Sprintf("host-%d", (worker*7+round)%(2*skillsGitRepoCacheMaxEntries))
+				dir, release, err := cache.acquire(key, version, build)
+				if errors.Is(err, errSkillsGitRepoDropped) {
+					continue
+				}
+				if err != nil {
+					errs <- err
+					return
+				}
+				if _, err := os.ReadFile(filepath.Join(dir, "HEAD")); err != nil {
+					release()
+					errs <- fmt.Errorf("export removed while served: %w", err)
+					return
+				}
+				cache.mu.Lock()
+				held := len(cache.entries)
+				if round%50 == 0 {
+					for _, entry := range cache.entries {
+						if entry.isBuilt() {
+							entry.builtAt = time.Now().Add(-2 * skillsGitRepoCacheTTL)
+						}
+					}
+				}
+				cache.mu.Unlock()
+				release()
+				if held > skillsGitRepoCacheMaxEntries+workers {
+					errs <- fmt.Errorf("cache held %d entries", held)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	cache.purge()
+	assertNoSkillExports(t, root)
+}
+
+// TestSkillsGitRepoCacheBuildSupersededWhileBuilding: an export dropped mid-build leaves
+// nothing behind, and a failed build keeps no entry to serve from.
+func TestSkillsGitRepoCacheBuildSupersededWhileBuilding(t *testing.T) {
+	cache := newSkillsGitRepoCache()
+	root := t.TempDir()
+	started, finish := make(chan struct{}), make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		_, _, err := cache.acquire("repo", "v1", func() (string, error) {
+			close(started)
+			<-finish
+			return os.MkdirTemp(root, "export")
+		})
+		result <- err
+	}()
+	<-started
+	cache.purge()
+	close(finish)
+	require.ErrorIs(t, <-result, errSkillsGitRepoDropped)
+	assertNoSkillExports(t, root)
+
+	boom := errors.New("export failed")
+	_, _, err := cache.acquire("repo", "v1", func() (string, error) { return "", boom })
+	require.ErrorIs(t, err, boom)
+	cache.mu.Lock()
+	_, kept := cache.entries["repo"]
+	cache.mu.Unlock()
+	require.False(t, kept, "a failed build must not stay cached")
+}
+
+func assertNoSkillExports(t *testing.T, root string) {
+	t.Helper()
+	left, err := os.ReadDir(root)
+	require.NoError(t, err)
+	require.Empty(t, left, "export directories leaked")
 }

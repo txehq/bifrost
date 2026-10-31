@@ -7985,3 +7985,45 @@ func BenchmarkCalculateCostBillingTurns(b *testing.B) {
 		})
 	}
 }
+
+// TestOffPeak_RoutingCallDiscountAtWindowEdges: a classification call takes the off-peak
+// discount exactly once, on its usage and never on its flat fee, at both edges of a peak
+// window, and through CalculateCost it is added once beside the request it served.
+func TestOffPeak_RoutingCallDiscountAtWindowEdges(t *testing.T) {
+	pricing := deepSeekPricing()
+	pricing.CostPerRequest = bifrost.Ptr(0.01)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("deepseek-v4-flash", "deepseek", "chat"): pricing,
+	})
+	provider, model, in, out := "deepseek", "deepseek-v4-flash", 1000, 1000
+	call := schemas.BifrostRoutingCall{
+		ProviderUsed: &provider, ModelUsed: &model, InputTokens: &in, OutputTokens: &out,
+		CountTowardBudgets: true,
+	}
+	const usage, flat = 0.00176, 0.01 // 1000*0.00000044 + 1000*0.00000132
+	response := func() *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 1000, TotalTokens: 2000},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:     schemas.ChatCompletionRequest,
+				RoutingInfo:     routingInfoFor(schemas.DeepSeek, model),
+				RoutingMetadata: &schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{call}},
+			},
+		}}
+	}
+	for _, tc := range []struct {
+		at   string
+		rate float64
+	}{
+		{"2026-08-17T00:59:59Z", 0.5},
+		{"2026-08-17T01:00:00Z", 1},
+		{"2026-08-17T03:59:59Z", 1},
+		{"2026-08-17T04:00:00Z", 0.5},
+	} {
+		t.Run(tc.at, func(t *testing.T) {
+			scopes := &LookupScopes{BilledAt: utc(t, tc.at)}
+			assert.InDelta(t, usage*tc.rate+flat, s.RoutingCallCost(call, scopes), 1e-12, "the call alone")
+			assert.InDelta(t, 2*(usage*tc.rate+flat), s.CalculateCost(response(), scopes), 1e-12, "the call beside its request")
+		})
+	}
+}

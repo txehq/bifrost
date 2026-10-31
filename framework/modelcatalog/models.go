@@ -309,8 +309,9 @@ func (mc *ModelCatalog) computeProvidersForModel(model string) []schemas.ModelPr
 // checks, not by the static keyconfig allow set).
 //
 //   - allowedModels=["*"]: defer to GetProvidersForModel (with custom-provider
-//     fast path when list-models is disabled), falling back to allow for a
-//     provider the datasheet describes but list-models cannot enumerate.
+//     fast path when list-models is disabled), falling back to the provider's
+//     keys for a provider the datasheet describes but list-models cannot
+//     enumerate.
 //   - allowedModels=[]: deny-by-default.
 //   - explicit allowedModels: direct or provider-prefixed match against the
 //     provider's catalog.
@@ -333,15 +334,16 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 		// known only through the pricing sheet, which lags new releases by weeks.
 		// Refusing on that list makes ["*"] narrower than the provider itself, so
 		// a wildcard denies every model released since the last sync (issue
-		// #6657). Defer to the provider instead: it 404s a model it does not
-		// have, and it is the authority on its own catalog.
+		// #6657). Defer to the provider's keys instead: their allow-lists and
+		// blacklists still apply, and the provider 404s a model it does not have.
 		//
 		// Both other cases are already right and stay untouched. A provider with
 		// no datasheet rows either is handled by computeProvidersForModel's
 		// keyconfig fallback, and a provider whose live list-models did answer is
 		// enumerable, so its catalog is authoritative and still narrows.
 		return len(mc.live.UnfilteredModelsForProvider(provider)) == 0 &&
-			len(mc.datasheet.DatasheetModelsForProvider(provider)) > 0
+			len(mc.datasheet.DatasheetModelsForProvider(provider)) > 0 &&
+			mc.keyconf.IsAllowed(provider, model)
 	}
 	if allowedModels.IsEmpty() {
 		return false

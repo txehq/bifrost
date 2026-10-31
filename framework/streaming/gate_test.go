@@ -2409,3 +2409,222 @@ func TestGate_ApprovedFullDrainWhilePausedThenResumeEnds(t *testing.T) {
 		t.Fatalf("gate state = %v after flusher exit, want Ended", state)
 	}
 }
+
+// TestGate_EstimateChunkBytesCountsNestedCarriers: every carrier that grows with what
+// the provider or a tool produced is counted, so a paused stream cannot buffer past
+// the replay cap on chunks the estimator cannot see. Each row holds one carrier.
+func TestGate_EstimateChunkBytesCountsNestedCarriers(t *testing.T) {
+	big := strings.Repeat("o", 64*1024)
+	bigRaw := json.RawMessage(`"` + big + `"`)
+	var sources interface{} = []interface{}{map[string]interface{}{"snippet": big}}
+	chat := func(d *schemas.ChatStreamResponseChoiceDelta) *schemas.BifrostStreamChunk {
+		return &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: d}}},
+		}}
+	}
+	responses := func(r *schemas.BifrostResponsesStreamResponse) *schemas.BifrostStreamChunk {
+		return &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: r}
+	}
+	rows := map[string]*schemas.BifrostStreamChunk{
+		"shell command":      responses(&schemas.BifrostResponsesStreamResponse{Command: &big}),
+		"patch diff":         responses(&schemas.BifrostResponsesStreamResponse{Diff: &big}),
+		"shell stdout":       responses(&schemas.BifrostResponsesStreamResponse{Output: []schemas.ResponsesShellCallOutputContent{{Stdout: big}}}),
+		"shell stderr":       responses(&schemas.BifrostResponsesStreamResponse{Output: []schemas.ResponsesShellCallOutputContent{{Stderr: big}}}),
+		"shell created_by":   responses(&schemas.BifrostResponsesStreamResponse{Output: []schemas.ResponsesShellCallOutputContent{{CreatedBy: &big}}}),
+		"stdout delta":       responses(&schemas.BifrostResponsesStreamResponse{ShellOutputDelta: &schemas.ResponsesShellCallOutputDelta{Stdout: &big}}),
+		"stderr delta":       responses(&schemas.BifrostResponsesStreamResponse{ShellOutputDelta: &schemas.ResponsesShellCallOutputDelta{Stderr: &big}}),
+		"citation title":     chat(&schemas.ChatStreamResponseChoiceDelta{Annotations: []schemas.ChatAssistantMessageAnnotation{{URLCitation: schemas.ChatAssistantMessageAnnotationCitation{Title: big}}}}),
+		"citation text":      chat(&schemas.ChatStreamResponseChoiceDelta{Annotations: []schemas.ChatAssistantMessageAnnotation{{URLCitation: schemas.ChatAssistantMessageAnnotationCitation{Text: &big}}}}),
+		"citation sources":   chat(&schemas.ChatStreamResponseChoiceDelta{Annotations: []schemas.ChatAssistantMessageAnnotation{{URLCitation: schemas.ChatAssistantMessageAnnotationCitation{Sources: &sources}}}}),
+		"tool call name":     chat(&schemas.ChatStreamResponseChoiceDelta{ToolCalls: []schemas.ChatAssistantMessageToolCall{{Function: schemas.ChatAssistantMessageToolCallFunction{Name: &big}}}}),
+		"tool call metadata": chat(&schemas.ChatStreamResponseChoiceDelta{ToolCalls: []schemas.ChatAssistantMessageToolCall{{ExtraContent: bigRaw}}}),
+		"choice filter":      {BifrostChatResponse: &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{ContentFilterResults: bigRaw}}}},
+		"text choice filter": {BifrostTextCompletionResponse: &schemas.BifrostTextCompletionResponse{Choices: []schemas.BifrostResponseChoice{{ContentFilterResults: bigRaw}}}},
+		"prompt filter":      {BifrostChatResponse: &schemas.BifrostChatResponse{PromptFilterResults: bigRaw}},
+		"chat citations":     {BifrostChatResponse: &schemas.BifrostChatResponse{Citations: []string{big}}},
+		"chat search":        {BifrostChatResponse: &schemas.BifrostChatResponse{SearchResults: []schemas.SearchResult{{Title: big}}}},
+		"chat videos":        {BifrostChatResponse: &schemas.BifrostChatResponse{Videos: []schemas.VideoResult{{URL: big}}}},
+		"transcription logprobs": {BifrostTranscriptionStreamResponse: &schemas.BifrostTranscriptionStreamResponse{
+			LogProbs: []schemas.TranscriptionLogProb{{Token: big}},
+		}},
+	}
+	for name, chunk := range rows {
+		t.Run(name, func(t *testing.T) {
+			if got, want := estimateChunkBytes(chunk), gateChunkSizeFloor+int64(len(big)); got < want {
+				t.Fatalf("estimate = %d, want >= %d", got, want)
+			}
+		})
+	}
+}
+
+// TestGate_ReplayCapBoundaryOnNestedCarriers holds real buffers one byte under, exactly
+// at and one byte over the cap, with a shell output chunk as the deciding chunk: the
+// first two stay held and replay, the last ends the stream with nothing released.
+func TestGate_ReplayCapBoundaryOnNestedCarriers(t *testing.T) {
+	stdout := strings.Repeat("o", 64*1024)
+	carrier := func() *schemas.BifrostStreamChunk {
+		return &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			Output: []schemas.ResponsesShellCallOutputContent{{Stdout: stdout}},
+		}}
+	}
+	// Stated, not estimated: the row must fail if the estimator stops seeing the stdout.
+	size := gateChunkSizeFloor + int64(len(stdout))
+	body := make([]byte, gateReplayBufMaxBytes)
+	filler := func(held int64) *schemas.BifrostStreamChunk {
+		return &schemas.BifrostStreamChunk{BifrostPassthroughResponse: &schemas.BifrostPassthroughResponse{Body: body[:held-gateChunkSizeFloor]}}
+	}
+
+	for _, tc := range []struct {
+		name string
+		held int64
+		fits bool
+	}{
+		{"limit-1", gateReplayBufMaxBytes - size - 1, true},
+		{"limit", gateReplayBufMaxBytes - size, true},
+		{"limit+1", gateReplayBufMaxBytes - size + 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newTestAccumulator(t)
+			traceID := "trace-carrier-" + tc.name
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			r := newRecorder(8)
+			defer r.close()
+			a.PauseStream(traceID)
+			sa := mustGet(t, a, traceID)
+			if !a.GateSend(traceID, filler(tc.held), false, false, r.ch, ctx) {
+				t.Fatal("filler refused below the cap")
+			}
+			held := a.GateSend(traceID, carrier(), false, false, r.ch, ctx)
+			if held != tc.fits {
+				t.Fatalf("GateSend = %v, want %v", held, tc.fits)
+			}
+			if tc.fits {
+				sa.mu.Lock()
+				gotBytes := sa.gateReplayBufBytes
+				sa.mu.Unlock()
+				if want := tc.held + size; gotBytes != want {
+					t.Fatalf("held bytes = %d, want %d", gotBytes, want)
+				}
+				a.ResumeStream(traceID)
+				if !r.waitFor(2, 2*time.Second) {
+					t.Fatal("resume did not replay both held chunks")
+				}
+			} else {
+				if !r.waitFor(1, 2*time.Second) {
+					t.Fatal("client never received the overflow error")
+				}
+				got, _ := r.snapshot()
+				if len(got) != 1 || got[0].BifrostError == nil || got[0].BifrostError.Error == nil ||
+					got[0].BifrostError.Error.Type == nil || *got[0].BifrostError.Error.Type != "paused_replay_buffer_overflow" {
+					t.Fatalf("overflow delivered %d chunks, want only the overflow error", len(got))
+				}
+			}
+			waitForGateRelease(t, sa)
+			sa.mu.Lock()
+			defer sa.mu.Unlock()
+			if sa.gateReplayBuf != nil || sa.gateReplayBufBytes != 0 {
+				t.Fatalf("buffer kept %d chunks and %d bytes after it was released", len(sa.gateReplayBuf), sa.gateReplayBufBytes)
+			}
+		})
+	}
+}
+
+// waitForGateRelease waits for a stream that has ended; a resumed stream keeps its
+// flusher parked, so it only waits for the buffer to empty.
+func waitForGateRelease(t *testing.T, sa *StreamAccumulator) {
+	t.Helper()
+	sa.mu.Lock()
+	ended := sa.gateState == StreamStateEnded
+	sa.mu.Unlock()
+	if ended {
+		sa.WaitForFlusher()
+		return
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sa.mu.Lock()
+		empty := sa.gateReplayBuf == nil
+		sa.mu.Unlock()
+		if empty {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("replay buffer never emptied")
+}
+
+// TestGate_CancelAndCleanupReleaseCarrierBytes: a held carrier's bytes do not outlive
+// the stream. A cancelled consumer abandons the replay, and an orphan reap drops it.
+func TestGate_CancelAndCleanupReleaseCarrierBytes(t *testing.T) {
+	stdout := strings.Repeat("o", 64*1024)
+	carrier := func() *schemas.BifrostStreamChunk {
+		return &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+			ShellOutputDelta: &schemas.ResponsesShellCallOutputDelta{Stdout: &stdout},
+		}}
+	}
+
+	t.Run("cancelled consumer", func(t *testing.T) {
+		a := newTestAccumulator(t)
+		traceID := "trace-carrier-cancel"
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		ch := make(chan *schemas.BifrostStreamChunk) // nobody reads: delivery can only end by cancel
+		a.PauseStream(traceID)
+		sa := mustGet(t, a, traceID)
+		for range 3 {
+			if !a.GateSend(traceID, carrier(), false, false, ch, ctx) {
+				t.Fatal("carrier refused below the cap")
+			}
+		}
+		cancel()
+		a.ResumeStream(traceID)
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			sa.mu.Lock()
+			state, buf, held := sa.gateState, sa.gateReplayBuf, sa.gateReplayBufBytes
+			sa.mu.Unlock()
+			if state == StreamStateEnded && buf == nil && held == 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("cancel left state %v, %d chunks, %d bytes", state, len(buf), held)
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		sa.WaitForFlusher()
+	})
+
+	t.Run("orphan reap", func(t *testing.T) {
+		a := newTestAccumulator(t)
+		traceID := "trace-carrier-reap"
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		r := newRecorder(8)
+		defer r.close()
+		a.PauseStream(traceID)
+		sa := mustGet(t, a, traceID)
+		if !a.GateSend(traceID, carrier(), false, false, r.ch, ctx) {
+			t.Fatal("carrier refused below the cap")
+		}
+		sa.mu.Lock()
+		a.cleanupStreamAccumulator(traceID, true)
+		buf, held := sa.gateReplayBuf, sa.gateReplayBufBytes
+		sa.mu.Unlock()
+		sa.WaitForFlusher()
+		if buf != nil || held != 0 {
+			t.Fatalf("reap kept %d chunks and %d bytes", len(buf), held)
+		}
+		if got, _ := r.snapshot(); len(got) != 0 {
+			t.Fatalf("a held chunk reached an orphaned consumer: %d chunks", len(got))
+		}
+	})
+}
+
+// BenchmarkChunkSizeEstimatorResponsesDelta measures the common Responses text delta,
+// which carries none of the shell, patch or citation payloads.
+func BenchmarkChunkSizeEstimatorResponsesDelta(b *testing.B) {
+	delta := strings.Repeat("x", 1400)
+	chunk := &schemas.BifrostStreamChunk{BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Delta: &delta}}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = estimateChunkBytes(chunk)
+	}
+}

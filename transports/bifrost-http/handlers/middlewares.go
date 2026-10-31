@@ -590,6 +590,11 @@ func (l *limitedBodyReader) Read(p []byte) (int, error) {
 	}
 	n, err := l.r.Read(p)
 	l.remaining -= int64(n)
+	if l.remaining <= 0 {
+		// The (max+1)th byte arrived. Reported now: a reader may hand it over with
+		// io.EOF in the same call, which would otherwise end the read as complete.
+		return n, errRequestBodyTooLarge
+	}
 	return n, err
 }
 

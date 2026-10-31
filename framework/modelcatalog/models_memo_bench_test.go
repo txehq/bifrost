@@ -219,3 +219,18 @@ func BenchmarkIsModelAllowed_Cached(b *testing.B) {
 		_ = mc.IsModelAllowedForProvider(schemas.ModelProvider("provider00"), model, nil, unrestricted)
 	}
 }
+
+// BenchmarkIsModelAllowedWildcardUncatalogued is the path that consults the provider's
+// keys: a wildcard, a model no catalog lists, and a provider with no live list.
+func BenchmarkIsModelAllowedWildcardUncatalogued(b *testing.B) {
+	mc, _ := benchCatalog(b, 20, 60)
+	provider := schemas.ModelProvider("provider00")
+	mc.live = live.New(nil)
+	unrestricted := schemas.WhiteList{"*"}
+	_ = mc.IsModelAllowedForProvider(provider, "uncatalogued-model", nil, unrestricted)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = mc.IsModelAllowedForProvider(provider, "uncatalogued-model", nil, unrestricted)
+	}
+}

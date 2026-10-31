@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/andybalholm/brotli"
@@ -5353,5 +5354,117 @@ func TestTracingMiddleware_CapturesTraceState(t *testing.T) {
 	// No traceparent means no parent to rebuild, so a lone tracestate is not stored.
 	if got := run(map[string]string{"tracestate": traceState}); got != "" {
 		t.Errorf("tracestate stored with no traceparent: %q", got)
+	}
+}
+
+// TestLimitedBodyReader_Boundary pins limit-1, limit and limit+1 for every way a reader
+// may hand over its last byte: with io.EOF in the same call, in a call of its own, or a
+// byte at a time. Past the limit the reader fails, whichever way the byte arrived, and it
+// takes at most one byte more than the limit from the source.
+func TestLimitedBodyReader_Boundary(t *testing.T) {
+	const limit = 16
+	for name, wrap := range map[string]func(io.Reader) io.Reader{
+		"data with EOF":   iotest.DataErrReader,
+		"EOF on its own":  func(r io.Reader) io.Reader { return r },
+		"one byte a read": iotest.OneByteReader,
+		"half reads":      iotest.HalfReader,
+	} {
+		for _, tc := range []struct {
+			name string
+			size int
+			fits bool
+		}{
+			{"limit-1", limit - 1, true},
+			{"limit", limit, true},
+			{"limit+1", limit + 1, false},
+			{"far over", limit * 8, false},
+		} {
+			t.Run(name+"/"+tc.name, func(t *testing.T) {
+				source := bytes.NewReader(bytes.Repeat([]byte("x"), tc.size))
+				got, err := io.ReadAll(newLimitedBodyReader(wrap(source), limit))
+				if tc.fits {
+					if err != nil || len(got) != tc.size {
+						t.Fatalf("got %d bytes, err %v, want %d bytes and no error", len(got), err, tc.size)
+					}
+					return
+				}
+				if !errors.Is(err, errRequestBodyTooLarge) {
+					t.Fatalf("got %d bytes, err %v, want errRequestBodyTooLarge", len(got), err)
+				}
+				if read := tc.size - source.Len(); read > limit+1 {
+					t.Fatalf("read %d bytes from the source, want at most %d", read, limit+1)
+				}
+			})
+		}
+	}
+}
+
+// TestLimitedBodyReader_PassesSourceErrorsBelowTheLimit: a failure under the limit stays
+// that failure; only the (max+1)th byte is reported as a body that is too large.
+func TestLimitedBodyReader_PassesSourceErrorsBelowTheLimit(t *testing.T) {
+	boom := errors.New("connection reset")
+	_, err := io.ReadAll(newLimitedBodyReader(io.MultiReader(bytes.NewReader([]byte("abc")), iotest.ErrReader(boom)), 16))
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the source error", err)
+	}
+}
+
+// TestDecodeRequestBodyWithLimit_BoundaryEveryEncoding drives the real decoders, whose
+// final read is what can carry io.EOF, across limit-1, limit and limit+1 decoded bytes.
+func TestDecodeRequestBodyWithLimit_BoundaryEveryEncoding(t *testing.T) {
+	const limit = 4096
+	encoders := map[string]func(*testing.T, []byte) []byte{
+		"gzip": func(t *testing.T, plain []byte) []byte {
+			var buf bytes.Buffer
+			w := gzip.NewWriter(&buf)
+			_, _ = w.Write(plain)
+			require.NoError(t, w.Close())
+			return buf.Bytes()
+		},
+		"deflate": func(t *testing.T, plain []byte) []byte {
+			var buf bytes.Buffer
+			w := zlib.NewWriter(&buf)
+			_, _ = w.Write(plain)
+			require.NoError(t, w.Close())
+			return buf.Bytes()
+		},
+		"br": func(t *testing.T, plain []byte) []byte {
+			var buf bytes.Buffer
+			w := brotli.NewWriter(&buf)
+			_, _ = w.Write(plain)
+			require.NoError(t, w.Close())
+			return buf.Bytes()
+		},
+		"zstd": func(t *testing.T, plain []byte) []byte {
+			w, err := zstd.NewWriter(nil)
+			require.NoError(t, err)
+			defer w.Close()
+			return w.EncodeAll(plain, nil)
+		},
+	}
+	for encoding, encode := range encoders {
+		for _, tc := range []struct {
+			name string
+			size int
+			fits bool
+		}{
+			{"limit-1", limit - 1, true},
+			{"limit", limit, true},
+			{"limit+1", limit + 1, false},
+		} {
+			t.Run(encoding+"/"+tc.name, func(t *testing.T) {
+				var req fasthttp.Request
+				req.Header.Set(fasthttp.HeaderContentEncoding, encoding)
+				req.SetBodyRaw(encode(t, bytes.Repeat([]byte("x"), tc.size)))
+				body, _, err := decodeRequestBodyWithLimit(&req, limit, nil)
+				if tc.fits {
+					require.NoError(t, err)
+					require.Len(t, body, tc.size)
+					return
+				}
+				require.ErrorIs(t, err, errRequestBodyTooLarge)
+				require.Nil(t, body)
+			})
+		}
 	}
 }
