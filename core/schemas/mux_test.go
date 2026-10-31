@@ -1125,6 +1125,85 @@ func TestToBifrostResponsesStreamResponse_ContentAfterToolStartNotEmittedPastDon
 	}
 }
 
+// TestToBifrostResponsesStreamResponse_TextAfterToolStartOpensNewMessageItem pins
+// text -> tool_call -> text: once the tool call closes the first text item, later
+// substantive text opens a new message item instead of being dropped, never lands on
+// the finished item, and both messages reach the completed output in stream order.
+func TestToBifrostResponsesStreamResponse_TextAfterToolStartOpensNewMessageItem(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	role := string(ChatMessageRoleAssistant)
+	before := "Let me check."
+	newline := "\n"
+	after := "Found it."
+	toolCallsFinish := string(BifrostFinishReasonToolCalls)
+	funcName := "lookup"
+	toolCallID := "call_1"
+
+	chunk := func(delta *ChatStreamResponseChoiceDelta, finish *string) *BifrostChatResponse {
+		return &BifrostChatResponse{
+			ID:    "chatcmpl-test",
+			Model: "test-model",
+			Choices: []BifrostResponseChoice{{
+				FinishReason:             finish,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: delta},
+			}},
+		}
+	}
+
+	var all []*BifrostResponsesStreamResponse
+	all = append(all, chunk(&ChatStreamResponseChoiceDelta{Role: &role, Content: &before}, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, chunk(&ChatStreamResponseChoiceDelta{ToolCalls: []ChatAssistantMessageToolCall{{
+		Index: 0, ID: &toolCallID, Function: ChatAssistantMessageToolCallFunction{Name: &funcName, Arguments: `{"q":"x"}`},
+	}}}, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, chunk(&ChatStreamResponseChoiceDelta{Content: &newline}, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, chunk(&ChatStreamResponseChoiceDelta{Content: &after}, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, chunk(&ChatStreamResponseChoiceDelta{}, &toolCallsFinish).ToBifrostResponsesStreamResponse(state)...)
+
+	doneIndices := map[int]bool{}
+	addedIndices := map[int]bool{}
+	var deltas []string
+	var completed *BifrostResponsesStreamResponse
+	for _, evt := range all {
+		switch evt.Type {
+		case ResponsesStreamResponseTypeOutputItemAdded:
+			if addedIndices[*evt.OutputIndex] {
+				t.Fatalf("output_index %d added twice", *evt.OutputIndex)
+			}
+			addedIndices[*evt.OutputIndex] = true
+		case ResponsesStreamResponseTypeOutputItemDone:
+			doneIndices[*evt.OutputIndex] = true
+		case ResponsesStreamResponseTypeOutputTextDelta:
+			if doneIndices[*evt.OutputIndex] {
+				t.Fatalf("output_text.delta %q emitted for output_index %d after its output_item.done", *evt.Delta, *evt.OutputIndex)
+			}
+			deltas = append(deltas, *evt.Delta)
+		case ResponsesStreamResponseTypeCompleted:
+			completed = evt
+		}
+	}
+
+	if want := []string{before, newline + after}; !reflect.DeepEqual(deltas, want) {
+		t.Fatalf("output_text deltas = %q, want %q", deltas, want)
+	}
+	if completed == nil || completed.Response == nil {
+		t.Fatal("expected response.completed event")
+	}
+	var got []string
+	for _, item := range completed.Response.Output {
+		switch {
+		case item.Type != nil && *item.Type == ResponsesMessageTypeMessage:
+			got = append(got, "message:"+*item.Content.ContentBlocks[0].Text)
+		case item.Type != nil && *item.Type == ResponsesMessageTypeFunctionCall:
+			got = append(got, "function_call:"+*item.Arguments)
+		}
+	}
+	if want := []string{"message:" + before, `function_call:{"q":"x"}`, "message:" + newline + after}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("completed output = %q, want %q", got, want)
+	}
+}
+
 func TestToBifrostResponsesStreamResponse_MapsLengthToIncompleteEvent(t *testing.T) {
 	state := AcquireChatToResponsesStreamState()
 	defer ReleaseChatToResponsesStreamState(state)
@@ -2355,5 +2434,174 @@ func TestToChatMessages_DropsConfigurationUpdateItem(t *testing.T) {
 	}
 	if got[0].Role != ChatMessageRoleUser {
 		t.Fatalf("expected the surviving message to be the user turn, got role %q", got[0].Role)
+	}
+}
+
+// TestChatToResponsesStreamStateReleaseDropsClosedText: the stream state is pooled,
+// so releasing it must not keep a finished stream's text reachable through the
+// backing array of its closed-item list.
+func TestChatToResponsesStreamStateReleaseDropsClosedText(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	state.closedTextItems = append(state.closedTextItems, closedChatTextItem{itemID: "msg_1", text: "a previous user's answer"})
+	backing := state.closedTextItems[:cap(state.closedTextItems)]
+	ReleaseChatToResponsesStreamState(state)
+	for i, item := range backing {
+		if item.text != "" || item.itemID != "" {
+			t.Fatalf("pooled state still references closed item %d: %+v", i, item)
+		}
+	}
+}
+
+// responsesStreamEvents feeds chunks through one pooled state and returns the events.
+func responsesStreamEvents(state *ChatToResponsesStreamState, chunks ...*BifrostChatResponse) []*BifrostResponsesStreamResponse {
+	var all []*BifrostResponsesStreamResponse
+	for _, chunk := range chunks {
+		all = append(all, chunk.ToBifrostResponsesStreamResponse(state)...)
+	}
+	return all
+}
+
+func textToolChunk(content, callID, finish string) *BifrostChatResponse {
+	delta := &ChatStreamResponseChoiceDelta{}
+	if content != "" {
+		delta.Content = Ptr(content)
+	}
+	if callID != "" {
+		delta.ToolCalls = []ChatAssistantMessageToolCall{{ID: Ptr(callID), Function: ChatAssistantMessageToolCallFunction{Name: Ptr("lookup"), Arguments: "{}"}}}
+	}
+	choice := BifrostResponseChoice{ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: delta}}
+	if finish != "" {
+		choice.FinishReason = Ptr(finish)
+	}
+	return &BifrostChatResponse{ID: "chatcmpl-test", Model: "test-model", Choices: []BifrostResponseChoice{choice}}
+}
+
+func completedMessageTexts(t *testing.T, events []*BifrostResponsesStreamResponse) []string {
+	t.Helper()
+	var texts []string
+	for _, event := range events {
+		if event.Type != ResponsesStreamResponseTypeCompleted {
+			continue
+		}
+		for _, item := range event.Response.Output {
+			if item.Type != nil && *item.Type == ResponsesMessageTypeMessage {
+				texts = append(texts, *item.Content.ContentBlocks[0].Text)
+			}
+		}
+		return texts
+	}
+	t.Fatal("expected response.completed")
+	return nil
+}
+
+// TestChatToResponsesStreamStateTextAlternatesWithToolsDeliveredOnce covers several
+// text and tool alternations: each text reaches one item, once, in stream order.
+func TestChatToResponsesStreamStateTextAlternatesWithToolsDeliveredOnce(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	events := responsesStreamEvents(state,
+		textToolChunk("one", "", ""), textToolChunk("", "call_1", ""),
+		textToolChunk("two", "", ""), textToolChunk("", "call_2", ""),
+		textToolChunk("three", "", ""), textToolChunk("", "", "stop"),
+	)
+
+	var deltas []string
+	itemIDs := map[string]bool{}
+	for _, event := range events {
+		if event.Type == ResponsesStreamResponseTypeOutputTextDelta {
+			deltas = append(deltas, *event.Delta)
+			itemIDs[*event.ItemID] = true
+		}
+	}
+	want := []string{"one", "two", "three"}
+	if !reflect.DeepEqual(deltas, want) {
+		t.Fatalf("deltas = %q, want %q", deltas, want)
+	}
+	if len(itemIDs) != 3 {
+		t.Fatalf("message items = %v, want one per text", itemIDs)
+	}
+	if got := completedMessageTexts(t, events); !reflect.DeepEqual(got, want) {
+		t.Fatalf("completed text = %q, want %q", got, want)
+	}
+}
+
+// TestChatToResponsesStreamStateTrailingWhitespaceOpensNoItem pins the SGLang shape:
+// whitespace after the last tool call is held, and with no text after it is never sent.
+func TestChatToResponsesStreamStateTrailingWhitespaceOpensNoItem(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	events := responsesStreamEvents(state, textToolChunk("one", "", ""), textToolChunk("", "call_1", ""), textToolChunk("\n", "", ""), textToolChunk("", "", "tool_calls"))
+
+	if got := completedMessageTexts(t, events); !reflect.DeepEqual(got, []string{"one"}) {
+		t.Fatalf("completed text = %q", got)
+	}
+}
+
+// TestChatToResponsesStreamStatePooledReuseStartsClean releases a state with closed items
+// and held whitespace, then runs a stream on what the pool hands back: nothing of the
+// first reaches the second, whichever state object the pool returns.
+func TestChatToResponsesStreamStatePooledReuseStartsClean(t *testing.T) {
+	first := AcquireChatToResponsesStreamState()
+	responsesStreamEvents(first, textToolChunk("secret", "", ""), textToolChunk("", "call_1", ""), textToolChunk("again", "", ""), textToolChunk("", "call_2", ""), textToolChunk("\n", "", ""))
+	if len(first.closedTextItems) != 1 || first.pendingText != "\n" {
+		t.Fatalf("setup: closed=%d pending=%q", len(first.closedTextItems), first.pendingText)
+	}
+	ReleaseChatToResponsesStreamState(first)
+
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+	if len(state.closedTextItems) != 0 || state.pendingText != "" {
+		t.Fatalf("acquired state keeps closed=%d pending=%q", len(state.closedTextItems), state.pendingText)
+	}
+	events := responsesStreamEvents(state, textToolChunk("mine", "", ""), textToolChunk("", "", "stop"))
+	if got := completedMessageTexts(t, events); !reflect.DeepEqual(got, []string{"mine"}) {
+		t.Fatalf("completed text = %q", got)
+	}
+}
+
+// TestChatToResponsesStreamStateBoundsPooledCapacity verifies an unusually long stream's
+// closed-item list is dropped, not kept in the pool.
+func TestChatToResponsesStreamStateBoundsPooledCapacity(t *testing.T) {
+	state := &ChatToResponsesStreamState{closedTextItems: make([]closedChatTextItem, maxPooledClosedTextItems+1)}
+	state.resetClosedTextItems()
+	if state.closedTextItems != nil {
+		t.Fatalf("capacity %d kept past the bound", cap(state.closedTextItems))
+	}
+	state.closedTextItems = make([]closedChatTextItem, maxPooledClosedTextItems)
+	state.resetClosedTextItems()
+	if cap(state.closedTextItems) != maxPooledClosedTextItems || len(state.closedTextItems) != 0 {
+		t.Fatalf("len %d cap %d, want a reusable empty slice at the bound", len(state.closedTextItems), cap(state.closedTextItems))
+	}
+}
+
+// BenchmarkToBifrostResponsesStreamResponseTextDelta measures the path every text chunk
+// takes; the closed-item work costs a stream with no tool calls nothing.
+func BenchmarkToBifrostResponsesStreamResponseTextDelta(b *testing.B) {
+	chunk := textToolChunk("hello", "", "")
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+	state.MessageID = Ptr("chatcmpl-bench")
+	chunk.ToBifrostResponsesStreamResponse(state)
+	b.ReportAllocs()
+	for b.Loop() {
+		state.TextBuffer.Reset()
+		chunk.ToBifrostResponsesStreamResponse(state)
+	}
+}
+
+// BenchmarkToBifrostResponsesStreamResponseTextAfterTool measures the feature path:
+// a tool call, then text that opens a new item.
+func BenchmarkToBifrostResponsesStreamResponseTextAfterTool(b *testing.B) {
+	tool, text := textToolChunk("", "call_1", ""), textToolChunk("after", "", "")
+	first := textToolChunk("before", "", "")
+	b.ReportAllocs()
+	for b.Loop() {
+		state := AcquireChatToResponsesStreamState()
+		first.ToBifrostResponsesStreamResponse(state)
+		tool.ToBifrostResponsesStreamResponse(state)
+		text.ToBifrostResponsesStreamResponse(state)
+		ReleaseChatToResponsesStreamState(state)
 	}
 }

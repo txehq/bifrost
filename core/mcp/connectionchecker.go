@@ -294,9 +294,12 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		// NeedsReauth itself on this attempt's outcome — nothing further to
 		// do here. "Already in progress" (another trigger, e.g. the
 		// reactive per-request path, beat this tick to it) is expected and
-		// fine to ignore; whichever attempt finishes is authoritative.
+		// fine to ignore; whichever attempt finishes is authoritative. The
+		// generation is rechecked at admission, as in reconnectAfterFailedCheck:
+		// another trigger may have installed a connection since this tick read
+		// none, and that connection must not be replaced.
 		go func() {
-			if err := c.manager.ReconnectClient(c.clientID); err != nil {
+			if err := c.manager.reconnectClientAtGeneration(c.clientID, connGeneration); err != nil {
 				c.logger.Debug("%s Connection checker's reconnect attempt for %s did not complete: %v", MCPLogPrefix, clientName, err)
 			}
 		}()
@@ -329,8 +332,11 @@ func (c *ClientConnectionChecker) reconnectAfterFailedCheck(clientName string, c
 		c.logger.Debug("%s Skipping reconnect for %s: the connection was replaced during the check, or the client is no longer reconnectable", MCPLogPrefix, clientName)
 		return
 	}
+	// This check runs before the reconnect takes the exclusive slot, so another
+	// reconnect can still finish in between; reconnectClientAtGeneration rechecks
+	// under the slot.
 	go func() {
-		if err := c.manager.ReconnectClient(c.clientID); err != nil {
+		if err := c.manager.reconnectClientAtGeneration(c.clientID, connGeneration); err != nil {
 			c.logger.Debug("%s Connection checker's reconnect attempt for %s did not complete: %v", MCPLogPrefix, clientName, err)
 		}
 	}()

@@ -483,7 +483,7 @@ func runInjectedChatLoop(
 }
 
 // runInjectedResponsesLoop is the Responses API parallel of runInjectedChatLoop. Every
-// output item of an intermediate turn except the client's function calls is replayed as
+// output item of an intermediate turn except the client's tool calls is replayed as
 // input, so reasoning items and their signatures reach the next turn intact.
 func runInjectedResponsesLoop(
 	original *schemas.BifrostResponsesRequest,
@@ -527,7 +527,7 @@ func runInjectedResponsesLoop(
 		next.Input = append(next.Input, turn.Input...)
 		for _, item := range resp.Output {
 			_, isInjected := injectedResponsesCall(item, set)
-			if isFunctionCall(item) && !isInjected {
+			if isToolCallItem(item) && !isInjected {
 				continue
 			}
 			next.Input = append(next.Input, item)
@@ -570,6 +570,35 @@ func executeInjectedCalls(calls []schemas.ChatAssistantMessageToolCall, exec fun
 
 func isFunctionCall(item schemas.ResponsesMessage) bool {
 	return item.Type != nil && *item.Type == schemas.ResponsesMessageTypeFunctionCall && item.ResponsesToolMessage != nil
+}
+
+// isToolCallItem reports whether the item asks the client for a tool result: a function
+// call, a custom tool call, or a call to a client-run computer, shell or patch tool.
+// Injected tools are always functions, so any other such call is the client's, and it
+// needs the client's output before it can be replayed. A shell call in a hosted container
+// is not one: the provider runs it and supplies its output, so the pair replays as is.
+func isToolCallItem(item schemas.ResponsesMessage) bool {
+	if item.Type == nil {
+		return false
+	}
+	switch *item.Type {
+	case schemas.ResponsesMessageTypeFunctionCall:
+		return item.ResponsesToolMessage != nil
+	case schemas.ResponsesMessageTypeCustomToolCall, schemas.ResponsesMessageTypeComputerCall,
+		schemas.ResponsesMessageTypeLocalShellCall, schemas.ResponsesMessageTypeApplyPatchCall:
+		return true
+	case schemas.ResponsesMessageTypeShellCall:
+		return !isHostedShellCall(item)
+	}
+	return false
+}
+
+// isHostedShellCall reports whether a shell call ran in a provider-hosted container.
+func isHostedShellCall(item schemas.ResponsesMessage) bool {
+	if item.ResponsesToolMessage == nil || item.ResponsesShellCall == nil || item.ResponsesShellCall.Environment == nil {
+		return false
+	}
+	return strings.HasPrefix(item.ResponsesShellCall.Environment.Type, "container")
 }
 
 // injectedResponsesCall returns the item as a chat tool call when it calls an injected tool.
@@ -781,6 +810,11 @@ func withGatewayToolSearch(set *injectedToolSet, req *schemas.BifrostRequest, ba
 	if (req.RequestType != schemas.ResponsesRequest && req.RequestType != schemas.ResponsesStreamRequest) ||
 		!toolsearch.Candidate(req.ResponsesRequest) ||
 		toolsearch.NativeSupport(baseProvider, model) {
+		return set
+	}
+	// An injected tool the operator named after the search keeps that name: declaring both
+	// would send the model two tools with one name and leave only one of them reachable.
+	if set.isInjected(toolsearch.ToolName) {
 		return set
 	}
 	session := toolsearch.NewSession(req.ResponsesRequest)

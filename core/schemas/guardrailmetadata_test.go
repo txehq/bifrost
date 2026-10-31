@@ -297,3 +297,93 @@ func TestGuardrailMetadataConcurrentAppendsAreNotLost(t *testing.T) {
 	assert.Len(t, metadata.Detections, writers)
 	assert.Len(t, metadata.JudgeCalls, writers)
 }
+
+// TestGuardrailMetadataAppendsDoNotRetainCallerOwnedData verifies that mutating an
+// appended entry's nested fields afterwards cannot change what the context stored.
+func TestGuardrailMetadataAppendsDoNotRetainCallerOwnedData(t *testing.T) {
+	t.Run("judge call", func(t *testing.T) {
+		ctx := NewBifrostContext(nil, NoDeadline)
+		ruleID := uint(7)
+		promptDetails := &ChatPromptTokensDetails{CachedReadTokens: 100}
+		completionDetails := &ChatCompletionTokensDetails{ReasoningTokens: 5}
+		require.True(t, AppendGuardrailJudgeCallOnContext(ctx, BifrostGuardrailJudgeCall{
+			RuleID:                  &ruleID,
+			PromptTokens:            200,
+			PromptTokensDetails:     promptDetails,
+			CompletionTokensDetails: completionDetails,
+			TotalTokens:             200,
+		}))
+		promptDetails.CachedReadTokens = 0
+		completionDetails.ReasoningTokens = 0
+		ruleID = 99
+
+		metadata, ok := GuardrailMetadataFromContext(ctx)
+		require.True(t, ok)
+		assert.Equal(t, 100, metadata.JudgeCalls[0].PromptTokensDetails.CachedReadTokens)
+		assert.Equal(t, 5, metadata.JudgeCalls[0].CompletionTokensDetails.ReasoningTokens)
+		assert.Equal(t, uint(7), *metadata.JudgeCalls[0].RuleID)
+	})
+	t.Run("detection", func(t *testing.T) {
+		ctx := NewBifrostContext(nil, NoDeadline)
+		ruleID := uint(7)
+		enforced := true
+		assessments := []string{"pii"}
+		require.True(t, AppendGuardrailDetectionOnContext(ctx, BifrostGuardrailDetection{RuleID: &ruleID, Assessments: assessments, Enforced: &enforced}))
+		assessments[0] = "mutated"
+		ruleID = 99
+		enforced = false
+
+		metadata, ok := GuardrailMetadataFromContext(ctx)
+		require.True(t, ok)
+		assert.Equal(t, []string{"pii"}, metadata.Detections[0].Assessments)
+		assert.Equal(t, uint(7), *metadata.Detections[0].RuleID)
+		assert.True(t, *metadata.Detections[0].Enforced)
+	})
+	t.Run("intervention", func(t *testing.T) {
+		ctx := NewBifrostContext(nil, NoDeadline)
+		ruleID := uint(7)
+		assessments := []string{"toxicity"}
+		require.True(t, AppendGuardrailInterventionOnContext(ctx, BifrostGuardrailIntervention{RuleID: &ruleID, Assessments: assessments}))
+		assessments[0] = "mutated"
+		ruleID = 99
+
+		metadata, ok := GuardrailMetadataFromContext(ctx)
+		require.True(t, ok)
+		assert.Equal(t, []string{"toxicity"}, metadata.Interventions[0].Assessments)
+		assert.Equal(t, uint(7), *metadata.Interventions[0].RuleID)
+	})
+}
+
+// TestGuardrailMetadataClonePreservesNilAndEmpty verifies a clone keeps a nil list nil and
+// an empty list empty, and shares no storage with the original.
+func TestGuardrailMetadataClonePreservesNilAndEmpty(t *testing.T) {
+	original := &BifrostGuardrailMetadata{
+		Detections: []BifrostGuardrailDetection{
+			{Assessments: nil},
+			{Assessments: []string{}},
+			{Assessments: []string{"pii"}},
+		},
+		Interventions: []BifrostGuardrailIntervention{{Assessments: nil}, {Assessments: []string{}}},
+	}
+
+	clone := original.Clone()
+
+	assert.Nil(t, clone.Detections[0].Assessments)
+	assert.NotNil(t, clone.Detections[1].Assessments)
+	assert.Empty(t, clone.Detections[1].Assessments)
+	assert.Nil(t, clone.Interventions[0].Assessments)
+	assert.NotNil(t, clone.Interventions[1].Assessments)
+	clone.Detections[2].Assessments[0] = "mutated"
+	assert.Equal(t, "pii", original.Detections[2].Assessments[0])
+}
+
+// BenchmarkAppendGuardrailDetectionOnContext measures one append with nested data.
+func BenchmarkAppendGuardrailDetectionOnContext(b *testing.B) {
+	ruleID := uint(7)
+	detection := BifrostGuardrailDetection{RuleID: &ruleID, Assessments: []string{"pii"}, Enforced: Ptr(true)}
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := NewBifrostContext(nil, NoDeadline)
+		AppendGuardrailDetectionOnContext(ctx, detection)
+	}
+}

@@ -646,3 +646,143 @@ func TestSSEStreamDropped_CheckerReconnects(t *testing.T) {
 		"rediscovery must run over the replacement connection, and only a tool registered after the drop can show that")
 	assert.Contains(t, after.ToolMap, config.Name+"-echo", "without losing what the client already had")
 }
+
+// TestReconnectAfterFailedCheck_SuccessorInstalledBeforeAdmission covers the gap between
+// the checker's generation check and its reconnect taking the exclusive operation slot.
+// A reconnect that finishes inside that gap installs a healthy successor; the checker's
+// reconnect, admitted afterwards, must recheck the generation it was owed for and leave
+// the successor alone.
+func TestReconnectAfterFailedCheck_SuccessorInstalledBeforeAdmission(t *testing.T) {
+	ts, _ := buildExpiringSessionMCPServer(t)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{
+		ID:                     "client-reconnect-admission",
+		Name:                   "admission-client",
+		AuthType:               schemas.MCPAuthTypeHeaders,
+		ConnectionType:         schemas.MCPConnectionTypeHTTP,
+		ConnectionString:       schemas.NewSecretVar(ts.URL),
+		NeedsSessionStickiness: schemas.Ptr(true),
+		ToolsToExecute:         []string{"*"},
+	}
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
+	before, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+	failedGeneration := before.ConnGeneration
+
+	checker := NewClientConnectionChecker(m, config.ID, time.Minute, false, &MockLogger{})
+	// The read lock parks the reconnect's goroutine at its admission (it needs the write
+	// lock) until the successor below is in, whatever the scheduler does.
+	m.mu.RLock()
+	checker.reconnectAfterFailedCheck(config.Name, failedGeneration)
+	m.clientMap[config.ID].ConnGeneration = failedGeneration + 1 // a concurrent reconnect installed a successor
+	m.mu.RUnlock()
+
+	require.Eventually(t, func() bool {
+		_, admitted := m.reconnectingClients.Load(config.ID)
+		return admitted
+	}, 5*time.Second, 5*time.Millisecond, "the checker's reconnect must still reach the exclusive slot")
+	finished, err := m.AwaitReconnect(config.ID, 10*time.Second)
+	require.True(t, finished)
+	require.NoError(t, err)
+
+	after, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+	assert.Equal(t, failedGeneration+1, after.ConnGeneration, "the successor installed after the generation check must not be replaced")
+	assert.True(t, before.Conn == after.Conn, "the successor's connection must stay installed")
+}
+
+// TestReconnectClientAtGeneration_RefusesUnreconnectableStates covers a client that was
+// disabled or lost its credential between the check and the admission, and one removed
+// outright: neither state bumps the generation, so the generation alone would not stop it.
+func TestReconnectClientAtGeneration_RefusesUnreconnectableStates(t *testing.T) {
+	for _, state := range []schemas.MCPConnectionState{schemas.MCPConnectionStateDisabled, schemas.MCPConnectionStateNeedsReauth} {
+		t.Run(string(state), func(t *testing.T) {
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			config := &schemas.MCPClientConfig{
+				ID: "client-refused", Name: "refused", AuthType: schemas.MCPAuthTypeHeaders, ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("http://127.0.0.1:0/mcp"), NeedsSessionStickiness: schemas.Ptr(true),
+			}
+			m.mu.Lock()
+			m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: state, ConnGeneration: 3}
+			m.mu.Unlock()
+
+			require.NoError(t, m.reconnectClientAtGeneration(config.ID, 3))
+
+			after, ok := snapshotClientState(m, config.ID)
+			require.True(t, ok)
+			assert.Equal(t, state, after.State, "a refused reconnect never dials, so the state stands")
+		})
+	}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	assert.Error(t, m.reconnectClientAtGeneration("client-removed", 1), "a removed client is reported, as by ReconnectClient")
+}
+
+// TestPerformCheck_NilConn_SuccessorInstalledBeforeAdmission is the no-connection branch's
+// version of the gap: the tick read no connection, and by the time its reconnect is
+// admitted another trigger has installed one.
+func TestPerformCheck_NilConn_SuccessorInstalledBeforeAdmission(t *testing.T) {
+	ts, _ := buildExpiringSessionMCPServer(t)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{
+		ID: "client-nil-conn-admission", Name: "nil-conn-admission", AuthType: schemas.MCPAuthTypeHeaders, ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
+	}
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
+	before, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+
+	m.mu.Lock()
+	m.clientMap[config.ID].Conn = nil
+	m.clientMap[config.ID].State = schemas.MCPConnectionStateUnstable
+	m.mu.Unlock()
+
+	checker := NewClientConnectionChecker(m, config.ID, time.Minute, false, &MockLogger{})
+	// As above: the read lock holds the tick's reconnect at its admission.
+	m.mu.RLock()
+	checker.performCheck()
+	m.clientMap[config.ID].Conn = before.Conn
+	m.clientMap[config.ID].State = schemas.MCPConnectionStateHealthy
+	m.clientMap[config.ID].ConnGeneration = before.ConnGeneration + 1
+	m.mu.RUnlock()
+
+	require.Eventually(t, func() bool {
+		_, admitted := m.reconnectingClients.Load(config.ID)
+		return admitted
+	}, 5*time.Second, 5*time.Millisecond, "the tick's reconnect must still reach the exclusive slot")
+	finished, _ := m.AwaitReconnect(config.ID, 10*time.Second)
+	require.True(t, finished)
+
+	after, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+	assert.Equal(t, before.ConnGeneration+1, after.ConnGeneration)
+	assert.True(t, before.Conn == after.Conn)
+}
+
+// TestReconnectClientAtGeneration_ConcurrentAdmission races several checkers holding the
+// same failed generation: one may redial, and every other sees the slot taken or the new
+// generation, so the connection is replaced at most once.
+func TestReconnectClientAtGeneration_ConcurrentAdmission(t *testing.T) {
+	ts, _ := buildExpiringSessionMCPServer(t)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	config := &schemas.MCPClientConfig{
+		ID: "client-concurrent-admission", Name: "concurrent-admission", AuthType: schemas.MCPAuthTypeHeaders, ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
+	}
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
+	before, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = m.reconnectClientAtGeneration(config.ID, before.ConnGeneration)
+		}()
+	}
+	wg.Wait()
+
+	after, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+	assert.LessOrEqual(t, after.ConnGeneration, before.ConnGeneration+1, "only the first admission may replace the connection it was owed for")
+}

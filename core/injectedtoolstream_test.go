@@ -180,6 +180,87 @@ func TestInjectedChatStream_StopsAtMaxDepth(t *testing.T) {
 	assert.Equal(t, "stop", *terminal.resp.Choices[0].FinishReason)
 }
 
+func streamChoice(index int, text, finish string, call *schemas.ChatAssistantMessageToolCall) schemas.BifrostResponseChoice {
+	delta := &schemas.ChatStreamResponseChoiceDelta{}
+	if text != "" {
+		delta.Content = schemas.Ptr(text)
+	}
+	if call != nil {
+		delta.ToolCalls = []schemas.ChatAssistantMessageToolCall{*call}
+	}
+	choice := schemas.BifrostResponseChoice{Index: index, ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: delta}}
+	if finish != "" {
+		choice.FinishReason = schemas.Ptr(finish)
+	}
+	return choice
+}
+
+func multiChoiceChunk(id string, u *schemas.BifrostLLMUsage, choices ...schemas.BifrostResponseChoice) *schemas.BifrostChatResponse {
+	return &schemas.BifrostChatResponse{ID: id, Created: 100, Model: "m", Object: "chat.completion.chunk", Usage: u, Choices: choices}
+}
+
+// emittedChoices collects, per client choice index, the streamed text, the tool
+// calls and the last finish reason.
+func emittedChoices(emits []streamEmit) (map[int]string, map[int][]schemas.ChatAssistantMessageToolCall, map[int]string) {
+	text, calls, finish := map[int]string{}, map[int][]schemas.ChatAssistantMessageToolCall{}, map[int]string{}
+	for _, e := range emits {
+		for _, c := range e.resp.Choices {
+			if c.FinishReason != nil {
+				finish[c.Index] = *c.FinishReason
+			}
+			if c.ChatStreamResponseChoice == nil || c.Delta == nil {
+				continue
+			}
+			if c.Delta.Content != nil {
+				text[c.Index] += *c.Delta.Content
+			}
+			calls[c.Index] = append(calls[c.Index], c.Delta.ToolCalls...)
+		}
+	}
+	return text, calls, finish
+}
+
+// With n>1 the loop is driven by the first choice, as in runInjectedChatLoop. Other
+// choices keep their index and reach the client from the turn that ends the stream,
+// minus injected calls; nothing from another choice is merged into choice zero.
+func TestInjectedChatStream_MultipleChoicesKeepTheirIndexes(t *testing.T) {
+	s := newInjectedChatStream(testInjectedSet(t))
+	turn1 := []*schemas.BifrostChatResponse{
+		multiChoiceChunk("turn-1", nil, streamChoice(0, "Looking.", "", nil), streamChoice(1, "Other draft.", "", nil)),
+		multiChoiceChunk("turn-1", nil, streamChoice(0, "", "", callStart(0, "c1", "web_search"))),
+		multiChoiceChunk("turn-1", nil, streamChoice(1, "", "stop", nil)),
+		multiChoiceChunk("turn-1", nil, streamChoice(0, "", "tool_calls", nil)),
+		multiChoiceChunk("turn-1", usage(10)),
+	}
+	var emits []streamEmit
+	for i, chunk := range turn1 {
+		emits = append(emits, s.onChunk(chunk, i == len(turn1)-1)...)
+	}
+	require.True(t, s.continues())
+	s.endTurn()
+
+	turn2 := []*schemas.BifrostChatResponse{
+		multiChoiceChunk("turn-2", nil, streamChoice(0, "Sunny.", "", nil), streamChoice(1, "Cloudy.", "", callStart(0, "c9", "web_search"))),
+		multiChoiceChunk("turn-2", nil, streamChoice(1, "", "", callStart(1, "c2", "get_weather"))),
+		multiChoiceChunk("turn-2", nil, streamChoice(0, "", "stop", nil), streamChoice(1, "", "tool_calls", nil)),
+		multiChoiceChunk("turn-2", usage(20)),
+	}
+	for i, chunk := range turn2 {
+		emits = append(emits, s.onChunk(chunk, i == len(turn2)-1)...)
+	}
+	require.False(t, s.continues())
+	require.True(t, emits[len(emits)-1].terminal)
+
+	text, calls, finish := emittedChoices(emits)
+	assert.Equal(t, "Looking.Sunny.", text[0], "choice zero carries only its own text")
+	assert.Equal(t, "stop", finish[0])
+	assert.Equal(t, "Cloudy.", text[1], "the final turn's other choice keeps its index")
+	require.Len(t, calls[1], 1, "the other choice keeps its client call and loses the injected one")
+	assert.Equal(t, "c2", *calls[1][0].ID)
+	assert.Equal(t, "tool_calls", finish[1])
+	assert.Empty(t, calls[0])
+}
+
 // gateCountingTracer counts every chunk that passes through the pause/resume gate.
 type gateCountingTracer struct {
 	schemas.NoOpTracer
@@ -374,6 +455,76 @@ func TestInjectedResponsesStream_ClientCallBeforeInjectedCallIsDropped(t *testin
 	require.Len(t, injected, 1)
 	require.Len(t, items, 1, "the client call is not replayed: it has no output to pair with")
 	assert.Equal(t, "c2", *items[0].CallID)
+}
+
+// A client custom tool call is held and dropped like a client function call when
+// the turn also calls an injected tool.
+func TestInjectedResponsesStream_ClientCustomCallBeforeInjectedCallIsDropped(t *testing.T) {
+	s := newInjectedResponsesStream(testInjectedSet(t))
+	r := &responsesEvents{respID: "resp_1"}
+	emits := feedResponses(s,
+		r.created(),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, responsesCustomToolCall("c1", "code_exec")),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, responsesCustomToolCall("c1", "code_exec")),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 1, responsesFunctionCall("c2", "web_search")),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 1, responsesFunctionCall("c2", "web_search")),
+		r.completed(5),
+	)
+	require.Len(t, emits, 1, "only response.created reaches the client")
+	require.True(t, s.continues())
+	items, injected := s.endTurn()
+	require.Len(t, injected, 1)
+	require.Len(t, items, 1, "the client custom call is not replayed: it has no output to pair with")
+	assert.Equal(t, "c2", *items[0].CallID)
+}
+
+// A custom tool call in the turn that ends the stream reaches the client, added and done
+// once, and in the completed output.
+func TestInjectedResponsesStream_FinalCustomCallReachesClient(t *testing.T) {
+	s := newInjectedResponsesStream(testInjectedSet(t))
+	r := &responsesEvents{respID: "resp_1"}
+	emits := feedResponses(s,
+		r.created(),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, responsesCustomToolCall("c1", "code_exec")),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, responsesCustomToolCall("c1", "code_exec")),
+		r.completed(5),
+	)
+	require.False(t, s.continues())
+	var added, done int
+	for _, emit := range emits {
+		switch emit.event.Type {
+		case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+			added++
+		case schemas.ResponsesStreamResponseTypeOutputItemDone:
+			done++
+		}
+	}
+	assert.Equal(t, 1, added)
+	assert.Equal(t, 1, done)
+	terminal := emits[len(emits)-1]
+	require.True(t, terminal.terminal)
+	require.Len(t, terminal.event.Response.Output, 1)
+	assert.Equal(t, schemas.ResponsesMessageTypeCustomToolCall, *terminal.event.Response.Output[0].Type)
+}
+
+// An upstream's other choices in a turn that is re-asked never reach the client, and do
+// not leak into the next turn's release.
+func TestInjectedChatStream_ReaskedTurnDiscardsOtherChoices(t *testing.T) {
+	s := newInjectedChatStream(testInjectedSet(t))
+	for i, chunk := range []*schemas.BifrostChatResponse{
+		multiChoiceChunk("turn-1", nil, streamChoice(1, "discarded", "stop", nil)),
+		multiChoiceChunk("turn-1", nil, streamChoice(0, "", "tool_calls", callStart(0, "c1", "web_search"))),
+	} {
+		emits := s.onChunk(chunk, i == 1)
+		assert.Empty(t, emits, "nothing of a re-asked turn's other choice is visible")
+	}
+	require.True(t, s.continues())
+	s.endTurn()
+
+	emits := s.onChunk(multiChoiceChunk("turn-2", usage(5), streamChoice(0, "Sunny.", "stop", nil)), true)
+	text, _, finish := emittedChoices(emits)
+	assert.Equal(t, map[int]string{0: "Sunny."}, text)
+	assert.Equal(t, map[int]string{0: "stop"}, finish)
 }
 
 // A client call the model sends before a text item stays ahead of it: once a client
@@ -733,4 +884,16 @@ func TestResponsesStream_GatewayToolSearch(t *testing.T) {
 	require.NotNil(t, final)
 	require.NotNil(t, final.Usage)
 	assert.Equal(t, 30, final.Usage.InputTokens, "usage summed across turns")
+}
+
+// BenchmarkInjectedChatStreamOnChunkText measures the chunk every streamed turn is made of:
+// one choice, no held choices.
+func BenchmarkInjectedChatStreamOnChunkText(b *testing.B) {
+	s := newInjectedChatStream(&injectedToolSet{maxDepth: 5})
+	chunk := multiChoiceChunk("turn", nil, streamChoice(0, "hello", "", nil))
+	b.ReportAllocs()
+	for b.Loop() {
+		s.text.Reset()
+		_ = s.onChunk(chunk, false)
+	}
 }

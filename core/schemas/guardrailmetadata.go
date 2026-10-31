@@ -82,32 +82,47 @@ func (d *BifrostGuardrailMetadata) Clone() *BifrostGuardrailMetadata {
 	if len(d.JudgeCalls) > 0 {
 		clone.JudgeCalls = make([]BifrostGuardrailJudgeCall, len(d.JudgeCalls))
 		for index, call := range d.JudgeCalls {
-			clone.JudgeCalls[index] = call
-			clone.JudgeCalls[index].RuleID = cloneUint(call.RuleID)
-			clone.JudgeCalls[index].PromptTokensDetails = cloneChatPromptTokensDetails(call.PromptTokensDetails)
-			clone.JudgeCalls[index].CompletionTokensDetails = cloneChatCompletionTokensDetails(call.CompletionTokensDetails)
+			clone.JudgeCalls[index] = call.clone()
 		}
 	}
 	if len(d.Detections) > 0 {
 		clone.Detections = make([]BifrostGuardrailDetection, len(d.Detections))
 		for index, detection := range d.Detections {
-			clone.Detections[index] = detection
-			clone.Detections[index].RuleID = cloneUint(detection.RuleID)
-			clone.Detections[index].Assessments = append([]string(nil), detection.Assessments...)
-			if detection.Enforced != nil {
-				clone.Detections[index].Enforced = Ptr(*detection.Enforced)
-			}
+			clone.Detections[index] = detection.clone()
 		}
 	}
 	if len(d.Interventions) > 0 {
 		clone.Interventions = make([]BifrostGuardrailIntervention, len(d.Interventions))
 		for index, intervention := range d.Interventions {
-			clone.Interventions[index] = intervention
-			clone.Interventions[index].RuleID = cloneUint(intervention.RuleID)
-			clone.Interventions[index].Assessments = append([]string(nil), intervention.Assessments...)
+			clone.Interventions[index] = intervention.clone()
 		}
 	}
 	return clone
+}
+
+// clone returns a copy of the judge call that shares no nested data with it.
+func (call BifrostGuardrailJudgeCall) clone() BifrostGuardrailJudgeCall {
+	call.RuleID = cloneUint(call.RuleID)
+	call.PromptTokensDetails = cloneChatPromptTokensDetails(call.PromptTokensDetails)
+	call.CompletionTokensDetails = cloneChatCompletionTokensDetails(call.CompletionTokensDetails)
+	return call
+}
+
+// clone returns a copy of the detection that shares no nested data with it.
+func (detection BifrostGuardrailDetection) clone() BifrostGuardrailDetection {
+	detection.RuleID = cloneUint(detection.RuleID)
+	detection.Assessments = slices.Clone(detection.Assessments)
+	if detection.Enforced != nil {
+		detection.Enforced = Ptr(*detection.Enforced)
+	}
+	return detection
+}
+
+// clone returns a copy of the intervention that shares no nested data with it.
+func (intervention BifrostGuardrailIntervention) clone() BifrostGuardrailIntervention {
+	intervention.RuleID = cloneUint(intervention.RuleID)
+	intervention.Assessments = slices.Clone(intervention.Assessments)
+	return intervention
 }
 
 // cloneChatPromptTokensDetails returns an owned copy of nested prompt token details.
@@ -171,12 +186,13 @@ func AppendGuardrailJudgeCallOnContext(ctx *BifrostContext, call BifrostGuardrai
 		return false
 	}
 	return appendGuardrailMetadataOnContext(ctx, func(metadata *BifrostGuardrailMetadata) {
-		metadata.JudgeCalls = append(metadata.JudgeCalls, call)
+		metadata.JudgeCalls = append(metadata.JudgeCalls, call.clone())
 	})
 }
 
 // appendGuardrailMetadataOnContext applies appendTo to an owned copy of ctx's guardrail metadata
 // and stores it in one locked step, so concurrent appends of any kind never lose an entry.
+// appendTo must store owned copies of its entries: the caller keeps the originals.
 func appendGuardrailMetadataOnContext(ctx *BifrostContext, appendTo func(*BifrostGuardrailMetadata)) bool {
 	ctx.updateValue(BifrostContextKeyGuardrailMetadata, func(current any) any {
 		existing, _ := current.(*BifrostGuardrailMetadata)
@@ -196,7 +212,7 @@ func AppendGuardrailDetectionOnContext(ctx *BifrostContext, detection BifrostGua
 		return false
 	}
 	return appendGuardrailMetadataOnContext(ctx, func(metadata *BifrostGuardrailMetadata) {
-		metadata.Detections = append(metadata.Detections, detection)
+		metadata.Detections = append(metadata.Detections, detection.clone())
 	})
 }
 
@@ -272,7 +288,7 @@ func AppendGuardrailInterventionOnContext(ctx *BifrostContext, intervention Bifr
 		return false
 	}
 	return appendGuardrailMetadataOnContext(ctx, func(metadata *BifrostGuardrailMetadata) {
-		metadata.Interventions = append(metadata.Interventions, intervention)
+		metadata.Interventions = append(metadata.Interventions, intervention.clone())
 	})
 }
 
