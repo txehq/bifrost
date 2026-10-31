@@ -186884,10 +186884,10 @@
                       "pm.test('two vectors come back for one input', function () {",
                       "  pm.expect(data.length, 'expected 2 vectors (audio + video); body: ' + body.slice(0, 300)).to.eql(2);",
                       "});",
-                      "pm.test('they are labelled audio and video, and indexed apart', function () {",
+                      "pm.test('they are labelled audio and video, and both name the one input', function () {",
                       "  var modalities = [data[0].modality, data[1].modality].sort();",
                       "  pm.expect(modalities, 'expected one audio and one video vector').to.eql(['audio', 'video']);",
-                      "  pm.expect(data[0].index, 'vectors must not share an index').to.not.eql(data[1].index);",
+                      "  pm.expect([data[0].index, data[1].index], 'one input was sent, so both vectors name input 0').to.eql([0, 0]);",
                       "  pm.expect(data[0].embedding.length, 'empty audio vector').to.eql(3072);",
                       "  pm.expect(data[1].embedding.length, 'empty video vector').to.eql(3072);",
                       "});"
