@@ -1689,6 +1689,7 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
 			TokenExchange:          dbClient.TokenExchange,
 			OpenAPIConfig:          dbClient.OpenAPIConfig,
+			MaxInstructionsLength:  dbClient.MaxInstructionsLength,
 		}
 		// Populate oauth client credentials from pre-fetched batch
 		if dbClient.OauthConfigID != nil {

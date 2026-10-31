@@ -510,6 +510,11 @@ func decodeKeyUpdate(body []byte, oldRawKey schemas.Key) (schemas.Key, error) {
 	if err := sonic.Unmarshal(body, &updateKey); err != nil {
 		return schemas.Key{}, err
 	}
+	present := make(map[string]bool)
+	gjson.ParseBytes(body).ForEach(func(key, _ gjson.Result) bool {
+		present[decodedFieldName(key.String())] = true
+		return true
+	})
 	for field, keep := range map[string]func(){
 		"value":                     func() { updateKey.Value = oldRawKey.Value },
 		"models":                    func() { updateKey.Models = oldRawKey.Models },
@@ -534,11 +539,20 @@ func decodeKeyUpdate(body []byte, oldRawKey schemas.Key) (schemas.Key, error) {
 		"use_openai_endpoints":      func() { updateKey.UseOpenAIEndpoints = oldRawKey.UseOpenAIEndpoints },
 		"description":               func() { updateKey.Description = oldRawKey.Description },
 	} {
-		if !gjson.GetBytes(body, field).Exists() {
+		if !present[field] {
 			keep()
 		}
 	}
 	return updateKey, nil
+}
+
+// decodedFieldName folds a JSON object key the way sonic matches struct fields, so that
+// code reading the raw body sees the fields the decoder saw. A key that is not an exact
+// field name matches on strings.ToLower, which is Unicode folding, not ASCII: "OAUTH_KEY_CONFIG"
+// and "oauth_\u212Aey_config" (the Kelvin sign lowers to k) both decode into oauth_key_config.
+// Exact names are lowercase here, so one fold covers both steps.
+func decodedFieldName(key string) string {
+	return strings.ToLower(key)
 }
 
 // mergeUpdatedKey merges an updated key with the old raw version, preserving
@@ -1458,15 +1472,21 @@ func validateVertexKeyAuth(provider schemas.ModelProvider, key schemas.Key) erro
 // fails at the first token exchange. Only the oauth block is checked: the rest of the key
 // keeps its lenient decoding.
 func rejectUnknownOAuthKeyConfigFields(body []byte) error {
-	raw := gjson.GetBytes(body, "oauth_key_config")
-	if !raw.Exists() || raw.Type == gjson.Null {
-		return nil
-	}
-	decoder := json.NewDecoder(strings.NewReader(raw.Raw))
-	decoder.DisallowUnknownFields()
-	var cfg schemas.OAuthKeyConfig
-	if err := decoder.Decode(&cfg); err != nil {
-		return fmt.Errorf("oauth_key_config: %s", strings.TrimPrefix(err.Error(), "json: "))
-	}
-	return nil
+	var rejected error
+	// Every spelling the decoder takes is checked: the block may be sent as a case variant,
+	// and when several are sent the decoder folds them all into one.
+	gjson.ParseBytes(body).ForEach(func(key, value gjson.Result) bool {
+		if decodedFieldName(key.String()) != "oauth_key_config" || value.Type == gjson.Null {
+			return true
+		}
+		decoder := json.NewDecoder(strings.NewReader(value.Raw))
+		decoder.DisallowUnknownFields()
+		var cfg schemas.OAuthKeyConfig
+		if err := decoder.Decode(&cfg); err != nil {
+			rejected = fmt.Errorf("oauth_key_config: %s", strings.TrimPrefix(err.Error(), "json: "))
+			return false
+		}
+		return true
+	})
+	return rejected
 }

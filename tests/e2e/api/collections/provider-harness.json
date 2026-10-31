@@ -279265,7 +279265,7 @@
     },
     {
       "name": "264. Provider key server-secret references on a whitelisted management route (key-secret-refs-e2e)",
-      "description": "Opt-in profile regression for TXE-4989. Run with provider_config/whitelisted-provider-keys/config.json (setup_token set, no admin, client.whitelisted_routes [\"/api/providers/*\"]) on an isolated fresh instance, INCLUDE_PREVIEW=1, PARALLEL=0 and FEATURE=key-secret-refs-e2e; the harness's setup token must be the profile's (BIFROST_SETUP_TOKEN, default bifrost-e2e-setup-token). With dashboard auth off, an operator-whitelisted /api route passes the OSS setup lock and is admitted by the fail-open bypass without any credential, which is how a caller with no credential reaches the provider-key handlers over HTTP in OSS (the other reachable bypasses are a gateway with no config store and enterprise builds with auth off). Before the fix such a caller could create or repoint a key whose value is an env./vault. reference, and the gateway resolved the server secret and sent it to the provider. Case 1 proves the lock is active for routes that are not whitelisted; case 2 creates a custom provider with an extra header referencing an env. variable as the setup-token admin (POST /api/providers is not under the whitelisted prefix; base_url 127.0.0.1:9, where nothing listens, so nothing leaves the host). Cases 3-5 cover the provider extra-header rule (TXE-5411) on this reachable path, correcting folder 263's claim that it had none in OSS: with no credential, resending the unchanged reference succeeds, repointing it gets the provider handler's 403, and the stored reference is unchanged. Case 6 creates a key with an env. reference with no credential and expects the key handler's 403, not the lock's 401 (red before the fix); case 7 shows nothing was stored (red before the fix); case 8 creates a literal key, which stays allowed; case 9 repoints its value to an env. reference and expects the 403 (red before the fix); case 10 shows an edit that leaves the value alone still succeeds; case 11 shows the literal survived (red before the fix); case 12 deletes the provider. The key rows reference HOME, a non-secret variable every gateway process has, so before the fix the reference resolves and the key is stored (an unset variable would be refused for an empty value and show nothing); the header variables are not set. No secret exists to leak in either build. The openai keyword is only a harness filter label; no provider calls are made. Cookies and redirect following are disabled. Every unexpected status fails. Run the whole folder in order.",
+      "description": "Opt-in profile regression for TXE-4989. Run with provider_config/whitelisted-provider-keys/config.json (setup_token set, no admin, client.whitelisted_routes [\"/api/providers/*\"]) on an isolated fresh instance, INCLUDE_PREVIEW=1, PARALLEL=0 and FEATURE=key-secret-refs-e2e; the harness's setup token must be the profile's (BIFROST_SETUP_TOKEN, default bifrost-e2e-setup-token). With dashboard auth off, an operator-whitelisted /api route passes the OSS setup lock and is admitted by the fail-open bypass without any credential, which is how a caller with no credential reaches the provider-key handlers over HTTP in OSS (the other reachable bypasses are a gateway with no config store and enterprise builds with auth off). Before the fix such a caller could create or repoint a key whose value is an env./vault. reference, and the gateway resolved the server secret and sent it to the provider. Case 1 proves the lock is active for routes that are not whitelisted; case 2 creates a custom provider with an extra header referencing an env. variable as the setup-token admin (POST /api/providers is not under the whitelisted prefix; base_url 127.0.0.1:9, where nothing listens, so nothing leaves the host). Cases 3-5 cover the provider extra-header rule (TXE-5411) on this reachable path, correcting folder 263's claim that it had none in OSS: with no credential, resending the unchanged reference succeeds, repointing it gets the provider handler's 403, and the stored reference is unchanged. Cases 6-12 (TXE-5528 inserts the two case-variant cases after the value repoint: a case-variant name reaches the same refusal, and an edit under one applies) cover keys. Case 6 creates a key with an env. reference with no credential and expects the key handler's 403, not the lock's 401 (red before the fix); case 7 shows nothing was stored (red before the fix); case 8 creates a literal key, which stays allowed; case 9 repoints its value to an env. reference and expects the 403 (red before the fix); case 10 shows an edit that leaves the value alone still succeeds; case 11 shows the literal survived (red before the fix); the last case deletes the provider. The key rows reference HOME, a non-secret variable every gateway process has, so before the fix the reference resolves and the key is stored (an unset variable would be refused for an empty value and show nothing); the header variables are not set. No secret exists to leak in either build. The openai keyword is only a harness filter label; no provider calls are made. Cookies and redirect following are disabled. Every unexpected status fails. Run the whole folder in order.",
       "item": [
         {
           "name": "[PREVIEW] [EXPECT-401] openai key-secret-refs-e2e setup lock precondition - key-secret-refs-e2e",
@@ -279676,6 +279676,111 @@
             "body": {
               "mode": "raw",
               "raw": "{\"value\": \"env.HOME\"}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-403] openai key-secret-refs-e2e whitelisted key update repointing the value under a case-variant name is refused - key-secret-refs-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('keySecretRefsE2EKey'), 'run the entire key-secret-refs-e2e folder in order').to.be.a('string').and.not.empty;",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('case-variant repoint exact response status - key-secret-refs-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "});",
+                  "pm.test('the key handler refuses the case-variant reference, not the setup lock - key-secret-refs-e2e', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(body, 'failed: ' + body).to.include('server secret reference (value)');",
+                  "  pm.expect(body).to.include('authenticated admin session');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/txe4989-key-refs/keys/{{keySecretRefsE2EKey}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"VALUE\": \"env.HOME\"}"
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-200] openai key-secret-refs-e2e whitelisted key update under a case-variant name applies - key-secret-refs-e2e",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.collectionVariables.get('keySecretRefsE2EKey'), 'run the entire key-secret-refs-e2e folder in order').to.be.a('string').and.not.empty;",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('case-variant weight update exact response status - key-secret-refs-e2e', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers/txe4989-key-refs/keys/' + pm.collectionVariables.get('keySecretRefsE2EKey'), method: 'GET' }, function (err, res) {",
+                  "  pm.test('the case-variant weight is the stored weight - key-secret-refs-e2e', function () {",
+                  "    pm.expect(res && res.code, err ? String(err) : res.text()).to.equal(200);",
+                  "    pm.expect(res.json().weight, res.text()).to.equal(4);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/providers/txe4989-key-refs/keys/{{keySecretRefsE2EKey}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"WEIGHT\": 4}"
             }
           }
         },
@@ -284102,6 +284207,841 @@
                   "['lroOwnerId', 'lroOtherId'].forEach(function (name) {",
                   "  pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + pm.collectionVariables.get(name), method: 'DELETE' }, function () {});",
                   "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "271. Saves keep what they did not change, and field names mean what the decoder says (handler-preservation) [SERIAL]",
+      "description": "TXE-5528 regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. That config provisions loopback catalog URLs, which the API may not introduce: a settings save that resends them unchanged must succeed, while a new file:// or metadata URL is refused and nothing moves. The MCP list must carry a client's instruction cap, because the edit form is filled from it and sends the whole config back. A provider-key update honours the field names the decoder takes, and a case-variant oauth_key_config block gets the same unknown-field check as the exact name. Case-variant secret references on a whitelisted route are in folder 264. Run the whole folder in order.",
+      "item": [
+        {
+          "name": "an unchanged provisioned catalog URL lets an unrelated settings save through - handler-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{hpConfigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// What the dashboard does: read the whole config and send it back with one edit.",
+                  "var edit = function (cfg) { pm.collectionVariables.set('hpSyncInterval', cfg.framework_config.pricing_sync_interval); cfg.framework_config.pricing_sync_interval += 60; };",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET' }, function (err, res) {",
+                  "  pm.test('handler-preservation: the config was read', function () { pm.expect(res && res.code, err ? String(err) : res.text()).to.equal(200); });",
+                  "  var cfg = res.json();",
+                  "  pm.collectionVariables.set('hpPricingUrl', cfg.framework_config.pricing_url);",
+                  "  edit(cfg);",
+                  "  pm.collectionVariables.set('hpConfigBody', JSON.stringify({ client_config: cfg.client_config, framework_config: cfg.framework_config }));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('handler-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "function readConfig(check) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET' }, function (err, res) { check(res.json().framework_config, res); });",
+                  "}",
+                  "var interval = pm.collectionVariables.get('hpSyncInterval') + 60;",
+                  "var want = pm.collectionVariables.get('hpPricingUrl');",
+                  "readConfig(function (fw, res) {",
+                  "  pm.test('handler-preservation: the provisioned URL stays and the edit is saved', function () {",
+                  "    pm.expect(fw.pricing_url, res.text()).to.equal(want);",
+                  "    pm.expect(fw.pricing_sync_interval, res.text()).to.equal(interval);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] a save introducing a file URL is refused - handler-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{hpConfigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// What the dashboard does: read the whole config and send it back with one edit.",
+                  "var edit = function (cfg) { cfg.framework_config.pricing_url = 'file:///etc/hostname'; };",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET' }, function (err, res) {",
+                  "  pm.test('handler-preservation: the config was read', function () { pm.expect(res && res.code, err ? String(err) : res.text()).to.equal(200); });",
+                  "  var cfg = res.json();",
+                  "  pm.collectionVariables.set('hpPricingUrl', cfg.framework_config.pricing_url);",
+                  "  edit(cfg);",
+                  "  pm.collectionVariables.set('hpConfigBody', JSON.stringify({ client_config: cfg.client_config, framework_config: cfg.framework_config }));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('handler-preservation: answered 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('handler-preservation: the refusal names the file rule', function () { pm.expect(pm.response.text()).to.include('file://'); });",
+                  "function readConfig(check) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET' }, function (err, res) { check(res.json().framework_config, res); });",
+                  "}",
+                  "var want = pm.collectionVariables.get('hpPricingUrl');",
+                  "readConfig(function (fw, res) {",
+                  "  pm.test('handler-preservation: the stored pricing URL did not move', function () { pm.expect(fw.pricing_url, res.text()).to.equal(want); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] a save introducing a metadata address is refused - handler-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{hpConfigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// What the dashboard does: read the whole config and send it back with one edit.",
+                  "var edit = function (cfg) { cfg.framework_config.model_parameters_url = 'http://169.254.169.254/latest/meta-data/'; };",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET' }, function (err, res) {",
+                  "  pm.test('handler-preservation: the config was read', function () { pm.expect(res && res.code, err ? String(err) : res.text()).to.equal(200); });",
+                  "  var cfg = res.json();",
+                  "  pm.collectionVariables.set('hpPricingUrl', cfg.framework_config.pricing_url);",
+                  "  edit(cfg);",
+                  "  pm.collectionVariables.set('hpConfigBody', JSON.stringify({ client_config: cfg.client_config, framework_config: cfg.framework_config }));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('handler-preservation: answered 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('handler-preservation: the refusal does not describe the target', function () { pm.expect(pm.response.text()).to.not.include('latest/meta-data'); });",
+                  "function readConfig(check) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET' }, function (err, res) { check(res.json().framework_config, res); });",
+                  "}",
+                  "var want = pm.collectionVariables.get('hpPricingUrl');",
+                  "readConfig(function (fw, res) {",
+                  "  pm.test('handler-preservation: the stored pricing URL did not move', function () { pm.expect(fw.pricing_url, res.text()).to.equal(want); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the sync interval goes back - handler-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{hpConfigBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// What the dashboard does: read the whole config and send it back with one edit.",
+                  "var edit = function (cfg) { cfg.framework_config.pricing_sync_interval = pm.collectionVariables.get('hpSyncInterval'); };",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/config', method: 'GET' }, function (err, res) {",
+                  "  pm.test('handler-preservation: the config was read', function () { pm.expect(res && res.code, err ? String(err) : res.text()).to.equal(200); });",
+                  "  var cfg = res.json();",
+                  "  pm.collectionVariables.set('hpPricingUrl', cfg.framework_config.pricing_url);",
+                  "  edit(cfg);",
+                  "  pm.collectionVariables.set('hpConfigBody', JSON.stringify({ client_config: cfg.client_config, framework_config: cfg.framework_config }));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('handler-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "an MCP client takes an instruction cap - handler-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{hpMcpId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{hpMcpId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{hpMcpBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/clients', method: 'GET' }, function (err, res) {",
+                  "  var client = ((res && res.json().clients) || []).find(function (c) { return c.config.name === 'fixture_mcp'; });",
+                  "  pm.test('handler-preservation: the fixture MCP client is listed', function () { pm.expect(client, err ? String(err) : res.text()).to.be.an('object'); });",
+                  "  pm.collectionVariables.set('hpMcpId', client.config.client_id);",
+                  "  pm.collectionVariables.set('hpMcpBody', JSON.stringify({ name: client.config.name, connection_type: client.config.connection_type, connection_string: client.config.connection_string, auth_type: client.config.auth_type, tools_to_execute: client.config.tools_to_execute, max_instructions_length: 1234 }));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('handler-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the MCP list carries the cap the edit form fills from - handler-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('handler-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var client = pm.response.json().clients.find(function (c) { return c.config.client_id === pm.collectionVariables.get('hpMcpId'); });",
+                  "pm.test('handler-preservation: the list keeps the instruction cap', function () { pm.expect(client.config.max_instructions_length, pm.response.text()).to.equal(1234); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the form's whole config comes back and keeps the cap - handler-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{hpMcpId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{hpMcpId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{hpMcpBody}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/clients', method: 'GET' }, function (err, res) {",
+                  "  var client = res.json().clients.find(function (c) { return c.config.client_id === pm.collectionVariables.get('hpMcpId'); });",
+                  "  // The form sends what it was filled with; a field the list lost reads as 0.",
+                  "  pm.collectionVariables.set('hpMcpBody', JSON.stringify({ name: client.config.name, connection_type: client.config.connection_type, connection_string: client.config.connection_string, auth_type: client.config.auth_type, tools_to_execute: client.config.tools_to_execute, max_instructions_length: client.config.max_instructions_length || 0 }));",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('handler-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var id = pm.collectionVariables.get('hpMcpId');",
+                  "pm.sendRequest({ url: BASE + '/api/mcp/clients', method: 'GET' }, function (err, res) {",
+                  "  var client = res.json().clients.find(function (c) { return c.config.client_id === id; });",
+                  "  pm.test('handler-preservation: the round trip kept the cap', function () { pm.expect(client.config.max_instructions_length, res.text()).to.equal(1234); });",
+                  "  // Back to the global cap, for the rest of the run.",
+                  "  pm.sendRequest({ url: BASE + '/api/mcp/client/' + id, method: 'PUT', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: client.config.name, connection_type: client.config.connection_type, connection_string: client.config.connection_string, auth_type: client.config.auth_type, tools_to_execute: client.config.tools_to_execute, max_instructions_length: 0 }) } }, function (e, r) {",
+                  "    pm.test('handler-preservation: the cap was cleared', function () { pm.expect(r && r.code, e ? String(e) : r.text()).to.equal(200); });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a custom provider for the key rows - handler-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\": \"txe5528-handler-keys\", \"custom_provider_config\": {\"base_provider_type\": \"openai\"}, \"network_config\": {\"base_url\": \"http://127.0.0.1:9/v1\", \"allow_private_network\": true}, \"concurrency_and_buffer_size\": {\"concurrency\": 1, \"buffer_size\": 4}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.collectionVariables.unset('hpKeyId');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('handler-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a literal key to edit - handler-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/txe5528-handler-keys/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "txe5528-handler-keys",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"handler-preservation\", \"value\": \"sk-txe5528-literal-0123456789\", \"models\": [\"*\"], \"weight\": 1}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('handler-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.collectionVariables.set('hpKeyId', pm.response.json().id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a key update under case-variant names applies - handler-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/txe5528-handler-keys/keys/{{hpKeyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "txe5528-handler-keys",
+                "keys",
+                "{{hpKeyId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"WEIGHT\": 3, \"Description\": \"edited under a case variant\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('handler-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the case-variant edit was stored and the value kept - handler-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/txe5528-handler-keys/keys/{{hpKeyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "txe5528-handler-keys",
+                "keys",
+                "{{hpKeyId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('handler-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var key = pm.response.json();",
+                  "pm.test('handler-preservation: the decoded fields are the stored ones', function () {",
+                  "  pm.expect(key.weight, pm.response.text()).to.equal(3);",
+                  "  pm.expect(key.description, pm.response.text()).to.equal('edited under a case variant');",
+                  "});",
+                  "pm.test('handler-preservation: the fields it left out kept their values', function () {",
+                  "  pm.expect(key.name, pm.response.text()).to.equal('handler-preservation');",
+                  "  pm.expect(key.value.value, pm.response.text()).to.match(/^sk-t\\*+6789$/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] a case-variant OAuth block gets the unknown-field check - handler-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/txe5528-handler-keys/keys/{{hpKeyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "txe5528-handler-keys",
+                "keys",
+                "{{hpKeyId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"OAUTH_KEY_CONFIG\": {\"grant_type\": \"client_credentials\", \"token_url\": \"https://idp.example/oauth2/token\", \"client_id\": \"id\", \"client_secret\": \"s\", \"scope\": [\"inference\"]}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('handler-preservation: answered 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('handler-preservation: the misspelled field is named', function () { pm.expect(pm.response.text()).to.include('unknown field'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the key rows' provider goes - handler-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/txe5528-handler-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "txe5528-handler-keys"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('handler-preservation: answered 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
                 ]
               }
             }

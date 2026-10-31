@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net/http"
@@ -316,6 +317,188 @@ func TestDecodeKeyUpdate_PartialBody(t *testing.T) {
 			t.Fatalf("sgl_key_config: got %+v, want nil", merged.SGLKeyConfig)
 		}
 	})
+
+	// The decoder matches field names case-insensitively, so presence must too: a field
+	// it decoded must not then be replaced by the stored value.
+	t.Run("case-variant field names apply", func(t *testing.T) {
+		merged := update(t, `{"Value":"sk-rotated-value-0123456789","Enabled":true,"WEIGHT":3}`)
+		if merged.Value.GetValue() != "sk-rotated-value-0123456789" {
+			t.Fatalf("value: got %q, want the rotated value", merged.Value.GetValue())
+		}
+		if merged.Enabled == nil || !*merged.Enabled {
+			t.Fatalf("enabled: got %v, want true", merged.Enabled)
+		}
+		if merged.Weight != 3 {
+			t.Fatalf("weight: got %v, want 3", merged.Weight)
+		}
+		if merged.Description != "primary" {
+			t.Fatalf("description: got %q, want the stored value", merged.Description)
+		}
+	})
+
+	t.Run("a masked value under a case-variant name keeps the stored value", func(t *testing.T) {
+		masked := schemas.NewSecretVar(rawValue).Redacted().GetValue()
+		merged := update(t, `{"VALUE":"`+masked+`","WEIGHT":3}`)
+		if merged.Value.GetValue() != rawValue {
+			t.Fatalf("value: got %q, want the stored value restored", merged.Value.GetValue())
+		}
+		if merged.Weight != 3 {
+			t.Fatalf("weight: got %v, want 3", merged.Weight)
+		}
+	})
+}
+
+// keyUpdateFieldSamples holds a JSON value for every field a key update patches, each
+// distinct from a zero stored key. keyUpdateFixedFields are the Key fields decodeKeyUpdate
+// does not patch.
+var (
+	keyUpdateFieldSamples = map[string]string{
+		"value":                     `"sk-sample-value-0123456789"`,
+		"models":                    `["sample-model"]`,
+		"blacklisted_models":        `["sample-blocked"]`,
+		"weight":                    `7`,
+		"aliases":                   `{"sample":"alias"}`,
+		"azure_key_config":          `{}`,
+		"vertex_key_config":         `{}`,
+		"bedrock_key_config":        `{}`,
+		"bedrock_mantle_key_config": `{}`,
+		"vllm_key_config":           `{}`,
+		"replicate_key_config":      `{}`,
+		"ollama_key_config":         `{}`,
+		"sgl_key_config":            `{}`,
+		"databricks_key_config":     `{}`,
+		"github_copilot_key_config": `{}`,
+		"cloudflare_key_config":     `{}`,
+		"oauth_key_config":          `{}`,
+		"enabled":                   `false`,
+		"use_for_batch_api":         `false`,
+		"use_anthropic_endpoints":   `false`,
+		"use_openai_endpoints":      `false`,
+		"description":               `"sample description"`,
+	}
+	keyUpdateFixedFields = []string{"id", "name", "config_hash", "status"}
+)
+
+// TestDecodeKeyUpdate_FieldNamesFoldAsTheDecoderDoes compares every spelling with the exact
+// name through the real decoder, so a change in how sonic folds names fails here rather than
+// silently splitting presence from what was decoded: a spelling the decoder takes applies,
+// and one it ignores keeps the stored value.
+func TestDecodeKeyUpdate_FieldNamesFoldAsTheDecoderDoes(t *testing.T) {
+	keyType := reflect.TypeFor[schemas.Key]()
+	for i := range keyType.NumField() {
+		name, _, _ := strings.Cut(keyType.Field(i).Tag.Get("json"), ",")
+		if _, patched := keyUpdateFieldSamples[name]; !patched && !slices.Contains(keyUpdateFixedFields, name) {
+			t.Fatalf("schemas.Key field %q is not classified: add it to the patch list or keyUpdateFixedFields", name)
+		}
+	}
+
+	stored := schemas.Key{ID: "key-1", Name: "stored", Weight: 1}
+	decode := func(t *testing.T, body string) schemas.Key {
+		t.Helper()
+		key, err := decodeKeyUpdate([]byte(body), stored)
+		if err != nil {
+			t.Fatalf("decodeKeyUpdate(%s): %v", body, err)
+		}
+		return key
+	}
+	untouched := decode(t, `{}`)
+
+	const kelvin, dottedI = "\u212a", "\u0130"
+	for field, sample := range keyUpdateFieldSamples {
+		t.Run(field, func(t *testing.T) {
+			applied := decode(t, `{"`+field+`":`+sample+`}`)
+			if reflect.DeepEqual(applied, untouched) {
+				t.Fatalf("the exact name did not apply; the sample proves nothing")
+			}
+			spellings := []string{
+				strings.ToUpper(field),
+				strings.ToUpper(field[:1]) + field[1:],
+				fmt.Sprintf("\\u%04x", field[0]) + field[1:], // an escaped first letter
+			}
+			// Unicode folds that strings.ToLower maps onto a field name's ASCII letters.
+			if strings.Contains(field, "k") {
+				spellings = append(spellings, strings.Replace(field, "k", kelvin, 1))
+			}
+			if strings.Contains(field, "i") {
+				spellings = append(spellings, strings.Replace(field, "i", dottedI, 1))
+			}
+			for _, spelling := range spellings {
+				if got := decode(t, `{"`+spelling+`":`+sample+`}`); !reflect.DeepEqual(got, applied) {
+					t.Fatalf("spelling %s: got %+v, want the exact name's result %+v", spelling, got, applied)
+				}
+			}
+			// Letters that fold only in the other direction, or not to a letter here,
+			// are unknown keys to the decoder: the stored value stays.
+			if strings.Contains(field, "s") {
+				ignored := strings.Replace(field, "s", "\u017f", 1) // long s lowers to itself
+				if got := decode(t, `{"`+ignored+`":`+sample+`}`); !reflect.DeepEqual(got, untouched) {
+					t.Fatalf("spelling %s: got %+v, want the stored key", ignored, got)
+				}
+			}
+		})
+	}
+}
+
+// TestDecodeKeyUpdate_RepeatedSpellingsFollowTheDecoder: a body naming one field in several
+// spellings is ambiguous, and whatever the decoder makes of it is what must be kept, so the
+// guards that run on the decoded key judge what is stored.
+func TestDecodeKeyUpdate_RepeatedSpellingsFollowTheDecoder(t *testing.T) {
+	stored := schemas.Key{ID: "key-1", Name: "stored", Value: *schemas.NewSecretVar("sk-stored-literal"), Weight: 1, Description: "stored"}
+	for _, body := range []string{
+		`{"value":"sk-first-0123456789","VALUE":"sk-second-0123456789"}`,
+		`{"VALUE":"sk-first-0123456789","value":"sk-second-0123456789"}`,
+		`{"weight":3,"WEIGHT":4}`,
+		`{"WEIGHT":4,"weight":3}`,
+		`{"weight":3,"Weight":null}`,
+		`{"Weight":null,"weight":3}`,
+		`{"description":"one","DESCRIPTION":"","Description":"three"}`,
+		`{"ollama_key_config":{"url":"http://first:11434"},"OLLAMA_KEY_CONFIG":null}`,
+		`{"OLLAMA_KEY_CONFIG":null,"ollama_key_config":{"url":"http://second:11434"}}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			var decoded schemas.Key
+			if err := sonic.Unmarshal([]byte(body), &decoded); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			got, err := decodeKeyUpdate([]byte(body), stored)
+			if err != nil {
+				t.Fatalf("decodeKeyUpdate: %v", err)
+			}
+			if strings.Contains(strings.ToLower(body), `"value"`) && got.Value.GetValue() != decoded.Value.GetValue() {
+				t.Fatalf("value: got %q, the decoder took %q", got.Value.GetValue(), decoded.Value.GetValue())
+			}
+			if strings.Contains(strings.ToLower(body), `"weight"`) && got.Weight != decoded.Weight {
+				t.Fatalf("weight: got %v, the decoder took %v", got.Weight, decoded.Weight)
+			}
+			if strings.Contains(strings.ToLower(body), `"description"`) && got.Description != decoded.Description {
+				t.Fatalf("description: got %q, the decoder took %q", got.Description, decoded.Description)
+			}
+			if strings.Contains(strings.ToLower(body), "ollama_key_config") && !reflect.DeepEqual(got.OllamaKeyConfig, decoded.OllamaKeyConfig) {
+				t.Fatalf("ollama_key_config: got %+v, the decoder took %+v", got.OllamaKeyConfig, decoded.OllamaKeyConfig)
+			}
+		})
+	}
+}
+
+func BenchmarkDecodeKeyUpdate(b *testing.B) {
+	stored := schemas.Key{ID: "key-1", Name: "stored", Value: *schemas.NewSecretVar("sk-stored-literal"), Weight: 1, Description: "stored"}
+	body := []byte(`{"name":"stored","models":["gpt-5"],"weight":2,"description":"edited","enabled":true}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := decodeKeyUpdate(body, stored); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRejectUnknownOAuthKeyConfigFields(b *testing.B) {
+	body := []byte(`{"name":"stored","models":["gpt-5"],"weight":2,"description":"edited","enabled":true}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := rejectUnknownOAuthKeyConfigFields(body); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 func TestMergeUpdatedKey_ProviderConfigMaskedPreviews(t *testing.T) {
@@ -1254,6 +1437,20 @@ func TestUpdateProviderKey_EndpointGuardWhenAuthBypassed(t *testing.T) {
 			wantURL:    storedURL,
 			wantWeight: 1,
 		},
+		{
+			name:       "changed endpoint under a case-variant name",
+			body:       `{"WEIGHT":3,"OLLAMA_KEY_CONFIG":{"url":"http://169.254.169.254/"}}`,
+			wantStatus: fasthttp.StatusForbidden,
+			wantURL:    storedURL,
+			wantWeight: 1,
+		},
+		{
+			name:       "unchanged endpoint under a case-variant name",
+			body:       `{"WEIGHT":2,"OLLAMA_KEY_CONFIG":{"url":"` + storedURL + `"}}`,
+			wantStatus: fasthttp.StatusOK,
+			wantURL:    storedURL,
+			wantWeight: 2,
+		},
 	}
 
 	for _, tc := range cases {
@@ -1902,6 +2099,17 @@ func TestRejectUnknownOAuthKeyConfigFields(t *testing.T) {
 		{"misspelled scopes", `{"oauth_key_config":{` + valid + `,"scope":["inference"]}}`, `unknown field "scope"`},
 		{"unknown nested field", `{"oauth_key_config":{` + valid + `,"client_secrett":"s"}}`, `unknown field "client_secrett"`},
 		{"unknown field outside the block is not this check's job", `{"oauth_key_config":{` + valid + `},"colour":"blue"}`, ""},
+		{"not an object", `null`, ""},
+		// The decoder takes these spellings into the same field, so they get the same check.
+		{"case-variant block", `{"OAUTH_KEY_CONFIG":{` + valid + `,"scope":["inference"]}}`, `unknown field "scope"`},
+		{"title-case block", `{"Oauth_Key_Config":{` + valid + `,"scope":["inference"]}}`, `unknown field "scope"`},
+		{"Kelvin sign in the name", `{"oauth_\u212aey_config":{` + valid + `,"scope":["inference"]}}`, `unknown field "scope"`},
+		{"escaped name", `{"\u006fauth_key_config":{` + valid + `,"scope":["inference"]}}`, `unknown field "scope"`},
+		{"case-variant block with known fields", `{"OAUTH_KEY_CONFIG":{` + valid + `}}`, ""},
+		{"null case-variant block", `{"OAUTH_KEY_CONFIG":null}`, ""},
+		{"bad block before a good one", `{"OAUTH_KEY_CONFIG":{` + valid + `,"scope":["inference"]},"oauth_key_config":{` + valid + `}}`, `unknown field "scope"`},
+		{"bad block after a good one", `{"oauth_key_config":{` + valid + `},"OAUTH_KEY_CONFIG":{` + valid + `,"scope":["inference"]}}`, `unknown field "scope"`},
+		{"bad block after a null one", `{"oauth_key_config":null,"OAUTH_KEY_CONFIG":{` + valid + `,"scope":["inference"]}}`, `unknown field "scope"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2342,47 +2550,68 @@ func TestProviderKeyWrites_BypassedSecretReferenceEveryField(t *testing.T) {
 	t.Setenv(txe4989SecretEnv, txe4989Secret)
 
 	for _, site := range enumerateKeySecretSites(t) {
-		body, err := sonic.Marshal(keyWithSecretAt(site, ref))
+		exact, err := sonic.Marshal(keyWithSecretAt(site, ref))
 		if err != nil {
 			t.Fatalf("site %v: marshal: %v", site, err)
 		}
-		for _, create := range []bool{true, false} {
-			name := fmt.Sprintf("%v/update", site)
-			if create {
-				name = fmt.Sprintf("%v/create", site)
-			}
-			t.Run(name, func(t *testing.T) {
-				stored := schemas.Key{ID: "key-1", Name: "stored", Value: *schemas.NewSecretVar("sk-stored-literal"), Weight: 1}
-				h := &ProviderHandler{
-					inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-						schemas.OpenAI: {Keys: []schemas.Key{stored}},
-					}},
-					modelsManager: &mockModelsManager{},
-				}
-				attachBifrostClient(t, h.inMemoryStore) // so a write the guard misses is stored, not a nil-client panic
-				ctx := newTestRequestCtx(string(body))
-				ctx.SetUserValue("provider", string(schemas.OpenAI))
-				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		// The decoder takes a case-variant field name, so that spelling reaches the same guard.
+		for spelling, body := range map[string][]byte{"exact": exact, "upper": upperTopLevelNames(t, exact)} {
+			for _, create := range []bool{true, false} {
+				name := fmt.Sprintf("%v/%s/update", site, spelling)
 				if create {
-					h.createProviderKey(ctx)
-				} else {
-					ctx.SetUserValue("key_id", "key-1")
-					h.updateProviderKey(ctx)
+					name = fmt.Sprintf("%v/%s/create", site, spelling)
 				}
-				resp := string(ctx.Response.Body())
-				if ctx.Response.StatusCode() != fasthttp.StatusForbidden || !strings.Contains(resp, "server secret reference") {
-					t.Fatalf("status %d, want 403 from the secret reference guard (%d-byte body)", ctx.Response.StatusCode(), len(resp))
-				}
-				if strings.Contains(resp, txe4989Secret) {
-					t.Fatalf("the refusal disclosed the resolved server secret")
-				}
-				keys := h.inMemoryStore.Providers[schemas.OpenAI].Keys
-				if len(keys) != 1 || len(keySecretRefs(&keys[0])) != 0 || keys[0].Value.GetValue() != "sk-stored-literal" {
-					t.Fatalf("the refused write changed the stored keys")
-				}
-			})
+				t.Run(name, func(t *testing.T) {
+					stored := schemas.Key{ID: "key-1", Name: "stored", Value: *schemas.NewSecretVar("sk-stored-literal"), Weight: 1}
+					h := &ProviderHandler{
+						inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+							schemas.OpenAI: {Keys: []schemas.Key{stored}},
+						}},
+						modelsManager: &mockModelsManager{},
+					}
+					attachBifrostClient(t, h.inMemoryStore) // so a write the guard misses is stored, not a nil-client panic
+					ctx := newTestRequestCtx(string(body))
+					ctx.SetUserValue("provider", string(schemas.OpenAI))
+					ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+					if create {
+						h.createProviderKey(ctx)
+					} else {
+						ctx.SetUserValue("key_id", "key-1")
+						h.updateProviderKey(ctx)
+					}
+					resp := string(ctx.Response.Body())
+					if ctx.Response.StatusCode() != fasthttp.StatusForbidden || !strings.Contains(resp, "server secret reference") {
+						t.Fatalf("status %d, want 403 from the secret reference guard (%d-byte body)", ctx.Response.StatusCode(), len(resp))
+					}
+					if strings.Contains(resp, txe4989Secret) {
+						t.Fatalf("the refusal disclosed the resolved server secret")
+					}
+					keys := h.inMemoryStore.Providers[schemas.OpenAI].Keys
+					if len(keys) != 1 || len(keySecretRefs(&keys[0])) != 0 || keys[0].Value.GetValue() != "sk-stored-literal" {
+						t.Fatalf("the refused write changed the stored keys")
+					}
+				})
+			}
 		}
 	}
+}
+
+// upperTopLevelNames rewrites a JSON object with its top-level names in upper case.
+func upperTopLevelNames(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := sonic.Unmarshal(body, &fields); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	upper := make(map[string]json.RawMessage, len(fields))
+	for name, value := range fields {
+		upper[strings.ToUpper(name)] = value
+	}
+	out, err := sonic.Marshal(upper)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return out
 }
 
 // errorMessage returns the decoded message of an error response, so a path holding quotes

@@ -9,10 +9,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/mcp"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	configtables "github.com/capsohq/bifrost/framework/configstore/tables"
@@ -569,6 +571,60 @@ func TestGetMCPLibrary_InstalledLooksPastFirstHundredClients(t *testing.T) {
 	assert.Equal(t, "linear", resp.Servers[1].Slug)
 	assert.False(t, resp.Servers[1].Installed)
 	assert.Equal(t, 3, store.clientPages, "251 clients read in pages of 100")
+}
+
+// emptyEngineMCPManager is an engine with no connected clients: the list endpoint then
+// projects every client from its stored row alone.
+type emptyEngineMCPManager struct {
+	mcp.MCPManagerInterface
+}
+
+func (emptyEngineMCPManager) GetClients() []schemas.MCPClientState { return nil }
+
+// TestGetMCPClients_ProjectsMaxInstructionsLength pins that the list response carries a client's
+// per-client instruction cap. The edit form is filled from this response and submits the whole
+// config back, so a missing field reads as zero and an unrelated edit would reset the override.
+func TestGetMCPClients_ProjectsMaxInstructionsLength(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	for id, limit := range map[string]int{"capped-client": 1000, "uncapped-client": 0} {
+		require.NoError(t, store.CreateMCPClientConfig(context.Background(), &schemas.MCPClientConfig{
+			ID:                    id,
+			Name:                  strings.ReplaceAll(id, "-", "_"),
+			ConnectionType:        schemas.MCPConnectionTypeHTTP,
+			ConnectionString:      schemas.NewSecretVar("https://mcp.example.com/mcp"),
+			AuthType:              schemas.MCPAuthTypeNone,
+			MaxInstructionsLength: limit,
+		}))
+	}
+	h := &MCPHandler{
+		client: &bifrost.Bifrost{MCPManager: emptyEngineMCPManager{}},
+		store:  &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}},
+	}
+
+	// Init gives the context a server, so the store can use it as a context.Context.
+	var request fasthttp.Request
+	request.Header.SetMethod(fasthttp.MethodGet)
+	request.SetRequestURI("/api/mcp/clients")
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&request, nil, nil)
+	h.getMCPClients(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	var body struct {
+		Clients []struct {
+			Config struct {
+				ID                    string `json:"client_id"`
+				MaxInstructionsLength int    `json:"max_instructions_length"`
+			} `json:"config"`
+		} `json:"clients"`
+	}
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body))
+	got := map[string]int{}
+	for _, client := range body.Clients {
+		got[client.Config.ID] = client.Config.MaxInstructionsLength
+	}
+	assert.Equal(t, map[string]int{"capped-client": 1000, "uncapped-client": 0}, got, "the list must carry each client's own instruction cap")
 }
 
 func TestIsMCPLibraryEntryInstalled(t *testing.T) {
