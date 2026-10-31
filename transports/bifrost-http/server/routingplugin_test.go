@@ -39,6 +39,9 @@ func TestGetRoutingPluginResolvesRegisteredPlugin(t *testing.T) {
 // start on its own copy, so a *governance.Config handed in, which MarshalPluginConfig
 // returns as is, keeps meaning what its owner set, and a reload of it behaves the same.
 func TestLoadBuiltinGovernancePluginLeavesCallerConfigAlone(t *testing.T) {
+	previousLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = previousLogger })
 	source := &governance.Config{}
 	config := &lib.Config{GovernanceConfig: &configstore.GovernanceConfig{}}
 	for range 2 {

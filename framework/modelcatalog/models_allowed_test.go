@@ -108,7 +108,7 @@ func TestIsModelAllowedForProvider_WildcardAllowsUncataloguedModel(t *testing.T)
 
 	// An enumerable provider's live list narrows a wildcard whatever its keys allow.
 	enumerable := newCatalog(open)
-	enumerable.UpsertLive(schemas.Fireworks, "fw", false, []string{known})
+	enumerable.UpsertLive(schemas.Fireworks, "fw", true, []string{known})
 	if enumerable.IsModelAllowedForProvider(schemas.Fireworks, unlisted, nil, wildcard) {
 		t.Errorf("a wildcard went past the live list of an enumerable provider")
 	}
