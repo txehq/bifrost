@@ -284083,8 +284083,8 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "// The log writer flushes in the background.",
-                  "setTimeout(function () {}, 2500);"
+                  "// The log writer flushes every 5s: a reconcile must have landed before the row can be judged unchanged.",
+                  "setTimeout(function () {}, 6500);"
                 ]
               }
             },
