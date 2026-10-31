@@ -1452,13 +1452,15 @@ func TestClickHouseAsyncJobCleanupDeletesEveryVersion(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 
-	// See TestClickHouseFinalAfterLightweightDelete: merges are stopped while
-	// the versions are written and counted, and restarted before the deletes.
-	require.NoError(t, store.db.Exec("SYSTEM STOP MERGES async_jobs").Error)
-	startMerges := sync.OnceFunc(func() {
-		require.NoError(t, store.db.Exec("SYSTEM START MERGES async_jobs").Error)
+	// A background merge collapsing the versions would hide the resurrection. SYSTEM
+	// STOP MERGES cannot keep them apart here: mutations stop with it, so the deletes
+	// would hang (see TestClickHouseFinalAfterLightweightDelete). A one-byte merge
+	// size leaves no part mergeable and lets the mutations run.
+	const noMerges = "max_bytes_to_merge_at_max_space_in_pool = 1, max_bytes_to_merge_at_min_space_in_pool = 1"
+	require.NoError(t, store.db.Exec("ALTER TABLE async_jobs MODIFY SETTING "+noMerges).Error)
+	t.Cleanup(func() {
+		require.NoError(t, store.db.Exec("ALTER TABLE async_jobs RESET SETTING max_bytes_to_merge_at_max_space_in_pool, max_bytes_to_merge_at_min_space_in_pool").Error)
 	})
-	t.Cleanup(startMerges)
 
 	expiredAt := now.Add(-time.Hour)
 	require.NoError(t, store.CreateAsyncJob(ctx, &AsyncJob{
@@ -1489,7 +1491,6 @@ func TestClickHouseAsyncJobCleanupDeletesEveryVersion(t *testing.T) {
 	require.EqualValues(t, 3, chCountIDsNoFinal(t, store, "async_jobs", []string{"ch-job-versions-expired"}),
 		"expected every lifecycle version on disk, or the resurrection case is not exercised")
 	require.EqualValues(t, 2, chCountIDsNoFinal(t, store, "async_jobs", []string{"ch-job-versions-stale"}))
-	startMerges()
 
 	deleted, err := store.DeleteExpiredAsyncJobs(ctx)
 	require.NoError(t, err)

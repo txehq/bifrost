@@ -3,6 +3,7 @@ package schemas
 import (
 	"encoding/base64"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -328,4 +329,24 @@ func TestHeldRootErrorNilClearsAndTraceWithoutRootIsSafe(t *testing.T) {
 	var none *Trace
 	none.HoldRootError("id", nil)
 	none.ApplyHeldRootError()
+}
+
+// Holding, applying and resetting race at a request's end: a late attempt, the
+// trace ending and the pool taking it back. Run under -race.
+func TestHeldRootErrorRacesApplyAndReset(t *testing.T) {
+	for range 500 {
+		root := &Span{SpanID: "root"}
+		trace := &Trace{InternalID: "id", RootSpan: root}
+		var wg sync.WaitGroup
+		wg.Go(func() { trace.HoldRootError("id", map[string]any{AttrError: "late"}) })
+		wg.Go(func() { trace.ApplyHeldRootError() })
+		wg.Go(func() { trace.Reset() })
+		wg.Wait()
+		trace.InternalID, trace.RootSpan = "next", &Span{SpanID: "next-root"}
+		trace.HoldRootError("id", map[string]any{AttrError: "stale handle"})
+		trace.ApplyHeldRootError()
+		if _, ok := trace.RootSpan.GetAttribute(AttrError); ok {
+			t.Fatal("a stale handle reached the next request's root span")
+		}
+	}
 }

@@ -1644,6 +1644,8 @@ func requireHiddenColumnsEmpty(t *testing.T, read func(column string) string) {
 	for column := range hiddenContentColumns() {
 		assert.Empty(t, read(column), "column %s survived the hidden update", column)
 	}
+	assert.Empty(t, read("content_summary"), "the content summary survived the hidden update")
+	assert.Empty(t, read("input_history"), "the input history survived the hidden update")
 	assert.Contains(t, read("token_usage"), `"prompt_tokens":10`, "pricing metadata is not content and stays")
 	assert.Equal(t, `{"cache_hit":false}`, read("cache_debug"), "pricing metadata is not content and stays")
 }
