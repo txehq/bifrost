@@ -159,3 +159,16 @@ func BenchmarkNormalizeBase64TextSources(b *testing.B) {
 		})
 	}
 }
+
+// A source type spelled with a JSON escape is still base64 once decoded, so the byte
+// scan in front of the query must not skip it.
+func TestNormalizeBase64TextSources_EscapedSourceType(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"\u0062ase64","media_type":"text/plain","data":"aGVsbG8="}}]}]}`)
+	out, err := normalizeBase64TextSources(body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := gjson.GetBytes(out, "messages.0.content.0.source"); got.Get("type").String() != "text" || got.Get("data").String() != "hello" {
+		t.Fatalf("escaped base64 source was not normalized: %s", out)
+	}
+}
