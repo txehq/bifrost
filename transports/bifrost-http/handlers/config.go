@@ -382,14 +382,33 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if payload.FrameworkConfig.ModelParametersURL != nil && strings.TrimSpace(*payload.FrameworkConfig.ModelParametersURL) == "" {
 		payload.FrameworkConfig.ModelParametersURL = bifrost.Ptr(modelcatalog.DefaultModelParametersURL)
 	}
-	if payload.FrameworkConfig.PricingURL != nil && *payload.FrameworkConfig.PricingURL != modelcatalog.DefaultPricingURL {
+	// A catalog URL the save does not change is not re-checked: the dashboard resubmits
+	// every URL on any settings save, so a file:// or private URL that config.json
+	// provisioned would otherwise fail an unrelated edit. A URL the request introduces is
+	// always checked, so the API still cannot set one. What counts as stored is what
+	// GET /api/config shows, the same normalization of the row.
+	storedCatalogURLs := &configstoreTables.TableFrameworkConfig{}
+	mcpLibrarySyncDisabled := payload.FrameworkConfig.MCPLibrarySyncInterval != nil && *payload.FrameworkConfig.MCPLibrarySyncInterval == modelcatalog.MCPLibrarySyncDisabled
+	if isCustomCatalogURL(payload.FrameworkConfig.PricingURL, modelcatalog.DefaultPricingURL) ||
+		isCustomCatalogURL(payload.FrameworkConfig.ModelParametersURL, modelcatalog.DefaultModelParametersURL) ||
+		isCustomCatalogURL(payload.FrameworkConfig.MCPLibraryURL, modelcatalog.DefaultMCPLibraryURL) ||
+		mcpLibrarySyncDisabled {
+		stored, err := h.store.ConfigStore.GetFrameworkConfig(ctx)
+		if err != nil {
+			logger.Warn("failed to get framework config from store: %v", err)
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get framework config from store: %v", err))
+			return
+		}
+		storedCatalogURLs, _, _ = lib.ResolveFrameworkPricingConfig(stored, nil)
+	}
+	if isNewCatalogURL(payload.FrameworkConfig.PricingURL, modelcatalog.DefaultPricingURL, storedCatalogURLs.PricingURL) {
 		if err := checkURLAccessibility(*payload.FrameworkConfig.PricingURL); err != nil {
 			logger.Warn("failed to check the accessibility of the pricing URL: %v", err)
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the pricing URL: %v", err))
 			return
 		}
 	}
-	if payload.FrameworkConfig.ModelParametersURL != nil && *payload.FrameworkConfig.ModelParametersURL != modelcatalog.DefaultModelParametersURL {
+	if isNewCatalogURL(payload.FrameworkConfig.ModelParametersURL, modelcatalog.DefaultModelParametersURL, storedCatalogURLs.ModelParametersURL) {
 		if err := checkURLAccessibility(*payload.FrameworkConfig.ModelParametersURL); err != nil {
 			logger.Warn("failed to check the accessibility of the model parameters URL: %v", err)
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the model parameters URL: %v", err))
@@ -405,7 +424,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Validate MCP library catalog URL override (only when set and non-default)
-	if payload.FrameworkConfig.MCPLibraryURL != nil && *payload.FrameworkConfig.MCPLibraryURL != "" && *payload.FrameworkConfig.MCPLibraryURL != modelcatalog.DefaultMCPLibraryURL {
+	if isNewCatalogURL(payload.FrameworkConfig.MCPLibraryURL, modelcatalog.DefaultMCPLibraryURL, storedCatalogURLs.MCPLibraryURL) {
 		if err := checkURLAccessibility(*payload.FrameworkConfig.MCPLibraryURL); err != nil {
 			logger.Warn("failed to check the accessibility of the MCP library URL: %v", err)
 			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to check the accessibility of the MCP library URL: %v", err))
@@ -413,7 +432,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	// Checking the MCP library sync interval
-	if payload.FrameworkConfig.MCPLibrarySyncInterval != nil && *payload.FrameworkConfig.MCPLibrarySyncInterval <= 0 {
+	// 0 is config.json's way to turn the sync off (air-gapped deployments), so a save
+	// resending it unchanged goes through, like the URLs above.
+	mcpLibrarySyncStaysDisabled := mcpLibrarySyncDisabled && storedCatalogURLs.MCPLibrarySyncInterval != nil &&
+		*storedCatalogURLs.MCPLibrarySyncInterval == modelcatalog.MCPLibrarySyncDisabled
+	if payload.FrameworkConfig.MCPLibrarySyncInterval != nil && *payload.FrameworkConfig.MCPLibrarySyncInterval <= 0 && !mcpLibrarySyncStaysDisabled {
 		logger.Warn("MCP library sync interval must be greater than 0")
 		SendError(ctx, fasthttp.StatusBadRequest, "MCP library sync interval must be greater than 0")
 		return
@@ -1500,6 +1523,19 @@ func validateHeaderFilterConfig(config *configstoreTables.GlobalHeaderFilterConf
 	}
 
 	return nil
+}
+
+// isCustomCatalogURL reports whether a save names a catalog URL other than the default,
+// which never needs checking. Empty means "not set" here: blank pricing and parameter
+// URLs were already reset to their defaults.
+func isCustomCatalogURL(submitted *string, defaultURL string) bool {
+	return submitted != nil && *submitted != "" && *submitted != defaultURL
+}
+
+// isNewCatalogURL reports whether a save introduces a catalog URL, as opposed to
+// resubmitting the stored one. Only an exact match is unchanged.
+func isNewCatalogURL(submitted *string, defaultURL string, stored *string) bool {
+	return isCustomCatalogURL(submitted, defaultURL) && (stored == nil || *stored != *submitted)
 }
 
 // checkURLAccessibilityDialContext is the dial function checkURLAccessibility's

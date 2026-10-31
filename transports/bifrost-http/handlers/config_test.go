@@ -848,6 +848,167 @@ func newDatasheetServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// TestUpdateConfig_KeepsUnchangedProvisionedCatalogURLs pins that the catalog URL rules apply
+// to URLs a request introduces, not to ones config.json provisioned: the dashboard resubmits
+// every catalog URL on an unrelated settings save, and an unchanged stored file:// URL must
+// not fail that save. Nothing is fetched for it either, and any other URL is still judged.
+func TestUpdateConfig_KeepsUnchangedProvisionedCatalogURLs(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	const pricingURL = "file:///opt/bifrost/pricing.json"
+	const parametersURL = "file:///opt/bifrost/model-parameters.json"
+	const libraryURL = "file:///opt/bifrost/mcp-library.json"
+	require.NoError(t, store.UpdateFrameworkConfig(bgCtx(), &configtables.TableFrameworkConfig{
+		PricingURL:             bifrost.Ptr(pricingURL),
+		PricingSyncInterval:    bifrost.Ptr(int64(3600)),
+		ModelParametersURL:     bifrost.Ptr(parametersURL),
+		MCPLibraryURL:          bifrost.Ptr(libraryURL),
+		MCPLibrarySyncInterval: bifrost.Ptr(int64(3600)),
+	}))
+	var dials atomic.Int32
+	prevDial := checkURLAccessibilityDialContext
+	checkURLAccessibilityDialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dials.Add(1)
+		return prevDial(ctx, network, addr)
+	}
+	t.Cleanup(func() { checkURLAccessibilityDialContext = prevDial })
+
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"pricing_url":"` + pricingURL +
+		`","model_parameters_url":"` + parametersURL + `","mcp_library_url":"` + libraryURL + `","pricing_sync_interval":7200}}`)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Zero(t, dials.Load(), "an unchanged URL is not fetched")
+
+	persisted, err := store.GetFrameworkConfig(bgCtx())
+	require.NoError(t, err)
+	require.NotNil(t, persisted)
+	assert.Equal(t, pricingURL, *persisted.PricingURL)
+	assert.Equal(t, parametersURL, *persisted.ModelParametersURL)
+	assert.Equal(t, libraryURL, *persisted.MCPLibraryURL)
+	assert.Equal(t, int64(7200), *persisted.PricingSyncInterval, "the unrelated change is saved")
+
+	// Only the same URL is the stored one. Each field is judged against its own stored value.
+	for _, field := range []string{"pricing_url", "model_parameters_url", "mcp_library_url"} {
+		for name, submitted := range map[string]string{
+			"another file":        "file:///etc/hostname",
+			"a sibling's URL":     map[string]string{"pricing_url": parametersURL, "model_parameters_url": libraryURL, "mcp_library_url": pricingURL}[field],
+			"a case variant":      "FILE:///opt/bifrost/pricing.json",
+			"surrounding space":   " " + map[string]string{"pricing_url": pricingURL, "model_parameters_url": parametersURL, "mcp_library_url": libraryURL}[field],
+			"metadata address":    "http://169.254.169.254/latest/meta-data/",
+			"a private host":      "http://10.0.0.1/pricing.json",
+			"embedded userinfo":   "http://user:pass@169.254.169.254/",
+			"an unsupported form": "ftp://example.com/pricing.json",
+		} {
+			t.Run(field+"/"+name, func(t *testing.T) {
+				before, err := store.GetFrameworkConfig(bgCtx())
+				require.NoError(t, err)
+				ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"` + field + `":"` + submitted + `"}}`)
+				h.updateConfig(ctx)
+				require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+				after, err := store.GetFrameworkConfig(bgCtx())
+				require.NoError(t, err)
+				assert.Equal(t, before, after, "a refused save changes nothing")
+			})
+		}
+	}
+}
+
+// TestUpdateConfig_UnchangedCatalogURLMatchesWhatTheDashboardWasShown: GET /api/config trims a
+// stored URL, so the trimmed value is what comes back on save and is still the stored URL.
+func TestUpdateConfig_UnchangedCatalogURLMatchesWhatTheDashboardWasShown(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	const libraryURL = "file:///opt/bifrost/mcp-library.json"
+	require.NoError(t, store.UpdateFrameworkConfig(bgCtx(), &configtables.TableFrameworkConfig{
+		PricingSyncInterval:    bifrost.Ptr(int64(3600)),
+		MCPLibraryURL:          bifrost.Ptr("  " + libraryURL + "\n"),
+		MCPLibrarySyncInterval: bifrost.Ptr(int64(3600)),
+	}))
+
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"mcp_library_url":"` + libraryURL + `"}}`)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+}
+
+// TestUpdateConfig_KeepsADisabledMCPLibrarySync: the air-gapped guide turns the library sync off
+// with mcp_library_sync_interval 0 next to its file:// URLs, and the dashboard resends that on
+// any save. Only that value unchanged passes: the API still cannot turn the sync off.
+func TestUpdateConfig_KeepsADisabledMCPLibrarySync(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	for name, tt := range map[string]struct {
+		stored     int64
+		submitted  string
+		wantStatus int
+	}{
+		"disabled stays disabled":           {stored: 0, submitted: "0", wantStatus: fasthttp.StatusOK},
+		"turning it off is still refused":   {stored: 3600, submitted: "0", wantStatus: fasthttp.StatusBadRequest},
+		"a negative value is still refused": {stored: 0, submitted: "-1", wantStatus: fasthttp.StatusBadRequest},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+			require.NoError(t, store.UpdateFrameworkConfig(bgCtx(), &configtables.TableFrameworkConfig{
+				PricingSyncInterval:    bifrost.Ptr(int64(3600)),
+				MCPLibrarySyncInterval: bifrost.Ptr(tt.stored),
+			}))
+			ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"mcp_library_sync_interval":` + tt.submitted + `}}`)
+			h.updateConfig(ctx)
+			require.Equal(t, tt.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			persisted, err := store.GetFrameworkConfig(bgCtx())
+			require.NoError(t, err)
+			assert.Equal(t, tt.stored, *persisted.MCPLibrarySyncInterval)
+		})
+	}
+}
+
+// TestUpdateConfig_CustomCatalogURLWithNoStoredRowIsNew: with no framework row every custom
+// URL is new, so it is judged rather than taken as unchanged.
+func TestUpdateConfig_CustomCatalogURLWithNoStoredRowIsNew(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored, err := store.GetFrameworkConfig(bgCtx())
+	require.NoError(t, err)
+	require.Nil(t, stored, "the test starts with no framework row")
+
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"pricing_url":"file:///etc/hostname"}}`)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+}
+
+// frameworkReadFailureStore fails the framework config read.
+type frameworkReadFailureStore struct {
+	configstore.ConfigStore
+}
+
+func (frameworkReadFailureStore) GetFrameworkConfig(context.Context) (*configtables.TableFrameworkConfig, error) {
+	return nil, errors.New("framework read failed")
+}
+
+// TestUpdateConfig_UnreadableStoreDoesNotPassACatalogURL: unchanged is only ever decided from a
+// stored value that was read, so a failed read refuses the save instead of waving the URL by.
+func TestUpdateConfig_UnreadableStoreDoesNotPassACatalogURL(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	cfg := newTestOAuth2Config(frameworkReadFailureStore{newRealOAuth2Store(t)}, configtables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"pricing_url":"file:///opt/bifrost/pricing.json"}}`)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Contains(t, string(ctx.Response.Body()), "failed to get framework config from store")
+}
+
 // TestCheckURLAccessibility_RejectsFileURLs: file:// datasheet and catalog
 // URLs are an operator feature of config.json (air-gapped deployments) and are
 // refused when they arrive over the HTTP API, whatever the path points at.

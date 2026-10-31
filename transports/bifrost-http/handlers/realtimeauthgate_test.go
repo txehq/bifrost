@@ -4,10 +4,13 @@ import (
 	"context"
 	"testing"
 
+	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/framework/grant"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
@@ -127,6 +130,48 @@ func newRealtimeUpgradeRequest(path string) *fasthttp.RequestCtx {
 func newRealtimeUpgradeHandler(enforceAuthOnInference bool) *WSRealtimeHandler {
 	config := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuthOnInference}}
 	return &WSRealtimeHandler{config: config, handlerStore: config}
+}
+
+// keySelectorPreRequestPlugin narrows key selection in its pre-request hook, the way a routing
+// plugin does, so a test can see whether the realtime session inherits the hook's context.
+type keySelectorPreRequestPlugin struct{ keyID string }
+
+func (keySelectorPreRequestPlugin) GetName() string { return "key-selector-test" }
+func (keySelectorPreRequestPlugin) Cleanup() error  { return nil }
+func (p keySelectorPreRequestPlugin) PreRequestHook(ctx *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, []string{p.keyID})
+	return nil
+}
+func (keySelectorPreRequestPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (keySelectorPreRequestPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// TestWSRealtimeHandleUpgrade_SnapshotKeepsPreRequestHookValues pins that the ordinary upgrade
+// snapshots the pre-request hooks' context before cancelling it, not only what the HTTP
+// middleware set: a key selector or routing attribution a hook adds must reach the session it
+// admits. The snapshot is read from the request's user values, which the merge writes before
+// the upgrade.
+func TestWSRealtimeHandleUpgrade_SnapshotKeepsPreRequestHookValues(t *testing.T) {
+	SetLogger(&mockLogger{})
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account:    splitKeysAccount{},
+		LLMPlugins: []schemas.LLMPlugin{keySelectorPreRequestPlugin{keyID: "hook-selected-key"}},
+		Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	h := newRealtimeUpgradeHandler(false)
+	h.client = client
+
+	ctx := newRealtimeUpgradeRequest("/v1/realtime?model=openai/gpt-realtime")
+	h.handleUpgrade(ctx)
+
+	require.Equal(t, fasthttp.StatusSwitchingProtocols, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	assert.Equal(t, []string{"hook-selected-key"}, ctx.UserValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys),
+		"the hook's key selector must be in the snapshot the session restores")
 }
 
 // TestWSRealtimeHandleUpgrade_AnonymousRefusedBeforeTargetResolution pins the gate's position in

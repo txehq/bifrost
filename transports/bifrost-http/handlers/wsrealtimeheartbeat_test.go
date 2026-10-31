@@ -3,6 +3,8 @@ package handlers
 import (
 	"encoding/json"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -544,6 +546,172 @@ func TestTranscriptionUpgradeWithQueryModelSkipsTheBootstrap(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("answered after %v, want it at once", elapsed)
+	}
+}
+
+// includeOnlyKeysAccount serves a key only to a caller governance restricted to it, and
+// "unrestricted" to anyone else, so the key an upstream receives shows whether a session's
+// context carried the restriction.
+type includeOnlyKeysAccount struct{ legacySessionAccount }
+
+func (includeOnlyKeysAccount) GetKeysForProvider(ctx context.Context, _ schemas.ModelProvider) ([]schemas.Key, error) {
+	key := func(id string) schemas.Key {
+		return schemas.Key{ID: id, Name: id, Value: *schemas.NewSecretVar("sk-" + id), Models: schemas.WhiteList{"*"}, Weight: 1}
+	}
+	allowed, restricted := ctx.Value(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys).([]string)
+	if !restricted {
+		return []schemas.Key{key("unrestricted")}, nil
+	}
+	keys := make([]schemas.Key, 0, len(allowed))
+	for _, id := range allowed {
+		keys = append(keys, key(id))
+	}
+	return keys, nil
+}
+
+// TestTranscriptionUpgradeKeepsMiddlewareValuesPastTheHandler: the model of a transcription
+// session arrives after the upgrade, by when the handler has returned and fasthttp may have
+// recycled the request ctx. What governance restricted on that request must still bind the
+// session, and a pre-request hook's values must still reach it, or the session runs on a key
+// the caller was never allowed.
+func TestTranscriptionUpgradeKeepsMiddlewareValuesPastTheHandler(t *testing.T) {
+	for name, tt := range map[string]struct {
+		plugins        []schemas.LLMPlugin
+		transportValue []string
+		wantKey        string
+	}{
+		"transport middleware restriction": {transportValue: []string{"transport-key"}, wantKey: "sk-transport-key"},
+		"pre-request hook restriction": {
+			plugins: []schemas.LLMPlugin{keySelectorPreRequestPlugin{keyID: "hook-key"}},
+			wantKey: "sk-hook-key",
+		},
+		"hook overrides the transport restriction": {
+			plugins:        []schemas.LLMPlugin{keySelectorPreRequestPlugin{keyID: "hook-key"}},
+			transportValue: []string{"transport-key"},
+			wantKey:        "sk-hook-key",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			upstreamAuth := make(chan string, 1)
+			upgrader := ws.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamAuth <- r.Header.Get("Authorization")
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				_, _, _ = conn.ReadMessage()
+			}))
+			defer upstream.Close()
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account:    includeOnlyKeysAccount{legacySessionAccount{baseURL: upstream.URL}},
+				LLMPlugins: tt.plugins,
+				Logger:     bifrost.NewDefaultLogger(schemas.LogLevelError),
+			})
+			if err != nil {
+				t.Fatalf("init bifrost: %v", err)
+			}
+			defer client.Shutdown()
+
+			h := newRealtimeUpgradeHandler(false)
+			h.client, h.sessions, h.pool = client, bfws.NewSessionManager(0), bfws.NewPool(nil)
+			defer h.Close()
+			r := router.New()
+			r.GET("/v1/realtime", func(ctx *fasthttp.RequestCtx) {
+				if tt.transportValue != nil {
+					ctx.SetUserValue(schemas.BifrostContextKeyGovernanceIncludeOnlyKeys, tt.transportValue)
+				}
+				preReqCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+				h.handleTranscriptionUpgrade(ctx, preReqCtx, cancel, &authHeaders{}, "/v1/realtime", "")
+				ctx.ResetUserValues() // what recycling the ctx does to a callback still reading it
+			})
+			ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			srv := &fasthttp.Server{Handler: r.Handler}
+			go func() { _ = srv.Serve(ln) }()
+			defer srv.Shutdown() //nolint:errcheck
+
+			conn, _, err := ws.DefaultDialer.Dial("ws://"+ln.Addr().String()+"/v1/realtime?intent=transcription", nil)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			defer conn.Close()
+			// The handler has returned by now: the dial saw its 101.
+			update := `{"type":"session.update","session":{"type":"transcription","audio":{"input":{"transcription":{"model":"openai/gpt-4o-transcribe"}}}}}`
+			if err := conn.WriteMessage(ws.TextMessage, []byte(update)); err != nil {
+				t.Fatalf("send bootstrap: %v", err)
+			}
+			select {
+			case got := <-upstreamAuth:
+				if got != "Bearer "+tt.wantKey {
+					t.Fatalf("session reached the upstream as %q, want %q: the restriction did not survive the handler", got, "Bearer "+tt.wantKey)
+				}
+			case <-time.After(5 * time.Second):
+				_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+				_, msg, _ := conn.ReadMessage()
+				t.Fatalf("no upstream connection; client got %s", msg)
+			}
+		})
+	}
+}
+
+// TestMergeRealtimeMiddlewareValuesKeepsOnlyListedKeys: the merged map lives as long as the
+// session, so it holds only realtimeMiddlewareKeys and never anything else the pre-request
+// context carried: not the request's headers, query or anything that pins a stream.
+func TestMergeRealtimeMiddlewareValuesKeepsOnlyListedKeys(t *testing.T) {
+	t.Parallel()
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "transport-virtual-key-id")
+	ctx.SetUserValue(schemas.BifrostContextKeyGovernanceTeamID, "transport-team")
+	transportValues := snapshotRealtimeMiddlewareValues(ctx)
+
+	bifrostCtx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	bifrostCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "hook-selected-key")
+	bifrostCtx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, "hook-team")
+	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"authorization": "Bearer caller"})
+	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestQuery, map[string]string{"model": "m"})
+	bifrostCtx.SetValue(schemas.BifrostContextKeyTraceID, "dead-trace")
+
+	values := mergeRealtimeMiddlewareValues(transportValues, bifrostCtx)
+	if want := 3; len(values) != want {
+		t.Fatalf("merged %d values, want %d: %v", len(values), want, values)
+	}
+	for key, want := range map[any]string{
+		schemas.BifrostContextKeyGovernanceVirtualKeyID: "transport-virtual-key-id",
+		schemas.BifrostContextKeySelectedKeyID:          "hook-selected-key",
+		schemas.BifrostContextKeyGovernanceTeamID:       "hook-team",
+	} {
+		if values[key] != want {
+			t.Fatalf("%v = %v, want %s", key, values[key], want)
+		}
+	}
+	if len(transportValues) != 2 || transportValues[schemas.BifrostContextKeyGovernanceTeamID] != "transport-team" {
+		t.Fatalf("the merge wrote into its snapshot: %v", transportValues)
+	}
+	if got := mergeRealtimeMiddlewareValues(nil, schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)); got != nil {
+		t.Fatalf("nothing to keep: got %v, want nil", got)
+	}
+	if got := mergeRealtimeMiddlewareValues(nil, nil); got != nil {
+		t.Fatalf("no context: got %v, want nil", got)
+	}
+}
+
+func BenchmarkRealtimeTranscriptionMiddlewareValues(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "transport-virtual-key-id")
+	ctx.SetUserValue(schemas.BifrostContextKeyGovernanceTeamID, "transport-team")
+	bifrostCtx := schemas.NewBifrostContext(b.Context(), schemas.NoDeadline)
+	bifrostCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, "hook-selected-key")
+	transportValues := snapshotRealtimeMiddlewareValues(ctx)
+	b.ReportAllocs()
+	for b.Loop() {
+		if values := mergeRealtimeMiddlewareValues(transportValues, bifrostCtx); len(values) != 3 {
+			b.Fatalf("got %d values", len(values))
+		}
 	}
 }
 

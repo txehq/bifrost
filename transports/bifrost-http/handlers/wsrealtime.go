@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"strings"
@@ -291,6 +292,9 @@ func (h *WSRealtimeHandler) handleTranscriptionUpgrade(
 	queryModel string,
 ) {
 	upgrader := h.websocketUpgrader("realtime")
+	// The callback runs after this handler returns, when fasthttp may already have recycled
+	// ctx, so the transport middleware values are read now.
+	transportValues := snapshotRealtimeMiddlewareValues(ctx)
 	err := upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 		defer conn.Close()
 		defer recoverWebSocketSession(conn)
@@ -362,7 +366,7 @@ func (h *WSRealtimeHandler) handleTranscriptionUpgrade(
 			preReqCancel()
 			return
 		}
-		middlewareValues := snapshotRealtimeMiddlewareValuesWithContext(ctx, preReqCtx)
+		middlewareValues := mergeRealtimeMiddlewareValues(transportValues, preReqCtx)
 		preReqCancel()
 
 		provider, ok := h.client.GetProviderByKey(providerKey).(schemas.RealtimeProvider)
@@ -1342,6 +1346,27 @@ func snapshotRealtimeMiddlewareValuesWithContext(ctx *fasthttp.RequestCtx, bifro
 		}
 	}
 	return snapshotRealtimeMiddlewareValues(ctx)
+}
+
+// mergeRealtimeMiddlewareValues overlays the pre-request hook values in bifrostCtx on a
+// snapshot taken from the request ctx, as snapshotRealtimeMiddlewareValuesWithContext does,
+// for a caller that can no longer touch the request ctx. Only realtimeMiddlewareKeys are
+// kept, so the session holds at most that many values and nothing else from the context.
+func mergeRealtimeMiddlewareValues(transportValues map[any]any, bifrostCtx *schemas.BifrostContext) map[any]any {
+	result := make(map[any]any, len(transportValues))
+	maps.Copy(result, transportValues)
+	if bifrostCtx != nil {
+		userValues := bifrostCtx.GetUserValues()
+		for _, key := range realtimeMiddlewareKeys {
+			if value, ok := userValues[key]; ok && value != nil {
+				result[key] = value
+			}
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 // snapshotRealtimeMiddlewareValues retains transport middleware values for the upgraded session.
