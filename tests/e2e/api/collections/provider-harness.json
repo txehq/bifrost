@@ -289087,7 +289087,7 @@
                   "var events = sse();",
                   "var deltas = events.filter(function (e) { return e.type === 'response.output_text.delta'; });",
                   "pm.test('both texts stream, the held newline leading the second', function () { pm.expect(deltas.map(function (d) { return d.delta; })).to.eql(['Before.', '\\nAfter.']); });",
-                  "pm.test('the second text is its own item, not a delta on a finished one', function () { pm.expect(deltas[0].item_id).to.not.equal(deltas[1].item_id); });",
+                  "pm.test('the second text is its own item, not a delta on a finished one', function () { pm.expect(deltas.length).to.equal(2); pm.expect(deltas[0].item_id).to.not.equal(deltas[1].item_id); });",
                   "var done = events.filter(function (e) { return e.type === 'response.completed'; });",
                   "pm.test('the terminal output follows stream order', function () { pm.expect(done.length).to.equal(1); pm.expect(types(done[0].response.output)).to.eql(['message', 'function_call', 'message']); pm.expect(done[0].response.output[2].content[0].text).to.equal('\\nAfter.'); });"
                 ]
@@ -289234,7 +289234,7 @@
                   "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
                   "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "var done = sse().filter(function (e) { return e.type === 'response.completed'; });",
-                  "pm.test('the client gets its own call', function () { pm.expect(done.length).to.equal(1); pm.expect(done[0].response.output[0].call_id).to.equal('call_search'); });",
+                  "pm.test('the client gets its own call', function () { pm.expect(done.length).to.equal(1); pm.expect((done[0].response.output[0] || {}).call_id).to.equal('call_search'); });",
                   "state(function (calls) { pm.test('one provider call: the gateway did not run the caller tool', function () { pm.expect(calls.length).to.equal(1); });",
                   " var tools = calls[0].body.tools || [];",
                   " var own = tools.filter(function (t) { return t.name === 'bifrost_tool_search'; });",
