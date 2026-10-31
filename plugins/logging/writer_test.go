@@ -1815,15 +1815,22 @@ func TestEvictedPartialCarriesItsVirtualKey(t *testing.T) {
 			}
 			const id = "req-evicted-owned"
 			content := "hello from input"
-			pending := &PendingLogData{
-				RequestID: id, Timestamp: time.Now().Add(-time.Hour), CreatedAt: time.Now().Add(-time.Hour),
-				VirtualKeyID: "vk-own", Status: logStatusProcessing,
-				InitialData: &InitialLogData{Object: "chat.completion", Provider: "openai", Model: "gpt-4o", InputHistory: []schemas.ChatMessage{{
-					Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content},
-				}}},
+			if _, _, err := plugin.PreLLMHook(evictionCtxWithKey(id, "vk-own"), &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-4o",
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}}},
+					Params:   &schemas.ChatParameters{},
+				},
+			}); err != nil {
+				t.Fatalf("PreLLMHook() error = %v", err)
 			}
-			plugin.pendingLogsEntries.Store(id, pending)
-			plugin.persistEvictedPartial(id, pending)
+			pendingVal, ok := plugin.pendingLogsEntries.Load(id)
+			if !ok {
+				t.Fatal("expected pending entry after PreLLMHook")
+			}
+			plugin.persistEvictedPartial(id, pendingVal.(*PendingLogData))
 			if _, _, err := plugin.PostLLMHook(evictionCtxWithKey(id, tc.caller), evictionChatResult("the answer"), nil); err != nil {
 				t.Fatalf("PostLLMHook() error = %v", err)
 			}

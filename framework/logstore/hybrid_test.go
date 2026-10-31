@@ -1782,15 +1782,27 @@ func TestHybrid_BatchUpdateHidingALogClearsDBContent(t *testing.T) {
 	assert.Empty(t, read.InputHistoryParsed, "the hybrid read recovers no content")
 	assert.Nil(t, read.OutputMessageParsed, "the hybrid read recovers no content")
 
-	// A partial's finish that may not touch a row writes nothing to its object either.
-	owner := "vk-other"
+}
+
+// A partial's finish that may not touch a row writes neither the row nor its object.
+func TestHybrid_BatchUpdateSkipsARowThePartialOwnerDoesNotHold(t *testing.T) {
+	h, inner, objects := newTestHybrid(t)
+	ctx := context.Background()
+	h.excludedRequestTypes = map[string]struct{}{"chat.completion": {}}
 	require.NoError(t, h.CreateIfNotExists(ctx, hiddenUpdateTestLog("hybrid-visible", time.Now().UTC())))
+
+	owner := "vk-other"
 	require.NoError(t, h.BatchUpdate(ctx, []*Log{{ID: "hybrid-visible", Status: "success", ContentHidden: true, PartialOwner: &owner}}))
+
 	kept, err := inner.FindByID(ctx, "hybrid-visible")
 	require.NoError(t, err)
 	assert.False(t, kept.ContentHidden)
 	assert.Equal(t, "processing", kept.Status)
 	assert.NotEmpty(t, kept.InputHistory)
+	assert.Never(t, func() bool {
+		keys, err := objects.ListByPrefix(ctx, "")
+		return err == nil && len(keys) > 0
+	}, 300*time.Millisecond, 20*time.Millisecond, "the skipped update uploaded an object")
 }
 
 func TestHybrid_BatchUpdateMergesOutputIntoStoredObject(t *testing.T) {
