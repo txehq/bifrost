@@ -350,7 +350,7 @@ const cpChatToolCall = { id: "call_cp", type: "function", function: { name: "web
 const cpChatAnswer = (text) => ({ role: "assistant", content: text });
 const cpChatToolTurn = { role: "assistant", content: null, tool_calls: [cpChatToolCall] };
 // Each entry is one upstream chunk's choices, so a chunk can carry several choices or only another one. The OpenAI
-// stream reader folds a finish reason in a chunk's first choice into its one terminal, so the first choice leads.
+// stream reader passes a chunk only on its first choice's content, so another choice's finish reason rides with text.
 const cpChunks = (model, usage, ...chunkChoices) => {
 	const base = { id: `chatcmpl-${model}`, object: "chat.completion.chunk", created: 1, model };
 	const chunks = [...chunkChoices.map((choices) => ({ ...base, choices })), { ...base, choices: [], usage }];
@@ -373,8 +373,8 @@ const cpChatAnswerFor = (body) => {
 			return failed;
 		case "cp-other-choice":
 			return done
-				? { status: 200, stream: cpChunks(body.model, cpUsage, [cpDelta(0, { role: "assistant", content: "Sunny." }), cpDelta(1, { role: "assistant", content: "Cloudy." })], [cpDelta(0, {}, "stop"), cpDelta(1, {}, "length")]) }
-				: { status: 200, stream: cpChunks(body.model, cpUsage, [cpDelta(1, { role: "assistant", content: "Discarded draft." })], [cpDelta(0, { role: "assistant", tool_calls: [{ index: 0, ...cpChatToolCall }] })], [cpDelta(0, {}, "tool_calls"), cpDelta(1, {}, "stop")]) };
+				? { status: 200, stream: cpChunks(body.model, cpUsage, [cpDelta(0, { role: "assistant", content: "Sunny." }), cpDelta(1, { role: "assistant", content: "Cloudy." }, "length")], [cpDelta(0, {}, "stop")]) }
+				: { status: 200, stream: cpChunks(body.model, cpUsage, [cpDelta(1, { role: "assistant", content: "Discarded draft." })], [cpDelta(0, { role: "assistant", tool_calls: [{ index: 0, ...cpChatToolCall }] })], [cpDelta(0, {}, "tool_calls")]) };
 		case "cp-two-choices":
 			if (stream) return { status: 200, stream: cpChunks(body.model, cpUsage, [cpDelta(0, { role: "assistant", content: "First." }), cpDelta(1, { role: "assistant", content: "Second." })], [cpDelta(0, {}, "stop"), cpDelta(1, {}, "length")]) };
 			return reply([{ index: 0, message: cpChatAnswer("First."), finish_reason: "stop" }, { index: 1, message: cpChatAnswer("Second."), finish_reason: "length" }]);
