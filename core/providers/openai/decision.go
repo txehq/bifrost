@@ -394,7 +394,14 @@ func HandleOpenAIDecisionRequest(
 
 	bifrostResponse, err := response.ToBifrostDecisionResponse(request)
 	if err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(err.Error(), nil), jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
+		// The answers were generated and billed even though they are rejected, so the
+		// error carries that usage for governance and logging to charge.
+		answerErr := providerUtils.NewBifrostOperationError(err.Error(), nil)
+		answerErr.ExtraFields.BilledUsage = response.Usage.ToBifrostLLMUsage()
+		if response.Model != "" {
+			answerErr.ExtraFields.ResolvedModelUsed = response.Model
+		}
+		return nil, providerUtils.EnrichError(ctx, answerErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 	if bifrostResponse.Model == "" {
 		bifrostResponse.Model = request.Model

@@ -501,3 +501,50 @@ func TestOpenAIDecisionUsageKeepsTokenDetails(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"input_tokens":3,"output_tokens":0,"total_tokens":3}`, string(plain), "absent details are left out")
 }
+
+// TestOpenAIProviderDecisionRejectionKeepsBilledUsage pins that answers OpenAI
+// generated but the conversion rejects still report their usage on the error.
+func TestOpenAIProviderDecisionRejectionKeepsBilledUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"dec_1","model":"gpt-6-luna-2026","answers":[],"usage":{"input_tokens":30,"output_tokens":2,"total_tokens":32}}`))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL}}, testNoopLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := provider.Decision(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, &schemas.BifrostDecisionRequest{
+		Provider:  schemas.OpenAI,
+		Model:     "gpt-6-luna",
+		Input:     schemas.DecisionInput{Text: schemas.Ptr("state")},
+		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("q"), Instructions: schemas.NewDecisionText("Q?")}},
+	})
+	require.NotNil(t, bifrostErr)
+	billed := bifrostErr.ExtraFields.BilledUsage
+	require.NotNil(t, billed, "rejected answers were still billed")
+	assert.Equal(t, 30, billed.PromptTokens)
+	assert.Equal(t, 2, billed.CompletionTokens)
+	assert.Equal(t, "gpt-6-luna-2026", bifrostErr.ExtraFields.ResolvedModelUsed)
+}
+
+// TestOpenAIProviderDecisionRejectionWithoutUsageStaysUnbilled pins the other side: an answer
+// rejected with no reported usage carries nothing for anyone to charge.
+func TestOpenAIProviderDecisionRejectionWithoutUsageStaysUnbilled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"dec_1","answers":[]}`))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL}}, testNoopLogger{})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := provider.Decision(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, &schemas.BifrostDecisionRequest{
+		Provider:  schemas.OpenAI,
+		Model:     "gpt-6-luna",
+		Input:     schemas.DecisionInput{Text: schemas.Ptr("state")},
+		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("q"), Instructions: schemas.NewDecisionText("Q?")}},
+	})
+	require.NotNil(t, bifrostErr)
+	assert.Nil(t, bifrostErr.ExtraFields.BilledUsage)
+	assert.Empty(t, bifrostErr.ExtraFields.ResolvedModelUsed)
+}

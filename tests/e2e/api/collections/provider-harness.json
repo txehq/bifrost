@@ -282201,6 +282201,1323 @@
           ]
         }
       ]
+    },
+    {
+      "name": "268. Separate provider calls price separately and rejected decisions bill once (per-call-billing) [SERIAL]",
+      "description": "TXE-5518 (PR5 preservation group 4b). Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream, MCP tool server and pricing source. The turns models make one client request two provider calls of 150k input tokens through a real injected tool: priced as the sum they would cross the fixture's 272k threshold and cost $3.004 instead of $0.304, and turns-tiered proves each turn keeps its own service tier. turns-fail fails the third call, and the error bills the two before it, still as two calls. The decision rows have the provider answer with something the conversion rejects: the error carries the usage, OpenRouter's reported cost, or the emulated turn's cached input, and each attempt of a fallback is charged once. Every row reads its own virtual key's budget and log rows, so governance and logging are proved to agree on the same price. Red before the fix: the sums price at the threshold, and native rejections bill nothing. The turns rows that bill one call on main stay green as positive controls. Run with FEATURE=per-call-billing.",
+      "item": [
+        {
+          "name": "chat two turns priced one call at a time - per-call-billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pcbVk}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai_turns/turns-priced\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather?\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-per-call-billing-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('pcbVk', 'missing');",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: ['openai', 'openai_turns', 'openrouter'].map(function (p) { return { provider: p, allowed_models: ['*'], key_ids: ['*'], weight: 1 }; }), budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+                  "  pm.test('per-call-billing setup: created the virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  var vk = res.json().virtual_key;",
+                  "  pm.collectionVariables.set('pcbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+                  "  pm.collectionVariables.set('pcbId', vk.id);",
+                  "  pm.collectionVariables.set('pcbBudget', vk.budgets[0].id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var wantCost = 0.304, wantRows = 1, wantTokens = 300000;",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
+                  "      var rows = logs.json().logs || [];",
+                  "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
+                  "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
+                  "        setTimeout(function () { read(tries - 1); }, 300);",
+                  "        return;",
+                  "      }",
+                  "      pm.test('one log row per attempt', function () { pm.expect(settled.length, JSON.stringify(rows)).to.equal(wantRows); });",
+                  "      pm.test('the log rows charge the call-by-call price', function () { pm.expect(logged, JSON.stringify(rows.map(function (r) { return r.cost; }))).to.be.closeTo(wantCost, 1e-9); });",
+                  "      pm.test('the budget charges the same, exactly once', function () { pm.expect(own.current_usage, JSON.stringify(own)).to.be.closeTo(wantCost, 1e-9); });",
+                  "      if (wantTokens !== null) {",
+                  "        pm.test('the row still reports the total tokens', function () { pm.expect((settled[0].token_usage || {}).prompt_tokens, JSON.stringify(settled[0])).to.equal(wantTokens); });",
+                  "      }",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(40);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "chat stream two turns priced one call at a time - per-call-billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pcbVk}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai_turns/turns-priced\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather?\"}], \"stream\": true, \"stream_options\": {\"include_usage\": true}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-per-call-billing-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('pcbVk', 'missing');",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: ['openai', 'openai_turns', 'openrouter'].map(function (p) { return { provider: p, allowed_models: ['*'], key_ids: ['*'], weight: 1 }; }), budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+                  "  pm.test('per-call-billing setup: created the virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  var vk = res.json().virtual_key;",
+                  "  pm.collectionVariables.set('pcbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+                  "  pm.collectionVariables.set('pcbId', vk.id);",
+                  "  pm.collectionVariables.set('pcbBudget', vk.budgets[0].id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var wantCost = 0.304, wantRows = 1, wantTokens = 300000;",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
+                  "      var rows = logs.json().logs || [];",
+                  "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
+                  "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
+                  "        setTimeout(function () { read(tries - 1); }, 300);",
+                  "        return;",
+                  "      }",
+                  "      pm.test('one log row per attempt', function () { pm.expect(settled.length, JSON.stringify(rows)).to.equal(wantRows); });",
+                  "      pm.test('the log rows charge the call-by-call price', function () { pm.expect(logged, JSON.stringify(rows.map(function (r) { return r.cost; }))).to.be.closeTo(wantCost, 1e-9); });",
+                  "      pm.test('the budget charges the same, exactly once', function () { pm.expect(own.current_usage, JSON.stringify(own)).to.be.closeTo(wantCost, 1e-9); });",
+                  "      if (wantTokens !== null) {",
+                  "        pm.test('the row still reports the total tokens', function () { pm.expect((settled[0].token_usage || {}).prompt_tokens, JSON.stringify(settled[0])).to.equal(wantTokens); });",
+                  "      }",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(40);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "responses two turns priced one call at a time - per-call-billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pcbVk}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai_turns/turns-priced\", \"input\": [{\"type\": \"message\", \"role\": \"user\", \"content\": [{\"type\": \"input_text\", \"text\": \"What is the weather?\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-per-call-billing-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('pcbVk', 'missing');",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: ['openai', 'openai_turns', 'openrouter'].map(function (p) { return { provider: p, allowed_models: ['*'], key_ids: ['*'], weight: 1 }; }), budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+                  "  pm.test('per-call-billing setup: created the virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  var vk = res.json().virtual_key;",
+                  "  pm.collectionVariables.set('pcbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+                  "  pm.collectionVariables.set('pcbId', vk.id);",
+                  "  pm.collectionVariables.set('pcbBudget', vk.budgets[0].id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var wantCost = 0.304, wantRows = 1, wantTokens = 300000;",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
+                  "      var rows = logs.json().logs || [];",
+                  "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
+                  "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
+                  "        setTimeout(function () { read(tries - 1); }, 300);",
+                  "        return;",
+                  "      }",
+                  "      pm.test('one log row per attempt', function () { pm.expect(settled.length, JSON.stringify(rows)).to.equal(wantRows); });",
+                  "      pm.test('the log rows charge the call-by-call price', function () { pm.expect(logged, JSON.stringify(rows.map(function (r) { return r.cost; }))).to.be.closeTo(wantCost, 1e-9); });",
+                  "      pm.test('the budget charges the same, exactly once', function () { pm.expect(own.current_usage, JSON.stringify(own)).to.be.closeTo(wantCost, 1e-9); });",
+                  "      if (wantTokens !== null) {",
+                  "        pm.test('the row still reports the total tokens', function () { pm.expect((settled[0].token_usage || {}).prompt_tokens, JSON.stringify(settled[0])).to.equal(wantTokens); });",
+                  "      }",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(40);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "responses stream two turns priced one call at a time - per-call-billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pcbVk}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai_turns/turns-priced\", \"input\": [{\"type\": \"message\", \"role\": \"user\", \"content\": [{\"type\": \"input_text\", \"text\": \"What is the weather?\"}]}], \"stream\": true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-per-call-billing-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('pcbVk', 'missing');",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: ['openai', 'openai_turns', 'openrouter'].map(function (p) { return { provider: p, allowed_models: ['*'], key_ids: ['*'], weight: 1 }; }), budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+                  "  pm.test('per-call-billing setup: created the virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  var vk = res.json().virtual_key;",
+                  "  pm.collectionVariables.set('pcbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+                  "  pm.collectionVariables.set('pcbId', vk.id);",
+                  "  pm.collectionVariables.set('pcbBudget', vk.budgets[0].id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var wantCost = 0.304, wantRows = 1, wantTokens = 300000;",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
+                  "      var rows = logs.json().logs || [];",
+                  "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
+                  "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
+                  "        setTimeout(function () { read(tries - 1); }, 300);",
+                  "        return;",
+                  "      }",
+                  "      pm.test('one log row per attempt', function () { pm.expect(settled.length, JSON.stringify(rows)).to.equal(wantRows); });",
+                  "      pm.test('the log rows charge the call-by-call price', function () { pm.expect(logged, JSON.stringify(rows.map(function (r) { return r.cost; }))).to.be.closeTo(wantCost, 1e-9); });",
+                  "      pm.test('the budget charges the same, exactly once', function () { pm.expect(own.current_usage, JSON.stringify(own)).to.be.closeTo(wantCost, 1e-9); });",
+                  "      if (wantTokens !== null) {",
+                  "        pm.test('the row still reports the total tokens', function () { pm.expect((settled[0].token_usage || {}).prompt_tokens, JSON.stringify(settled[0])).to.equal(wantTokens); });",
+                  "      }",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(40);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "chat turns keep their own service tier - per-call-billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pcbVk}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai_turns/turns-tiered\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather?\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-per-call-billing-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('pcbVk', 'missing');",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: ['openai', 'openai_turns', 'openrouter'].map(function (p) { return { provider: p, allowed_models: ['*'], key_ids: ['*'], weight: 1 }; }), budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+                  "  pm.test('per-call-billing setup: created the virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  var vk = res.json().virtual_key;",
+                  "  pm.collectionVariables.set('pcbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+                  "  pm.collectionVariables.set('pcbId', vk.id);",
+                  "  pm.collectionVariables.set('pcbBudget', vk.budgets[0].id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var wantCost = 0.456, wantRows = 1, wantTokens = 300000;",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
+                  "      var rows = logs.json().logs || [];",
+                  "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
+                  "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
+                  "        setTimeout(function () { read(tries - 1); }, 300);",
+                  "        return;",
+                  "      }",
+                  "      pm.test('one log row per attempt', function () { pm.expect(settled.length, JSON.stringify(rows)).to.equal(wantRows); });",
+                  "      pm.test('the log rows charge the call-by-call price', function () { pm.expect(logged, JSON.stringify(rows.map(function (r) { return r.cost; }))).to.be.closeTo(wantCost, 1e-9); });",
+                  "      pm.test('the budget charges the same, exactly once', function () { pm.expect(own.current_usage, JSON.stringify(own)).to.be.closeTo(wantCost, 1e-9); });",
+                  "      if (wantTokens !== null) {",
+                  "        pm.test('the row still reports the total tokens', function () { pm.expect((settled[0].token_usage || {}).prompt_tokens, JSON.stringify(settled[0])).to.equal(wantTokens); });",
+                  "      }",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(40);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "responses stream turns keep their own service tier - per-call-billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pcbVk}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai_turns/turns-tiered\", \"input\": [{\"type\": \"message\", \"role\": \"user\", \"content\": [{\"type\": \"input_text\", \"text\": \"What is the weather?\"}]}], \"stream\": true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-per-call-billing-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('pcbVk', 'missing');",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: ['openai', 'openai_turns', 'openrouter'].map(function (p) { return { provider: p, allowed_models: ['*'], key_ids: ['*'], weight: 1 }; }), budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+                  "  pm.test('per-call-billing setup: created the virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  var vk = res.json().virtual_key;",
+                  "  pm.collectionVariables.set('pcbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+                  "  pm.collectionVariables.set('pcbId', vk.id);",
+                  "  pm.collectionVariables.set('pcbBudget', vk.budgets[0].id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var wantCost = 0.456, wantRows = 1, wantTokens = 300000;",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
+                  "      var rows = logs.json().logs || [];",
+                  "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
+                  "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
+                  "        setTimeout(function () { read(tries - 1); }, 300);",
+                  "        return;",
+                  "      }",
+                  "      pm.test('one log row per attempt', function () { pm.expect(settled.length, JSON.stringify(rows)).to.equal(wantRows); });",
+                  "      pm.test('the log rows charge the call-by-call price', function () { pm.expect(logged, JSON.stringify(rows.map(function (r) { return r.cost; }))).to.be.closeTo(wantCost, 1e-9); });",
+                  "      pm.test('the budget charges the same, exactly once', function () { pm.expect(own.current_usage, JSON.stringify(own)).to.be.closeTo(wantCost, 1e-9); });",
+                  "      if (wantTokens !== null) {",
+                  "        pm.test('the row still reports the total tokens', function () { pm.expect((settled[0].token_usage || {}).prompt_tokens, JSON.stringify(settled[0])).to.equal(wantTokens); });",
+                  "      }",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(40);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-500] chat third turn fails, the two before it bill as two calls - per-call-billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pcbVk}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai_turns/turns-fail\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather?\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-per-call-billing-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('pcbVk', 'missing');",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: ['openai', 'openai_turns', 'openrouter'].map(function (p) { return { provider: p, allowed_models: ['*'], key_ids: ['*'], weight: 1 }; }), budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+                  "  pm.test('per-call-billing setup: created the virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  var vk = res.json().virtual_key;",
+                  "  pm.collectionVariables.set('pcbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+                  "  pm.collectionVariables.set('pcbId', vk.id);",
+                  "  pm.collectionVariables.set('pcbBudget', vk.budgets[0].id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var wantCost = 0.304, wantRows = 1, wantTokens = 300000;",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); });",
+                  "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
+                  "      var rows = logs.json().logs || [];",
+                  "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
+                  "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
+                  "        setTimeout(function () { read(tries - 1); }, 300);",
+                  "        return;",
+                  "      }",
+                  "      pm.test('one log row per attempt', function () { pm.expect(settled.length, JSON.stringify(rows)).to.equal(wantRows); });",
+                  "      pm.test('the log rows charge the call-by-call price', function () { pm.expect(logged, JSON.stringify(rows.map(function (r) { return r.cost; }))).to.be.closeTo(wantCost, 1e-9); });",
+                  "      pm.test('the budget charges the same, exactly once', function () { pm.expect(own.current_usage, JSON.stringify(own)).to.be.closeTo(wantCost, 1e-9); });",
+                  "      if (wantTokens !== null) {",
+                  "        pm.test('the row still reports the total tokens', function () { pm.expect((settled[0].token_usage || {}).prompt_tokens, JSON.stringify(settled[0])).to.equal(wantTokens); });",
+                  "      }",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(40);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-500] chat stream third turn fails, the two before it bill as two calls - per-call-billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pcbVk}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai_turns/turns-fail\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather?\"}], \"stream\": true, \"stream_options\": {\"include_usage\": true}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-per-call-billing-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('pcbVk', 'missing');",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: ['openai', 'openai_turns', 'openrouter'].map(function (p) { return { provider: p, allowed_models: ['*'], key_ids: ['*'], weight: 1 }; }), budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+                  "  pm.test('per-call-billing setup: created the virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  var vk = res.json().virtual_key;",
+                  "  pm.collectionVariables.set('pcbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+                  "  pm.collectionVariables.set('pcbId', vk.id);",
+                  "  pm.collectionVariables.set('pcbBudget', vk.budgets[0].id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var wantCost = 0.304, wantRows = 1, wantTokens = 300000;",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); });",
+                  "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
+                  "      var rows = logs.json().logs || [];",
+                  "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
+                  "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
+                  "        setTimeout(function () { read(tries - 1); }, 300);",
+                  "        return;",
+                  "      }",
+                  "      pm.test('one log row per attempt', function () { pm.expect(settled.length, JSON.stringify(rows)).to.equal(wantRows); });",
+                  "      pm.test('the log rows charge the call-by-call price', function () { pm.expect(logged, JSON.stringify(rows.map(function (r) { return r.cost; }))).to.be.closeTo(wantCost, 1e-9); });",
+                  "      pm.test('the budget charges the same, exactly once', function () { pm.expect(own.current_usage, JSON.stringify(own)).to.be.closeTo(wantCost, 1e-9); });",
+                  "      if (wantTokens !== null) {",
+                  "        pm.test('the row still reports the total tokens', function () { pm.expect((settled[0].token_usage || {}).prompt_tokens, JSON.stringify(settled[0])).to.equal(wantTokens); });",
+                  "      }",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(40);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-500] responses third turn fails, the two before it bill as two calls - per-call-billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pcbVk}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai_turns/turns-fail\", \"input\": [{\"type\": \"message\", \"role\": \"user\", \"content\": [{\"type\": \"input_text\", \"text\": \"What is the weather?\"}]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-per-call-billing-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('pcbVk', 'missing');",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: ['openai', 'openai_turns', 'openrouter'].map(function (p) { return { provider: p, allowed_models: ['*'], key_ids: ['*'], weight: 1 }; }), budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+                  "  pm.test('per-call-billing setup: created the virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  var vk = res.json().virtual_key;",
+                  "  pm.collectionVariables.set('pcbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+                  "  pm.collectionVariables.set('pcbId', vk.id);",
+                  "  pm.collectionVariables.set('pcbBudget', vk.budgets[0].id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var wantCost = 0.304, wantRows = 1, wantTokens = 300000;",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); });",
+                  "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
+                  "      var rows = logs.json().logs || [];",
+                  "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
+                  "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
+                  "        setTimeout(function () { read(tries - 1); }, 300);",
+                  "        return;",
+                  "      }",
+                  "      pm.test('one log row per attempt', function () { pm.expect(settled.length, JSON.stringify(rows)).to.equal(wantRows); });",
+                  "      pm.test('the log rows charge the call-by-call price', function () { pm.expect(logged, JSON.stringify(rows.map(function (r) { return r.cost; }))).to.be.closeTo(wantCost, 1e-9); });",
+                  "      pm.test('the budget charges the same, exactly once', function () { pm.expect(own.current_usage, JSON.stringify(own)).to.be.closeTo(wantCost, 1e-9); });",
+                  "      if (wantTokens !== null) {",
+                  "        pm.test('the row still reports the total tokens', function () { pm.expect((settled[0].token_usage || {}).prompt_tokens, JSON.stringify(settled[0])).to.equal(wantTokens); });",
+                  "      }",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(40);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-500] responses stream third turn fails, the two before it bill as two calls - per-call-billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pcbVk}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai_turns/turns-fail\", \"input\": [{\"type\": \"message\", \"role\": \"user\", \"content\": [{\"type\": \"input_text\", \"text\": \"What is the weather?\"}]}], \"stream\": true}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-per-call-billing-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('pcbVk', 'missing');",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: ['openai', 'openai_turns', 'openrouter'].map(function (p) { return { provider: p, allowed_models: ['*'], key_ids: ['*'], weight: 1 }; }), budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+                  "  pm.test('per-call-billing setup: created the virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  var vk = res.json().virtual_key;",
+                  "  pm.collectionVariables.set('pcbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+                  "  pm.collectionVariables.set('pcbId', vk.id);",
+                  "  pm.collectionVariables.set('pcbBudget', vk.budgets[0].id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var wantCost = 0.304, wantRows = 1, wantTokens = 300000;",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); });",
+                  "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
+                  "      var rows = logs.json().logs || [];",
+                  "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
+                  "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
+                  "        setTimeout(function () { read(tries - 1); }, 300);",
+                  "        return;",
+                  "      }",
+                  "      pm.test('one log row per attempt', function () { pm.expect(settled.length, JSON.stringify(rows)).to.equal(wantRows); });",
+                  "      pm.test('the log rows charge the call-by-call price', function () { pm.expect(logged, JSON.stringify(rows.map(function (r) { return r.cost; }))).to.be.closeTo(wantCost, 1e-9); });",
+                  "      pm.test('the budget charges the same, exactly once', function () { pm.expect(own.current_usage, JSON.stringify(own)).to.be.closeTo(wantCost, 1e-9); });",
+                  "      if (wantTokens !== null) {",
+                  "        pm.test('the row still reports the total tokens', function () { pm.expect((settled[0].token_usage || {}).prompt_tokens, JSON.stringify(settled[0])).to.equal(wantTokens); });",
+                  "      }",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(40);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-500] native decision rejected, billed at its decision rates - per-call-billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pcbVk}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-6-luna\", \"input\": \"Win a free cruise now.\", \"questions\": [{\"type\": \"predicate\", \"name\": \"is_spam\", \"instructions\": \"Is this spam?\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-per-call-billing-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('pcbVk', 'missing');",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: ['openai', 'openai_turns', 'openrouter'].map(function (p) { return { provider: p, allowed_models: ['*'], key_ids: ['*'], weight: 1 }; }), budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+                  "  pm.test('per-call-billing setup: created the virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  var vk = res.json().virtual_key;",
+                  "  pm.collectionVariables.set('pcbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+                  "  pm.collectionVariables.set('pcbId', vk.id);",
+                  "  pm.collectionVariables.set('pcbBudget', vk.budgets[0].id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var wantCost = 0.00304, wantRows = 1, wantTokens = 1000;",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); });",
+                  "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
+                  "      var rows = logs.json().logs || [];",
+                  "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
+                  "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
+                  "        setTimeout(function () { read(tries - 1); }, 300);",
+                  "        return;",
+                  "      }",
+                  "      pm.test('one log row per attempt', function () { pm.expect(settled.length, JSON.stringify(rows)).to.equal(wantRows); });",
+                  "      pm.test('the log rows charge the call-by-call price', function () { pm.expect(logged, JSON.stringify(rows.map(function (r) { return r.cost; }))).to.be.closeTo(wantCost, 1e-9); });",
+                  "      pm.test('the budget charges the same, exactly once', function () { pm.expect(own.current_usage, JSON.stringify(own)).to.be.closeTo(wantCost, 1e-9); });",
+                  "      if (wantTokens !== null) {",
+                  "        pm.test('the row still reports the total tokens', function () { pm.expect((settled[0].token_usage || {}).prompt_tokens, JSON.stringify(settled[0])).to.equal(wantTokens); });",
+                  "      }",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(40);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-500] OpenRouter decision rejected, billed at its reported cost - per-call-billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pcbVk}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openrouter/typesafe/jev-1.13\", \"input\": \"Win a free cruise now.\", \"questions\": [{\"type\": \"predicate\", \"name\": \"is_spam\", \"instructions\": \"Is this spam?\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-per-call-billing-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('pcbVk', 'missing');",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: ['openai', 'openai_turns', 'openrouter'].map(function (p) { return { provider: p, allowed_models: ['*'], key_ids: ['*'], weight: 1 }; }), budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+                  "  pm.test('per-call-billing setup: created the virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  var vk = res.json().virtual_key;",
+                  "  pm.collectionVariables.set('pcbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+                  "  pm.collectionVariables.set('pcbId', vk.id);",
+                  "  pm.collectionVariables.set('pcbBudget', vk.budgets[0].id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var wantCost = 0.25, wantRows = 1, wantTokens = 1000;",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); });",
+                  "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
+                  "      var rows = logs.json().logs || [];",
+                  "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
+                  "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
+                  "        setTimeout(function () { read(tries - 1); }, 300);",
+                  "        return;",
+                  "      }",
+                  "      pm.test('one log row per attempt', function () { pm.expect(settled.length, JSON.stringify(rows)).to.equal(wantRows); });",
+                  "      pm.test('the log rows charge the call-by-call price', function () { pm.expect(logged, JSON.stringify(rows.map(function (r) { return r.cost; }))).to.be.closeTo(wantCost, 1e-9); });",
+                  "      pm.test('the budget charges the same, exactly once', function () { pm.expect(own.current_usage, JSON.stringify(own)).to.be.closeTo(wantCost, 1e-9); });",
+                  "      if (wantTokens !== null) {",
+                  "        pm.test('the row still reports the total tokens', function () { pm.expect((settled[0].token_usage || {}).prompt_tokens, JSON.stringify(settled[0])).to.equal(wantTokens); });",
+                  "      }",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(40);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-500] rejected decision falls back, each attempt billed once - per-call-billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pcbVk}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/gpt-6-luna\", \"input\": \"Win a free cruise now.\", \"questions\": [{\"type\": \"predicate\", \"name\": \"is_spam\", \"instructions\": \"Is this spam?\"}], \"fallbacks\": [\"openrouter/typesafe/jev-1.13\"]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-per-call-billing-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('pcbVk', 'missing');",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: ['openai', 'openai_turns', 'openrouter'].map(function (p) { return { provider: p, allowed_models: ['*'], key_ids: ['*'], weight: 1 }; }), budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+                  "  pm.test('per-call-billing setup: created the virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  var vk = res.json().virtual_key;",
+                  "  pm.collectionVariables.set('pcbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+                  "  pm.collectionVariables.set('pcbId', vk.id);",
+                  "  pm.collectionVariables.set('pcbBudget', vk.budgets[0].id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var wantCost = 0.25304, wantRows = 2, wantTokens = null;",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); });",
+                  "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
+                  "      var rows = logs.json().logs || [];",
+                  "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
+                  "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
+                  "        setTimeout(function () { read(tries - 1); }, 300);",
+                  "        return;",
+                  "      }",
+                  "      pm.test('one log row per attempt', function () { pm.expect(settled.length, JSON.stringify(rows)).to.equal(wantRows); });",
+                  "      pm.test('the log rows charge the call-by-call price', function () { pm.expect(logged, JSON.stringify(rows.map(function (r) { return r.cost; }))).to.be.closeTo(wantCost, 1e-9); });",
+                  "      pm.test('the budget charges the same, exactly once', function () { pm.expect(own.current_usage, JSON.stringify(own)).to.be.closeTo(wantCost, 1e-9); });",
+                  "      if (wantTokens !== null) {",
+                  "        pm.test('the row still reports the total tokens', function () { pm.expect((settled[0].token_usage || {}).prompt_tokens, JSON.stringify(settled[0])).to.equal(wantTokens); });",
+                  "      }",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(40);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-500] emulated decision rejected, cached input at the text cache rate - per-call-billing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{pcbVk}}"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"openai/decision-emulated\", \"input\": \"Win a free cruise now.\", \"questions\": [{\"type\": \"predicate\", \"name\": \"is_spam\", \"instructions\": \"Is this spam?\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A run-scoped virtual key with its own budget, so this row's charge is the only one it reads.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = 'harness-per-call-billing-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('pcbVk', 'missing');",
+                  "pm.sendRequest({ url: BASE + '/api/governance/virtual-keys', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ name: run, provider_configs: ['openai', 'openai_turns', 'openrouter'].map(function (p) { return { provider: p, allowed_models: ['*'], key_ids: ['*'], weight: 1 }; }), budgets: [{ max_limit: 100, reset_duration: '1h' }] }) } }, function (err, res) {",
+                  "  pm.test('per-call-billing setup: created the virtual key', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  var vk = res.json().virtual_key;",
+                  "  pm.collectionVariables.set('pcbVk', (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value);",
+                  "  pm.collectionVariables.set('pcbId', vk.id);",
+                  "  pm.collectionVariables.set('pcbBudget', vk.budgets[0].id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var wantCost = 0.0003, wantRows = 1, wantTokens = 1000;",
+                  "pm.test('the client gets the status of the outcome', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); });",
+                  "var id = pm.collectionVariables.get('pcbId'), budget = pm.collectionVariables.get('pcbBudget');",
+                  "function read(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?virtual_key_ids=' + id + '&limit=20', method: 'GET' }, function (e1, logs) {",
+                  "    pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id + '?from_memory=true', method: 'GET' }, function (e2, key) {",
+                  "      var rows = logs.json().logs || [];",
+                  "      var settled = rows.filter(function (r) { return r.status !== 'processing'; });",
+                  "      var own = ((key.json().virtual_key || {}).budgets || []).filter(function (b) { return b.id === budget; })[0] || {};",
+                  "      var logged = settled.reduce(function (sum, r) { return sum + (r.cost || 0); }, 0);",
+                  "      if (tries > 0 && (settled.length < wantRows || !(own.current_usage > 0) || !(logged > 0))) {",
+                  "        setTimeout(function () { read(tries - 1); }, 300);",
+                  "        return;",
+                  "      }",
+                  "      pm.test('one log row per attempt', function () { pm.expect(settled.length, JSON.stringify(rows)).to.equal(wantRows); });",
+                  "      pm.test('the log rows charge the call-by-call price', function () { pm.expect(logged, JSON.stringify(rows.map(function (r) { return r.cost; }))).to.be.closeTo(wantCost, 1e-9); });",
+                  "      pm.test('the budget charges the same, exactly once', function () { pm.expect(own.current_usage, JSON.stringify(own)).to.be.closeTo(wantCost, 1e-9); });",
+                  "      if (wantTokens !== null) {",
+                  "        pm.test('the row still reports the total tokens', function () { pm.expect((settled[0].token_usage || {}).prompt_tokens, JSON.stringify(settled[0])).to.equal(wantTokens); });",
+                  "      }",
+                  "      pm.sendRequest({ url: BASE + '/api/governance/virtual-keys/' + id, method: 'DELETE' }, function () {});",
+                  "    });",
+                  "  });",
+                  "}",
+                  "read(40);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

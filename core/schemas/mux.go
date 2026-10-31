@@ -1148,6 +1148,7 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 		}
 	}
 	usage.ToolUsage = cu.ToolUsage.DeepCopy()
+	usage.BillingTurns = cu.BillingTurns
 
 	return usage
 }
@@ -1188,6 +1189,7 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 		}
 	}
 	usage.ToolUsage = ru.ToolUsage.DeepCopy()
+	usage.BillingTurns = ru.BillingTurns
 
 	return usage
 }

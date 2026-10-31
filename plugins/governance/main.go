@@ -1729,6 +1729,7 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 		Cost:         toolCost,
 		RequestID:    requestID,
 		BillingNonce: billingNonce,
+		ToolCallID:   bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyMCPLogID),
 		IsStreaming:  false,
 		IsFinalChunk: true,
 		HasUsageData: toolCost > 0, // Has usage data if we have a cost

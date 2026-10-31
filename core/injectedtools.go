@@ -457,11 +457,11 @@ func runInjectedChatLoop(
 				withoutInjectedCalls(resp, 0, client)
 			}
 			stripInjectedCallsFromOtherChoices(resp, set)
-			resp.Usage = schemas.MergeBifrostLLMUsage(usage, resp.Usage)
+			resp.Usage = schemas.AddBillingTurn(usage, chatTurnUsage(resp))
 			prependChatText(resp, priorText)
 			return resp, nil
 		}
-		usage = schemas.MergeBifrostLLMUsage(usage, resp.Usage)
+		usage = schemas.AddBillingTurn(usage, chatTurnUsage(resp))
 		if text := chatMessageText(msg); text != "" {
 			priorText = append(priorText, text)
 		}
@@ -515,10 +515,10 @@ func runInjectedResponsesLoop(
 				}
 			}
 			resp.Output = output
-			resp.Usage = schemas.MergeBifrostLLMUsage(usage, resp.Usage.ToBifrostLLMUsage()).ToResponsesResponseUsage()
+			resp.Usage = schemas.AddBillingTurn(usage, responsesTurnUsage(resp)).ToResponsesResponseUsage()
 			return resp, nil
 		}
-		usage = schemas.MergeBifrostLLMUsage(usage, resp.Usage.ToBifrostLLMUsage())
+		usage = schemas.AddBillingTurn(usage, responsesTurnUsage(resp))
 
 		results := executeInjectedCalls(injected, exec)
 		next := *turn
@@ -686,7 +686,40 @@ func billEarlierTurns(bifrostErr *schemas.BifrostError, earlier *schemas.Bifrost
 	if bifrostErr == nil || earlier == nil {
 		return
 	}
-	bifrostErr.ExtraFields.BilledUsage = schemas.MergeBifrostLLMUsage(earlier, bifrostErr.ExtraFields.BilledUsage)
+	bifrostErr.ExtraFields.BilledUsage = schemas.AddBillingTurn(earlier, bifrostErr.ExtraFields.BilledUsage)
+}
+
+// chatTurnUsage is one chat turn's usage with what served it, see servedTurnUsage.
+func chatTurnUsage(resp *schemas.BifrostChatResponse) *schemas.BifrostLLMUsage {
+	return servedTurnUsage(resp.Usage, resp.ServiceTier, resp.Speed, resp.InferenceGeo, resp.ExtraFields.RoutingInfo.ServerSideFallbackModel)
+}
+
+// responsesTurnUsage is one Responses turn's usage with what served it, see servedTurnUsage.
+func responsesTurnUsage(resp *schemas.BifrostResponsesResponse) *schemas.BifrostLLMUsage {
+	return servedTurnUsage(resp.Usage.ToBifrostLLMUsage(), resp.ServiceTier, resp.Speed, resp.InferenceGeo, resp.ExtraFields.RoutingInfo.ServerSideFallbackModel)
+}
+
+// servedTurnUsage returns usage carrying the tier and model that served its turn. A loop's
+// response reports only the last turn's, so a turn that does not carry its own would be priced
+// at that one's rates. The provider's usage object is left as it is.
+func servedTurnUsage(usage *schemas.BifrostLLMUsage, tier *schemas.BifrostServiceTier, speed, geo, fallback *string) *schemas.BifrostLLMUsage {
+	if usage == nil || (tier == nil && speed == nil && geo == nil && fallback == nil) {
+		return usage
+	}
+	served := *usage
+	if tier != nil {
+		served.ServiceTier = tier
+	}
+	if speed != nil {
+		served.Speed = speed
+	}
+	if geo != nil {
+		served.InferenceGeo = geo
+	}
+	if fallback != nil {
+		served.ServerSideFallbackModel = fallback
+	}
+	return &served
 }
 
 func chatMessageText(msg *schemas.ChatMessage) string {
@@ -794,9 +827,9 @@ func (bifrost *Bifrost) injectedToolsForStream(ctx *schemas.BifrostContext, conf
 // turn goes to the same provider, model and key; plugins see only the final response.
 func (bifrost *Bifrost) runInjectedTools(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, set *injectedToolSet) (*schemas.BifrostResponse, *schemas.BifrostError) {
 	ctx := req.Context
-	exec := func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+	exec := keepAttemptLimits(ctx, func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
 		return bifrost.executeInjectedCall(ctx, set, call)
-	}
+	})
 	switch req.RequestType {
 	case schemas.ChatCompletionRequest:
 		original := req.BifrostRequest.ChatRequest
@@ -818,6 +851,36 @@ func (bifrost *Bifrost) runInjectedTools(provider schemas.Provider, config *sche
 		return &schemas.BifrostResponse{ResponsesResponse: resp}, nil
 	}
 	return bifrost.handleProviderRequest(provider, config, req, key, nil)
+}
+
+// keepAttemptLimits returns exec restoring what the attempt answers to once no tool call is running.
+// A tool is evaluated with no provider or model, and that evaluation settles its own limits on the
+// grant the whole request shares; left there, the model-scoped limits that admitted the attempt
+// would be gone when the turns are billed. Calls run in parallel and each one's post hook bills what
+// it reads from the grant, so restoring after any single call would charge a tool still running to
+// the inference's limits; the last call out restores them instead. Call it before the first tool runs.
+func keepAttemptLimits(ctx *schemas.BifrostContext, exec func(schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage) func(schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+	g := ctx.Grant()
+	if g == nil {
+		return exec
+	}
+	limits := g.Limits()
+	var mu sync.Mutex
+	running := 0
+	return func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+		mu.Lock()
+		running++
+		mu.Unlock()
+		defer func() {
+			mu.Lock()
+			defer mu.Unlock()
+			running--
+			if running == 0 {
+				g.SetLimits(limits)
+			}
+		}()
+		return exec(call)
+	}
 }
 
 // executeInjectedCall runs one injected tool call through the MCP plugin pipeline.

@@ -45,7 +45,7 @@ func (s *Store) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *
 	if extraFields != nil && extraFields.CacheDebug != nil {
 		requestCost = s.calculateCostWithCache(result, extraFields.CacheDebug, lookupScopes)
 	} else {
-		requestCost = s.calculateBaseCost(result, lookupScopes)
+		requestCost = s.calculateRequestCost(result, lookupScopes)
 	}
 	if extraFields == nil {
 		return requestCost
@@ -94,6 +94,34 @@ func (s *Store) CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *
 	merged.AdditionalCostDetails.RoutingCost += routingCost
 	merged.TotalCost += sidecarCost
 	return merged
+}
+
+// calculateRequestCost prices the request itself. A Responses aggregate that carries
+// BillingSegments settles several provider responses on one billing unit; each is priced on
+// its own, under the aggregate's ExtraFields, and the breakdowns are summed, so context-length
+// thresholds, service tiers and per-request fees apply per response rather than to the merged
+// usage. Sidecar costs stay with the caller, so they are added once.
+func (s *Store) calculateRequestCost(result *schemas.BifrostResponse, scopes LookupScopes) *schemas.BifrostCost {
+	aggregate := result.ResponsesResponse
+	if aggregate == nil || len(aggregate.BillingSegments) == 0 {
+		return s.calculateBaseCost(result, scopes)
+	}
+	var total *schemas.BifrostCost
+	for _, segment := range aggregate.BillingSegments {
+		segment.ExtraFields = aggregate.ExtraFields
+		segment.BillingSegments = nil
+		if segment.Model == "" {
+			segment.Model = aggregate.Model
+		}
+		total = total.Add(s.calculateBaseCost(&schemas.BifrostResponse{ResponsesResponse: &segment}, scopes))
+	}
+	return total
+}
+
+// summedTurns reports whether usage adds up separate provider calls, which pricing then takes
+// one at a time, each call's own provider-reported cost included.
+func summedTurns(usage *schemas.BifrostLLMUsage) bool {
+	return usage != nil && len(usage.BillingTurns) > 1
 }
 
 // RoutingCallCost calculates the cost of one routing-classification call — a
@@ -208,7 +236,7 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 	}
 
 	// If the provider already computed cost, trust it (matches calculateBaseCost).
-	if s.providerCostUsable(usage.Cost, provider) {
+	if !summedTurns(usage) && s.providerCostUsable(usage.Cost, provider) {
 		return usage.Cost
 	}
 
@@ -435,7 +463,7 @@ func (s *Store) calculateCostWithCache(result *schemas.BifrostResponse, cacheMet
 	}
 
 	// Cache miss — full LLM cost + embedding lookup cost (a sidecar additional cost)
-	base := s.calculateBaseCost(result, scopes)
+	base := s.calculateRequestCost(result, scopes)
 	embeddingCost := s.computeCacheEmbeddingCost(cacheMetadata, scopes)
 	if embeddingCost == 0 {
 		return base
@@ -561,7 +589,7 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	}
 
 	// If provider already computed cost, use it unless the provider is configured to ignore it
-	if input.usage != nil && s.providerCostUsable(input.usage.Cost, routingInfo.Provider) {
+	if input.usage != nil && !summedTurns(input.usage) && s.providerCostUsable(input.usage.Cost, routingInfo.Provider) {
 		return input.usage.Cost
 	}
 	// Image responses carry usage on imageUsage, never on input.usage.
@@ -628,6 +656,28 @@ func (s *Store) calculateAzureModelRouterCost(result *schemas.BifrostResponse, i
 // function. Shared by calculateBaseCost (response-driven) and
 // CalculateCostForUsage (bare-usage-driven, for failed/cancelled requests).
 func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.RoutingInfo, requestType schemas.RequestType, scopes LookupScopes) *schemas.BifrostCost {
+	// Usage summed over separate provider calls (an injected-tool loop) is priced call by
+	// call, so context-length thresholds and per-request fees apply to each call rather than
+	// to the sum. A turn carries the tier and model that served it; the response around it
+	// reports only the last turn's.
+	if summedTurns(input.usage) {
+		var total *schemas.BifrostCost
+		for i := range input.usage.BillingTurns {
+			turn := &input.usage.BillingTurns[i]
+			if s.providerCostUsable(turn.Cost, routingInfo.Provider) {
+				total = total.Add(turn.Cost)
+				continue
+			}
+			perTurn := input
+			perTurn.usage = turn
+			perTurn.audioSeconds = turn.AudioSeconds
+			perTurn.tier = tierFromResponse(turn.ServiceTier, turn.Speed, turn.InferenceGeo)
+			turnRouting := routingInfo
+			turnRouting.ServerSideFallbackModel = turn.ServerSideFallbackModel
+			total = total.Add(s.computeCostFromInput(perTurn, turnRouting, requestType, scopes))
+		}
+		return total
+	}
 	// When a pricing model override is set (e.g. container creates always look
 	// up "container"), it replaces the lookup hierarchy entirely. Build a
 	// synthetic RoutingInfo that reuses Provider but pins the model fields to
@@ -888,6 +938,7 @@ func responsesUsageToBifrostUsage(u *schemas.ResponsesResponseUsage) *schemas.Bi
 		}
 	}
 	usage.ToolUsage = u.ToolUsage
+	usage.BillingTurns = u.BillingTurns
 	return usage
 }
 

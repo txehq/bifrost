@@ -114,6 +114,99 @@ const responsesFor = (body, count) => {
 	};
 };
 
+// Injected-tool turns, TXE-5518. Each model answers its first request with a call to the injected web_search tool
+// and the request that carries the tool's result with a final answer, so one client request is two provider calls.
+// Both report 150k input tokens: priced one at a time they stay under the fixture's 272k threshold, priced as a sum
+// they cross it. turns-tiered answers its first turn at priority and its second at default. turns-fail calls the
+// tool twice and fails its third turn. The row names its behaviour by model, so every shape shares one script.
+const TURN_USAGE = { input: 150000, output: 1000 };
+const isTurnsModel = (name) => name === "turns-priced" || name === "turns-tiered" || name === "turns-fail";
+const chatTurnsDone = (body) => (Array.isArray(body.messages) ? body.messages : []).filter((m) => m && m.role === "tool").length;
+const responsesTurnsDone = (body) => (Array.isArray(body.input) ? body.input : []).filter((i) => i && i.type === "function_call_output").length;
+const turnTier = (name, second) => (name === "turns-tiered" && !second ? "priority" : "default");
+const chatUsage = () => ({ prompt_tokens: TURN_USAGE.input, completion_tokens: TURN_USAGE.output, total_tokens: TURN_USAGE.input + TURN_USAGE.output });
+const responsesUsage = () => ({ input_tokens: TURN_USAGE.input, output_tokens: TURN_USAGE.output, total_tokens: TURN_USAGE.input + TURN_USAGE.output });
+const chatTurn = (name, second) => {
+	const message = second
+		? { role: "assistant", content: "It is sunny." }
+		: { role: "assistant", content: null, tool_calls: [{ id: "call_turn_1", type: "function", function: { name: "web_search", arguments: "{\"query\":\"weather\"}" } }] };
+	return {
+		id: `chatcmpl-${name}`, object: "chat.completion", created: 1, model: name, service_tier: turnTier(name, second),
+		choices: [{ index: 0, message, finish_reason: second ? "stop" : "tool_calls" }],
+		usage: chatUsage(),
+	};
+};
+const chatTurnStream = (completion) => {
+	const base = { id: completion.id, object: "chat.completion.chunk", created: 1, model: completion.model, service_tier: completion.service_tier };
+	const { message, finish_reason: finish } = completion.choices[0];
+	const delta = message.tool_calls
+		? { role: "assistant", tool_calls: [{ index: 0, ...message.tool_calls[0] }] }
+		: { role: "assistant", content: message.content };
+	const chunks = [
+		{ ...base, choices: [{ index: 0, delta, finish_reason: null }] },
+		{ ...base, choices: [{ index: 0, delta: {}, finish_reason: finish }] },
+		{ ...base, choices: [], usage: completion.usage },
+	];
+	return chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n";
+};
+const responsesTurn = (name, second) => {
+	const item = second
+		? { id: "msg_turn_2", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "It is sunny.", annotations: [] }] }
+		: { id: "fc_turn_1", type: "function_call", status: "completed", call_id: "call_turn_1", name: "web_search", arguments: "{\"query\":\"weather\"}" };
+	return { id: `resp_${name}_${second ? 2 : 1}`, object: "response", created_at: 1, status: "completed", model: name, service_tier: turnTier(name, second), output: [item], usage: responsesUsage() };
+};
+const responsesTurnStream = (response) => {
+	const pending = { ...response, status: "in_progress", output: [], usage: null };
+	const item = response.output[0];
+	const events = [
+		{ type: "response.created", sequence_number: 0, response: pending },
+		{ type: "response.output_item.added", sequence_number: 1, output_index: 0, item },
+		{ type: "response.output_item.done", sequence_number: 2, output_index: 0, item },
+		{ type: "response.completed", sequence_number: 3, response },
+	];
+	return events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join("");
+};
+
+// The injected tool behind the turns models, as a Streamable HTTP MCP server answering plain JSON. It exists so the
+// loop runs in the gateway: the fixture's one tool returns a fixed text.
+const mcpAnswer = (message) => {
+	const reply = (result) => ({ jsonrpc: "2.0", id: message.id, result });
+	switch (message.method) {
+		case "initialize":
+			return reply({ protocolVersion: message.params?.protocolVersion || "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "provider-error-fixture", version: "1.0.0" } });
+		case "ping":
+			return reply({});
+		case "tools/list":
+			return reply({ tools: [{ name: "web_search", description: "Search the web.", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } }] });
+		case "tools/call":
+			return reply({ content: [{ type: "text", text: "Sunny." }], isError: false });
+		default:
+			return { jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "method not found" } };
+	}
+};
+
+// Decision answers the conversion rejects, TXE-5518: no answers for the question asked, though the model ran and
+// reported usage. OpenRouter also reports what it billed.
+const decisionUsage = { input_tokens: 1000, output_tokens: 10, total_tokens: 1010 };
+const nativeDecisionAnswer = (body) => {
+	if (body.model === "gpt-6-luna") {
+		return { model: "gpt-6-luna-2026", answers: [], usage: decisionUsage };
+	}
+	return undefined;
+};
+const openRouterDecisionAnswer = () => ({ model: "typesafe/jev-1.13.0", answers: {}, usage: { input_tokens: 1000, output_tokens: 10, cost: 0.25 } });
+
+// The rows the per-call pricing folder is judged against. Every other fixture model stays unpriced.
+const turnRates = { mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, input_cost_per_token_above_272k_tokens: 0.00001, output_cost_per_token_above_272k_tokens: 0.00002, input_cost_per_token_priority: 0.000002, output_cost_per_token_priority: 0.000004 };
+const fixturePricing = {
+	"turns-priced": { provider: "openai_turns", ...turnRates },
+	"turns-tiered": { provider: "openai_turns", ...turnRates },
+	"turns-fail": { provider: "openai_turns", ...turnRates },
+	"gpt-6-luna": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, input_cost_per_token_decisions: 0.000003, output_cost_per_token_decisions: 0.000004, supports_decisions: true },
+	"typesafe/jev-1.13": { provider: "openrouter", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
+	"decision-emulated": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, cache_read_input_token_cost: 0.0000001 },
+};
+
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
 const hits = Object.create(null);
 
@@ -127,7 +220,7 @@ const server = http.createServer((req, res) => {
 	// catalog decides which request types a model supports (gpt-5-pro is Responses-only, so a chat request to it is
 	// converted). Serving both from here keeps the run offline and the result independent of a remote file.
 	if (req.method === "GET" && path === "/pricing.json") {
-		return send(200, {}, JSON.stringify({}));
+		return send(200, {}, JSON.stringify(fixturePricing));
 	}
 	if (req.method === "GET" && path === "/model-parameters.json") {
 		// supported_endpoints/mode feed the catalog's per-model request types: gpt-5-pro answers on /v1/responses only.
@@ -140,12 +233,24 @@ const server = http.createServer((req, res) => {
 	if (req.method === "GET" && path === "/__hits") {
 		return send(200, {}, JSON.stringify({ data: [{ hits: { ...hits } }] }));
 	}
-	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions")) {
+	if (req.method === "GET" && path === "/mcp") {
+		return send(405, {}, errorBody("no server stream", "invalid_request_error", "method_not_allowed"));
+	}
+	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions" && path !== "/mcp" && path !== "/v1/decisions" && path !== "/alpha/decisions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
 	}
 	const chunks = [];
 	req.on("data", (c) => chunks.push(c));
 	req.on("end", () => {
+		if (path === "/mcp") {
+			let message = {};
+			try { message = JSON.parse(Buffer.concat(chunks).toString("utf8")) || {}; } catch {}
+			if (message.id === undefined) {
+				res.writeHead(202);
+				return res.end();
+			}
+			return send(200, {}, JSON.stringify(mcpAnswer(message)));
+		}
 		// Creating a session incurs the WebRTC minimum before the relay validates this answer.
 		if (path === "/v1/live/sessions") {
 			let body;
@@ -209,6 +314,37 @@ const server = http.createServer((req, res) => {
 			return res.end(payload, () => {
 				if (truncated) socket.end(); // Graceful EOF without a Connection: close header.
 			});
+		}
+		if (path === "/alpha/decisions") {
+			return send(200, {}, JSON.stringify(openRouterDecisionAnswer()));
+		}
+		if (path === "/v1/responses" && model === "decision-emulated") {
+			return send(200, {}, JSON.stringify({
+				id: "resp_decision_emulated", object: "response", created_at: 1, status: "completed", model: "decision-emulated-2026",
+				output: [{ id: "msg_decision_emulated", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "no decision", annotations: [] }] }],
+				usage: { input_tokens: 1000, input_tokens_details: { cached_tokens: 800 }, output_tokens: 10, total_tokens: 1010 },
+			}));
+		}
+		if (path === "/v1/decisions") {
+			const answer = nativeDecisionAnswer(parsed);
+			return answer ? send(200, {}, JSON.stringify(answer)) : send(404, {}, errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found"));
+		}
+		if (isTurnsModel(model)) {
+			const done = path === "/v1/responses" ? responsesTurnsDone(parsed) : chatTurnsDone(parsed);
+			if (model === "turns-fail" && done === 2) {
+				return send(500, {}, errorBody("internal server error", "server_error", "internal_error"));
+			}
+			const second = model !== "turns-fail" && done > 0;
+			if (path === "/v1/responses") {
+				const response = responsesTurn(model, second);
+				if (parsed.stream !== true) return send(200, {}, JSON.stringify(response));
+				res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+				return res.end(responsesTurnStream(response));
+			}
+			const completion = chatTurn(model, second);
+			if (parsed.stream !== true) return send(200, {}, JSON.stringify(completion));
+			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+			return res.end(chatTurnStream(completion));
 		}
 		// The model's behaviour picks the response, so only an own entry may be looked up: "constructor" or
 		// "toString" must be an unknown model, not an inherited function.

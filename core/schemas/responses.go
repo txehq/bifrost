@@ -281,6 +281,8 @@ type BifrostResponsesResponse struct {
 	SearchResults []SearchResult `json:"search_results,omitempty"`
 	Videos        []VideoResult  `json:"videos,omitempty"`
 	Citations     []string       `json:"citations,omitempty"`
+
+	BillingSegments []BifrostResponsesResponse `json:"-"` // Responses one billing unit settled; see the model catalog's calculateRequestCost
 }
 
 // CacheDiagnostics is the Anthropic cache-diagnosis response payload
@@ -1352,6 +1354,8 @@ type ResponsesResponseUsage struct {
 	CostInUsdTicks             *int64                               `json:"cost_in_usd_ticks,omitempty"`
 	ServerSideToolUsageDetails *ResponsesServerSideToolUsageDetails `json:"server_side_tool_usage_details,omitempty"`
 	ContextDetails             *ResponsesContextDetails             `json:"context_details,omitempty"`
+
+	BillingTurns []BifrostLLMUsage `json:"-"` // Mirrors BifrostLLMUsage.BillingTurns through the conversions
 }
 
 // NormalizeProviderCost mirrors BifrostLLMUsage.NormalizeProviderCost for the responses path.

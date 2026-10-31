@@ -7626,3 +7626,362 @@ func TestCalculateCostForUsage_LiveVoiceDuration(t *testing.T) {
 			"usage carried on an error is priced the same as successful voice usage")
 	}
 }
+
+// TestCalculateCostBreakdown_BillingSegmentsKeepPerResponseBoundaries: an aggregate
+// that settles several responses on one unit is priced response by response. Two
+// 150k-input responses stay under the 272k threshold each and keep their own service
+// tiers; priced as one 300k-input response they would cross it and take one tier.
+func TestCalculateCostBreakdown_BillingSegmentsKeepPerResponseBoundaries(t *testing.T) {
+	p := gpt56SolPricing()
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(p.Model, p.Provider, p.Mode): p,
+	})
+	segment := func(tier *schemas.BifrostServiceTier) schemas.BifrostResponsesResponse {
+		return schemas.BifrostResponsesResponse{
+			ServiceTier: tier,
+			Usage:       &schemas.ResponsesResponseUsage{InputTokens: 150000, OutputTokens: 1000, TotalTokens: 151000},
+		}
+	}
+	priority := schemas.BifrostServiceTierPriority
+	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Usage: &schemas.ResponsesResponseUsage{InputTokens: 300000, OutputTokens: 2000, TotalTokens: 302000},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ResponsesRequest,
+			RoutingInfo: routingInfoFor(schemas.ModelProvider(p.Provider), p.Model),
+		},
+		BillingSegments: []schemas.BifrostResponsesResponse{segment(&priority), segment(nil)},
+	}}
+
+	one := &schemas.BifrostLLMUsage{PromptTokens: 150000, CompletionTokens: 1000, TotalTokens: 151000}
+	want := computeTextCostTotal(&p, one, serviceTier{isPriority: true}) + computeTextCostTotal(&p, one, serviceTier{})
+	merged := computeTextCostTotal(&p, &schemas.BifrostLLMUsage{PromptTokens: 300000, CompletionTokens: 2000, TotalTokens: 302000}, serviceTier{})
+	require.NotEqual(t, want, merged, "fixture must make merged pricing differ")
+
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, want, breakdown.TotalCost, 1e-12)
+	assert.InDelta(t, breakdown.TotalCost, breakdown.InputCost+breakdown.OutputCost+breakdown.AdditionalCost, 1e-12)
+	assert.InDelta(t, want, s.CalculateCost(resp, nil), 1e-12)
+}
+
+// TestCalculateCost_BillingTurnsKeepPerCallThresholds: usage that sums several
+// independently billable calls (an injected-tool loop's turns) is priced call by
+// call, on the success path and on the bare-usage error path. Two 150k-input
+// turns stay under the 272k threshold each; summed they would cross it.
+func TestCalculateCost_BillingTurnsKeepPerCallThresholds(t *testing.T) {
+	p := gpt56SolPricing()
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(p.Model, p.Provider, p.Mode): p,
+	})
+	turn := schemas.BifrostLLMUsage{PromptTokens: 150000, CompletionTokens: 1000, TotalTokens: 151000}
+	usage := schemas.AddBillingTurn(&turn, &turn)
+	require.Len(t, usage.BillingTurns, 2)
+	require.Equal(t, 300000, usage.PromptTokens, "the usage still reports the totals")
+
+	want := 2 * computeTextCostTotal(&p, &turn, serviceTier{})
+	merged := computeTextCostTotal(&p, &schemas.BifrostLLMUsage{PromptTokens: 300000, CompletionTokens: 2000, TotalTokens: 302000}, serviceTier{})
+	require.NotEqual(t, want, merged, "fixture must make merged pricing differ")
+
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: usage,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionRequest,
+			RoutingInfo: routingInfoFor(schemas.ModelProvider(p.Provider), p.Model),
+		},
+	}}
+	assert.InDelta(t, want, s.CalculateCost(resp, nil), 1e-12)
+	assert.InDelta(t, want, s.CalculateCostForUsage(usage, schemas.ModelProvider(p.Provider), p.Model, schemas.ChatCompletionRequest, nil), 1e-12)
+
+	// The Responses conversions carry the turns, and a Responses result prices them too.
+	viaResponses := usage.ToResponsesResponseUsage().ToBifrostLLMUsage()
+	assert.InDelta(t, want, s.CalculateCostForUsage(viaResponses, schemas.ModelProvider(p.Provider), p.Model, schemas.ResponsesRequest, nil), 1e-12)
+	responsesResult := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Usage: usage.ToResponsesResponseUsage(),
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ResponsesRequest,
+			RoutingInfo: routingInfoFor(schemas.ModelProvider(p.Provider), p.Model),
+		},
+	}}
+	assert.InDelta(t, want, s.CalculateCost(responsesResult, nil), 1e-12)
+}
+
+// TestCalculateCost_BillingTurnsKeepEachTurnsServedTier: a turn is priced at the tier that served
+// it, on the response path and the bare-usage path alike, whatever the last turn's was.
+func TestCalculateCost_BillingTurnsKeepEachTurnsServedTier(t *testing.T) {
+	p := gpt56SolPricing()
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(p.Model, p.Provider, p.Mode): p,
+	})
+	priority := schemas.BifrostServiceTierPriority
+	first := schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100, ServiceTier: &priority}
+	second := schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}
+	usage := schemas.AddBillingTurn(&first, &second)
+
+	want := computeTextCostTotal(&p, &first, serviceTier{isPriority: true}) + computeTextCostTotal(&p, &second, serviceTier{})
+	require.NotEqual(t, want, 2*computeTextCostTotal(&p, &second, serviceTier{}), "fixture must make the tiers differ")
+	require.NotEqual(t, want, 2*computeTextCostTotal(&p, &first, serviceTier{isPriority: true}), "fixture must make the tiers differ")
+
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		ServiceTier: &priority, // the last turn's tier, which must not price the others
+		Usage:       usage,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionRequest,
+			RoutingInfo: routingInfoFor(schemas.ModelProvider(p.Provider), p.Model),
+		},
+	}}
+	assert.InDelta(t, want, s.CalculateCost(resp, nil), 1e-12)
+	assert.InDelta(t, want, s.CalculateCostForUsage(usage, schemas.ModelProvider(p.Provider), p.Model, schemas.ChatCompletionRequest, nil), 1e-12)
+}
+
+// TestCalculateCost_BillingTurnsKeepEachTurnsServedModel: a turn a server-side fallback served is
+// priced at that model's rates, and the turn beside it at the requested model's, whichever the
+// last turn was.
+func TestCalculateCost_BillingTurnsKeepEachTurnsServedModel(t *testing.T) {
+	requested := gpt56SolPricing()
+	served := chatPricing(0.000001, 0.000002)
+	served.Model = "served-by-fallback"
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(requested.Model, requested.Provider, requested.Mode): requested,
+		makeKey(served.Model, served.Provider, served.Mode):          served,
+	})
+	first := schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100, ServerSideFallbackModel: bifrost.Ptr(served.Model)}
+	second := schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}
+	usage := schemas.AddBillingTurn(&first, &second)
+
+	want := computeTextCostTotal(&served, &first, serviceTier{}) + computeTextCostTotal(&requested, &second, serviceTier{})
+	assert.InDelta(t, want, s.CalculateCostForUsage(usage, schemas.ModelProvider(requested.Provider), requested.Model, schemas.ChatCompletionRequest, nil), 1e-12)
+
+	info := routingInfoFor(schemas.ModelProvider(requested.Provider), requested.Model)
+	info.ServerSideFallbackModel = bifrost.Ptr(served.Model) // the last turn's, which must not price the others
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage:       usage,
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, RoutingInfo: info},
+	}}
+	assert.InDelta(t, want, s.CalculateCost(resp, nil), 1e-12)
+}
+
+// TestCalculateCost_BillingTurnsFeesAndProviderCosts: a per-request fee is one per call, and a
+// provider-reported cost is that call's only, so a call without one is still priced.
+func TestCalculateCost_BillingTurnsFeesAndProviderCosts(t *testing.T) {
+	p := gpt56SolPricing()
+	p.CostPerRequest = bifrost.Ptr(0.25)
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(p.Model, p.Provider, p.Mode): p,
+	})
+	provider := schemas.ModelProvider(p.Provider)
+	priced := schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}
+	reported := priced
+	reported.Cost = &schemas.BifrostCost{TotalCost: 3}
+
+	plain := schemas.AddBillingTurn(&priced, &priced)
+	assert.InDelta(t, 2*(computeTextCostTotal(&p, &priced, serviceTier{})+0.25),
+		s.CalculateCostForUsage(plain, provider, p.Model, schemas.ChatCompletionRequest, nil), 1e-12, "one fee per call")
+
+	mixed := schemas.AddBillingTurn(&reported, &priced)
+	require.InDelta(t, 3, mixed.Cost.TotalCost, 1e-12, "the sum only knows the reported call's cost")
+	assert.InDelta(t, 3+computeTextCostTotal(&p, &priced, serviceTier{})+0.25,
+		s.CalculateCostForUsage(mixed, provider, p.Model, schemas.ChatCompletionRequest, nil), 1e-12)
+
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+		Usage: mixed,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ChatCompletionRequest,
+			RoutingInfo: routingInfoFor(provider, p.Model),
+		},
+	}}
+	assert.InDelta(t, 3+computeTextCostTotal(&p, &priced, serviceTier{})+0.25, s.CalculateCost(resp, nil), 1e-12)
+}
+
+// TestCalculateCost_BillingTurnsPriceReasoningOnce: reasoning tokens are part of each call's
+// output and of no one else's, so the turns cost what the same calls cost one at a time.
+func TestCalculateCost_BillingTurnsPriceReasoningOnce(t *testing.T) {
+	p := gpt56SolPricing()
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(p.Model, p.Provider, p.Mode): p,
+	})
+	provider := schemas.ModelProvider(p.Provider)
+	turn := schemas.BifrostLLMUsage{
+		PromptTokens: 1000, CompletionTokens: 500, TotalTokens: 1500,
+		CompletionTokensDetails: &schemas.ChatCompletionTokensDetails{ReasoningTokens: 300},
+	}
+	one := s.CalculateCostForUsage(&turn, provider, p.Model, schemas.ChatCompletionRequest, nil)
+	require.Positive(t, one)
+	sum := schemas.AddBillingTurn(&turn, &turn)
+	require.Equal(t, 600, sum.CompletionTokensDetails.ReasoningTokens, "the total reports both calls' reasoning")
+	assert.InDelta(t, 2*one, s.CalculateCostForUsage(sum, provider, p.Model, schemas.ChatCompletionRequest, nil), 1e-12)
+}
+
+// TestCalculateCostBreakdown_BillingSegmentsSidecarsOnce: sidecar costs belong to the unit, not
+// to each response it settled, on the plain path and on a semantic-cache miss.
+func TestCalculateCostBreakdown_BillingSegmentsSidecarsOnce(t *testing.T) {
+	p := gpt56SolPricing()
+	embedding := configstoreTables.TableModelPricing{
+		Model: "text-embedding-3-small", Provider: "openai", Mode: "embedding", InputCostPerToken: bifrost.Ptr(0.0000001), OutputCostPerToken: bifrost.Ptr(0.0),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(p.Model, p.Provider, p.Mode):                         p,
+		makeKey(embedding.Model, embedding.Provider, embedding.Mode): embedding,
+	})
+	segment := schemas.BifrostResponsesResponse{Usage: &schemas.ResponsesResponseUsage{InputTokens: 150000, OutputTokens: 1000, TotalTokens: 151000}}
+	one := &schemas.BifrostLLMUsage{PromptTokens: 150000, CompletionTokens: 1000, TotalTokens: 151000}
+	requestCost := 2 * computeTextCostTotal(&p, one, serviceTier{})
+	aggregate := func(extra schemas.BifrostResponseExtraFields) *schemas.BifrostResponse {
+		extra.RequestType = schemas.ResponsesRequest
+		extra.RoutingInfo = routingInfoFor(schemas.ModelProvider(p.Provider), p.Model)
+		return &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+			Usage:           &schemas.ResponsesResponseUsage{InputTokens: 300000, OutputTokens: 2000, TotalTokens: 302000},
+			ExtraFields:     extra,
+			BillingSegments: []schemas.BifrostResponsesResponse{segment, segment},
+		}}
+	}
+
+	providerUsed, modelUsed, tokens := p.Provider, p.Model, 1000
+	routed := s.CalculateCostBreakdown(aggregate(schemas.BifrostResponseExtraFields{RoutingMetadata: &schemas.BifrostRoutingMetadata{
+		Calls: []schemas.BifrostRoutingCall{{ProviderUsed: &providerUsed, ModelUsed: &modelUsed, InputTokens: &tokens, RequestType: schemas.ChatCompletionRequest, CountTowardBudgets: true}},
+	}}), nil)
+	require.NotNil(t, routed)
+	sidecar := float64(tokens) * *p.InputCostPerToken
+	assert.InDelta(t, requestCost+sidecar, routed.TotalCost, 1e-9, "the routing call is billed once, not per segment")
+	assert.InDelta(t, sidecar, routed.AdditionalCost, 1e-9)
+
+	cacheProvider, cacheModel := schemas.OpenAI, embedding.Model
+	cacheTokens := 1000
+	missed := s.CalculateCostBreakdown(aggregate(schemas.BifrostResponseExtraFields{CacheDebug: &schemas.BifrostCacheMetadata{
+		ProviderUsed: bifrost.Ptr(string(cacheProvider)), ModelUsed: &cacheModel, InputTokens: &cacheTokens,
+	}}), nil)
+	require.NotNil(t, missed)
+	assert.InDelta(t, requestCost+1000*0.0000001, missed.TotalCost, 1e-9, "a cache miss still prices each segment, and the lookup once")
+}
+
+// TestCalculateCostBreakdown_BillingSegmentsDoNotTouchTheAggregate: pricing reads the segments;
+// the aggregate a later plugin or the log row reads keeps its totals, and a provider-reported
+// cost on one segment is that segment's.
+func TestCalculateCostBreakdown_BillingSegmentsDoNotTouchTheAggregate(t *testing.T) {
+	p := gpt56SolPricing()
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(p.Model, p.Provider, p.Mode): p,
+	})
+	one := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}
+	reportedCost := &schemas.BifrostCost{TotalCost: 3}
+	result := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Model: "aggregate-model",
+		Usage: &schemas.ResponsesResponseUsage{InputTokens: 2000, OutputTokens: 200, TotalTokens: 2200},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ResponsesRequest,
+			RoutingInfo: routingInfoFor(schemas.ModelProvider(p.Provider), p.Model),
+		},
+		BillingSegments: []schemas.BifrostResponsesResponse{
+			{Usage: &schemas.ResponsesResponseUsage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100, Cost: reportedCost}},
+			{Usage: &schemas.ResponsesResponseUsage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100}},
+		},
+	}}
+
+	got := s.CalculateCostBreakdown(result, nil)
+
+	require.NotNil(t, got)
+	assert.InDelta(t, 3+computeTextCostTotal(&p, one, serviceTier{}), got.TotalCost, 1e-12)
+	assert.Equal(t, 2000, result.ResponsesResponse.Usage.InputTokens)
+	assert.Len(t, result.ResponsesResponse.BillingSegments, 2)
+	assert.Empty(t, result.ResponsesResponse.BillingSegments[0].Model, "a segment is priced from a copy")
+	assert.InDelta(t, 3, reportedCost.TotalCost, 1e-12, "the provider's cost object is not added to")
+}
+
+// TestDecisionCost_EmulatedCacheAndNativeGuards pins the row rules on the bare-usage path a
+// rejected decision bills through: an emulated decision bills its cache reads and writes as the
+// text call it is, a responses-only row prices it, native decision rates stay flat over the
+// same usage, and a variable-price row stays unpriced.
+func TestDecisionCost_EmulatedCacheAndNativeGuards(t *testing.T) {
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens: 1000, CompletionTokens: 10, TotalTokens: 1010,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedReadTokens: 500, CachedWriteTokens: 300},
+	}
+	price := func(row configstoreTables.TableModelPricing) float64 {
+		return lunaStore(row).CalculateCostForUsage(usage, schemas.ModelProvider(row.Provider), row.Model, schemas.DecisionRequest, nil)
+	}
+	emulated := lunaChatRow(false)
+	emulated.CacheReadInputTokenCost = bifrost.Ptr(lunaChatInput / 10)
+	emulated.CacheCreationInputTokenCost = bifrost.Ptr(lunaChatInput * 2)
+	want := computeTextCostTotal(&emulated, usage, serviceTier{})
+	require.NotEqual(t, want, 1000*lunaChatInput+10*lunaChatOutput, "fixture must make cache rates differ from the input rate")
+	assert.InDelta(t, want, price(emulated), decisionTestEpsilon)
+
+	responsesOnly := emulated
+	responsesOnly.Mode = "responses"
+	assert.InDelta(t, want, price(responsesOnly), decisionTestEpsilon)
+
+	native := lunaChatRow(true)
+	native.CacheReadInputTokenCost = emulated.CacheReadInputTokenCost
+	assert.InDelta(t, 1000*lunaDecisionInput+10*lunaDecisionOutput, price(native), decisionTestEpsilon)
+
+	variable := emulated
+	variable.InputCostPerToken, variable.OutputCostPerToken = bifrost.Ptr(-1.0), bifrost.Ptr(-1.0)
+	assert.Zero(t, price(variable))
+}
+
+// TestCalculateCostBreakdown_SegmentsPastTheLiveBoundStayExact: a drain stopped at its bound can
+// hold a few responses more than it, and each still prices alone: 67 mixed-tier responses of 150k
+// input stay under the threshold and on their own tier, far from what their sum would cost.
+func TestCalculateCostBreakdown_SegmentsPastTheLiveBoundStayExact(t *testing.T) {
+	p := gpt56SolPricing()
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(p.Model, p.Provider, p.Mode): p,
+	})
+	priority := schemas.BifrostServiceTierPriority
+	one := &schemas.BifrostLLMUsage{PromptTokens: 150000, CompletionTokens: 1000, TotalTokens: 151000}
+	segments := make([]schemas.BifrostResponsesResponse, 67)
+	want := 0.0
+	for i := range segments {
+		segments[i].Usage = &schemas.ResponsesResponseUsage{InputTokens: 150000, OutputTokens: 1000, TotalTokens: 151000}
+		if i%2 == 0 {
+			segments[i].ServiceTier = &priority
+			want += computeTextCostTotal(&p, one, serviceTier{isPriority: true})
+		} else {
+			want += computeTextCostTotal(&p, one, serviceTier{})
+		}
+	}
+	got := s.CalculateCostBreakdown(&schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Usage: &schemas.ResponsesResponseUsage{InputTokens: 67 * 150000, OutputTokens: 67000, TotalTokens: 67 * 151000},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.ResponsesRequest,
+			RoutingInfo: routingInfoFor(schemas.ModelProvider(p.Provider), p.Model),
+		},
+		BillingSegments: segments,
+	}}, nil)
+	require.NotNil(t, got)
+	assert.InDelta(t, want, got.TotalCost, 1e-9)
+	assert.InDelta(t, want, got.InputCost+got.OutputCost+got.AdditionalCost, 1e-9)
+}
+
+// BenchmarkCalculateCostBillingTurns measures pricing on the request path: an ordinary call
+// pays one length check for the turns, and a ten-turn loop one pricing pass per call.
+func BenchmarkCalculateCostBillingTurns(b *testing.B) {
+	p := gpt56SolPricing()
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(p.Model, p.Provider, p.Mode): p,
+	})
+	turn := &schemas.BifrostLLMUsage{PromptTokens: 150000, CompletionTokens: 1000, TotalTokens: 151000}
+	var summed *schemas.BifrostLLMUsage
+	for range schemas.DefaultMaxAgentDepth {
+		summed = schemas.AddBillingTurn(summed, turn)
+	}
+	result := func(usage *schemas.BifrostLLMUsage) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Usage: usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionRequest,
+				RoutingInfo: routingInfoFor(schemas.ModelProvider(p.Provider), p.Model),
+			},
+		}}
+	}
+	for name, usage := range map[string]*schemas.BifrostLLMUsage{"single": turn, "loop10": summed} {
+		resp := result(usage)
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if s.CalculateCost(resp, nil) <= 0 {
+					b.Fatal("unpriced")
+				}
+			}
+		})
+	}
+}

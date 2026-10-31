@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ type fakeLiveRunner struct {
 	opens       []fakeLiveOpen
 	posts       []fakeLivePost
 	cleanups    int
+	cleanedBy   map[int]int // open index -> times its unit was cleaned
 	refuse      bool
 	panicOnPost bool // the post hook panics, the way a billing plugin might
 	keyIDs      map[string][]string
@@ -53,6 +55,7 @@ func (f *fakeLiveRunner) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, re
 	kind, _ := ctx.Value(schemas.BifrostContextKeyLiveUnit).(string)
 	start, _ := ctx.Value(schemas.BifrostContextKeyLiveSessionStart).(bool)
 	f.opens = append(f.opens, fakeLiveOpen{model: model, continuation: continuation, kind: kind, start: start})
+	openIndex := len(f.opens) - 1
 	if f.refuse {
 		return nil, newRealtimeWireBifrostError(402, "budget_exceeded", "Budget exceeded: virtual key budget spent")
 	}
@@ -85,6 +88,10 @@ func (f *fakeLiveRunner) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, re
 		Cleanup: func() {
 			f.mu.Lock()
 			f.cleanups++
+			if f.cleanedBy == nil {
+				f.cleanedBy = make(map[int]int)
+			}
+			f.cleanedBy[openIndex]++
 			f.mu.Unlock()
 		},
 	}, nil
@@ -275,6 +282,33 @@ func TestLiveMeterBillsEachBackendResponseOnce(t *testing.T) {
 	assert.Len(t, posts, 1)
 }
 
+// TestLiveMeterDoesNotCarryServiceTierToTheNextResponse pins that a settled
+// response's service tier does not price the next one: a response that reports
+// no tier bills at the default rates, not the previous response's priority.
+func TestLiveMeterDoesNotCarryServiceTierToTheNextResponse(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+
+	priority := schemas.BifrostServiceTierPriority
+	require.Nil(t, meter.onBackendResponse(&schemas.BifrostResponsesResponse{
+		ID: new("resp_1"), Model: "gpt-5.6-luna", ServiceTier: &priority,
+		Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12},
+	}, "", 0))
+	require.Nil(t, meter.onBackendResponse(&schemas.BifrostResponsesResponse{
+		ID: new("resp_2"), Model: "gpt-5.6-luna",
+		Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12},
+	}, "", 0))
+
+	_, posts, _ := runner.snapshot()
+	require.Len(t, posts, 2)
+	require.NotNil(t, posts[0].resp.ServiceTier)
+	assert.Equal(t, schemas.BifrostServiceTierPriority, *posts[0].resp.ServiceTier)
+	assert.Nil(t, posts[1].resp.ServiceTier, "a response without a tier must not inherit the previous one's")
+}
+
 func TestLiveMeterSumsBackendUsageWhileRefused(t *testing.T) {
 	t.Parallel()
 
@@ -301,6 +335,31 @@ func TestLiveMeterSumsBackendUsageWhileRefused(t *testing.T) {
 	require.NotNil(t, backend)
 	assert.Equal(t, 200, backend.Usage.InputTokens, "both responses bill on the admitted unit")
 	assert.Equal(t, 220, backend.Usage.TotalTokens)
+}
+
+// TestLiveMeterFailedDelegationPanicKeepsTheSuccessor pins that a post hook panicking
+// while a refused delegation closes still leaves the admitted successor on the lane:
+// the session's recovery then finishes through it, so every admitted unit is cleaned
+// exactly once and the released one is never reused.
+func TestLiveMeterFailedDelegationPanicKeepsTheSuccessor(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+
+	runner.setPanicOnPost(true)
+	func() {
+		defer func() { require.NotNil(t, recover(), "the post hook was expected to panic") }()
+		meter.failBackend(newRealtimeWireBifrostError(400, "responses_validation_failed", "The model does not exist"))
+	}()
+	meter.finish(1)
+
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	for i := range runner.opens {
+		assert.Equal(t, 1, runner.cleanedBy[i], "unit %d (%s) cleaned %d times", i, runner.opens[i].kind, runner.cleanedBy[i])
+	}
 }
 
 func TestLiveMeterFailedDelegationClosesItsUnitWithTheError(t *testing.T) {
@@ -688,4 +747,251 @@ func BenchmarkLiveMeterSessionRotationAndClose(b *testing.B) {
 		}
 		meter.finish(165)
 	}
+}
+
+// TestLiveMeterRefusedDrainKeepsPerResponseSegments: responses that drain onto one
+// admitted unit after a refused renewal stay separate billing segments, each with its
+// own usage and service tier, so pricing never applies a merged context length or one
+// response's tier to another. A unit that settles one response carries no segments.
+func TestLiveMeterRefusedDrainKeepsPerResponseSegments(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+	require.Nil(t, meter.onBackendResponse(&schemas.BifrostResponsesResponse{
+		ID: new("resp_0"), Model: "gpt-5.6-luna",
+		Usage: &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 1, TotalTokens: 6},
+	}, "", 0))
+	runner.setRefuse(true)
+
+	priority := schemas.BifrostServiceTierPriority
+	for _, r := range []struct {
+		id   string
+		tier *schemas.BifrostServiceTier
+	}{{"resp_1", &priority}, {"resp_2", nil}} {
+		require.NotNil(t, meter.onBackendResponse(&schemas.BifrostResponsesResponse{
+			ID: new(r.id), Model: "gpt-5.6-luna", ServiceTier: r.tier,
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 150000, OutputTokens: 1000, TotalTokens: 151000},
+		}, "", 0))
+	}
+	meter.finish(5)
+
+	_, posts, _ := runner.snapshot()
+	var backends []*schemas.BifrostResponsesResponse
+	for _, post := range posts {
+		if post.model == "gpt-5.6-luna" {
+			backends = append(backends, post.resp)
+		}
+	}
+	require.Len(t, backends, 2)
+	assert.Nil(t, backends[0].BillingSegments, "a unit that settles one response is priced as that response")
+
+	drained := backends[1]
+	assert.Equal(t, 300000, drained.Usage.InputTokens, "usage still reports the totals")
+	require.Len(t, drained.BillingSegments, 2)
+	for i, segment := range drained.BillingSegments {
+		require.NotNil(t, segment.Usage)
+		assert.Equal(t, 150000, segment.Usage.InputTokens, "segment %d keeps its own context length", i)
+	}
+	require.NotNil(t, drained.BillingSegments[0].ServiceTier)
+	assert.Equal(t, schemas.BifrostServiceTierPriority, *drained.BillingSegments[0].ServiceTier)
+	assert.Nil(t, drained.BillingSegments[1].ServiceTier, "a segment keeps its own tier, not the previous one's")
+}
+
+// TestLiveMeterSingleResponseCarriesNoSegments: an ordinary unit settles one response, priced as
+// that response, and the lane holds nothing of it afterwards.
+func TestLiveMeterSingleResponseCarriesNoSegments(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+	for _, id := range []string{"resp_1", "resp_2"} {
+		require.Nil(t, meter.onBackendResponse(&schemas.BifrostResponsesResponse{
+			ID: new(id), Model: "gpt-5.6-luna",
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12},
+		}, "", 0))
+	}
+
+	_, posts, _ := runner.snapshot()
+	require.Len(t, posts, 2)
+	for _, post := range posts {
+		assert.Nil(t, post.resp.BillingSegments)
+	}
+	lane := meter.backends["gpt-5.6-luna"]
+	assert.Nil(t, lane.segments)
+	assert.Equal(t, schemas.BifrostResponsesResponse{}.Model, lane.segment.Model)
+	assert.Nil(t, lane.serviceTier)
+}
+
+// TestLiveMeterDrainReachesItsBoundWithoutFolding: a provider that keeps answering a refused session
+// brings the unit to its bound, which the session then acts on. Every response read keeps its own
+// usage and tier, those that arrive while the stop takes effect included, so nothing is priced together.
+func TestLiveMeterDrainReachesItsBoundWithoutFolding(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+	runner.setRefuse(true)
+	priority := schemas.BifrostServiceTierPriority
+	respond := func(i int) {
+		var tier *schemas.BifrostServiceTier
+		if i%2 == 0 {
+			tier = &priority
+		}
+		meter.onBackendResponse(&schemas.BifrostResponsesResponse{
+			ID: new(fmt.Sprintf("resp_%d", i)), Model: "gpt-5.6-luna", ServiceTier: tier,
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 150000 + i, OutputTokens: 2, TotalTokens: 150002 + i},
+		}, "", 0)
+	}
+
+	for i := range liveMaxBillingSegments - 1 {
+		respond(i)
+	}
+	assert.False(t, meter.billingBoundReached(), "one response short of the bound")
+	respond(liveMaxBillingSegments - 1)
+	assert.True(t, meter.billingBoundReached())
+
+	responses := liveMaxBillingSegments + 3 // frames already on their way when the stop lands
+	for i := liveMaxBillingSegments; i < responses; i++ {
+		respond(i)
+	}
+	lane := meter.backends["gpt-5.6-luna"]
+	meter.finish(5)
+
+	_, posts, _ := runner.snapshot()
+	var drained *schemas.BifrostResponsesResponse
+	for _, post := range posts {
+		if post.model == "gpt-5.6-luna" {
+			drained = post.resp
+		}
+	}
+	require.NotNil(t, drained)
+	require.Len(t, drained.BillingSegments, responses, "no response is folded into another")
+	for i, segment := range drained.BillingSegments {
+		assert.Equal(t, 150000+i, segment.Usage.InputTokens, "segment %d keeps its own usage", i)
+		assert.Equal(t, i%2 == 0, segment.ServiceTier != nil, "segment %d keeps its own tier", i)
+	}
+	assert.Nil(t, lane.segments, "a settled unit releases its segments")
+}
+
+// TestLiveMeterSegmentsDoNotAliasTheProviderEvent: the segments outlive the event they came from,
+// and a segment never moves with the lane's running totals.
+func TestLiveMeterSegmentsDoNotAliasTheProviderEvent(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+	runner.setRefuse(true)
+
+	first := &schemas.ResponsesResponseUsage{InputTokens: 100, TotalTokens: 100, InputTokensDetails: &schemas.ResponsesResponseInputTokens{CachedReadTokens: 7}}
+	second := &schemas.ResponsesResponseUsage{InputTokens: 200, TotalTokens: 200, InputTokensDetails: &schemas.ResponsesResponseInputTokens{CachedReadTokens: 9}}
+	meter.onBackendResponse(&schemas.BifrostResponsesResponse{ID: new("resp_1"), Model: "gpt-5.6-luna", Usage: first}, "", 0)
+	meter.onBackendResponse(&schemas.BifrostResponsesResponse{ID: new("resp_2"), Model: "gpt-5.6-luna", Usage: second}, "", 0)
+	first.InputTokensDetails.CachedReadTokens = 999
+	second.InputTokensDetails.CachedReadTokens = 999
+	meter.finish(5)
+
+	_, posts, _ := runner.snapshot()
+	var drained *schemas.BifrostResponsesResponse
+	for _, post := range posts {
+		if post.model == "gpt-5.6-luna" {
+			drained = post.resp
+		}
+	}
+	require.NotNil(t, drained)
+	require.Len(t, drained.BillingSegments, 2)
+	assert.Equal(t, 100, drained.BillingSegments[0].Usage.InputTokens)
+	assert.Equal(t, 7, drained.BillingSegments[0].Usage.InputTokensDetails.CachedReadTokens)
+	assert.Equal(t, 9, drained.BillingSegments[1].Usage.InputTokensDetails.CachedReadTokens)
+	assert.Equal(t, 300, drained.Usage.InputTokens)
+	assert.Equal(t, 16, drained.Usage.InputTokensDetails.CachedReadTokens)
+}
+
+// TestLiveMeterDrainWithConcurrentFinish: responses draining while the session finishes settle
+// exactly once on the race detector; whatever landed before finish is billed, nothing after it.
+func TestLiveMeterDrainWithConcurrentFinish(t *testing.T) {
+	t.Parallel()
+
+	runner := &fakeLiveRunner{}
+	meter := newTestLiveMeter(runner)
+	require.Nil(t, meter.admit("gpt-live-1", "gpt-5.6-luna"))
+	runner.setRefuse(true)
+
+	var wg sync.WaitGroup
+	for w := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 20 {
+				meter.onBackendResponse(&schemas.BifrostResponsesResponse{
+					ID: new(fmt.Sprintf("resp_%d_%d", w, i)), Model: "gpt-5.6-luna",
+					Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, TotalTokens: 10},
+				}, "", 0)
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		meter.finish(5)
+	}()
+	wg.Wait()
+
+	_, posts, _ := runner.snapshot()
+	billed := 0
+	for _, post := range posts {
+		if post.model == "gpt-5.6-luna" && post.resp != nil && post.resp.Usage != nil {
+			billed += post.resp.Usage.InputTokens
+			segmentInput := 0
+			for _, segment := range post.resp.BillingSegments {
+				segmentInput += segment.Usage.InputTokens
+			}
+			if len(post.resp.BillingSegments) > 0 {
+				assert.Equal(t, post.resp.Usage.InputTokens, segmentInput)
+			}
+		}
+	}
+	assert.LessOrEqual(t, billed, 8*20*10)
+	for _, id := range []string{"late_1", "late_2"} {
+		meter.onBackendResponse(&schemas.BifrostResponsesResponse{
+			ID: new(id), Model: "gpt-5.6-luna",
+			Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, TotalTokens: 10},
+		}, "", 0)
+	}
+	lane := meter.backends["gpt-5.6-luna"]
+	assert.Nil(t, lane.segments, "finish released the segments, and a late response retains none")
+	assert.Nil(t, lane.usage, "nothing settles a response after finish")
+}
+
+// BenchmarkLiveMeterBackendResponse measures one backend response settling on the request path:
+// the ordinary case adds no segment work, a draining unit one segment per response, reset at the
+// bound as a session would stop there.
+func BenchmarkLiveMeterBackendResponse(b *testing.B) {
+	usage := &schemas.ResponsesResponseUsage{InputTokens: 150000, OutputTokens: 1000, TotalTokens: 151000}
+	run := func(b *testing.B, refuse bool) {
+		b.ReportAllocs()
+		runner := &fakeLiveRunner{}
+		meter := newTestLiveMeter(runner)
+		if bifrostErr := meter.admit("gpt-live-1", "gpt-5.6-luna"); bifrostErr != nil {
+			b.Fatal(bifrostErr)
+		}
+		runner.setRefuse(refuse)
+		response := &schemas.BifrostResponsesResponse{Model: "gpt-5.6-luna", Usage: usage}
+		for b.Loop() {
+			meter.mu.Lock()
+			meter.backends["gpt-5.6-luna"].addBillingSegmentLocked(response)
+			lane := meter.backends["gpt-5.6-luna"]
+			lane.usage = addResponsesUsage(lane.usage, usage)
+			if !refuse || len(lane.segments) >= liveMaxBillingSegments {
+				lane.usage, lane.segments, lane.segment = nil, nil, schemas.BifrostResponsesResponse{}
+			}
+			meter.mu.Unlock()
+		}
+	}
+	b.Run("settled", func(b *testing.B) { run(b, false) })
+	b.Run("drain", func(b *testing.B) { run(b, true) })
 }

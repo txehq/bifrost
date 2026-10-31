@@ -51,6 +51,8 @@ type UsageUpdate struct {
 
 	// Position in the fallback chain; 0 for the primary.
 	FallbackIndex int `json:"fallback_index,omitempty"`
+	// ToolCallID is the MCP log id of the tool call this update settles, "" for inference.
+	ToolCallID string `json:"tool_call_id,omitempty"`
 	// BilledReason is auditing metadata only ("success" | "partial_usage_on_error"):
 	// it makes it possible to assert we never bill both a success and a failure
 	// for the same physical call. Not used for dedup.
@@ -289,11 +291,15 @@ func (t *UsageTracker) resetExpiredCounters(ctx context.Context) {
 // in the fallback chain, so the fallback index tells a fallback's attempts from
 // the primary's. The success-vs-cancellation race for one physical call
 // matches on all four, which is what this dedup exists to guard.
+//
+// A tool call a provider-injected loop runs shares its inference's RequestID, nonce and attempt, so
+// ToolCallID keeps the two apart: without it the tool's settlement claims the key and the inference
+// that ran the tool is dropped as already billed.
 func (t *UsageTracker) tryClaimBilling(update *UsageUpdate) bool {
 	if update.RequestID == "" {
 		return true
 	}
-	key := fmt.Sprintf("%s:%s:%d:%d", update.BillingNonce, update.RequestID, update.FallbackIndex, update.AttemptNumber)
+	key := fmt.Sprintf("%s:%s:%d:%d:%s", update.BillingNonce, update.RequestID, update.FallbackIndex, update.AttemptNumber, update.ToolCallID)
 	t.billedMu.Lock()
 	defer t.billedMu.Unlock()
 	if _, seen := t.billed[key]; seen {

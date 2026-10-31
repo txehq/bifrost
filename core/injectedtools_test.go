@@ -3,6 +3,7 @@ package bifrost
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -551,7 +552,20 @@ func TestRunInjectedChatLoop_ExecutesInjectedCallsAndReturnsFinalAnswer(t *testi
 	assert.Equal(t, "stop", *resp.Choices[0].FinishReason)
 	assert.Equal(t, 30, resp.Usage.PromptTokens, "usage covers every model turn")
 	assert.Equal(t, 32, resp.Usage.TotalTokens)
+	assertBillingTurns(t, resp.Usage, 10, 20)
 	assert.Len(t, original.Input, 1, "the caller's request is never appended to")
+}
+
+// assertBillingTurns checks that usage summed over an injected-tool loop keeps
+// each provider call as its own billing turn, so pricing applies per-call
+// thresholds rather than pricing the sum as one call.
+func assertBillingTurns(t *testing.T, usage *schemas.BifrostLLMUsage, prompts ...int) {
+	t.Helper()
+	require.NotNil(t, usage)
+	require.Len(t, usage.BillingTurns, len(prompts), "each model turn must stay a separate billing turn")
+	for i, prompt := range prompts {
+		assert.Equal(t, prompt, usage.BillingTurns[i].PromptTokens, "billing turn %d", i)
+	}
 }
 
 func TestRunInjectedChatLoop_MixedTurnDropsClientCallAndReasks(t *testing.T) {
@@ -655,6 +669,81 @@ func TestRunInjectedResponsesLoop_ExecutesInjectedCalls(t *testing.T) {
 	assert.Equal(t, "Sunny.", *resp.Output[1].Content.ContentStr)
 	assert.Equal(t, 30, resp.Usage.InputTokens)
 	assert.Equal(t, 33, resp.Usage.TotalTokens)
+	assertBillingTurns(t, resp.Usage.ToBifrostLLMUsage(), 10, 20)
+}
+
+// TestInjectedLoopsKeepEachTurnsServedTier: the response around a loop reports only the last
+// turn's tier and fallback model, so each turn carries its own for pricing, and neither the
+// provider's usage nor the client's totals change.
+func TestInjectedLoopsKeepEachTurnsServedTier(t *testing.T) {
+	priority, flex := schemas.BifrostServiceTierPriority, schemas.BifrostServiceTierFlex
+	fallback := "served-by-fallback"
+	first := chatTurnResponse("", "tool_calls", 10, chatToolCall("c1", "web_search"))
+	first.ServiceTier = &priority
+	first.ExtraFields.RoutingInfo.ServerSideFallbackModel = &fallback
+	providerUsage := first.Usage
+	second := chatTurnResponse("Sunny.", "stop", 20)
+	second.ServiceTier = &flex
+	turns := &scriptedChatTurns{responses: []*schemas.BifrostChatResponse{first, second}}
+
+	resp, err := runInjectedChatLoop(&schemas.BifrostChatRequest{Model: "m"}, testInjectedSet(t), turns.dispatch, searchResult)
+
+	require.Nil(t, err)
+	assertBillingTurns(t, resp.Usage, 10, 20)
+	require.NotNil(t, resp.Usage.BillingTurns[0].ServiceTier)
+	assert.Equal(t, priority, *resp.Usage.BillingTurns[0].ServiceTier)
+	require.NotNil(t, resp.Usage.BillingTurns[0].ServerSideFallbackModel)
+	assert.Equal(t, fallback, *resp.Usage.BillingTurns[0].ServerSideFallbackModel)
+	require.NotNil(t, resp.Usage.BillingTurns[1].ServiceTier)
+	assert.Equal(t, flex, *resp.Usage.BillingTurns[1].ServiceTier)
+	assert.Nil(t, resp.Usage.BillingTurns[1].ServerSideFallbackModel, "the first turn's fallback is not the last turn's")
+	assert.Nil(t, providerUsage.ServiceTier, "the provider's usage object is left as it is")
+}
+
+// TestInjectedLoopsBillEarlierTurnsSeparatelyOnError: a turn that fails after earlier ones
+// finished bills all of them, each still its own call, on chat and Responses alike. A failed
+// turn that reported nothing leaves the earlier turn's usage as it is.
+func TestInjectedLoopsBillEarlierTurnsSeparatelyOnError(t *testing.T) {
+	failing := func(billed *schemas.BifrostLLMUsage) *schemas.BifrostError {
+		return &schemas.BifrostError{ExtraFields: schemas.BifrostErrorExtraFields{BilledUsage: billed}}
+	}
+	t.Run("chat", func(t *testing.T) {
+		calls := 0
+		dispatch := func(*schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+			calls++
+			if calls == 1 {
+				return chatTurnResponse("", "tool_calls", 10, chatToolCall("c1", "web_search")), nil
+			}
+			return nil, failing(&schemas.BifrostLLMUsage{PromptTokens: 7, TotalTokens: 7})
+		}
+		_, err := runInjectedChatLoop(&schemas.BifrostChatRequest{Model: "m"}, testInjectedSet(t), dispatch, searchResult)
+		require.NotNil(t, err)
+		assert.Equal(t, 17, err.ExtraFields.BilledUsage.PromptTokens)
+		assertBillingTurns(t, err.ExtraFields.BilledUsage, 10, 7)
+	})
+	t.Run("responses", func(t *testing.T) {
+		calls := 0
+		dispatch := func(*schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+			calls++
+			if calls == 1 {
+				return &schemas.BifrostResponsesResponse{
+					Output: []schemas.ResponsesMessage{responsesFunctionCall("c1", "web_search")},
+					Usage:  &schemas.ResponsesResponseUsage{InputTokens: 10, TotalTokens: 10},
+				}, nil
+			}
+			return nil, failing(&schemas.BifrostLLMUsage{PromptTokens: 7, TotalTokens: 7})
+		}
+		_, err := runInjectedResponsesLoop(&schemas.BifrostResponsesRequest{Model: "m"}, testInjectedSet(t), dispatch, searchResult)
+		require.NotNil(t, err)
+		assertBillingTurns(t, err.ExtraFields.BilledUsage, 10, 7)
+	})
+	t.Run("failed turn reported nothing", func(t *testing.T) {
+		earlier := &schemas.BifrostLLMUsage{PromptTokens: 10, TotalTokens: 10}
+		err := failing(nil)
+		billEarlierTurns(err, earlier)
+		assert.Same(t, earlier, err.ExtraFields.BilledUsage)
+		assert.Empty(t, err.ExtraFields.BilledUsage.BillingTurns)
+	})
 }
 
 // A client that forces web search gets the choice remapped to the injected tool. Kept on
@@ -1009,4 +1098,143 @@ func BenchmarkWithGatewayToolSearch_NoDeferredTools(b *testing.B) {
 			b.Fatal("unexpected tool search")
 		}
 	}
+}
+
+// limitsGrant is a grant whose limits a test can settle and read.
+type limitsGrant struct {
+	stubGrant
+	limits atomic.Pointer[schemas.Limits]
+}
+
+func (g *limitsGrant) Limits() schemas.Limits {
+	if l := g.limits.Load(); l != nil {
+		return *l
+	}
+	return nil
+}
+
+func (g *limitsGrant) SetLimits(limits schemas.Limits) bool {
+	if limits == nil {
+		return false
+	}
+	g.limits.Store(&limits)
+	return true
+}
+
+type namedLimits struct {
+	schemas.Limits
+	name string
+}
+
+// TestKeepAttemptLimits: a tool's evaluation replaces the limits on the grant the whole request
+// shares, and the attempt's are back for billing once every parallel call has returned.
+func TestKeepAttemptLimits(t *testing.T) {
+	g := &limitsGrant{}
+	attempt, tool := namedLimits{name: "attempt"}, namedLimits{name: "tool"}
+	g.SetLimits(attempt)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.True(t, ctx.SetGrant(g))
+
+	exec := keepAttemptLimits(ctx, func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+		g.SetLimits(tool)
+		return searchResult(call)
+	})
+	executeInjectedCalls([]schemas.ChatAssistantMessageToolCall{chatToolCall("c1", "web_search"), chatToolCall("c2", "web_search")}, exec)
+
+	assert.Equal(t, attempt, g.Limits(), "the turns are billed to what admitted the attempt")
+}
+
+// TestKeepAttemptLimitsWaitForTheLastParallelCall: a tool's post hook bills what it reads from the
+// grant, so a call that finishes first must leave the tool limits in place for the one still running.
+func TestKeepAttemptLimitsWaitForTheLastParallelCall(t *testing.T) {
+	g := &limitsGrant{}
+	attempt, tool := namedLimits{name: "attempt"}, namedLimits{name: "tool"}
+	g.SetLimits(attempt)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.True(t, ctx.SetGrant(g))
+
+	slowEntered, fastDone, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var seen schemas.Limits
+	exec := keepAttemptLimits(ctx, func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+		g.SetLimits(tool)
+		if *call.ID == "slow" {
+			close(slowEntered)
+			<-fastDone
+			seen = g.Limits()
+		}
+		return searchResult(call)
+	})
+	go func() {
+		defer close(done)
+		exec(chatToolCall("slow", "web_search"))
+	}()
+	<-slowEntered
+	exec(chatToolCall("fast", "web_search"))
+	close(fastDone)
+	<-done
+
+	assert.Equal(t, tool, seen, "the running tool still reads the limits it was evaluated under")
+	assert.Equal(t, attempt, g.Limits(), "the last call out restores the attempt's")
+}
+
+// TestKeepAttemptLimitsBelongToTheirAttempt: each attempt restores the limits it was admitted under,
+// so a later attempt on another provider is never billed to the one before it.
+func TestKeepAttemptLimitsBelongToTheirAttempt(t *testing.T) {
+	g := &limitsGrant{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	require.True(t, ctx.SetGrant(g))
+	tool := func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+		g.SetLimits(namedLimits{name: "tool"})
+		return searchResult(call)
+	}
+	first, fallback := namedLimits{name: "first"}, namedLimits{name: "fallback"}
+
+	g.SetLimits(first)
+	keepAttemptLimits(ctx, tool)(chatToolCall("c1", "web_search"))
+	assert.Equal(t, first, g.Limits())
+
+	g.SetLimits(fallback)
+	keepAttemptLimits(ctx, tool)(chatToolCall("c2", "web_search"))
+	assert.Equal(t, fallback, g.Limits())
+}
+
+// TestKeepAttemptLimitsWithoutGrant: a request nothing governs runs its tools unchanged.
+func TestKeepAttemptLimitsWithoutGrant(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	result := keepAttemptLimits(ctx, searchResult)(chatToolCall("c1", "web_search"))
+	require.NotNil(t, result)
+}
+
+// BenchmarkRunInjectedChatLoopUsage measures the loop's accounting on the request path: a
+// request that never calls an injected tool, and one that runs the default ten turns.
+func BenchmarkRunInjectedChatLoopUsage(b *testing.B) {
+	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool()}, maxDepth: schemas.DefaultMaxAgentDepth}
+	set := resolveInjectedTools(src, webSearchConfig(), schemas.ChatCompletionRequest, nil)
+	call := chatToolCall("c1", "web_search")
+	run := func(b *testing.B, turns int) {
+		b.ReportAllocs()
+		responses := make([]*schemas.BifrostChatResponse, turns)
+		for i := range responses {
+			if i == turns-1 {
+				responses[i] = chatTurnResponse("Sunny.", "stop", 150000)
+			} else {
+				responses[i] = chatTurnResponse("", "tool_calls", 150000, call)
+			}
+		}
+		original := &schemas.BifrostChatRequest{Model: "m"}
+		for b.Loop() {
+			next := 0
+			dispatch := func(*schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+				copied := *responses[next]
+				copied.Choices = append([]schemas.BifrostResponseChoice(nil), copied.Choices...)
+				next++
+				return &copied, nil
+			}
+			if _, err := runInjectedChatLoop(original, set, dispatch, searchResult); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+	b.Run("single", func(b *testing.B) { run(b, 1) })
+	b.Run("loop10", func(b *testing.B) { run(b, schemas.DefaultMaxAgentDepth) })
 }

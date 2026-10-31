@@ -562,6 +562,7 @@ type liveSessionController struct {
 	withholdUpstream atomic.Bool // the session's owner could not be recorded; nothing more reaches the client
 	closeOnce        sync.Once
 	refusalOnce      sync.Once
+	billingBoundOnce sync.Once
 	drainMu          sync.Mutex
 	drainTimer       *time.Timer
 	transcript       liveTranscript // guarded by upstreamMu
@@ -764,6 +765,7 @@ func (c *liveSessionController) fromUpstream(message []byte) bool {
 			}
 			if refusal := c.meter.onBackendResponse(response, delegationID, startedMs); refusal != nil {
 				c.endForRefusal(refusal)
+				c.stopDrainAtBillingBound()
 			}
 		}
 	case schemas.LiveEventError:
@@ -891,6 +893,15 @@ func (c *liveSessionController) requestClose() {
 		_ = c.io.sendUpstream([]byte(`{"type":"session.close"}`))
 		c.startDrainTimer()
 	})
+}
+
+// stopDrainAtBillingBound ends a refused session's drain early once its unit can hold no more
+// responses, the way the drain timer does when session.closed never comes. It runs off this
+// goroutine, which is the one reading the provider's frames.
+func (c *liveSessionController) stopDrainAtBillingBound() {
+	if c.meter.billingBoundReached() {
+		c.billingBoundOnce.Do(func() { go c.io.abandonUpstream() })
+	}
 }
 
 func (c *liveSessionController) startDrainTimer() {

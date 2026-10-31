@@ -6,6 +6,19 @@
       "mcp_library_sync_interval": 0
     }
   },
+  "mcp": {
+    "tool_manager_config": {
+      "disable_auto_tool_inject": true
+    },
+    "client_configs": [
+      {
+        "name": "fixture_mcp",
+        "connection_type": "http",
+        "connection_string": "http://127.0.0.1:8791/mcp",
+        "tools_to_execute": ["web_search"]
+      }
+    ]
+  },
   "providers": {
     "openai": {
       "keys": [
@@ -19,7 +32,9 @@
             "upstream-ok",
             "upstream-fixed-length-short",
             "upstream-fixed-length-ok",
-            "gpt-5-pro"
+            "gpt-5-pro",
+            "gpt-6-luna",
+            "decision-emulated"
           ],
           "weight": 1
         }
@@ -48,6 +63,52 @@
         "max_retries": 0,
         "default_request_timeout_in_seconds": 10
       }
+    },
+    "openrouter": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "typesafe/jev-1.13"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "openai_turns": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "turns-priced",
+            "turns-tiered",
+            "turns-fail"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai"
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      },
+      "injected_tools": [
+        {
+          "name": "web_search",
+          "mcp_client_name": "fixture_mcp",
+          "tool_name": "web_search"
+        }
+      ]
     }
   }
 }
