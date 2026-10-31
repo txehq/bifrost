@@ -37,6 +37,7 @@ import (
 func TestMain(m *testing.M) {
 	oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
 	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
 	os.Exit(m.Run())
 }
 

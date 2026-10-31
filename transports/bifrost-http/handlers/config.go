@@ -388,9 +388,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// always checked, so the API still cannot set one. What counts as stored is what
 	// GET /api/config shows, the same normalization of the row.
 	storedCatalogURLs := &configstoreTables.TableFrameworkConfig{}
+	mcpLibrarySyncDisabled := payload.FrameworkConfig.MCPLibrarySyncInterval != nil && *payload.FrameworkConfig.MCPLibrarySyncInterval == modelcatalog.MCPLibrarySyncDisabled
 	if isCustomCatalogURL(payload.FrameworkConfig.PricingURL, modelcatalog.DefaultPricingURL) ||
 		isCustomCatalogURL(payload.FrameworkConfig.ModelParametersURL, modelcatalog.DefaultModelParametersURL) ||
-		isCustomCatalogURL(payload.FrameworkConfig.MCPLibraryURL, modelcatalog.DefaultMCPLibraryURL) {
+		isCustomCatalogURL(payload.FrameworkConfig.MCPLibraryURL, modelcatalog.DefaultMCPLibraryURL) ||
+		mcpLibrarySyncDisabled {
 		stored, err := h.store.ConfigStore.GetFrameworkConfig(ctx)
 		if err != nil {
 			logger.Warn("failed to get framework config from store: %v", err)
@@ -430,7 +432,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	// Checking the MCP library sync interval
-	if payload.FrameworkConfig.MCPLibrarySyncInterval != nil && *payload.FrameworkConfig.MCPLibrarySyncInterval <= 0 {
+	// 0 is config.json's way to turn the sync off (air-gapped deployments), so a save
+	// resending it unchanged goes through, like the URLs above.
+	mcpLibrarySyncStaysDisabled := mcpLibrarySyncDisabled && storedCatalogURLs.MCPLibrarySyncInterval != nil &&
+		*storedCatalogURLs.MCPLibrarySyncInterval == modelcatalog.MCPLibrarySyncDisabled
+	if payload.FrameworkConfig.MCPLibrarySyncInterval != nil && *payload.FrameworkConfig.MCPLibrarySyncInterval <= 0 && !mcpLibrarySyncStaysDisabled {
 		logger.Warn("MCP library sync interval must be greater than 0")
 		SendError(ctx, fasthttp.StatusBadRequest, "MCP library sync interval must be greater than 0")
 		return

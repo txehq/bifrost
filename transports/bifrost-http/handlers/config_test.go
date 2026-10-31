@@ -936,6 +936,39 @@ func TestUpdateConfig_UnchangedCatalogURLMatchesWhatTheDashboardWasShown(t *test
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 }
 
+// TestUpdateConfig_KeepsADisabledMCPLibrarySync: the air-gapped guide turns the library sync off
+// with mcp_library_sync_interval 0 next to its file:// URLs, and the dashboard resends that on
+// any save. Only that value unchanged passes: the API still cannot turn the sync off.
+func TestUpdateConfig_KeepsADisabledMCPLibrarySync(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	for name, tt := range map[string]struct {
+		stored     int64
+		submitted  string
+		wantStatus int
+	}{
+		"disabled stays disabled":           {stored: 0, submitted: "0", wantStatus: fasthttp.StatusOK},
+		"turning it off is still refused":   {stored: 3600, submitted: "0", wantStatus: fasthttp.StatusBadRequest},
+		"a negative value is still refused": {stored: 0, submitted: "-1", wantStatus: fasthttp.StatusBadRequest},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newRealOAuth2Store(t)
+			cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+			h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+			require.NoError(t, store.UpdateFrameworkConfig(bgCtx(), &configtables.TableFrameworkConfig{
+				PricingSyncInterval:    bifrost.Ptr(int64(3600)),
+				MCPLibrarySyncInterval: bifrost.Ptr(tt.stored),
+			}))
+			ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"mcp_library_sync_interval":` + tt.submitted + `}}`)
+			h.updateConfig(ctx)
+			require.Equal(t, tt.wantStatus, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			persisted, err := store.GetFrameworkConfig(bgCtx())
+			require.NoError(t, err)
+			assert.Equal(t, tt.stored, *persisted.MCPLibrarySyncInterval)
+		})
+	}
+}
+
 // TestUpdateConfig_CustomCatalogURLWithNoStoredRowIsNew: with no framework row every custom
 // URL is new, so it is judged rather than taken as unchanged.
 func TestUpdateConfig_CustomCatalogURLWithNoStoredRowIsNew(t *testing.T) {

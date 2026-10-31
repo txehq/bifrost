@@ -616,7 +616,7 @@ func TestTranscriptionUpgradeKeepsMiddlewareValuesPastTheHandler(t *testing.T) {
 			defer client.Shutdown()
 
 			h := newRealtimeUpgradeHandler(false)
-			h.client, h.sessions = client, bfws.NewSessionManager(0)
+			h.client, h.sessions, h.pool = client, bfws.NewSessionManager(0), bfws.NewPool(nil)
 			defer h.Close()
 			r := router.New()
 			r.GET("/v1/realtime", func(ctx *fasthttp.RequestCtx) {

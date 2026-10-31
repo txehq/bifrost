@@ -284216,7 +284216,7 @@
     },
     {
       "name": "271. Saves keep what they did not change, and field names mean what the decoder says (handler-preservation) [SERIAL]",
-      "description": "TXE-5528 regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. That config provisions loopback catalog URLs, which the API may not introduce: a settings save that resends them unchanged must succeed, while a new file:// or metadata URL is refused and nothing moves. The MCP list must carry a client's instruction cap, because the edit form is filled from it and sends the whole config back. A provider-key update honours the field names the decoder takes, and a case-variant oauth_key_config block gets the same unknown-field check as the exact name. Case-variant secret references on a whitelisted route are in folder 264. Run the whole folder in order.",
+      "description": "TXE-5528 regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. That config provisions loopback catalog URLs, which the API may not introduce, and a disabled MCP library sync: a settings save that resends them unchanged must succeed, while a new file:// or metadata URL is refused and nothing moves. The MCP list must carry a client's instruction cap, because the edit form is filled from it and sends the whole config back. A provider-key update honours the field names the decoder takes, and a case-variant oauth_key_config block gets the same unknown-field check as the exact name. Case-variant secret references on a whitelisted route are in folder 264. Run the whole folder in order.",
       "item": [
         {
           "name": "an unchanged provisioned catalog URL lets an unrelated settings save through - handler-preservation",
@@ -284846,7 +284846,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"WEIGHT\": 3, \"Description\": \"edited under a case variant\"}",
+              "raw": "{\"WEIGHT\": 3, \"Blacklisted_Models\": [\"txe5528-blocked\"]}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -284926,7 +284926,7 @@
                   "var key = pm.response.json();",
                   "pm.test('handler-preservation: the decoded fields are the stored ones', function () {",
                   "  pm.expect(key.weight, pm.response.text()).to.equal(3);",
-                  "  pm.expect(key.description, pm.response.text()).to.equal('edited under a case variant');",
+                  "  pm.expect(key.blacklisted_models, pm.response.text()).to.eql(['txe5528-blocked']);",
                   "});",
                   "pm.test('handler-preservation: the fields it left out kept their values', function () {",
                   "  pm.expect(key.name, pm.response.text()).to.equal('handler-preservation');",
