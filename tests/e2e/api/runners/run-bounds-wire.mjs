@@ -2,7 +2,7 @@
 // Wire checks for the gateway's request, bootstrap and export bounds, against a running gateway
 // and the provider error fixture (TXE-5542). A collection cannot send these: they need compressed
 // request bodies, raw WebSocket frames, a real git client and a look at the gateway's own disk and
-// peak memory. Start the gateway from provider_config/bounds-wire.config.json with TMPDIR set.
+// peak memory. The wildcard rows repeat folder 275 of the provider harness on this config. Start the gateway from provider_config/bounds-wire.config.json with TMPDIR set.
 //
 //   BOUNDS_BASE_URL     the gateway, http://127.0.0.1:<port>
 //   BOUNDS_FIXTURE_URL  the fixture, http://127.0.0.1:8791

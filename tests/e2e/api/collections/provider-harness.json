@@ -289247,6 +289247,358 @@
           ]
         }
       ]
+    },
+    {
+      "name": "275. A wildcard virtual key stays within what the provider keys allow (bounds-preservation) [SERIAL]",
+      "description": "TXE-5542 regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream: the rows read back what reached it from /__wire. Fireworks has a pricing row and no enumerable list-models, so a wildcard virtual key passes a model the sheet has not listed, and the provider key's blacklist still refuses one at governance, before any provider call. Compressed request bodies, raw WebSocket frames, git clones and the gateway's temp directory and peak memory cannot be sent from a collection: tests/e2e/api/runners/run-bounds-wire.mjs covers them. Run the whole folder in order.",
+      "item": [
+        {
+          "name": "[setup] a wildcard virtual key on a provider that cannot list its models - bounds-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"bounds-wildcard\", \"provider_configs\": [{\"provider\": \"fireworks\", \"weight\": 1, \"allowed_models\": [\"*\"], \"key_ids\": [\"*\"]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('bounds-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// calls: the requests that reached the provider, by model.",
+                  "function calls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/bounds/') === 0; }).map(function (c) { return JSON.parse(c.body).model; })); }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var created = pm.response.json().virtual_key;",
+                  "pm.test('the key was created', function () { pm.expect(created.value).to.be.a('string'); });",
+                  "pm.collectionVariables.set('boundsVirtualKey', created.value); pm.collectionVariables.set('boundsVirtualKeyId', created.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[wildcard] datasheet model reaches the provider - bounds-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{boundsVirtualKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"fireworks/accounts/fixture/models/known\", \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('bounds-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// calls: the requests that reached the provider, by model.",
+                  "function calls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/bounds/') === 0; }).map(function (c) { return JSON.parse(c.body).model; })); }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "calls(function (models) { pm.test('the model reached the provider once', function () { pm.expect(models).to.eql(['accounts/fixture/models/known']); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[wildcard] uncatalogued model reaches the provider - bounds-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{boundsVirtualKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"fireworks/accounts/fixture/models/unlisted\", \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('bounds-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// calls: the requests that reached the provider, by model.",
+                  "function calls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/bounds/') === 0; }).map(function (c) { return JSON.parse(c.body).model; })); }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "calls(function (models) { pm.test('the model reached the provider once', function () { pm.expect(models).to.eql(['accounts/fixture/models/unlisted']); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-403] [wildcard] a model the provider key blacklists is refused by governance - bounds-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{boundsVirtualKey}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"fireworks/accounts/fixture/models/blocked\", \"messages\": [{\"role\": \"user\", \"content\": \"Hi\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('bounds-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// calls: the requests that reached the provider, by model.",
+                  "function calls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/bounds/') === 0; }).map(function (c) { return JSON.parse(c.body).model; })); }); }",
+                  "pm.test('the client gets 403', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(403); });",
+                  "pm.test('the refusal names the model as not allowed', function () { pm.expect(pm.response.text()).to.include('not allowed'); });",
+                  "calls(function (models) { pm.test('nothing reached the provider', function () { pm.expect(models).to.eql([]); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[cleanup] the wildcard virtual key is deleted - bounds-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{boundsVirtualKeyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{boundsVirtualKeyId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('bounds-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// calls: the requests that reached the provider, by model.",
+                  "function calls(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/bounds/') === 0; }).map(function (c) { return JSON.parse(c.body).model; })); }); }",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
