@@ -81,7 +81,7 @@
 
 ## 🍴 Fork changes (txehq/bifrost)
 
-- A client's custom tool call in a turn that also calls an injected tool is held and dropped, not replayed unanswered; the same holds for client computer, shell and patch calls, and a call in the turn that ends the loop reaches the client
+- A client's custom tool call in a turn that also calls an injected tool is held and dropped, not replayed unanswered; the same holds for client computer, local shell and patch calls, and a call in the turn that ends the loop reaches the client
 - An attempt that ran a provider-injected tool is not followed by a fallback, so the tool's side effects are not repeated; streamed injected chat keeps an upstream's other choices under their own index
 - Chat-to-Responses streams deliver text after a tool call as a new message item, in stream order, and pooled stream state keeps no text across requests
 - Guardrail metadata appends and `DeepCopyResponsesMessage` own what they store: nested entries are copied and a message's `output_config` survives the copy

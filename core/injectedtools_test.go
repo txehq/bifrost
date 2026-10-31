@@ -700,6 +700,48 @@ func TestRunInjectedResponsesLoop_HandsFinalCustomCallToClient(t *testing.T) {
 	assert.Equal(t, "c2", *resp.Output[1].CallID)
 }
 
+// A hosted shell call and the output the provider gave it stay paired in the replay, and
+// the client sees both.
+func TestRunInjectedResponsesLoop_KeepsHostedShellPair(t *testing.T) {
+	set := testInjectedSet(t)
+	hosted := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeShellCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:             schemas.Ptr("sh1"),
+			ResponsesShellCall: &schemas.ResponsesShellCall{Environment: &schemas.ResponsesShellCallEnvironment{Type: "container_reference"}},
+		},
+	}
+	output := schemas.ResponsesMessage{
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeShellCallOutput),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("sh1")},
+	}
+	var sent []*schemas.BifrostResponsesRequest
+	scripted := []*schemas.BifrostResponsesResponse{
+		{Output: []schemas.ResponsesMessage{hosted, output, responsesFunctionCall("c1", "web_search")}},
+		{Output: []schemas.ResponsesMessage{responsesText("Done.")}},
+	}
+	dispatch := func(req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		sent = append(sent, req)
+		resp := scripted[0]
+		scripted = scripted[1:]
+		return resp, nil
+	}
+
+	resp, err := runInjectedResponsesLoop(&schemas.BifrostResponsesRequest{Model: "m"}, set, dispatch, searchResult)
+
+	require.Nil(t, err)
+	require.Len(t, sent, 2)
+	var replayed []schemas.ResponsesMessageType
+	for _, item := range sent[1].Input {
+		replayed = append(replayed, *item.Type)
+	}
+	assert.Contains(t, replayed, schemas.ResponsesMessageTypeShellCall)
+	assert.Contains(t, replayed, schemas.ResponsesMessageTypeShellCallOutput)
+	require.Len(t, resp.Output, 3)
+	assert.Equal(t, schemas.ResponsesMessageTypeShellCall, *resp.Output[0].Type)
+	assert.Equal(t, schemas.ResponsesMessageTypeShellCallOutput, *resp.Output[1].Type)
+}
+
 func TestIsToolCallItem(t *testing.T) {
 	typed := func(kind schemas.ResponsesMessageType) schemas.ResponsesMessage {
 		return schemas.ResponsesMessage{Type: &kind, ResponsesToolMessage: &schemas.ResponsesToolMessage{}}
@@ -717,6 +759,14 @@ func TestIsToolCallItem(t *testing.T) {
 	} {
 		assert.False(t, isToolCallItem(typed(kind)), "%s needs no client output", kind)
 	}
+	shell := func(environment string) schemas.ResponsesMessage {
+		item := typed(schemas.ResponsesMessageTypeShellCall)
+		item.ResponsesShellCall = &schemas.ResponsesShellCall{Environment: &schemas.ResponsesShellCallEnvironment{Type: environment}}
+		return item
+	}
+	assert.True(t, isToolCallItem(shell("local")), "a local shell call is the client's")
+	assert.False(t, isToolCallItem(shell("container_reference")), "a hosted shell call has its output from the provider")
+	assert.False(t, isToolCallItem(shell("container_auto")), "a hosted shell call has its output from the provider")
 	assert.False(t, isToolCallItem(schemas.ResponsesMessage{}), "an untyped item is not a call")
 	functionType := schemas.ResponsesMessageTypeFunctionCall
 	assert.False(t, isToolCallItem(schemas.ResponsesMessage{Type: &functionType}), "a function call needs its tool fields")

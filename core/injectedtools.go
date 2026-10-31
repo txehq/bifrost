@@ -575,7 +575,8 @@ func isFunctionCall(item schemas.ResponsesMessage) bool {
 // isToolCallItem reports whether the item asks the client for a tool result: a function
 // call, a custom tool call, or a call to a client-run computer, shell or patch tool.
 // Injected tools are always functions, so any other such call is the client's, and it
-// needs the client's output before it can be replayed.
+// needs the client's output before it can be replayed. A shell call in a hosted container
+// is not one: the provider runs it and supplies its output, so the pair replays as is.
 func isToolCallItem(item schemas.ResponsesMessage) bool {
 	if item.Type == nil {
 		return false
@@ -584,11 +585,20 @@ func isToolCallItem(item schemas.ResponsesMessage) bool {
 	case schemas.ResponsesMessageTypeFunctionCall:
 		return item.ResponsesToolMessage != nil
 	case schemas.ResponsesMessageTypeCustomToolCall, schemas.ResponsesMessageTypeComputerCall,
-		schemas.ResponsesMessageTypeShellCall, schemas.ResponsesMessageTypeLocalShellCall,
-		schemas.ResponsesMessageTypeApplyPatchCall:
+		schemas.ResponsesMessageTypeLocalShellCall, schemas.ResponsesMessageTypeApplyPatchCall:
 		return true
+	case schemas.ResponsesMessageTypeShellCall:
+		return !isHostedShellCall(item)
 	}
 	return false
+}
+
+// isHostedShellCall reports whether a shell call ran in a provider-hosted container.
+func isHostedShellCall(item schemas.ResponsesMessage) bool {
+	if item.ResponsesToolMessage == nil || item.ResponsesShellCall == nil || item.ResponsesShellCall.Environment == nil {
+		return false
+	}
+	return strings.HasPrefix(item.ResponsesShellCall.Environment.Type, "container")
 }
 
 // injectedResponsesCall returns the item as a chat tool call when it calls an injected tool.
