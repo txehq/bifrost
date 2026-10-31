@@ -199,9 +199,10 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 // cannot see that, and such a file was not the one the checkpoint was stored for: it is a
 // real edit, so the checkpoint must not match it even when the hash does.
 //
-// One case stays out of reach: compat.azure_deepseek false writes nothing in the current
-// format, so the current hash of such a file equals the prior hash of the same file without
-// the key, and it reads as an unchanged current checkpoint before this comparison is reached.
+// compat.azure_deepseek false writes nothing in the current format, so the current hash of
+// such a file equals the prior hash of the same file without the key. On such a match the
+// loader takes this one field from the file; a file adding the key at an upgrade still reads
+// as an unchanged current checkpoint, and applies on its next edit.
 func (c *ClientConfig) GeneratePriorFormatClientConfigHash() (hash string, unchanged bool, err error) {
 	hash, added, err := c.generateClientConfigHashes(true)
 	if err != nil {

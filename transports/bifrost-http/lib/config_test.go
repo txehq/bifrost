@@ -24099,6 +24099,27 @@ func TestLoadClientConfig_PriorReleaseCheckpoint(t *testing.T) {
 		assert.Equal(t, 7, upgraded.LogRetentionDays)
 	})
 
+	t.Run("a current checkpoint that hashes like a prior one is not mistaken for it", func(t *testing.T) {
+		// compat.azure_deepseek false adds nothing to the current hash, so this file's current
+		// checkpoint equals the prior hash of the same file at the default.
+		const off = `{"drop_excess_requests":true,"log_retention_days":7,"enforce_auth_on_inference":false,"compat":{"azure_deepseek":false}}`
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		first := start(t, store, fileData(t, off))
+		require.False(t, first.Compat.AzureDeepseek)
+		first.LogRetentionDays = 30
+		require.NoError(t, store.UpdateClientConfig(ctx, first))
+		prior, _, err := fileData(t, explicit).Client.GeneratePriorFormatClientConfigHashWithToolManager(tm)
+		require.NoError(t, err)
+		require.Equal(t, prior, first.ConfigHash, "the collision this case exists for")
+
+		restored := start(t, store, fileData(t, explicit))
+		assert.True(t, restored.Compat.AzureDeepseek, "restoring the default in the file must apply")
+		assert.Equal(t, 30, restored.LogRetentionDays, "it is the only thing the match cannot speak for")
+		current, err := fileData(t, explicit).Client.GenerateClientConfigHashWithToolManager(tm)
+		require.NoError(t, err)
+		assert.Equal(t, current, restored.ConfigHash)
+	})
+
 	t.Run("an edit to a field the prior format hashes wins", func(t *testing.T) {
 		edited := strings.Replace(explicit, `"log_retention_days":7`, `"log_retention_days":14`, 1)
 		assert.Equal(t, 14, start(t, seed(t, explicit, ""), fileData(t, edited)).LogRetentionDays)
