@@ -371,6 +371,8 @@ func TestGetTokenHistogramMatViewTrimsBoundaryBuckets(t *testing.T) {
 	insert(day.Add(35*time.Hour+30*time.Minute), "success", "openai")    // tail sliver
 	insert(day.Add(35*time.Hour+50*time.Minute), "success", "openai")    // after end -> must not count
 	insert(day.Add(18*time.Hour+5*time.Minute), "processing", "openai")  // in-flight -> terminal-only
+	insert(day.Add(10*time.Hour+50*time.Minute), "processing", "openai") // in-flight in a sliver -> terminal-only
+	insert(day.Add(35*time.Hour+10*time.Minute), "success", "anthropic") // tail sliver, other provider
 
 	refreshTestMatViews(t, db)
 	store.matViewsReady.Store(true)
@@ -392,24 +394,24 @@ func TestGetTokenHistogramMatViewTrimsBoundaryBuckets(t *testing.T) {
 	}
 
 	prompt, completion, total, cachedRead, byBucket := sum(SearchFilters{StartTime: &start, EndTime: &end}, 3600)
-	assert.Equal(t, int64(40), prompt, "bars must sum to the terminal logs inside [start, end] only")
-	assert.Equal(t, int64(20), completion)
-	assert.Equal(t, int64(60), total)
-	assert.Equal(t, int64(12), cachedRead)
+	assert.Equal(t, int64(50), prompt, "bars must sum to the terminal logs inside [start, end] only")
+	assert.Equal(t, int64(25), completion)
+	assert.Equal(t, int64(75), total)
+	assert.Equal(t, int64(15), cachedRead)
 	assert.Equal(t, int64(10), byBucket[day.Add(10*time.Hour).Unix()], "first bar holds only the in-window sliver row")
 	assert.Equal(t, int64(20), byBucket[day.Add(18*time.Hour).Unix()], "an interior hour comes whole from the matview")
-	assert.Equal(t, int64(10), byBucket[day.Add(35*time.Hour).Unix()], "last bar holds only the in-window sliver row")
+	assert.Equal(t, int64(20), byBucket[day.Add(35*time.Hour).Unix()], "last bar holds only the in-window sliver rows")
 
 	// A dimension filter reaches both halves of the hybrid.
 	prompt, _, _, cachedRead, _ = sum(SearchFilters{StartTime: &start, EndTime: &end, Providers: []string{"openai"}}, 3600)
-	assert.Equal(t, int64(30), prompt, "the anthropic row is filtered out of the interior")
+	assert.Equal(t, int64(30), prompt, "the anthropic rows are filtered out of the interior and the sliver")
 	assert.Equal(t, int64(9), cachedRead)
 
 	// Wider bars merge the raw and matview halves into one bucket.
 	prompt, _, total, cachedRead, _ = sum(SearchFilters{StartTime: &start, EndTime: &end}, 86400)
-	assert.Equal(t, int64(40), prompt)
-	assert.Equal(t, int64(60), total)
-	assert.Equal(t, int64(12), cachedRead)
+	assert.Equal(t, int64(50), prompt)
+	assert.Equal(t, int64(75), total)
+	assert.Equal(t, int64(15), cachedRead)
 
 	// A window under two hours has no interior: it is aggregated from the raw table.
 	shortStart, shortEnd := day.Add(10*time.Hour+40*time.Minute), day.Add(10*time.Hour+50*time.Minute)
@@ -426,9 +428,9 @@ func TestGetTokenHistogramMatViewTrimsBoundaryBuckets(t *testing.T) {
 	// from the matview, the slivers from the raw table, each exactly once.
 	require.NoError(t, db.Exec("DELETE FROM logs WHERE timestamp >= ? AND timestamp < ?", day.Add(18*time.Hour), day.Add(19*time.Hour)).Error)
 	prompt, _, _, cachedRead, _ = sum(SearchFilters{StartTime: &start, EndTime: &end}, 3600)
-	assert.Equal(t, int64(40), prompt, "the interior is served by the matview, not by a raw fallback")
-	assert.Equal(t, int64(12), cachedRead)
+	assert.Equal(t, int64(50), prompt, "the interior is served by the matview, not by a raw fallback")
+	assert.Equal(t, int64(15), cachedRead)
 	require.NoError(t, db.Exec("DELETE FROM logs WHERE timestamp >= ? AND timestamp < ?", day.Add(10*time.Hour), day.Add(11*time.Hour)).Error)
 	prompt, _, _, _, _ = sum(SearchFilters{StartTime: &start, EndTime: &end}, 3600)
-	assert.Equal(t, int64(30), prompt, "the head sliver is served by the raw table")
+	assert.Equal(t, int64(40), prompt, "the head sliver is served by the raw table")
 }
