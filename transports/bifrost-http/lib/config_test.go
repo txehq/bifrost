@@ -24170,7 +24170,8 @@ func TestLoadClientConfig_PriorReleaseCheckpoint(t *testing.T) {
 }
 
 // A file with a tool manager section and no client section: a release before v2.3.0 stored the
-// default config's prior-format hash for it. Same rules as the client section.
+// default config's prior-format hash for it. The default config sets none of the fields that
+// format leaves out, so that hash is also the current one and no upgrade path is needed.
 func TestLoadClientConfig_PriorReleaseToolManagerOnlyCheckpoint(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
@@ -24180,7 +24181,9 @@ func TestLoadClientConfig_PriorReleaseToolManagerOnlyCheckpoint(t *testing.T) {
 		require.NoError(t, loadClientConfig(ctx, &Config{ConfigStore: store}, &ConfigData{MCP: &schemas.MCPConfig{ToolManagerConfig: tm}}))
 		stored, err := store.GetClientConfig(ctx)
 		require.NoError(t, err)
-		stored.ConfigHash, _, err = priorToolManagerOnlyHash(tm)
+		cc := new(DefaultClientConfig)
+		applyToolManagerToClientConfig(cc, tm)
+		stored.ConfigHash, _, err = cc.GeneratePriorFormatClientConfigHashWithToolManager(tm)
 		require.NoError(t, err)
 		stored.MCPAgentDepth = 9
 		require.NoError(t, store.UpdateClientConfig(ctx, stored))

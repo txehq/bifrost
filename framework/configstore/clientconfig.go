@@ -643,17 +643,17 @@ func (c *ClientConfig) GeneratePriorFormatClientConfigHashWithToolManager(tm *sc
 		return base, unchanged, err
 	}
 	hash, err = extendClientConfigHashWithToolManager(base, tm, true)
-	return hash, unchanged && !ToolManagerSetsPostPriorFormatFields(tm), err
+	return hash, unchanged && !toolManagerSetsPostPriorFormatFields(tm), err
 }
 
-// ToolManagerSetsPostPriorFormatFields reports whether tm sets a field the prior hash format
+// toolManagerSetsPostPriorFormatFields reports whether tm sets a field the prior hash format
 // leaves out. The file holding such a tm cannot be the one a prior checkpoint was stored for.
-func ToolManagerSetsPostPriorFormatFields(tm *schemas.MCPToolManagerConfig) bool {
+func toolManagerSetsPostPriorFormatFields(tm *schemas.MCPToolManagerConfig) bool {
 	return tm != nil && (tm.CodeModeLimits != nil || tm.OAuthPrivateAllowlist != nil)
 }
 
 // extendClientConfigHashWithToolManager mixes tm into a client config hash. With prior set it
-// leaves out the fields ToolManagerSetsPostPriorFormatFields names.
+// leaves out the fields toolManagerSetsPostPriorFormatFields names.
 func extendClientConfigHashWithToolManager(base string, tm *schemas.MCPToolManagerConfig, prior bool) (string, error) {
 	h := sha256.New()
 	h.Write([]byte(base))

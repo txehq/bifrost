@@ -1714,20 +1714,6 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 			logger.Debug("mcp.tool_manager_config unchanged, keeping DB config")
 			return nil
 		}
-		priorTMHash, _, hashErr := priorToolManagerOnlyHash(toolManagerFromFile)
-		if hashErr != nil {
-			return fmt.Errorf("failed to hash mcp.tool_manager_config: %w", hashErr)
-		}
-		if !forceToolManagerSync && clientConfig.ConfigHash == priorTMHash &&
-			!configstore.ToolManagerSetsPostPriorFormatFields(toolManagerFromFile) {
-			// The checkpoint a release before v2.3.0 stored, for this same file: see Case 2b.
-			logger.Info("mcp.tool_manager_config unchanged since the previous release's checkpoint; keeping DB config and upgrading its hash format")
-			config.ClientConfig.ConfigHash = tmHash
-			if err = persistReconciledClientConfig(ctx, config); err != nil {
-				return err
-			}
-			return nil
-		}
 		logger.Info("mcp.tool_manager_config was updated in config.json, syncing. Note that: file config takes precedence.")
 		applyToolManagerToClientConfig(config.ClientConfig, toolManagerFromFile)
 		config.ClientConfig.ConfigHash = tmHash
@@ -1804,14 +1790,6 @@ func toolManagerOnlyHash(tm *schemas.MCPToolManagerConfig) (string, error) {
 	cc := new(DefaultClientConfig)
 	applyToolManagerToClientConfig(cc, tm)
 	return cc.GenerateClientConfigHashWithToolManager(tm)
-}
-
-// priorToolManagerOnlyHash is toolManagerOnlyHash in the prior format: what a release before
-// v2.3.0 stored as the checkpoint of a file with no client section.
-func priorToolManagerOnlyHash(tm *schemas.MCPToolManagerConfig) (string, bool, error) {
-	cc := new(DefaultClientConfig)
-	applyToolManagerToClientConfig(cc, tm)
-	return cc.GeneratePriorFormatClientConfigHashWithToolManager(tm)
 }
 
 // applyToolManagerToClientConfig copies tool manager settings from the file into ClientConfig.
