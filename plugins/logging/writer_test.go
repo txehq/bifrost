@@ -1623,6 +1623,89 @@ func TestPostLLMHookReconcilesEvictedPartialRowSuccess(t *testing.T) {
 	}
 }
 
+// seedOwnedRow seeds a partial row, then gives it an owner and a status.
+func seedOwnedRow(t *testing.T, store logstore.LogStore, id, status, virtualKeyID string) {
+	t.Helper()
+	seedProcessingRow(t, store, id, time.Now().Add(-time.Hour))
+	updates := map[string]any{"status": status}
+	if virtualKeyID != "" {
+		updates["virtual_key_id"] = virtualKeyID
+	}
+	if err := store.Update(context.Background(), id, updates); err != nil {
+		t.Fatalf("seed Update() error = %v", err)
+	}
+}
+
+// TestPostLLMHookReconcilesOnlyItsOwnPartialRow: request IDs are caller-supplied,
+// so a hidden request that lands on the no-pending path with another row's ID must
+// not reconcile onto it, which would overwrite that row and empty its content. Only
+// a partial of the same virtual key is the request's own, and that one is hidden
+// for real: nothing of its input comes back through the store.
+func TestPostLLMHookReconcilesOnlyItsOwnPartialRow(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status, owner, caller string
+		marked, reconciled    bool
+	}{
+		"completed row, probe path":                  {status: "success", owner: "vk-victim", caller: "vk-attacker"},
+		"completed row, same key":                    {status: "success", owner: "vk-victim", caller: "vk-victim"},
+		"completed row without a key":                {status: "success"},
+		"completed row, eviction marker":             {status: "success", owner: "vk-victim", caller: "vk-attacker", marked: true},
+		"another key's partial, probe path":          {status: "processing", owner: "vk-victim", caller: "vk-attacker"},
+		"another key's partial, eviction marker":     {status: "processing", owner: "vk-victim", caller: "vk-attacker", marked: true},
+		"a keyed partial and a caller without a key": {status: "processing", owner: "vk-victim"},
+		"own partial, probe path":                    {status: "processing", owner: "vk-own", caller: "vk-own", reconciled: true},
+		"own partial, eviction marker":               {status: "processing", owner: "vk-own", caller: "vk-own", marked: true, reconciled: true},
+		"partial without a key":                      {status: "processing", caller: "vk-own", reconciled: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newTestStore(t)
+			plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			const id = "req-shared-id"
+			seedOwnedRow(t, store, id, tc.status, tc.owner)
+			if tc.marked {
+				plugin.evictedPartials.Store(id, time.Now())
+			}
+			ctx := evictionRequestCtx(id)
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+			if tc.caller != "" {
+				ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, tc.caller)
+			}
+			if _, _, err := plugin.PostLLMHook(ctx, evictionChatResult("attacker output"), nil); err != nil {
+				t.Fatalf("PostLLMHook() error = %v", err)
+			}
+			if err := plugin.Cleanup(); err != nil {
+				t.Fatalf("Cleanup() error = %v", err)
+			}
+
+			row, err := store.FindByID(context.Background(), id)
+			if err != nil {
+				t.Fatalf("FindByID() error = %v", err)
+			}
+			if tc.reconciled {
+				if !row.ContentHidden || row.Status != "success" {
+					t.Fatalf("the request's own partial was not finished as hidden: hidden=%v status=%q", row.ContentHidden, row.Status)
+				}
+				if len(row.InputHistoryParsed) != 0 || row.InputHistory != "" || row.ContentSummary != "" {
+					t.Fatalf("a hidden reconcile left content on its own row: %q %q", row.InputHistory, row.ContentSummary)
+				}
+				return
+			}
+			if row.ContentHidden || row.Status != tc.status {
+				t.Fatalf("another row was changed: hidden=%v status=%q, want visible %q", row.ContentHidden, row.Status, tc.status)
+			}
+			if len(row.InputHistoryParsed) != 1 || row.ContentSummary == "" {
+				t.Fatalf("another row lost its content: %d messages, summary %q", len(row.InputHistoryParsed), row.ContentSummary)
+			}
+			if strings.Contains(row.OutputMessage, "attacker output") {
+				t.Fatalf("another row took this request's output: %q", row.OutputMessage)
+			}
+		})
+	}
+}
+
 // TestPostLLMHookReconcilesEvictedPartialRowError verifies the error variant of
 // the reconcile path: a terminal error with no in-memory pending updates the
 // persisted partial row to status=error with error details.

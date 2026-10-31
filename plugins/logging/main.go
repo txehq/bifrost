@@ -2021,17 +2021,12 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// was queued, so it is reliable even while that insert is still in flight);
 	// only a miss, e.g. a row persisted by a previous process, falls back to a
 	// bounded DB probe on p.ctx, since the request ctx may already be cancelled on
-	// timeout.
+	// timeout. Either way the row must be this request's own partial: the request
+	// ID is caller-supplied, so a row that only shares it stays untouched.
 	if !hasPending && isTerminal {
-		present := evicted
-		if !present {
-			probeCtx, cancelProbe := context.WithTimeout(p.ctx, evictedPartialProbeTimeout)
-			ok, perr := p.store.IsLogEntryPresent(probeCtx, requestID)
-			cancelProbe()
-			if perr == nil && ok {
-				present = true
-			}
-		}
+		probeCtx, cancelProbe := context.WithTimeout(p.ctx, evictedPartialProbeTimeout)
+		present := p.holdsPartialRow(probeCtx, ctx, requestID, evicted)
+		cancelProbe()
 		if present {
 			p.logger.Warn("no pending log data found for request %s, reconciling output onto persisted partial row", requestID)
 			// Object/Provider/Model are rewritten with the values the row already
@@ -2557,6 +2552,29 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	p.persistCompletedEntry(ctx, entry, pending.EvictedPartial)
 	p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 	return result, bifrostErr, nil
+}
+
+// holdsPartialRow reports whether a request with no pending entry may reconcile
+// onto the row with its ID. marked is the in-memory eviction marker: the row it
+// stands for may still be queued, so a failed lookup does not refuse it. Without
+// the marker the row must exist. A row found must still be a partial, and must not
+// be another virtual key's: request IDs are caller-supplied, and reconciling
+// overwrites the row's output and, for a hidden request, empties its content.
+func (p *LoggerPlugin) holdsPartialRow(probeCtx context.Context, ctx *schemas.BifrostContext, requestID string, marked bool) bool {
+	if !marked {
+		if ok, err := p.store.IsLogEntryPresent(probeCtx, requestID); err != nil || !ok {
+			return false
+		}
+	}
+	row, err := p.store.FindByID(probeCtx, requestID)
+	if err != nil {
+		return marked
+	}
+	if row.Status != logStatusProcessing {
+		return false
+	}
+	virtualKeyID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID)
+	return row.VirtualKeyID == nil || *row.VirtualKeyID == "" || *row.VirtualKeyID == virtualKeyID
 }
 
 // persistCompletedEntry writes a completed log entry. The normal path inserts it
