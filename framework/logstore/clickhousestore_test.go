@@ -1836,3 +1836,40 @@ func TestClickHouseWarpPruneDeletesThreadsWithFractionalSeconds(t *testing.T) {
 	require.Len(t, list, 1)
 	require.Equal(t, owner+"-2", list[0].ID)
 }
+
+// TestClickHousePartialFinishLosesToAnotherInstance: rmwLocks cover one process, so
+// a completion from another instance can land between a partial finish's read and
+// its write. The finish is versioned just above what it read, so that completion
+// outranks it in either arrival order, and a hidden finish erases nothing.
+func TestClickHousePartialFinishLosesToAnotherInstance(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	other, err := newClickHouseLogStore(ctx, clickhouseTestConfig(), 0, testLogger{})
+	require.NoError(t, err)
+	otherInstance := other.(*ClickHouseLogStore)
+	t.Cleanup(func() { _ = otherInstance.Close(context.Background()) })
+
+	require.NoError(t, store.CreateIfNotExists(ctx, hiddenUpdateTestLog("ch-partial-race", time.Now().UTC().Truncate(time.Millisecond))))
+	otherAnswer := "the other instance's answer"
+	store.beforePartialWrite = func() {
+		store.beforePartialWrite = nil
+		require.NoError(t, otherInstance.BatchUpdate(ctx, []*Log{{
+			ID: "ch-partial-race", Status: "success",
+			OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &otherAnswer}},
+		}}))
+	}
+
+	owner := ""
+	finish := &Log{ID: "ch-partial-race", Status: "error", ContentHidden: true, PartialOwner: &owner}
+	require.NoError(t, store.BatchUpdate(ctx, []*Log{finish}))
+	require.True(t, finish.PartialRefused, "the finish lost and must say so, or the hybrid store would still merge its object")
+
+	found, err := store.FindByID(ctx, "ch-partial-race")
+	require.NoError(t, err)
+	assert.False(t, found.ContentHidden)
+	assert.Equal(t, "success", found.Status)
+	assert.Contains(t, found.OutputMessage, otherAnswer)
+	assert.Contains(t, found.InputHistory, hiddenTestContent, "the row the other instance completed lost its content")
+	assert.Equal(t, hiddenTestContent, found.ContentSummary)
+	assert.NotEmpty(t, found.TokenUsage)
+}

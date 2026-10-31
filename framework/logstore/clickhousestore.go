@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"reflect"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -53,6 +54,9 @@ type ClickHouseLogStore struct {
 	// covers this process. Nil means single-instance behaviour. Set once at
 	// startup, before any Warp write, so it is read without synchronization.
 	warpLocker DistributedLocker
+	// beforePartialWrite, in tests, runs after a partial's finish has read its row
+	// and before it writes, standing in for another instance's write in that gap.
+	beforePartialWrite func()
 }
 
 // warpHistoryLockKey is the shared lock for one owner's Warp history. Hashed
@@ -682,6 +686,29 @@ func (s *ClickHouseLogStore) BulkUpdateCost(ctx context.Context, updates map[str
 	return nil
 }
 
+// chVersionedLog re-inserts a row at a chosen ReplacingMergeTree version.
+type chVersionedLog struct {
+	Log
+	Ver time.Time `gorm:"column:ver"`
+}
+
+// chLogVersions reads the current version of each id, FINAL under the
+// connection-level final=1.
+func (s *ClickHouseLogStore) chLogVersions(ctx context.Context, ids []string) (map[string]time.Time, error) {
+	var rows []struct {
+		ID  string
+		Ver time.Time
+	}
+	if err := s.db.WithContext(ctx).Raw("SELECT id, ver FROM logs WHERE id IN ?", ids).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	versions := make(map[string]time.Time, len(rows))
+	for _, r := range rows {
+		versions[r.ID] = r.Ver
+	}
+	return versions, nil
+}
+
 // BatchUpdate overlays each entry's non-zero fields onto its existing row via
 // read-modify-write and re-insert, one chunk at a time under the RMW locks.
 // It overrides the embedded RDB implementation, whose GORM UPDATE would be a
@@ -689,6 +716,14 @@ func (s *ClickHouseLogStore) BulkUpdateCost(ctx context.Context, updates map[str
 // id are applied in batch order, as the RDB store applies them. Missing ids are
 // skipped, matching the RDB semantics. content_summary is left as the row has
 // it: the entry's own serialization would regenerate it from output only.
+//
+// rmwLocks cover one process and ClickHouse has no conditional write, so a
+// PartialOwner entry is fenced by its version, as the queue store fences a lease
+// holder: it is written one tick above the version read before the row, so a write
+// from any instance that lands after that read outranks it, in whichever order the
+// two arrive. The version is read first, or a completion landing between the reads
+// could sit below the fence. A finish that lost is read back and marked
+// PartialRefused, so the hybrid store leaves the row's object alone.
 func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
 	byID := make(map[string][]*Log, len(entries))
 	ids := make([]string, 0, len(entries))
@@ -710,6 +745,16 @@ func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) er
 	}
 	return forEachRMWChunk(ids, func(chunk []string) error {
 		defer s.lockRMWBatch("logs", chunk)()
+		var read map[string]time.Time
+		for _, id := range chunk {
+			if slices.ContainsFunc(byID[id], func(e *Log) bool { return e.PartialOwner != nil }) {
+				var err error
+				if read, err = s.chLogVersions(ctx, chunk); err != nil {
+					return err
+				}
+				break
+			}
+		}
 		var rows []*Log
 		if err := s.db.WithContext(ctx).Where("id IN ?", chunk).Find(&rows).Error; err != nil {
 			return err
@@ -717,11 +762,17 @@ func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) er
 		if len(rows) == 0 {
 			return nil
 		}
+		plain := make([]*Log, 0, len(rows))
+		var fenced []*chVersionedLog
 		for _, r := range rows {
+			touched, finishesPartial := false, false
 			for _, src := range byID[r.ID] {
-				// Read under the row's RMW lock; see the RDB store.
-				if src.PartialOwner != nil && !r.IsPartialOf(*src.PartialOwner) {
-					continue
+				if src.PartialOwner != nil {
+					if _, versioned := read[r.ID]; !versioned || !r.IsPartialOf(*src.PartialOwner) {
+						src.PartialRefused = true
+						continue
+					}
+					finishesPartial = true
 				}
 				if err := src.SerializeFields(); err != nil {
 					return err
@@ -738,9 +789,48 @@ func (s *ClickHouseLogStore) BatchUpdate(ctx context.Context, entries []*Log) er
 				if r.ContentHidden {
 					clearHiddenContent(r)
 				}
+				touched = true
+			}
+			switch {
+			case finishesPartial:
+				fenced = append(fenced, &chVersionedLog{Log: *r, Ver: read[r.ID].Add(time.Nanosecond)})
+			case touched:
+				plain = append(plain, r)
 			}
 		}
-		return s.chReinsert(ctx, &rows)
+		if s.beforePartialWrite != nil {
+			s.beforePartialWrite()
+		}
+		if len(plain) > 0 {
+			if err := s.chReinsert(ctx, &plain); err != nil {
+				return err
+			}
+		}
+		if len(fenced) == 0 {
+			return nil
+		}
+		if err := s.chReinsert(ctx, &fenced); err != nil {
+			return err
+		}
+		written := make([]string, 0, len(fenced))
+		for _, f := range fenced {
+			written = append(written, f.ID)
+		}
+		current, err := s.chLogVersions(ctx, written)
+		if err != nil {
+			return err
+		}
+		for _, f := range fenced {
+			if current[f.ID].Equal(f.Ver) {
+				continue
+			}
+			for _, src := range byID[f.ID] {
+				if src.PartialOwner != nil {
+					src.PartialRefused = true
+				}
+			}
+		}
+		return nil
 	})
 }
 

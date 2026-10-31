@@ -1758,7 +1758,9 @@ func exerciseHiddenUpdates(t *testing.T, store LogStore, columns func(t *testing
 			row := hiddenUpdateTestLog(id, now)
 			row.Status, row.VirtualKeyID = seedRow.status, seedRow.virtualKey
 			require.NoError(t, store.CreateIfNotExists(ctx, row))
-			require.NoError(t, store.BatchUpdate(ctx, finish(id, seedRow.partialOwner)))
+			entries := finish(id, seedRow.partialOwner)
+			require.NoError(t, store.BatchUpdate(ctx, entries))
+			assert.Equal(t, !seedRow.applies, entries[0].PartialRefused, id)
 			found, err := store.FindByID(ctx, id)
 			require.NoError(t, err)
 			if seedRow.applies {

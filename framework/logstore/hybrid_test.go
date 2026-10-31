@@ -1805,6 +1805,55 @@ func TestHybrid_BatchUpdateSkipsARowThePartialOwnerDoesNotHold(t *testing.T) {
 	}, 300*time.Millisecond, 20*time.Millisecond, "the skipped update uploaded an object")
 }
 
+// completesAfterReadStore is an inner store whose row completes right after the
+// hybrid store has read it, as a concurrent request's completion would.
+type completesAfterReadStore struct {
+	*RDBLogStore
+	afterRead func()
+}
+
+func (s *completesAfterReadStore) FindByID(ctx context.Context, id string) (*Log, error) {
+	row, err := s.RDBLogStore.FindByID(ctx, id)
+	if s.afterRead != nil {
+		s.afterRead()
+		s.afterRead = nil
+	}
+	return row, err
+}
+
+// The hybrid store's own read of the row can go stale. The inner store refuses the
+// finish, and that refusal must reach the upload: no object for a row it lost.
+func TestHybrid_BatchUpdateDropsTheUploadOfARefusedFinish(t *testing.T) {
+	h, inner, objects := newTestHybrid(t)
+	ctx := context.Background()
+	h.excludedRequestTypes = map[string]struct{}{"chat.completion": {}}
+	require.NoError(t, h.CreateIfNotExists(ctx, hiddenUpdateTestLog("hybrid-race", time.Now().UTC())))
+	h.excludedRequestTypes = nil
+
+	rdb := inner.(*RDBLogStore)
+	h.inner = &completesAfterReadStore{RDBLogStore: rdb, afterRead: func() {
+		require.NoError(t, rdb.BatchUpdate(ctx, []*Log{{ID: "hybrid-race", Status: "success"}}))
+	}}
+	owner := ""
+	answer := "a stale finish's output"
+	finish := &Log{
+		ID: "hybrid-race", Status: "error", ContentHidden: true, PartialOwner: &owner,
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &answer}},
+	}
+	require.NoError(t, h.BatchUpdate(ctx, []*Log{finish}))
+	assert.True(t, finish.PartialRefused, "the caller's entry learns the store refused the copy")
+
+	row, err := rdb.FindByID(ctx, "hybrid-race")
+	require.NoError(t, err)
+	assert.False(t, row.ContentHidden)
+	assert.Equal(t, "success", row.Status)
+	assert.NotEmpty(t, row.InputHistory)
+	assert.Never(t, func() bool {
+		keys, err := objects.ListByPrefix(ctx, "")
+		return err == nil && len(keys) > 0
+	}, 300*time.Millisecond, 20*time.Millisecond, "the refused finish uploaded an object")
+}
+
 func TestHybrid_BatchUpdateMergesOutputIntoStoredObject(t *testing.T) {
 	hybrid, inner, objStore := newTestHybrid(t)
 	defer hybrid.Close(context.Background())

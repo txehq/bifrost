@@ -441,6 +441,7 @@ type Log struct {
 
 	RedactionData            *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
 	PartialOwner             *string                       `gorm:"-" json:"-"`                           // Set on a BatchUpdate entry that finishes an evicted partial row: the virtual key that row must carry ("" for none). The entry applies only while the row is that owner's and still processing
+	PartialRefused           bool                          `gorm:"-" json:"-"`                           // Set by BatchUpdate on a PartialOwner entry that wrote nothing, or lost to another write: nothing else may follow from it
 	PassthroughParseFormat   schemas.ModelProvider         `gorm:"-" json:"-"`                           // Transient: base provider whose wire format the log writer parses passthrough bodies with; empty skips parsing
 	PassthroughParseMaxBytes int64                         `gorm:"-" json:"-"`                           // Transient: large-payload request threshold applied to media parsed from passthrough bodies; 0 keeps everything
 	RedactionMapping         string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row

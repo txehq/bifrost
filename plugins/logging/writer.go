@@ -71,7 +71,8 @@ type PendingLogData struct {
 	Live             *liveSessionState
 	ProvisionalInput bool           // Input captured before the virtual key's content decision was known
 	ContentPolicy    *contentPolicy // Content policy resolved in PreLLMHook; nil means the global policy
-	VirtualKeyID     string         // Virtual key the request was admitted under; a persisted partial carries it so only that key finishes the row
+	VirtualKeyID     string         // Virtual key ID stamped when the entry was built, usually none yet; a persisted partial carries it. On an EvictedPartial stub, the owner the row must carry
+	presentedKey     string         // Virtual key the request presented; hashed into the eviction marker
 	EvictionAttempts int            // Sweeps that could not queue this entry's partial row
 	EvictedPartial   bool           // PostLLMHook stub for an already-evicted request; reconciles by UPDATE
 }
@@ -1012,7 +1013,7 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	// still finds the row through the DB probe while flushStaleProcessingLogs
 	// has not reaped it yet.
 	p.evictedPartials.Range(func(key, value any) bool {
-		if ts, ok := value.(time.Time); ok && ts.Before(cutoff) {
+		if marker, ok := value.(evictedPartialMarker); ok && marker.at.Before(cutoff) {
 			p.evictedPartials.Delete(key)
 		}
 		return true
@@ -1116,7 +1117,7 @@ func (p *LoggerPlugin) persistEvictedPartial(key any, pending *PendingLogData) {
 	// Queued before the marker is visible, so a finish that sees the marker
 	// enqueues its update behind the insert; processBatch also applies inserts
 	// before updates within a batch.
-	p.evictedPartials.Store(id, time.Now())
+	p.evictedPartials.Store(id, evictedPartialMarker{at: time.Now(), owner: pending.VirtualKeyID, presented: presentedKeyRef(pending.presentedKey)})
 }
 
 // claimStaleMCPEntry takes a pending MCP entry away from PostMCPHook for the stale-entry reaper.

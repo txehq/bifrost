@@ -880,6 +880,7 @@ func (s *RDBLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
 				return updated.Error
 			}
 			if entry.PartialOwner != nil && updated.RowsAffected == 0 {
+				entry.PartialRefused = true
 				continue
 			}
 			// Updates skips zero values, so a final "visible" (false) decision
