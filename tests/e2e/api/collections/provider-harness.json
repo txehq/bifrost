@@ -286221,7 +286221,7 @@
     },
     {
       "name": "273. Provider conversions keep what the wire needs, and refused models never leave the gateway (provider-preservation) [SERIAL]",
-      "description": "TXE-5539 regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream: the rows read back the bytes that reached it from /__wire. A restored custom tool is relayed from the typed response, a repeated embedding input embeds the last one, xAI's native Messages are forwarded unchanged but for the model prefix and logged as Anthropic, a Cloudflare decision model cannot leave the decision endpoint, text documents reach Anthropic decoded, Gemini code execution keeps its thought signatures, vision embeddings stay on the multimodal endpoint, and a custom Cohere provider gets Cohere's tool_choice default. Run the whole folder in order.",
+      "description": "TXE-5539 regression. Local fixture regression: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream: the rows read back the bytes that reached it from /__wire. A restored custom tool is relayed from the typed response, a repeated embedding input embeds the last one, xAI's native Messages are forwarded unchanged but for the model prefix and logged as Anthropic, a Cloudflare decision model cannot leave the decision endpoint, text documents reach Anthropic decoded, Gemini code execution keeps its thought signatures, vision embeddings stay on the multimodal endpoint, a custom Cohere provider gets Cohere's tool_choice default, and a Databricks decision with an image asset is refused rather than decided without the image. Run the whole folder in order.",
       "item": [
         {
           "name": "a custom tool answer is relayed restored, not as its raw function call - provider-preservation",
@@ -287407,6 +287407,73 @@
                   "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
                   "pm.test('the fixture\\'s failure reaches the client', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(500); });",
                   "wire(function (calls) { pm.test('the emulated call rests on the system prompt', function () { pm.expect(calls).to.have.length(1); pm.expect(calls[0].path).to.equal('/pp/cohere/v2/chat'); pm.expect(JSON.parse(calls[0].body).tool_choice, 'Cohere reasoning models reject a required tool_choice').to.equal(undefined); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] a Databricks decision with an image asset is refused here - provider-preservation",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"databricks/ai_decide\", \"input\": [{\"role\": \"user\", \"content\": [{\"type\": \"input_text\", \"text\": \"Is the damage in img_1 covered?\"}, {\"type\": \"input_image\", \"id\": \"img_1\", \"data\": \"iVBORw0KGgo=\"}]}], \"questions\": [{\"type\": \"predicate\", \"name\": \"is_covered\", \"instructions\": \"Is it covered?\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('provider-preservation setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); }); cb(res.json().data[0].calls); }); }",
+                  "pm.test('the gateway refuses the asset itself, since ai_decide would decide without the image', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); pm.expect(pm.response.text()).to.include('cannot read'); });"
                 ]
               }
             }
