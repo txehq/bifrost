@@ -288943,7 +288943,7 @@
                   "function sse() { return pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); }); }",
                   "function types(items) { return (items || []).map(function (i) { return i.type; }); }",
                   "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
-                  "pm.test('the refusal names the combination', function () { pm.expect(pm.response.text()).to.include('n > 1'); });",
+                  "pm.test('the refusal names the combination', function () { pm.expect(pm.response.text()).to.include('cannot serve a streamed chat request'); });",
                   "state(function (calls, tools) { pm.test('nothing reached a provider or the tool', function () { pm.expect(calls.length).to.equal(0); pm.expect(tools).to.equal(0); }); });"
                 ]
               }

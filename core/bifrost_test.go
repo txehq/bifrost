@@ -9686,6 +9686,8 @@ func TestRealtimeTurnPluginLogsSurviveContextHandoff(t *testing.T) {
 				}
 			})
 		}
+	}
+}
 
 // A primary attempt that already ran a provider-injected tool is not handed to
 // fallbacks: a fallback restarts from the original request without the tool
