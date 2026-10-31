@@ -214,7 +214,9 @@ const fetchRefs = async (i) => {
 	for (let attempt = 0; ; attempt++) {
 		const res = await refs(i);
 		if (res.status !== 503 || attempt === 40) return res;
-		await new Promise((r) => setTimeout(r, 50)); // serving slots are taken: the 503 asks for a retry
+		// A 503 with Retry-After is the gateway's answer when its four serving slots are taken, so
+		// a client retries it; it is protocol behaviour, not a retried test. Anything else is final.
+		await new Promise((r) => setTimeout(r, 50));
 	}
 };
 
