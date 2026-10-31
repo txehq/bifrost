@@ -1656,6 +1656,18 @@ func (s *racingFindStore) FindByID(ctx context.Context, id string) (*logstore.Lo
 	return row, err
 }
 
+// countingUpdateStore counts the rows that reach the store's update path, where the
+// version and the object payload of a finish are written.
+type countingUpdateStore struct {
+	logstore.LogStore
+	updates atomic.Int32
+}
+
+func (s *countingUpdateStore) BatchUpdate(ctx context.Context, entries []*logstore.Log) error {
+	s.updates.Add(int32(len(entries)))
+	return s.LogStore.BatchUpdate(ctx, entries)
+}
+
 // requireRowUntouched checks a row a request with its ID may not finish.
 func requireRowUntouched(t *testing.T, store logstore.LogStore, id, status string) {
 	t.Helper()
@@ -1734,7 +1746,7 @@ func TestPostLLMHookReconcilesOnlyItsOwnPartialRow(t *testing.T) {
 		"keyless partial, marker, keyless caller": {status: "processing", marked: true, reconciled: true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			store := newTestStore(t)
+			store := &countingUpdateStore{LogStore: newTestStore(t)}
 			plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
 			if err != nil {
 				t.Fatalf("Init() error = %v", err)
@@ -1752,6 +1764,10 @@ func TestPostLLMHookReconcilesOnlyItsOwnPartialRow(t *testing.T) {
 			}
 			if !tc.reconciled {
 				requireRowUntouched(t, store, id, tc.status)
+				// Not refused at the write: never sent, so no version or object payload exists.
+				if n := store.updates.Load(); n != 0 {
+					t.Fatalf("a refused request reached the store's update path %d times", n)
+				}
 				return
 			}
 			row, err := store.FindByID(context.Background(), id)
