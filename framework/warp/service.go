@@ -68,7 +68,7 @@ type Service struct {
 	// after construction. Every reader takes it, not just the ones near SetLogReader:
 	// an unguarded read elsewhere is the same race, just harder to find. A logging plugin enabled at runtime rebinds them while
 	// requests are already being served.
-	mu sync.RWMutex
+	mu     sync.RWMutex
 	saveMu sync.Mutex // serializes SaveConfig; see its doc comment
 	// closed records that Shutdown ran, so a later rebind cannot revive a
 	// service whose lifecycle is over.
