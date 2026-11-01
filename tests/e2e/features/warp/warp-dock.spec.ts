@@ -106,6 +106,91 @@ test.describe('Warp dock and an in-flight answer', () => {
   })
 })
 
+// What a failed turn cost and what a question offered both have to survive into the next
+// exchange, or the spend goes unshown and the model cannot tell what the reply answers.
+test.describe('Warp turn state across an exchange', () => {
+  test.beforeEach(async ({ dashboardPage }) => {
+    await enableWarpFlag(dashboardPage.page)
+    await dashboardPage.goto()
+    await expect(dashboardPage.pageTitle).toBeVisible()
+  })
+
+  const frames = (...list: object[]) => list.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('')
+
+  test('a failed turn shows what it spent and the retry continues its thread', async ({ dashboardPage }) => {
+    const page = dashboardPage.page
+    await mockWarpConfig(page)
+    const thread = '00000000-0000-4000-8000-000000000003'
+    const bodies: { conversation_id?: string }[] = []
+    await page.route('**/api/warp/chat', async (route) => {
+      bodies.push(route.request().postDataJSON())
+      const body =
+        bodies.length === 1
+          ? frames({ type: 'error', code: 'upstream_error', message: 'boom', conversation_id: thread, usage: { prompt_tokens: 900, completion_tokens: 334, total_tokens: 1234 } })
+          : frames({ type: 'delta', delta: 'Recovered.' }, { type: 'done', finish_reason: 'stop', conversation_id: thread })
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body })
+    })
+    await page.reload()
+
+    await page.getByTestId('topbar-warp-btn').click()
+    const composer = page.getByTestId('warp-composer-input')
+    await composer.fill('why did the requests fail?')
+    await composer.press('Enter')
+    await expect(page.getByTestId('warp-turn-error')).toBeVisible()
+    await expect(page.getByTestId('warp-usage')).toContainText('1,234')
+
+    await composer.fill('try again')
+    await composer.press('Enter')
+    await expect(page.getByTestId('warp-message-assistant').last()).toContainText('Recovered.')
+    expect(bodies[1].conversation_id).toBe(thread)
+  })
+
+  test('a question asked with narration replays with its choices', async ({ dashboardPage }) => {
+    const page = dashboardPage.page
+    await mockWarpConfig(page)
+    const question = { question: 'Which time range?', kind: 'time_range', options: [{ label: 'Last 7 days', hint: '-7d' }, { label: 'Today', hint: 'today' }] }
+    const bodies: { messages: { role: string; content: string; question?: boolean }[] }[] = []
+    await page.route('**/api/warp/chat', async (route) => {
+      bodies.push(route.request().postDataJSON())
+      const body =
+        bodies.length === 1
+          ? frames({ type: 'delta', delta: 'Let me narrow this down.' }, { type: 'question', question }, { type: 'done', finish_reason: 'question', conversation_id: '00000000-0000-4000-8000-000000000004' })
+          : frames({ type: 'delta', delta: 'Seven failed.' }, { type: 'done', finish_reason: 'stop', conversation_id: '00000000-0000-4000-8000-000000000004' })
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body })
+    })
+    await page.reload()
+
+    await page.getByTestId('topbar-warp-btn').click()
+    const composer = page.getByTestId('warp-composer-input')
+    await composer.fill('how many failed?')
+    await composer.press('Enter')
+    await expect(page.getByTestId('warp-question')).toBeVisible()
+    await page.getByTestId('warp-question').getByText('Last 7 days').click()
+    await expect(page.getByTestId('warp-message-assistant').last()).toContainText('Seven failed.')
+
+    const asked = bodies[1].messages[1]
+    expect(asked.question).toBe(true)
+    expect(asked.content).toContain('Let me narrow this down.')
+    expect(asked.content).toContain('Which time range?')
+    expect(asked.content).toContain('Last 7 days (-7d)')
+  })
+
+  test('settings offers a custom provider with no request restriction for embeddings', async ({ dashboardPage }) => {
+    const page = dashboardPage.page
+    await mockWarpConfig(page)
+    await page.route('**/api/providers', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ providers: [{ name: 'my-openai', keys: [], custom_provider_config: { base_provider_type: 'openai' } }], total: 1 }),
+      }),
+    )
+    await page.goto('/workspace/config/warp')
+    await expect(page.getByTestId('warp-embedding-provider-select')).toBeVisible()
+    await expect(page.getByTestId('warp-no-embedding-providers')).toHaveCount(0)
+  })
+})
+
 // Closing the dock unmounts the panel, so anything the panel held dies with it unless the
 // provider-owned session holds it. The chat and history answers are held open by the test, so
 // the order they land in is the test's, not the network's.
