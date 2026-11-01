@@ -167,7 +167,7 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
 <Tab title="Go SDK">
 
 ```go
-func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     switch provider {
     case schemas.Azure:
         return []schemas.Key{
@@ -302,7 +302,7 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
 <Tab title="Go SDK">
 
 ```go
-func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     switch provider {
     case schemas.Azure:
         return []schemas.Key{
@@ -434,7 +434,7 @@ curl -X POST http://localhost:8080/api/providers/azure/keys \
 <Tab title="Go SDK">
 
 ```go
-func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     switch provider {
     case schemas.Azure:
         return []schemas.Key{
@@ -794,8 +794,8 @@ curl -X POST http://localhost:8080/v1/embeddings \
 resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
     Provider: schemas.Azure,
     Model:    "text-embedding-3-small",
-    Input: []schemas.EmbeddingContent{
-        {{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("text to embed")}},
+    Input: []schemas.EmbeddingInputItem{
+        {Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("text to embed")}}},
     },
 })
 ```

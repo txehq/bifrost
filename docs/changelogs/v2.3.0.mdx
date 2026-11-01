@@ -131,7 +131,7 @@ These entries change a default, a status code, a response shape or a Go SDK type
 - **Management API Refuses Unlisted Browser Origins** - add cross-origin browser apps to `client.allowed_origins` or enable dashboard auth.
 - **Real Auth Required for Secret References and Private Targets** - enable dashboard auth or send `X-Bifrost-Setup-Token` for MCP `env.`/`vault.` references, private webhooks, plugin endpoints, Vertex `auth_credentials` and `DELETE /api/mcp-logs`.
 - **Auth Config Changes Need Proof of Control** - send `auth_config.current_password` or `setup_token` when re-enabling auth or rotating admin credentials while auth is off.
-- **Request Decompression Limits** - bodies expanding over 100x return `413`; send them uncompressed or raise `client.max_request_body_size_mb`.
+- **Request Decompression Limits** - compressed bodies expanding over 100x their size (and past 1 MiB) return `413`; send them uncompressed, since raising `client.max_request_body_size_mb` does not lift the ratio limit. Raise that cap only when the `413` says the decompressed body exceeds the max allowed size.
 - **Access Profiles for Teams, Business Units and Customers** - move config.json limits of governed entities and their keys onto the access profile.
 - **Global Proxy in config.json and for All Outbound Traffic** - set `enable_for_inference: false` to keep inference direct, and list direct hosts in `proxy_config.no_proxy`.
 - **Audit Logs: Omit IP Addresses** - make SIEM rules accept both audit `typeURI` values.

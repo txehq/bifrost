@@ -172,7 +172,7 @@ Claude Code's [`apiKeyHelper`](https://code.claude.com/docs/en/settings-referenc
       <Tab title="Windows">
         ```json
         {
-          "apiKeyHelper": "& \"$env:USERPROFILE\\.bifrost\\bin\\bifrost.exe\" --context production auth print-token",
+          "apiKeyHelper": "\"C:/Users/<you>/.bifrost/bin/bifrost.exe\" --context production auth print-token",
           "env": {
             "ANTHROPIC_BASE_URL": "https://bifrost.example.com/anthropic",
             "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "900000"
@@ -183,6 +183,7 @@ Claude Code's [`apiKeyHelper`](https://code.claude.com/docs/en/settings-referenc
     </Tabs>
 
     - Use the full path to `bifrost`; the helper shell may not load your interactive `PATH`.
+    - On Windows, replace `<you>` with your user name. The helper runs as a shell command, not in PowerShell, so a quoted path with forward slashes works where `$env:USERPROFILE` and `&` do not.
     - Pin `--context` so the helper does not follow a later `bifrost context use`.
     - Remove `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` from the same `env` block and from your shell. Both take precedence over `apiKeyHelper`.
   </Step>

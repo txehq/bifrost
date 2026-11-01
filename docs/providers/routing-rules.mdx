@@ -814,7 +814,7 @@ A target's `key_id` outranks the caller's own key pins: when a rule pins the key
 
 ### Time to First Token (TTFT) Cutoff
 
-A provider can accept a streaming request and then stall before it sends any output. Set `ttft_timeout_ms` on a rule to cap that wait. When the rule matches a streaming request, each attempt that still has a fallback after it gets this deadline. If an attempt has not produced its first token in time, Bifrost closes its connection and moves to the next fallback. The client never sees the slow attempt: nothing is streamed to it until the first token arrives.
+A provider can accept a streaming request and then stall before it sends any output. Set `ttft_timeout_ms` on a rule's target to cap that wait. When the rule matches a streaming request and selects that target, each attempt that still has a fallback after it gets this deadline. If an attempt has not produced its first token in time, Bifrost closes its connection and moves to the next fallback. The client never sees the slow attempt: nothing is streamed to it until the first token arrives.
 
 ```json
 {
@@ -824,21 +824,20 @@ A provider can accept a streaming request and then stall before it sends any out
         "id": "fast-gpt",
         "name": "Fast GPT",
         "cel_expression": "model == 'gpt-4o'",
-        "targets": [{ "provider": "openai", "model": "gpt-4o", "weight": 1 }],
-        "fallbacks": ["azure/gpt-4o", "bedrock/openai.gpt-oss-120b-1:0"],
-        "ttft_timeout_ms": 1500
+        "targets": [{ "provider": "openai", "model": "gpt-4o", "weight": 1, "ttft_timeout_ms": 1500 }],
+        "fallbacks": ["azure/gpt-4o", "bedrock/openai.gpt-oss-120b-1:0"]
       }
     ]
   }
 }
 ```
 
-Or through the API (`0` clears the value on update):
+Or through the API. An update that sends `targets` replaces every target, so send the full list; `0` (or omitting the field) clears the value:
 
 ```bash
 curl -X PUT http://localhost:8080/api/routing/rules/{rule_id} \
   -H "Content-Type: application/json" \
-  -d '{"ttft_timeout_ms": 1500}'
+  -d '{"targets": [{"provider": "openai", "model": "gpt-4o", "weight": 1, "ttft_timeout_ms": 1500}]}'
 ```
 
 How the cutoff behaves:
@@ -847,8 +846,8 @@ How the cutoff behaves:
 - **The last attempt is never cut off.** In the example, OpenAI and Azure each get 1.5 s. Bedrock, the last fallback, is never cut off by the TTFT deadline and runs under the normal timeouts, so a slow last provider still gets its full request timeout. A rule without fallbacks (and a request that brings none) is never cut off.
 - **No retry on the same provider.** A TTFT miss goes straight to the next fallback. It does not use the provider's `max_retries`, because retrying a slow provider adds more latency.
 - **What counts as the first token.** Real output: text, reasoning, tool call arguments, audio or image data, a finish reason, or usage. Startup events such as `response.created` or an empty assistant role delta do not count. The deadline covers the whole wait, from sending the request to the first token, including the wait for response headers.
-- **Rule chaining.** The value comes from the last matched rule, together with that rule's fallbacks.
-- **Range.** 1 to 300000 ms. Omit it (or send `0` over the API) to turn it off.
+- **Rule chaining.** The value comes from the target selected by the last matched rule, together with that rule's fallbacks.
+- **Range.** 1 to 300000 ms per target. Omit it (or send `0` over the API) to turn it off.
 
 A cutoff is recorded in the routing engine logs as `TTFT timeout: <provider>/<model> produced no first token within <duration>`, and in the key attempt trail as `ttft_timeout`.
 

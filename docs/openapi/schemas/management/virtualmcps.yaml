@@ -18,25 +18,6 @@ VirtualMCP:
       type: string
       nullable: true
       description: Operator-facing note. Never sent to a model.
-    instructions:
-      type: string
-      nullable: true
-      description: |
-        Model-facing guidance served with this Virtual MCP's tools, wrapped in a
-        `<virtual_mcp name="...">` block on the `/mcp/{endpoint_slug}` initialize
-        response. Unlike `description`, this reaches the model.
-
-        Only forwarded when the deployment's `mcp_server_instructions_mode` is
-        `gateway` or `all`; at `off` it is stored but never sent.
-    instructions_mode:
-      type: string
-      enum: [append, replace]
-      default: append
-      description: |
-        How `instructions` combines with what the source MCP servers advertise.
-        `append` keeps the inherited text and adds this Virtual MCP's own after
-        it. `replace` drops the inherited text from every source server, sending
-        only `instructions`.
     enabled:
       type: boolean
     tools:
@@ -61,11 +42,10 @@ VirtualMCP:
 CreateVirtualMCPRequest:
   type: object
   description: |
-    `name` and `tools` are required. `enabled` defaults to `true` and
-    `instructions_mode` to `append`.
+    `name` is required. `enabled` defaults to `true`. `tools` may be omitted or
+    empty to create a Virtual MCP that exposes no tools yet.
   required:
     - name
-    - tools
   properties:
     name:
       type: string
@@ -73,20 +53,12 @@ CreateVirtualMCPRequest:
       type: string
       description: Honored on create only.
     description:
-      type: string
-      nullable: true
-    instructions:
-      type: string
-      nullable: true
-      description: Model-facing guidance. See `VirtualMCP.instructions`.
-    instructions_mode:
-      type: string
-      enum: [append, replace]
-      default: append
+      type: [string, 'null']
     enabled:
       type: boolean
     tools:
       type: array
+      description: Tools to expose. Omitted or empty selects none.
       items:
         $ref: './mcptoolgroups.yaml#/MCPToolSpec'
 
@@ -94,10 +66,8 @@ UpdateVirtualMCPRequest:
   type: object
   description: |
     Partial update: every field is optional and an omitted one preserves its current
-    value. `endpoint_slug` is ignored because it is immutable after create.
-
-    To clear `instructions`, send an empty string; `null` reads as "not provided" and
-    leaves the stored text in place.
+    value. `endpoint_slug` is ignored because it is immutable after create. `tools`,
+    when sent, replaces the whole list.
   properties:
     name:
       type: string
@@ -107,14 +77,6 @@ UpdateVirtualMCPRequest:
     description:
       type: string
       nullable: true
-    instructions:
-      type: string
-      nullable: true
-      description: Model-facing guidance. See `VirtualMCP.instructions`.
-    instructions_mode:
-      type: string
-      enum: [append, replace]
-      default: append
     enabled:
       type: boolean
     tools:

@@ -187,7 +187,7 @@ When dashboard authentication is disabled or unconfigured, `spec_url` and `base_
 The parser lives in `framework/openapimcp`; core only knows the hook. Register the factory once and declare clients with `connection_type: "openapi"`:
 
 ```go
-import "github.com/maximhq/bifrost/framework/openapimcp"
+import "github.com/capsohq/bifrost/framework/openapimcp"
 
 cfg.MCPConfig.InProcessServerFactory = openapimcp.Factory(openapimcp.WithConfigDir("/etc/bifrost"))
 ```

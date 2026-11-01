@@ -2854,10 +2854,10 @@ ComplexitySemanticConfig:
       minLength: 1
       description: Embedding model, e.g. text-embedding-3-small
     timeout:
-      description: Ceiling on the inline embedding call. Accepts a duration string ("1.5s") or milliseconds as a number. Default 1.5s; exceeding it publishes no tier for that request.
+      description: Ceiling on the inline embedding call. Accepts a Go duration string ("1.5s", "1m30s") or milliseconds as a number, and is returned as a duration string (60000 reads back as "1m0s"). Default 1.5s; exceeding it publishes no tier for that request.
       oneOf:
         - type: string
-          pattern: '^[0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h)$'
+          pattern: '^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$'
         - type: number
           exclusiveMinimum: 0
     min_similarity:
@@ -2907,10 +2907,10 @@ ComplexityDecisionConfig:
       default: 1
       description: Number of preceding user messages sent with the current user request. Assistant messages are excluded.
     timeout:
-      description: Maximum decision-model classification latency. Accepts a duration string or milliseconds as a number; default 1500ms.
+      description: Maximum decision-model classification latency. Accepts a Go duration string ("1.5s", "1m30s") or milliseconds as a number, and is returned as a duration string (60000 reads back as "1m0s"); default 1500ms.
       oneOf:
         - type: string
-          pattern: '^[0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h)$'
+          pattern: '^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$'
         - type: number
           minimum: 0
     criteria:
@@ -2970,10 +2970,10 @@ ComplexityLLMConfig:
       minLength: 1
       description: Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one.
     timeout:
-      description: Per-request classification timeout. Accepts a duration string ("2s") or milliseconds as a number. Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.
+      description: Per-request classification timeout. Accepts a Go duration string ("2s", "1m30s") or milliseconds as a number, and is returned as a duration string (60000 reads back as "1m0s"). Default 4s. On timeout no complexity tier is published and the request is recorded as skipped.
       oneOf:
         - type: string
-          pattern: '^[0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h)$'
+          pattern: '^([0-9]+(\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$'
         - type: number
           exclusiveMinimum: 0
     prompt:
