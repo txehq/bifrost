@@ -1656,6 +1656,11 @@ func (s *ledgerStore) TryAcquireLock(ctx context.Context, lock *tables.TableDist
 		return acquired, err
 	}
 	now := time.Now()
+	// Confirmed after its expiry: TryLock refuses it, so it is no lease, and the row
+	// may already be another holder's.
+	if !lock.ExpiresAt.After(now) {
+		return true, nil
+	}
 	s.ledger.mu.Lock()
 	defer s.ledger.mu.Unlock()
 	for holder, expiry := range s.ledger.leases {
