@@ -18,6 +18,7 @@
 //
 // Exit 0: every row passed. Exit 1: a row failed. Exit 2: setup failed, so the run proves nothing.
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -91,6 +92,13 @@ const configSql = async (sql) => {
 	return stdout.trim();
 };
 
+// Weaviate takes UUIDs only, as the gateway's own log ids are. The index comes last, zero-padded, so the
+// ids sort as the indexes do and a test can say which row a page ends on.
+const rowId = (group, index) => {
+	const prefix = createHash("sha256").update(`${tag}-${group}`).digest("hex");
+	return `${prefix.slice(0, 8)}-${prefix.slice(8, 12)}-4${prefix.slice(13, 16)}-8${prefix.slice(17, 20)}-${String(index).padStart(12, "0")}`;
+};
+
 const logRow = (id, timestamp, fields = {}) => ({
 	id, timestamp: new Date(timestamp).toISOString(), created_at: new Date(timestamp).toISOString(),
 	object: "chat_completion", provider: "openai", model: `wire-${tag}`, status: "success", latency: 100, content_summary: `summary of ${id}`, ...fields,
@@ -145,7 +153,7 @@ async function checkUsage() {
 	await expectSpend("usage rejected vector", key, result.terminal, 2);
 
 	// The refused call was not billed.
-	key = `${tag}-usage-refused`;
+	key = `${tag}-usage-declined`;
 	await script(key, [search([`refused one [case:${key}]`, `good one [case:${key}]`]), { text: "search failed." }]);
 	result = await turn(`search please [case:${key}]`);
 	await expectSpend("usage refused call", key, result.terminal, 1);
@@ -327,7 +335,7 @@ async function checkTrace() {
 	const output = await lastOutput(key);
 	row("trace session parent is not a root", output?.root_id === primary, JSON.stringify(output).slice(0, 200));
 	const node = output?.nodes?.find?.((entry) => entry.id === hop);
-	row("trace hop carries its diagnostics", node?.error?.type === "overloaded_error" && node?.attempts?.length === 1, JSON.stringify(node).slice(0, 300));
+	row("trace hop carries its diagnostics", node?.error?.type === "overloaded_error" && node?.attempts?.length === 1, String(JSON.stringify(node)).slice(0, 300));
 }
 
 const waitForBackfill = async () => {
@@ -345,7 +353,7 @@ async function checkBackfill() {
 	// and a new row lands at the same instant.
 	const start = hour(Date.now() - 10 * DAY);
 	const tied = start + 1_800_123;
-	const id = (index) => `bf-${tag}-${String(index).padStart(3, "0")}`;
+	const id = (index) => rowId("backfill", index);
 	const logs = Array.from({ length: BATCH + 2 }, (_, index) => logRow(id(index), tied));
 	await seed(logs);
 	await fx("/__hold", { match: id(BATCH - 1) });
@@ -371,7 +379,7 @@ async function checkBackfill() {
 	// A job an earlier release left: its checkpoint carries an offset and no row.
 	const legacyStart = hour(Date.now() - 12 * DAY);
 	const legacyTied = legacyStart + 1_800_456;
-	const legacyId = (index) => `lg-${tag}-${index}`;
+	const legacyId = (index) => rowId("legacy", index);
 	await seed(Array.from({ length: 5 }, (_, index) => logRow(legacyId(index), legacyTied)));
 	res = await startBackfill(legacyStart, legacyStart + 3_600_000);
 	await waitForBackfill();
@@ -390,7 +398,7 @@ async function checkBackfill() {
 
 async function checkSearch() {
 	const start = hour(Date.now() - 14 * DAY);
-	const [matching, other] = [`se-${tag}-match`, `se-${tag}-other`];
+	const [matching, other] = [rowId("search", 1), rowId("search", 2)];
 	const conversation = (question, reply) => ({ input_history: [{ role: "user", content: question }], output_message: { role: "assistant", content: reply } });
 	await seed([
 		logRow(matching, start + 60_000, { project_id: "project-a", tokens: 900, content_summary: "Where is my order 1182?", ...conversation("Where is my order 1182?", "I have issued a refund of $20 to your card.") }),
