@@ -856,3 +856,45 @@ func TestWarpSemanticFiltersCoverEverySearchField(t *testing.T) {
 		require.Containsf(t, unenforcedSemanticFilters(&filters), name, "%s is neither enforced nor refused", name)
 	}
 }
+
+// BenchmarkWarpEmbedSemanticQueries measures a search's embedding round, the part
+// that now reports its spend, with the store and the provider answering at once.
+func BenchmarkWarpEmbedSemanticQueries(b *testing.B) {
+	executor := func(*schemas.BifrostContext, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		return &schemas.BifrostEmbeddingResponse{
+			Data:  []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}},
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 7, TotalTokens: 7},
+		}, nil
+	}
+	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, newFakeWarpVectorStore(), executor, &semanticLogReader{})
+	queries := []string{"declined cards", "failed payments", "refund requests"}
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := searcher.Search(ctx, queries, nil, 10); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkWarpMatchesSemanticFilters measures the check every hydrated candidate
+// passes through, on a row and a filter that reach its last comparison.
+func BenchmarkWarpMatchesSemanticFilters(b *testing.B) {
+	project, reason, status, kind := "project-a", "stop", 400, "invalid_request_error"
+	minTokens := 1
+	entry := &logstore.Log{
+		ID: "row", Timestamp: time.Now(), Provider: "openai", Model: "gpt-4o", Status: "error", Object: string(schemas.ChatCompletionRequest),
+		ProjectID: &project, StopReason: &reason, TotalTokens: 10,
+		ErrorDetailsParsed: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Type: &kind}},
+	}
+	filters := &logstore.SearchFilters{
+		Providers: []string{"openai"}, Models: []string{"gpt-4o"}, Status: []string{"error"}, ProjectIDs: []string{"project-a"},
+		StopReasons: []string{"stop"}, MinTokens: &minTokens, ErrorTypes: []string{kind}, StatusCodes: []int{400},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if !matchesSemanticFilters(entry, filters) {
+			b.Fatal("the row must match")
+		}
+	}
+}

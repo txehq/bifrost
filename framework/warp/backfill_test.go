@@ -1105,3 +1105,32 @@ func TestWarpBackfillPagesTiedRowsOnTheStore(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkWarpBackfillJob measures a job over one thousand tied rows with the store
+// and the provider answering at once, so what is left is the paging.
+func BenchmarkWarpBackfillJob(b *testing.B) {
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	tied := start.Add(time.Hour)
+	logs := make([]logstore.Log, 0, 1000)
+	for index := range 1000 {
+		id := fmt.Sprintf("log-%04d", index)
+		logs = append(logs, logstore.Log{ID: id, Timestamp: tied, Object: string(schemas.ChatCompletionRequest), Status: "success", ContentSummary: "payment failed " + id})
+	}
+	service := NewService(nil,
+		WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(&backfillLogReader{logs: logs}),
+		WithVectorStore(newFakeWarpVectorStore()), WithEmbeddingExecutor(backfillEmbeddingExecutor),
+	)
+	defer service.Shutdown()
+	ctx := context.Background()
+	metaJSON, err := service.BuildBackfillJobMeta(ctx, start, start.Add(24*time.Hour), false)
+	if err != nil {
+		b.Fatal(err)
+	}
+	job := tables.TableSidekiqJob{Metadata: metaJSON}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := service.RunBackfillJob(ctx, job, func(string) error { return nil }); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

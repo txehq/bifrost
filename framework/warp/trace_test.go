@@ -321,3 +321,33 @@ func TestWarpGetRequestTraceHydratesFallbackHops(t *testing.T) {
 	require.Len(t, hop.RoutingEngineLogs, 1)
 	require.Equal(t, "caller", childCtx.Value(ctxKey{}), "the child is read through the caller's scoped context")
 }
+
+// BenchmarkWarpGetRequestTrace measures a trace of the longest chain it reads, which
+// now loads every hop in full.
+func BenchmarkWarpGetRequestTrace(b *testing.B) {
+	root := &logstore.Log{ID: "root", Status: "error"}
+	hops := make([]logstore.Log, 0, MaxTraceChainLength)
+	byID := map[string]*logstore.Log{"root": root}
+	for index := range MaxTraceChainLength {
+		id := fmt.Sprintf("hop-%d", index)
+		hops = append(hops, logstore.Log{ID: id, Status: "error", FallbackIndex: index + 1, ParentRequestID: new("root")})
+		byID[id] = &hops[index]
+	}
+	fake := &fakeLogReader{
+		getLogFunc:   func(_ context.Context, id string) (*logstore.Log, error) { return byID[id], nil },
+		searchResult: &logstore.SearchResult{Logs: hops, Pagination: logstore.PaginationOptions{TotalCount: int64(len(hops))}},
+	}
+	tool, ok := toolByName(buildTools(), "get_request_trace")
+	if !ok {
+		b.Fatal("no get_request_trace tool")
+	}
+	deps := &ToolDeps{logManager: fake}
+	args := map[string]any{"log_id": "root"}
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := tool.execute(ctx, deps, args); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

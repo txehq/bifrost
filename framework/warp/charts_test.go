@@ -2,6 +2,7 @@ package warp
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -607,5 +608,26 @@ func TestWarpErrorRatePopulationsAgreeOnTheStore(t *testing.T) {
 			// Asked for errors alone, everything in the population failed.
 			require.Equal(t, []ChartPoint{{X: "gpt-4o", Y: 100}}, chart("bar", "model", []any{"error"}))
 		})
+	}
+}
+
+// BenchmarkWarpBarChartErrorRate measures a failure-rate bar chart over 50 model and
+// provider pairs, with the store answering at once.
+func BenchmarkWarpBarChartErrorRate(b *testing.B) {
+	rankings := make([]logstore.ModelRankingWithTrend, 0, 50)
+	for index := range 50 {
+		rankings = append(rankings, logstore.ModelRankingWithTrend{ModelRankingEntry: logstore.ModelRankingEntry{
+			Model: fmt.Sprintf("model-%d", index/2), Provider: fmt.Sprintf("provider-%d", index%2), TotalRequests: 100, SuccessRate: 90, AvgLatency: 100,
+		}})
+	}
+	fake := &fakeLogReader{modelRankingResult: &logstore.ModelRankingResult{Rankings: rankings}}
+	deps := &ToolDeps{logManager: fake}
+	filters := &logstore.SearchFilters{}
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := barChartPoints(ctx, deps, filters, "error_rate", "model", 10); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
