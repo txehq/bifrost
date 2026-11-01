@@ -3,6 +3,7 @@ package harness
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -299,27 +300,13 @@ trust_level = "trusted"
 		t.Fatalf("codexWriteNativeConfig() error = %v", err)
 	}
 
-	// auth.json should keep tokens.id_token but flip OPENAI_API_KEY.
+	// auth.json belongs to the user's own Codex login and is left alone.
 	authBytes, err := os.ReadFile(authPath)
 	if err != nil {
 		t.Fatalf("read auth.json: %v", err)
 	}
-	var auth map[string]any
-	if err := sonic.Unmarshal(authBytes, &auth); err != nil {
-		t.Fatalf("unmarshal auth.json: %v", err)
-	}
-	if got, _ := auth["OPENAI_API_KEY"].(string); got != "sk-bf-new" {
-		t.Fatalf("auth.OPENAI_API_KEY = %q, want %q", got, "sk-bf-new")
-	}
-	if got, _ := auth["auth_mode"].(string); got != "apikey" {
-		t.Fatalf("auth.auth_mode = %q, want %q", got, "apikey")
-	}
-	tokens, ok := auth["tokens"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected tokens map preserved, got %#v", auth["tokens"])
-	}
-	if got, _ := tokens["id_token"].(string); got != "keep-me" {
-		t.Fatalf("tokens.id_token = %q, want %q", got, "keep-me")
+	if string(authBytes) != initialAuth {
+		t.Fatalf("auth.json changed: %s", authBytes)
 	}
 
 	// config.toml should select a custom Responses provider, preserve
@@ -337,7 +324,7 @@ trust_level = "trusted"
 		`name = "Bifrost"`,
 		`base_url = "http://localhost:8080/openai/v1"`,
 		`wire_api = "responses"`,
-		`env_key = "OPENAI_API_KEY"`,
+		`experimental_bearer_token = "sk-bf-new"`,
 		`requires_openai_auth = false`,
 		`supports_websockets = false`,
 		`[projects."/Users/me/proj"]`,
@@ -352,6 +339,10 @@ trust_level = "trusted"
 		`"stale-literal-key"`,
 		`"gpt-old"`,
 		`openai_base_url=`,
+		// A direct launch has no OPENAI_API_KEY in its environment, so the
+		// provider carries its own key.
+		`env_key`,
+		`requires_openai_auth = true`,
 	} {
 		if strings.Contains(got, unwanted) {
 			t.Fatalf("expected config.toml to no longer contain %q, got:\n%s", unwanted, got)
@@ -367,16 +358,8 @@ func TestCodexWriteNativeConfigCreatesFilesWhenMissing(t *testing.T) {
 		t.Fatalf("codexWriteNativeConfig() error = %v", err)
 	}
 
-	authBytes, err := os.ReadFile(filepath.Join(home, ".codex", "auth.json"))
-	if err != nil {
-		t.Fatalf("read auth.json: %v", err)
-	}
-	var auth map[string]any
-	if err := sonic.Unmarshal(authBytes, &auth); err != nil {
-		t.Fatalf("unmarshal auth.json: %v", err)
-	}
-	if got, _ := auth["OPENAI_API_KEY"].(string); got != "sk-bf-fresh" {
-		t.Fatalf("auth.OPENAI_API_KEY = %q", got)
+	if _, err := os.Stat(filepath.Join(home, ".codex", "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("configure wrote an auth.json: %v", err)
 	}
 
 	tomlBytes, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
@@ -389,13 +372,16 @@ func TestCodexWriteNativeConfigCreatesFilesWhenMissing(t *testing.T) {
 		`[model_providers.bifrost]`,
 		`base_url = "http://localhost:8080/openai/v1"`,
 		`wire_api = "responses"`,
-		`env_key = "OPENAI_API_KEY"`,
+		`experimental_bearer_token = "sk-bf-fresh"`,
 		`requires_openai_auth = false`,
 		`supports_websockets = false`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected config.toml to contain %q, got:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, `env_key`) {
+		t.Fatalf("persistent config must not require an environment key, got:\n%s", got)
 	}
 	if strings.Contains(got, `model =`) {
 		t.Fatalf("did not expect model line when model is empty, got:\n%s", got)
@@ -413,42 +399,642 @@ func TestCodexWriteNativeConfigSkipsAuthForDummyKey(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, ".codex", "auth.json")); !os.IsNotExist(err) {
 		t.Fatalf("expected no auth.json for dummy key, stat err=%v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".codex", "config.toml")); err != nil {
-		t.Fatalf("expected config.toml to still be written, stat err=%v", err)
+	configured, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatalf("expected config.toml to still be written, err=%v", err)
+	}
+	// A keyless gateway needs no credential: neither an environment key a
+	// direct launch lacks, nor OpenAI auth that would prompt for a login.
+	got := string(configured)
+	if strings.Contains(got, `env_key`) || !strings.Contains(got, `requires_openai_auth = false`) {
+		t.Fatalf("keyless config must require no credential, got:\n%s", got)
 	}
 }
 
-func TestCodexPreLaunchUsesTemporaryHome(t *testing.T) {
+// TestCodexWriteNativeConfigStaysOutOfCodexCredentialSelection pins that the provider
+// is independent of Codex's own credential: whatever store the config selects, globally
+// or in a profile, the provider never asks for OpenAI auth, the setting is left as it
+// was, and auth.json is not touched. A store enforced by managed policy is outside this
+// file; requires_openai_auth = false with the provider's own token is what covers it
+// (resolve_provider_auth in openai/codex model-provider/src/auth.rs).
+func TestCodexWriteNativeConfigStaysOutOfCodexCredentialSelection(t *testing.T) {
+	for _, line := range []string{
+		"",
+		`cli_auth_credentials_store = "file"`,
+		`cli_auth_credentials_store = "keyring"`,
+		`cli_auth_credentials_store = "auto"`,
+		`cli_auth_credentials_store = "ephemeral"`,
+		"[profiles.work]\n" + `cli_auth_credentials_store = "keyring"`,
+	} {
+		t.Run(line, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			dir := filepath.Join(home, ".codex")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			userAuth := `{"auth_mode":"chatgpt","tokens":{"id_token":"keep-me"}}`
+			if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(line+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte(userAuth), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := codexWriteNativeConfig("http://localhost:8080/openai/v1", "sk-bf-test", ""); err != nil {
+				t.Fatal(err)
+			}
+			configured, err := os.ReadFile(filepath.Join(dir, "config.toml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := string(configured)
+			if !strings.Contains(got, line) {
+				t.Fatalf("config changed the user's setting %q:\n%s", line, got)
+			}
+			if strings.Contains(got, `requires_openai_auth = true`) || strings.Count(got, "cli_auth_credentials_store") > 1 {
+				t.Fatalf("the provider reaches Codex's own credential:\n%s", got)
+			}
+			if !strings.Contains(got, `experimental_bearer_token = "sk-bf-test"`) {
+				t.Fatalf("the provider has no key of its own:\n%s", got)
+			}
+			if authBytes, err := os.ReadFile(filepath.Join(dir, "auth.json")); err != nil || string(authBytes) != userAuth {
+				t.Fatalf("auth.json changed: %s, %v", authBytes, err)
+			}
+			assertMode(t, filepath.Join(dir, "config.toml"), 0o600)
+		})
+	}
+}
+
+// TestCodexWriteNativeConfigRefusesAnInsecureGateway pins that a key is not saved for
+// Codex to send in plain text: Codex does not go through the CLI's transport checks.
+func TestCodexWriteNativeConfigRefusesAnInsecureGateway(t *testing.T) {
+	for _, baseURL := range []string{"http://gateway.example/openai", "ftp://gateway.example/openai"} {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		if err := codexWriteNativeConfig(baseURL, "sk-bf-test", ""); err == nil {
+			t.Fatalf("codexWriteNativeConfig(%s) saved a key", baseURL)
+		}
+		if _, err := os.Stat(filepath.Join(home, ".codex")); !os.IsNotExist(err) {
+			t.Fatalf("a refused configure wrote to the Codex home: %v", err)
+		}
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("CODEX_HOME", "")
+	for _, baseURL := range []string{"http://127.0.0.1:8080/openai", "http://localhost:8080/openai", "https://gateway.example/openai"} {
+		if err := codexWriteNativeConfig(baseURL, "sk-bf-test", ""); err != nil {
+			t.Fatalf("codexWriteNativeConfig(%s) = %v", baseURL, err)
+		}
+	}
+}
 
-	environment, cleanup, err := codexPreLaunch("http://localhost:8080/openai", "sk-bf-test", "gpt-test")
+func TestCodexWriteNativeConfigEscapesTheKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := codexWriteNativeConfig("http://localhost:8080/openai/v1", `sk"bf\key`, ""); err != nil {
+		t.Fatal(err)
+	}
+	configured, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(configured), `experimental_bearer_token = "sk\"bf\\key"`) {
+		t.Fatalf("key not escaped:\n%s", configured)
+	}
+}
+
+// TestCodexWriteNativeConfigDoesNotWriteThroughASymlink pins that a key is not written
+// into a dotfile repository the config links to.
+func TestCodexWriteNativeConfigDoesNotWriteThroughASymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unprivileged symlinks only")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	shared := filepath.Join(t.TempDir(), "dotfiles-config.toml")
+	if err := os.WriteFile(shared, []byte("model_reasoning_effort = \"high\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(shared, filepath.Join(home, ".codex", "config.toml")); err != nil {
+		t.Fatal(err)
+	}
+	if err := codexWriteNativeConfig("http://localhost:8080/openai/v1", "sk-bf-test", ""); err != nil {
+		t.Fatal(err)
+	}
+	target, err := os.ReadFile(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(target), "sk-bf-test") {
+		t.Fatalf("the key was written through the link:\n%s", target)
+	}
+	assertMode(t, filepath.Join(home, ".codex", "config.toml"), 0o600)
+}
+
+// TestCodexWriteNativeConfigKeylessLeavesTheCredentialStore pins that a config which
+// saves no key does not change where the user's credentials live.
+func TestCodexWriteNativeConfigKeylessLeavesTheCredentialStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	userConfig := `cli_auth_credentials_store = "keyring"` + "\n"
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(userConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := codexWriteNativeConfig("http://localhost:8080/openai/v1", "dummy-key", ""); err != nil {
+		t.Fatal(err)
+	}
+	configured, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(configured), `cli_auth_credentials_store = "keyring"`) {
+		t.Fatalf("a keyless config changed the credential store:\n%s", configured)
+	}
+}
+
+// TestCodexWriteNativeConfigChangingGatewayReplacesTheKey pins that a saved key never
+// reaches the next gateway, keyed or keyless.
+func TestCodexWriteNativeConfigChangingGatewayReplacesTheKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	read := func() string {
+		t.Helper()
+		configured, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(configured)
+	}
+
+	if err := codexWriteNativeConfig("https://keyed.example/openai/v1", "sk-bf-old", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := codexWriteNativeConfig("https://other.example/openai/v1", "sk-bf-new", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(); strings.Contains(got, "sk-bf-old") || !strings.Contains(got, "sk-bf-new") || strings.Contains(got, "keyed.example") {
+		t.Fatalf("the previous gateway's key or endpoint survived:\n%s", got)
+	}
+	if err := codexWriteNativeConfig("http://localhost:8080/openai/v1", "dummy-key", ""); err != nil {
+		t.Fatal(err)
+	}
+	got := read()
+	if !strings.Contains(got, `base_url = "http://localhost:8080/openai/v1"`) || strings.Contains(got, "other.example") {
+		t.Fatalf("config kept the previous endpoint:\n%s", got)
+	}
+	if strings.Contains(got, "sk-bf-new") || strings.Contains(got, "experimental_bearer_token") || strings.Contains(got, `env_key`) {
+		t.Fatalf("a keyless endpoint must carry no key:\n%s", got)
+	}
+}
+
+// codexLaunchHome runs codexPreLaunch and returns the CODEX_HOME it selected. The
+// launch ends with the test, or earlier through the returned cleanup.
+func codexLaunchHome(t *testing.T, baseURL, apiKey, model string) (string, func()) {
+	t.Helper()
+	environment, cleanup, err := codexPreLaunch(baseURL, apiKey, model)
 	if err != nil {
 		t.Fatalf("codexPreLaunch() error = %v", err)
 	}
 	if cleanup == nil {
 		t.Fatal("codexPreLaunch() returned no cleanup")
 	}
-	defer cleanup()
-	var codexHome string
-	for _, entry := range environment {
-		if strings.HasPrefix(entry, "CODEX_HOME=") {
-			codexHome = strings.TrimPrefix(entry, "CODEX_HOME=")
-		}
+	t.Cleanup(cleanup)
+	codexHome := envValue(environment, "CODEX_HOME")
+	if codexHome == "" {
+		t.Fatal("codexPreLaunch() set no CODEX_HOME")
 	}
-	if codexHome == "" || codexHome == filepath.Join(home, ".codex") {
-		t.Fatalf("CODEX_HOME = %q, want an isolated temporary directory", codexHome)
-	}
+	return codexHome, cleanup
+}
+
+func readCodexConfig(t *testing.T, codexHome string) string {
+	t.Helper()
 	configured, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
 	if err != nil {
-		t.Fatalf("read temporary config.toml: %v", err)
+		t.Fatalf("read launcher config.toml: %v", err)
 	}
-	if !strings.Contains(string(configured), `model_provider = "bifrost"`) {
-		t.Fatalf("temporary config missing Bifrost provider:\n%s", configured)
+	return string(configured)
+}
+
+// writeCodexSession records one session line the way a launched Codex does.
+func writeCodexSession(t *testing.T, codexHome string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(codexHome, "sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(filepath.Join(codexHome, "sessions", "rollout.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+	defer file.Close()
+	if _, err := file.WriteString("{\"turn\":1}\n"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func hasCodexSession(codexHome string) bool {
+	_, err := os.Stat(filepath.Join(codexHome, "sessions", "rollout.jsonl"))
+	return err == nil
+}
+
+// codexStoreFiles lists every file kept under the user's Codex session stores.
+func codexStoreFiles(t *testing.T, home string) []string {
+	t.Helper()
+	var files []string
+	err := filepath.WalkDir(filepath.Join(home, ".bifrost", "codex-home"), func(path string, entry os.DirEntry, err error) error {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func TestCodexPreLaunchKeepsSessionsAcrossLaunches(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+
+	codexHome, cleanup := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test", "gpt-test")
+	configured := readCodexConfig(t, codexHome)
+	if !strings.Contains(configured, `model_provider = "bifrost"`) {
+		t.Fatalf("launcher config missing Bifrost provider:\n%s", configured)
+	}
+	// The launcher supplies OPENAI_API_KEY, so the wrapped session reads it
+	// from the environment rather than from any saved auth.json.
+	if !strings.Contains(configured, `env_key = "OPENAI_API_KEY"`) || !strings.Contains(configured, `requires_openai_auth = false`) {
+		t.Fatalf("launcher config must read the launcher-supplied key:\n%s", configured)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".codex", "config.toml")); !os.IsNotExist(err) {
 		t.Fatalf("pre-launch mutated the real Codex config: %v", err)
+	}
+
+	// A session written by the launched Codex survives its exit, so it can be resumed.
+	writeCodexSession(t, codexHome)
+	cleanup()
+	if _, err := os.Stat(codexHome); !os.IsNotExist(err) {
+		t.Fatalf("the launch's home outlived it: %v", err)
+	}
+	again, _ := codexLaunchHome(t, "http://localhost:8080/openai/", "sk-bf-test", "gpt-test")
+	if !hasCodexSession(again) {
+		t.Fatal("launcher session history was lost across launches")
+	}
+}
+
+// TestCodexPreLaunchKeepsTheStateDatabaseWithTheLaunch pins that Codex's state database
+// never outlives the home it recorded: it holds absolute rollout paths, so a kept one
+// would hide sessions whose files survive. The session files rebuild it each launch.
+func TestCodexPreLaunchKeepsTheStateDatabaseWithTheLaunch(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("CODEX_SQLITE_HOME", filepath.Join(home, "inherited"))
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	userConfig := "sqlite_home = \"/shared/codex\"\nmodel_reasoning_effort = \"high\"\n"
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(userConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	environment, cleanup, err := codexPreLaunch("http://localhost:8080/openai", "sk-bf-test", "gpt-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	codexHome := envValue(environment, "CODEX_HOME")
+	if got := envValue(environment, "CODEX_SQLITE_HOME"); got != codexHome {
+		t.Fatalf("CODEX_SQLITE_HOME = %q, want the launch's own home %q", got, codexHome)
+	}
+	configured := readCodexConfig(t, codexHome)
+	if strings.Contains(configured, "sqlite_home") || !strings.Contains(configured, "model_reasoning_effort") {
+		t.Fatalf("launcher config must drop sqlite_home and nothing else:\n%s", configured)
+	}
+}
+
+// TestCodexPreLaunchKeepsEachGatewaySeparate pins that no session crosses gateways: a
+// shared history could resend one gateway's transcript to the other.
+func TestCodexPreLaunchKeepsEachGatewaySeparate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+
+	first, _ := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test", "gpt-test")
+	writeCodexSession(t, first)
+	second, _ := codexLaunchHome(t, "https://gateway.example/openai", "sk-bf-other", "gpt-test")
+	if hasCodexSession(second) {
+		t.Fatal("a session recorded on one gateway is visible on another")
+	}
+	if configured := readCodexConfig(t, second); !strings.Contains(configured, `base_url = "https://gateway.example/openai/v1"`) {
+		t.Fatalf("second gateway's config has the wrong endpoint:\n%s", configured)
+	}
+	if files := strings.Join(codexStoreFiles(t, home), " "); strings.Contains(files, "gateway.example") {
+		t.Fatalf("store paths expose the gateway: %s", files)
+	}
+}
+
+// TestCodexPreLaunchKeepsConcurrentLaunchesApart pins that two running launches on one
+// gateway neither overwrite each other's config nor lose each other's sessions.
+func TestCodexPreLaunchKeepsConcurrentLaunchesApart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	const endpoint = "http://localhost:8080/openai"
+
+	first, _ := codexLaunchHome(t, endpoint, "sk-bf-test", "gpt-first")
+	second, _ := codexLaunchHome(t, endpoint, "sk-bf-test", "gpt-second")
+	if first == second {
+		t.Fatalf("concurrent launches share %q", first)
+	}
+	if configured := readCodexConfig(t, first); !strings.Contains(configured, `model = "gpt-first"`) {
+		t.Fatalf("the second launch overwrote the first one's config:\n%s", configured)
+	}
+	if configured := readCodexConfig(t, second); !strings.Contains(configured, `model = "gpt-second"`) {
+		t.Fatalf("second launch has the wrong model:\n%s", configured)
+	}
+	writeCodexSession(t, first)
+	if !hasCodexSession(second) {
+		t.Fatal("concurrent launches on one gateway do not share sessions")
+	}
+}
+
+func TestCodexPreLaunchKeepsEachUserSeparate(t *testing.T) {
+	t.Setenv("CODEX_HOME", "")
+	userA, userB := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", userA)
+	homeA, _ := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test", "gpt-test")
+	writeCodexSession(t, homeA)
+	t.Setenv("HOME", userB)
+	homeB, _ := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test", "gpt-test")
+	if hasCodexSession(homeB) {
+		t.Fatal("one user's session is visible to another")
+	}
+}
+
+// TestCodexPreLaunchLeavesNoCredentialBehind pins that what persists is session state
+// alone: not the launch's key, a copy of the user's Codex authentication, or the
+// user's config.toml with whatever secrets it holds.
+func TestCodexPreLaunchLeavesNoCredentialBehind(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	userHome := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(userHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	userAuth := `{"auth_mode":"apikey","OPENAI_API_KEY":"sk-user-own"}`
+	if err := os.WriteFile(filepath.Join(userHome, "auth.json"), []byte(userAuth), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	userConfig := "[mcp_servers.local.env]\nTOKEN = \"sk-config-secret\"\n"
+	if err := os.WriteFile(filepath.Join(userHome, "config.toml"), []byte(userConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	codexHome, cleanup := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-secret", "gpt-test")
+	if _, err := os.Stat(filepath.Join(codexHome, "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("launcher home holds an auth.json: %v", err)
+	}
+	configured := readCodexConfig(t, codexHome)
+	if !strings.Contains(configured, "sk-config-secret") {
+		t.Fatalf("the launch lost the user's MCP setting:\n%s", configured)
+	}
+	if strings.Contains(configured, "sk-bf-secret") || strings.Contains(configured, "sk-user-own") {
+		t.Fatalf("launcher config holds a credential:\n%s", configured)
+	}
+	writeCodexSession(t, codexHome)
+	cleanup()
+	for _, path := range codexStoreFiles(t, home) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range []string{"sk-bf-secret", "sk-user-own", "sk-config-secret"} {
+			if strings.Contains(string(data), secret) {
+				t.Fatalf("%s outlived the launch in %s", secret, path)
+			}
+		}
+		if name := filepath.Base(path); name == "config.toml" || name == "auth.json" {
+			t.Fatalf("%s outlived the launch", path)
+		}
+	}
+	original, err := os.ReadFile(filepath.Join(userHome, "auth.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(original) != userAuth {
+		t.Fatalf("user auth.json changed: %s", original)
+	}
+}
+
+// TestCodexPreLaunchStripsASavedKey pins that a key saved by `configure` for a direct
+// launch does not reach a launch's temporary config, or the gateway it points at.
+func TestCodexPreLaunchStripsASavedKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	if err := codexWriteNativeConfig("https://saved.example/openai/v1", "sk-bf-saved", ""); err != nil {
+		t.Fatal(err)
+	}
+	for _, apiKey := range []string{"sk-bf-launch", "dummy-key"} {
+		codexHome, _ := codexLaunchHome(t, "http://localhost:8080/openai", apiKey, "gpt-test")
+		configured := readCodexConfig(t, codexHome)
+		if strings.Contains(configured, "sk-bf-saved") || strings.Contains(configured, "experimental_bearer_token") || strings.Contains(configured, "saved.example") {
+			t.Fatalf("a launch's config kept the saved key or endpoint:\n%s", configured)
+		}
+	}
+}
+
+// TestCodexPreLaunchFollowsKeyedAndKeylessLaunches pins that a keyless launch names
+// no env_key, which Codex fails when the variable is unset, and that a keyed launch
+// on the same endpoint restores it.
+func TestCodexPreLaunchFollowsKeyedAndKeylessLaunches(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	const endpoint = "http://localhost:8080/openai"
+	config := func(apiKey string) string {
+		t.Helper()
+		codexHome, _ := codexLaunchHome(t, endpoint, apiKey, "gpt-test")
+		return readCodexConfig(t, codexHome)
+	}
+
+	if keyless := config("dummy-key"); strings.Contains(keyless, "env_key") || !strings.Contains(keyless, `requires_openai_auth = false`) {
+		t.Fatalf("keyless launch must name no credential:\n%s", keyless)
+	}
+	if keyed := config("sk-bf-test"); !strings.Contains(keyed, `env_key = "OPENAI_API_KEY"`) {
+		t.Fatalf("keyed launch must read the launcher-supplied key:\n%s", keyed)
+	}
+	if keyless := config(""); strings.Contains(keyless, "env_key") {
+		t.Fatalf("keyless launch kept the keyed launch's env_key:\n%s", keyless)
+	}
+}
+
+// TestCodexPreLaunchInsideALauncherSession covers a launch from a shell the launcher
+// started, whose CODEX_HOME is the outer launch's home.
+func TestCodexPreLaunchInsideALauncherSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	const endpoint = "http://localhost:8080/openai"
+	outer, _ := codexLaunchHome(t, endpoint, "sk-bf-test", "gpt-test")
+	if err := os.WriteFile(filepath.Join(outer, "config.toml"), []byte("model_reasoning_effort = \"high\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", outer)
+	inner, _ := codexLaunchHome(t, endpoint, "sk-bf-test", "gpt-test")
+	configured := readCodexConfig(t, inner)
+	if !strings.Contains(configured, "model_reasoning_effort") || !strings.Contains(configured, `model_provider = "bifrost"`) {
+		t.Fatalf("nested launch must start from the outer config:\n%s", configured)
+	}
+}
+
+// TestLinkCodexSessionStateLeavesNoPartialLinks pins the fallback where linking fails:
+// a launch either has all of its session state in the store or none of it.
+func TestLinkCodexSessionStateLeavesNoPartialLinks(t *testing.T) {
+	store, codexHome := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(codexHome, "archived_sessions"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if linkCodexSessionState(codexHome, store) {
+		t.Fatal("linkCodexSessionState() reported success over an existing file")
+	}
+	for _, name := range []string{"history.jsonl", "sessions"} {
+		if _, err := os.Lstat(filepath.Join(codexHome, name)); !os.IsNotExist(err) {
+			t.Fatalf("a partial link to %s was left behind: %v", name, err)
+		}
+	}
+}
+
+func TestCodexPreLaunchProtectsSessionStore(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes and unprivileged symlinks only")
+	}
+	t.Setenv("CODEX_HOME", "")
+	const endpoint = "http://localhost:8080/openai"
+	// storeOf runs one launch and returns the store it created.
+	storeOf := func(t *testing.T) string {
+		t.Helper()
+		codexHome, _ := codexLaunchHome(t, endpoint, "sk-bf-test", "gpt-test")
+		sessions, err := os.Readlink(filepath.Join(codexHome, "sessions"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return filepath.Dir(sessions)
+	}
+
+	t.Run("new store is owner-only", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		store := storeOf(t)
+		for _, path := range []string{store, filepath.Join(store, "sessions"), filepath.Join(store, "archived_sessions")} {
+			assertMode(t, path, 0o700)
+		}
+		assertMode(t, filepath.Join(store, "history.jsonl"), 0o600)
+	})
+
+	t.Run("loose store is tightened", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		store := storeOf(t)
+		if err := os.Chmod(filepath.Join(store, "sessions"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(store, "history.jsonl"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		storeOf(t)
+		assertMode(t, filepath.Join(store, "sessions"), 0o700)
+		assertMode(t, filepath.Join(store, "history.jsonl"), 0o600)
+	})
+
+	t.Run("symlinked store is refused", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		store := storeOf(t)
+		if err := os.RemoveAll(store); err != nil {
+			t.Fatal(err)
+		}
+		shared := t.TempDir()
+		if err := os.Chmod(shared, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(shared, store); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := codexPreLaunch(endpoint, "sk-bf-test", "gpt-test"); err == nil {
+			t.Fatal("codexPreLaunch() followed a symlinked session store")
+		}
+		assertMode(t, shared, 0o755)
+	})
+
+	t.Run("symlinked sessions are refused", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		store := storeOf(t)
+		sessions := filepath.Join(store, "sessions")
+		if err := os.RemoveAll(sessions); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(t.TempDir(), sessions); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := codexPreLaunch(endpoint, "sk-bf-test", "gpt-test"); err == nil {
+			t.Fatal("codexPreLaunch() followed symlinked sessions")
+		}
+	})
+
+	t.Run("symlinked history is refused", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		store := storeOf(t)
+		history := filepath.Join(store, "history.jsonl")
+		if err := os.Remove(history); err != nil {
+			t.Fatal(err)
+		}
+		shared := filepath.Join(t.TempDir(), "shared-history")
+		if err := os.WriteFile(shared, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(shared, history); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := codexPreLaunch(endpoint, "sk-bf-test", "gpt-test"); err == nil {
+			t.Fatal("codexPreLaunch() followed symlinked history")
+		}
+		assertMode(t, shared, 0o644)
+	})
+
+	t.Run("file in its place is refused", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		store := storeOf(t)
+		if err := os.RemoveAll(store); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(store, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := codexPreLaunch(endpoint, "sk-bf-test", "gpt-test"); err == nil {
+			t.Fatal("codexPreLaunch() accepted a file as its session store")
+		}
+	})
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %o, want %o", path, got, want)
 	}
 }
 
@@ -495,11 +1081,11 @@ base_url = "https://stale.example/v1"
 		`base_url = "http://localhost:8080/openai/v1"`,
 	} {
 		if !strings.Contains(got, expected) {
-			t.Fatalf("temporary config does not contain %q:\n%s", expected, got)
+			t.Fatalf("launcher config does not contain %q:\n%s", expected, got)
 		}
 	}
 	if strings.Contains(got, "stale.example") || strings.Contains(got, `model_provider = "openai"`) {
-		t.Fatalf("temporary config retained stale routing:\n%s", got)
+		t.Fatalf("launcher config retained stale routing:\n%s", got)
 	}
 	original, err := os.ReadFile(filepath.Join(userHome, "config.toml"))
 	if err != nil {

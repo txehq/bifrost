@@ -101,7 +101,7 @@ var all = map[string]Harness{
 		},
 		PreLaunch:         codexPreLaunch,
 		WriteNativeConfig: codexWriteNativeConfig,
-		NativeConfigPath:  "~/.codex/auth.json, ~/.codex/config.toml",
+		NativeConfigPath:  "~/.codex/config.toml",
 	},
 	"gemini": {
 		ID:         "gemini",

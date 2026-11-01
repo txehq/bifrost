@@ -291,9 +291,18 @@ func snapshotConfigFiles(contextID, agentID string, paths []string) (*configRece
 	return receipt, nil
 }
 
+// configureLeavesFile reports a manifest file configuration no longer writes. It stays
+// in the manifest so that a receipt from a version that wrote it still restores it.
+func configureLeavesFile(path string) bool {
+	return filepath.Base(path) == "auth.json"
+}
+
 // recordConfiguredHashes records the expected post-configuration file contents.
 func recordConfiguredHashes(receipt *configReceipt) error {
 	for index := range receipt.Files {
+		if configureLeavesFile(receipt.Files[index].Path) {
+			continue
+		}
 		body, err := os.ReadFile(receipt.Files[index].Path)
 		if err != nil {
 			return fmt.Errorf("read configured file %s: %w", receipt.Files[index].Path, err)
@@ -326,6 +335,11 @@ func verifyConfiguredFiles(receipt *configReceipt, force bool) error {
 // restoreConfigReceipt restores original files or removes files created by configuration.
 func restoreConfigReceipt(receipt *configReceipt) error {
 	for _, snapshot := range receipt.Files {
+		// With no hash from a version that wrote it, what is there now is the user's
+		// own, such as an auth.json from a later login.
+		if configureLeavesFile(snapshot.Path) && snapshot.ConfiguredSHA256 == "" {
+			continue
+		}
 		if !snapshot.Existed {
 			if err := os.Remove(snapshot.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("remove generated config %s: %w", snapshot.Path, err)

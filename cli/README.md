@@ -357,14 +357,22 @@ interactive launcher. Claude receives a temporary, session-scoped
 current session and rotates rejected credentials before printing the agent
 token. The temporary settings contain no token and are removed when Claude
 exits. Codex receives the current agent token in its child-process environment.
-Its isolated temporary `CODEX_HOME` starts from the user's `config.toml`, so
-MCP servers, project trust entries, and preferences remain available while
-authentication files and session history stay isolated. Changes made inside
-that temporary home are discarded when Codex exits.
+Its temporary `CODEX_HOME` starts from the user's `config.toml`, so MCP servers,
+project trust entries, and preferences remain available while authentication
+files stay isolated, and it is removed when Codex exits, so concurrent launches
+keep their own settings and nothing in that copy persists. Only session state
+stays, in an owner-only store per gateway endpoint
+(`~/.bifrost/codex-home/<endpoint digest>`), so the next launch on that gateway
+can resume it; another gateway never sees it. Session history holds your prompts
+and responses; delete the directory to remove it. On a system that cannot create
+symbolic links, such as Windows without the privilege, the launch says so and keeps
+no history.
 OpenCode receives the token in an owner-readable temporary provider config,
 which is deleted when the process exits. Persistent `configure` remains
 virtual-key-only so short-lived user credentials are never written to an
 agent's long-lived config.
+For Codex that key is stored in plain text in `~/.codex/config.toml` at mode
+`0600`, so keep that file out of synced dotfiles.
 
 Harness authentication and refresh behavior is intentionally explicit:
 

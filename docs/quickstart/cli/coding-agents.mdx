@@ -44,7 +44,7 @@ If a harness is not installed, the interactive launcher offers to install it and
 Before the harness starts, the CLI prints the endpoint, credential type (`Enterprise SSO` or `virtual key`), and the equivalent harness command. Launches change only the child process environment and temporary files:
 
 - **Claude Code** receives the gateway URL and model. With SSO, it also receives a temporary `--settings` file whose `apiKeyHelper` runs `bifrost auth print-token`; the file is removed when Claude Code exits.
-- **Codex CLI** runs with a temporary `CODEX_HOME` containing a copy of your `config.toml` plus a `bifrost` provider. The temporary home, including that session's history, is removed when Codex exits.
+- **Codex CLI** runs with a temporary `CODEX_HOME` containing a copy of your `config.toml` plus a `bifrost` provider, removed when Codex exits. Only session state stays, in an owner-only store for that gateway (`~/.bifrost/codex-home/<endpoint digest>`), so a later launch on the same gateway can resume it, until you delete the directory. That history holds your prompts and responses. Where symbolic links are unavailable, the launch says so and keeps no history.
 - **OpenCode** receives an owner-readable temporary provider configuration that is removed when OpenCode exits.
 - Inherited provider credentials such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` are removed from the child environment so they cannot override the Bifrost credential.
 
@@ -60,7 +60,9 @@ bifrost configure codex --model openai/gpt-5
 | Harness | Files changed |
 | --- | --- |
 | Claude Code | `~/.claude/settings.json`: `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_AUTH_TOKEN`, model settings; removes `apiKeyHelper` |
-| Codex CLI | `~/.codex/auth.json` and `~/.codex/config.toml` (`model_provider = "bifrost"`) |
+| Codex CLI | `~/.codex/config.toml` (`model_provider = "bifrost"`, and the key in the provider table) |
+
+The key is stored in plain text in the `bifrost` provider table of `~/.codex/config.toml`, as `experimental_bearer_token` at mode `0600`. Keep that file out of synced dotfiles, or use `bifrost run codex`, which saves no key. `bifrost configure codex` requires an HTTPS gateway, or plain HTTP on loopback. If `config.toml` is a symbolic link, `bifrost configure` replaces the link with a regular file rather than writing through it, and `bifrost unconfigure` restores the link. Codex calls this field experimental and recommends `env_key`, so a Codex upgrade may change it. Your `auth.json` and `cli_auth_credentials_store` are left alone, and this provider does not use your OpenAI login.
 
 Before changing anything, the CLI saves a restoration receipt under `~/.bifrost/receipts/`. To undo the change:
 
