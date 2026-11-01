@@ -1095,12 +1095,11 @@ func TestDistributedLock_ZeroTTL(t *testing.T) {
 	lock, err := manager.NewLock("zero-ttl-lock")
 	require.NoError(t, err)
 
-	// Zero TTL should still work but lock will be immediately expired
+	// A zero TTL lease has run out before the store confirms it, so it is refused.
 	acquired, err := lock.TryLock(ctx)
 	require.NoError(t, err)
-	assert.True(t, acquired)
+	assert.False(t, acquired)
 
-	// Lock should immediately appear not held due to zero TTL
 	held, err := lock.IsHeld(ctx)
 	require.NoError(t, err)
 	assert.False(t, held, "Zero TTL lock should not be held")
@@ -1109,7 +1108,7 @@ func TestDistributedLock_ZeroTTL(t *testing.T) {
 func TestDistributedLock_VeryShortTTL(t *testing.T) {
 	store := setupLockTestStore(t)
 	logger := newMockLogger()
-	manager := NewDistributedLockManager(store, logger, WithDefaultTTL(1*time.Millisecond))
+	manager := NewDistributedLockManager(store, logger, WithDefaultTTL(50*time.Millisecond))
 	ctx := context.Background()
 
 	lock, err := manager.NewLock("short-ttl-lock")
@@ -1120,7 +1119,7 @@ func TestDistributedLock_VeryShortTTL(t *testing.T) {
 	assert.True(t, acquired)
 
 	// Wait for TTL to expire
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
 	// Another lock should be able to acquire
 	lock2, err := manager.NewLock("short-ttl-lock")
@@ -1635,38 +1634,302 @@ func TestDistributedLockManager_StoppedHoldersLeaveNoWorkBehind(t *testing.T) {
 	}
 }
 
-// Renewals racing release, on healthy stores, never put two holders in the section at
-// once and never strand a row. Run with -race.
+// leaseLedger records every lease a store confirmed, across all the stores of one key.
+// The moment a holder is confirmed, no other holder may have an unexpired confirmed
+// lease: that is what exclusivity means here, and unlike a counter around the section
+// it does not depend on how fast a holder that was told to stop wakes up.
+//
+// unconfirmed holds the renewals that came back with an error. Such a write can still
+// have committed: the holder then cannot know its row runs on, and that row stays live
+// for at most one TTL with no holder behind it. That costs the next holder a wait, not
+// exclusivity, and it is the only way a live row may outlast its holder.
+type leaseLedger struct {
+	mu          sync.Mutex
+	leases      map[string]time.Time
+	unconfirmed map[string]time.Time
+	overlap     []string
+}
+
+// ledgerStore is one store's view of a shared leaseLedger.
+type ledgerStore struct {
+	LockStore
+	ledger *leaseLedger
+}
+
+func (s *ledgerStore) TryAcquireLock(ctx context.Context, lock *tables.TableDistributedLock) (bool, error) {
+	acquired, err := s.LockStore.TryAcquireLock(ctx, lock)
+	if err != nil || !acquired {
+		return acquired, err
+	}
+	now := time.Now()
+	// Confirmed after its expiry: TryLock refuses it, so it is no lease, and the row
+	// may already be another holder's.
+	if !lock.ExpiresAt.After(now) {
+		return true, nil
+	}
+	s.ledger.mu.Lock()
+	defer s.ledger.mu.Unlock()
+	for holder, expiry := range s.ledger.leases {
+		if expiry.After(now) {
+			s.ledger.overlap = append(s.ledger.overlap, fmt.Sprintf("%s had %s left when %s was confirmed", holder, expiry.Sub(now), lock.HolderID))
+		}
+	}
+	s.ledger.leases[lock.HolderID] = lock.ExpiresAt
+	return true, nil
+}
+
+func (s *ledgerStore) UpdateLockExpiry(ctx context.Context, key, holder string, expiresAt time.Time) error {
+	err := s.LockStore.UpdateLockExpiry(ctx, key, holder, expiresAt)
+	s.ledger.mu.Lock()
+	defer s.ledger.mu.Unlock()
+	if err == nil {
+		s.ledger.leases[holder] = expiresAt
+		delete(s.ledger.unconfirmed, holder)
+	} else {
+		s.ledger.unconfirmed[holder] = expiresAt
+	}
+	return err
+}
+
+// explainsLiveRow reports whether row is exactly the last renewal its own holder could
+// not confirm. Postgres keeps microseconds and Go keeps nanoseconds, so the two agree
+// to within a microsecond and no closer. Nothing else may be live with no holder.
+func (l *leaseLedger) explainsLiveRow(row *tables.TableDistributedLock) bool {
+	written, unconfirmed := l.unconfirmed[row.HolderID]
+	return unconfirmed && written.Sub(row.ExpiresAt).Abs() <= time.Microsecond
+}
+
+// ReleaseLock gives the lease up before the row goes: the row's delete is what lets
+// the next holder in, and the ledger must not still hold the lease by then.
+func (s *ledgerStore) ReleaseLock(ctx context.Context, key, holder string) (bool, error) {
+	s.ledger.mu.Lock()
+	delete(s.ledger.leases, holder)
+	s.ledger.mu.Unlock()
+	return s.LockStore.ReleaseLock(ctx, key, holder)
+}
+
+// Renewals racing release, on healthy stores, never leave two holders with a valid
+// lease and never strand a live row. A holder that loses its lease stops at once, as
+// the contract asks of a caller, and the next one may then enter. Run with -race.
 func TestDistributedLockManager_ContendedHoldersStayExclusive(t *testing.T) {
 	forEachLockBackend(t, func(t *testing.T, open func() *RDBConfigStore) {
 		ctx := context.Background()
 		const ttl = 200 * time.Millisecond
-		var inside, entries atomic.Int32
+		ledger := &leaseLedger{leases: map[string]time.Time{}, unconfirmed: map[string]time.Time{}}
+		var entries atomic.Int32
 		var wg sync.WaitGroup
 		for range 4 {
 			store := open()
 			wg.Go(func() {
-				manager := newLockTestManager(store, ttl)
+				manager := newLockTestManager(&ledgerStore{LockStore: store, ledger: ledger}, ttl)
 				for range 8 {
 					held, release, err := manager.Acquire(ctx, "contended-holders")
 					if !assert.NoError(t, err) {
 						return
 					}
-					assert.EqualValues(t, 1, inside.Add(1), "two holders in the critical section")
 					entries.Add(1)
 					// Long enough for a renewal tick to race the release.
-					time.Sleep(ttl/3 + 5*time.Millisecond)
-					assert.NoError(t, held.Err())
-					inside.Add(-1)
+					select {
+					case <-held.Done():
+						assert.ErrorIs(t, context.Cause(held), ErrLockLost)
+					case <-time.After(ttl/3 + 5*time.Millisecond):
+					}
 					release()
 				}
 			})
 		}
 		wg.Wait()
 		assert.EqualValues(t, 32, entries.Load())
+		assert.Empty(t, ledger.overlap, "two holders had a valid lease")
 		row, err := open().GetLock(ctx, "contended-holders")
 		require.NoError(t, err)
-		assert.Nil(t, row, "a released lock left its row behind")
+		// Release leaves a row past its lease alone, and a stalled store can run a lease
+		// out between the section and the release: such a row is any holder's to take.
+		if row != nil && row.ExpiresAt.After(time.Now()) {
+			assert.True(t, ledger.explainsLiveRow(row), "a released lock left a live row behind: holder %s row expiry %s, confirmed %s, unconfirmed %s, now %s",
+				row.HolderID, row.ExpiresAt, ledger.leases[row.HolderID], ledger.unconfirmed[row.HolderID], time.Now())
+		}
+	})
+}
+
+// Only the last write a holder could not confirm explains a live row: not another
+// holder's, not another expiry, not one a later confirmed renewal replaced.
+func TestLeaseLedger_ExplainsOnlyAnUnconfirmedWrite(t *testing.T) {
+	written := time.Now().Add(time.Minute).Truncate(time.Microsecond).Add(400 * time.Nanosecond)
+	ledger := &leaseLedger{leases: map[string]time.Time{}, unconfirmed: map[string]time.Time{"holder": written}}
+	row := func(holder string, expiry time.Time) *tables.TableDistributedLock {
+		return &tables.TableDistributedLock{HolderID: holder, ExpiresAt: expiry}
+	}
+	assert.True(t, ledger.explainsLiveRow(row("holder", written)))
+	assert.True(t, ledger.explainsLiveRow(row("holder", written.Truncate(time.Microsecond))), "a store keeps microseconds")
+	assert.True(t, ledger.explainsLiveRow(row("holder", written.Round(time.Microsecond))), "and may round them")
+	assert.False(t, ledger.explainsLiveRow(row("holder", written.Add(2*time.Microsecond))), "a different write")
+	assert.False(t, ledger.explainsLiveRow(row("other", written)), "another holder's row")
+
+	store := &ledgerStore{LockStore: &stubRenewStore{}, ledger: ledger}
+	require.NoError(t, store.UpdateLockExpiry(context.Background(), "key", "holder", written))
+	assert.False(t, ledger.explainsLiveRow(row("holder", written)), "a confirmed renewal replaced the unconfirmed write")
+}
+
+// stubRenewStore confirms every renewal, for the ledger's own test.
+type stubRenewStore struct{ LockStore }
+
+func (*stubRenewStore) UpdateLockExpiry(context.Context, string, string, time.Time) error { return nil }
+
+// commitThenTimeoutStore commits every renewal and reports a timeout, as a store does
+// when the commit lands after the client's deadline.
+type commitThenTimeoutStore struct {
+	LockStore
+	committed atomic.Int32
+}
+
+func (s *commitThenTimeoutStore) UpdateLockExpiry(ctx context.Context, key, holder string, expiresAt time.Time) error {
+	if err := s.LockStore.UpdateLockExpiry(context.WithoutCancel(ctx), key, holder, expiresAt); err != nil {
+		return err
+	}
+	s.committed.Add(1)
+	return context.DeadlineExceeded
+}
+
+// A renewal that commits after the client gave up leaves the row running on past the
+// holder, which cannot know. The holder is stopped at the lease it last confirmed, the
+// row is exactly the unconfirmed write, it lasts at most one TTL from that write, and
+// the next holder takes the key when it runs out and not before.
+func TestDistributedLockManager_RenewalCommittedAfterTheClientGaveUp(t *testing.T) {
+	forEachLockBackend(t, func(t *testing.T, open func() *RDBConfigStore) {
+		ctx := context.Background()
+		const ttl = 300 * time.Millisecond
+		store := open()
+		ledger := &leaseLedger{leases: map[string]time.Time{}, unconfirmed: map[string]time.Time{}}
+		timeouts := &commitThenTimeoutStore{LockStore: store}
+		acquiredAt := time.Now()
+		held, release, err := newLockTestManager(&ledgerStore{LockStore: timeouts, ledger: ledger}, ttl).Acquire(ctx, "unconfirmed-renewal")
+		require.NoError(t, err)
+		select {
+		case <-held.Done():
+		case <-time.After(5 * ttl):
+			require.Fail(t, "the holder was never told its lease ran out")
+		}
+		require.ErrorIs(t, context.Cause(held), ErrLockLost)
+		require.Positive(t, timeouts.committed.Load())
+		release()
+
+		row, err := store.GetLock(ctx, "unconfirmed-renewal")
+		require.NoError(t, err)
+		require.NotNil(t, row, "the committed renewal keeps the row")
+		require.True(t, row.ExpiresAt.After(time.Now()), "the row outlives the holder that was told to stop")
+		require.True(t, ledger.explainsLiveRow(row))
+		require.False(t, row.ExpiresAt.After(acquiredAt.Add(3*ttl)), "at most one TTL from the last renewal write")
+
+		_, secondRelease, err := newLockTestManager(store, ttl).Acquire(ctx, "unconfirmed-renewal")
+		require.NoError(t, err)
+		defer secondRelease()
+		require.False(t, time.Now().Before(row.ExpiresAt), "the next holder took the key while the row was live")
+	})
+}
+
+// lateConfirmStore answers its first late acquisitions only after a delay, and ignores
+// its context while it does, as a store stalled on the insert would.
+type lateConfirmStore struct {
+	LockStore
+	delay     time.Duration
+	late      atomic.Int32
+	attempts  atomic.Int32
+	whileLate func()
+}
+
+func (s *lateConfirmStore) TryAcquireLock(ctx context.Context, lock *tables.TableDistributedLock) (bool, error) {
+	s.attempts.Add(1)
+	acquired, err := s.LockStore.TryAcquireLock(ctx, lock)
+	if acquired && err == nil && s.late.Add(-1) >= 0 {
+		time.Sleep(s.delay)
+		if s.whileLate != nil {
+			s.whileLate()
+		}
+	}
+	return acquired, err
+}
+
+// A store can confirm a lease after it ran out: the expiry is fixed before the write.
+// Such a lease is refused, the holder owns nothing, and a retry gets a live one.
+func TestDistributedLock_RefusesALeaseConfirmedAfterItsExpiry(t *testing.T) {
+	const ttl = 100 * time.Millisecond
+	const delay = 150 * time.Millisecond
+	forEachLockBackend(t, func(t *testing.T, open func() *RDBConfigStore) {
+		ctx := context.Background()
+		store := open()
+
+		t.Run("the holder owns nothing", func(t *testing.T) {
+			late := &lateConfirmStore{LockStore: store, delay: delay}
+			late.late.Store(1)
+			lock, err := newLockTestManager(late, ttl).NewLock("late-refused")
+			require.NoError(t, err)
+			acquired, err := lock.TryLock(ctx)
+			require.NoError(t, err)
+			require.False(t, acquired, "the lease ran out before the store confirmed it")
+			require.ErrorIs(t, lock.Unlock(ctx), ErrLockNotHeld)
+			require.ErrorIs(t, lock.Extend(ctx), ErrLockNotHeld)
+		})
+
+		t.Run("a retry gets a live lease", func(t *testing.T) {
+			late := &lateConfirmStore{LockStore: store, delay: delay}
+			late.late.Store(2)
+			held, release, err := newLockTestManager(late, ttl).Acquire(ctx, "late-retried")
+			require.NoError(t, err)
+			defer release()
+			require.NoError(t, held.Err(), "Acquire never hands back a dead lease")
+			require.EqualValues(t, 3, late.attempts.Load())
+			row, err := store.GetLock(ctx, "late-retried")
+			require.NoError(t, err)
+			require.NotNil(t, row)
+			require.True(t, row.ExpiresAt.After(time.Now()))
+		})
+
+		t.Run("a newer holder keeps the key", func(t *testing.T) {
+			var newer *DistributedLock
+			late := &lateConfirmStore{LockStore: store, delay: delay}
+			late.late.Store(1)
+			late.whileLate = func() {
+				var err error
+				newer, err = newLockTestManager(store, 30*time.Second).NewLock("late-overtaken")
+				require.NoError(t, err)
+				acquired, err := newer.TryLock(ctx)
+				require.NoError(t, err)
+				require.True(t, acquired, "the expired row is any holder's to take")
+			}
+			lock, err := newLockTestManager(late, ttl).NewLock("late-overtaken")
+			require.NoError(t, err)
+			acquired, err := lock.TryLock(ctx)
+			require.NoError(t, err)
+			require.False(t, acquired)
+			held, err := newer.IsHeld(ctx)
+			require.NoError(t, err)
+			require.True(t, held, "the refused holder left the newer holder's row alone")
+			require.NoError(t, newer.Extend(ctx))
+			require.NoError(t, newer.Unlock(ctx))
+		})
+
+		t.Run("retries stay bounded and leave nothing running", func(t *testing.T) {
+			before := runtime.NumGoroutine()
+			late := &lateConfirmStore{LockStore: store, delay: delay}
+			late.late.Store(100)
+			manager := NewDistributedLockManager(late, newMockLogger(), WithDefaultTTL(ttl), WithRetryInterval(time.Millisecond), WithMaxRetries(2))
+			_, _, err := manager.Acquire(ctx, "late-bounded")
+			require.ErrorIs(t, err, ErrLockNotAcquired)
+			require.EqualValues(t, 3, late.attempts.Load())
+			require.Eventually(t, func() bool { return runtime.NumGoroutine() <= before+2 }, 2*time.Second, 10*time.Millisecond)
+		})
+
+		t.Run("cancellation ends the retries", func(t *testing.T) {
+			cancelled, cancel := context.WithCancel(ctx)
+			defer cancel()
+			late := &lateConfirmStore{LockStore: store, delay: delay}
+			late.late.Store(100)
+			late.whileLate = cancel
+			_, _, err := newLockTestManager(late, ttl).Acquire(cancelled, "late-cancelled")
+			require.ErrorIs(t, err, context.Canceled)
+			require.EqualValues(t, 1, late.attempts.Load())
+		})
 	})
 }
 

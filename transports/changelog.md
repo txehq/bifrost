@@ -81,6 +81,7 @@
 
 ## 🍴 Fork changes (txehq/bifrost)
 
+- A distributed lock the store confirms only after its lease ran out is refused and retried, so `Acquire` never hands back a dead lease
 - Warp reports each semantic-search embedding once in a turn's usage and cost, on success and on failure, and files what it reported; a failed turn shows its usage in the dashboard
 - Warp refuses moving back onto a retired namespace, and clearing the embedding space in place; clearing it onto a new namespace retires the old one and waits for a running backfill
 - A failed Warp config save keeps the namespace it created, since another node may already use it; saves on one node are serialized

@@ -380,13 +380,22 @@ func (l *DistributedLock) TryLock(ctx context.Context) (bool, error) {
 		return false, fmt.Errorf("error trying to acquire lock: %w", err)
 	}
 
-	if acquired {
-		l.acquired = true
-		l.expiresAt = lock.ExpiresAt
-		l.logger.Debug("acquired lock %s with holder %s", l.lockKey, l.holderID)
+	if !acquired {
+		return false, nil
 	}
-
-	return acquired, nil
+	// The expiry was fixed before the write, so a write that took longer than the
+	// TTL hands back a lease that has already run out and that any other holder may
+	// take. That is not a lock, so it is refused. The row is left alone: it is
+	// expired, so the next contender's cleanup removes it, and nothing here can
+	// touch a newer holder's row.
+	if !time.Now().Before(lock.ExpiresAt) {
+		l.logger.Debug("refusing lock %s: the store confirmed it after its expiry", l.lockKey)
+		return false, nil
+	}
+	l.acquired = true
+	l.expiresAt = lock.ExpiresAt
+	l.logger.Debug("acquired lock %s with holder %s", l.lockKey, l.holderID)
+	return true, nil
 }
 
 // Unlock releases the lock if it's held by this holder.
