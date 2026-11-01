@@ -264,7 +264,9 @@ func (r *Runner) runDoctor(ctx context.Context, env *environment) error {
 		auth client.AuthMode
 	}{
 		{name: "gateway health", path: "/health", auth: client.AuthNone},
-		{name: "management authentication", path: "/api/session/is-auth-enabled", auth: client.AuthManagement},
+		// A management-protected read: the auth-discovery route answers without
+		// credentials, so it proves nothing about them.
+		{name: "management authentication", path: "/api/providers", auth: client.AuthManagement},
 		{name: "model discovery", path: "/v1/models", auth: client.AuthInference},
 	}
 	results := make([]checkResult, 0, len(checks))

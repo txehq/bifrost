@@ -44,7 +44,7 @@ If a harness is not installed, the interactive launcher offers to install it and
 Before the harness starts, the CLI prints the endpoint, credential type (`Enterprise SSO` or `virtual key`), and the equivalent harness command. Launches change only the child process environment and temporary files:
 
 - **Claude Code** receives the gateway URL and model. With SSO, it also receives a temporary `--settings` file whose `apiKeyHelper` runs `bifrost auth print-token`; the file is removed when Claude Code exits.
-- **Codex CLI** runs with a temporary `CODEX_HOME` containing a copy of your `config.toml` plus a `bifrost` provider. The temporary home, including that session's history, is removed when Codex exits.
+- **Codex CLI** runs with a Bifrost-owned `CODEX_HOME` for that gateway (`~/.bifrost/codex-home/<endpoint digest>`, owner-only), holding a copy of your `config.toml` plus a `bifrost` provider and no key. Session history stays there, so a later launch on the same gateway can resume it, until you delete the directory.
 - **OpenCode** receives an owner-readable temporary provider configuration that is removed when OpenCode exits.
 - Inherited provider credentials such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` are removed from the child environment so they cannot override the Bifrost credential.
 

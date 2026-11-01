@@ -1612,3 +1612,20 @@ func TestResourcesListWorksOffline(t *testing.T) {
 		t.Fatalf("resources output = %q", outputBuffer.String())
 	}
 }
+
+// TestDoctorChecksManagementAuthOnAProtectedRoute pins that doctor's management
+// check fails when the gateway refuses the management credential, rather than
+// passing on an auth-discovery route that answers anyone.
+func TestDoctorChecksManagementAuthOnAProtectedRoute(t *testing.T) {
+	runner, _, _ := newTestRunner(t, testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/health", "/api/session/is-auth-enabled", "/v1/models":
+			return jsonResponse(request, `{}`), nil
+		}
+		return &http.Response{StatusCode: http.StatusUnauthorized, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(`{"error":"unauthorized"}`)), Request: request}, nil
+	}))
+	if err := runner.Run(context.Background(), []string{"doctor"}); err == nil {
+		t.Fatal("doctor passed although the management credential was refused")
+	}
+}

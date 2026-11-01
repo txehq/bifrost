@@ -3,6 +3,7 @@ package harness
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -337,8 +338,7 @@ trust_level = "trusted"
 		`name = "Bifrost"`,
 		`base_url = "http://localhost:8080/openai/v1"`,
 		`wire_api = "responses"`,
-		`env_key = "OPENAI_API_KEY"`,
-		`requires_openai_auth = false`,
+		`requires_openai_auth = true`,
 		`supports_websockets = false`,
 		`[projects."/Users/me/proj"]`,
 		`trust_level = "trusted"`,
@@ -352,6 +352,9 @@ trust_level = "trusted"
 		`"stale-literal-key"`,
 		`"gpt-old"`,
 		`openai_base_url=`,
+		// A direct launch has no OPENAI_API_KEY in its environment; the
+		// provider must read the key saved in auth.json instead.
+		`env_key`,
 	} {
 		if strings.Contains(got, unwanted) {
 			t.Fatalf("expected config.toml to no longer contain %q, got:\n%s", unwanted, got)
@@ -389,13 +392,15 @@ func TestCodexWriteNativeConfigCreatesFilesWhenMissing(t *testing.T) {
 		`[model_providers.bifrost]`,
 		`base_url = "http://localhost:8080/openai/v1"`,
 		`wire_api = "responses"`,
-		`env_key = "OPENAI_API_KEY"`,
-		`requires_openai_auth = false`,
+		`requires_openai_auth = true`,
 		`supports_websockets = false`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("expected config.toml to contain %q, got:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, `env_key`) {
+		t.Fatalf("persistent config must not require an environment key, got:\n%s", got)
 	}
 	if strings.Contains(got, `model =`) {
 		t.Fatalf("did not expect model line when model is empty, got:\n%s", got)
@@ -413,42 +418,324 @@ func TestCodexWriteNativeConfigSkipsAuthForDummyKey(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, ".codex", "auth.json")); !os.IsNotExist(err) {
 		t.Fatalf("expected no auth.json for dummy key, stat err=%v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".codex", "config.toml")); err != nil {
-		t.Fatalf("expected config.toml to still be written, stat err=%v", err)
+	configured, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatalf("expected config.toml to still be written, err=%v", err)
+	}
+	// A keyless gateway needs no credential: neither an environment key a
+	// direct launch lacks, nor OpenAI auth that would prompt for a login.
+	got := string(configured)
+	if strings.Contains(got, `env_key`) || !strings.Contains(got, `requires_openai_auth = false`) {
+		t.Fatalf("keyless config must require no credential, got:\n%s", got)
 	}
 }
 
-func TestCodexPreLaunchUsesTemporaryHome(t *testing.T) {
+// TestCodexWriteNativeConfigChangingToKeylessGatewayDropsStoredAuth pins that a
+// saved key is not offered to the next gateway: moving to a keyless endpoint stops
+// the provider reading auth.json, so the old gateway's key is not sent to the new one.
+func TestCodexWriteNativeConfigChangingToKeylessGatewayDropsStoredAuth(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("CODEX_HOME", "")
 
-	environment, cleanup, err := codexPreLaunch("http://localhost:8080/openai", "sk-bf-test", "gpt-test")
+	if err := codexWriteNativeConfig("https://keyed.example/openai/v1", "sk-bf-old", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := codexWriteNativeConfig("http://localhost:8080/openai/v1", "dummy-key", ""); err != nil {
+		t.Fatal(err)
+	}
+	configured, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(configured)
+	if !strings.Contains(got, `base_url = "http://localhost:8080/openai/v1"`) || strings.Contains(got, "keyed.example") {
+		t.Fatalf("config kept the previous endpoint:\n%s", got)
+	}
+	if !strings.Contains(got, `requires_openai_auth = false`) || strings.Contains(got, `requires_openai_auth = true`) || strings.Contains(got, `env_key`) {
+		t.Fatalf("keyless endpoint must not read a stored key:\n%s", got)
+	}
+}
+
+// codexLaunchHome runs codexPreLaunch and returns the CODEX_HOME it selected.
+func codexLaunchHome(t *testing.T, baseURL, apiKey string) string {
+	t.Helper()
+	environment, cleanup, err := codexPreLaunch(baseURL, apiKey, "gpt-test")
 	if err != nil {
 		t.Fatalf("codexPreLaunch() error = %v", err)
 	}
 	if cleanup == nil {
 		t.Fatal("codexPreLaunch() returned no cleanup")
 	}
-	defer cleanup()
-	var codexHome string
-	for _, entry := range environment {
-		if strings.HasPrefix(entry, "CODEX_HOME=") {
-			codexHome = strings.TrimPrefix(entry, "CODEX_HOME=")
-		}
+	t.Cleanup(cleanup)
+	codexHome := envValue(environment, "CODEX_HOME")
+	if codexHome == "" {
+		t.Fatal("codexPreLaunch() set no CODEX_HOME")
 	}
-	if codexHome == "" || codexHome == filepath.Join(home, ".codex") {
-		t.Fatalf("CODEX_HOME = %q, want an isolated temporary directory", codexHome)
-	}
+	return codexHome
+}
+
+func readCodexConfig(t *testing.T, codexHome string) string {
+	t.Helper()
 	configured, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
 	if err != nil {
-		t.Fatalf("read temporary config.toml: %v", err)
+		t.Fatalf("read launcher config.toml: %v", err)
 	}
-	if !strings.Contains(string(configured), `model_provider = "bifrost"`) {
-		t.Fatalf("temporary config missing Bifrost provider:\n%s", configured)
+	return string(configured)
+}
+
+func TestCodexPreLaunchUsesPersistentLauncherHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+
+	codexHome := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test")
+	if !strings.HasPrefix(codexHome, filepath.Join(home, ".bifrost", "codex-home")+string(filepath.Separator)) {
+		t.Fatalf("CODEX_HOME = %q, want a launcher home under the user's Bifrost directory", codexHome)
+	}
+	configured := readCodexConfig(t, codexHome)
+	if !strings.Contains(configured, `model_provider = "bifrost"`) {
+		t.Fatalf("launcher config missing Bifrost provider:\n%s", configured)
+	}
+	// The launcher supplies OPENAI_API_KEY, so the wrapped session reads it
+	// from the environment rather than from any saved auth.json.
+	if !strings.Contains(configured, `env_key = "OPENAI_API_KEY"`) || !strings.Contains(configured, `requires_openai_auth = false`) {
+		t.Fatalf("launcher config must read the launcher-supplied key:\n%s", configured)
 	}
 	if _, err := os.Stat(filepath.Join(home, ".codex", "config.toml")); !os.IsNotExist(err) {
 		t.Fatalf("pre-launch mutated the real Codex config: %v", err)
+	}
+
+	// A session written by the launched Codex survives its exit, so it can be resumed.
+	history := filepath.Join(codexHome, "sessions", "rollout.jsonl")
+	if err := os.MkdirAll(filepath.Dir(history), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(history, []byte(`{"turn":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if again := codexLaunchHome(t, "http://localhost:8080/openai/", "sk-bf-test"); again != codexHome {
+		t.Fatalf("second launch used %q, want the same launcher home %q", again, codexHome)
+	}
+	if _, err := os.Stat(history); err != nil {
+		t.Fatalf("launcher session history was lost across launches: %v", err)
+	}
+}
+
+// TestCodexPreLaunchKeepsEachGatewaySeparate pins that no launcher state crosses
+// gateways: a shared config.toml could send one launch's key to the other gateway,
+// and a shared history could resend one gateway's transcript to the other.
+func TestCodexPreLaunchKeepsEachGatewaySeparate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+
+	first := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test")
+	second := codexLaunchHome(t, "https://gateway.example/openai", "sk-bf-other")
+	if first == second {
+		t.Fatalf("both gateways share launcher home %q", first)
+	}
+	if configured := readCodexConfig(t, first); !strings.Contains(configured, `base_url = "http://localhost:8080/openai/v1"`) {
+		t.Fatalf("first gateway's config was overwritten:\n%s", configured)
+	}
+	if configured := readCodexConfig(t, second); !strings.Contains(configured, `base_url = "https://gateway.example/openai/v1"`) {
+		t.Fatalf("second gateway's config has the wrong endpoint:\n%s", configured)
+	}
+	if strings.Contains(first+second, "gateway.example") {
+		t.Fatalf("launcher home paths expose the gateway: %q %q", first, second)
+	}
+}
+
+func TestCodexPreLaunchKeepsEachUserSeparate(t *testing.T) {
+	t.Setenv("CODEX_HOME", "")
+	userA, userB := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", userA)
+	homeA := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test")
+	t.Setenv("HOME", userB)
+	homeB := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test")
+	if !strings.HasPrefix(homeA, userA) || !strings.HasPrefix(homeB, userB) {
+		t.Fatalf("launcher homes %q and %q are not under their users %q and %q", homeA, homeB, userA, userB)
+	}
+}
+
+// TestCodexPreLaunchKeepsCredentialsOutOfLauncherHome pins that the persistent home
+// holds neither the launcher's key nor a copy of the user's Codex authentication.
+func TestCodexPreLaunchKeepsCredentialsOutOfLauncherHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	userHome := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(userHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	userAuth := `{"auth_mode":"apikey","OPENAI_API_KEY":"sk-user-own"}`
+	if err := os.WriteFile(filepath.Join(userHome, "auth.json"), []byte(userAuth), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	codexHome := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-secret")
+	if _, err := os.Stat(filepath.Join(codexHome, "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("launcher home holds an auth.json: %v", err)
+	}
+	if configured := readCodexConfig(t, codexHome); strings.Contains(configured, "sk-bf-secret") || strings.Contains(configured, "sk-user-own") {
+		t.Fatalf("launcher config holds a credential:\n%s", configured)
+	}
+	original, err := os.ReadFile(filepath.Join(userHome, "auth.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(original) != userAuth {
+		t.Fatalf("user auth.json changed: %s", original)
+	}
+}
+
+// TestCodexPreLaunchFollowsKeyedAndKeylessLaunches pins that a keyless launch names
+// no env_key, which Codex fails when the variable is unset, and that a keyed launch
+// on the same endpoint restores it.
+func TestCodexPreLaunchFollowsKeyedAndKeylessLaunches(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	const endpoint = "http://localhost:8080/openai"
+
+	keyless := readCodexConfig(t, codexLaunchHome(t, endpoint, "dummy-key"))
+	if strings.Contains(keyless, "env_key") || !strings.Contains(keyless, `requires_openai_auth = false`) {
+		t.Fatalf("keyless launch must name no credential:\n%s", keyless)
+	}
+	keyed := readCodexConfig(t, codexLaunchHome(t, endpoint, "sk-bf-test"))
+	if !strings.Contains(keyed, `env_key = "OPENAI_API_KEY"`) {
+		t.Fatalf("keyed launch must read the launcher-supplied key:\n%s", keyed)
+	}
+	keyless = readCodexConfig(t, codexLaunchHome(t, endpoint, ""))
+	if strings.Contains(keyless, "env_key") {
+		t.Fatalf("keyless launch kept the keyed launch's env_key:\n%s", keyless)
+	}
+}
+
+// TestCodexPreLaunchForgetsARemovedUserConfig pins that the persistent home does not
+// keep preferences, or any secret in them, after the user removes their config.
+func TestCodexPreLaunchForgetsARemovedUserConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	userHome := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(userHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	userConfig := filepath.Join(userHome, "config.toml")
+	if err := os.WriteFile(userConfig, []byte("model_reasoning_effort = \"high\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const endpoint = "http://localhost:8080/openai"
+	if configured := readCodexConfig(t, codexLaunchHome(t, endpoint, "sk-bf-test")); !strings.Contains(configured, "model_reasoning_effort") {
+		t.Fatalf("launcher config lost the user's preference:\n%s", configured)
+	}
+	if err := os.Remove(userConfig); err != nil {
+		t.Fatal(err)
+	}
+	configured := readCodexConfig(t, codexLaunchHome(t, endpoint, "sk-bf-test"))
+	if strings.Contains(configured, "model_reasoning_effort") {
+		t.Fatalf("launcher config kept a preference the user removed:\n%s", configured)
+	}
+	if !strings.Contains(configured, `model_provider = "bifrost"`) {
+		t.Fatalf("launcher config lost its provider:\n%s", configured)
+	}
+}
+
+// TestCodexPreLaunchInsideALauncherSession covers a launch from a shell the launcher
+// started, whose CODEX_HOME is already the launcher home.
+func TestCodexPreLaunchInsideALauncherSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	const endpoint = "http://localhost:8080/openai"
+	codexHome := codexLaunchHome(t, endpoint, "sk-bf-test")
+	configPath := filepath.Join(codexHome, "config.toml")
+	if err := os.WriteFile(configPath, []byte("model_reasoning_effort = \"high\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", codexHome)
+	if again := codexLaunchHome(t, endpoint, "sk-bf-test"); again != codexHome {
+		t.Fatalf("nested launch used %q, want %q", again, codexHome)
+	}
+	configured := readCodexConfig(t, codexHome)
+	if !strings.Contains(configured, "model_reasoning_effort") || !strings.Contains(configured, `model_provider = "bifrost"`) {
+		t.Fatalf("nested launch must update the config in place:\n%s", configured)
+	}
+}
+
+func TestCodexPreLaunchProtectsLauncherHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX modes and unprivileged symlinks only")
+	}
+	t.Setenv("CODEX_HOME", "")
+	const endpoint = "http://localhost:8080/openai"
+
+	t.Run("new home is owner-only", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		codexHome := codexLaunchHome(t, endpoint, "sk-bf-test")
+		assertMode(t, codexHome, 0o700)
+		assertMode(t, filepath.Join(codexHome, "config.toml"), 0o600)
+	})
+
+	t.Run("loose home is tightened", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		codexHome := codexLaunchHome(t, endpoint, "sk-bf-test")
+		if err := os.Chmod(codexHome, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(codexHome, "config.toml"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		codexLaunchHome(t, endpoint, "sk-bf-test")
+		assertMode(t, codexHome, 0o700)
+		assertMode(t, filepath.Join(codexHome, "config.toml"), 0o600)
+	})
+
+	t.Run("symlinked home is refused", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		codexHome := codexLaunchHome(t, endpoint, "sk-bf-test")
+		if err := os.RemoveAll(codexHome); err != nil {
+			t.Fatal(err)
+		}
+		shared := t.TempDir()
+		if err := os.Chmod(shared, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(shared, codexHome); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := codexPreLaunch(endpoint, "sk-bf-test", "gpt-test"); err == nil {
+			t.Fatal("codexPreLaunch() followed a symlinked launcher home")
+		}
+		if entries, err := os.ReadDir(shared); err != nil || len(entries) != 0 {
+			t.Fatalf("symlink target was written: %v %v", entries, err)
+		}
+		assertMode(t, shared, 0o755)
+	})
+
+	t.Run("file in its place is refused", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		codexHome := codexLaunchHome(t, endpoint, "sk-bf-test")
+		if err := os.RemoveAll(codexHome); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(codexHome, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := codexPreLaunch(endpoint, "sk-bf-test", "gpt-test"); err == nil {
+			t.Fatal("codexPreLaunch() accepted a file as its launcher home")
+		}
+	})
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %o, want %o", path, got, want)
 	}
 }
 
@@ -495,11 +782,11 @@ base_url = "https://stale.example/v1"
 		`base_url = "http://localhost:8080/openai/v1"`,
 	} {
 		if !strings.Contains(got, expected) {
-			t.Fatalf("temporary config does not contain %q:\n%s", expected, got)
+			t.Fatalf("launcher config does not contain %q:\n%s", expected, got)
 		}
 	}
 	if strings.Contains(got, "stale.example") || strings.Contains(got, `model_provider = "openai"`) {
-		t.Fatalf("temporary config retained stale routing:\n%s", got)
+		t.Fatalf("launcher config retained stale routing:\n%s", got)
 	}
 	original, err := os.ReadFile(filepath.Join(userHome, "config.toml"))
 	if err != nil {

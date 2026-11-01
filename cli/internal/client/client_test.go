@@ -113,6 +113,90 @@ func assertCrossPortRedirect(t *testing.T, baseURL, location string, wantFollowe
 	}
 }
 
+// TestClientRedirectOriginMatrix pins the whole redirect policy, for both the buffered
+// and the streaming path: a credential is followed only to the same host and effective
+// port, plus the one scheme change between the two default ports, and HTTPS drops to
+// HTTP only on loopback.
+func TestClientRedirectOriginMatrix(t *testing.T) {
+	cases := []struct {
+		name, base, location string
+		follow               bool
+	}{
+		{"https same implicit port", "https://gateway.example", "https://gateway.example/moved", true},
+		{"https implicit to explicit default", "https://gateway.example", "https://gateway.example:443/moved", true},
+		{"https explicit default to implicit", "https://gateway.example:443", "https://gateway.example/moved", true},
+		{"https same explicit port", "https://gateway.example:8443", "https://gateway.example:8443/moved", true},
+		{"https explicit to other port", "https://gateway.example:8443", "https://gateway.example:9443/moved", false},
+		{"https explicit to default", "https://gateway.example:8443", "https://gateway.example/moved", false},
+		{"https default to explicit", "https://gateway.example", "https://gateway.example:8443/moved", false},
+		{"https to other host", "https://gateway.example", "https://other.example/moved", false},
+		{"https to plain http remote", "https://gateway.example", "http://gateway.example/moved", false},
+		{"https to plain http remote same port", "https://gateway.example:8443", "http://gateway.example:8443/moved", false},
+		{"http same explicit port", "http://localhost:8080", "http://localhost:8080/moved", true},
+		{"http to other port", "http://localhost:8080", "http://localhost:8081/moved", false},
+		{"http upgrade between default ports", "http://localhost", "https://localhost/moved", true},
+		{"http upgrade on one port", "http://localhost:8080", "https://localhost:8080/moved", true},
+		{"http upgrade to other port", "http://localhost:8080", "https://localhost:9443/moved", false},
+		{"http default upgrade to other port", "http://localhost", "https://localhost:9443/moved", false},
+		{"http default upgrade naming 443", "http://localhost", "https://localhost:443/moved", false},
+		{"http naming 80 upgrade to default", "http://localhost:80", "https://localhost/moved", false},
+		{"loopback downgrade between default ports", "https://localhost", "http://localhost/moved", true},
+		{"loopback downgrade on one port", "https://localhost:8443", "http://localhost:8443/moved", true},
+		{"loopback downgrade to other port", "https://localhost:8443", "http://localhost:8081/moved", false},
+		{"loopback default downgrade to other port", "https://localhost", "http://localhost:8081/moved", false},
+		{"loopback downgrade naming 80", "https://localhost", "http://localhost:80/moved", false},
+		{"ipv6 loopback to other port", "https://[::1]:8443", "http://[::1]:8081/moved", false},
+		{"host case does not change origin", "https://gateway.example", "https://GATEWAY.example/moved", true},
+	}
+	const managementKey, virtualKey = "sk-mgmt-test", "sk-bf-test"
+	exchanges := map[string]func(*Client, Request) error{
+		"buffered": func(api *Client, request Request) error {
+			_, err := api.Do(context.Background(), request)
+			return err
+		},
+		"streaming": func(api *Client, request Request) error {
+			return api.Stream(context.Background(), request, io.Discard)
+		},
+	}
+	for _, tc := range cases {
+		for name, exchange := range exchanges {
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				api := New(tc.base, Credentials{ManagementKey: managementKey, VirtualKey: virtualKey}, time.Second)
+				var followed *http.Request
+				requests := 0
+				transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+					requests++
+					if requests > 1 {
+						followed = request
+						return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{}")), Request: request}, nil
+					}
+					return &http.Response{
+						StatusCode: http.StatusTemporaryRedirect, Header: http.Header{"Location": {tc.location}},
+						Body: io.NopCloser(strings.NewReader("")), Request: request,
+					}, nil
+				})
+				api.HTTPClient.Transport = transport
+				err := exchange(api, Request{Path: "/api/providers"})
+				if !tc.follow {
+					if err == nil || !strings.Contains(err.Error(), "refusing to follow") {
+						t.Fatalf("err = %v, want a refusal", err)
+					}
+					if requests != 1 {
+						t.Fatalf("requests = %d: the credential reached %s", requests, tc.location)
+					}
+					return
+				}
+				if err != nil || followed == nil {
+					t.Fatalf("err = %v, followed = %v; want the redirect followed", err, followed)
+				}
+				if got := followed.Header.Get("Authorization"); got != "Bearer "+managementKey {
+					t.Fatalf("followed Authorization = %q", got)
+				}
+			})
+		}
+	}
+}
+
 // TestClientRejectsCrossHostRedirectToLoopback ensures the local-development
 // HTTP exception cannot be used by a remote gateway to forward credentials to
 // an unrelated service listening on the user's machine.
