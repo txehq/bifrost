@@ -184,7 +184,7 @@ live_threads() {
     VERDICT=pass REASON="connector completed its review of $HEAD_SHA with no review or receipt on it, and every live P0/P1 thread of the connector there was resolved by a person: $named"
     return
   fi
-  VERDICT=fail REASON="the connector's state block reports findings on $HEAD_SHA with no review of it and no receipt for it, and its live P0/P1 findings there are not resolved by a person: $blocking. Fix them and push; or reply in the thread with evidence and have a person resolve it, then re-run this check; or comment @codex review once, then re-run this check"
+  VERDICT=fail REASON="the connector's state block reports findings on $HEAD_SHA with no review of it and no receipt for it, and its live P0/P1 findings there are not resolved by a person: $blocking. Fix them and push; or reply in the thread with evidence and have a person resolve it (the codex-review-nudge job then re-runs this check within about 5 minutes); or comment @codex review once, then re-run this check"
 }
 
 # base_seen sets VERDICT=pending and REASON when the PR's base changed after the review of
