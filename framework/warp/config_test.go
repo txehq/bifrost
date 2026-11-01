@@ -1021,3 +1021,49 @@ func TestWarpDraftClearingTheEmbeddingSpaceMustMoveNamespace(t *testing.T) {
 	_, err = newTestService(store).SaveConfig(context.Background(), inputFromJSON(t, `{"enabled": false, "embedding_model": "", "log_vector_store_namespace": "BifrostWarpLogsCleared"}`))
 	require.NoError(t, err)
 }
+
+// Clearing the space onto a new namespace leaves the old one holding vectors that
+// no row describes any more. It is retired like any namespace a space left, so a
+// later save cannot move a different model back onto it.
+func TestWarpClearingTheEmbeddingSpaceRetiresItsNamespace(t *testing.T) {
+	store := &recordingStore{row: validWarpConfigRow()}
+	service := newTestService(store)
+	_, err := service.SaveConfig(context.Background(), inputFromJSON(t, `{"enabled": false, "embedding_model": "", "log_vector_store_namespace": "BifrostWarpLogsCleared"}`))
+	require.NoError(t, err)
+	require.Equal(t, []string{schemas.WarpDefaultLogVectorStoreNamespace}, retiredNamespaces(store.row))
+
+	back := validWarpConfigInput()
+	back.EmbeddingModel = "text-embedding-3-large"
+	back.LogVectorStoreNamespace = schemas.WarpDefaultLogVectorStoreNamespace
+	_, err = service.SaveConfig(context.Background(), back)
+	require.ErrorIs(t, err, ErrInvalidConfig, "the retired namespace holds the cleared model's vectors")
+	require.ErrorContains(t, err, "was retired")
+}
+
+// A running backfill froze the space it was started under. Clearing it changes
+// that signature as surely as replacing it, so it waits for the job too.
+func TestWarpClearingTheEmbeddingSpaceWaitsForABackfill(t *testing.T) {
+	store := &recordingStore{row: validWarpConfigRow()}
+	service := NewService(nil, WithConfigStore(store), WithVectorStore(newFakeWarpVectorStore()), WithBackfillJobStore(activeBackfillStore{active: &tables.TableSidekiqJob{ID: "job"}}))
+	_, err := service.SaveConfig(context.Background(), inputFromJSON(t, `{"enabled": false, "embedding_model": "", "log_vector_store_namespace": "BifrostWarpLogsCleared"}`))
+	require.ErrorIs(t, err, ErrBackfillInProgress)
+	require.Empty(t, store.upserted, "nothing is stored")
+}
+
+// A namespace a failed save left behind is the same one the retry needs: the
+// retry finds it, keeps it, and stores a config pointing at it.
+func TestWarpRetryAfterAFailedSaveReusesTheNamespace(t *testing.T) {
+	vectors := newNamespaceVectorStore()
+	store := &racingConfigStore{failModel: "gpt-4o-fails"}
+	service := NewService(nil, WithConfigStore(store), WithVectorStore(vectors))
+	failing := validWarpConfigInput()
+	failing.Model = "gpt-4o-fails"
+	_, err := service.SaveConfig(context.Background(), failing)
+	require.Error(t, err)
+	require.True(t, vectors.exists(failing.LogVectorStoreNamespace))
+
+	_, err = service.SaveConfig(context.Background(), validWarpConfigInput())
+	require.NoError(t, err)
+	require.Equal(t, failing.LogVectorStoreNamespace, store.row.LogVectorStoreNamespace)
+	require.True(t, vectors.exists(failing.LogVectorStoreNamespace))
+}

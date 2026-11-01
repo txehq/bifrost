@@ -158,6 +158,26 @@ describe("WarpStreamSession", () => {
 		expect(messages[1].content).toContain("Last 7 days (-7d)");
 	});
 
+	// A question turn with no narration stores the question as its text, and a reopened
+	// thread stores every question that way. The text alone holds no choices.
+	it("replays the choices of a question that is also the turn's text", async () => {
+		const history: WarpTurn[] = [
+			{ role: "user", content: "why are requests failing?" },
+			{ role: "assistant", content: "Which time range?", question: { question: "Which time range?", options: [{ label: "Last 7 days", hint: "-7d" }, { label: "Today" }] } },
+			{ role: "user", content: "Today" },
+			{ role: "assistant", content: "Which team?", question: { question: "Which team?", options: [] } },
+		];
+		const sending = session.send(history, "platform");
+		await settle();
+		await net.push({ type: "done", finish_reason: "stop" });
+		await net.close();
+		await sending;
+
+		const messages = (net.calls[0].body as { messages: { role: string; content: string; question?: boolean }[] }).messages;
+		expect(messages[1]).toEqual({ role: "assistant", content: "Which time range?\nChoices: Last 7 days (-7d); Today", question: true });
+		expect(messages[3]).toEqual({ role: "assistant", content: "Which team?", question: true });
+	});
+
 	it("notifies subscribers per event and hands a late subscriber the in-flight state", async () => {
 		const seen: string[] = [];
 		session.subscribe(() => seen.push(session.getSnapshot().text));

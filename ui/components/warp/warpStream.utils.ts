@@ -74,13 +74,21 @@ export function historyForRequest<T extends { content: string }>(history: T[]): 
  * The text an assistant turn replays as. A clarifying question asked alongside
  * narration was kept apart from the text, so the replay carried the narration
  * alone and the model could not tell what the user's next message answered. The
- * question and its choices are appended unless the text already holds the question.
+ * question is appended unless the text already holds it, and its choices follow
+ * unless the text already lists them: a turn with no narration, and any reopened
+ * turn, stores the question as its text and the choices apart from it.
  */
 export function replayedAssistantContent(content: string, question?: WarpQuestion): string {
-	if (!question?.question || content.includes(question.question)) return content;
-	const choices = question.options.map((option) => (option.hint ? `${option.label} (${option.hint})` : option.label));
-	const asked = choices.length > 0 ? `${question.question}\nChoices: ${choices.join("; ")}` : question.question;
-	return content.trim() === "" ? asked : `${content}\n\n${asked}`;
+	if (!question?.question) return content;
+	const options = question.options ?? [];
+	const choices = options.map((option) => (option.hint ? `${option.label} (${option.hint})` : option.label));
+	const listed = choices.length > 0 ? `Choices: ${choices.join("; ")}` : "";
+	const asked = content.includes(question.question)
+		? content
+		: content.trim() === ""
+			? question.question
+			: `${content}\n\n${question.question}`;
+	return listed === "" || asked.includes(listed) ? asked : `${asked}\n${listed}`;
 }
 
 /** Parses one SSE frame, or null for heartbeats and junk so the caller can skip it without tearing down the stream. */

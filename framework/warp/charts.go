@@ -418,7 +418,7 @@ func barChartPoints(ctx context.Context, deps *ToolDeps, filters *logstore.Searc
 		}
 		for name, t := range totals {
 			if metric == "error_rate" {
-				if rate, ok := failureRate(t.TotalRequests, failed[name].TotalRequests); ok {
+				if rate, ok := failureRate(t.completed, failed[name].TotalRequests); ok {
 					points = append(points, ChartPoint{X: name, Y: rate})
 				}
 				continue

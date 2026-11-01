@@ -252,7 +252,10 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		slices.ContainsFunc(retired, func(name string) bool { return normalizedNamespace(name) == target }) {
 		return ConfigView{}, fmt.Errorf("%w: log_vector_store_namespace %q was retired and may still hold vectors from an earlier embedding configuration; choose a namespace that has not been used before", ErrInvalidConfig, target)
 	}
-	if embeddingSpaceChanged(previous, input) && s.backfillJobs != nil {
+	// Clearing the space is a change a running backfill's frozen signature sees, so
+	// it waits for the job and retires the namespace it leaves, as changing it does.
+	spaceReplaced := embeddingSpaceChanged(previous, input) || embeddingSpaceCleared(previous, input)
+	if spaceReplaced && s.backfillJobs != nil {
 		active, activeErr := s.backfillJobs.GetInFlightSidekiqJobByKind(ctx, BackfillJobKind)
 		if activeErr != nil {
 			return ConfigView{}, activeErr
@@ -265,7 +268,7 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 	// namespace, not "no namespace", so the raw check skipped retiring the very
 	// namespace a legacy row had been indexed under - and retiring "" would
 	// have named nothing anyway.
-	if embeddingSpaceChanged(previous, input) {
+	if spaceReplaced {
 		retired = appendUnique(retired, normalizedNamespace(previous.LogVectorStoreNamespace))
 	}
 	if input.Enabled {

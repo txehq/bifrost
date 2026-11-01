@@ -612,6 +612,8 @@ type providerTotal struct {
 	AverageLatency float64 `json:"average_latency_ms"`
 	// Link opens this provider's requests under the tool's own filters.
 	Link string `json:"link,omitempty"`
+	// completed counts the requests in SuccessRate's denominator, not in the result.
+	completed int64
 }
 
 // providerTotals reads each provider's exact totals over the filtered window,
@@ -656,9 +658,20 @@ func providerTotals(ctx context.Context, deps *ToolDeps, filters *logstore.Searc
 			SuccessRate:    stats[index].SuccessRate,
 			AverageLatency: stats[index].AverageLatency,
 			Link:           logsViewLink(&narrowed),
+			completed:      completedRequests(stats[index]),
 		}
 	}
 	return totals, nil
+}
+
+// completedRequests is the requests that reached a terminal status. TotalRequests
+// also counts those still in flight, which have neither failed nor succeeded and
+// are not in the rankings' counts.
+func completedRequests(stats *logstore.SearchStats) int64 {
+	if stats.CacheHitRateTotalRequests != nil {
+		return *stats.CacheHitRateTotalRequests
+	}
+	return stats.TotalRequests
 }
 
 // previousPeriodTrend fetches the period immediately preceding the filtered

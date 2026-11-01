@@ -3,6 +3,7 @@ package warp
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -794,4 +795,64 @@ func TestWarpSemanticSearchReportsEveryEmbeddingSpend(t *testing.T) {
 	}
 	require.Equal(t, 14, turn.TotalTokens)
 	require.InDelta(t, 0.014, turn.Cost.TotalCost, 1e-9)
+}
+
+// A query the provider refused was not billed and reports nothing; the one it
+// answered was, and is reported once, whichever way the search ended.
+func TestWarpSemanticSearchReportsOnlyAnsweredEmbeddings(t *testing.T) {
+	executor := func(_ *schemas.BifrostContext, request *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		if strings.Contains(*request.Input[0].Content[0].Text, "refused") {
+			return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "embedding refused"}}
+		}
+		return &schemas.BifrostEmbeddingResponse{
+			Data:  []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: make([]float64, 1536)}}},
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 7, TotalTokens: 7},
+		}, nil
+	}
+	searcher := NewSemanticSearcher(&recordingStore{row: validWarpConfigRow()}, newFakeWarpVectorStore(), executor, &semanticLogReader{})
+	sink := &spendSink{}
+	_, err := searcher.Search(withSpendSink(context.Background(), sink), []string{"declined cards", "refused one"}, nil, 10)
+	require.ErrorContains(t, err, "embedding refused")
+	spent := sink.drain()
+	require.Len(t, spent, 1)
+	require.Equal(t, 7, spent[0].TotalTokens)
+	require.Empty(t, sink.drain(), "a drained sink reports nothing twice")
+}
+
+// A filter added to SearchFilters has to be enforced after hydration or refused:
+// one that is neither reads as an answer to a question it never applied.
+func TestWarpSemanticFiltersCoverEverySearchField(t *testing.T) {
+	enforced := map[string]bool{
+		"providers": true, "models": true, "status": true, "stop_reasons": true, "objects": true, "parent_request_id": true,
+		"request_id": true, "virtual_key_ids": true, "session_id": true, "team_ids": true, "customer_ids": true, "user_ids": true,
+		"business_unit_ids": true, "project_ids": true, "apps": true, "start_time": true, "end_time": true, "min_latency": true,
+		"max_latency": true, "min_tokens": true, "max_tokens": true, "min_cost": true, "max_cost": true, "error_types": true,
+		"error_codes": true, "status_codes": true, "content_search": true,
+	}
+	// Not filters a tool can set: chain and session shaping, and a ranking row cap.
+	notFilters := map[string]bool{"roots_only": true, "group_sessions": true, "ranking_limit": true}
+	kind := reflect.TypeOf(logstore.SearchFilters{})
+	for index := range kind.NumField() {
+		field := kind.Field(index)
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if enforced[name] || notFilters[name] {
+			continue
+		}
+		filters := logstore.SearchFilters{}
+		value := reflect.ValueOf(&filters).Elem().Field(index)
+		switch field.Type.Kind() {
+		case reflect.Slice:
+			value.Set(reflect.MakeSlice(field.Type, 1, 1))
+		case reflect.Map:
+			value.Set(reflect.MakeMap(field.Type))
+			value.SetMapIndex(reflect.ValueOf("k"), reflect.ValueOf("v"))
+		case reflect.String:
+			value.SetString("x")
+		case reflect.Bool:
+			value.SetBool(true)
+		default:
+			require.Failf(t, "unclassified filter", "%s has kind %s", name, field.Type.Kind())
+		}
+		require.Containsf(t, unenforcedSemanticFilters(&filters), name, "%s is neither enforced nor refused", name)
+	}
 }

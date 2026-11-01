@@ -24,6 +24,7 @@ import {
 	splitWarpAnswer,
 	splitWarpCharts,
 	splitWarpFrames,
+	replayedAssistantContent,
 	terminalConversationID,
 	turnsFromStoredMessages,
 	warpErrorDetail,
@@ -331,6 +332,29 @@ describe("historyForRequest", () => {
 		expect(historyForRequest([{ role: "assistant", content: "pick one", question: true }])).toEqual([
 			{ role: "assistant", content: "pick one", question: true },
 		]);
+	});
+});
+
+describe("replayedAssistantContent", () => {
+	const question = { question: "Which period?", options: [{ label: "Last 7 days", hint: "-7d" }, { label: "Today" }] };
+	const choices = "Choices: Last 7 days (-7d); Today";
+
+	it("leaves a turn with no question alone", () => {
+		expect(replayedAssistantContent("An answer.")).toBe("An answer.");
+	});
+	it("puts the question and its choices after the narration", () => {
+		expect(replayedAssistantContent("Let me check.", question)).toBe(`Let me check.\n\nWhich period?\n${choices}`);
+	});
+	it("asks the question on its own when the turn has no text", () => {
+		expect(replayedAssistantContent("  ", question)).toBe(`Which period?\n${choices}`);
+	});
+	it("adds the choices to text that holds only the question", () => {
+		expect(replayedAssistantContent("Which period?", question)).toBe(`Which period?\n${choices}`);
+	});
+	it("repeats nothing the text already holds", () => {
+		const whole = `Which period?\n${choices}`;
+		expect(replayedAssistantContent(whole, question)).toBe(whole);
+		expect(replayedAssistantContent("Which team?", { question: "Which team?", options: [] })).toBe("Which team?");
 	});
 });
 

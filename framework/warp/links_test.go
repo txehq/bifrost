@@ -288,6 +288,13 @@ func TestWarpSanitizeAnswerLinksUnfencesIssueLink(t *testing.T) {
 	}
 	code := "```bash\ncurl " + url + "\n```"
 	require.Equal(t, code, sanitizeAnswerLinks(code, nil))
+
+	// A build that rewrites the module owner rewrites the prompt's link with it.
+	fork := strings.Replace(url, "maximhq", "capsohq", 1)
+	require.Equal(t, "[Request this in Bifrost's issue tracker]("+fork+")\n", sanitizeAnswerLinks("```text\n"+fork+"\n```\n", nil))
+	// Any other owner's tracker is not Warp's link to rewrite.
+	other := "```text\n" + strings.Replace(url, "maximhq", "someone-else", 1) + "\n```\n"
+	require.Equal(t, other, sanitizeAnswerLinks(other, nil))
 }
 
 // rankingRowsJSON runs a ranking tool and returns its "rankings" rows (found at

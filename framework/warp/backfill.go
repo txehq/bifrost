@@ -49,11 +49,14 @@ type BackfillJobMeta struct {
 	Namespace       string     `json:"namespace"`
 	CursorTime      *time.Time `json:"cursor_time,omitempty"`
 	CursorID        string     `json:"cursor_id,omitempty"`
-	Total           int64      `json:"total"`
-	Scanned         int        `json:"scanned"`
-	Indexed         int        `json:"indexed"`
-	Skipped         int        `json:"skipped"`
-	Failed          int        `json:"failed"`
+	// CursorOffset is the cursor a checkpoint written before CursorID carries: rows
+	// consumed at CursorTime. Only read, for the one page that moves it to CursorID.
+	CursorOffset int   `json:"cursor_offset,omitempty"`
+	Total        int64 `json:"total"`
+	Scanned      int   `json:"scanned"`
+	Indexed      int   `json:"indexed"`
+	Skipped      int   `json:"skipped"`
+	Failed       int   `json:"failed"`
 	// EmbeddingTokens and EmbeddingCost total what the job's embedding calls
 	// consumed, across every resume of this checkpoint. They are spend, not
 	// progress: a page rolled back out of the counters above was still billed,
@@ -204,7 +207,7 @@ func (s *Service) resumableBackfillMeta(ctx context.Context, start, end time.Tim
 	if sonic.Unmarshal([]byte(last.Metadata), &meta) != nil {
 		return BackfillJobMeta{}, false, nil
 	}
-	if meta.CursorTime == nil || meta.CursorID == "" || !meta.StartTime.Equal(start) || !meta.EndTime.Equal(end) || meta.ConfigSignature != signature {
+	if meta.CursorTime == nil || (meta.CursorID == "" && meta.CursorOffset == 0) || !meta.StartTime.Equal(start) || !meta.EndTime.Equal(end) || meta.ConfigSignature != signature {
 		return BackfillJobMeta{}, false, nil
 	}
 	meta.LastError = ""
@@ -212,8 +215,8 @@ func (s *Service) resumableBackfillMeta(ctx context.Context, start, end time.Tim
 	return meta, true, nil
 }
 
-// RunBackfillJob walks the frozen window in stable timestamp/id order. The
-// inclusive cursor plus offset makes identical timestamps resumable.
+// RunBackfillJob walks the frozen window in stable timestamp/id order, each page
+// strictly after the last row of the one before.
 func (s *Service) RunBackfillJob(ctx context.Context, job tables.TableSidekiqJob, progress sidekiq.ProgressFunc) (string, error) {
 	var meta BackfillJobMeta
 	if err := sonic.Unmarshal([]byte(job.Metadata), &meta); err != nil {
@@ -245,11 +248,7 @@ func (s *Service) RunBackfillJob(ctx context.Context, job tables.TableSidekiqJob
 			return snapshot(), fmt.Errorf("Warp embedding configuration changed while backfill was running")
 		}
 
-		filters := backfillFilters(meta.StartTime, meta.EndTime)
-		pagination := logstore.PaginationOptions{Limit: backfillBatchSize, SortBy: "timestamp", Order: "asc"}
-		if meta.CursorTime != nil && meta.CursorID != "" {
-			pagination.AfterTimestamp, pagination.AfterID = meta.CursorTime, meta.CursorID
-		}
+		filters, pagination := backfillPage(meta)
 		result, err := s.logs.Search(ctx, &filters, &pagination)
 		if err != nil {
 			return snapshot(), fmt.Errorf("search logs for Warp backfill: %w", err)
@@ -523,6 +522,24 @@ func (s *Service) recordBackfillSpend(meta *BackfillJobMeta, config *schemas.War
 	*meta.EmbeddingCost += cost.TotalCost
 }
 
+// backfillPage is the read for the page after meta's cursor. The total was
+// frozen when the job was built, so a page skips the count.
+//
+// Warp shipped with a timestamp-and-offset cursor, so a checkpoint from an earlier
+// release can name no row. Its one remaining page is read the way it was written,
+// and advanceBackfillCursor moves it to the keyset.
+func backfillPage(meta BackfillJobMeta) (logstore.SearchFilters, logstore.PaginationOptions) {
+	pagination := logstore.PaginationOptions{Limit: backfillBatchSize, SortBy: "timestamp", Order: "asc", SkipCount: true}
+	if meta.CursorTime != nil && meta.CursorID == "" && meta.CursorOffset > 0 {
+		pagination.Offset = meta.CursorOffset
+		return backfillFilters(*meta.CursorTime, meta.EndTime), pagination
+	}
+	if meta.CursorTime != nil && meta.CursorID != "" {
+		pagination.AfterTimestamp, pagination.AfterID = meta.CursorTime, meta.CursorID
+	}
+	return backfillFilters(meta.StartTime, meta.EndTime), pagination
+}
+
 func backfillFilters(start, end time.Time) logstore.SearchFilters {
 	return logstore.SearchFilters{
 		Objects: []string{string(schemas.ChatCompletionRequest), string(schemas.ChatCompletionStreamRequest), string(schemas.ResponsesRequest), string(schemas.ResponsesStreamRequest)},
@@ -550,6 +567,7 @@ func advanceBackfillCursor(meta *BackfillJobMeta, logs []logstore.Log) {
 	value := last.Timestamp
 	meta.CursorTime = &value
 	meta.CursorID = last.ID
+	meta.CursorOffset = 0
 }
 
 func marshalBackfillMeta(meta BackfillJobMeta) (string, error) {

@@ -57,6 +57,14 @@ describe("Warp embedding configuration", () => {
 			supportsWarpEmbedding({ name: "my-claude", custom_provider_config: { base_provider_type: "anthropic" } } as ModelProvider),
 		).toBe(false);
 	});
+	it("keeps a custom provider's restriction over what the provider it wraps supports", () => {
+		expect(
+			supportsWarpEmbedding({
+				name: "my-chat-openai",
+				custom_provider_config: { base_provider_type: "openai", allowed_requests: { chat_completion: true } },
+			} as ModelProvider),
+		).toBe(false);
+	});
 });
 // Changing the embedding space invalidates every vector already indexed, which
 // is why a rename is demanded. But there is nothing to invalidate before the
