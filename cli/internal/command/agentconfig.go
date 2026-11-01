@@ -295,6 +295,10 @@ func snapshotConfigFiles(contextID, agentID string, paths []string) (*configRece
 func recordConfiguredHashes(receipt *configReceipt) error {
 	for index := range receipt.Files {
 		body, err := os.ReadFile(receipt.Files[index].Path)
+		if errors.Is(err, os.ErrNotExist) && !receipt.Files[index].Existed {
+			// Configuration did not create this file, so it has nothing to record.
+			continue
+		}
 		if err != nil {
 			return fmt.Errorf("read configured file %s: %w", receipt.Files[index].Path, err)
 		}
@@ -327,6 +331,11 @@ func verifyConfiguredFiles(receipt *configReceipt, force bool) error {
 func restoreConfigReceipt(receipt *configReceipt) error {
 	for _, snapshot := range receipt.Files {
 		if !snapshot.Existed {
+			// A finished configuration with no hash never wrote this file, so a file
+			// there now is the user's own, such as an auth.json from a later login.
+			if !receipt.Pending && snapshot.ConfiguredSHA256 == "" {
+				continue
+			}
 			if err := os.Remove(snapshot.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("remove generated config %s: %w", snapshot.Path, err)
 			}

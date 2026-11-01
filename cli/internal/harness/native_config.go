@@ -147,9 +147,9 @@ func codexPreLaunch(baseURL, apiKey string, model string) ([]string, func(), err
 		return nil, nil, fmt.Errorf("read Codex config: %w", readErr)
 	}
 	// env_key fails a launch that supplies no key, so a keyless gateway names none.
-	auth := codexAuthNone
+	auth := codexProviderAuth{}
 	if codexHasKey(apiKey) {
-		auth = codexAuthEnvironment
+		auth.envKey = true
 	}
 	configured := codexRenderConfigTOML(existing, baseURL, model, auth)
 	if err := config.WriteAtomic(filepath.Join(temporaryHome, "config.toml"), configured, 0o600); err != nil {
@@ -261,12 +261,15 @@ func codexUserHome() (string, error) {
 	return filepath.Join(home, ".codex"), nil
 }
 
-// codexWriteNativeConfig writes the bifrost endpoint, API key, and model
-// into Codex CLI's config files (~/.codex/auth.json and
-// ~/.codex/config.toml) so the same configuration is available when users
-// launch Codex directly.
+// codexWriteNativeConfig writes the bifrost endpoint, API key, and model into
+// Codex CLI's config.toml so the same configuration is available when users launch
+// Codex directly.
 //
-// It merges into the existing files, preserving any user-defined settings.
+// It merges into the existing file, preserving any user-defined settings. The key
+// goes in the provider's own table, in plain text at mode 0600, rather than auth.json:
+// a direct launch has no OPENAI_API_KEY in its environment, and requires_openai_auth
+// would tie this provider to Codex's global OpenAI credential, whichever store a user
+// or a managed policy selects, and could send that credential to the gateway.
 func codexWriteNativeConfig(baseURL, apiKey, model string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -274,70 +277,15 @@ func codexWriteNativeConfig(baseURL, apiKey, model string) error {
 	}
 
 	dir := filepath.Join(home, ".codex")
-	hasKey := codexHasKey(apiKey)
-	if hasKey {
-		if err := refuseCodexCredentialStore(filepath.Join(dir, "config.toml")); err != nil {
-			return err
-		}
-	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create codex config dir: %w", err)
 	}
 
-	// A direct launch has no launcher-supplied OPENAI_API_KEY, so the provider
-	// reads the key saved in auth.json, or sends none at all.
-	auth := codexAuthNone
-	if hasKey {
-		if err := codexWriteAuth(filepath.Join(dir, "auth.json"), strings.TrimSpace(apiKey)); err != nil {
-			return err
-		}
-		auth = codexAuthStored
+	auth := codexProviderAuth{}
+	if codexHasKey(apiKey) {
+		auth.bearerToken = strings.TrimSpace(apiKey)
 	}
 	return codexWriteConfigTOML(filepath.Join(dir, "config.toml"), baseURL, model, auth)
-}
-
-// refuseCodexCredentialStore rejects a config whose credentials do not live in
-// auth.json, where Codex would not read the saved key. Changing the setting is the
-// user's call: it decides what every provider in that Codex home authenticates with.
-func refuseCodexCredentialStore(path string) error {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("read codex config: %w", err)
-	}
-	store := topLevelTOMLString(data, "cli_auth_credentials_store")
-	if store == "" || store == "file" {
-		return nil
-	}
-	return fmt.Errorf("Codex keeps its credentials in %q storage (cli_auth_credentials_store), so it would not read a saved key; use 'bifrost run codex', which saves none, or set cli_auth_credentials_store = \"file\" in %s yourself", store, path)
-}
-
-// topLevelTOMLString returns the string value of key before the first table, or "".
-func topLevelTOMLString(data []byte, key string) string {
-	for _, line := range strings.Split(string(data), "\n") {
-		if isTOMLTableHeader(line) {
-			return ""
-		}
-		if _, ok := matchTopLevelTOMLKey(line, map[string]string{key: ""}); !ok {
-			continue
-		}
-		_, value, _ := strings.Cut(line, "=")
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return ""
-		}
-		quote := value[0]
-		if quote != '"' && quote != '\'' {
-			return value
-		}
-		if end := strings.IndexByte(value[1:], quote); end >= 0 {
-			return value[1 : end+1]
-		}
-		return ""
-	}
-	return ""
 }
 
 // codexHasKey reports whether apiKey is a real credential, not the launcher's
@@ -347,40 +295,13 @@ func codexHasKey(apiKey string) bool {
 	return apiKey != "" && apiKey != "dummy-key"
 }
 
-// codexProviderAuth selects where the Bifrost provider obtains its key.
-type codexProviderAuth int
-
-const (
-	// codexAuthEnvironment reads the OPENAI_API_KEY a wrapped launch supplies.
-	codexAuthEnvironment codexProviderAuth = iota
-	// codexAuthStored reads the API key saved in Codex's auth.json.
-	codexAuthStored
-	// codexAuthNone sends no credential, for keyless gateways.
-	codexAuthNone
-)
-
-// codexWriteAuth merges the bifrost virtual key into Codex's auth.json,
-// preserving any other fields the user (or Codex itself) may have written.
-func codexWriteAuth(path, apiKey string) error {
-	auth := make(map[string]any)
-	if b, err := os.ReadFile(path); err == nil {
-		if err := sonic.Unmarshal(b, &auth); err != nil {
-			// Unparseable auth.json — overwrite rather than fail the launch,
-			// since the user can't easily recover from a corrupt file.
-			auth = make(map[string]any)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read codex auth: %w", err)
-	}
-
-	auth["auth_mode"] = "apikey"
-	auth["OPENAI_API_KEY"] = apiKey
-
-	b, err := sonic.MarshalIndent(auth, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal codex auth: %w", err)
-	}
-	return config.WriteAtomic(path, b, 0o600)
+// codexProviderAuth selects where the Bifrost provider obtains its key. The zero
+// value sends no credential, for keyless gateways.
+type codexProviderAuth struct {
+	// envKey reads the OPENAI_API_KEY a wrapped launch supplies.
+	envKey bool
+	// bearerToken is sent as written, for a direct launch.
+	bearerToken string
 }
 
 // codexWriteConfigTOML merges the Bifrost provider into the config file at path.
@@ -397,8 +318,9 @@ func codexWriteConfigTOML(path, baseURL, model string, auth codexProviderAuth) e
 // codexRenderConfigTOML declares Bifrost as a custom Responses provider.
 // Current Codex versions ignore OPENAI_BASE_URL and require a custom provider
 // to disable OpenAI OAuth, so the provider table is part of the routing contract.
-// With codexAuthStored, requires_openai_auth makes Codex send the API key saved in
-// auth.json (auth_mode "apikey"), which needs no OAuth login.
+// requires_openai_auth stays false for every auth, so this provider never reaches
+// Codex's own OpenAI login. The table is replaced whole, so a token saved earlier
+// cannot follow an endpoint change, a keyless config, or a launch's temporary copy.
 func codexRenderConfigTOML(existing []byte, baseURL, model string, auth codexProviderAuth) []byte {
 	targets := map[string]string{"model_provider": "bifrost"}
 	if m := strings.TrimSpace(model); m != "" {
@@ -414,15 +336,13 @@ func codexRenderConfigTOML(existing []byte, baseURL, model string, auth codexPro
 		"base_url = " + tomlQuote(codexProviderURL(baseURL)),
 		`wire_api = "responses"`,
 	}
-	switch auth {
-	case codexAuthEnvironment:
-		providerBody = append(providerBody, `env_key = "OPENAI_API_KEY"`, `requires_openai_auth = false`)
-	case codexAuthStored:
-		providerBody = append(providerBody, `requires_openai_auth = true`)
-	default:
-		providerBody = append(providerBody, `requires_openai_auth = false`)
+	if auth.envKey {
+		providerBody = append(providerBody, `env_key = "OPENAI_API_KEY"`)
 	}
-	providerBody = append(providerBody, `supports_websockets = false`)
+	if auth.bearerToken != "" {
+		providerBody = append(providerBody, "experimental_bearer_token = "+tomlQuote(auth.bearerToken))
+	}
+	providerBody = append(providerBody, `requires_openai_auth = false`, `supports_websockets = false`)
 	return replaceTOMLTable(configured, "model_providers.bifrost", providerBody)
 }
 

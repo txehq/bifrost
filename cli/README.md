@@ -371,6 +371,8 @@ OpenCode receives the token in an owner-readable temporary provider config,
 which is deleted when the process exits. Persistent `configure` remains
 virtual-key-only so short-lived user credentials are never written to an
 agent's long-lived config.
+For Codex that key is stored in plain text in `~/.codex/config.toml` at mode
+`0600`, so keep that file out of synced dotfiles.
 
 Harness authentication and refresh behavior is intentionally explicit:
 

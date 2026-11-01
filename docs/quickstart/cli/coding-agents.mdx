@@ -60,9 +60,9 @@ bifrost configure codex --model openai/gpt-5
 | Harness | Files changed |
 | --- | --- |
 | Claude Code | `~/.claude/settings.json`: `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_AUTH_TOKEN`, model settings; removes `apiKeyHelper` |
-| Codex CLI | `~/.codex/auth.json` and `~/.codex/config.toml` (`model_provider = "bifrost"`) |
+| Codex CLI | `~/.codex/config.toml` (`model_provider = "bifrost"`, and the key in the provider table) |
 
-A saved key lives in `auth.json`, so `bifrost configure codex` refuses a `config.toml` that sets `cli_auth_credentials_store` to anything but `file`, before changing any file. That setting decides what every provider in your Codex home authenticates with, so Bifrost does not change it. Use `bifrost run codex`, which saves no key, or set it to `file` yourself.
+The key is stored in plain text in the `bifrost` provider table of `~/.codex/config.toml`, as `experimental_bearer_token` at mode `0600`. Keep that file out of synced dotfiles, or use `bifrost run codex`, which saves no key. If `config.toml` is a symbolic link, `bifrost configure` replaces the link with a regular file rather than writing through it, and `bifrost unconfigure` restores the link. Codex calls this field experimental and recommends `env_key`, so a Codex upgrade may change it. Your `auth.json` and `cli_auth_credentials_store` are left alone, and this provider does not use your OpenAI login.
 
 Before changing anything, the CLI saves a restoration receipt under `~/.bifrost/receipts/`. To undo the change:
 

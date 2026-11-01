@@ -536,12 +536,13 @@ func TestWireLauncherKeylessGateway(t *testing.T) {
 	}
 }
 
-// TestWireConfigureSavesAKeyADirectLaunchCanUse pins the saved Codex config. Changing
-// gateway replaces the key, and `configure` refuses to run with no key at all; the
-// keyless write behind that refusal is pinned in internal/harness.
+// TestWireConfigureSavesAKeyADirectLaunchCanUse pins the saved Codex config: the key is
+// the provider's own, changing gateway replaces it, a launch does not carry it, and
+// `configure` refuses to run with no key at all. The keyless write behind that refusal
+// is pinned in internal/harness.
 func TestWireConfigureSavesAKeyADirectLaunchCanUse(t *testing.T) {
 	first, second, home, stub := startGateway(t, false, true), startGateway(t, false, true), t.TempDir(), installStub(t)
-	configPath, authPath := filepath.Join(home, ".codex", "config.toml"), filepath.Join(home, ".codex", "auth.json")
+	configPath := filepath.Join(home, ".codex", "config.toml")
 	configure := func(g *gateway, key string) (result, string) {
 		t.Helper()
 		env := map[string]string{"PATH": stub}
@@ -560,14 +561,24 @@ func TestWireConfigureSavesAKeyADirectLaunchCanUse(t *testing.T) {
 	if out.exit != 0 {
 		t.Fatalf("configure exit %d\n%s", out.exit, out.all())
 	}
-	if strings.Contains(config, "env_key") || !strings.Contains(config, "requires_openai_auth = true") {
-		t.Fatalf("a saved key must be read from auth.json, a direct launch has no environment key:\n%s", config)
+	if !strings.Contains(config, `experimental_bearer_token = "`+virtualKey+`"`) || strings.Contains(config, "env_key") || strings.Contains(config, "requires_openai_auth = true") {
+		t.Fatalf("a direct launch must find the provider's own key, with no environment key or OpenAI auth:\n%s", config)
 	}
-	if strings.Contains(config, virtualKey) {
-		t.Fatal("config.toml holds the key")
+	if strings.Contains(out.all(), virtualKey) {
+		t.Fatalf("configure printed the key:\n%s", out.all())
 	}
-	if info, err := os.Stat(authPath); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("auth.json = %v, %v; want mode 600", info, err)
+	if info, err := os.Stat(configPath); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("config.toml = %v, %v; want mode 600", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".codex", "auth.json")); !os.IsNotExist(err) {
+		t.Fatalf("configure wrote an auth.json: %v", err)
+	}
+
+	if launched := mustLaunch(t, home, stub, first, virtualKey); launched.key != virtualKey {
+		t.Fatalf("the launch did not get its key from the environment: %q", launched.key)
+	}
+	if files := filesContaining(t, filepath.Join(home, ".bifrost"), virtualKey); len(files) != 0 {
+		t.Fatalf("the saved key reached the session store: %v", files)
 	}
 
 	const secondKey = "sk-bf-wire-second"
@@ -575,8 +586,8 @@ func TestWireConfigureSavesAKeyADirectLaunchCanUse(t *testing.T) {
 	if out.exit != 0 {
 		t.Fatalf("second configure exit %d\n%s", out.exit, out.all())
 	}
-	if !strings.Contains(config, second.URL) || strings.Contains(config, first.URL) {
-		t.Fatalf("config kept the previous endpoint:\n%s", config)
+	if !strings.Contains(config, second.URL) || strings.Contains(config, first.URL) || !strings.Contains(config, secondKey) {
+		t.Fatalf("config kept the previous endpoint or lost the key:\n%s", config)
 	}
 	if files := filesContaining(t, filepath.Join(home, ".codex"), virtualKey); len(files) != 0 {
 		t.Fatalf("the previous gateway's key is still saved, so it would go to the new endpoint: %v", files)
@@ -591,19 +602,19 @@ func TestWireConfigureSavesAKeyADirectLaunchCanUse(t *testing.T) {
 	}
 }
 
-// TestWireConfigureRefusesKeyringStorage pins that a saved key does not override an
-// explicit credential store: the refusal comes before any write, leaves no receipt to
-// undo, and the launcher still works for that user.
-func TestWireConfigureRefusesKeyringStorage(t *testing.T) {
-	for _, store := range []string{"keyring", "auto"} {
+// TestWireConfigureLeavesCodexCredentialsAlone pins that saving a key touches neither
+// the user's credential store setting nor their login, and that `unconfigure` puts
+// both files back byte for byte.
+func TestWireConfigureLeavesCodexCredentialsAlone(t *testing.T) {
+	for _, store := range []string{"keyring", "auto", "file"} {
 		t.Run(store, func(t *testing.T) {
 			g, home, stub := startGateway(t, false, true), t.TempDir(), installStub(t)
 			userCodex := filepath.Join(home, ".codex")
 			if err := os.MkdirAll(userCodex, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			userConfig := fmt.Sprintf("cli_auth_credentials_store = %q\n", store)
-			userAuth := `{"tokens":{"id_token":"keep-me-wire"}}`
+			setting := fmt.Sprintf("cli_auth_credentials_store = %q", store)
+			userConfig, userAuth := setting+"\n", `{"tokens":{"id_token":"keep-me-wire"}}`
 			configPath, authPath := filepath.Join(userCodex, "config.toml"), filepath.Join(userCodex, "auth.json")
 			if err := os.WriteFile(configPath, []byte(userConfig), 0o600); err != nil {
 				t.Fatal(err)
@@ -613,21 +624,55 @@ func TestWireConfigureRefusesKeyringStorage(t *testing.T) {
 			}
 
 			out := runCLI(t, home, map[string]string{"PATH": stub, "BIFROST_VIRTUAL_KEY": virtualKey}, "--base-url", g.URL, "configure", "codex")
-			if out.exit == 0 || !strings.Contains(out.stderr, "bifrost run codex") {
-				t.Fatalf("configure under %s storage: exit %d, stderr %q; want a refusal naming the launcher", store, out.exit, out.stderr)
+			if out.exit != 0 {
+				t.Fatalf("configure exit %d\n%s", out.exit, out.all())
 			}
-			if strings.Contains(out.all(), virtualKey) {
-				t.Fatalf("the refusal printed the key:\n%s", out.all())
+			config, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(config), setting) || strings.Contains(string(config), "requires_openai_auth = true") {
+				t.Fatalf("configure reached Codex's own credential selection:\n%s", config)
+			}
+			if got, err := os.ReadFile(authPath); err != nil || string(got) != userAuth {
+				t.Fatalf("auth.json = %q, %v; want it untouched", got, err)
+			}
+
+			out = runCLI(t, home, map[string]string{"PATH": stub}, "--base-url", g.URL, "unconfigure", "codex")
+			if out.exit != 0 {
+				t.Fatalf("unconfigure exit %d\n%s", out.exit, out.all())
 			}
 			for path, want := range map[string]string{configPath: userConfig, authPath: userAuth} {
 				if got, err := os.ReadFile(path); err != nil || string(got) != want {
-					t.Fatalf("a refused configure changed %s: %q, %v", path, got, err)
+					t.Fatalf("%s after unconfigure = %q, %v; want the original", path, got, err)
 				}
 			}
-			if receipts, _ := filepath.Glob(filepath.Join(home, ".bifrost", "receipts", "*")); len(receipts) != 0 {
-				t.Fatalf("a refused configure left receipts: %v", receipts)
-			}
-			mustLaunch(t, home, stub, g, virtualKey)
 		})
+	}
+}
+
+// TestWireUnconfigureKeepsALoginMadeLater pins that `unconfigure` removes what
+// `configure` created and nothing else: it no longer writes auth.json, so one that
+// appears afterwards is the user's own login.
+func TestWireUnconfigureKeepsALoginMadeLater(t *testing.T) {
+	g, home, stub := startGateway(t, false, true), t.TempDir(), installStub(t)
+	out := runCLI(t, home, map[string]string{"PATH": stub, "BIFROST_VIRTUAL_KEY": virtualKey}, "--base-url", g.URL, "configure", "codex")
+	if out.exit != 0 {
+		t.Fatalf("configure exit %d\n%s", out.exit, out.all())
+	}
+	login := `{"tokens":{"id_token":"keep-me-wire"}}`
+	authPath, configPath := filepath.Join(home, ".codex", "auth.json"), filepath.Join(home, ".codex", "config.toml")
+	if err := os.WriteFile(authPath, []byte(login), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out = runCLI(t, home, map[string]string{"PATH": stub}, "--base-url", g.URL, "unconfigure", "codex")
+	if out.exit != 0 {
+		t.Fatalf("unconfigure exit %d\n%s", out.exit, out.all())
+	}
+	if got, err := os.ReadFile(authPath); err != nil || string(got) != login {
+		t.Fatalf("unconfigure removed the user's login: %q, %v", got, err)
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("unconfigure left the config it created: %v", err)
 	}
 }
