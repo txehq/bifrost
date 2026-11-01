@@ -139,7 +139,8 @@ ResponsesMessage:
         outputs, an array of content blocks for structured function tool
         outputs, an array of command results for shell_call_output, or a
         computer-tool screenshot object for computer_call_output.
-      oneOf:
+      # anyOf, not oneOf: an empty array is valid and matches both array forms.
+      anyOf:
         - type: string
         - type: array
           items:
