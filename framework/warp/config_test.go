@@ -827,18 +827,18 @@ func TestWarpSaveConfigRejectsReusingARetiredNamespace(t *testing.T) {
 // that survived a failed save from one the save removed.
 type namespaceVectorStore struct {
 	*fakeWarpVectorStore
-	nsMu       sync.Mutex
-	namespaces map[string]bool
-	lists      int
-	// onFirstList runs inside the first ListNamespaces call, after its answer
-	// is fixed: the point between one save's existence check and its create.
-	onFirstList func()
+	nsMu        sync.Mutex
+	namespaces  map[string]bool
+	lists       int
+	onFirstList func() // see ListNamespaces
 }
 
 func newNamespaceVectorStore() *namespaceVectorStore {
 	return &namespaceVectorStore{fakeWarpVectorStore: newFakeWarpVectorStore(), namespaces: map[string]bool{}}
 }
 
+// ListNamespaces runs onFirstList inside the first call, after its answer is fixed:
+// the point between one save's existence check and its create.
 func (s *namespaceVectorStore) ListNamespaces(context.Context, string) ([]string, error) {
 	s.nsMu.Lock()
 	names := make([]string, 0, len(s.namespaces))

@@ -46,11 +46,9 @@ type fakeLogReader struct {
 	rankingDimension logstore.RankingDimension
 	// Canned ranking responses. Nil means the minimal shape each method has
 	// always returned.
-	modelRankingResult     *logstore.ModelRankingResult
-	dimensionRankingResult *logstore.DimensionRankingResult
-	// errorModelRankingResult answers a model ranking narrowed to status error,
-	// so a failure-rate test can give the failed rows their own counts.
-	errorModelRankingResult *logstore.ModelRankingResult
+	modelRankingResult      *logstore.ModelRankingResult
+	dimensionRankingResult  *logstore.DimensionRankingResult
+	errorModelRankingResult *logstore.ModelRankingResult // answers a ranking narrowed to status error
 
 	histogramBucket int64
 	// Canned histogram responses. Nil means "empty result, zero buckets" -
@@ -95,10 +93,8 @@ type fakeLogReader struct {
 	// statsByProvider, when set, answers a GetStats call narrowed to exactly
 	// one provider - order-independent, so concurrent per-provider calls get
 	// the right stats regardless of which one reaches the fake first.
-	statsByProvider map[string]*logstore.SearchStats
-	// errorStatsByProvider is statsByProvider for a call also narrowed to
-	// status error.
-	errorStatsByProvider map[string]*logstore.SearchStats
+	statsByProvider      map[string]*logstore.SearchStats
+	errorStatsByProvider map[string]*logstore.SearchStats // statsByProvider narrowed to status error
 	sawContext           context.Context
 	// *Delay, when set, makes the matching method take real wall-clock time
 	// before returning - the lever a test has to prove several calls actually
