@@ -1638,10 +1638,16 @@ func TestDistributedLockManager_StoppedHoldersLeaveNoWorkBehind(t *testing.T) {
 // The moment a holder is confirmed, no other holder may have an unexpired confirmed
 // lease: that is what exclusivity means here, and unlike a counter around the section
 // it does not depend on how fast a holder that was told to stop wakes up.
+//
+// unconfirmed holds the renewals that came back with an error. Such a write can still
+// have committed: the holder then cannot know its row runs on, and that row stays live
+// for at most one TTL with no holder behind it. That costs the next holder a wait, not
+// exclusivity, and it is the only way a live row may outlast its holder.
 type leaseLedger struct {
-	mu      sync.Mutex
-	leases  map[string]time.Time
-	overlap []string
+	mu          sync.Mutex
+	leases      map[string]time.Time
+	unconfirmed map[string]time.Time
+	overlap     []string
 }
 
 // ledgerStore is one store's view of a shared leaseLedger.
@@ -1674,10 +1680,12 @@ func (s *ledgerStore) TryAcquireLock(ctx context.Context, lock *tables.TableDist
 
 func (s *ledgerStore) UpdateLockExpiry(ctx context.Context, key, holder string, expiresAt time.Time) error {
 	err := s.LockStore.UpdateLockExpiry(ctx, key, holder, expiresAt)
+	s.ledger.mu.Lock()
+	defer s.ledger.mu.Unlock()
 	if err == nil {
-		s.ledger.mu.Lock()
 		s.ledger.leases[holder] = expiresAt
-		s.ledger.mu.Unlock()
+	} else {
+		s.ledger.unconfirmed[holder] = expiresAt
 	}
 	return err
 }
@@ -1698,7 +1706,7 @@ func TestDistributedLockManager_ContendedHoldersStayExclusive(t *testing.T) {
 	forEachLockBackend(t, func(t *testing.T, open func() *RDBConfigStore) {
 		ctx := context.Background()
 		const ttl = 200 * time.Millisecond
-		ledger := &leaseLedger{leases: map[string]time.Time{}}
+		ledger := &leaseLedger{leases: map[string]time.Time{}, unconfirmed: map[string]time.Time{}}
 		var entries atomic.Int32
 		var wg sync.WaitGroup
 		for range 4 {
@@ -1728,8 +1736,9 @@ func TestDistributedLockManager_ContendedHoldersStayExclusive(t *testing.T) {
 		require.NoError(t, err)
 		// Release leaves a row past its lease alone, and a stalled store can run a lease
 		// out between the section and the release: such a row is any holder's to take.
-		if row != nil {
-			assert.False(t, row.ExpiresAt.After(time.Now()), "a released lock left a live row behind")
+		if row != nil && row.ExpiresAt.After(time.Now()) {
+			written, unconfirmed := ledger.unconfirmed[row.HolderID]
+			assert.True(t, unconfirmed && written.Equal(row.ExpiresAt), "a released lock left a live row behind")
 		}
 	})
 }
