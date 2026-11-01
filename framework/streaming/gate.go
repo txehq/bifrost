@@ -88,8 +88,8 @@ func gateCompositeBytes(v interface{}) int64 {
 // serializing it. It feeds only the gateReplayBufMaxBytes safety cap, so
 // exactness is not required: it counts the carriers that grow with response
 // size — passthrough bodies, raw request/response bytes, delta/text strings,
-// tool-call arguments, and composite item copies — and covers everything else
-// with a fixed per-chunk floor.
+// tool-call arguments, shell and patch payloads, citations, and composite item
+// copies — and covers everything else with a fixed per-chunk floor.
 func estimateChunkBytes(chunk *schemas.BifrostStreamChunk) int64 {
 	if chunk == nil {
 		return 0
@@ -102,7 +102,16 @@ func estimateChunkBytes(chunk *schemas.BifrostStreamChunk) int64 {
 		size += gateRawBytes(r.ExtraFields.RawRequest) + gateRawBytes(r.ExtraFields.RawResponse)
 	case chunk.BifrostChatResponse != nil:
 		r := chunk.BifrostChatResponse
-		size += int64(len(r.ID)) + gateChoiceBytes(r.Choices)
+		size += int64(len(r.ID)) + gateChoiceBytes(r.Choices) + int64(len(r.PromptFilterResults))
+		for _, citation := range r.Citations {
+			size += int64(len(citation))
+		}
+		if len(r.SearchResults) > 0 {
+			size += gateCompositeBytes(r.SearchResults)
+		}
+		if len(r.Videos) > 0 {
+			size += gateCompositeBytes(r.Videos)
+		}
 		size += gateRawBytes(r.ExtraFields.RawRequest) + gateRawBytes(r.ExtraFields.RawResponse)
 	case chunk.BifrostTextCompletionResponse != nil:
 		r := chunk.BifrostTextCompletionResponse
@@ -114,7 +123,16 @@ func estimateChunkBytes(chunk *schemas.BifrostStreamChunk) int64 {
 			gateStrPtrBytes(r.Input) + gateStrPtrBytes(r.Refusal) + gateStrPtrBytes(r.Obfuscation) +
 			gateStrPtrBytes(r.PartialImageB64) + gateStrPtrBytes(r.Signature) +
 			gateStrPtrBytes(r.Code) + gateStrPtrBytes(r.Message) + gateStrPtrBytes(r.Param) +
+			gateStrPtrBytes(r.Command) + gateStrPtrBytes(r.Diff) +
 			int64(len(r.SafeguardResults))
+		// Shell output and patch carriers grow with what the command printed.
+		for i := range r.Output {
+			size += int64(len(r.Output[i].Stdout)) + int64(len(r.Output[i].Stderr)) +
+				gateStrPtrBytes(r.Output[i].CreatedBy)
+		}
+		if d := r.ShellOutputDelta; d != nil {
+			size += gateStrPtrBytes(d.Stdout) + gateStrPtrBytes(d.Stderr)
+		}
 		for _, citation := range r.Citations {
 			size += int64(len(citation))
 		}
@@ -152,6 +170,9 @@ func estimateChunkBytes(chunk *schemas.BifrostStreamChunk) int64 {
 	case chunk.BifrostTranscriptionStreamResponse != nil:
 		r := chunk.BifrostTranscriptionStreamResponse
 		size += gateStrPtrBytes(r.Delta) + int64(len(r.Text))
+		if len(r.LogProbs) > 0 {
+			size += gateCompositeBytes(r.LogProbs)
+		}
 		size += gateRawBytes(r.ExtraFields.RawRequest) + gateRawBytes(r.ExtraFields.RawResponse)
 	case chunk.BifrostImageGenerationStreamResponse != nil:
 		r := chunk.BifrostImageGenerationStreamResponse
@@ -176,12 +197,15 @@ func gateChoiceBytes(choices []schemas.BifrostResponseChoice) int64 {
 	var size int64
 	for i := range choices {
 		c := &choices[i]
+		size += int64(len(c.ContentFilterResults))
 		if c.ChatStreamResponseChoice != nil && c.ChatStreamResponseChoice.Delta != nil {
 			d := c.ChatStreamResponseChoice.Delta
 			size += gateStrPtrBytes(d.Content) + gateStrPtrBytes(d.Reasoning) + gateStrPtrBytes(d.Refusal)
 			size += int64(len(d.ExtraContent))
 			for j := range d.ToolCalls {
-				size += int64(len(d.ToolCalls[j].Function.Arguments))
+				tc := &d.ToolCalls[j]
+				size += int64(len(tc.Function.Arguments)) + gateStrPtrBytes(tc.Function.Name) +
+					int64(len(tc.ExtraContent))
 			}
 			if d.Audio != nil {
 				size += int64(len(d.Audio.Data)) + int64(len(d.Audio.Transcript))
@@ -190,6 +214,11 @@ func gateChoiceBytes(choices []schemas.BifrostResponseChoice) int64 {
 				rd := &d.ReasoningDetails[j]
 				size += gateStrPtrBytes(rd.Text) + gateStrPtrBytes(rd.Data) +
 					gateStrPtrBytes(rd.Signature) + gateStrPtrBytes(rd.Summary)
+			}
+			if len(d.Annotations) > 0 {
+				// URL citations: titles, cited text and provider source blobs of
+				// any size, on the chunks that carry them.
+				size += gateCompositeBytes(d.Annotations)
 			}
 		}
 		if c.LogProbs != nil {

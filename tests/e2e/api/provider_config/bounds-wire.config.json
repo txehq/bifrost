@@ -1,0 +1,47 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "client": {
+    "enforce_auth_on_inference": false,
+    "max_request_body_size_mb": 1
+  },
+  "framework": {
+    "pricing": {
+      "pricing_url": "http://127.0.0.1:8791/pricing.json",
+      "model_parameters_url": "http://127.0.0.1:8791/model-parameters.json",
+      "mcp_library_sync_interval": 0
+    }
+  },
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "local-bounds-fixture",
+          "value": "test-key",
+          "models": ["upstream-ok"],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "fireworks": {
+      "keys": [
+        {
+          "name": "local-bounds-fixture",
+          "value": "test-key",
+          "models": ["*"],
+          "blacklisted_models": ["accounts/fixture/models/blocked"],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/bounds",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    }
+  }
+}

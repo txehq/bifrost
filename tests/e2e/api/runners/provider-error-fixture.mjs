@@ -267,6 +267,8 @@ const fixturePricing = {
 	"typesafe/jev-1.13": { provider: "openrouter", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
 	"decision-emulated": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, cache_read_input_token_cost: 0.0000001 },
 	"pp-custom-legacy": { provider: "openai", mode: "responses", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
+	// A provider the datasheet knows and list-models cannot enumerate, for run-bounds-wire.mjs.
+	"fireworks_ai/accounts/fixture/models/known": { provider: "fireworks_ai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
 };
 
 // Provider wire capture, TXE-5539. The config points each provider these rows use at /pp/<provider>, so one fixture
@@ -406,6 +408,9 @@ const cpCloudflareChat = (body) => ({ status: 200, stream: cpChunks(body.model, 
 	[cpDelta(0, {}, "tool_calls")]) });
 
 const wireAnswer = (path, body) => {
+	if (path === "/pp/bounds/v1/chat/completions") {
+		return { status: 200, body: JSON.stringify({ id: "chatcmpl_bounds", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
+	}
 	if (path === "/pp/cp/v1/chat/completions") return cpChatAnswerFor(body);
 	if (path === "/pp/cp/v1/responses") return cpResponsesAnswerFor(body);
 	if (path === "/pp/cloudflare/accounts/acct-1/ai/v1/chat/completions") return cpCloudflareChat(body);

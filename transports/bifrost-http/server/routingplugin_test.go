@@ -1,9 +1,12 @@
 package server
 
 import (
+	"context"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/configstore"
+	"github.com/capsohq/bifrost/plugins/governance"
 	"github.com/capsohq/bifrost/plugins/routing"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 )
@@ -29,5 +32,28 @@ func TestGetRoutingPluginResolvesRegisteredPlugin(t *testing.T) {
 	// is the symptom that matters, since it is what the reload paths surface to callers.
 	if _, err := server.getRoutingPlugin(); err != nil {
 		t.Fatalf("getRoutingPlugin returned error for a registered routing plugin: %v", err)
+	}
+}
+
+// TestLoadBuiltinGovernancePluginLeavesCallerConfigAlone: the transport defers the worker
+// start on its own copy, so a *governance.Config handed in, which MarshalPluginConfig
+// returns as is, keeps meaning what its owner set, and a reload of it behaves the same.
+func TestLoadBuiltinGovernancePluginLeavesCallerConfigAlone(t *testing.T) {
+	previousLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = previousLogger })
+	source := &governance.Config{}
+	config := &lib.Config{GovernanceConfig: &configstore.GovernanceConfig{}}
+	for range 2 {
+		plugin, err := loadBuiltinPlugin(context.Background(), governance.PluginName, source, config)
+		if err != nil {
+			t.Fatalf("loadBuiltinPlugin: %v", err)
+		}
+		if source.DeferWorkerStart {
+			t.Fatal("the transport's deferred start leaked into the caller's config")
+		}
+		if err := plugin.(*governance.GovernancePlugin).Cleanup(); err != nil {
+			t.Fatalf("Cleanup: %v", err)
+		}
 	}
 }

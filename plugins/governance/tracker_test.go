@@ -712,3 +712,137 @@ func TestUsageTracker_CleanupWaitsForPeriodicDumpBeforeFinalFlush(t *testing.T) 
 	assert.NotContains(t, logger.errors, "failed to dump rate limits to database: %v",
 		"shutdown cancellation must not be logged as a database failure")
 }
+
+// TestGovernanceConstructorsStartWorkersUnlessDeferred pins that a plugin from either
+// constructor runs its workers without another call, as a Go SDK caller expects, while a
+// caller that defers the start gets them only from StartResetWorkers, once.
+func TestGovernanceConstructorsStartWorkersUnlessDeferred(t *testing.T) {
+	newStore := func(t *testing.T) GovernanceStore {
+		store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
+		require.NoError(t, err)
+		return store
+	}
+	constructors := map[string]func(*testing.T, *Config) (*GovernancePlugin, error){
+		"Init": func(_ *testing.T, config *Config) (*GovernancePlugin, error) {
+			return Init(context.Background(), config, NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil, nil)
+		},
+		"InitFromStore": func(t *testing.T, config *Config) (*GovernancePlugin, error) {
+			return InitFromStore(context.Background(), config, NewMockLogger(), newStore(t), nil, nil, nil, nil)
+		},
+	}
+	for name, construct := range constructors {
+		t.Run(name+"/starts", func(t *testing.T) {
+			plugin, err := construct(t, &Config{})
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+			ticker := plugin.tracker.resetTicker
+			require.NotNil(t, ticker, "the constructor must start the workers")
+			plugin.StartResetWorkers(context.Background())
+			require.Same(t, ticker, plugin.tracker.resetTicker, "a later StartResetWorkers must not start them again")
+		})
+		t.Run(name+"/nil config starts", func(t *testing.T) {
+			plugin, err := construct(t, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+			require.NotNil(t, plugin.tracker.resetTicker)
+		})
+		t.Run(name+"/deferred waits", func(t *testing.T) {
+			plugin, err := construct(t, &Config{DeferWorkerStart: true})
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+			require.Nil(t, plugin.tracker.resetTicker, "a deferred start waits for StartResetWorkers")
+			plugin.StartResetWorkers(context.Background())
+			require.NotNil(t, plugin.tracker.resetTicker)
+		})
+		t.Run(name+"/cleanup before a deferred start stops it", func(t *testing.T) {
+			plugin, err := construct(t, &Config{DeferWorkerStart: true})
+			require.NoError(t, err)
+			require.NoError(t, plugin.Cleanup())
+			plugin.StartResetWorkers(context.Background())
+			require.Nil(t, plugin.tracker.resetTicker, "a stopped plugin must not start workers")
+		})
+	}
+}
+
+// TestGovernanceDeferredStartRacesCleanupCleanly: cancelling startup while the server is
+// still loading leaves no worker behind, whichever of the start and Cleanup runs first.
+func TestGovernanceDeferredStartRacesCleanupCleanly(t *testing.T) {
+	for range 50 {
+		ctx, cancel := context.WithCancel(context.Background())
+		plugin, err := Init(ctx, &Config{DeferWorkerStart: true}, NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil, nil)
+		require.NoError(t, err)
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			plugin.StartResetWorkers(ctx)
+		}()
+		go func() {
+			defer wg.Done()
+			cancel()
+		}()
+		go func() {
+			defer wg.Done()
+			require.NoError(t, plugin.Cleanup())
+		}()
+		wg.Wait()
+		done := make(chan struct{})
+		go func() {
+			plugin.tracker.wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("a reset worker outlived Cleanup")
+		}
+	}
+}
+
+// TestGovernanceConstructorRunsStartupResetsBeforeReturning keeps the StartResetWorkers
+// ordering in the constructor path against a real store: the expired counter is reset and
+// the startup lock released before the constructor returns, with the workers then running.
+// A deferred start leaves the stored counter alone until StartResetWorkers runs.
+func TestGovernanceConstructorRunsStartupResetsBeforeReturning(t *testing.T) {
+	for _, deferred := range []bool{false, true} {
+		t.Run(fmt.Sprintf("deferred=%t", deferred), func(t *testing.T) {
+			ctx := context.Background()
+			logger := NewMockLogger()
+			configStore, err := configstore.NewConfigStore(ctx, &configstore.Config{
+				Enabled: true,
+				Type:    configstore.ConfigStoreTypeSQLite,
+				Config:  &configstore.SQLiteConfig{Path: t.TempDir() + "/startup.db"},
+			}, logger)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, configStore.Close(ctx)) })
+
+			anchor := time.Now().Add(-24 * time.Hour).Truncate(time.Second)
+			rateLimit := buildRateLimitWithUsage("startup-rate-limit", 1000, 900, 1000, 900)
+			rateLimit.CreatedAt = anchor
+			rateLimit.TokenLastReset = anchor
+			rateLimit.RequestLastReset = anchor
+			require.NoError(t, configStore.CreateRateLimit(ctx, rateLimit))
+			store, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil, nil)
+			require.NoError(t, err)
+
+			plugin, err := InitFromStore(ctx, &Config{DeferWorkerStart: deferred}, logger, store, configStore, nil, nil, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+			persisted, err := configStore.GetRateLimit(ctx, rateLimit.ID)
+			require.NoError(t, err)
+			if deferred {
+				require.True(t, persisted.TokenLastReset.Equal(anchor), "a deferred start must not reset during construction")
+				require.Nil(t, plugin.tracker.resetTicker)
+				plugin.StartResetWorkers(ctx)
+				persisted, err = configStore.GetRateLimit(ctx, rateLimit.ID)
+				require.NoError(t, err)
+			}
+			require.True(t, persisted.TokenLastReset.After(anchor), "the expired counter must be reset before workers run")
+			require.NotNil(t, plugin.tracker.resetTicker)
+			lock, err := configStore.GetLock(ctx, "governance_startup_reset")
+			require.NoError(t, err)
+			require.Nil(t, lock, "the startup lock must be released")
+		})
+	}
+}

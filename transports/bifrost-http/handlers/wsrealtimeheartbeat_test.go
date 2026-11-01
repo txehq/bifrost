@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -243,6 +245,139 @@ func TestBufferRealtimeTranscriptionBootstrapPreservesFrames(t *testing.T) {
 		if buffered[i].messageType != frames[i].messageType || string(buffered[i].data) != string(frames[i].data) {
 			t.Fatalf("buffered[%d] = (%d, %q), want (%d, %q)", i, buffered[i].messageType, buffered[i].data, frames[i].messageType, frames[i].data)
 		}
+	}
+}
+
+// realtimeBootstrapFrame builds a text frame of exactly size bytes. With a model it is the
+// session.update that ends bootstrap; without one it is padding the loop keeps reading past.
+func realtimeBootstrapFrame(t *testing.T, size int, withModel bool) []byte {
+	t.Helper()
+	prefix, suffix := `{"type":"input_audio_buffer.append","audio":"`, `"}`
+	if withModel {
+		prefix = `{"type":"session.update","session":{"audio":{"input":{"transcription":{"model":"openai/gpt-4o-transcribe"}}}},"padding":"`
+	}
+	padding := size - len(prefix) - len(suffix)
+	if padding < 0 {
+		t.Fatalf("frame of %d bytes cannot hold its %d bytes of JSON", size, len(prefix)+len(suffix))
+	}
+	return []byte(prefix + strings.Repeat("A", padding) + suffix)
+}
+
+// runRealtimeBootstrap writes frames from the peer and runs one bootstrap over a real connection.
+func runRealtimeBootstrap(t *testing.T, frames [][]byte) (int, string, error) {
+	t.Helper()
+	serverConn, peerConn, cleanup := dialRealtimeTestConn(t)
+	defer cleanup()
+	go func() {
+		for _, frame := range frames {
+			if peerConn.WriteMessage(ws.TextMessage, frame) != nil {
+				return
+			}
+		}
+	}()
+	got, model, err := bufferRealtimeTranscriptionBootstrap(newRealtimeClientConn(serverConn))
+	return len(got), model, err
+}
+
+// TestBufferRealtimeTranscriptionBootstrapBudgetBoundary pins limit-1, limit and limit+1
+// of the aggregate allowance on one message and across reads, so the allowance is what
+// remains, not the 1 MiB of a single message.
+func TestBufferRealtimeTranscriptionBootstrapBudgetBoundary(t *testing.T) {
+	const limit = realtimeTranscriptionBootstrapMaxBytes
+	const first = 400 << 10
+	for _, tc := range []struct {
+		name  string
+		sizes []int
+		fits  bool
+	}{
+		{"one message limit-1", []int{limit - 1}, true},
+		{"one message limit", []int{limit}, true},
+		{"one message limit+1", []int{limit + 1}, false},
+		{"two reads limit-1", []int{first, limit - first - 1}, true},
+		{"two reads limit", []int{first, limit - first}, true},
+		{"two reads limit+1", []int{first, limit - first + 1}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frames := make([][]byte, len(tc.sizes))
+			for i, size := range tc.sizes {
+				frames[i] = realtimeBootstrapFrame(t, size, i == len(tc.sizes)-1)
+			}
+			count, model, err := runRealtimeBootstrap(t, frames)
+			if tc.fits {
+				if err != nil || count != len(frames) || model != "openai/gpt-4o-transcribe" {
+					t.Fatalf("frames %d, model %q, err %v", count, model, err)
+				}
+				return
+			}
+			if !errors.Is(err, ws.ErrReadLimit) {
+				t.Fatalf("bootstrap error = %v, want the read limit to stop the read", err)
+			}
+		})
+	}
+}
+
+// TestBufferRealtimeTranscriptionBootstrapStopsAtASpentAllowance: once the allowance is
+// used up with no model, bootstrap ends without reading another frame.
+func TestBufferRealtimeTranscriptionBootstrapStopsAtASpentAllowance(t *testing.T) {
+	_, _, err := runRealtimeBootstrap(t, [][]byte{realtimeBootstrapFrame(t, realtimeTranscriptionBootstrapMaxBytes, false)})
+	if err == nil || errors.Is(err, ws.ErrReadLimit) || !strings.Contains(err.Error(), "exceeded 1 MiB") {
+		t.Fatalf("bootstrap error = %v, want the spent allowance reported before another read", err)
+	}
+}
+
+// TestBufferRealtimeTranscriptionBootstrapRefusesOnTheFrameHeader: a frame that declares
+// more than the allowance is refused from its header, with no payload read or buffered,
+// and the peer is told why. The peer sends the header and then nothing at all.
+func TestBufferRealtimeTranscriptionBootstrapRefusesOnTheFrameHeader(t *testing.T) {
+	serverConn, peerConn, cleanup := dialRealtimeTestConn(t)
+	defer cleanup()
+
+	header := make([]byte, 14)
+	header[0], header[1] = 0x81, 0x80|127 // FIN text, masked, 64-bit length
+	binary.BigEndian.PutUint64(header[2:], 1<<40)
+	if _, err := peerConn.UnderlyingConn().Write(header); err != nil {
+		t.Fatalf("write header: %v", err)
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		_, _, err := bufferRealtimeTranscriptionBootstrap(newRealtimeClientConn(serverConn))
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		if !errors.Is(err, ws.ErrReadLimit) {
+			t.Fatalf("bootstrap error = %v, want the read limit", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("bootstrap waited for the payload of a frame its header already put over the allowance")
+	}
+	_ = peerConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, _, err := peerConn.ReadMessage()
+	if !ws.IsCloseError(err, ws.CloseMessageTooBig) {
+		t.Fatalf("peer read = %v, want close 1009", err)
+	}
+}
+
+// TestBufferRealtimeTranscriptionBootstrapLiftsTheLimitAfterwards: the bootstrap limit
+// belongs to bootstrap. An admitted session reads frames past it, as it always did.
+func TestBufferRealtimeTranscriptionBootstrapLiftsTheLimitAfterwards(t *testing.T) {
+	serverConn, peerConn, cleanup := dialRealtimeTestConn(t)
+	defer cleanup()
+	large := realtimeBootstrapFrame(t, 2*realtimeTranscriptionBootstrapMaxBytes, false)
+	go func() {
+		if peerConn.WriteMessage(ws.TextMessage, realtimeBootstrapFrame(t, 256, true)) != nil {
+			return
+		}
+		_ = peerConn.WriteMessage(ws.TextMessage, large)
+	}()
+	if _, _, err := bufferRealtimeTranscriptionBootstrap(newRealtimeClientConn(serverConn)); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	_ = serverConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, message, err := serverConn.ReadMessage()
+	if err != nil || len(message) != len(large) {
+		t.Fatalf("frame after bootstrap: %d bytes, err %v, want %d bytes", len(message), err, len(large))
 	}
 }
 

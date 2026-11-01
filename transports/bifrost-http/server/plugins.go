@@ -129,7 +129,14 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 			return nil, fmt.Errorf("failed to marshal governance plugin config: %w", err)
 		}
 		inMemoryStore := &GovernanceInMemoryStore{Config: bifrostConfig}
-		governancePlugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore,
+		// A copy: MarshalPluginConfig hands back a *governance.Config source as is, and
+		// deferring the start here must not change the caller's config.
+		deferredConfig := governance.Config{}
+		if governanceConfig != nil {
+			deferredConfig = *governanceConfig
+		}
+		deferredConfig.DeferWorkerStart = true
+		governancePlugin, err := governance.Init(ctx, &deferredConfig, logger, bifrostConfig.ConfigStore,
 			bifrostConfig.GovernanceConfig, bifrostConfig.ModelCatalog,
 			bifrostConfig.MCPCatalog, inMemoryStore)
 		if err != nil {

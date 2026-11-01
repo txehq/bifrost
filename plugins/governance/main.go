@@ -85,6 +85,11 @@ type Config struct {
 	DisableAutoToolInject *bool     `json:"disable_auto_tool_inject"`
 	// Reports the live client.enforce_vk_object_ownership; nil means on
 	ObjectOwnershipEnforced func() bool `json:"-"`
+	// DeferWorkerStart leaves the reset, persistence and cleanup workers stopped
+	// until the caller runs StartResetWorkers, for a caller that controls when
+	// startup resets run (the HTTP transport). Otherwise the constructor starts
+	// them, so a Go SDK caller gets them without another step.
+	DeferWorkerStart bool `json:"-"`
 }
 
 type InMemoryStore interface {
@@ -225,7 +230,8 @@ type GovernancePlugin struct {
 //
 // Side effects:
 //   - Logs warnings when optional dependencies are missing.
-//   - May perform startup resets via the usage tracker when `configStore` is non-nil.
+//   - Runs StartResetWorkers (startup resets, then the usage tracker's workers)
+//     before returning, unless config.DeferWorkerStart is set.
 //
 // Alternative entry point:
 //   - Use InitFromStore to inject a custom GovernanceStore implementation instead
@@ -296,6 +302,9 @@ func Init(
 
 		objectOwnershipEnforcedFn: objectOwnershipEnforcedFn,
 	}
+	if config == nil || !config.DeferWorkerStart {
+		plugin.StartResetWorkers(ctx)
+	}
 	return plugin, nil
 }
 
@@ -365,6 +374,9 @@ func InitFromStore(
 		disableAutoToolInject: disableAutoToolInject,
 
 		objectOwnershipEnforcedFn: objectOwnershipEnforcedFn,
+	}
+	if config == nil || !config.DeferWorkerStart {
+		plugin.StartResetWorkers(ctx)
 	}
 	return plugin, nil
 }
