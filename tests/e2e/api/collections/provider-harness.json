@@ -289605,25 +289605,11 @@
       "description": "TXE-5543 regression. Local fixture regression: run with warpWire=1 and warpWireFixtureUrl against the gateway of tests/e2e/api/provider_config/warp-wire.config.json, with a logs store and a vector store, and tests/e2e/api/runners/warp-wire-fixture.mjs as the only upstream. A retired namespace holds vectors of a space nothing records, so moving back onto one is refused; clearing the space in place is refused, and clearing it onto a new namespace retires the old one. A turn that searches reports its model calls and each query embedding once: 110 tokens per model call and 7 per embedding on this fixture. Model turns held open, backfill pages, tied timestamps and the chart, trace and search reads cannot be sent from a collection: tests/e2e/api/runners/run-warp-wire.mjs covers them. Run the whole folder in order.",
       "item": [
         {
-          "name": "openai warp-preservation setup: enable warp feature flag",
+          "name": "openai warp-preservation setup: warp feature flag is on",
           "request": {
-            "method": "PUT",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": "{{baseUrl}}/api/feature-flags/warp",
-            "body": {
-              "mode": "raw",
-              "raw": "{\"enabled\":true}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/feature-flags"
           },
           "event": [
             {
@@ -289649,6 +289635,7 @@
                 "exec": [
                   "pm.test('warp-preservation: warp flag enabled', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().flags.filter(function (f) { return f.id === 'warp' && f.enabled; }).length, pm.response.text()).to.equal(1);",
                   "});"
                 ]
               }

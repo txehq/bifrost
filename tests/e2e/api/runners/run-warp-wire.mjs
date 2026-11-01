@@ -263,6 +263,9 @@ async function checkCharts() {
 	const logs = [];
 	const add = (provider, status, count) => { for (let i = 0; i < count; i++) logs.push(logRow(`chart-${tag}-${logs.length}`, at, { provider, status, team_id: team, cost: 0.01, tokens: 10 })); };
 	add("openai", "success", 60); add("openai", "error", 20); add("openai", "cancelled", 20); add("openai", "processing", 10); add("azure", "success", 10); add("azure", "error", 10);
+	// Every request failed and none cost anything.
+	const downModel = `wire-down-${tag}`;
+	for (let i = 0; i < 5; i++) logs.push(logRow(`chart-${tag}-down-${i}`, at, { provider: "cerebras", model: downModel, status: "error" }));
 	await seed(logs);
 	if (backend === "postgres") await configSql("REFRESH MATERIALIZED VIEW mv_logs_hourly");
 
@@ -284,6 +287,8 @@ async function checkCharts() {
 		row(`chart ${window} team agrees with model`, byValue(points)[team] === 25, JSON.stringify(points).slice(0, 200));
 		points = await chart(`success-${window}`, { metric: "error_rate", group: "provider", filters: { ...filters, status: ["success"] } });
 		row(`chart ${window} excluded errors are not counted`, byValue(points).openai === 0 && byValue(points).azure === 0, JSON.stringify(points).slice(0, 200));
+		points = await chart(`down-${window}`, { metric: "error_rate", group: "provider", filters: { ...filters, models: [downModel] } });
+		row(`chart ${window} a provider with no spend still has a bar`, byValue(points).cerebras === 100, JSON.stringify(points).slice(0, 200));
 		points = await chart(`cost-${window}`, { metric: "cost", group: "model", filters });
 		row(`chart ${window} cost sums across providers`, Array.isArray(points) && points.length === 1 && close(points[0].y, 1.2), JSON.stringify(points).slice(0, 200));
 	}
@@ -411,8 +416,9 @@ async function checkSearch() {
 }
 
 async function main() {
-	const flag = await api("PUT", "/api/feature-flags/warp", { enabled: true });
-	if (flag.status !== 200) setupFailure(`feature flag ${flag.status} ${flag.text.slice(0, 200)}`);
+	// warp-wire.config.json turns the flag on and locks it.
+	const flags = await api("GET", "/api/feature-flags");
+	if (!flags.json?.flags?.some((flag) => flag.id === "warp" && flag.enabled)) setupFailure(`feature flag ${flags.status} ${flags.text.slice(0, 200)}`);
 	await checkConfig();
 	await checkCustomProviders();
 	await checkUsage();

@@ -406,13 +406,24 @@ func barChartPoints(ctx context.Context, deps *ToolDeps, filters *logstore.Searc
 		if err != nil {
 			return nil, fmt.Errorf("provider lookup failed: %w", err)
 		}
-		totals, err := providerTotals(ctx, deps, &scoped, discovered.Providers)
+		// The cost histogram lists only providers that cost something, and a provider
+		// whose every request failed costs nothing: it is the one bar a failure rate
+		// is for. The rankings count every finished request.
+		ranked, err := deps.logManager.GetModelRankings(ctx, &scoped)
+		if err != nil {
+			return nil, fmt.Errorf("provider lookup failed: %w", err)
+		}
+		providers := discovered.Providers
+		for _, r := range ranked.Rankings {
+			providers = append(providers, r.Provider)
+		}
+		totals, err := providerTotals(ctx, deps, &scoped, providers)
 		if err != nil {
 			return nil, fmt.Errorf("per-provider totals failed: %w", err)
 		}
 		var failed map[string]providerTotal
 		if countErrors {
-			if failed, err = providerTotals(ctx, deps, &errorsOnly, discovered.Providers); err != nil {
+			if failed, err = providerTotals(ctx, deps, &errorsOnly, providers); err != nil {
 				return nil, fmt.Errorf("per-provider error totals failed: %w", err)
 			}
 		}
