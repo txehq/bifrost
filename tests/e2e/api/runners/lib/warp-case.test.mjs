@@ -346,4 +346,37 @@ test("a forbidden question is recorded as a failure, not answered", () => {
   assert.match(recorded.tests[0].message, /asked a question: Which team\?/);
 });
 
+// A 200 whose JSON is not an object (null, false, 0, "", an array) carries no answer to check,
+// so it must fail the case rather than skip every expectation.
+test("a 200 whose JSON is not an object fails the case", () => {
+  for (const raw of ["null", "false", "0", '""', "[]", "[1]"]) {
+    const { pm, recorded } = fakePm();
+    const lib = createWarpLib(pm);
+    const c = { name: "c", ask: "q", expect: { answerAll: ["anything"] } };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      lib.prerequest(c);
+      pm.respond(200, raw);
+      lib.test(c);
+    }
+    assert.strictEqual(recorded.tests.length, 1, raw);
+    assert.strictEqual(recorded.tests[0].ok, false, `HTTP 200 with ${raw} passed the case`);
+    assert.match(recorded.tests[0].message, /response is not a JSON object/, raw);
+  }
+});
+
+// The link must be the one framework/warp/prompt.go tells Warp to offer, and framework/warp/links.go
+// accepts either owner, so a refusal naming the other tracker passes too.
+test("capability refusals expect the prompt's feature-request link", () => {
+  const { pm } = fakePm();
+  const lib = createWarpLib(pm);
+  const prompt = readFileSync(new URL("../../../../../framework/warp/prompt.go", import.meta.url), "utf8");
+  const link = prompt.match(/https:\/\/github\.com\/[\w-]+\/bifrost\/issues\/new/)[0];
+  const refusal = `I can't produce files. Request it here: ${link}?title=[Warp]+csv&labels=enhancement`;
+  assert.deepStrictEqual(lib.evaluate(answered(refusal), caseFromCollection("cap-csv").expect), []);
+  const other = refusal.replace(/github\.com\/[\w-]+\//, link.includes("maximhq") ? "github.com/capsohq/" : "github.com/maximhq/");
+  assert.deepStrictEqual(lib.evaluate(answered(other), caseFromCollection("cap-csv").expect), []);
+  const greeting = lib.evaluate(answered(`Hi! I answer questions about this deployment. ${link}`), caseFromCollection("greet-capabilities").expect);
+  assert.ok(greeting.some((f) => /issues/.test(f)), "a greeting carrying the feature link must fail its answerNone");
+});
+
 console.log(`\n${passed} passed`);

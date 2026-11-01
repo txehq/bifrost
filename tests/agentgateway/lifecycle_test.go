@@ -373,7 +373,11 @@ func TestSecurityLive(t *testing.T) {
 	lifecycleCard := &a2a.AgentCard{Name: "security-fixture", Version: "1", Capabilities: a2a.AgentCapabilities{Streaming: true, ExtendedAgentCard: true}, DefaultInputModes: []string{"text/plain"}, DefaultOutputModes: []string{"text/plain"}}
 	lifecycleCard.Skills = []a2a.AgentSkill{{ID: "fixture", Name: "Lifecycle", Description: "Finite lifecycle validation", Tags: []string{"validation"}}}
 	lifecycleCard.SupportedInterfaces = []*a2a.AgentInterface{a2a.NewAgentInterface(upstream.URL+"/jsonrpc", a2a.TransportProtocolJSONRPC)}
-	handler, _ := fixture.NewLifecycleHandler(lifecycleCard)
+	// This handler backs the published UI fixture, whose "interruptible stream" the capture test
+	// reads to completion; nothing here drives its checkpoint, so open the gate now rather than
+	// leave the stream parked at checkpoint 1.
+	handler, releaseCheckpoint := fixture.NewLifecycleHandler(lifecycleCard)
+	releaseCheckpoint()
 	grpcServer := grpc.NewServer()
 	a2apb.RegisterA2AServiceServer(grpcServer, a2agrpc.NewHandler(handler))
 	go grpcServer.Serve(listener)
@@ -556,13 +560,11 @@ func TestSecurityLive(t *testing.T) {
 			e = driver.AssertLogs(logCtx, gw, lifecycleName, lifecycleResult, false, driver.Tags{})
 			stopLogs()
 			if e != nil {
+				// Missing, duplicated or miscorrelated history is a failure, not a note.
 				logObservations = append(logObservations, fmt.Sprintf("%s -> %s: %v", inbound, binding, e))
-				t.Logf("OBSERVATION logs %s -> %s: %v", inbound, binding, e)
-			}
-			if e == nil {
-				t.Logf("PASS lifecycle + logs %s -> %s", inbound, binding)
+				t.Errorf("logs %s -> %s: %v", inbound, binding, e)
 			} else {
-				t.Logf("PASS native lifecycle %s -> %s; log correlation unresolved", inbound, binding)
+				t.Logf("PASS lifecycle + logs %s -> %s", inbound, binding)
 			}
 		}
 	}
@@ -636,7 +638,7 @@ func TestSecurityLive(t *testing.T) {
 			time.Sleep(time.Second)
 		}
 	}
-	t.Logf("log observations=%d", len(logObservations))
+	t.Logf("log failures=%d", len(logObservations))
 	t.Logf("PASS live explicitOperations=%d runtimeHTTP=%d oauthDiscovery=%d oauthToken=%d; resources=%s", requests, runtimeCalls.Load(), discoveryCalls.Load(), tokenCalls.Load(), id)
 }
 
@@ -839,6 +841,9 @@ func TestSecurityLiveCapture(t *testing.T) {
 	var cc map[string]json.RawMessage
 	json.Unmarshal(cfg["client_config"], &cc)
 	original := cc["a2a_store_raw_request_response"]
+	// Registered before the first mutation so a fatal failure in either phase still turns raw
+	// capture back to what it was; the test's own context is already done by then.
+	restoreClientConfigOnCleanup(t, gw, cc, cfg["framework_config"], "a2a_store_raw_request_response")
 	record := func(line string) {
 		f, e := os.OpenFile("../../tmp/agentgateway-security-20261015-mutations.md", os.O_APPEND|os.O_WRONLY, 0600)
 		if e != nil {
@@ -954,10 +959,46 @@ func TestSecurityLiveCapture(t *testing.T) {
 		}
 		t.Logf("PASS fresh capture=%t unary+SSE events=%d; ordinarylogs present", enabled, events)
 	}
-	cc["a2a_store_raw_request_response"] = original
-	record(fmt.Sprintf("attempt restore /api/config a2a_store_raw_request_response=%s", original))
-	expect("PUT", "/api/config", map[string]any{"client_config": cc, "framework_config": cfg["framework_config"]}, 200)
-	record(fmt.Sprintf("restored /api/config a2a_store_raw_request_response=%s", original))
+	record(fmt.Sprintf("restore on cleanup /api/config a2a_store_raw_request_response=%s", original))
+}
+
+// restoreClientConfigOnCleanup snapshots client_config now and, when the test ends however it
+// ends, PUTs the snapshot back with a fresh bounded context and checks field reads back as it was.
+func restoreClientConfigOnCleanup(t *testing.T, gw *driver.Gateway, cc map[string]json.RawMessage, frameworkConfig json.RawMessage, field string) {
+	t.Helper()
+	snapshot := make(map[string]json.RawMessage, len(cc))
+	for k, v := range cc {
+		snapshot[k] = append(json.RawMessage(nil), v...)
+	}
+	t.Cleanup(func() {
+		cleanCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stop()
+		status, body, err := gw.Do(cleanCtx, "PUT", "/api/config", map[string]any{"client_config": snapshot, "framework_config": frameworkConfig}, nil)
+		if err != nil || status != http.StatusOK {
+			t.Errorf("restore client_config.%s HTTP %d: %v: %s", field, status, err, body)
+			return
+		}
+		status, body, err = gw.Do(cleanCtx, "GET", "/api/config?from_db=true", nil, nil)
+		var out map[string]json.RawMessage
+		json.Unmarshal(body, &out)
+		var current map[string]json.RawMessage
+		json.Unmarshal(out["client_config"], &current)
+		if err != nil || status != http.StatusOK || !jsonEqual(current[field], snapshot[field]) {
+			t.Errorf("client_config.%s after restore = %s, want %s (HTTP %d: %v)", field, current[field], snapshot[field], status, err)
+		}
+	})
+}
+
+// jsonEqual compares two JSON values by meaning, treating an absent value as null.
+func jsonEqual(a, b json.RawMessage) bool {
+	var x, y any
+	if len(a) > 0 && json.Unmarshal(a, &x) != nil {
+		return false
+	}
+	if len(b) > 0 && json.Unmarshal(b, &y) != nil {
+		return false
+	}
+	return reflect.DeepEqual(x, y)
 }
 
 // TestSecurityLivePropagation checks live node-local inspection and origin updates while the finite UI fixture is active.
@@ -1032,6 +1073,9 @@ func TestSecurityLivePropagation(t *testing.T) {
 	}
 	var baseline []string
 	json.Unmarshal(cc["a2a_private_allowlist"], &baseline)
+	// Registered before the denied phase revokes loopback, so a fatal failure there still puts the
+	// baseline allowlist back.
+	restoreClientConfigOnCleanup(t, gw, cc, cfg["framework_config"], "a2a_private_allowlist")
 	denied := []string{}
 	for _, entry := range baseline {
 		if entry != "127.0.0.1" && entry != "localhost" {

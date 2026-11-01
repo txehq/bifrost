@@ -160,6 +160,7 @@ NOT_DIALLED_HOSTS = {
     "does-not-exist-h150.invalid": "OpenAI Responses MCP tool server_url; OpenAI dials it, and .invalid never resolves",
     "en.wikipedia.org": "googleSearch excludeDomains filter value, not a URL anyone fetches",
     "petstore3.swagger.io": "servers/base_url inside the inline specs of the 229 mcp-openapi-spec rows; no tool is called, and the rows carry the setup token, so the auth-bypassed public-target DNS check never runs",
+    "upload.wikimedia.org": "Volcengine multimodal embedding image_url in the 277 rows - Volcengine fetches it server-side",
     "placeholder.search.windows.net": "Azure AI Search placeholder in a request body; never resolved",
     "client.example": "push callback URL the gateway stores in the 266 a2a-push-tenancy rows; the fixture agent never pushes, so no delivery dials it",
     "intruder.example": "another tenant's attempted push callback URL in the 266 a2a-push-tenancy rows; refused before anything is stored or dialled",

@@ -49,7 +49,13 @@ func TestMain(m *testing.M) {
 
 	gatewayUp = gatewayHealthy()
 	if !gatewayUp {
-		fmt.Printf("live e2e: gateway at %s is not reachable; every test will skip\n", gatewayURL)
+		// A run that reaches no gateway tests nothing, so it fails unless the caller asked for
+		// only the offline helper tests (the fake server and client unit tests) with LIVE_OFFLINE=1.
+		if os.Getenv("LIVE_OFFLINE") != "1" {
+			fmt.Printf("live e2e: gateway at %s is not reachable; start it (see README.md) or set LIVE_OFFLINE=1 to run only the offline tests\n", gatewayURL)
+			os.Exit(1)
+		}
+		fmt.Printf("live e2e: LIVE_OFFLINE=1 and gateway at %s is not reachable; every gateway test will skip\n", gatewayURL)
 	}
 	if upstreamMode == fakeUpstream && gatewayUp {
 		var err error
@@ -90,7 +96,7 @@ func gatewayHealthy() bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// requireGateway skips when no gateway answers.
+// requireGateway skips when no gateway answers, which TestMain allows only under LIVE_OFFLINE=1.
 func requireGateway(t *testing.T) {
 	t.Helper()
 	if !gatewayUp {

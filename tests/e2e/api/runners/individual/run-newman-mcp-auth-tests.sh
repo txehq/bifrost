@@ -33,6 +33,9 @@ cd "$API_DIR"
 COLLECTION="collections/bifrost-v1-mcp-auth.postman_collection.json"
 REPORT_DIR="newman-reports/mcp-auth"
 VK_VALUE="sk-bf-mcp-test-key"
+# Each fresh gateway has no admin account, so the OSS setup lock refuses every /api call without
+# this token. It goes into the server's config.json and onto every request.
+SETUP_TOKEN="${BIFROST_E2E_SETUP_TOKEN:-${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}}"
 VK_INACTIVE_VALUE="sk-bf-mcp-inactive-key"
 MCP_UPSTREAM_DIR="$REPO_ROOT/examples/mcps/http-no-ping-server"
 MCP_UPSTREAM_PORT="3001"
@@ -94,6 +97,8 @@ if [ ! -f "$COLLECTION" ]; then
 fi
 
 mkdir -p "$REPORT_DIR"
+SETUP_COLLECTION="$REPORT_DIR/$(basename "$COLLECTION" .postman_collection.json)-setup-token.postman_collection.json"
+node "$SCRIPT_DIR/../add-setup-token-header.mjs" "$COLLECTION" "$SETUP_COLLECTION"
 
 # Tracks the running servers + temp dirs so the trap can always clean up.
 CURRENT_PID=""
@@ -167,6 +172,7 @@ write_config() {
     cat > "$dir/config.json" <<EOF
 {
   "\$schema": "https://www.getbifrost.ai/schema",
+  "setup_token": "$SETUP_TOKEN",
   "client": {
     "drop_excess_requests": false,
     "initial_pool_size": 50,
@@ -174,6 +180,7 @@ write_config() {
     "enable_logging": false,
     "enforce_auth_on_inference": false,
     "mcp_server_auth_mode": "$mode",
+    "mcp_enable_temp_token_auth": true,
     $oauth_block
     "max_request_body_size_mb": 100
   },
@@ -240,8 +247,9 @@ run_mode() {
         echo -e "${RED}   Server did not start within 60s${NC}"; cat "$server_log"; OVERALL_EXIT=1
     else
         local report_prefix="${REPORT_DIR}/${mode}"
-        local cmd=(newman run "$COLLECTION"
+        local cmd=(newman run "$SETUP_COLLECTION"
             --env-var "base_url=http://localhost:$PORT"
+            --env-var "setup_token=$SETUP_TOKEN"
             --env-var "auth_mode=$mode"
             --env-var "vk_value=$VK_VALUE"
             --env-var "vk_inactive_value=$VK_INACTIVE_VALUE"

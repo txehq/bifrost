@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Bifrost V1 - Virtual Key Object Ownership",
-    "description": "client.enforce_vk_object_ownership end to end. Two virtual keys share one provider key. With the setting on, a file the owner uploads is a 404 to the other key on retrieve, download and delete and is missing from its list, while the owner still reaches it. Turned off, the other key retrieves, downloads and lists the file, and the owner uploads a second file. Turned back on, both files are a 404 to the other key and missing from its list, which shows the creator is recorded while the setting is off. Teardown deletes both files and both keys and restores the client config snapshot. Files are the probe because they are free; the same setting covers batches, videos, containers, cached contents and live sessions. Known limit: a fresh install reads back log_retention_days 0, which PUT /api/config refuses, so the snapshot raises it to 30 and Teardown restores 30. If a run is killed before Teardown and leaves ownership off, the next run's first check (enforce_vk_object_ownership is on by default) fails. Passthrough (TXE-5023): tuning jobs and tuned models record no creator, so with the setting on a virtual key is refused (403) when it lists, cancels or reads them through /openai_passthrough, in any spelling; a method-override header, sent directly or through x-bf-eh-*, never reaches the provider, so an upload is not turned into a list; the owner still reaches its file and chat completions still pass. With the setting off the tuning list reaches the provider.",
+    "description": "client.enforce_vk_object_ownership end to end. Two virtual keys share one provider key. With the setting on, a file the owner uploads is a 404 to the other key on retrieve, download and delete and is missing from its list, while the owner still reaches it. Turned off, the other key retrieves, downloads and lists the file, and the owner uploads a second file. Turned back on, both files are a 404 to the other key and missing from its list, which shows the creator is recorded while the setting is off. Teardown deletes both files and both keys and restores the client config snapshot. Files are the probe because they are free; the same setting covers batches, videos, containers, cached contents and live sessions. Known limit: a fresh install reads back log_retention_days 0, which PUT /api/config refuses, so the snapshot uses the gateway default of 365 and Teardown restores 365. If newman stops before Teardown, the runner restores the ownership setting it found. Passthrough (TXE-5023): tuning jobs and tuned models record no creator, so with the setting on a virtual key is refused (403) when it lists, cancels or reads them through /openai_passthrough, in any spelling; a method-override header, sent directly or through x-bf-eh-*, never reaches the provider, so an upload is not turned into a list; the owner still reaches its file and chat completions still pass. With the setting off the tuning list reaches the provider.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -80,7 +80,9 @@
                   "// and Teardown restores it verbatim.",
                   "var snap = cc || {};",
                   "// A fresh install reports log_retention_days 0, which the PUT validator rejects (must be >= 1).",
-                  "if (!snap.log_retention_days || snap.log_retention_days < 1) { snap.log_retention_days = 30; }",
+                  "// 0 means the gateway default of 365 days, so the snapshot restores that, not a shorter window",
+                  "// that would delete history on the next cleanup.",
+                  "if (!snap.log_retention_days || snap.log_retention_days < 1) { snap.log_retention_days = 365; }",
                   "pm.collectionVariables.set('client_config_snapshot', JSON.stringify(snap));",
                   "// The setting is on unless an operator turned it off; an omitted value means on.",
                   "pm.test('enforce_vk_object_ownership is on by default', function () { pm.expect(cc.enforce_vk_object_ownership, 'client_config: ' + JSON.stringify(cc).slice(0, 400)).to.not.equal(false); });"
@@ -629,7 +631,8 @@
                   "pm.test('Other VK file list returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
                   "var body = {};",
                   "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-                  "var ids = (body.data || []).map(function (f) { return f.id; });",
+                  "pm.test('File list is a JSON object with a data array', function () { pm.expect(Array.isArray(body.data), 'list: ' + pm.response.text().slice(0, 400)).to.be.true; });",
+                  "var ids = (Array.isArray(body.data) ? body.data : []).map(function (f) { return f.id; });",
                   "pm.test('Other VK file list omits file_1_id', function () { pm.expect(ids, 'list: ' + pm.response.text().slice(0, 400)).to.not.include(pm.collectionVariables.get('file_1_id')); });"
                 ]
               }
@@ -743,7 +746,8 @@
                   "pm.test('Owner VK file list returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
                   "var body = {};",
                   "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-                  "var ids = (body.data || []).map(function (f) { return f.id; });",
+                  "pm.test('File list is a JSON object with a data array', function () { pm.expect(Array.isArray(body.data), 'list: ' + pm.response.text().slice(0, 400)).to.be.true; });",
+                  "var ids = (Array.isArray(body.data) ? body.data : []).map(function (f) { return f.id; });",
                   "pm.test('Owner VK file list includes file_1_id', function () { pm.expect(ids, 'list: ' + pm.response.text().slice(0, 400)).to.include(pm.collectionVariables.get('file_1_id')); });"
                 ]
               }
@@ -1483,7 +1487,8 @@
                   "pm.test('Other VK file list while off returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
                   "var body = {};",
                   "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-                  "var ids = (body.data || []).map(function (f) { return f.id; });",
+                  "pm.test('File list is a JSON object with a data array', function () { pm.expect(Array.isArray(body.data), 'list: ' + pm.response.text().slice(0, 400)).to.be.true; });",
+                  "var ids = (Array.isArray(body.data) ? body.data : []).map(function (f) { return f.id; });",
                   "pm.test('Other VK file list while off includes file_1_id', function () { pm.expect(ids, 'list: ' + pm.response.text().slice(0, 400)).to.include(pm.collectionVariables.get('file_1_id')); });"
                 ]
               }
@@ -1913,7 +1918,8 @@
                   "pm.test('Other VK file list after re-enabling returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
                   "var body = {};",
                   "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-                  "var ids = (body.data || []).map(function (f) { return f.id; });",
+                  "pm.test('File list is a JSON object with a data array', function () { pm.expect(Array.isArray(body.data), 'list: ' + pm.response.text().slice(0, 400)).to.be.true; });",
+                  "var ids = (Array.isArray(body.data) ? body.data : []).map(function (f) { return f.id; });",
                   "pm.test('Other VK file list after re-enabling omits file_1_id', function () { pm.expect(ids, 'list: ' + pm.response.text().slice(0, 400)).to.not.include(pm.collectionVariables.get('file_1_id')); });",
                   "pm.test('Other VK file list after re-enabling omits file_2_id', function () { pm.expect(ids, 'list: ' + pm.response.text().slice(0, 400)).to.not.include(pm.collectionVariables.get('file_2_id')); });"
                 ]

@@ -892,3 +892,117 @@ func TestAgent_EarlierTurnTextAndReasoningReachClient_ResponsesFormat(t *testing
 		}
 	}
 }
+
+// TestAgent_EarlierTurnReasoningPrecedesLaterReasoning_ChatFormat covers the case a live probe
+// cannot tell apart: when the continuation turn reasons too, the client must still get turn 1's
+// reasoning, ahead of turn 2's. A final message carrying turn 2's reasoning alone would look
+// the same to a client that only checks that some reasoning is present.
+func TestAgent_EarlierTurnReasoningPrecedesLaterReasoning_ChatFormat(t *testing.T) {
+	t.Parallel()
+
+	manager := setupMCPManager(t)
+	require.NoError(t, RegisterEchoTool(manager))
+	require.NoError(t, SetInternalClientAutoExecute(manager, []string{"echo"}))
+	ctx := createTestContext()
+
+	turn1 := CreateChatResponseWithToolCalls([]schemas.ChatAssistantMessageToolCall{
+		GetSampleEchoToolCall("call-1", "1706.03762"),
+	})
+	turn1Message := turn1.Choices[0].ChatNonStreamResponseChoice.Message
+	turn1Message.ChatAssistantMessage.Reasoning = schemas.Ptr("turn-1 reasoning")
+	turn1Message.ChatAssistantMessage.ReasoningDetails = []schemas.ChatReasoningDetails{{
+		Index: 0, Type: schemas.BifrostReasoningDetailsTypeText, Text: schemas.Ptr("turn-1 reasoning"), Signature: schemas.Ptr("sig-turn-1"),
+	}}
+
+	turn2 := CreateChatResponseWithText("1706.03762")
+	turn2Message := turn2.Choices[0].ChatNonStreamResponseChoice.Message
+	turn2Message.ChatAssistantMessage = &schemas.ChatAssistantMessage{
+		Reasoning: schemas.Ptr("turn-2 reasoning"),
+		ReasoningDetails: []schemas.ChatReasoningDetails{{
+			Index: 0, Type: schemas.BifrostReasoningDetailsTypeText, Text: schemas.Ptr("turn-2 reasoning"), Signature: schemas.Ptr("sig-turn-2"),
+		}},
+	}
+
+	mockLLM := &MockLLMCaller{chatResponses: []*schemas.BifrostChatResponse{turn1, turn2}, chatCallCount: 1}
+	originalReq := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Echo the arXiv id of Attention Is All You Need")},
+		}},
+	}
+
+	result, bifrostErr := manager.CheckAndExecuteAgentForChatRequest(ctx, originalReq, turn1, mockLLM.MakeChatRequest)
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, result)
+	require.Equal(t, 2, mockLLM.chatCallCount, "the loop should have made exactly one follow-up call")
+
+	assistant := result.Choices[0].ChatNonStreamResponseChoice.Message.ChatAssistantMessage
+	require.NotNil(t, assistant)
+	require.Len(t, assistant.ReasoningDetails, 2, "both turns' signed thinking must reach the client")
+	signatures := []string{*assistant.ReasoningDetails[0].Signature, *assistant.ReasoningDetails[1].Signature}
+	assert.Equal(t, []string{"sig-turn-1", "sig-turn-2"}, signatures, "turn 1's thinking must come first, signature intact")
+	assert.Equal(t, 0, assistant.ReasoningDetails[0].Index)
+	assert.Equal(t, 1, assistant.ReasoningDetails[1].Index)
+	require.NotNil(t, assistant.Reasoning)
+	first, second := strings.Index(*assistant.Reasoning, "turn-1 reasoning"), strings.Index(*assistant.Reasoning, "turn-2 reasoning")
+	assert.True(t, first >= 0 && second > first, "reasoning text must hold turn 1 then turn 2: %q", *assistant.Reasoning)
+}
+
+// TestAgent_EarlierTurnReasoningPrecedesLaterReasoning_ResponsesFormat is the Responses API
+// parallel: turn 1's reasoning item keeps its encrypted content and comes before turn 2's.
+func TestAgent_EarlierTurnReasoningPrecedesLaterReasoning_ResponsesFormat(t *testing.T) {
+	t.Parallel()
+
+	manager := setupMCPManager(t)
+	require.NoError(t, RegisterEchoTool(manager))
+	require.NoError(t, SetInternalClientAutoExecute(manager, []string{"echo"}))
+	ctx := createTestContext()
+
+	reasoningType := schemas.ResponsesMessageTypeReasoning
+	messageType := schemas.ResponsesMessageTypeMessage
+	assistant := schemas.ResponsesInputMessageRoleAssistant
+	reasoning := func(id, enc string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{ID: schemas.Ptr(id), Type: &reasoningType, ResponsesReasoning: &schemas.ResponsesReasoning{EncryptedContent: schemas.Ptr(enc)}}
+	}
+	turn1 := CreateResponsesResponseWithToolCalls([]schemas.ResponsesToolMessage{{
+		CallID:    schemas.Ptr("call-1"),
+		Name:      schemas.Ptr("bifrostInternal-echo"),
+		Arguments: schemas.Ptr(`{"message": "1706.03762"}`),
+	}})
+	turn1.Output = append([]schemas.ResponsesMessage{reasoning("rs_1", "enc-turn-1")}, turn1.Output...)
+	turn2 := &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{
+		reasoning("rs_2", "enc-turn-2"),
+		{
+			ID: schemas.Ptr("msg_2"), Type: &messageType, Role: &assistant,
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+				Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("1706.03762"),
+			}}},
+		},
+	}}
+
+	mockLLM := &MockLLMCaller{responsesResponses: []*schemas.BifrostResponsesResponse{turn1, turn2}, responsesCallCount: 1}
+	originalReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input:    []schemas.ResponsesMessage{GetSampleResponsesUserMessage("Echo the arXiv id of Attention Is All You Need")},
+	}
+
+	result, bifrostErr := manager.CheckAndExecuteAgentForResponsesRequest(ctx, originalReq, turn1, mockLLM.MakeResponsesRequest)
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, result)
+	require.Equal(t, 2, mockLLM.responsesCallCount, "the loop should have made exactly one follow-up call")
+
+	var encrypted []string
+	for _, item := range result.Output {
+		if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeReasoning && item.ResponsesReasoning != nil && item.ResponsesReasoning.EncryptedContent != nil {
+			encrypted = append(encrypted, *item.ResponsesReasoning.EncryptedContent)
+		}
+	}
+	assert.Equal(t, []string{"enc-turn-1", "enc-turn-2"}, encrypted, "turn 1's reasoning item must come first, encrypted content intact")
+	require.NotEmpty(t, result.Output)
+	last := result.Output[len(result.Output)-1]
+	require.NotNil(t, last.Type)
+	assert.Equal(t, schemas.ResponsesMessageTypeMessage, *last.Type, "the answer comes after both turns' reasoning")
+}

@@ -167,7 +167,12 @@
                   "  pm.test('/oauth2/register is hidden in headers mode (404)', function () { pm.expect(code, pm.response.text()).to.equal(404); });",
                   "  return;",
                   "}",
-                  "pm.test('/oauth2/register is served when issuance is enabled (not 404)', function () { pm.expect(code, pm.response.text()).to.not.equal(404); });"
+                  "pm.test('/oauth2/register is served when issuance is enabled (not 404)', function () { pm.expect(code, pm.response.text()).to.not.equal(404); });",
+                  "// Served and asked with nothing, the endpoint refuses the request itself: a 4xx validation answer. A 5xx is the issuer failing, not answering.",
+                  "pm.test('/oauth2/register answers the empty request with a client error', function () { pm.expect(code, pm.response.text()).to.be.within(400, 499); });",
+                  "var payload = null;",
+                  "try { payload = pm.response.json(); } catch (e) { payload = null; }",
+                  "if (payload !== null) { pm.test('/oauth2/register names an OAuth error', function () { pm.expect(payload.error, pm.response.text()).to.be.a('string').and.not.empty; }); }"
                 ]
               }
             }
@@ -194,7 +199,12 @@
                   "  pm.test('/oauth2/authorize is hidden in headers mode (404)', function () { pm.expect(code, pm.response.text()).to.equal(404); });",
                   "  return;",
                   "}",
-                  "pm.test('/oauth2/authorize is served when issuance is enabled (not 404)', function () { pm.expect(code, pm.response.text()).to.not.equal(404); });"
+                  "pm.test('/oauth2/authorize is served when issuance is enabled (not 404)', function () { pm.expect(code, pm.response.text()).to.not.equal(404); });",
+                  "// Served and asked with nothing, the endpoint refuses the request itself: a 4xx validation answer. A 5xx is the issuer failing, not answering.",
+                  "pm.test('/oauth2/authorize answers the empty request with a client error', function () { pm.expect(code, pm.response.text()).to.be.within(400, 499); });",
+                  "var payload = null;",
+                  "try { payload = pm.response.json(); } catch (e) { payload = null; }",
+                  "if (payload !== null) { pm.test('/oauth2/authorize names an OAuth error', function () { pm.expect(payload.error, pm.response.text()).to.be.a('string').and.not.empty; }); }"
                 ]
               }
             }
@@ -220,7 +230,12 @@
                   "  pm.test('/oauth2/token is hidden in headers mode (404)', function () { pm.expect(code, pm.response.text()).to.equal(404); });",
                   "  return;",
                   "}",
-                  "pm.test('/oauth2/token is served when issuance is enabled (not 404)', function () { pm.expect(code, pm.response.text()).to.not.equal(404); });"
+                  "pm.test('/oauth2/token is served when issuance is enabled (not 404)', function () { pm.expect(code, pm.response.text()).to.not.equal(404); });",
+                  "// Served and asked with nothing, the endpoint refuses the request itself: a 4xx validation answer. A 5xx is the issuer failing, not answering.",
+                  "pm.test('/oauth2/token answers the empty request with a client error', function () { pm.expect(code, pm.response.text()).to.be.within(400, 499); });",
+                  "var payload = null;",
+                  "try { payload = pm.response.json(); } catch (e) { payload = null; }",
+                  "if (payload !== null) { pm.test('/oauth2/token names an OAuth error', function () { pm.expect(payload.error, pm.response.text()).to.be.a('string').and.not.empty; }); }"
                 ]
               }
             }
@@ -1281,6 +1296,9 @@
                   "if (mode === 'headers') { pm.test('session flow runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
                   "pm.test('authorize redirects (302)', function () { pm.expect(pm.response.code).to.equal(302); });",
                   "var loc = pm.response.headers.get('Location') || '';",
+                  "var consent = loc.match(/#t=([^&]+)/);",
+                  "pm.test('the redirect carries the flow\u2019s consent token', function () { pm.expect(consent, 'consent token in ' + loc).to.not.equal(null); });",
+                  "if (consent) { pm.collectionVariables.set('sess_consent_token', decodeURIComponent(consent[1])); }",
                   "var flow = loc.match(/[?&]flow=([^&#]+)/);",
                   "pm.expect(flow, 'flow id').to.not.equal(null);",
                   "pm.collectionVariables.set('sess_flow_id', decodeURIComponent(flow[1]));"
@@ -1312,6 +1330,18 @@
           "name": "Consent flow detail for an anonymous caller",
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The operator's setup token counts as an authenticated consenter. What an anonymous browser",
+                  "// holds is the flow's consent token, which authorizes the page and identifies nobody.",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');",
+                  "pm.request.headers.upsert({ key: 'X-Bifrost-Temp-Token', value: pm.collectionVariables.get('sess_consent_token') || '' });"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -1342,6 +1372,18 @@
         {
           "name": "Consent as session",
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The operator's setup token counts as an authenticated consenter. What an anonymous browser",
+                  "// holds is the flow's consent token, which authorizes the page and identifies nobody.",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');",
+                  "pm.request.headers.upsert({ key: 'X-Bifrost-Temp-Token', value: pm.collectionVariables.get('sess_consent_token') || '' });"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
@@ -1410,8 +1452,19 @@
                   "if (mode === 'headers') { pm.test('session consent gate runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
                   "// The JWT from the virtual-key flow carries a real credential, so enforcing",
                   "// auth on inference leaves it acceptable (within its access_token_ttl).",
-                  "pm.test('virtual-key-identity JWT connects when auth is enforced (not 401)', function () {",
-                  "  pm.expect(pm.response.code, pm.response.text()).to.not.equal(401);",
+                  "// Connecting means initialize succeeds: a 403 or 500 is as much a failure as a 401.",
+                  "pm.test('virtual-key-identity JWT connects when auth is enforced (initialize succeeds)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299);",
+                  "  var text = pm.response.text(), msg = null;",
+                  "  try { msg = JSON.parse(text); } catch (e) {",
+                  "    // A streamable-HTTP server may answer as SSE: the JSON-RPC message is the data line.",
+                  "    var data = text.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); });",
+                  "    try { msg = JSON.parse(data[data.length - 1]); } catch (e2) {}",
+                  "  }",
+                  "  pm.expect(msg, 'a JSON-RPC message: ' + text).to.be.an('object');",
+                  "  pm.expect(msg.error, 'JSON-RPC error: ' + text).to.equal(undefined);",
+                  "  pm.expect(msg.result, 'JSON-RPC result: ' + text).to.be.an('object');",
+                  "  pm.expect(msg.result.protocolVersion, 'initialize result protocolVersion: ' + text).to.be.a('string');",
                   "});"
                 ]
               }

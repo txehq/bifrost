@@ -52,7 +52,8 @@ const NO_REQUEST_TYPE_FILTER = [{ pattern: '"objects"' }];
 // A one-sentence decline, with room for the issue-tracker link Warp offers.
 const REFUSAL_CHARS = 600;
 // The link Warp offers after declining something it cannot do.
-const FEATURE_LINK = "github\\.com/maximhq/bifrost/issues/new";
+// Either owner, as framework/warp/links.go accepts: the prompt names one, a model may write the other.
+const FEATURE_LINK = "github\\.com/(?:maximhq|capsohq)/bifrost/issues/new";
 // A chart render_chart drew: the block, expanded server-side into a spec with
 // points - an unexpanded "chart-1" id alone would not match '"points"'.
 const CHART_BLOCK = ["```warp-chart", '"points":\\['];
@@ -152,7 +153,9 @@ const FOLDERS = [
     name: "Conversation content",
     description: "Seeded prompts cover debugging, pricing/billing, and error explanations; searched through the semantic index the Setup folder backfills.",
     cases: [
-      { id: "content-themes", name: "Summarises what people ask about", ask: "What are people asking about most in the last 7 days?", expect: { toolsAny: CONTENT } },
+      // Themes come from a sample of query_logs rows, not semantic search, and the answer says how
+      // big the sample was and that it is not representative.
+      { id: "content-themes", name: "Summarises what people ask about", ask: "What are people asking about most in the last 7 days?", expect: { toolsAll: ["query_logs"], answerAll: ["sample of[^.]{0,40}\\d[\\d,]*[^.]{0,40}(of|out of)[^.]{0,20}\\d[\\d,]*", "(not[ -]|un)representative"] } },
       { id: "content-debugging", name: "Finds debugging conversations", ask: "Find conversations about debugging code.", expect: { toolsAny: CONTENT, answerAny: ["bug|debug|panic|index|nil|get_user|code review|memory leak"] } },
       { id: "content-billing", name: "Finds pricing and billing questions", ask: "Has anyone asked about pricing or billing?", expect: { toolsAny: CONTENT, answerAny: ["refund|invoice|pricing|billing|subscription|payment"] } },
       { id: "content-error-explained", name: "Finds an assistant explaining an error", ask: "Find requests where the assistant explained an error to someone.", expect: { toolsAny: CONTENT, answerAny: ["429|rate limit|index out of range|panic|nil|error"] } },

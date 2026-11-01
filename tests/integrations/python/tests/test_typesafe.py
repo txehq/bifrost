@@ -527,6 +527,28 @@ _AGREEMENT_FAIL_THRESHOLD = _MATRIX.get("_agreement_fail_threshold", 0.7)
 # non-availability error (Perplexity returns a bare "invalid request" when the
 # 30-question schema is too large) do we retry one question at a time and merge.
 _SPLIT_PROVIDERS = set(_MATRIX.get("_split_question_providers", []))
+
+# How a capability-limited provider rejects a decision schema it cannot take: Perplexity's sonar
+# answers choice and score questions with a 400 "invalid request". Only that shape is a capability
+# SKIP; a 500 (emulation returned no decision), a 400 for any other reason, or any other status from
+# the same provider is a defect and FAILS, exactly as it would for every other provider.
+_CAPABILITY_REJECTION_MARKERS = ("invalid request", "invalid_request")
+
+
+# The question kinds the split providers are documented to reject one at a time.
+_CAPABILITY_REJECTED_KINDS = ("choice", "score")
+
+
+def _is_capability_rejection(provider, status_code, text, rejected_kind=None):
+    # Only the demonstrated limit skips: a choice or score question rejected in the
+    # one-at-a-time split. The marker alone is a generic invalid-request error, which
+    # a request we built wrong also carries.
+    if provider not in _SPLIT_PROVIDERS or status_code != 400:
+        return False
+    if rejected_kind not in _CAPABILITY_REJECTED_KINDS:
+        return False
+    low = text.lower()
+    return any(marker in low for marker in _CAPABILITY_REJECTION_MARKERS)
 _JEV_MODEL = "typesafe/jev-1.13.0"
 
 
@@ -609,7 +631,7 @@ def _fetch_decision_split(model_id, batched_latency_ms, deadline):
         resp, latency_ms = _post_raw(model_id, {name: q}, deadline)
         total_latency += latency_ms
         if resp.status_code != 200:
-            return {"status": resp.status_code, "answers": None, "latency_ms": total_latency, "tokens": None, "cost": "-", "text": resp.text, "split": True}
+            return {"status": resp.status_code, "answers": None, "latency_ms": total_latency, "tokens": None, "cost": "-", "text": resp.text, "split": True, "failed_kind": q.get("kind")}
         body = resp.json()
         merged.update(body["answers"])
         tokens, _ = _usage_cost(body)
@@ -676,6 +698,10 @@ def jev_reference():
     return answers
 
 
+# _MATRIX_ROWS lives in one process and test_zzz_report judges it, so under pytest-xdist the whole
+# class stays on one worker (pyproject sets --dist=loadgroup); split across workers the report
+# would count only its own worker's combinations against _min_passing.
+@pytest.mark.xdist_group("decision_emulation_matrix")
 class TestDecisionEmulationMatrix:
     @pytest.mark.parametrize("provider,model", _MATRIX_PAIRS, ids=[f"{p}/{m}" for p, m in _MATRIX_PAIRS])
     def test_provider_model_matches_jev(self, provider, model, jev_reference):
@@ -698,9 +724,9 @@ class TestDecisionEmulationMatrix:
                 _MATRIX_ROWS.append({"model_id": model_id, "status": "SKIP", "agree": 0, "total": total, "latency_ms": latency_ms, "tokens": None, "cost": "-", "detail": detail})
                 pytest.skip(f"{model_id}: {detail}")
             # Capability-limited providers (e.g. Perplexity's sonar rejects choice/score
-            # decision schemas): the split was attempted and could not complete the set,
+            # decision schemas): the split was attempted and the provider rejected the schema,
             # so skip rather than fail - the identical schema works on every other provider.
-            if provider in _SPLIT_PROVIDERS:
+            if r.get("split") and _is_capability_rejection(provider, r["status"], r["text"], r.get("failed_kind")):
                 _MATRIX_ROWS.append({"model_id": model_id, "status": "SKIP", "agree": 0, "total": total, "latency_ms": latency_ms, "tokens": None, "cost": "-", "detail": "capability-limited - " + detail})
                 pytest.skip(f"{model_id}: capability-limited - {detail}")
             # A malformed request we built (400) or emulation returning no decision (500): defect.
@@ -747,3 +773,10 @@ class TestDecisionEmulationMatrix:
         skipped = [r for r in _MATRIX_ROWS if r["status"] == "SKIP"]
         print(f"\nscore = questions agreeing with jev out of {len(_MATRIX_QUESTIONS)}; PASS threshold = {_AGREEMENT_FAIL_THRESHOLD:.0%}")
         print(f"PASS={len(passed)}  FAIL={len(failed)}  SKIP={len(skipped)}  TOTAL={len(_MATRIX_PAIRS)} (+jev reference)")
+        # Each unavailable combination skips, so a gateway that refuses everything (a bad
+        # key, an outage) would otherwise skip the whole matrix and report success.
+        min_passing = int(_MATRIX.get("_min_passing", 1))
+        assert len(passed) >= min_passing, (
+            f"only {len(passed)} of {len(_MATRIX_PAIRS)} combinations passed, below _min_passing={min_passing}; skipped: "
+            + "; ".join(f"{r['model_id']}: {r['detail']}" for r in skipped[:10])
+        )

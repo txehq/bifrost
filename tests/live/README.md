@@ -76,8 +76,9 @@ cd tests/live/python && uv run pytest -q          # by hand, with BIFROST_BASE_U
 | `BIFROST_VK` | | credential for real mode when the gateway enforces auth |
 | `BIFROST_SETUP_TOKEN` | `bifrost-live-setup-token` | the `setup_token` in `config.json`, sent on `/api` calls while dashboard auth is off |
 | `BIFROST_ADMIN_AUTH` | | the `Authorization` header value for `/api` calls on a gateway with dashboard auth: `Basic <base64 user:password>` with the admin login, or `Bearer <session token>` |
+| `LIVE_OFFLINE` | | `1` runs only the offline tests when no gateway answers, instead of failing |
 
-Every test skips when the gateway does not answer `/health`.
+A run fails at once when the gateway does not answer `/health`, so an explicit run never passes without testing anything. To run only the offline tests (the fake server and client unit tests), set `LIVE_OFFLINE=1`: every gateway test then skips.
 
 ## Files
 

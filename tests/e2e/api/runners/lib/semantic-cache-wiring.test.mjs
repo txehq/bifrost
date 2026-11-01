@@ -370,4 +370,39 @@ test("noBodyCacheDebug rejects a body that carries cache_debug", () => {
   assert.match(f.tests[0].error, /must carry no cache_debug/);
 });
 
+// D23 exists to see the unknown-model error and that a repeat is not cached into success. An
+// unrelated 4xx (auth, throttling) never reached that path, so both requests must reject it.
+test("the generated D23 unknown-model cases reject unrelated client errors", () => {
+  const collection = JSON.parse(readFileSync(new URL("../../collections/bifrost-semantic-cache-wiring.postman_collection.json", import.meta.url), "utf8"));
+  const specOf = (name) => {
+    const walk = (items) => {
+      for (const it of items) {
+        if (it.item) {
+          const found = walk(it.item);
+          if (found) return found;
+        } else if (it.name === name) {
+          const source = it.event.find((e) => e.listen === "test").script.exec.join("\n");
+          return JSON.parse(source.slice(source.indexOf("scw.run(") + 8, source.lastIndexOf(");")));
+        }
+      }
+      return null;
+    };
+    const spec = walk(collection.item);
+    assert.ok(spec, `no request named ${name}`);
+    return spec;
+  };
+  const unknown = JSON.stringify({ error: { message: "The model `gpt-scw-does-not-exist` does not exist or you do not have access to it.", code: "model_not_found" } });
+  for (const name of ["D23 unknown model: A is an error", "D23 unknown model: B is still an error"]) {
+    const spec = specOf(name);
+    for (const [code, body] of [[401, JSON.stringify({ error: { message: "Incorrect API key provided" } })], [429, JSON.stringify({ error: { message: "Rate limit reached" } })]]) {
+      const w = fakePm({ code, body, headers: JSON_CT, requestName: name });
+      scwLib(w.pm).run({ ...spec, poll: false });
+      assert.strictEqual(w.tests[0].ok, false, `${name} passed on an unrelated ${code}`);
+    }
+    const w = fakePm({ code: 404, body: unknown, headers: JSON_CT, requestName: name });
+    scwLib(w.pm).run({ ...spec, poll: false });
+    assert.strictEqual(w.tests[0].ok, true, `${name} rejected the unknown-model error: ${w.tests[0].error}`);
+  }
+});
+
 console.log(`\n${passed} passed`);

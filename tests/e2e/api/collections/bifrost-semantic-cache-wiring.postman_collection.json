@@ -9104,7 +9104,8 @@
                   "eval(pm.collectionVariables.get('scw_lib'));",
                   "scw.run({",
                   "  \"name\": \"D23 unknown model: A is an error\",",
-                  "  \"status\": \"4xx\",",
+                  "  \"status\": 404,",
+                  "  \"message\": \"gpt-scw-does-not-exist\",",
                   "  \"outcome\": \"none\"",
                   "});"
                 ]
@@ -9162,7 +9163,8 @@
                   "eval(pm.collectionVariables.get('scw_lib'));",
                   "scw.run({",
                   "  \"name\": \"D23 unknown model: B is still an error\",",
-                  "  \"status\": \"4xx\",",
+                  "  \"status\": 404,",
+                  "  \"message\": \"gpt-scw-does-not-exist\",",
                   "  \"outcome\": \"none\"",
                   "});"
                 ]

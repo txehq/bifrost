@@ -1644,10 +1644,13 @@
                 "type": "text/javascript",
                 "exec": [
                   "// The budget is scoped to the configured model; a sibling model must not",
-                  "// resolve to it. The provider's own answer (200 or a provider-side error)",
-                  "// is not under test here, only that governance did not refuse it.",
-                  "pm.test('Sibling model is not refused with 402', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.not.equal(402); });",
-                  "pm.test('Sibling model is not refused as budget_exceeded', function() { pm.expect(pm.response.text()).to.not.include('budget_exceeded'); });"
+                  "// resolve to it. Only a completed request proves that: a 401, 403 or 500",
+                  "// is not a 402 either, but says nothing about which budget applied.",
+                  "pm.test('Sibling model is not refused as budget_exceeded', function() { pm.expect(pm.response.text()).to.not.include('budget_exceeded'); });",
+                  "pm.test('Sibling model request completes', function() { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "pm.test('Sibling model request reports usage', function() { pm.expect(body && body.usage && body.usage.total_tokens, pm.response.text()).to.be.above(0); });"
                 ]
               }
             }

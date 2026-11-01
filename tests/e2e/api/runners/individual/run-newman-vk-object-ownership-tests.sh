@@ -88,7 +88,6 @@ mkdir -p "$REPORT_DIR"
 GLOBALS_TMP=""
 if [ -f "$PROVIDER_CAPABILITIES_JSON" ] && command -v jq &>/dev/null; then
     GLOBALS_TMP=$(mktemp)
-    trap 'rm -f "$GLOBALS_TMP"' EXIT
     jq -n --rawfile cap "$PROVIDER_CAPABILITIES_JSON" '{id: "bifrost-provider-capabilities", name: "Provider capabilities", values: [{key: "provider_capabilities", value: $cap, type: "default", enabled: true}]}' > "$GLOBALS_TMP"
 fi
 
@@ -163,6 +162,29 @@ cmd=(newman run "$SETUP_COLLECTION")
 base_url="${BIFROST_BASE_URL:-http://localhost:8080}"
 cmd+=(--env-var "base_url=$base_url")
 cmd+=(--env-var "setup_token=$SETUP_TOKEN")
+
+# The collection turns ownership off and its later steps and Teardown turn it back on, but newman
+# skips them when it stops early (--bail, Ctrl-C), which would leave every virtual key able to
+# reach every other key's objects. The setting is read before the run and restored on every exit.
+# The whole config is sent back because PUT /api/config resets omitted fields; a fresh install's
+# log_retention_days 0 (the gateway default of 365) is sent as 365, since the PUT requires a value.
+ORIGINAL_OWNERSHIP=$(curl -sf -H "X-Bifrost-Setup-Token: $SETUP_TOKEN" "$base_url/api/config?from_db=true" |
+    jq -r 'if .client_config.enforce_vk_object_ownership == false then "false" else "true" end') || ORIGINAL_OWNERSHIP=true
+restore_ownership() {
+    local cfg
+    cfg=$(curl -sf -H "X-Bifrost-Setup-Token: $SETUP_TOKEN" "$base_url/api/config?from_db=true") || return 0
+    [ "$(jq -r 'if .client_config.enforce_vk_object_ownership == false then "false" else "true" end' <<<"$cfg")" = "$ORIGINAL_OWNERSHIP" ] && return 0
+    echo -e "${YELLOW}Restoring enforce_vk_object_ownership to $ORIGINAL_OWNERSHIP (newman stopped before Teardown)${NC}"
+    jq --argjson on "$ORIGINAL_OWNERSHIP" '{client_config: (.client_config | .enforce_vk_object_ownership = $on | if (.log_retention_days // 0) < 1 then .log_retention_days = 365 else . end)}' <<<"$cfg" |
+        curl -sf -X PUT -H "X-Bifrost-Setup-Token: $SETUP_TOKEN" -H "Content-Type: application/json" --data-binary @- "$base_url/api/config" >/dev/null ||
+        echo -e "${RED}Could not restore enforce_vk_object_ownership; set it back to $ORIGINAL_OWNERSHIP by hand${NC}"
+}
+cleanup() {
+    restore_ownership
+    [ -n "$GLOBALS_TMP" ] && rm -f "$GLOBALS_TMP"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 cmd+=(-r "$REPORTERS")
 

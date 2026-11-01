@@ -2238,7 +2238,9 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-18s %s\n' ""                "  request count (main shards, 429 replays, the deferred cache-parity pass, sequential mode) before it"; \
 		printf '  %-18s %s\n' ""                "  starts: a launch that would cross the cap is refused, so the live total never exceeds N. Running"; \
 		printf '  %-18s %s\n' ""                "  shards drain and the report merges as usual; the target exits 3. Stream-cancellation probes are"; \
-		printf '  %-18s %s\n' ""                "  never sent under a cap (their count is not known up front). Unset = no cap (default)."; \
+		printf '  %-18s %s\n' ""                "  never sent under a cap (their count is not known up front), and neither is a launch holding a row"; \
+		printf '  %-18s %s\n' ""                "  whose scripts call pm.sendRequest (retries, bursts, fallback probes the entry count cannot see)."; \
+		printf '  %-18s %s\n' ""                "  Unset = no cap (default)."; \
 		printf '  %-18s %s\n' "RETRY_429=N"     "Max transient-failure retry attempts per shard (default 3; 0 disables). Covers 429 plus the two"; \
 		printf '  %-18s %s\n' ""                "  overload codes - 503 (OpenAI 'engine is currently overloaded') and 529 (Anthropic"; \
 		printf '  %-18s %s\n' ""                "  overloaded_error, which is its whole equivalent of 503; its error table has no 503). Other 5xx"; \
@@ -2375,8 +2377,25 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		echo "$(RED)HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS) is not a non-negative whole number$(NC)"; \
 		exit 1; \
 	fi; \
+	: "A row whose scripts call pm.sendRequest sends requests the entry count never sees: a"; \
+	: "retry loop, a session burst or a fallback probe turns one entry into up to thousands of"; \
+	: "calls. setNextRequest does the same by re-running entries (a row that retries itself)."; \
+	: "That number is not known before the row runs, so under a cap such a launch is"; \
+	: "refused, as the stream-cancellation probes are. A folder's script counts for every row"; \
+	: "under it. Prints the number of such rows, or 'unknown' when the file cannot be read."; \
+	scripted_rows() { \
+		node -e 'var c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); function s(x) { var e = JSON.stringify(x.event || []); return e.indexOf("pm.sendRequest") !== -1 || e.indexOf("setNextRequest(") !== -1; } function w(a, f) { var n = 0; (a || []).forEach(function (i) { var g = f || s(i); n += i.item ? w(i.item, g) : (g ? 1 : 0); }); return n; } console.log(w(c.item, s(c)));' "$$1" 2>/dev/null || echo unknown; \
+	}; \
 	budget_ok() { \
 		if [ -z "$(HARNESS_MAX_REQUESTS)" ]; then return 0; fi; \
+		if [ -n "$$3" ]; then \
+			SCRIPTED_ROWS="$$(scripted_rows "$$3")"; \
+			if [ "$$SCRIPTED_ROWS" != "0" ]; then \
+				BUDGET_EXCEEDED=1; \
+				say "$(RED)[$$2] not launched: $$SCRIPTED_ROWS row(s) send or re-run requests from their scripts (pm.sendRequest, setNextRequest), which no entry count bounds, so HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS) cannot cap them. Narrow PROVIDER/FEATURE/FOLDER to rows without scripted calls, or run without the cap.$(NC)"; \
+				return 1; \
+			fi; \
+		fi; \
 		if [ "$$BUDGET_EXCEEDED" = "1" ] || [ $$((BUDGET_USED + $$1)) -gt "$(HARNESS_MAX_REQUESTS)" ]; then \
 			BUDGET_EXCEEDED=1; \
 			say "$(RED)[$$2] not launched: $$1 request(s) would push the total to $$((BUDGET_USED + $$1)), past HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS) (launched so far: $$BUDGET_USED)$(NC)"; \
@@ -2928,7 +2947,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			fi; \
 			: "A refused shard must not leave its filtered file behind: the status table counts"; \
 			: "every tmp/harness-filtered-*.json as planned work, so it would show rows that never ran."; \
-			budget_ok "$$P_ITEM_COUNT" "$$SHARD" || { rm -f "tmp/harness-filtered-$$SHARD.json"; continue; }; \
+			budget_ok "$$P_ITEM_COUNT" "$$SHARD" "tmp/harness-filtered-$$SHARD.json" || { rm -f "tmp/harness-filtered-$$SHARD.json"; continue; }; \
 			: "Block until a slot frees. 'wait -n' reaps one arbitrary child, which is why shard"; \
 			: "exit codes are recorded by the subshell into tmp/parallel-exit-<shard> instead of"; \
 			: "being collected later with 'wait <pid>' - that pid may already have been reaped here."; \
@@ -2947,7 +2966,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		MAIN_EMPTY=0; \
 		if [ "$$LAUNCHED" -eq 0 ]; then \
 			if [ "$$BUDGET_EXCEEDED" = "1" ]; then \
-				say "$(RED)Aborted before any launch: every shard would exceed HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS). Raise the cap or narrow PROVIDER/FEATURE.$(NC)"; \
+				say "$(RED)Aborted before any launch: HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS) refused every shard (reasons above). Raise the cap or narrow PROVIDER/FEATURE.$(NC)"; \
 				exit 3; \
 			fi; \
 			: "A filter that matches only [SERIAL] rows launches no fork: those rows were carved out"; \
@@ -3025,7 +3044,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 				fi; \
 				RETRY_COUNT="$$(grep -c '"request":' "$$RETRY_COLL" 2>/dev/null || true)"; RETRY_COUNT="$${RETRY_COUNT:-0}"; \
 				[ "$$RETRY_COUNT" -eq 0 ] && continue; \
-				budget_ok "$$RETRY_COUNT" "$$rs-retry$$RETRY_ATTEMPT" || { rm -f "$$RETRY_COLL"; continue; }; \
+				budget_ok "$$RETRY_COUNT" "$$rs-retry$$RETRY_ATTEMPT" "$$RETRY_COLL" || { rm -f "$$RETRY_COLL"; continue; }; \
 				while [ "$$(shard_jobs)" -ge "$$JOBS_CAP" ]; do wait -n 2>/dev/null || true; done; \
 				( \
 					newman_shard "$$rs-retry$$RETRY_ATTEMPT" "$$RETRY_COLL" "tmp/newman-report-$$rs-retry$$RETRY_ATTEMPT.json" "$$rp"; \
@@ -3116,7 +3135,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		SEQ_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
 		: > tmp/newman-cli.log; \
 		SEQ_COUNT="$$(grep -c '"request":' "$$COLLECTION_FILE" 2>/dev/null || true)"; SEQ_COUNT="$${SEQ_COUNT:-0}"; \
-		if budget_ok "$$SEQ_COUNT" main; then \
+		if budget_ok "$$SEQ_COUNT" main "$$COLLECTION_FILE"; then \
 		add_pass "$$(printf '{"t":"pass","id":"main","mode":"sequential","log":"tmp/newman-cli.log","collection":"%s"}' "$$COLLECTION_FILE")"; \
 		newman run "$$COLLECTION_FILE" \
 				--env-var "baseUrl=$$BASE_URL_VAL" \
@@ -3178,7 +3197,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		CACHE_COUNT="$$(grep -c '"request":' tmp/harness-cache-filtered.json 2>/dev/null || true)"; CACHE_COUNT="$${CACHE_COUNT:-0}"; \
 		if [ "$$CACHE_COUNT" -eq 0 ]; then \
 			say "$(CYAN)Cache parity pass: the scope selects no cache-parity row - nothing to replay.$(NC)"; \
-		elif [ -f tmp/harness-cache-filtered.json ] && budget_ok "$$CACHE_COUNT" cache-parity; then \
+		elif [ -f tmp/harness-cache-filtered.json ] && budget_ok "$$CACHE_COUNT" cache-parity tmp/harness-cache-filtered.json; then \
 			CACHE_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
 			: > tmp/newman-cli-cache-parity.log; \
 			add_pass '{"t":"pass","id":"cache-parity","mode":"sequential","log":"tmp/newman-cli-cache-parity.log","collection":"tmp/harness-cache-filtered.json"}'; \
@@ -3234,7 +3253,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			:; \
 		elif [ "$$SERIAL_COUNT" -eq 0 ]; then \
 			say "$(CYAN)Serial pass: the scope selects no [SERIAL] folder - nothing to run.$(NC)"; \
-		elif [ -f tmp/harness-serial-filtered.json ] && budget_ok "$$SERIAL_COUNT" serial; then \
+		elif [ -f tmp/harness-serial-filtered.json ] && budget_ok "$$SERIAL_COUNT" serial tmp/harness-serial-filtered.json; then \
 			: > tmp/newman-cli-serial.log; \
 			add_pass '{"t":"pass","id":"serial","mode":"sequential","log":"tmp/newman-cli-serial.log","collection":"tmp/harness-serial-filtered.json"}'; \
 			newman run tmp/harness-serial-filtered.json \
@@ -3262,7 +3281,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		elif [ "$${MAIN_EMPTY:-0}" = "1" ] && [ "$${BUDGET_EXCEEDED:-0}" = "1" ]; then \
 			: "budget_ok refused the serial pass, and the main pass had nothing: nothing ran at all."; \
 			stop_monitor; \
-			say "$(RED)Aborted before any launch: the serial pass would exceed HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS). Raise the cap or narrow PROVIDER/FEATURE.$(NC)"; \
+			say "$(RED)Aborted before any launch: HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS) refused the serial pass (reason above). Raise the cap or narrow PROVIDER/FEATURE.$(NC)"; \
 			exit 3; \
 		fi; \
 	fi; \
@@ -3340,7 +3359,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		fi; \
 	fi; \
 	if [ "$$BUDGET_EXCEEDED" = "1" ]; then \
-		say "$(RED)Aborted: HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS) reached; $$BUDGET_USED request(s) were launched. The provider table above is the actual total.$(NC)"; \
+		say "$(RED)Aborted: HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS) refused a launch (reason above); $$BUDGET_USED request(s) were launched. The provider table above is the actual total.$(NC)"; \
 		exit 3; \
 	fi; \
 	if [ "$$NEWMAN_EXIT" -ne 0 ]; then exit $$NEWMAN_EXIT; fi; \

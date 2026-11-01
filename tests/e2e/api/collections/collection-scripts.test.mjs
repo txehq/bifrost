@@ -1154,5 +1154,97 @@ test("routing-wiring: a trail check resolves run variables in the lines it expec
   assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
 });
 
+// Native Anthropic Messages calls (/anthropic/v1/messages with a bare or anthropic/ model) take
+// the byte-preserving passthrough, which answers with Anthropic's own body: there is no
+// extra_fields.raw_request and none of the typed bridge's rewrites run. A harness row on that
+// route that reads raw_request must either be tagged [SKIP] [NATIVE-PASSTHROUGH] (it asserts a
+// typed rewrite) or check the passthrough identity in every test that reads the capture.
+const providerHarness = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8"));
+// On main before the upstream merge that brought the other rows; kept out of this check.
+const nativeRawRequestPreExisting = ["75.01 ", "75.06 "];
+
+function nativeAnthropicRawRequestRows() {
+  const rows = [];
+  (function walk(items) {
+    for (const item of items) {
+      if (item.item) { walk(item.item); continue; }
+      const url = typeof item.request?.url === "string" ? item.request.url : item.request?.url?.raw || "";
+      if (!/\/anthropic\/v1\/messages(\?|$)/.test(url)) continue;
+      const model = (/"model"\s*:\s*"([^"]+)"/.exec(item.request?.body?.raw || "") || [])[1] || "";
+      if (model.includes("/") && !model.startsWith("anthropic/")) continue;
+      const test = (item.event || []).filter((e) => e.listen === "test").map((e) => e.script.exec.join("\n")).join("\n");
+      if (test.includes("raw_request")) rows.push({ item, test });
+    }
+  })(providerHarness.item);
+  return rows;
+}
+
+test("provider-harness: native Anthropic rows reading raw_request are tagged or check the passthrough", () => {
+  const rows = nativeAnthropicRawRequestRows();
+  assert.ok(rows.length > 0, "no native Anthropic raw_request rows found; the route or model detection drifted");
+  const unguarded = [];
+  for (const { item, test } of rows) {
+    if (item.name.startsWith("[SKIP] [NATIVE-PASSTHROUGH] ")) continue;
+    if (nativeRawRequestPreExisting.some((prefix) => item.name.startsWith(prefix))) continue;
+    const lines = test.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].startsWith("pm.test(")) continue;
+      let end = i + 1;
+      while (end < lines.length && lines[end] !== "});") end++;
+      const block = lines.slice(i + 1, end).join("\n");
+      if (/\b(rr|raw|blocks|useIdx)\b/.test(block) && !block.includes("x-bifrost-request-type') === 'passthrough'")) {
+        unguarded.push(`${item.name}: ${lines[i].slice(0, 100)}`);
+      }
+    }
+  }
+  assert.deepStrictEqual(unguarded, []);
+});
+
+test("provider-harness: a skipped native row that creates a routing rule does not create it while skipped", () => {
+  const row = nativeAnthropicRawRequestRows().find(({ item }) => item.name.startsWith("[SKIP] [NATIVE-PASSTHROUGH] bare claude-sonnet-4-5 routed to bedrock"));
+  assert.ok(row, "the bare-id interleaved row is not tagged");
+  const src = row.item.event.find((e) => e.listen === "prerequest").script.exec.join("\n");
+  const run = (vars) => {
+    let sent = 0;
+    const pm = {
+      info: { requestName: row.item.name },
+      environment: { get: (k) => vars[k] },
+      collectionVariables: { get: () => undefined },
+      variables: { get: (k) => vars[k], set() {}, unset() {}, replaceIn: (v) => v },
+      sendRequest: () => { sent++; },
+      test() {},
+    };
+    new Function("pm", src)(pm);
+    return sent;
+  };
+  assert.strictEqual(run({}), 0, "a skipped run still created the routing rule");
+  assert.strictEqual(run({ include_skip: "1" }), 1, "an opted-in run did not create the routing rule");
+});
+
+// Azure can still be processing an upload when 62.14 reads its content (409). Re-running the row
+// left every 409 attempt recorded as a failed status check, so the row now polls in its
+// prerequest and the asserted request runs once.
+test("provider-harness: 62.14 polls Azure readiness before its asserted content request", () => {
+  let item = null;
+  (function walk(items) { for (const i of items) { if (i.item) walk(i.item); else if (i.name.startsWith("62.14 Azure: /anthropic content route")) item = i; } })(providerHarness.item);
+  assert.ok(item, "62.14 not found");
+  const script = (listen) => item.event.find((e) => e.listen === listen).script.exec.join("\n");
+  assert.ok(!/setNextRequest/.test(script("test")), "62.14 still re-runs itself from its test script");
+  const poll = (codes) => {
+    const seen = [];
+    const pm = {
+      variables: { replaceIn: (v) => v },
+      request: { url: { toString: () => "http://gw/anthropic/v1/files/f/content" }, headers: { each: (fn) => [{ key: "x-model-provider", value: "azure" }].forEach(fn) } },
+      sendRequest: (req, cb) => { seen.push(req); cb(null, { code: codes[Math.min(seen.length - 1, codes.length - 1)] }); },
+    };
+    new Function("pm", "setTimeout", script("prerequest"))(pm, (fn) => fn());
+    return seen;
+  };
+  const ready = poll([409, 409, 200]);
+  assert.strictEqual(ready.length, 3, "the poll did not stop at the first non-409");
+  assert.deepStrictEqual(ready[0].header, [{ key: "x-model-provider", value: "azure" }]);
+  assert.strictEqual(poll([409]).length, 11, "the poll is not bounded at 10 retries");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
