@@ -56,8 +56,12 @@ its 25-minute wait; `@codex review` on the PR asks for another attempt.
    re-run the latest `Codex review` run on the PR (labels do not start the workflow).
 5. **Resolve the connector threads you have fixed or refuted before the next push.** A P0
    or P1 you refuted is resolved by a person, never by you: an open, live P0/P1 thread is
-   what the check fails on when a re-review posts no review of its own. Resolving a thread
-   starts no run; re-run the latest `Codex review` run after it.
+   what the check fails on when a re-review posts no review of its own. GitHub starts no
+   workflow when a thread is resolved, so once every live P0/P1 thread is resolved by a
+   person, the codex-review-nudge job (txehq/action-runner-ops `jobs/codex-review-nudge/`,
+   TXE-5366) re-runs the failed check within about 5 minutes plus the run: re-running it by
+   hand is not the step. Re-opening a thread starts no run. While a connector review of the
+   head carries a P0 or P1, resolving its threads changes nothing: fix and push.
 6. **If the connector is silent, leave the re-request to the nudge job.** A review silent
    for 10 minutes is re-requested once by the nudge job (txehq/action-runner-ops
    `jobs/codex-review-nudge/`, an `@codex review` comment from `connorwang` carrying
