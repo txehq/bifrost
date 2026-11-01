@@ -178,7 +178,7 @@ curl -X POST http://localhost:8080/api/providers/bedrock/keys \
 <Tab title="Go SDK">
 
 ```go
-func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     switch provider {
     case schemas.Bedrock:
         return []schemas.Key{
@@ -319,7 +319,7 @@ curl -X POST http://localhost:8080/api/providers/bedrock/keys \
 <Tab title="Go SDK">
 
 ```go
-func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     switch provider {
     case schemas.Bedrock:
         return []schemas.Key{
@@ -423,7 +423,7 @@ curl -X POST http://localhost:8080/api/providers/bedrock/keys \
 <Tab title="Go SDK">
 
 ```go
-func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     switch provider {
     case schemas.Bedrock:
         return []schemas.Key{
