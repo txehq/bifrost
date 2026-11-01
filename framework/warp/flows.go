@@ -612,8 +612,8 @@ type providerTotal struct {
 	AverageLatency float64 `json:"average_latency_ms"`
 	// Link opens this provider's requests under the tool's own filters.
 	Link string `json:"link,omitempty"`
-	// completed counts the requests in SuccessRate's denominator, not in the result.
-	completed int64
+
+	completed int64 // SuccessRate's denominator; see completedRequests
 }
 
 // providerTotals reads each provider's exact totals over the filtered window,

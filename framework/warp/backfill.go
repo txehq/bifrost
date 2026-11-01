@@ -49,14 +49,12 @@ type BackfillJobMeta struct {
 	Namespace       string     `json:"namespace"`
 	CursorTime      *time.Time `json:"cursor_time,omitempty"`
 	CursorID        string     `json:"cursor_id,omitempty"`
-	// CursorOffset is the cursor a checkpoint written before CursorID carries: rows
-	// consumed at CursorTime. Only read, for the one page that moves it to CursorID.
-	CursorOffset int   `json:"cursor_offset,omitempty"`
-	Total        int64 `json:"total"`
-	Scanned      int   `json:"scanned"`
-	Indexed      int   `json:"indexed"`
-	Skipped      int   `json:"skipped"`
-	Failed       int   `json:"failed"`
+	CursorOffset    int        `json:"cursor_offset,omitempty"` // earlier releases' cursor; see backfillPage
+	Total           int64      `json:"total"`
+	Scanned         int        `json:"scanned"`
+	Indexed         int        `json:"indexed"`
+	Skipped         int        `json:"skipped"`
+	Failed          int        `json:"failed"`
 	// EmbeddingTokens and EmbeddingCost total what the job's embedding calls
 	// consumed, across every resume of this checkpoint. They are spend, not
 	// progress: a page rolled back out of the counters above was still billed,

@@ -198,6 +198,11 @@ func (s *Service) ConfigView(ctx context.Context) (ConfigView, error) {
 // SaveConfig validates and stores a configuration, returning the view a caller
 // would get from ConfigView afterwards. Validation failures wrap
 // ErrInvalidConfig; anything else is a store error.
+//
+// Saves in one process run one at a time, from the first read to the last write:
+// each one decides what to retire and whether to create a namespace from the row
+// it read, so two at once could decide from the same row. That says nothing about
+// another node, which is why a failed save never deletes the namespace it made.
 func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigView, error) {
 	if s.store == nil {
 		return ConfigView{}, ErrUnavailable
@@ -223,7 +228,7 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 	// save was then rejected, and surfaced whatever the store said about a
 	// dimension mismatch in place of the ErrInvalidConfig the request earned.
 	// Set only when this save is the one that created the namespace, so a failing
-	// write can undo its own work without touching anybody else's.
+	// write can name what it left behind.
 	createdNamespace := ""
 	retired := retiredNamespaces(previous)
 	// Compared as effective namespaces, not raw strings. A legacy row storing ""
@@ -275,10 +280,9 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		// Still ahead of the write: a namespace that cannot be created is a save
 		// that cannot work, and the config must not claim otherwise.
 		//
-		// createdNamespace records whether this call is the one that made it, so a
-		// failing write can undo only its own work. A namespace that already
-		// existed may hold vectors a previous configuration still indexes and is
-		// never touched.
+		// createdNamespace records whether this call is the one that made it. A
+		// namespace that already existed may hold vectors a previous configuration
+		// still indexes.
 		created, err := ensureWarpNamespace(ctx, s.vectorStore, input.LogVectorStoreNamespace, input.EmbeddingDimension)
 		if err != nil {
 			return ConfigView{}, fmt.Errorf("ensure warp vector namespace: %w", err)

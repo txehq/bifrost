@@ -40,9 +40,8 @@ type SemanticSearcher struct {
 	// reader interface, where adding it breaks every implementation outside this
 	// repo - including ones with semantic search switched off.
 	logs SemanticHydrator
-	// price prices one query embedding by the embedding provider and model it ran
-	// on; nil when the deployment has no model catalog.
-	price func(usage *schemas.BifrostLLMUsage, config *schemas.WarpConfig) *schemas.BifrostCost
+
+	price func(usage *schemas.BifrostLLMUsage, config *schemas.WarpConfig) *schemas.BifrostCost // nil without a model catalog
 }
 
 // spendSink collects the embedding usage a turn's tool calls spent, for the agent
