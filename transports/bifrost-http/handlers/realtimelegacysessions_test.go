@@ -236,6 +236,7 @@ func TestLegacyRealtimeSessionRoutesMintThroughClientSecrets(t *testing.T) {
 // is Bifrost-minted, and presenting it to Bifrost's realtime WebSocket opens the
 // upstream session with the provider's own ephemeral token, never the minted one.
 func TestLegacyRealtimeSessionSecretOpensUpstreamThroughBifrost(t *testing.T) {
+	drainRealtimeSessions(t)
 	SetLogger(&mockLogger{})
 	upstreamAuth := make(chan string, 1)
 	upgrader := ws.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
