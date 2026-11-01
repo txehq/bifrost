@@ -3,15 +3,9 @@ set -euo pipefail
 
 export GOTOOLCHAIN=auto
 
-# If go.work exists, keep it: a checked-in workspace carries local replaces for
-# internal module versions that are never tagged. It still has to include the
-# Warp seeder, which builds inside the workspace (see below), so add it when absent.
+# If go.work exists, skip
 if [ -f "go.work" ]; then
   echo "🔍 Go workspace already exists, skipping initialization"
-  if ! go work edit -json | grep -q '"DiskPath": "./tests/cmd/seed"'; then
-    go work use ./tests/cmd/seed
-    echo "➕ Added ./tests/cmd/seed to the existing workspace"
-  fi
   return
 fi
 
