@@ -1296,6 +1296,9 @@
                   "if (mode === 'headers') { pm.test('session flow runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
                   "pm.test('authorize redirects (302)', function () { pm.expect(pm.response.code).to.equal(302); });",
                   "var loc = pm.response.headers.get('Location') || '';",
+                  "var consent = loc.match(/#t=([^&]+)/);",
+                  "pm.test('the redirect carries the flow\u2019s consent token', function () { pm.expect(consent, 'consent token in ' + loc).to.not.equal(null); });",
+                  "if (consent) { pm.collectionVariables.set('sess_consent_token', decodeURIComponent(consent[1])); }",
                   "var flow = loc.match(/[?&]flow=([^&#]+)/);",
                   "pm.expect(flow, 'flow id').to.not.equal(null);",
                   "pm.collectionVariables.set('sess_flow_id', decodeURIComponent(flow[1]));"
@@ -1327,6 +1330,18 @@
           "name": "Consent flow detail for an anonymous caller",
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The operator's setup token counts as an authenticated consenter. What an anonymous browser",
+                  "// holds is the flow's consent token, which authorizes the page and identifies nobody.",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');",
+                  "pm.request.headers.upsert({ key: 'X-Bifrost-Temp-Token', value: pm.collectionVariables.get('sess_consent_token') || '' });"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -1357,6 +1372,18 @@
         {
           "name": "Consent as session",
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The operator's setup token counts as an authenticated consenter. What an anonymous browser",
+                  "// holds is the flow's consent token, which authorizes the page and identifies nobody.",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');",
+                  "pm.request.headers.upsert({ key: 'X-Bifrost-Temp-Token', value: pm.collectionVariables.get('sess_consent_token') || '' });"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {

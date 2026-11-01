@@ -180,6 +180,7 @@ write_config() {
     "enable_logging": false,
     "enforce_auth_on_inference": false,
     "mcp_server_auth_mode": "$mode",
+    "mcp_enable_temp_token_auth": true,
     $oauth_block
     "max_request_body_size_mb": 100
   },
