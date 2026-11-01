@@ -694,28 +694,33 @@ func TestCodexPreLaunchKeepsSessionsAcrossLaunches(t *testing.T) {
 	}
 }
 
-func TestCodexPreLaunchSharesTheStateDatabasePerGateway(t *testing.T) {
+// TestCodexPreLaunchKeepsTheStateDatabaseWithTheLaunch pins that Codex's state database
+// never outlives the home it recorded: it holds absolute rollout paths, so a kept one
+// would hide sessions whose files survive. The session files rebuild it each launch.
+func TestCodexPreLaunchKeepsTheStateDatabaseWithTheLaunch(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
-	sqliteHome := func(baseURL string) string {
-		environment, cleanup, err := codexPreLaunch(baseURL, "sk-bf-test", "gpt-test")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(cleanup)
-		path := envValue(environment, "CODEX_SQLITE_HOME")
-		if !strings.HasPrefix(path, filepath.Join(home, ".bifrost", "codex-home")+string(filepath.Separator)) {
-			t.Fatalf("CODEX_SQLITE_HOME = %q, want it in the user's session store", path)
-		}
-		return path
+	t.Setenv("CODEX_SQLITE_HOME", filepath.Join(home, "inherited"))
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	first := sqliteHome("http://localhost:8080/openai")
-	if again := sqliteHome("http://localhost:8080/openai"); again != first {
-		t.Fatalf("one gateway got two state databases: %q %q", first, again)
+	userConfig := "sqlite_home = \"/shared/codex\"\nmodel_reasoning_effort = \"high\"\n"
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(userConfig), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if other := sqliteHome("https://gateway.example/openai"); other == first {
-		t.Fatalf("two gateways share a state database: %q", other)
+	environment, cleanup, err := codexPreLaunch("http://localhost:8080/openai", "sk-bf-test", "gpt-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(cleanup)
+	codexHome := envValue(environment, "CODEX_HOME")
+	if got := envValue(environment, "CODEX_SQLITE_HOME"); got != codexHome {
+		t.Fatalf("CODEX_SQLITE_HOME = %q, want the launch's own home %q", got, codexHome)
+	}
+	configured := readCodexConfig(t, codexHome)
+	if strings.Contains(configured, "sqlite_home") || !strings.Contains(configured, "model_reasoning_effort") {
+		t.Fatalf("launcher config must drop sqlite_home and nothing else:\n%s", configured)
 	}
 }
 
@@ -922,18 +927,18 @@ func TestCodexPreLaunchProtectsSessionStore(t *testing.T) {
 	// storeOf runs one launch and returns the store it created.
 	storeOf := func(t *testing.T) string {
 		t.Helper()
-		environment, cleanup, err := codexPreLaunch(endpoint, "sk-bf-test", "gpt-test")
+		codexHome, _ := codexLaunchHome(t, endpoint, "sk-bf-test", "gpt-test")
+		sessions, err := os.Readlink(filepath.Join(codexHome, "sessions"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(cleanup)
-		return filepath.Dir(envValue(environment, "CODEX_SQLITE_HOME"))
+		return filepath.Dir(sessions)
 	}
 
 	t.Run("new store is owner-only", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		store := storeOf(t)
-		for _, path := range []string{store, filepath.Join(store, "sessions"), filepath.Join(store, "archived_sessions"), filepath.Join(store, "state")} {
+		for _, path := range []string{store, filepath.Join(store, "sessions"), filepath.Join(store, "archived_sessions")} {
 			assertMode(t, path, 0o700)
 		}
 		assertMode(t, filepath.Join(store, "history.jsonl"), 0o600)

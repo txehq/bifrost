@@ -152,25 +152,22 @@ func codexPreLaunch(baseURL, apiKey string, model string) ([]string, func(), err
 	if codexHasKey(apiKey) {
 		auth.envKey = true
 	}
+	// Codex stores absolute rollout paths in its state database, so one kept past this
+	// home would point at nothing. Each launch rebuilds its own from the session files.
+	existing = removeTopLevelTOMLKeys(existing, map[string]struct{}{"sqlite_home": {}})
 	configured := codexRenderConfigTOML(existing, baseURL, model, auth)
 	if err := config.WriteAtomic(filepath.Join(temporaryHome, "config.toml"), configured, 0o600); err != nil {
 		cleanup()
 		return nil, nil, fmt.Errorf("write temporary Codex config: %w", err)
 	}
-	environment := []string{"CODEX_HOME=" + temporaryHome}
-	if linkCodexSessionState(temporaryHome, store) {
-		environment = append(environment, "CODEX_SQLITE_HOME="+filepath.Join(store, codexStateDirectory))
-	} else {
+	if !linkCodexSessionState(temporaryHome, store) {
 		// The launch still works, with its sessions removed along with the home.
 		fmt.Fprintln(os.Stderr, "bifrost: this system cannot link Codex session history, so this session will not be kept after exit")
 	}
-	return environment, cleanup, nil
+	return []string{"CODEX_HOME=" + temporaryHome, "CODEX_SQLITE_HOME=" + temporaryHome}, cleanup, nil
 }
 
-const (
-	codexStateDirectory = "state"
-	codexHistoryFile    = "history.jsonl"
-)
+const codexHistoryFile = "history.jsonl"
 
 // codexSessionDirectories are the directories Codex keeps session rollouts in.
 var codexSessionDirectories = []string{"sessions", "archived_sessions"}
@@ -192,7 +189,7 @@ func codexSessionStore(baseURL string) (string, error) {
 // exists, and refuses a symlink or the wrong file type: history outlives the launch,
 // so it must not land wherever a link points.
 func prepareCodexSessionStore(store string) error {
-	directories := []string{store, filepath.Join(store, codexStateDirectory)}
+	directories := []string{store}
 	for _, name := range codexSessionDirectories {
 		directories = append(directories, filepath.Join(store, name))
 	}

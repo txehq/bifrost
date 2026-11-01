@@ -355,7 +355,9 @@ func TestWireRedirects(t *testing.T) {
 
 // stubCodex installs a fake codex recording each launch. It applies the rule of
 // Codex's ModelProviderInfo::api_key: a provider naming env_key fails when the
-// variable is unset. It keeps one line per launch under CODEX_HOME, as a session.
+// variable is unset. It keeps one line per launch under CODEX_HOME, as a session, and
+// records that session's absolute path in a state file, as Codex does in SQLite; a
+// recorded path that no longer exists stands for a session Codex would stop listing.
 const stubCodex = `#!/bin/sh
 if [ "$1" = "--version" ]; then echo "codex-cli 0.0.0-stub"; exit 0; fi
 if grep -q '^env_key' "$CODEX_HOME/config.toml" && [ -z "$OPENAI_API_KEY" ]; then
@@ -365,7 +367,14 @@ fi
 [ -d "$CODEX_HOME/sessions" ] || mkdir "$CODEX_HOME/sessions"
 prior=0
 [ -f "$CODEX_HOME/sessions/rollout.jsonl" ] && prior=$(wc -l <"$CODEX_HOME/sessions/rollout.jsonl")
+state="${CODEX_SQLITE_HOME:-$CODEX_HOME}/threads"
+if [ -f "$state" ]; then
+  while read -r recorded; do
+    [ -e "$recorded" ] || { echo "stale rollout path: $recorded" >&2; exit 8; }
+  done <"$state"
+fi
 echo '{"turn":1}' >>"$CODEX_HOME/sessions/rollout.jsonl"
+echo "$CODEX_HOME/sessions/rollout.jsonl" >>"$state"
 printf '%s\n%s\n%s\n' "$CODEX_HOME" "$prior" "$OPENAI_API_KEY" >"$STUB_RECORD"
 `
 
