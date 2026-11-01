@@ -52,7 +52,8 @@ const NO_REQUEST_TYPE_FILTER = [{ pattern: '"objects"' }];
 // A one-sentence decline, with room for the issue-tracker link Warp offers.
 const REFUSAL_CHARS = 600;
 // The link Warp offers after declining something it cannot do.
-const FEATURE_LINK = "github\\.com/capsohq/bifrost/issues/new";
+// Either owner, as framework/warp/links.go accepts: the prompt names one, a model may write the other.
+const FEATURE_LINK = "github\\.com/(?:maximhq|capsohq)/bifrost/issues/new";
 // A chart render_chart drew: the block, expanded server-side into a spec with
 // points - an unexpanded "chart-1" id alone would not match '"points"'.
 const CHART_BLOCK = ["```warp-chart", '"points":\\['];

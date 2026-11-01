@@ -364,14 +364,17 @@ test("a 200 whose JSON is not an object fails the case", () => {
   }
 });
 
-// The link must be the one framework/warp/prompt.go tells Warp to offer: this fork's tracker.
-test("capability refusals expect the fork's feature-request link", () => {
+// The link must be the one framework/warp/prompt.go tells Warp to offer, and framework/warp/links.go
+// accepts either owner, so a refusal naming the other tracker passes too.
+test("capability refusals expect the prompt's feature-request link", () => {
   const { pm } = fakePm();
   const lib = createWarpLib(pm);
   const prompt = readFileSync(new URL("../../../../../framework/warp/prompt.go", import.meta.url), "utf8");
   const link = prompt.match(/https:\/\/github\.com\/[\w-]+\/bifrost\/issues\/new/)[0];
   const refusal = `I can't produce files. Request it here: ${link}?title=[Warp]+csv&labels=enhancement`;
   assert.deepStrictEqual(lib.evaluate(answered(refusal), caseFromCollection("cap-csv").expect), []);
+  const other = refusal.replace(/github\.com\/[\w-]+\//, link.includes("maximhq") ? "github.com/capsohq/" : "github.com/maximhq/");
+  assert.deepStrictEqual(lib.evaluate(answered(other), caseFromCollection("cap-csv").expect), []);
   const greeting = lib.evaluate(answered(`Hi! I answer questions about this deployment. ${link}`), caseFromCollection("greet-capabilities").expect);
   assert.ok(greeting.some((f) => /issues/.test(f)), "a greeting carrying the feature link must fail its answerNone");
 });
