@@ -289605,7 +289605,7 @@
       "description": "TXE-5543 regression. Local fixture regression: run with warpWire=1 and warpWireFixtureUrl against the gateway of tests/e2e/api/provider_config/warp-wire.config.json, with a logs store and a vector store, and tests/e2e/api/runners/warp-wire-fixture.mjs as the only upstream. A retired namespace holds vectors of a space nothing records, so moving back onto one is refused; clearing the space in place is refused, and clearing it onto a new namespace retires the old one. A turn that searches reports its model calls and each query embedding once: 110 tokens per model call and 7 per embedding on this fixture. Model turns held open, backfill pages, tied timestamps and the chart, trace and search reads cannot be sent from a collection: tests/e2e/api/runners/run-warp-wire.mjs covers them. Run the whole folder in order.",
       "item": [
         {
-          "name": "openai warp-preservation setup: warp feature flag is on",
+          "name": "[setup] the warp feature flag is on - warp-preservation",
           "request": {
             "method": "GET",
             "header": [],
@@ -289643,7 +289643,7 @@
           ]
         },
         {
-          "name": "openai warp-preservation setup: first namespace",
+          "name": "[setup] a first namespace - warp-preservation",
           "request": {
             "method": "PUT",
             "header": [
@@ -289689,7 +289689,7 @@
           ]
         },
         {
-          "name": "openai warp-preservation setup: move to a second namespace",
+          "name": "[setup] a move to a second namespace - warp-preservation",
           "request": {
             "method": "PUT",
             "header": [
@@ -289735,7 +289735,7 @@
           ]
         },
         {
-          "name": "openai warp-preservation a retired namespace is refused",
+          "name": "[EXPECT-400] a retired namespace is refused - warp-preservation",
           "request": {
             "method": "PUT",
             "header": [
@@ -289782,7 +289782,7 @@
           ]
         },
         {
-          "name": "openai warp-preservation clearing the space in place is refused",
+          "name": "[EXPECT-400] clearing the space in place is refused - warp-preservation",
           "request": {
             "method": "PUT",
             "header": [
@@ -289829,7 +289829,7 @@
           ]
         },
         {
-          "name": "openai warp-preservation clearing onto a new namespace is allowed",
+          "name": "clearing onto a new namespace is allowed - warp-preservation",
           "request": {
             "method": "PUT",
             "header": [
@@ -289875,7 +289875,7 @@
           ]
         },
         {
-          "name": "openai warp-preservation the namespace clearing left is retired",
+          "name": "[EXPECT-400] the namespace clearing left is retired - warp-preservation",
           "request": {
             "method": "PUT",
             "header": [
@@ -289922,7 +289922,7 @@
           ]
         },
         {
-          "name": "openai warp-preservation setup: fourth namespace for the chat",
+          "name": "[setup] a namespace for the chat - warp-preservation",
           "request": {
             "method": "PUT",
             "header": [
@@ -289968,7 +289968,7 @@
           ]
         },
         {
-          "name": "openai warp-preservation a turn's usage counts each search embedding once",
+          "name": "a turn's usage counts each search embedding once - warp-preservation",
           "request": {
             "method": "POST",
             "header": [
