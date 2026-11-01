@@ -77,6 +77,26 @@ func dialRealtimeTestConn(t *testing.T) (*ws.Conn, *ws.Conn, func()) {
 	}
 }
 
+// drainRealtimeSessions fails t unless every session on sessions has ended by the time the
+// test's own defers have run. A session runs on the hijacked connection's goroutine, which no
+// server waits for, so a test can return with one running, and it then reads the package
+// logger while the next test's SetLogger writes it. Count is the wait, and not a look at the
+// goroutines: the session's last act is Remove on the same mutex, so seeing it gone orders
+// everything the session did before whatever the next test does.
+func drainRealtimeSessions(t *testing.T, sessions *bfws.SessionManager) {
+	t.Helper()
+	t.Cleanup(func() {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for sessions.Count() > 0 {
+			if time.Now().After(deadline) {
+				t.Fatalf("%d realtime session(s) outlived the test", sessions.Count())
+			}
+			time.Sleep(time.Millisecond)
+		}
+	})
+}
+
 func TestDiscoverRealtimeTranscriptionModel(t *testing.T) {
 	t.Parallel()
 
@@ -586,6 +606,7 @@ func TestTranscriptionUpgradeCountsAgainstMaxConnectionsDuringBootstrap(t *testi
 	// Upstream #7317's credential check reads the handler's config and store.
 	h := newRealtimeUpgradeHandler(false)
 	h.sessions = bfws.NewSessionManager(1)
+	drainRealtimeSessions(t, h.sessions)
 	r := router.New()
 	r.GET("/v1/realtime", func(ctx *fasthttp.RequestCtx) {
 		preReqCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
@@ -652,6 +673,7 @@ func TestTranscriptionUpgradeWithQueryModelSkipsTheBootstrap(t *testing.T) {
 	defer client.Shutdown()
 	h := newRealtimeUpgradeHandler(false)
 	h.client, h.sessions = client, bfws.NewSessionManager(0)
+	drainRealtimeSessions(t, h.sessions)
 	r := router.New()
 	r.GET("/v1/realtime", func(ctx *fasthttp.RequestCtx) {
 		preReqCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
@@ -751,7 +773,9 @@ func TestTranscriptionUpgradeKeepsMiddlewareValuesPastTheHandler(t *testing.T) {
 
 			h := newRealtimeUpgradeHandler(false)
 			h.client, h.sessions, h.pool = client, bfws.NewSessionManager(0), bfws.NewPool(nil)
-			defer h.Close()
+			// Close empties the session map, so it follows the drain: cleanups run last first.
+			t.Cleanup(h.Close)
+			drainRealtimeSessions(t, h.sessions)
 			r := router.New()
 			r.GET("/v1/realtime", func(ctx *fasthttp.RequestCtx) {
 				if tt.transportValue != nil {
