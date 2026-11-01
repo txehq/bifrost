@@ -20,6 +20,9 @@ permissions:
 jobs:
   # Check if pipeline should be skipped based on first line of commit message
   check-skip:
+    # @maximhq on npm belongs to upstream. The fork publishes nothing there, and the
+    # jobs below need this one, so they skip with it.
+    if: github.repository == 'maximhq/bifrost'
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
       contents: read

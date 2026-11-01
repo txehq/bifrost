@@ -1,0 +1,5 @@
+- fix: every stored credential of a context is cleared when its gateway URL changes
+- fix: `bifrost doctor` checks management authentication on a protected route
+- fix: `bifrost run codex` keeps session history in a private store per gateway
+- fix: `bifrost configure codex` saves a config that a direct Codex launch can use
+- change: this fork build makes no update check against upstream, and `bifrost update` points to this repository's releases instead of replacing the binary

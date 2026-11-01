@@ -32,6 +32,12 @@ platforms=(
 MODULE_PATH="$PROJECT_ROOT/cli"
 COMMIT="${GITHUB_SHA:-$(git rev-parse HEAD 2>/dev/null || echo 'unknown')}"
 
+# Fork releases set CLI_RELEASE_CHANNEL; see internal/update/check.go.
+CHANNEL_LDFLAG=""
+if [[ -n "${CLI_RELEASE_CHANNEL:-}" ]]; then
+  CHANNEL_LDFLAG="-X github.com/capsohq/bifrost/cli/internal/update.releaseChannel=${CLI_RELEASE_CHANNEL}"
+fi
+
 for platform in "${platforms[@]}"; do
   IFS='/' read -r GOOS GOARCH <<< "$platform"
 
@@ -46,7 +52,7 @@ for platform in "${platforms[@]}"; do
   # CLI has no CGO dependencies, so we can cross-compile without cross-compilers
   env GOWORK=off CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
     go build -trimpath \
-    -ldflags "-s -w -buildid= -X main.version=v${VERSION} -X main.commit=${COMMIT}" \
+    -ldflags "-s -w -buildid= -X main.version=v${VERSION} -X main.commit=${COMMIT} ${CHANNEL_LDFLAG}" \
     -o "$PROJECT_ROOT/dist/$GOOS/$GOARCH/$output_name" .
 
   # Generate SHA-256 checksum for the binary

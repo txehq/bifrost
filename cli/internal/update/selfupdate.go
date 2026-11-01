@@ -16,6 +16,9 @@ import (
 
 // RunSelfUpdate downloads and replaces the current binary with the latest version.
 func RunSelfUpdate(currentVersion string) error {
+	if isForkBuild() {
+		return fmt.Errorf("self-update is not available in this build (%s): download a newer release from %s, verify it against SHA256SUMS and replace the binary", currentVersion, forkReleasesURL)
+	}
 	fmt.Println("Checking latest bifrost version...")
 	latest, err := fetchLatestVersion()
 	if err != nil {

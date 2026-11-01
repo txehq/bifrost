@@ -36,7 +36,8 @@ jobs:
 
   notify:
     needs: [check-skip]
-    if: needs.check-skip.outputs.should-skip != 'true'
+    # A push has no pull request to comment on.
+    if: needs.check-skip.outputs.should-skip != 'true' && github.event.pull_request.number
     name: Post Test Instructions
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     steps:

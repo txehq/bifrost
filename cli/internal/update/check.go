@@ -19,6 +19,21 @@ const (
 	requestTimeout = 3 * time.Second
 )
 
+// releaseChannel is set at link time. Fork release builds set it to forkChannel;
+// every other build leaves it empty and keeps the upstream update behaviour.
+var releaseChannel string
+
+const (
+	forkChannel     = "txehq"
+	forkReleasesURL = "https://github.com/txehq/bifrost/releases?q=cli%2Fv"
+)
+
+// isForkBuild reports whether this binary came from the fork's release pipeline.
+// A fork build must never read or install anything from upstream's download host.
+func isForkBuild() bool {
+	return releaseChannel == forkChannel
+}
+
 // CheckResult holds the outcome of a version check.
 type CheckResult struct {
 	CurrentVersion  string
@@ -48,6 +63,9 @@ func CheckInBackground(currentVersion, statePath string) <-chan *CheckResult {
 }
 
 func doCheck(currentVersion, statePath string) *CheckResult {
+	if isForkBuild() {
+		return nil
+	}
 	if currentVersion == "dev" || strings.TrimSpace(currentVersion) == "" {
 		return nil
 	}
