@@ -772,3 +772,50 @@ func TestLocalConfigBaseURLSchemeOrPortChangeClearsCredentials(t *testing.T) {
 		})
 	}
 }
+
+// TestRestoreConfigReceiptFromAVersionThatWroteAuth pins upgrades: a receipt recording
+// a hash for auth.json was written by a version that changed it, so it is still undone.
+func TestRestoreConfigReceiptFromAVersionThatWroteAuth(t *testing.T) {
+	dir := t.TempDir()
+	created, replaced := filepath.Join(dir, "created", "auth.json"), filepath.Join(dir, "replaced", "auth.json")
+	for _, path := range []string{created, replaced} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(`{"OPENAI_API_KEY":"sk-bf-old"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	receipt := &configReceipt{Files: []configSnapshot{
+		{Path: created, ConfiguredSHA256: "recorded"},
+		{Path: replaced, Existed: true, Mode: 0o600, Original: []byte(`{"auth_mode":"chatgpt"}`), ConfiguredSHA256: "recorded"},
+	}}
+	if err := restoreConfigReceipt(receipt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(created); !os.IsNotExist(err) {
+		t.Fatalf("an auth.json the old version created was kept: %v", err)
+	}
+	if got, err := os.ReadFile(replaced); err != nil || string(got) != `{"auth_mode":"chatgpt"}` {
+		t.Fatalf("an auth.json the old version replaced was not restored: %q, %v", got, err)
+	}
+}
+
+// TestRecordConfiguredHashesKeepsAnOlderAuthHash pins the same upgrade through a
+// reconfigure: auth.json is not hashed again, so an older hash stays for restoring it.
+func TestRecordConfiguredHashesKeepsAnOlderAuthHash(t *testing.T) {
+	dir := t.TempDir()
+	auth, config := filepath.Join(dir, "auth.json"), filepath.Join(dir, "config.toml")
+	for _, path := range []string{auth, config} {
+		if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	receipt := &configReceipt{Files: []configSnapshot{{Path: auth, ConfiguredSHA256: "older"}, {Path: config}}}
+	if err := recordConfiguredHashes(receipt); err != nil {
+		t.Fatal(err)
+	}
+	if receipt.Files[0].ConfiguredSHA256 != "older" || receipt.Files[1].ConfiguredSHA256 == "" {
+		t.Fatalf("hashes = %+v", receipt.Files)
+	}
+}

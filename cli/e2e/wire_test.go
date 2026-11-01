@@ -651,28 +651,56 @@ func TestWireConfigureLeavesCodexCredentialsAlone(t *testing.T) {
 	}
 }
 
-// TestWireUnconfigureKeepsALoginMadeLater pins that `unconfigure` removes what
-// `configure` created and nothing else: it no longer writes auth.json, so one that
-// appears afterwards is the user's own login.
+// TestWireUnconfigureKeepsALoginMadeLater pins that `unconfigure` undoes what `configure`
+// wrote and nothing else: it no longer writes auth.json, so a login there is the
+// user's, whether it was there first, or came after one or two configure runs.
 func TestWireUnconfigureKeepsALoginMadeLater(t *testing.T) {
-	g, home, stub := startGateway(t, false, true), t.TempDir(), installStub(t)
-	out := runCLI(t, home, map[string]string{"PATH": stub, "BIFROST_VIRTUAL_KEY": virtualKey}, "--base-url", g.URL, "configure", "codex")
-	if out.exit != 0 {
-		t.Fatalf("configure exit %d\n%s", out.exit, out.all())
-	}
-	login := `{"tokens":{"id_token":"keep-me-wire"}}`
-	authPath, configPath := filepath.Join(home, ".codex", "auth.json"), filepath.Join(home, ".codex", "config.toml")
-	if err := os.WriteFile(authPath, []byte(login), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out = runCLI(t, home, map[string]string{"PATH": stub}, "--base-url", g.URL, "unconfigure", "codex")
-	if out.exit != 0 {
-		t.Fatalf("unconfigure exit %d\n%s", out.exit, out.all())
-	}
-	if got, err := os.ReadFile(authPath); err != nil || string(got) != login {
-		t.Fatalf("unconfigure removed the user's login: %q, %v", got, err)
-	}
-	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
-		t.Fatalf("unconfigure left the config it created: %v", err)
+	for _, tc := range []struct {
+		name        string
+		loginBefore bool
+		configures  int
+	}{
+		{name: "created after configure", configures: 1},
+		{name: "created before reconfigure", configures: 2},
+		{name: "replaced after configure", loginBefore: true, configures: 1},
+		{name: "replaced before reconfigure", loginBefore: true, configures: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g, home, stub := startGateway(t, false, true), t.TempDir(), installStub(t)
+			authPath, configPath := filepath.Join(home, ".codex", "auth.json"), filepath.Join(home, ".codex", "config.toml")
+			if tc.loginBefore {
+				if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(authPath, []byte(`{"tokens":{"id_token":"old-login"}}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			configure := func() {
+				t.Helper()
+				out := runCLI(t, home, map[string]string{"PATH": stub, "BIFROST_VIRTUAL_KEY": virtualKey}, "--base-url", g.URL, "configure", "codex")
+				if out.exit != 0 {
+					t.Fatalf("configure exit %d\n%s", out.exit, out.all())
+				}
+			}
+			configure()
+			login := `{"tokens":{"id_token":"keep-me-wire"}}`
+			if err := os.WriteFile(authPath, []byte(login), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for run := 1; run < tc.configures; run++ {
+				configure()
+			}
+			out := runCLI(t, home, map[string]string{"PATH": stub}, "--base-url", g.URL, "unconfigure", "codex")
+			if out.exit != 0 {
+				t.Fatalf("unconfigure exit %d\n%s", out.exit, out.all())
+			}
+			if got, err := os.ReadFile(authPath); err != nil || string(got) != login {
+				t.Fatalf("unconfigure changed the user's login: %q, %v", got, err)
+			}
+			if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+				t.Fatalf("unconfigure left the config it created: %v", err)
+			}
+		})
 	}
 }
