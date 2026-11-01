@@ -1428,8 +1428,8 @@ func TestMemoryStoreAckedSetIsBounded(t *testing.T) {
 	assert.Empty(t, store.messages)
 }
 
-// BenchmarkMemoryStorePurgeAckedIdleGroup measures what the purge pays for compaction: a
-// group holding queueSize live deliveries with one acknowledged since the last purge.
+// BenchmarkMemoryStorePurgeAckedIdleGroup measures a purge after one acknowledgement, on a
+// group holding queueSize live deliveries: what compaction adds to the periodic purge.
 func BenchmarkMemoryStorePurgeAckedIdleGroup(b *testing.B) {
 	for _, queueSize := range []int{1_000, 100_000} {
 		b.Run(fmt.Sprintf("queue=%d", queueSize), func(b *testing.B) {
@@ -1441,21 +1441,39 @@ func BenchmarkMemoryStorePurgeAckedIdleGroup(b *testing.B) {
 				msgs[i] = &Message{ID: fmt.Sprintf("m%d", i), Topic: "t"}
 			}
 			require.NoError(b, store.Append(ctx, msgs))
-			key := memoryGroupKey{"t", "g"}
+			next := queueSize
 			b.ReportAllocs()
 			for b.Loop() {
 				b.StopTimer()
-				store.mu.Lock()
-				if store.acked == nil {
-					store.acked = make(map[memoryGroupKey]bool)
-				}
-				store.acked[key] = true
-				store.mu.Unlock()
+				next++
+				require.NoError(b, store.Append(ctx, []*Message{{ID: fmt.Sprintf("m%d", next), Topic: "t"}}))
+				claimed, err := store.Claim(ctx, ClaimRequest{Topic: "t", Group: "g", Max: 1, Lease: time.Minute})
+				require.NoError(b, err)
+				_, err = store.Ack(ctx, claimed)
+				require.NoError(b, err)
 				b.StartTimer()
-				if _, err := store.Purge(ctx, PurgePolicy{AckedRetention: time.Hour}, 1000); err != nil {
-					b.Fatal(err)
-				}
+				_, err = store.Purge(ctx, PurgePolicy{AckedRetention: time.Hour}, 1000)
+				require.NoError(b, err)
 			}
 		})
+	}
+}
+
+// BenchmarkMemoryStoreAck measures the acknowledgement itself, which now records its group.
+func BenchmarkMemoryStoreAck(b *testing.B) {
+	ctx := context.Background()
+	store := newMemoryStore()
+	require.NoError(b, store.EnsureGroup(ctx, "t", "g", StartFromEarliest))
+	next := 0
+	b.ReportAllocs()
+	for b.Loop() {
+		b.StopTimer()
+		next++
+		require.NoError(b, store.Append(ctx, []*Message{{ID: fmt.Sprintf("m%d", next), Topic: "t"}}))
+		claimed, err := store.Claim(ctx, ClaimRequest{Topic: "t", Group: "g", Max: 1, Lease: time.Minute})
+		require.NoError(b, err)
+		b.StartTimer()
+		_, err = store.Ack(ctx, claimed)
+		require.NoError(b, err)
 	}
 }
