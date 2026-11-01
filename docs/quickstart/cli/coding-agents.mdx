@@ -60,7 +60,7 @@ bifrost configure codex --model openai/gpt-5
 | Harness | Files changed |
 | --- | --- |
 | Claude Code | `~/.claude/settings.json`: `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_AUTH_TOKEN`, model settings; removes `apiKeyHelper` |
-| Codex CLI | `~/.codex/auth.json` and `~/.codex/config.toml` (`model_provider = "bifrost"`) |
+| Codex CLI | `~/.codex/auth.json` and `~/.codex/config.toml` (`model_provider = "bifrost"`, and `cli_auth_credentials_store = "file"`, since the key is saved in `auth.json`) |
 
 Before changing anything, the CLI saves a restoration receipt under `~/.bifrost/receipts/`. To undo the change:
 

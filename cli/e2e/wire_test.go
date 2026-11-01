@@ -562,7 +562,7 @@ func TestWireConfigureSavesAKeyADirectLaunchCanUse(t *testing.T) {
 	if out.exit != 0 {
 		t.Fatalf("configure exit %d\n%s", out.exit, out.all())
 	}
-	if strings.Contains(config, "env_key") || !strings.Contains(config, "requires_openai_auth = true") {
+	if strings.Contains(config, "env_key") || !strings.Contains(config, "requires_openai_auth = true") || !strings.Contains(config, `cli_auth_credentials_store = "file"`) {
 		t.Fatalf("a saved key must be read from auth.json, a direct launch has no environment key:\n%s", config)
 	}
 	if strings.Contains(config, virtualKey) {

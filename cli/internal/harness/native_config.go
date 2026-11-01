@@ -288,6 +288,10 @@ func codexRenderConfigTOML(existing []byte, baseURL, model string, auth codexPro
 	if m := strings.TrimSpace(model); m != "" {
 		targets["model"] = m
 	}
+	if auth == codexAuthStored {
+		// The key is saved in auth.json, which keyring and auto storage do not read.
+		targets["cli_auth_credentials_store"] = "file"
+	}
 	existing = removeTopLevelTOMLKeys(existing, map[string]struct{}{
 		"openai_base_url": {},
 		"env_key":         {},

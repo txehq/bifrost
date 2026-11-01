@@ -430,6 +430,34 @@ func TestCodexWriteNativeConfigSkipsAuthForDummyKey(t *testing.T) {
 	}
 }
 
+// TestCodexWriteNativeConfigStoresKeyWhereCodexReadsIt pins that a saved key works
+// under a user's keyring setting: Codex reads auth.json only with file storage.
+func TestCodexWriteNativeConfigStoresKeyWhereCodexReadsIt(t *testing.T) {
+	for _, existing := range []string{"", `cli_auth_credentials_store = "keyring"` + "\n", `cli_auth_credentials_store = "auto"` + "\n"} {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		if existing != "" {
+			if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(existing), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := codexWriteNativeConfig("http://localhost:8080/openai/v1", "sk-bf-test", ""); err != nil {
+			t.Fatal(err)
+		}
+		configured, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := string(configured)
+		if !strings.Contains(got, `cli_auth_credentials_store = "file"`) || strings.Contains(got, "keyring") || strings.Contains(got, `"auto"`) {
+			t.Fatalf("saved key would not be read, config:\n%s", got)
+		}
+	}
+}
+
 // TestCodexWriteNativeConfigChangingToKeylessGatewayDropsStoredAuth pins that a
 // saved key is not offered to the next gateway: moving to a keyless endpoint stops
 // the provider reading auth.json, so the old gateway's key is not sent to the new one.
@@ -542,6 +570,24 @@ func TestCodexPreLaunchKeepsEachGatewaySeparate(t *testing.T) {
 	}
 	if strings.Contains(first+second, "gateway.example") {
 		t.Fatalf("launcher home paths expose the gateway: %q %q", first, second)
+	}
+}
+
+// TestCodexPreLaunchLeavesTheUsersCredentialStore pins that only a saved key changes
+// the store: a launch reads its key from the environment.
+func TestCodexPreLaunchLeavesTheUsersCredentialStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	userConfig := `cli_auth_credentials_store = "keyring"` + "\n"
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(userConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readCodexConfig(t, codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test")); !strings.Contains(got, `cli_auth_credentials_store = "keyring"`) {
+		t.Fatalf("launcher config changed the user's credential store:\n%s", got)
 	}
 }
 
