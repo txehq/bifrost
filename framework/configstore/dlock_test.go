@@ -1692,7 +1692,8 @@ func (s *ledgerStore) UpdateLockExpiry(ctx context.Context, key, holder string, 
 }
 
 // explainsLiveRow reports whether row is exactly the last renewal its own holder could
-// not confirm, to the microsecond a store keeps. Nothing else may be live with no holder.
+// not confirm. Postgres keeps microseconds and Go keeps nanoseconds, so the two agree
+// to within a microsecond and no closer. Nothing else may be live with no holder.
 func (l *leaseLedger) explainsLiveRow(row *tables.TableDistributedLock) bool {
 	written, unconfirmed := l.unconfirmed[row.HolderID]
 	return unconfirmed && written.Sub(row.ExpiresAt).Abs() <= time.Microsecond
@@ -1754,14 +1755,15 @@ func TestDistributedLockManager_ContendedHoldersStayExclusive(t *testing.T) {
 // Only the last write a holder could not confirm explains a live row: not another
 // holder's, not another expiry, not one a later confirmed renewal replaced.
 func TestLeaseLedger_ExplainsOnlyAnUnconfirmedWrite(t *testing.T) {
-	written := time.Now().Add(time.Minute)
+	written := time.Now().Add(time.Minute).Truncate(time.Microsecond).Add(400 * time.Nanosecond)
 	ledger := &leaseLedger{leases: map[string]time.Time{}, unconfirmed: map[string]time.Time{"holder": written}}
 	row := func(holder string, expiry time.Time) *tables.TableDistributedLock {
 		return &tables.TableDistributedLock{HolderID: holder, ExpiresAt: expiry}
 	}
 	assert.True(t, ledger.explainsLiveRow(row("holder", written)))
 	assert.True(t, ledger.explainsLiveRow(row("holder", written.Truncate(time.Microsecond))), "a store keeps microseconds")
-	assert.False(t, ledger.explainsLiveRow(row("holder", written.Add(time.Millisecond))), "a different write")
+	assert.True(t, ledger.explainsLiveRow(row("holder", written.Round(time.Microsecond))), "and may round them")
+	assert.False(t, ledger.explainsLiveRow(row("holder", written.Add(2*time.Microsecond))), "a different write")
 	assert.False(t, ledger.explainsLiveRow(row("other", written)), "another holder's row")
 
 	store := &ledgerStore{LockStore: &stubRenewStore{}, ledger: ledger}
