@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"runtime/pprof"
 	"strings"
 	"testing"
 	"time"
@@ -78,37 +77,24 @@ func dialRealtimeTestConn(t *testing.T) (*ws.Conn, *ws.Conn, func()) {
 	}
 }
 
-// drainRealtimeSessions fails t unless every realtime session the test started has ended
-// by the time its own defers have run. A session runs on the hijacked connection's goroutine,
-// which no server waits for, so a test can return with one still running, and that session
-// then reads the package logger while the next test's SetLogger writes it. Only serial
-// tests use this: a parallel test's sessions would count against it.
-func drainRealtimeSessions(t *testing.T) {
+// drainRealtimeSessions fails t unless every session on sessions has ended by the time the
+// test's own defers have run. A session runs on the hijacked connection's goroutine, which no
+// server waits for, so a test can return with one running, and it then reads the package
+// logger while the next test's SetLogger writes it. Count is the wait, and not a look at the
+// goroutines: the session's last act is Remove on the same mutex, so seeing it gone orders
+// everything the session did before whatever the next test does.
+func drainRealtimeSessions(t *testing.T, sessions *bfws.SessionManager) {
 	t.Helper()
 	t.Cleanup(func() {
 		t.Helper()
-		var live string
-		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-			if live = liveRealtimeSessions(); live == "" {
-				return
+		deadline := time.Now().Add(5 * time.Second)
+		for sessions.Count() > 0 {
+			if time.Now().After(deadline) {
+				t.Fatalf("%d realtime session(s) outlived the test", sessions.Count())
 			}
+			time.Sleep(time.Millisecond)
 		}
-		t.Fatalf("a realtime session outlived its test:\n%s", live)
 	})
-}
-
-// liveRealtimeSessions returns the stacks of the goroutines running a realtime session.
-func liveRealtimeSessions() string {
-	var stacks strings.Builder
-	_ = pprof.Lookup("goroutine").WriteTo(&stacks, 2)
-	var live []string
-	for stack := range strings.SplitSeq(stacks.String(), "\n\n") {
-		if strings.Contains(stack, "handlers.(*WSRealtimeHandler).runRealtimeSession") ||
-			strings.Contains(stack, "handlers.(*WSRealtimeHandler).handleTranscriptionUpgrade.func") {
-			live = append(live, stack)
-		}
-	}
-	return strings.Join(live, "\n\n")
 }
 
 func TestDiscoverRealtimeTranscriptionModel(t *testing.T) {
@@ -617,10 +603,10 @@ func TestPinRealtimeTranscriptionModelCoversEveryShape(t *testing.T) {
 // model, so it must be admitted (and counted against MaxConnections, and reachable
 // by CloseAll) before the bootstrap read, not after it.
 func TestTranscriptionUpgradeCountsAgainstMaxConnectionsDuringBootstrap(t *testing.T) {
-	drainRealtimeSessions(t)
 	// Upstream #7317's credential check reads the handler's config and store.
 	h := newRealtimeUpgradeHandler(false)
 	h.sessions = bfws.NewSessionManager(1)
+	drainRealtimeSessions(t, h.sessions)
 	r := router.New()
 	r.GET("/v1/realtime", func(ctx *fasthttp.RequestCtx) {
 		preReqCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
@@ -677,7 +663,6 @@ func TestTranscriptionUpgradeCountsAgainstMaxConnectionsDuringBootstrap(t *testi
 // a client that waits for session.created first would never send. Here no
 // realtime provider is configured, so "straight on" shows as an immediate refusal.
 func TestTranscriptionUpgradeWithQueryModelSkipsTheBootstrap(t *testing.T) {
-	drainRealtimeSessions(t)
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
 		Account: wsSpanTestAccount{},
 		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
@@ -688,6 +673,7 @@ func TestTranscriptionUpgradeWithQueryModelSkipsTheBootstrap(t *testing.T) {
 	defer client.Shutdown()
 	h := newRealtimeUpgradeHandler(false)
 	h.client, h.sessions = client, bfws.NewSessionManager(0)
+	drainRealtimeSessions(t, h.sessions)
 	r := router.New()
 	r.GET("/v1/realtime", func(ctx *fasthttp.RequestCtx) {
 		preReqCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
@@ -763,7 +749,6 @@ func TestTranscriptionUpgradeKeepsMiddlewareValuesPastTheHandler(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			drainRealtimeSessions(t)
 			upstreamAuth := make(chan string, 1)
 			upgrader := ws.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -788,7 +773,9 @@ func TestTranscriptionUpgradeKeepsMiddlewareValuesPastTheHandler(t *testing.T) {
 
 			h := newRealtimeUpgradeHandler(false)
 			h.client, h.sessions, h.pool = client, bfws.NewSessionManager(0), bfws.NewPool(nil)
-			defer h.Close()
+			// Close empties the session map, so it follows the drain: cleanups run last first.
+			t.Cleanup(h.Close)
+			drainRealtimeSessions(t, h.sessions)
 			r := router.New()
 			r.GET("/v1/realtime", func(ctx *fasthttp.RequestCtx) {
 				if tt.transportValue != nil {
