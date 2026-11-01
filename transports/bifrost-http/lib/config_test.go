@@ -20801,6 +20801,17 @@ func TestConfigSchemaSyncTopLevel(t *testing.T) {
 // AUTH CONFIG PASSWORD HASHING TESTS
 // ===================================================================================
 
+// TestResolveFrameworkPricingConfigWithoutLogger: handlers can reach the resolver before
+// SetLogger, as handler tests do; the debug line must not dereference the unset logger.
+func TestResolveFrameworkPricingConfigWithoutLogger(t *testing.T) {
+	saved := logger
+	logger = nil
+	t.Cleanup(func() { logger = saved })
+	table, catalog, _ := ResolveFrameworkPricingConfig(nil, nil)
+	require.NotNil(t, table)
+	require.NotNil(t, catalog)
+}
+
 func TestResolveFrameworkPricingConfig(t *testing.T) {
 	initTestLogger()
 	defaultURL := modelcatalog.DefaultPricingURL

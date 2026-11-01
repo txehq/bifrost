@@ -172,6 +172,54 @@ test.describe('Notification panel background jobs', () => {
     await expect(page.getByTestId('sidekiq-jobs-section')).toHaveCount(0)
   })
 
+  test('shows loading until the job list arrives, never an empty list', async ({ page }) => {
+    let release = () => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    await page.route('**/api/sidekiq/jobs', async (route) => {
+      await held
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ jobs: [runningJob()] }) })
+    })
+    await page.goto('/workspace/dashboard')
+    await openJobsTab(page)
+
+    const section = page.getByTestId('sidekiq-jobs-section')
+    await expect(section).toContainText('Loading background jobs')
+    await expect(section).not.toContainText('No background jobs')
+
+    release()
+    await expect(page.getByTestId('sidekiq-job-job-running')).toBeVisible()
+    await expect(section).not.toContainText('Loading background jobs')
+  })
+
+  test('shows a failed list with a retry that fetches and displays it', async ({ page }) => {
+    let serving = false
+    await page.route('**/api/sidekiq/jobs', (route) =>
+      serving
+        ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ jobs: [runningJob()] }) })
+        : route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { message: 'boom' } }) }),
+    )
+    await page.goto('/workspace/dashboard')
+    await openJobsTab(page)
+
+    const section = page.getByTestId('sidekiq-jobs-section')
+    await expect(section).toContainText("Couldn't load background jobs")
+    await expect(section).not.toContainText('No background jobs')
+
+    // The open tray polls every 3 seconds, so the endpoint recovers in the same step as the
+    // click: a poll landing between the two would remove the button under the test.
+    const retry = page.getByTestId('sidekiq-jobs-retry')
+    await retry.waitFor()
+    const retried = page.waitForRequest('**/api/sidekiq/jobs', { timeout: 1500 })
+    serving = true
+    await retry.evaluate((button: HTMLElement) => button.click())
+    await retried
+
+    await expect(page.getByTestId('sidekiq-job-job-running')).toContainText('Recalculating log costs')
+    await expect(section).not.toContainText("Couldn't load background jobs")
+  })
+
   test('dismisses a finished job and clears all finished jobs, leaving running ones', async ({ page }) => {
     const finished = (id: string, status: MockJob['status']): MockJob => ({
       id,

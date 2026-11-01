@@ -1848,6 +1848,12 @@ ui:
 # Workspace helpers
 setup-workspace: ## Set up Go workspace with all local modules for development
 	@$(ECHO) "$(GREEN)Setting up Go workspace for local development...$(NC)"
+# A checked-in go.work carries local replaces for internal module versions that are
+# never tagged; regenerating it would make every module resolve those tags remotely.
+ifneq ($(shell git ls-files go.work 2>/dev/null),)
+	@$(ECHO) "$(YELLOW)Keeping the checked-in go.work$(NC)"
+	@go list -m all >/dev/null
+else
 	@$(ECHO) "$(YELLOW)Cleaning existing workspace...$(NC)"
 	@rm -f go.work go.work.sum || true
 	@$(ECHO) "$(YELLOW)Initializing new workspace...$(NC)"
@@ -1868,6 +1874,7 @@ setup-workspace: ## Set up Go workspace with all local modules for development
 	done
 	@$(ECHO) "$(YELLOW)Syncing workspace...$(NC)"
 	@go work sync
+endif
 	@$(ECHO) "$(GREEN)✓ Go workspace ready with all local modules$(NC)"
 	@$(ECHO) ""
 	@$(ECHO) "$(CYAN)Local modules in workspace:$(NC)"
@@ -1876,7 +1883,9 @@ setup-workspace: ## Set up Go workspace with all local modules for development
 	@$(ECHO) "$(CYAN)Remote modules (no local version):$(NC)"
 	@go list -m all | grep "github.com/capsohq/bifrost" | grep " v" | sed 's/^/  → /'
 	@$(ECHO) ""
+ifeq ($(shell git ls-files go.work 2>/dev/null),)
 	@$(ECHO) "$(YELLOW)Note: go.work files are not committed to version control$(NC)"
+endif
 
 work-init: ## Create local go.work to use local modules for development (legacy)
 	@$(ECHO) "$(YELLOW)⚠️  work-init is deprecated, use 'make setup-workspace' instead$(NC)"

@@ -1,0 +1,15 @@
+---
+title: "v2.1.49-sync.20"
+description: "Helm v2.1.49-sync.20 prerelease changelog - 2026-11-01"
+---
+
+<Update label="Bifrost Helm" description="v2.1.49-sync.20 (prerelease)">
+
+## Changelog
+
+Prerelease of the txehq fork for transport v2.3.3-sync.20; the published chart stays 2.1.48 until a stable version supersedes it. Install this one with `helm install --devel` or `--version 2.1.49-sync.20`. No values, templates or schema change:
+
+- `startupProbe` now renders on the StatefulSet too, so a chart using persistent storage holds off its liveness probe the same way the Deployment does
+- `appVersion` is now `2.3.3-sync.20`, the transport prerelease this chart ships with; it sets only the `app.kubernetes.io/version` label, and `image.tag` stays required.
+
+</Update>

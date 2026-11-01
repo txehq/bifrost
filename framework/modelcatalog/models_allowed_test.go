@@ -113,3 +113,57 @@ func TestIsModelAllowedForProvider_WildcardAllowsUncataloguedModel(t *testing.T)
 		t.Errorf("a wildcard went past the live list of an enumerable provider")
 	}
 }
+
+// TestIsModelAllowedForProvider_WildcardFallbackNeverBroadensRestrictions pins that
+// the uncatalogued-model fallback only widens an unrestricted ["*"] grant on a
+// provider list-models cannot enumerate. An explicit model list, an empty list, an
+// enumerable provider's catalog, and a disabled or block-all key all keep refusing
+// a model they do not name.
+func TestIsModelAllowedForProvider_WildcardFallbackNeverBroadensRestrictions(t *testing.T) {
+	ds := datasheet.NewTestStore(nil)
+	ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+		{Model: "accounts/fireworks/models/glm-5p2", Provider: "fireworks_ai", Mode: "chat"},
+	})
+	const known, unlisted = "accounts/fireworks/models/glm-5p2", "accounts/fireworks/models/glm-5p3"
+	newCatalog := func(key schemas.Key, listed []string) *ModelCatalog {
+		kc := keyconfig.New(nil)
+		kc.Replace(map[schemas.ModelProvider][]schemas.Key{schemas.Fireworks: {key}})
+		lv := live.New(nil)
+		if listed != nil {
+			lv.Upsert(schemas.Fireworks, key.ID, true, listed)
+		}
+		mc := &ModelCatalog{datasheet: ds, live: lv, keyconf: kc, done: make(chan struct{})}
+		mc.initCaches()
+		return mc
+	}
+	openKey := schemas.Key{ID: "fw", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"}}
+
+	open := newCatalog(openKey, nil)
+	if !open.IsModelAllowedForProvider(schemas.Fireworks, unlisted, nil, schemas.WhiteList{"*"}) {
+		t.Fatalf("control: the fallback must allow %q under an unrestricted wildcard", unlisted)
+	}
+	if open.IsModelAllowedForProvider(schemas.Fireworks, unlisted, nil, schemas.WhiteList{known}) {
+		t.Errorf("an explicit model list was broadened to %q", unlisted)
+	}
+	if !open.IsModelAllowedForProvider(schemas.Fireworks, known, nil, schemas.WhiteList{known}) {
+		t.Errorf("control: an explicit list must still allow the model it names")
+	}
+	if open.IsModelAllowedForProvider(schemas.Fireworks, unlisted, nil, schemas.WhiteList{}) {
+		t.Errorf("an empty model list (deny by default) was broadened to %q", unlisted)
+	}
+
+	enumerable := newCatalog(openKey, []string{known})
+	if enumerable.IsModelAllowedForProvider(schemas.Fireworks, unlisted, nil, schemas.WhiteList{"*"}) {
+		t.Errorf("a provider whose list-models answered was broadened past its catalog to %q", unlisted)
+	}
+
+	disabled := newCatalog(schemas.Key{ID: "fw", Enabled: ptrBool(false), Models: schemas.WhiteList{"*"}}, nil)
+	if disabled.IsModelAllowedForProvider(schemas.Fireworks, unlisted, nil, schemas.WhiteList{"*"}) {
+		t.Errorf("a disabled key authorized %q through the fallback", unlisted)
+	}
+	blockAll := newCatalog(schemas.Key{ID: "fw", Enabled: ptrBool(true), Models: schemas.WhiteList{"*"},
+		BlacklistedModels: schemas.BlackList{"*"}}, nil)
+	if blockAll.IsModelAllowedForProvider(schemas.Fireworks, unlisted, nil, schemas.WhiteList{"*"}) {
+		t.Errorf("a block-all key authorized %q through the fallback", unlisted)
+	}
+}

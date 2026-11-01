@@ -1314,3 +1314,166 @@ func footprintOnce(b *testing.B, backend benchBackend, payload, groups int) {
 	backend.compact(b, s)
 	perMsg("purged-compacted")
 }
+
+// TestMemoryStorePurgeReleasesAckedDeliveriesOfIdleGroups: an acknowledged delivery
+// stays in its group's queue until that group claims again, so Purge compacts it out;
+// otherwise a group that stopped consuming keeps the purged message's payload alive.
+func TestMemoryStorePurgeReleasesAckedDeliveriesOfIdleGroups(t *testing.T) {
+	ctx := context.Background()
+	store := newMemoryStore()
+	require.NoError(t, store.EnsureGroup(ctx, "t", "g", StartFromEarliest))
+	require.NoError(t, store.Append(ctx, []*Message{{ID: "m1", Topic: "t", Payload: make([]byte, 1<<20)}}))
+	claimed, err := store.Claim(ctx, ClaimRequest{Topic: "t", Group: "g", Max: 1, Lease: time.Minute})
+	require.NoError(t, err)
+	require.Len(t, claimed, 1)
+	_, err = store.Ack(ctx, claimed)
+	require.NoError(t, err)
+
+	_, err = store.Purge(ctx, PurgePolicy{}, 100)
+	require.NoError(t, err)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	assert.Empty(t, store.queues[memoryGroupKey{"t", "g"}], "the acknowledged delivery still pins its message")
+	assert.Empty(t, store.messages, "the message itself is purged")
+}
+
+// memoryQueueIDs returns the delivery message IDs still held in a group's queue, in order.
+func memoryQueueIDs(store *memoryStore, topic, group string) []string {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	var ids []string
+	for _, it := range store.queues[memoryGroupKey{topic, group}] {
+		ids = append(ids, it.message.msg.ID)
+	}
+	return ids
+}
+
+// TestMemoryStorePurgeKeepsUnfinishedDeliveriesInOrder: compaction removes only finished
+// deliveries. A pending delivery and a leased one in the same queue survive in order, and
+// the lease still acknowledges afterwards, so a purge loses no message.
+func TestMemoryStorePurgeKeepsUnfinishedDeliveriesInOrder(t *testing.T) {
+	ctx := context.Background()
+	store := newMemoryStore()
+	require.NoError(t, store.EnsureGroup(ctx, "t", "g", StartFromEarliest))
+	require.NoError(t, store.Append(ctx, []*Message{{ID: "m1", Topic: "t"}, {ID: "m2", Topic: "t"}, {ID: "m3", Topic: "t"}}))
+	claimed, err := store.Claim(ctx, ClaimRequest{Topic: "t", Group: "g", Max: 2, Lease: time.Minute})
+	require.NoError(t, err)
+	require.Len(t, claimed, 2)
+	_, err = store.Ack(ctx, claimed[:1])
+	require.NoError(t, err)
+
+	_, err = store.Purge(ctx, PurgePolicy{}, 100)
+	require.NoError(t, err)
+	assert.Equal(t, []string{claimed[1].Message.ID, "m3"}, memoryQueueIDs(store, "t", "g"))
+
+	held, err := store.Ack(ctx, claimed[1:])
+	require.NoError(t, err)
+	assert.Len(t, held, 1, "a lease taken before the purge still acknowledges")
+	next, err := store.Claim(ctx, ClaimRequest{Topic: "t", Group: "g", Max: 10, Lease: time.Minute})
+	require.NoError(t, err)
+	require.Len(t, next, 1)
+	assert.Equal(t, "m3", next[0].Message.ID)
+}
+
+// TestMemoryStorePurgeLeavesAnIdleGroupsBacklog: one group finishing a message says nothing
+// about another. A group that never claimed keeps its delivery and the message's payload
+// through a purge, and can still claim it however long it stayed idle.
+func TestMemoryStorePurgeLeavesAnIdleGroupsBacklog(t *testing.T) {
+	ctx := context.Background()
+	store := newMemoryStore()
+	require.NoError(t, store.EnsureGroup(ctx, "t", "busy", StartFromEarliest))
+	require.NoError(t, store.EnsureGroup(ctx, "t", "idle", StartFromEarliest))
+	require.NoError(t, store.Append(ctx, []*Message{{ID: "m1", Topic: "t", Payload: []byte("payload")}}))
+	claimed, err := store.Claim(ctx, ClaimRequest{Topic: "t", Group: "busy", Max: 1, Lease: time.Minute})
+	require.NoError(t, err)
+	_, err = store.Ack(ctx, claimed)
+	require.NoError(t, err)
+
+	base := store.now()
+	store.now = func() time.Time { return base.Add(24 * time.Hour) }
+	_, err = store.Purge(ctx, PurgePolicy{}, 100)
+	require.NoError(t, err)
+	assert.Empty(t, memoryQueueIDs(store, "t", "busy"))
+	assert.Equal(t, []string{"m1"}, memoryQueueIDs(store, "t", "idle"))
+
+	idle, err := store.Claim(ctx, ClaimRequest{Topic: "t", Group: "idle", Max: 1, Lease: time.Minute})
+	require.NoError(t, err)
+	require.Len(t, idle, 1)
+	assert.Equal(t, []byte("payload"), idle[0].Message.Payload)
+}
+
+// TestMemoryStoreAckedSetIsBounded: the set of groups awaiting compaction holds one entry
+// per group however many deliveries were acknowledged, and a purge empties it.
+func TestMemoryStoreAckedSetIsBounded(t *testing.T) {
+	ctx := context.Background()
+	store := newMemoryStore()
+	require.NoError(t, store.EnsureGroup(ctx, "t", "g", StartFromEarliest))
+	for i := range 100 {
+		require.NoError(t, store.Append(ctx, []*Message{{ID: fmt.Sprintf("m%d", i), Topic: "t"}}))
+		claimed, err := store.Claim(ctx, ClaimRequest{Topic: "t", Group: "g", Max: 1, Lease: time.Minute})
+		require.NoError(t, err)
+		_, err = store.Ack(ctx, claimed)
+		require.NoError(t, err)
+	}
+	store.mu.Lock()
+	entries := len(store.acked)
+	store.mu.Unlock()
+	assert.Equal(t, 1, entries)
+
+	_, err := store.Purge(ctx, PurgePolicy{}, 1000)
+	require.NoError(t, err)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	assert.Empty(t, store.acked)
+	assert.Empty(t, store.messages)
+}
+
+// BenchmarkMemoryStorePurgeAckedIdleGroup measures a purge after one acknowledgement, on a
+// group holding queueSize live deliveries: what compaction adds to the periodic purge.
+func BenchmarkMemoryStorePurgeAckedIdleGroup(b *testing.B) {
+	for _, queueSize := range []int{1_000, 100_000} {
+		b.Run(fmt.Sprintf("queue=%d", queueSize), func(b *testing.B) {
+			ctx := context.Background()
+			store := newMemoryStore()
+			require.NoError(b, store.EnsureGroup(ctx, "t", "g", StartFromEarliest))
+			msgs := make([]*Message, queueSize)
+			for i := range msgs {
+				msgs[i] = &Message{ID: fmt.Sprintf("m%d", i), Topic: "t"}
+			}
+			require.NoError(b, store.Append(ctx, msgs))
+			next := queueSize
+			b.ReportAllocs()
+			for b.Loop() {
+				b.StopTimer()
+				next++
+				require.NoError(b, store.Append(ctx, []*Message{{ID: fmt.Sprintf("m%d", next), Topic: "t"}}))
+				claimed, err := store.Claim(ctx, ClaimRequest{Topic: "t", Group: "g", Max: 1, Lease: time.Minute})
+				require.NoError(b, err)
+				_, err = store.Ack(ctx, claimed)
+				require.NoError(b, err)
+				b.StartTimer()
+				_, err = store.Purge(ctx, PurgePolicy{AckedRetention: time.Hour}, 1000)
+				require.NoError(b, err)
+			}
+		})
+	}
+}
+
+// BenchmarkMemoryStoreAck measures the acknowledgement itself, which now records its group.
+func BenchmarkMemoryStoreAck(b *testing.B) {
+	ctx := context.Background()
+	store := newMemoryStore()
+	require.NoError(b, store.EnsureGroup(ctx, "t", "g", StartFromEarliest))
+	next := 0
+	b.ReportAllocs()
+	for b.Loop() {
+		b.StopTimer()
+		next++
+		require.NoError(b, store.Append(ctx, []*Message{{ID: fmt.Sprintf("m%d", next), Topic: "t"}}))
+		claimed, err := store.Claim(ctx, ClaimRequest{Topic: "t", Group: "g", Max: 1, Lease: time.Minute})
+		require.NoError(b, err)
+		b.StartTimer()
+		_, err = store.Ack(ctx, claimed)
+		require.NoError(b, err)
+	}
+}

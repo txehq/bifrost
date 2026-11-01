@@ -518,8 +518,8 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 // its own mode retries under the counterpart rather than pricing at zero.
 // Decision requests retry under chat: a model served natively on a decisions
 // endpoint carries its decision rates on its chat row (see computeDecisionCost), and
-// one answered by emulation is billed as the chat call it is. A model with
-// only a responses row stays unpriced for decisions.
+// one answered by emulation is billed as the text call it is. A model with
+// only a responses row is found by getBasePricing's further responses retry.
 // Returns false for request types with no such counterpart.
 func chatResponsesFallbackMode(reqType schemas.RequestType) (string, bool) {
 	switch reqType {

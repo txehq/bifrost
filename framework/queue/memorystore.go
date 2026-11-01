@@ -37,6 +37,10 @@ type memoryStore struct {
 	keyLive  map[memoryKey]int                // (topic, group, key) -> pending, leased and waiting deliveries
 	waiting  map[memoryKey][]*memoryItem      // (topic, group, key) -> waiting deliveries in seq order
 	scanned  atomic.Int64                     // deliveries Claim has examined; lets tests check scan cost
+	// acked holds groups whose queues still reference acknowledged deliveries. Claim
+	// compacts only what it scans, so Purge compacts these: a group that stopped
+	// claiming would otherwise keep their messages' payloads alive.
+	acked map[memoryGroupKey]bool
 }
 
 type memoryGroupKey struct{ topic, group string }
@@ -284,6 +288,10 @@ func (s *memoryStore) Ack(ctx context.Context, cs []*Claimed) ([]string, error) 
 		it.removed = true
 		delete(s.items, it.id)
 		s.finishKeyLocked(it)
+		if s.acked == nil {
+			s.acked = make(map[memoryGroupKey]bool)
+		}
+		s.acked[memoryGroupKey{it.message.msg.Topic, it.group}] = true
 		held = append(held, it.id)
 	}
 	return held, nil
@@ -388,9 +396,13 @@ func (s *memoryStore) Purge(ctx context.Context, policy PurgePolicy, batch int) 
 			removed++
 		}
 	}
-	// Drop purged deliveries from their queues now, not on the group's next
-	// claim, so their messages are not kept alive by a group that stopped
-	// consuming.
+	// Drop purged and acknowledged deliveries from their queues now, not on the
+	// group's next claim, so their messages are not kept alive by a group that
+	// stopped consuming.
+	for k := range s.acked {
+		touched[k] = true
+	}
+	clear(s.acked)
 	for k := range touched {
 		queue := s.queues[k]
 		live := queue[:0]

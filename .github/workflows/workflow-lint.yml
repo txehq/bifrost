@@ -58,6 +58,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 .github/workflows/scripts/test-release-gates.py
 
+      - name: Check every release job honours the memory-regression gate
+        if: ${{ !cancelled() }}
+        run: python3 .github/workflows/scripts/test-release-memory-gate.py
+
       # Fake git/npx/docker/lsof only: an invalid override must fail before any baseline starts.
       - name: Check migration local-binary overrides fail closed
         if: ${{ !cancelled() }}
