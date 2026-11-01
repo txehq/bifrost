@@ -42,10 +42,10 @@ VirtualMCP:
 CreateVirtualMCPRequest:
   type: object
   description: |
-    `name` and `tools` are required. `enabled` defaults to `true`.
+    `name` is required. `enabled` defaults to `true`. `tools` may be omitted or
+    empty to create a Virtual MCP that exposes no tools yet.
   required:
     - name
-    - tools
   properties:
     name:
       type: string
@@ -53,12 +53,12 @@ CreateVirtualMCPRequest:
       type: string
       description: Honored on create only.
     description:
-      type: string
-      nullable: true
+      type: [string, 'null']
     enabled:
       type: boolean
     tools:
       type: array
+      description: Tools to expose. Omitted or empty selects none.
       items:
         $ref: './mcptoolgroups.yaml#/MCPToolSpec'
 

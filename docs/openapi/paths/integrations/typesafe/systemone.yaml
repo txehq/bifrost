@@ -25,13 +25,14 @@ systemone:
             - questions
             properties:
               state:
-                description: A plain string, or structured data (object or array) to evaluate.
+                description: A plain string, structured data (object or array), or null, to evaluate.
                 oneOf:
                 - type: string
                 - type: object
                   additionalProperties: true
                 - type: array
                   items: {}
+                - type: 'null'
               model:
                 type: string
                 description: Typesafe model identifier (e.g. `jev-1.14.0`, `jev-latest`).
@@ -62,14 +63,13 @@ systemone:
                   type: object
                   required:
                   - type
-                  - instructions
                   properties:
                     type:
                       type: string
                       enum: [noul, choice, score, box]
                       description: Question type. `noul` returns a probability from 0 to 1, `choice` a selection with probabilities, `score` a probability-weighted rubric value, `box` the edges of a box around the instructions' subject in an image (Jev 1.14).
                     instructions:
-                      description: Question instructions. A string, or structured data.
+                      description: Question instructions. A string, or structured data. Optional.
                       oneOf:
                       - type: string
                       - type: object
@@ -80,14 +80,13 @@ systemone:
                       description: |
                         Optional `true`/`false` descriptions for `noul`; a map of option
                         to description for `choice` (at most 255 options); an ordered
-                        array of 2-10 level descriptions for `score`.
+                        array of 2-10 level descriptions for `score`. Each description
+                        is a string, structured data (object or array), or null.
                       oneOf:
                       - type: object
-                        additionalProperties:
-                          type: string
+                        additionalProperties: {oneOf: [{type: string}, {type: object, additionalProperties: true}, {type: array, items: {}}, {type: 'null'}]}
                       - type: array
-                        items:
-                          type: string
+                        items: {oneOf: [{type: string}, {type: object, additionalProperties: true}, {type: array, items: {}}, {type: 'null'}]}
         multipart/form-data:
           schema:
             type: object
@@ -154,8 +153,8 @@ systemone:
                           type: number
                       legend:
                         type: object
-                        additionalProperties:
-                          type: string
+                        description: Each score level's description, echoed verbatim (string, object, or array), keyed by level number
+                        additionalProperties: {}
                       confidence:
                         type: number
                 usage:

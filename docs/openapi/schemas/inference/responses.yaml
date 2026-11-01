@@ -137,12 +137,17 @@ ResponsesMessage:
       description: |
         Tool call output. A plain string for function/custom/local-shell tool
         outputs, an array of content blocks for structured function tool
-        outputs, or a computer-tool screenshot object for computer_call_output.
+        outputs, an array of command results for shell_call_output, or a
+        computer-tool screenshot object for computer_call_output.
       oneOf:
         - type: string
         - type: array
           items:
             $ref: "#/ResponsesMessageContentBlock"
+        - type: array
+          description: Shell command results (shell_call_output), one per command.
+          items:
+            $ref: "#/ResponsesShellCallOutputContent"
         - type: object
           description: Computer tool call output (computer_screenshot).
           properties:
@@ -175,6 +180,37 @@ ResponsesMessage:
         $ref: "#/ResponsesReasoningSummary"
     encrypted_content:
       type: string
+    environment:
+      type: object
+      description: Where a shell_call runs.
+      additionalProperties: true
+    max_output_length:
+      type: integer
+      description: Output length cap a shell_call_output was produced under.
+
+ResponsesShellCallOutputContent:
+  type: object
+  required:
+    - stdout
+    - stderr
+    - outcome
+  properties:
+    stdout:
+      type: string
+    stderr:
+      type: string
+    outcome:
+      type: object
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum: [exit, timeout]
+        exit_code:
+          type: integer
+    created_by:
+      type: string
 
 ResponsesMessageType:
   type: string
@@ -190,6 +226,10 @@ ResponsesMessageType:
     - code_interpreter_call
     - local_shell_call
     - local_shell_call_output
+    - shell_call
+    - shell_call_output
+    - apply_patch_call
+    - apply_patch_call_output
     - mcp_call
     - custom_tool_call
     - custom_tool_call_output
