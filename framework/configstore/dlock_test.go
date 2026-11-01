@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1695,8 +1696,26 @@ func (s *ledgerStore) UpdateLockExpiry(ctx context.Context, key, holder string, 
 // not confirm. Postgres keeps microseconds and Go keeps nanoseconds, so the two agree
 // to within a microsecond and no closer. Nothing else may be live with no holder.
 func (l *leaseLedger) explainsLiveRow(row *tables.TableDistributedLock) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	written, unconfirmed := l.unconfirmed[row.HolderID]
 	return unconfirmed && written.Sub(row.ExpiresAt).Abs() <= time.Microsecond
+}
+
+// overlaps returns what the ledger recorded, safe to call with a renewal in flight:
+// release can return before a renewal does.
+func (l *leaseLedger) overlaps() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.overlap)
+}
+
+// leasesOf returns the last expiry each kind of write left for holder, for a failure
+// message.
+func (l *leaseLedger) leasesOf(holder string) (confirmed, unconfirmed time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.leases[holder], l.unconfirmed[holder]
 }
 
 // ReleaseLock gives the lease up before the row goes: the row's delete is what lets
@@ -1740,14 +1759,15 @@ func TestDistributedLockManager_ContendedHoldersStayExclusive(t *testing.T) {
 		}
 		wg.Wait()
 		assert.EqualValues(t, 32, entries.Load())
-		assert.Empty(t, ledger.overlap, "two holders had a valid lease")
+		assert.Empty(t, ledger.overlaps(), "two holders had a valid lease")
 		row, err := open().GetLock(ctx, "contended-holders")
 		require.NoError(t, err)
 		// Release leaves a row past its lease alone, and a stalled store can run a lease
 		// out between the section and the release: such a row is any holder's to take.
 		if row != nil && row.ExpiresAt.After(time.Now()) {
+			confirmed, unconfirmed := ledger.leasesOf(row.HolderID)
 			assert.True(t, ledger.explainsLiveRow(row), "a released lock left a live row behind: holder %s row expiry %s, confirmed %s, unconfirmed %s, now %s",
-				row.HolderID, row.ExpiresAt, ledger.leases[row.HolderID], ledger.unconfirmed[row.HolderID], time.Now())
+				row.HolderID, row.ExpiresAt, confirmed, unconfirmed, time.Now())
 		}
 	})
 }
@@ -1810,15 +1830,20 @@ func TestDistributedLockManager_RenewalCommittedAfterTheClientGaveUp(t *testing.
 		case <-time.After(5 * ttl):
 			require.Fail(t, "the holder was never told its lease ran out")
 		}
+		told := time.Now()
 		require.ErrorIs(t, context.Cause(held), ErrLockLost)
 		require.Positive(t, timeouts.committed.Load())
 		release()
 
-		row, err := store.GetLock(ctx, "unconfirmed-renewal")
-		require.NoError(t, err)
-		require.NotNil(t, row, "the committed renewal keeps the row")
-		require.True(t, row.ExpiresAt.After(time.Now()), "the row outlives the holder that was told to stop")
-		require.True(t, ledger.explainsLiveRow(row))
+		// Release can return with a renewal still in flight, so the row and the ledger
+		// agree once that write has landed.
+		var row *tables.TableDistributedLock
+		require.Eventually(t, func() bool {
+			var err error
+			row, err = store.GetLock(ctx, "unconfirmed-renewal")
+			return err == nil && row != nil && ledger.explainsLiveRow(row)
+		}, 2*ttl, 5*time.Millisecond, "the row is exactly the write the holder could not confirm")
+		require.True(t, row.ExpiresAt.After(told), "the row outlives the holder that was told to stop")
 		require.False(t, row.ExpiresAt.After(acquiredAt.Add(3*ttl)), "at most one TTL from the last renewal write")
 
 		_, secondRelease, err := newLockTestManager(store, ttl).Acquire(ctx, "unconfirmed-renewal")
