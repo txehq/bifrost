@@ -592,3 +592,56 @@ func TestWireConfigureSavesAKeyADirectLaunchCanUse(t *testing.T) {
 		t.Fatalf("a refused configure changed the config:\n%s", after)
 	}
 }
+
+// TestWireConfigureKeyringUserIsRestored pins the saved-key store change for someone
+// on keyring storage: the other fields of auth.json survive it, nothing is read out
+// of a keyring, and `unconfigure` puts both files back byte for byte.
+func TestWireConfigureKeyringUserIsRestored(t *testing.T) {
+	g, home, stub := startGateway(t, false, true), t.TempDir(), installStub(t)
+	userCodex := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(userCodex, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	userConfig := `cli_auth_credentials_store = "keyring"` + "\n"
+	userAuth := `{"tokens":{"id_token":"keep-me-wire"}}`
+	configPath, authPath := filepath.Join(userCodex, "config.toml"), filepath.Join(userCodex, "auth.json")
+	if err := os.WriteFile(configPath, []byte(userConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authPath, []byte(userAuth), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	out := runCLI(t, home, map[string]string{"PATH": stub, "BIFROST_VIRTUAL_KEY": virtualKey}, "--base-url", g.URL, "configure", "codex")
+	if out.exit != 0 {
+		t.Fatalf("configure exit %d\n%s", out.exit, out.all())
+	}
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(config), `cli_auth_credentials_store = "file"`) || strings.Contains(string(config), "keyring") {
+		t.Fatalf("saved key would not be read under keyring storage:\n%s", config)
+	}
+	auth, err := os.ReadFile(authPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(auth), "keep-me-wire") || !strings.Contains(string(auth), virtualKey) {
+		t.Fatalf("auth.json lost a field or the key: %s", auth)
+	}
+	if info, err := os.Stat(authPath); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("auth.json = %v, %v; want mode 600", info, err)
+	}
+
+	out = runCLI(t, home, map[string]string{"PATH": stub}, "--base-url", g.URL, "unconfigure", "codex")
+	if out.exit != 0 {
+		t.Fatalf("unconfigure exit %d\n%s", out.exit, out.all())
+	}
+	for path, want := range map[string]string{configPath: userConfig, authPath: userAuth} {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != want {
+			t.Fatalf("%s after unconfigure = %q, %v; want the original", path, got, err)
+		}
+	}
+}

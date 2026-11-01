@@ -433,7 +433,12 @@ func TestCodexWriteNativeConfigSkipsAuthForDummyKey(t *testing.T) {
 // TestCodexWriteNativeConfigStoresKeyWhereCodexReadsIt pins that a saved key works
 // under a user's keyring setting: Codex reads auth.json only with file storage.
 func TestCodexWriteNativeConfigStoresKeyWhereCodexReadsIt(t *testing.T) {
-	for _, existing := range []string{"", `cli_auth_credentials_store = "keyring"` + "\n", `cli_auth_credentials_store = "auto"` + "\n"} {
+	for _, existing := range []string{
+		"",
+		`cli_auth_credentials_store = "keyring"` + "\n",
+		`cli_auth_credentials_store = "auto"` + "\n",
+		`cli_auth_credentials_store = "file"` + "\n",
+	} {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		if existing != "" {
@@ -455,6 +460,30 @@ func TestCodexWriteNativeConfigStoresKeyWhereCodexReadsIt(t *testing.T) {
 		if !strings.Contains(got, `cli_auth_credentials_store = "file"`) || strings.Contains(got, "keyring") || strings.Contains(got, `"auto"`) {
 			t.Fatalf("saved key would not be read, config:\n%s", got)
 		}
+	}
+}
+
+// TestCodexWriteNativeConfigKeylessLeavesTheCredentialStore pins that a config which
+// saves no key does not change where the user's credentials live.
+func TestCodexWriteNativeConfigKeylessLeavesTheCredentialStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	userConfig := `cli_auth_credentials_store = "keyring"` + "\n"
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(userConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := codexWriteNativeConfig("http://localhost:8080/openai/v1", "dummy-key", ""); err != nil {
+		t.Fatal(err)
+	}
+	configured, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(configured), `cli_auth_credentials_store = "keyring"`) {
+		t.Fatalf("a keyless config changed the credential store:\n%s", configured)
 	}
 }
 
