@@ -2065,6 +2065,10 @@ components:
     CohereError:
       $ref: "./schemas/integrations/cohere/common.yaml#/CohereError"
 
+    # ==================== Typesafe Integration ====================
+    TypesafeError:
+      $ref: "./schemas/integrations/typesafe/common.yaml#/TypesafeError"
+
     # ==================== Management ====================
     # Common
     SuccessResponse:
@@ -2127,6 +2131,19 @@ components:
       $ref: "./schemas/management/mcp.yaml#/MCPClient"
     MCPClientConfig:
       $ref: "./schemas/management/mcp.yaml#/MCPClientConfig"
+    # The create-request variants are registered so MCPClientCreateRequest's
+    # discriminator mapping (a plain string the bundler does not rewrite) has
+    # component paths to point at.
+    MCPClientCreateRequest:
+      $ref: "./schemas/management/mcp.yaml#/MCPClientCreateRequest"
+    MCPClientCreateRequestHTTP:
+      $ref: "./schemas/management/mcp.yaml#/MCPClientCreateRequestHTTP"
+    MCPClientCreateRequestSSE:
+      $ref: "./schemas/management/mcp.yaml#/MCPClientCreateRequestSSE"
+    MCPClientCreateRequestSTDIO:
+      $ref: "./schemas/management/mcp.yaml#/MCPClientCreateRequestSTDIO"
+    MCPClientCreateRequestOpenAPI:
+      $ref: "./schemas/management/mcp.yaml#/MCPClientCreateRequestOpenAPI"
     MCPOpenAPIConfig:
       $ref: "./schemas/management/mcp.yaml#/MCPOpenAPIConfig"
     MCPOpenAPIPreviewRequest:

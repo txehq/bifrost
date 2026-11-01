@@ -1,0 +1,58 @@
+# Schemas shared by the Typesafe integration (/typesafe/*).
+
+TypesafeError:
+  type: object
+  description: |
+    Error body on the `/typesafe` routes, in Typesafe's native shape rather than
+    `BifrostError`, so Typesafe's SDKs can parse it.
+
+    When the upstream returned a JSON error body, that body is relayed verbatim,
+    so `detail` (Typesafe's native field) takes whichever form the upstream used: a message string, an
+    `{error_type, message}` object, or a validation array of `{loc, msg, type}`
+    entries. An error Bifrost raised itself (or an upstream Cloudflare
+    `errors[]` envelope, which is not a Typesafe body) is rebuilt as
+    `{"detail": {"error_type": ..., "message": ...}}`, with `error_type`
+    defaulting to `api_error`.
+  properties:
+    detail:
+      oneOf:
+        - type: string
+          description: The error message.
+        - $ref: '#/TypesafeErrorDetail'
+        - type: array
+          description: Request validation failures.
+          items:
+            $ref: '#/TypesafeValidationError'
+    message:
+      type: string
+      description: Set instead of `detail` by an upstream that reports a top-level message; relayed verbatim.
+  additionalProperties: true
+
+TypesafeErrorDetail:
+  type: object
+  required:
+    - error_type
+    - message
+  properties:
+    error_type:
+      type: string
+      example: api_error
+    message:
+      type: string
+
+TypesafeValidationError:
+  type: object
+  required:
+    - msg
+  properties:
+    loc:
+      type: array
+      description: Path to the offending field, e.g. `["body", "assets"]`.
+      items:
+        oneOf:
+          - type: string
+          - type: integer
+    msg:
+      type: string
+    type:
+      type: string

@@ -166,9 +166,17 @@ systemone:
                     output_tokens:
                       type: integer
       '400':
-        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+        description: Bad request, in Typesafe's native error shape
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/typesafe/common.yaml#/TypesafeError'
       '500':
-        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+        description: Internal server error, in Typesafe's native error shape
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/typesafe/common.yaml#/TypesafeError'
     security:
     - BearerAuth: []
     - VirtualKeyAuth: []
@@ -210,9 +218,17 @@ models:
                         type: string
                         format: date-time
       '400':
-        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+        description: Bad request, in Typesafe's native error shape
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/typesafe/common.yaml#/TypesafeError'
       '500':
-        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+        description: Internal server error, in Typesafe's native error shape
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/typesafe/common.yaml#/TypesafeError'
     security:
     - BearerAuth: []
     - VirtualKeyAuth: []

@@ -210,8 +210,10 @@ can actually reach. Each server's contribution is capped at 4096 bytes and the w
 
 <Warning>
 Instructions add tokens to every MCP-bearing LLM request and change the prompt prefix, which can
-invalidate provider-side prompt caching. Bound them with the size caps above, or turn off
-`disable_auto_tool_inject` to stop tools and instructions alike from being injected.
+invalidate provider-side prompt caching. Bound them with the size caps above, or set
+`disable_auto_tool_inject: true` to stop tools and instructions alike from being injected. A request
+that names its own `x-bf-mcp-include-tools` or `x-bf-mcp-include-clients` filter still receives the
+tools and instructions it selects.
 </Warning>
 
 Verify what a client receives:

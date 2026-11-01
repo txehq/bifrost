@@ -165,13 +165,16 @@ MCPClientCreateRequest:
     - $ref: '#/MCPClientCreateRequestSSE'
     - $ref: '#/MCPClientCreateRequestSTDIO'
     - $ref: '#/MCPClientCreateRequestOpenAPI'
+  # Mapping values are plain strings, not $refs, so the bundler copies them
+  # verbatim: they name the components registered in openapi.yaml, which is
+  # where they resolve in the bundled openapi.json.
   discriminator:
     propertyName: connection_type
     mapping:
-      http: '#/MCPClientCreateRequestHTTP'
-      sse: '#/MCPClientCreateRequestSSE'
-      stdio: '#/MCPClientCreateRequestSTDIO'
-      openapi: '#/MCPClientCreateRequestOpenAPI'
+      http: '#/components/schemas/MCPClientCreateRequestHTTP'
+      sse: '#/components/schemas/MCPClientCreateRequestSSE'
+      stdio: '#/components/schemas/MCPClientCreateRequestSTDIO'
+      openapi: '#/components/schemas/MCPClientCreateRequestOpenAPI'
   description: |
     MCP client configuration for creating a new client (tool_pricing not available at creation).
     The schema varies based on connection_type:

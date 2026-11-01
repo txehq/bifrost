@@ -1294,9 +1294,11 @@ ModelRankingTrend:
     requests_trend:
       type: number
     tokens_trend:
-      type: number
+      type: [number, 'null']
+      description: Percent change in tokens. `null` when the previous period had no tokens but this one does, since there is no percentage to report.
     cost_trend:
-      type: number
+      type: [number, 'null']
+      description: Percent change in cost. `null` when the previous period had no cost but this one does, since there is no percentage to report.
     latency_trend:
       type: number
 
@@ -1428,9 +1430,11 @@ DimensionRankingTrend:
     requests_trend:
       type: number
     tokens_trend:
-      type: number
+      type: [number, 'null']
+      description: Percent change in tokens. `null` when the previous period had no tokens but this one does, since there is no percentage to report.
     cost_trend:
-      type: number
+      type: [number, 'null']
+      description: Percent change in cost. `null` when the previous period had no cost but this one does, since there is no percentage to report.
 
 DimensionRankingWithTrend:
   allOf:
@@ -1640,9 +1644,11 @@ UserRankingTrend:
     requests_trend:
       type: number
     tokens_trend:
-      type: number
+      type: [number, 'null']
+      description: Percent change in tokens. `null` when the previous period had no tokens but this one does, since there is no percentage to report.
     cost_trend:
-      type: number
+      type: [number, 'null']
+      description: Percent change in cost. `null` when the previous period had no cost but this one does, since there is no percentage to report.
 
 UserRankingEntry:
   type: object

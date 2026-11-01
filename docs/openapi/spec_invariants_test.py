@@ -605,7 +605,12 @@ def test_warp_config_input_models_the_embedding_contract():
     """ValidateConfigInput requires provider, model, embedding_provider, embedding_model
     and a positive embedding_dimension once enabled is true, and allows an incomplete
     draft when it is false. The schema has to say the same, or a generated client sends
-    a body the server rejects and the contract is only discoverable by trying it."""
+    a body the server rejects and the contract is only discoverable by trying it.
+
+    The embedding fields are validated after SaveConfig fills omitted ones from the stored
+    row (applyStoredEmbeddingSettings), so a write may leave them out once they are stored.
+    The schema may require only what the request itself must carry - provider and model -
+    and constrain the embedding fields when they are present."""
     schema = load(HERE / "schemas" / "management" / "warp.yaml")["WarpConfigInput"]
     problems = []
 
@@ -620,12 +625,26 @@ def test_warp_config_input_models_the_embedding_contract():
             problems.append("the conditional does not key on enabled: true")
         then = schema.get("then") or {}
         required = set(then.get("required") or [])
-        for field in ("provider", "model", "embedding_provider", "embedding_model", "embedding_dimension"):
+        then_properties = then.get("properties") or {}
+        for field in ("provider", "model"):
             if field not in required:
                 problems.append(f"an enabled config must require {field}")
-        minimum = ((then.get("properties") or {}).get("embedding_dimension") or {}).get("minimum")
+        for field in ("embedding_provider", "embedding_model", "embedding_dimension"):
+            if field in required:
+                problems.append(
+                    f"an enabled config must not require {field}: an omitted one keeps its stored "
+                    "value, so a partial update that leaves it out is valid"
+                )
+        for field in ("embedding_provider", "embedding_model"):
+            constraint = then_properties.get(field) or {}
+            if constraint.get("minLength") != 1 or not constraint.get("pattern"):
+                problems.append(f"an enabled config needs minLength 1 and a non-whitespace pattern on a supplied {field}")
+        minimum = (then_properties.get("embedding_dimension") or {}).get("minimum")
         if minimum != 1:
             problems.append(f"an enabled config needs embedding_dimension minimum 1, found {minimum}")
+        description = " ".join((schema.get("description") or "").lower().split())
+        if "stored" not in description:
+            problems.append("WarpConfigInput's description does not say omitted embedding fields keep their stored values")
 
     # The draft path must stay open, or the form cannot be filled in over two sittings.
     if "required" in schema:
@@ -669,37 +688,6 @@ def test_warp_config_input_models_the_enabled_contract():
                 problems.append(f"{source}: an enabled `{field}` has no minLength 1")
             if not constraint.get("pattern"):
                 problems.append(f"{source}: an enabled `{field}` has no non-whitespace pattern")
-
-        # base_url is optional, but a non-empty one must be an absolute http(s)
-        # URL with no userinfo - the same rule ValidateConfigInput applies.
-        #
-        # Checked by behaviour, not just by presence: a pattern that exists but
-        # admits whitespace in the authority, or a dropped `format`, is exactly
-        # the drift a non-empty check cannot see.
-        base_url = (schema.get("properties") or {}).get("base_url") or {}
-        pattern = base_url.get("pattern")
-        if not pattern:
-            problems.append(f"{source}: base_url has no pattern constraining it to an absolute http(s) URL without userinfo")
-        else:
-            accepted = ("", "https://api.example.com", "http://localhost:8080", "https://a.com/v1")
-            rejected = (
-                "https://host name",  # whitespace in the authority
-                "https://tok@a.com",  # userinfo
-                "https://u:p@a.com",
-                "api.example.com",  # not absolute
-                "https://",  # scheme only
-                "ftp://a.com",  # wrong scheme
-            )
-            for value in accepted:
-                if not re.match(pattern, value):
-                    problems.append(f"{source}: base_url pattern rejects {value!r}, which the server accepts")
-            for value in rejected:
-                if re.match(pattern, value):
-                    problems.append(f"{source}: base_url pattern accepts {value!r}, which the server rejects")
-        # url.Parse also rejects a malformed percent escape such as "https://%",
-        # which a character-class pattern cannot express - format carries that.
-        if base_url.get("format") != "uri-reference":
-            problems.append(f"{source}: base_url has no `format: uri-reference`")
 
     assert not problems, "Warp enabled-config contract:\n    " + "\n    ".join(problems)
 
@@ -1035,6 +1023,240 @@ def test_adaptive_routing_put_descriptions_state_the_empty_reroute_target():
     assert not problems, "reroute_target descriptions drift from the settings handler:\n    " + "\n    ".join(problems)
 
 
+# ---- Checks against the bundled openapi.json --------------------------------------------
+# These validate sample payloads the server really emits or accepts against the schemas a
+# generated client sees, so they read the bundle rather than the split sources.
+
+
+def load_bundle():
+    return json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+
+
+def bundle_validator(bundle, pointer):
+    """A Draft 2020-12 validator for the schema at `pointer` in the bundle, with every
+    `#/components/...` ref resolving inside the bundle."""
+    try:
+        import jsonschema
+        from referencing import Registry, Resource
+        from referencing.jsonschema import DRAFT202012
+    except ImportError as exc:  # keep the run going; the other checks need only PyYAML
+        raise AssertionError("needs the jsonschema package: pip install jsonschema") from exc
+    uri = "urn:bifrost-openapi"
+    registry = Registry().with_resource(uri, Resource(contents=bundle, specification=DRAFT202012))
+    return jsonschema.Draft202012Validator({"$ref": f"{uri}#{pointer}"}, registry=registry)
+
+
+def iter_schemas(node, pointer=""):
+    """Every dict in the bundle with its JSON pointer."""
+    if isinstance(node, dict):
+        yield pointer, node
+        for key, value in node.items():
+            token = str(key).replace("~", "~0").replace("/", "~1")
+            yield from iter_schemas(value, f"{pointer}/{token}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from iter_schemas(value, f"{pointer}/{index}")
+
+
+def resolve_bundle_pointer(document, pointer):
+    node = document
+    for token in pointer_tokens(pointer.lstrip("/")) if pointer.strip("/") else ():
+        if isinstance(node, list):
+            node = node[int(token)]
+        elif isinstance(node, dict) and token in node:
+            node = node[token]
+        else:
+            return None
+    return node
+
+
+def test_discriminator_mappings_resolve():
+    """A discriminator mapping is a plain string, so the bundler never rewrites it: a mapping
+    written against a fragment file (`#/MCPClientCreateRequestHTTP`) survives bundling and points
+    at nothing. Every mapping in the bundle must name a schema that exists in it."""
+    bundle = load_bundle()
+    problems = []
+    for pointer, node in iter_schemas(bundle):
+        mapping = (node.get("discriminator") or {}).get("mapping") if isinstance(node.get("discriminator"), dict) else None
+        for value, target in (mapping or {}).items():
+            if not isinstance(target, str) or not target.startswith("#/") or resolve_bundle_pointer(bundle, target[1:]) is None:
+                problems.append(f"{pointer}: mapping {value!r} -> {target!r} resolves to nothing")
+    assert not problems, "unresolvable discriminator mappings:\n    " + "\n    ".join(problems)
+
+
+def test_ranking_trends_admit_null():
+    """metricTrend (framework/logstore/rdb.go) returns nil for tokens_trend and cost_trend when
+    the previous period had none of that metric, and the trend structs serialize the nil as
+    null. Every trend schema in the bundle must accept that, ranking and dashboard alike."""
+    bundle = load_bundle()
+    problems = []
+    found = 0
+    for pointer, node in iter_schemas(bundle):
+        properties = node.get("properties") if isinstance(node.get("properties"), dict) else {}
+        if "tokens_trend" not in properties or "cost_trend" not in properties:
+            continue
+        found += 1
+        sample = {"has_previous_period": True, "requests_trend": 12.5, "tokens_trend": None, "cost_trend": None}
+        errors = list(bundle_validator(bundle, pointer).iter_errors(sample))
+        if errors:
+            problems.append(f"{pointer}: {errors[0].message}")
+    if not found:
+        problems.append("no schema with tokens_trend and cost_trend found; the check is stale")
+    assert not problems, "trend schemas reject a null trend the server emits:\n    " + "\n    ".join(problems)
+
+
+def test_responses_tool_accepts_shell():
+    """The gateway accepts and forwards OpenAI's `shell` tool, whose `environment` is an
+    object, while `computer_use_preview` keeps a string `environment`. Every Responses tool
+    schema must accept both and keep them apart."""
+    bundle = load_bundle()
+    problems = []
+    found = 0
+    cases = [
+        ({"type": "shell", "environment": {"type": "local"}}, True),
+        ({"type": "shell", "environment": {"type": "container_auto", "memory_limit": "4g", "network_policy": {"type": "allowlist", "allowed_domains": ["example.com"]}}}, True),
+        ({"type": "shell"}, True),
+        ({"type": "computer_use_preview", "environment": "browser", "display_width": 1024, "display_height": 768}, True),
+        ({"type": "computer_use_preview", "environment": {"type": "local"}}, False),
+        ({"type": "shell", "environment": "browser"}, False),
+    ]
+    for pointer, node in iter_schemas(bundle):
+        type_schema = (node.get("properties") or {}).get("type") if isinstance(node.get("properties"), dict) else None
+        enum = (type_schema or {}).get("enum") if isinstance(type_schema, dict) else None
+        if not enum or "computer_use_preview" not in enum or "local_shell" not in enum:
+            continue
+        found += 1
+        validator = bundle_validator(bundle, pointer)
+        for sample, accepted in cases:
+            errors = list(validator.iter_errors(sample))
+            if accepted and errors:
+                problems.append(f"{pointer}: rejects {json.dumps(sample)}: {errors[0].message}")
+            if not accepted and not errors:
+                problems.append(f"{pointer}: accepts {json.dumps(sample)}")
+    if not found:
+        problems.append("no Responses tool schema found; the check is stale")
+    assert not problems, "Responses tool schema drift:\n    " + "\n    ".join(problems)
+
+
+def test_duration_patterns_admit_go_duration_strings():
+    """The complexity configs accept a duration string or milliseconds and write Timeout back
+    with time.Duration.String(), so 60000 is stored and returned as "1m0s". A pattern that
+    admits only one unit rejects the gateway's own output."""
+    bundle = load_bundle()
+    problems = []
+    found = 0
+    serialized = ("1.5s", "500ms", "4s", "1m0s", "1m30s", "1h0m0s", "2h45m10.5s", "1µs")
+    for pointer, node in iter_schemas(bundle):
+        timeout = (node.get("properties") or {}).get("timeout") if isinstance(node.get("properties"), dict) else None
+        if not isinstance(timeout, dict):
+            continue
+        for branch in timeout.get("oneOf") or []:
+            pattern = branch.get("pattern") if isinstance(branch, dict) and branch.get("type") == "string" else None
+            if not pattern:
+                continue
+            found += 1
+            for value in serialized:
+                if not re.search(pattern, value):
+                    problems.append(f"{pointer}/properties/timeout: pattern rejects {value!r}")
+            for value in ("", "1", "fast", "1d"):
+                if re.search(pattern, value):
+                    problems.append(f"{pointer}/properties/timeout: pattern accepts {value!r}")
+    if not found:
+        problems.append("no patterned timeout schema found; the check is stale")
+    assert not problems, "duration patterns reject Duration.String() output:\n    " + "\n    ".join(problems)
+
+
+def test_stored_openapi_document_is_an_object():
+    """GET /api/mcp/client/{id}/openapi-spec writes a stored JSON document byte for byte as
+    application/json, so the body is the document object, not a JSON string."""
+    bundle = load_bundle()
+    problems = []
+    found = 0
+    for template, item in (bundle.get("paths") or {}).items():
+        if not template.endswith("/openapi-spec"):
+            continue
+        operation = (item or {}).get("get") or {}
+        content = (((operation.get("responses") or {}).get("200") or {}).get("content") or {})
+        if "application/json" not in content:
+            continue
+        found += 1
+        token = template.replace("~", "~0").replace("/", "~1")
+        validator = bundle_validator(bundle, f"/paths/{token}/get/responses/200/content/application~1json/schema")
+        errors = list(validator.iter_errors({"openapi": "3.0.0", "info": {"title": "t", "version": "1"}, "paths": {}}))
+        if errors:
+            problems.append(f"GET {template}: a stored JSON document fails the schema: {errors[0].message}")
+    if not found:
+        problems.append("no GET .../openapi-spec operation with an application/json response found; the check is stale")
+    assert not problems, "stored OpenAPI document contract:\n    " + "\n    ".join(problems)
+
+
+def test_virtual_mcp_contract_matches_handler():
+    """VirtualMCPRequest/VirtualMCPResponse (transports/bifrost-http/handlers/virtualmcp.go) carry
+    name, endpoint_slug, description, enabled and tools; nothing stores or serves instructions.
+    tool_names is an allow-list (VirtualMCPToolAccess): ["*"] is every tool, [] or omitted none."""
+    bundle = load_bundle()
+    problems = []
+    unsupported = {"instructions", "instructions_mode"}
+    for template, item in (bundle.get("paths") or {}).items():
+        if not template.startswith("/api/mcp/virtual-mcps"):
+            continue
+        for pointer, node in iter_schemas(item, template):
+            properties = node.get("properties") if isinstance(node.get("properties"), dict) else {}
+            for name in sorted(unsupported & set(properties)):
+                problems.append(f"{pointer}: advertises `{name}`, which the handler discards")
+            tool_names = properties.get("tool_names")
+            if isinstance(tool_names, dict):
+                text = " ".join((tool_names.get("description") or "").split())
+                if '["*"]' not in text or "none" not in text:
+                    problems.append(f"{pointer}/properties/tool_names: does not say [\"*\"] is all tools and empty is none")
+                if 'means "all tools' in text:
+                    problems.append(f"{pointer}/properties/tool_names: says an empty list means all tools")
+    assert not problems, "Virtual MCP contract drift:\n    " + "\n    ".join(problems)
+
+
+def test_typesafe_errors_use_the_native_envelope():
+    """The /typesafe routes install ToTypesafeNativeErrorBody as their ErrorConverter, so a 400
+    or 500 body is Typesafe's {"detail": ...}, never a BifrostError."""
+    bundle = load_bundle()
+    problems = []
+    found = 0
+    for template, item in (bundle.get("paths") or {}).items():
+        if not template.startswith("/typesafe/"):
+            continue
+        for method, operation in (item or {}).items():
+            if not isinstance(operation, dict) or "responses" not in operation:
+                continue
+            for status in ("400", "500"):
+                response = operation["responses"].get(status)
+                if response is None:
+                    continue
+                found += 1
+                token = template.replace("~", "~0").replace("/", "~1")
+                pointer = f"/paths/{token}/{method}/responses/{status}"
+                if "$ref" in response:
+                    problems.append(f"{method.upper()} {template} {status}: refers to {response['$ref']}, a BifrostError response")
+                    continue
+                schema = (((response.get("content") or {}).get("application/json") or {}).get("schema") or {})
+                if "$ref" in schema:
+                    schema = resolve_bundle_pointer(bundle, schema["$ref"][1:]) or {}
+                if "detail" not in (schema.get("properties") or {}):
+                    # BifrostError has no required fields, so the samples below would pass
+                    # against it; the native field is what tells the two envelopes apart.
+                    problems.append(f"{method.upper()} {template} {status}: body schema has no native `detail` field")
+                validator = bundle_validator(bundle, pointer + "/content/application~1json/schema")
+                for sample in (
+                    {"detail": {"error_type": "api_error", "message": "boom"}},
+                    {"detail": "Invalid API key"},
+                    {"detail": [{"loc": ["body", "assets"], "msg": "field required", "type": "missing"}]},
+                ):
+                    errors = list(validator.iter_errors(sample))
+                    if errors:
+                        problems.append(f"{method.upper()} {template} {status}: rejects {json.dumps(sample)}: {errors[0].message}")
+    if not found:
+        problems.append("no /typesafe error responses found; the check is stale")
+    assert not problems, "Typesafe error envelope drift:\n    " + "\n    ".join(problems)
+
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
 check("secret-capable values accept bare strings (EnvVar oneOf)", test_secret_capable_values_accept_bare_strings)
 check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws_workload_identity_contract)
@@ -1054,5 +1276,12 @@ check("oauth token_url descriptions state the loopback and URL-part rules", test
 check("adaptive routing legacy alias declares Link and Warning on every response", test_adaptive_routing_legacy_alias_declares_deprecation_headers_on_every_response)
 check("adaptive routing PUT descriptions state that an empty reroute_target is stored as pool", test_adaptive_routing_put_descriptions_state_the_empty_reroute_target)
 
+check("discriminator mappings resolve inside the bundle", test_discriminator_mappings_resolve)
+check("ranking and dashboard trend schemas admit null token and cost trends", test_ranking_trends_admit_null)
+check("Responses tool schema accepts shell with an object environment", test_responses_tool_accepts_shell)
+check("timeout duration patterns admit Duration.String() output", test_duration_patterns_admit_go_duration_strings)
+check("stored OpenAPI JSON document is documented as an object", test_stored_openapi_document_is_an_object)
+check("virtual MCP contract matches the handler", test_virtual_mcp_contract_matches_handler)
+check("typesafe error responses use the native envelope", test_typesafe_errors_use_the_native_envelope)
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

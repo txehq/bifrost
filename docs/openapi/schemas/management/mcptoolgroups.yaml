@@ -17,15 +17,16 @@ MCPToolSpec:
       items:
         type: string
       description: |
-        Specific tools from this client to include in the group.
-        An empty or omitted array means "all tools from this client".
+        Tools from this client to include, as an allow-list: `["*"]` includes
+        every tool the client has now or adds later, a list of names includes
+        only those tools, and an empty or omitted array includes none of this
+        client's tools.
 
 MCPToolGroup:
   type: object
   description: |
     Deprecated shape returned by the `/api/mcp/tool-groups` alias. The current
-    resource is `VirtualMCP`, which adds `endpoint_slug`, `instructions`, and
-    `instructions_mode`.
+    resource is `VirtualMCP`, which adds `endpoint_slug`.
   properties:
     id:
       type: integer

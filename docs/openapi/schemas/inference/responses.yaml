@@ -411,6 +411,29 @@ ResponsesTool:
   type: object
   required:
     - type
+  # `environment` means different things per tool type: a display environment
+  # string for computer_use_preview, an execution environment object for shell.
+  allOf:
+    - if:
+        properties:
+          type:
+            const: computer_use_preview
+        required:
+          - type
+      then:
+        properties:
+          environment:
+            type: string
+    - if:
+        properties:
+          type:
+            const: shell
+        required:
+          - type
+      then:
+        properties:
+          environment:
+            $ref: "#/ResponsesToolShellEnvironment"
   properties:
     type:
       type: string
@@ -424,6 +447,7 @@ ResponsesTool:
         - code_interpreter
         - image_generation
         - local_shell
+        - shell
         - custom
         - web_search_preview
         - memory
@@ -457,7 +481,12 @@ ResponsesTool:
     display_width:
       type: integer
     environment:
-      type: string
+      description: |
+        For `computer_use_preview`, the display environment as a string. For
+        `shell`, where commands run, as an object.
+      oneOf:
+        - type: string
+        - $ref: "#/ResponsesToolShellEnvironment"
     enable_zoom:
       type: boolean
     search_context_size:
@@ -510,6 +539,86 @@ ResponsesTool:
       type: string
     format:
       type: object
+
+ResponsesToolShellEnvironment:
+  type: object
+  description: Where a `shell` tool's commands run.
+  required:
+    - type
+  properties:
+    type:
+      type: string
+      enum: [local, container_auto, container_reference]
+    file_ids:
+      type: array
+      description: Files to mount (`container_auto`).
+      items:
+        type: string
+    memory_limit:
+      type: string
+      description: Container memory limit (`container_auto`), e.g. `1g`, `4g`, `16g` or `64g`.
+    network_policy:
+      type: object
+      description: Outbound network policy (`container_auto`).
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum: [disabled, allowlist]
+        allowed_domains:
+          type: array
+          items:
+            type: string
+        domain_secrets:
+          type: array
+          items:
+            type: object
+            required: [domain, name, value]
+            properties:
+              domain:
+                type: string
+              name:
+                type: string
+              value:
+                type: string
+    skills:
+      type: array
+      description: |
+        Skills available to the shell (`local` and `container_auto`): a local
+        skill (`name`, `description`, `path`), a `skill_reference` (`skill_id`,
+        `version`) or an `inline` bundle (`source`).
+      items:
+        type: object
+        properties:
+          type:
+            type: string
+            enum: [skill_reference, inline]
+          name:
+            type: string
+          description:
+            type: string
+          path:
+            type: string
+          skill_id:
+            type: string
+          version:
+            type: string
+          source:
+            type: object
+            required: [type, media_type, data]
+            properties:
+              type:
+                type: string
+                enum: [base64]
+              media_type:
+                type: string
+                enum: [application/zip]
+              data:
+                type: string
+    container_id:
+      type: string
+      description: Existing container to run in (`container_reference`).
 
 ResponsesReasoningSummary:
   type: object

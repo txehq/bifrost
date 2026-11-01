@@ -175,6 +175,17 @@ WarpConfigInput:
     Switching `enabled` on is what makes the rest required - see the conditional
     below, which mirrors what the server enforces so a generated client learns
     the rule from the schema rather than from a rejected request.
+
+    The embedding fields (`embedding_provider`, `embedding_model`,
+    `embedding_api_key_id`, `embedding_dimension`) and
+    `log_vector_store_namespace`, `semantic_search_threshold` and
+    `semantic_search_limit` are partial: an omitted one keeps its stored
+    value. The server fills them in from the stored configuration and then
+    validates the merged result, so an enabled write may leave the embedding
+    fields out once a previous save stored them; with nothing stored, an
+    enabled write that omits them is rejected with `400`. A field that is
+    sent is validated as sent, so an explicit blank or a zero
+    `embedding_dimension` is rejected when `enabled` is true.
   # Nothing is required unconditionally: a disabled draft is a valid write.
   if:
     properties:
@@ -183,12 +194,13 @@ WarpConfigInput:
     required:
       - enabled
   then:
+    # Only provider and model are replaced on every write. The embedding fields
+    # are not required here because an omitted one keeps its stored value
+    # (applyStoredEmbeddingSettings) and the merged result is what gets
+    # validated; the constraints below apply when they are sent.
     required:
       - provider
       - model
-      - embedding_provider
-      - embedding_model
-      - embedding_dimension
     properties:
       # minLength and a non-whitespace pattern on the four identifiers:
       # `required` alone accepts "", and minLength alone still accepts "   ",
@@ -270,16 +282,23 @@ WarpConfigInput:
       type: string
     embedding_provider:
       type: string
-      description: Required when `enabled` is true.
+      description: |
+        Required when `enabled` is true, after omitted fields are filled from the
+        stored configuration: omit it to keep the stored value.
     embedding_model:
       type: string
-      description: Required when `enabled` is true.
+      description: |
+        Required when `enabled` is true, after omitted fields are filled from the
+        stored configuration: omit it to keep the stored value.
     embedding_api_key_id:
       type: string
+      description: Omit to keep the stored value.
     embedding_dimension:
       type: integer
       minimum: 0
-      description: Must be positive when `enabled` is true.
+      description: |
+        Must be positive when `enabled` is true, after omitted fields are filled
+        from the stored configuration: omit it to keep the stored value.
     log_vector_store_namespace:
       type: string
       default: BifrostWarpLogs

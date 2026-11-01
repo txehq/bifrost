@@ -1286,7 +1286,8 @@ client-openapi-spec:
     summary: Get the stored OpenAPI spec of an MCP client
     description: |
       Returns the OpenAPI document an `openapi` connection-type client was
-      created from, as JSON or YAML text. `GET /api/mcp/clients` leaves the
+      created from, exactly as stored: a JSON object as `application/json`,
+      anything else as `application/yaml` text. `GET /api/mcp/clients` leaves the
       document out of `openapi_config` because it can be large; this endpoint
       serves it on demand (the UI's "Replace spec" flow seeds its editor from
       it). 404 for clients of other connection types and for openapi clients
@@ -1310,8 +1311,9 @@ client-openapi-spec:
         content:
           application/json:
             schema:
-              type: string
-              description: The OpenAPI document as it was stored (JSON text).
+              type: object
+              additionalProperties: true
+              description: The OpenAPI document as it was stored, served byte for byte when it is a JSON object.
           application/yaml:
             schema:
               type: string

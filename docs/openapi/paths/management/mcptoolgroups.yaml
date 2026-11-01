@@ -18,7 +18,7 @@ mcp-tool-groups:
         <Warning>
           Deprecated. Tool groups were renamed to Virtual MCPs; use `/api/mcp/virtual-mcps`
           instead. This alias serves the Enterprise tool-group handler, which does not accept
-          the `endpoint_slug`, `instructions`, or `instructions_mode` fields.
+          the `endpoint_slug` field.
         </Warning>
 
         **Required Permissions**
@@ -78,7 +78,7 @@ mcp-tool-groups:
         <Warning>
           Deprecated. Tool groups were renamed to Virtual MCPs; use `/api/mcp/virtual-mcps`
           instead. This alias serves the Enterprise tool-group handler, which does not accept
-          the `endpoint_slug`, `instructions`, or `instructions_mode` fields.
+          the `endpoint_slug` field.
         </Warning>
 
         **Required Permissions**
@@ -135,7 +135,7 @@ mcp-tool-groups-by-id:
         <Warning>
           Deprecated. Tool groups were renamed to Virtual MCPs; use `/api/mcp/virtual-mcps`
           instead. This alias serves the Enterprise tool-group handler, which does not accept
-          the `endpoint_slug`, `instructions`, or `instructions_mode` fields.
+          the `endpoint_slug` field.
         </Warning>
 
         **Required Permissions**
@@ -187,7 +187,7 @@ mcp-tool-groups-by-id:
         <Warning>
           Deprecated. Tool groups were renamed to Virtual MCPs; use `/api/mcp/virtual-mcps`
           instead. This alias serves the Enterprise tool-group handler, which does not accept
-          the `endpoint_slug`, `instructions`, or `instructions_mode` fields.
+          the `endpoint_slug` field.
         </Warning>
 
         **Required Permissions**
@@ -250,7 +250,7 @@ mcp-tool-groups-by-id:
         <Warning>
           Deprecated. Tool groups were renamed to Virtual MCPs; use `/api/mcp/virtual-mcps`
           instead. This alias serves the Enterprise tool-group handler, which does not accept
-          the `endpoint_slug`, `instructions`, or `instructions_mode` fields.
+          the `endpoint_slug` field.
         </Warning>
 
         **Required Permissions**
