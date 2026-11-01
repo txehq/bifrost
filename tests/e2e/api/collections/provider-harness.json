@@ -289599,6 +289599,434 @@
           ]
         }
       ]
+    },
+    {
+      "name": "276. Warp keeps embedding spaces apart and counts what a turn embedded (warp-preservation) [SERIAL]",
+      "description": "TXE-5543 regression. Local fixture regression: run with warpWire=1 and warpWireFixtureUrl against the gateway of tests/e2e/api/provider_config/warp-wire.config.json, with a logs store and a vector store, and tests/e2e/api/runners/warp-wire-fixture.mjs as the only upstream. A retired namespace holds vectors of a space nothing records, so moving back onto one is refused; clearing the space in place is refused, and clearing it onto a new namespace retires the old one. A turn that searches reports its model calls and each query embedding once: 110 tokens per model call and 7 per embedding on this fixture. Model turns held open, backfill pages, tied timestamps and the chart, trace and search reads cannot be sent from a collection: tests/e2e/api/runners/run-warp-wire.mjs covers them. Run the whole folder in order.",
+      "item": [
+        {
+          "name": "[setup] the warp feature flag is on - warp-preservation",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/feature-flags"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('warpWire') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var stamp = Date.now();",
+                  "pm.collectionVariables.set('warpPresA', 'Warppres' + stamp + 'a');",
+                  "pm.collectionVariables.set('warpPresB', 'Warppres' + stamp + 'b');",
+                  "pm.collectionVariables.set('warpPresC', 'Warppres' + stamp + 'c');",
+                  "pm.collectionVariables.set('warpPresD', 'Warppres' + stamp + 'd');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-preservation: warp flag enabled', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().flags.filter(function (f) { return f.id === 'warp' && f.enabled; }).length, pm.response.text()).to.equal(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[setup] a first namespace - warp-preservation",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/warp/config",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": true, \"provider\": \"openai\", \"model\": \"wire-chat\", \"max_iterations\": 8, \"request_timeout_seconds\": 60, \"history_retention_days\": 30, \"embedding_provider\": \"openai\", \"embedding_model\": \"wire-embed\", \"embedding_dimension\": 8, \"log_vector_store_namespace\": \"{{warpPresA}}\", \"semantic_search_threshold\": 0.1, \"semantic_search_limit\": 10}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('warpWire') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-preservation: first namespace saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[setup] a move to a second namespace - warp-preservation",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/warp/config",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": true, \"provider\": \"openai\", \"model\": \"wire-chat\", \"max_iterations\": 8, \"request_timeout_seconds\": 60, \"history_retention_days\": 30, \"embedding_provider\": \"openai\", \"embedding_model\": \"wire-embed\", \"embedding_dimension\": 8, \"log_vector_store_namespace\": \"{{warpPresB}}\", \"semantic_search_threshold\": 0.1, \"semantic_search_limit\": 10}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('warpWire') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-preservation: second namespace saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] a retired namespace is refused - warp-preservation",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/warp/config",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": true, \"provider\": \"openai\", \"model\": \"wire-chat\", \"max_iterations\": 8, \"request_timeout_seconds\": 60, \"history_retention_days\": 30, \"embedding_provider\": \"openai\", \"embedding_model\": \"wire-embed\", \"embedding_dimension\": 8, \"log_vector_store_namespace\": \"{{warpPresA}}\", \"semantic_search_threshold\": 0.1, \"semantic_search_limit\": 10}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('warpWire') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-preservation: retired namespace refused', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('was retired');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] clearing the space in place is refused - warp-preservation",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/warp/config",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": false, \"provider\": \"openai\", \"model\": \"wire-chat\", \"max_iterations\": 8, \"request_timeout_seconds\": 60, \"history_retention_days\": 30, \"embedding_provider\": \"openai\", \"embedding_model\": \"\", \"embedding_dimension\": 8, \"log_vector_store_namespace\": \"{{warpPresB}}\", \"semantic_search_threshold\": 0.1, \"semantic_search_limit\": 10}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('warpWire') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-preservation: clearing in place refused', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('is cleared');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "clearing onto a new namespace is allowed - warp-preservation",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/warp/config",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": false, \"provider\": \"openai\", \"model\": \"wire-chat\", \"max_iterations\": 8, \"request_timeout_seconds\": 60, \"history_retention_days\": 30, \"embedding_provider\": \"openai\", \"embedding_model\": \"\", \"embedding_dimension\": 8, \"log_vector_store_namespace\": \"{{warpPresC}}\", \"semantic_search_threshold\": 0.1, \"semantic_search_limit\": 10}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('warpWire') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-preservation: clearing onto a new namespace saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] the namespace clearing left is retired - warp-preservation",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/warp/config",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": true, \"provider\": \"openai\", \"model\": \"wire-chat\", \"max_iterations\": 8, \"request_timeout_seconds\": 60, \"history_retention_days\": 30, \"embedding_provider\": \"openai\", \"embedding_model\": \"wire-embed\", \"embedding_dimension\": 8, \"log_vector_store_namespace\": \"{{warpPresB}}\", \"semantic_search_threshold\": 0.1, \"semantic_search_limit\": 10}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('warpWire') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-preservation: cleared namespace refused', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text()).to.include('was retired');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[setup] a namespace for the chat - warp-preservation",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/warp/config",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": true, \"provider\": \"openai\", \"model\": \"wire-chat\", \"max_iterations\": 8, \"request_timeout_seconds\": 60, \"history_retention_days\": 30, \"embedding_provider\": \"openai\", \"embedding_model\": \"wire-embed\", \"embedding_dimension\": 8, \"log_vector_store_namespace\": \"{{warpPresD}}\", \"semantic_search_threshold\": 0.1, \"semantic_search_limit\": 10}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('warpWire') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('warp-preservation: chat namespace saved', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a turn's usage counts each search embedding once - warp-preservation",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/api/warp/chat",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\": [{\"role\": \"user\", \"content\": \"why did payments fail? [case:{{warpPresKey}}]\"}], \"stream\": false, \"timezone\": \"UTC\", \"utc_offset_minutes\": 0}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('warpWire') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var key = pm.variables.get('warpPresA').toLowerCase();",
+                  "pm.collectionVariables.set('warpPresKey', key);",
+                  "pm.sendRequest({ url: pm.variables.get('warpWireFixtureUrl') + '/__script', method: 'POST', body: JSON.stringify({ key: key, steps: [",
+                  "  { tool: 'semantic_search_logs', args: { queries: ['declined cards [case:' + key + ']', 'failed payments [case:' + key + ']'], filters: {} } },",
+                  "  { text: 'none found.' },",
+                  "] }) }, function (err, res) {",
+                  "  pm.test('warp-preservation setup: the model is scripted', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "pm.test('warp-preservation: two model calls and two embeddings are reported', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(body.usage.total_tokens, pm.response.text()).to.equal(234);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

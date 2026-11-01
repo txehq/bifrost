@@ -2,13 +2,19 @@ package warp
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/logstore"
+	"github.com/capsohq/bifrost/framework/postgresconn"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -248,6 +254,9 @@ func TestWarpRenderChartErrorRateByModel(t *testing.T) {
 	fake := &fakeLogReader{modelRankingResult: &logstore.ModelRankingResult{Rankings: []logstore.ModelRankingWithTrend{
 		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "claude-3-5-sonnet", TotalRequests: 100, SuccessRate: 70}},
 		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "gpt-4o-mini", TotalRequests: 60, SuccessRate: 95}},
+	}}, errorModelRankingResult: &logstore.ModelRankingResult{Rankings: []logstore.ModelRankingWithTrend{
+		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "claude-3-5-sonnet", TotalRequests: 30}},
+		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "gpt-4o-mini", TotalRequests: 3}},
 	}}}
 	deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
 	_, err := runTool(t, RenderChartTool, deps, map[string]any{
@@ -257,6 +266,76 @@ func TestWarpRenderChartErrorRateByModel(t *testing.T) {
 	require.NoError(t, err)
 	spec, _ := deps.charts.get(spec1(t, deps))
 	require.Equal(t, []ChartPoint{{X: "claude-3-5-sonnet", Y: 30}, {X: "gpt-4o-mini", Y: 5}}, spec.Points)
+}
+
+// A cancelled request is not a failed one. The model and provider bars took
+// 100 minus the success rate, so 80 successes and 20 cancellations with no
+// error at all charted a 20% error rate, while the dimension bars, which count
+// failed requests, charted 0% for the same traffic.
+func TestWarpRenderChartErrorRateIgnoresCancellations(t *testing.T) {
+	t.Run("model", func(t *testing.T) {
+		fake := &fakeLogReader{modelRankingResult: &logstore.ModelRankingResult{Rankings: []logstore.ModelRankingWithTrend{
+			{ModelRankingEntry: logstore.ModelRankingEntry{Model: "gpt-4o", Provider: "openai", TotalRequests: 100, SuccessCount: 80, SuccessRate: 80}},
+		}}, errorModelRankingResult: &logstore.ModelRankingResult{}}
+		deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
+		_, err := runTool(t, RenderChartTool, deps, map[string]any{
+			"kind": "bar", "title": "Failure rate by model", "metric": "error_rate", "group": "model",
+			"filters": map[string]any{"start_time": "-7d"},
+		})
+		require.NoError(t, err)
+		spec, _ := deps.charts.get(spec1(t, deps))
+		require.Equal(t, []ChartPoint{{X: "gpt-4o", Y: 0}}, spec.Points, "20 cancellations and no errors is a 0% error rate")
+	})
+	t.Run("provider", func(t *testing.T) {
+		fake := &fakeLogReader{
+			providerCostHistogramResult: &logstore.ProviderCostHistogramResult{Providers: []string{"openai"}},
+			statsByProvider:             map[string]*logstore.SearchStats{"openai": {TotalRequests: 100, SuccessRate: 80}},
+			errorStatsByProvider:        map[string]*logstore.SearchStats{"openai": {TotalRequests: 5}},
+		}
+		deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
+		_, err := runTool(t, RenderChartTool, deps, map[string]any{
+			"kind": "bar", "title": "Failure rate by provider", "metric": "error_rate", "group": "provider",
+			"filters": map[string]any{"start_time": "-7d"},
+		})
+		require.NoError(t, err)
+		spec, _ := deps.charts.get(spec1(t, deps))
+		require.Equal(t, []ChartPoint{{X: "openai", Y: 5}}, spec.Points, "5 errors over 100 requests; the other 15 that did not succeed were cancelled")
+	})
+	t.Run("in-flight requests", func(t *testing.T) {
+		// 10 of the 110 are still running. The rate is over the 100 that finished,
+		// as the model and dimension bars count it.
+		completed := int64(100)
+		fake := &fakeLogReader{
+			providerCostHistogramResult: &logstore.ProviderCostHistogramResult{Providers: []string{"openai"}},
+			statsByProvider:             map[string]*logstore.SearchStats{"openai": {TotalRequests: 110, CacheHitRateTotalRequests: &completed, SuccessRate: 80}},
+			errorStatsByProvider:        map[string]*logstore.SearchStats{"openai": {TotalRequests: 5}},
+		}
+		deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
+		_, err := runTool(t, RenderChartTool, deps, map[string]any{
+			"kind": "bar", "title": "Failure rate by provider", "metric": "error_rate", "group": "provider",
+			"filters": map[string]any{"start_time": "-7d"},
+		})
+		require.NoError(t, err)
+		spec, _ := deps.charts.get(spec1(t, deps))
+		require.Equal(t, []ChartPoint{{X: "openai", Y: 5}}, spec.Points)
+	})
+	t.Run("status filter excluding errors", func(t *testing.T) {
+		// Asked for successful requests only, the population holds no errors: the
+		// rate is 0, not the unfiltered errors over the success-only total.
+		fake := &fakeLogReader{
+			providerCostHistogramResult: &logstore.ProviderCostHistogramResult{Providers: []string{"openai"}},
+			statsByProvider:             map[string]*logstore.SearchStats{"openai": {TotalRequests: 80, SuccessRate: 100}},
+			errorStatsByProvider:        map[string]*logstore.SearchStats{"openai": {TotalRequests: 120}},
+		}
+		deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
+		_, err := runTool(t, RenderChartTool, deps, map[string]any{
+			"kind": "bar", "title": "Failure rate by provider", "metric": "error_rate", "group": "provider",
+			"filters": map[string]any{"start_time": "-7d", "status": []any{"success"}},
+		})
+		require.NoError(t, err)
+		spec, _ := deps.charts.get(spec1(t, deps))
+		require.Equal(t, []ChartPoint{{X: "openai", Y: 0}}, spec.Points)
+	})
 }
 
 func spec1(t *testing.T, deps *ToolDeps) string {
@@ -356,5 +435,199 @@ func TestWarpRenderChartFailureLinksOpenTheFailures(t *testing.T) {
 			spec, _ := deps.charts.get(spec1(t, deps))
 			require.Equal(t, wantErrors, strings.Contains(spec.Link, "status=error"), spec.Link)
 		})
+	}
+}
+
+// TestWarpRenderChartModelBarsAggregateAcrossProviders: rankings are per model and
+// provider, but a model chart labels bars by model, so one model served by two
+// providers is one bar with their combined value (latency weighted by requests),
+// not two identically labelled bars.
+func TestWarpRenderChartModelBarsAggregateAcrossProviders(t *testing.T) {
+	rankings := &logstore.ModelRankingResult{Rankings: []logstore.ModelRankingWithTrend{
+		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "gpt-4o", Provider: "openai", TotalRequests: 30, TotalCost: 3, AvgLatency: 100}},
+		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "gpt-4o", Provider: "azure", TotalRequests: 10, TotalCost: 2, AvgLatency: 300}},
+		{ModelRankingEntry: logstore.ModelRankingEntry{Model: "claude", Provider: "anthropic", TotalRequests: 5, TotalCost: 4, AvgLatency: 50}},
+	}}
+	for _, tc := range []struct {
+		metric string
+		want   []ChartPoint
+	}{
+		{"cost", []ChartPoint{{X: "gpt-4o", Y: 5}, {X: "claude", Y: 4}}},
+		{"latency", []ChartPoint{{X: "gpt-4o", Y: 150}, {X: "claude", Y: 50}}},
+	} {
+		fake := &fakeLogReader{modelRankingResult: rankings}
+		deps := &ToolDeps{logManager: fake, charts: newChartRegistry()}
+		_, err := runTool(t, RenderChartTool, deps, map[string]any{
+			"kind": "bar", "title": tc.metric + " by model", "metric": tc.metric, "group": "model",
+			"filters": map[string]any{"start_time": "-7d"},
+		})
+		require.NoError(t, err)
+		spec, _ := deps.charts.get(spec1(t, deps))
+		require.Equal(t, tc.want, spec.Points, tc.metric)
+	}
+}
+
+// storeLogReader serves Warp's reads from a real log store, so a test sees the SQL
+// each backend runs. Anything else it is asked panics through LogReaderStub.
+type storeLogReader struct {
+	LogReaderStub
+	store logstore.LogStore
+}
+
+func (r storeLogReader) Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
+	return r.store.SearchLogs(ctx, *filters, *pagination)
+}
+
+func (r storeLogReader) GetLog(ctx context.Context, id string) (*logstore.Log, error) {
+	return r.store.FindByID(ctx, id)
+}
+
+func (r storeLogReader) GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error) {
+	return r.store.GetStats(ctx, *filters)
+}
+
+func (r storeLogReader) GetHistogram(ctx context.Context, filters *logstore.SearchFilters, bucket int64) (*logstore.HistogramResult, error) {
+	return r.store.GetHistogram(ctx, *filters, bucket)
+}
+
+func (r storeLogReader) GetModelRankings(ctx context.Context, filters *logstore.SearchFilters) (*logstore.ModelRankingResult, error) {
+	return r.store.GetModelRankings(ctx, *filters)
+}
+
+func (r storeLogReader) GetDimensionRankings(ctx context.Context, filters *logstore.SearchFilters, dimension logstore.RankingDimension) (*logstore.DimensionRankingResult, error) {
+	return r.store.GetDimensionRankings(ctx, *filters, dimension)
+}
+
+func (r storeLogReader) GetProviderCostHistogram(ctx context.Context, filters *logstore.SearchFilters, bucket int64) (*logstore.ProviderCostHistogramResult, error) {
+	return r.store.GetProviderCostHistogram(ctx, *filters, bucket)
+}
+
+// warpTestWindow is an hour of its own in the past, so rows from another run on a
+// shared database stay out of a window that filters on nothing else.
+func warpTestWindow() time.Time {
+	return time.Now().UTC().AddDate(-5, 0, 0).Add(time.Duration(time.Now().UnixNano()%(1<<45)) * time.Microsecond).Truncate(time.Hour)
+}
+
+// warpTestLogStores opens every backend this run can reach. SQLite always runs;
+// Postgres and ClickHouse run against a dedicated database named by
+// BIFROST_TEST_WARP_POSTGRES_* and BIFROST_TEST_CLICKHOUSE_*, and are skipped
+// without one.
+func warpTestLogStores(t *testing.T) map[string]func(t *testing.T) logstore.LogStore {
+	t.Helper()
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	open := func(t *testing.T, kind logstore.LogStoreType, config any) logstore.LogStore {
+		t.Helper()
+		ctx := context.Background()
+		store, err := logstore.NewLogStore(ctx, &logstore.Config{Enabled: true, Type: kind, Config: config}, logger)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = store.Close(ctx) })
+		return store
+	}
+	return map[string]func(t *testing.T) logstore.LogStore{
+		"sqlite": func(t *testing.T) logstore.LogStore {
+			return open(t, logstore.LogStoreTypeSQLite, &logstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "logs.db")})
+		},
+		"postgres": func(t *testing.T) logstore.LogStore {
+			host := os.Getenv("BIFROST_TEST_WARP_POSTGRES_HOST")
+			if host == "" {
+				t.Skip("BIFROST_TEST_WARP_POSTGRES_HOST names no dedicated database")
+			}
+			return open(t, logstore.LogStoreTypePostgres, &logstore.PostgresConfig{Config: postgresconn.Config{
+				Host: schemas.NewSecretVar(host), Port: schemas.NewSecretVar(os.Getenv("BIFROST_TEST_WARP_POSTGRES_PORT")),
+				User: schemas.NewSecretVar(os.Getenv("BIFROST_TEST_WARP_POSTGRES_USER")), Password: schemas.NewSecretVar(os.Getenv("BIFROST_TEST_WARP_POSTGRES_PASSWORD")),
+				DBName: schemas.NewSecretVar(os.Getenv("BIFROST_TEST_WARP_POSTGRES_DB")), SSLMode: schemas.NewSecretVar("disable"),
+			}})
+		},
+		"clickhouse": func(t *testing.T) logstore.LogStore {
+			host := os.Getenv("BIFROST_TEST_CLICKHOUSE_HOST")
+			if host == "" {
+				t.Skip("BIFROST_TEST_CLICKHOUSE_HOST names no dedicated database")
+			}
+			return open(t, logstore.LogStoreTypeClickHouse, &logstore.ClickHouseConfig{
+				Host: schemas.NewSecretVar(host), Port: schemas.NewSecretVar(os.Getenv("BIFROST_TEST_CLICKHOUSE_PORT")),
+				Database: schemas.NewSecretVar(os.Getenv("BIFROST_TEST_CLICKHOUSE_DB")), Username: schemas.NewSecretVar(os.Getenv("BIFROST_TEST_CLICKHOUSE_USER")),
+				Password: schemas.NewSecretVar(os.Getenv("BIFROST_TEST_CLICKHOUSE_PASSWORD")),
+			})
+		},
+	}
+}
+
+// Every way of grouping one window has to report one failure rate for one set of
+// requests. openai: 60 successes, 20 errors, 20 cancelled and 10 in flight. azure:
+// 10 successes and 10 errors, on the same model. So 30 errors over 120 finished
+// requests on the model bar, 20 over 100 and 10 over 20 on the provider bars, and
+// the team bar and the timeline agree.
+func TestWarpErrorRatePopulationsAgreeOnTheStore(t *testing.T) {
+	for backend, open := range warpTestLogStores(t) {
+		t.Run(backend, func(t *testing.T) {
+			store := open(t)
+			ctx := context.Background()
+			start := warpTestWindow()
+			team := "team-" + uuid.NewString()
+			entries := []*logstore.Log{}
+			seed := func(provider, status string, count int) {
+				for range count {
+					entries = append(entries, &logstore.Log{
+						ID: uuid.NewString(), Timestamp: start.Add(30 * time.Minute), Object: string(schemas.ChatCompletionRequest),
+						Provider: provider, Model: "gpt-4o", Status: status, TeamID: &team, Latency: new(100.0),
+					})
+				}
+			}
+			seed("openai", "success", 60)
+			seed("openai", "error", 20)
+			seed("openai", "cancelled", 20)
+			seed("openai", "processing", 10)
+			seed("azure", "success", 10)
+			seed("azure", "error", 10)
+			require.NoError(t, store.BatchCreateIfNotExists(ctx, entries))
+
+			deps := &ToolDeps{logManager: storeLogReader{store: store}, charts: newChartRegistry()}
+			chart := func(kind, group string, status []any) []ChartPoint {
+				t.Helper()
+				deps.charts = newChartRegistry()
+				filters := map[string]any{"start_time": start.Format(time.RFC3339), "end_time": start.Add(2 * time.Hour).Format(time.RFC3339), "team_ids": []any{team}}
+				if status != nil {
+					filters["status"] = status
+				}
+				args := map[string]any{"kind": kind, "title": "Failure rate", "metric": "error_rate", "filters": filters}
+				if group != "" {
+					args["group"] = group
+				}
+				_, err := runTool(t, RenderChartTool, deps, args)
+				require.NoError(t, err)
+				spec, _ := deps.charts.get(spec1(t, deps))
+				return spec.Points
+			}
+			require.Equal(t, []ChartPoint{{X: "gpt-4o", Y: 25}}, chart("bar", "model", nil))
+			require.ElementsMatch(t, []ChartPoint{{X: "openai", Y: 20}, {X: "azure", Y: 50}}, chart("bar", "provider", nil))
+			require.Equal(t, []ChartPoint{{X: team, Y: 25}}, chart("bar", "team", nil))
+
+			// A population holding no errors has no failure rate above zero.
+			require.Equal(t, []ChartPoint{{X: "gpt-4o", Y: 0}}, chart("bar", "model", []any{"success"}))
+			require.ElementsMatch(t, []ChartPoint{{X: "openai", Y: 0}, {X: "azure", Y: 0}}, chart("bar", "provider", []any{"success"}))
+			// Asked for errors alone, everything in the population failed.
+			require.Equal(t, []ChartPoint{{X: "gpt-4o", Y: 100}}, chart("bar", "model", []any{"error"}))
+		})
+	}
+}
+
+// BenchmarkWarpBarChartErrorRate measures a failure-rate bar chart over 50 model and
+// provider pairs, with the store answering at once.
+func BenchmarkWarpBarChartErrorRate(b *testing.B) {
+	rankings := make([]logstore.ModelRankingWithTrend, 0, 50)
+	for index := range 50 {
+		rankings = append(rankings, logstore.ModelRankingWithTrend{ModelRankingEntry: logstore.ModelRankingEntry{
+			Model: fmt.Sprintf("model-%d", index/2), Provider: fmt.Sprintf("provider-%d", index%2), TotalRequests: 100, SuccessRate: 90, AvgLatency: 100,
+		}})
+	}
+	fake := &fakeLogReader{modelRankingResult: &logstore.ModelRankingResult{Rankings: rankings}}
+	deps := &ToolDeps{logManager: fake}
+	filters := &logstore.SearchFilters{}
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := barChartPoints(ctx, deps, filters, "error_rate", "model", 10); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

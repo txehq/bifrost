@@ -4,6 +4,7 @@ import {
 	isEncodedTurnError,
 	isPartialAnswer,
 	parseWarpFrame,
+	replayedAssistantContent,
 	splitWarpFrames,
 	terminalConversationID,
 	warpTextLength,
@@ -197,6 +198,8 @@ export class WarpStreamSession {
 					// Terminal. Always encoded so a colon in a code-less message isn't read as a code.
 					terminalError = encodeTurnError(event.code, event.message ?? (event.code ? "" : "error"));
 					sawTerminal = true;
+					// A failed turn is still paid for. The thread it was filed under is kept above.
+					usage = event.usage ?? usage;
 					break;
 				default:
 					break;
@@ -218,7 +221,7 @@ export class WarpStreamSession {
 							// Lets the server cap how many times in a row Warp asks instead of answering.
 							.map((turn) => ({
 								role: turn.role,
-								content: turn.content,
+								content: turn.role === "assistant" ? replayedAssistantContent(turn.content, turn.question) : turn.content,
 								...(turn.role === "assistant" && turn.question ? { question: true } : {}),
 							})),
 						{ role: "user", content: question },

@@ -431,12 +431,28 @@ func queryMetricsTool() Tool {
 			setLogsLink(out, filters)
 			noteRequestTypes(out, filters)
 			var groupedProviders []string
-			for _, metric := range metrics {
-				switch metric {
-				case "summary":
+			// windowStats is the window's exact aggregate, read once and shared by
+			// the summary and by the totals of the summarized series. Those totals
+			// cannot be the sum of the buckets: on Postgres the buckets come from
+			// whole matview hours, so the first and last carry spend from outside
+			// a window that starts or ends mid-hour.
+			var exact *logstore.SearchStats
+			windowStats := func() (*logstore.SearchStats, error) {
+				if exact == nil {
 					stats, err := deps.logManager.GetStats(ctx, filters)
 					if err != nil {
 						return nil, fmt.Errorf("stats query failed: %w", err)
+					}
+					exact = stats
+				}
+				return exact, nil
+			}
+			for _, metric := range metrics {
+				switch metric {
+				case "summary":
+					stats, err := windowStats()
+					if err != nil {
+						return nil, err
 					}
 					out["summary"] = stats
 					if link := failuresLink(filters, stats.TotalRequests, stats.SuccessRate); link != "" {
@@ -483,7 +499,15 @@ func queryMetricsTool() Tool {
 						out["tokens"] = result
 						continue
 					}
-					out["tokens"] = summarizeTokensHistogram(result)
+					stats, err := windowStats()
+					if err != nil {
+						return nil, err
+					}
+					summary := summarizeTokensHistogram(result)
+					setExactTotal(summary, "prompt_tokens", float64(stats.PromptTokens))
+					setExactTotal(summary, "completion_tokens", float64(stats.CompletionTokens))
+					setExactTotal(summary, "total_tokens", float64(stats.TotalTokens))
+					out["tokens"] = summary
 				case "cost":
 					if byProvider {
 						result, err := deps.logManager.GetProviderCostHistogram(ctx, filters, providerBucket)
@@ -502,7 +526,13 @@ func queryMetricsTool() Tool {
 						out["cost"] = result
 						continue
 					}
-					out["cost"] = summarizeCostHistogram(result)
+					stats, err := windowStats()
+					if err != nil {
+						return nil, err
+					}
+					summary := summarizeCostHistogram(result)
+					setExactTotal(summary, "total_cost", stats.TotalCost)
+					out["cost"] = summary
 				case "latency":
 					if byProvider {
 						result, err := deps.logManager.GetProviderLatencyHistogram(ctx, filters, providerBucket)
@@ -582,6 +612,8 @@ type providerTotal struct {
 	AverageLatency float64 `json:"average_latency_ms"`
 	// Link opens this provider's requests under the tool's own filters.
 	Link string `json:"link,omitempty"`
+
+	completed int64 // SuccessRate's denominator; see completedRequests
 }
 
 // providerTotals reads each provider's exact totals over the filtered window,
@@ -626,9 +658,20 @@ func providerTotals(ctx context.Context, deps *ToolDeps, filters *logstore.Searc
 			SuccessRate:    stats[index].SuccessRate,
 			AverageLatency: stats[index].AverageLatency,
 			Link:           logsViewLink(&narrowed),
+			completed:      completedRequests(stats[index]),
 		}
 	}
 	return totals, nil
+}
+
+// completedRequests is the requests that reached a terminal status. TotalRequests
+// also counts those still in flight, which have neither failed nor succeeded and
+// are not in the rankings' counts.
+func completedRequests(stats *logstore.SearchStats) int64 {
+	if stats.CacheHitRateTotalRequests != nil {
+		return *stats.CacheHitRateTotalRequests
+	}
+	return stats.TotalRequests
 }
 
 // previousPeriodTrend fetches the period immediately preceding the filtered
@@ -783,6 +826,17 @@ func summarizeRequestsHistogram(result *logstore.HistogramResult) map[string]any
 		"buckets":             n,
 		"bucket_size_seconds": result.BucketSizeSeconds,
 	}
+}
+
+// setExactTotal replaces a summarized series' bucket-summed total with the
+// window's exact one. The buckets still describe the shape.
+func setExactTotal(summary map[string]any, field string, total float64) {
+	series, ok := summary[field].(seriesSummary)
+	if !ok {
+		return
+	}
+	series.Total = &total
+	summary[field] = series
 }
 
 func summarizeTokensHistogram(result *logstore.TokenHistogramResult) map[string]any {

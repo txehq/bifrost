@@ -240,8 +240,10 @@ func openableHost(hostname string) bool {
 // feature-request link from the prompt. The model wrapped it in a block
 // labelled "github issue link placeholder", and the dashboard rendered a code
 // viewer with a scrollbar where a link belonged. A fence holding anything else
-// - real code that happens to contain the URL - does not match.
-var fencedIssueLink = regexp.MustCompile(`\x60{3}[^\n\x60]*\n\s*(https://github\.com/maximhq/bifrost/issues/new\S*)\s*\n\x60{3}\n?`)
+// - real code that happens to contain the URL - does not match. The prompt names
+// the upstream tracker; a fork whose build rewrites that path to its own module
+// owner names capsohq, so both are unwrapped.
+var fencedIssueLink = regexp.MustCompile(`\x60{3}[^\n\x60]*\n\s*(https://github\.com/(?:maximhq|capsohq)/bifrost/issues/new\S*)\s*\n\x60{3}\n?`)
 
 // logsViewPath is the dashboard's Logs page. Links are built here rather than
 // left to the model so the URL scheme lives in one place and the model only

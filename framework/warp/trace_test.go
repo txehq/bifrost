@@ -240,3 +240,114 @@ func TestWarpGetRequestTraceReportsTruncatedChain(t *testing.T) {
 	require.Equal(t, true, out["truncated_chain"])
 	require.NotContains(t, out, "final_status", "a truncated chain's last fetched node isn't necessarily the terminal hop, so final_status must not be inferred from it")
 }
+
+// Session baggage is stored as a primary request's parent_request_id. The
+// trace followed it like a fallback's parent, replacing the request it had
+// just loaded with a lookup of the session string - not found, or, when a log
+// happened to have that id, an unrelated request's chain. Only a fallback hop
+// points at its chain's root.
+func TestWarpGetRequestTraceDoesNotFollowASessionParent(t *testing.T) {
+	ts := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
+	primary := &logstore.Log{ID: "req-primary", Timestamp: ts, Provider: "openai", Model: "gpt-4o", Status: "error", ParentRequestID: new("my-session")}
+	fallback := &logstore.Log{ID: "req-fallback", Timestamp: ts.Add(time.Second), Provider: "anthropic", Model: "claude-sonnet-5", Status: "success", FallbackIndex: 1, ParentRequestID: new("req-primary")}
+	unrelated := &logstore.Log{ID: "my-session", Timestamp: ts, Provider: "bedrock", Model: "nova", Status: "success"}
+
+	for name, logs := range map[string]map[string]*logstore.Log{
+		"no log has the session id": {"req-primary": primary, "req-fallback": fallback},
+		"a log id collides with it": {"req-primary": primary, "req-fallback": fallback, "my-session": unrelated},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeLogReader{
+				getLogFunc: func(_ context.Context, id string) (*logstore.Log, error) { return logs[id], nil },
+				searchResult: &logstore.SearchResult{
+					Logs:       []logstore.Log{*fallback},
+					Pagination: logstore.PaginationOptions{TotalCount: 1},
+				},
+			}
+			result, err := runTool(t, "get_request_trace", &ToolDeps{logManager: fake}, map[string]any{"log_id": "req-primary"})
+			require.NoError(t, err)
+			out := result.(map[string]any)
+			require.Equal(t, "req-primary", out["root_id"])
+			require.Equal(t, "req-primary", fake.searchFilters.ParentRequestID)
+			nodes := out["nodes"].([]traceNode)
+			require.Equal(t, []string{"req-primary", "req-fallback"}, []string{nodes[0].ID, nodes[1].ID})
+		})
+	}
+}
+
+// The chain search returns list rows, which leave out a row's error details,
+// retry attempts, plugin and routing logs and overhead breakdown - so every
+// fallback hop came back with none of the diagnostics the trace exists for.
+// Each child is loaded in full, through the caller's context.
+func TestWarpGetRequestTraceHydratesFallbackHops(t *testing.T) {
+	ts := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
+	root := &logstore.Log{ID: "req-root", Timestamp: ts, Provider: "openai", Model: "gpt-4o", Status: "error"}
+	listed := logstore.Log{ID: "req-fallback-1", Timestamp: ts.Add(time.Second), Provider: "anthropic", Status: "error", FallbackIndex: 1, ParentRequestID: new("req-root")}
+	full := listed
+	failReason := "overloaded"
+	full.NumberOfRetries = 1
+	full.AttemptTrailParsed = []schemas.KeyAttemptRecord{{Attempt: 1, KeyName: "primary", FailReason: &failReason}}
+	full.ErrorDetailsParsed = &schemas.BifrostError{StatusCode: new(529), Error: &schemas.ErrorField{Type: new("overloaded_error"), Message: "overloaded"}}
+	full.RoutingEngineLogs = "[1700000000000] [governance] [info] - fallback triggered\n"
+
+	type ctxKey struct{}
+	ctx := context.WithValue(context.Background(), ctxKey{}, "caller")
+	var childCtx context.Context
+	fake := &fakeLogReader{
+		getLogFunc: func(c context.Context, id string) (*logstore.Log, error) {
+			switch id {
+			case "req-root":
+				return root, nil
+			case "req-fallback-1":
+				childCtx = c
+				return &full, nil
+			}
+			return nil, nil
+		},
+		searchResult: &logstore.SearchResult{Logs: []logstore.Log{listed}, Pagination: logstore.PaginationOptions{TotalCount: 1}},
+	}
+	tool, ok := toolByName(buildTools(), "get_request_trace")
+	require.True(t, ok)
+	result, err := tool.execute(ctx, &ToolDeps{logManager: fake}, map[string]any{"log_id": "req-root"})
+	require.NoError(t, err)
+	nodes := result.(map[string]any)["nodes"].([]traceNode)
+	require.Len(t, nodes, 2)
+	hop := nodes[1]
+	require.Equal(t, "req-fallback-1", hop.ID)
+	require.NotNil(t, hop.Error, "the hop's persisted error")
+	require.Equal(t, "overloaded_error", hop.Error.Type)
+	require.Len(t, hop.Attempts, 1)
+	require.Equal(t, "overloaded", hop.Attempts[0].FailReason)
+	require.Len(t, hop.RoutingEngineLogs, 1)
+	require.Equal(t, "caller", childCtx.Value(ctxKey{}), "the child is read through the caller's scoped context")
+}
+
+// BenchmarkWarpGetRequestTrace measures a trace of the longest chain it reads, which
+// now loads every hop in full.
+func BenchmarkWarpGetRequestTrace(b *testing.B) {
+	root := &logstore.Log{ID: "root", Status: "error"}
+	hops := make([]logstore.Log, 0, MaxTraceChainLength)
+	byID := map[string]*logstore.Log{"root": root}
+	for index := range MaxTraceChainLength {
+		id := fmt.Sprintf("hop-%d", index)
+		hops = append(hops, logstore.Log{ID: id, Status: "error", FallbackIndex: index + 1, ParentRequestID: new("root")})
+		byID[id] = &hops[index]
+	}
+	fake := &fakeLogReader{
+		getLogFunc:   func(_ context.Context, id string) (*logstore.Log, error) { return byID[id], nil },
+		searchResult: &logstore.SearchResult{Logs: hops, Pagination: logstore.PaginationOptions{TotalCount: int64(len(hops))}},
+	}
+	tool, ok := toolByName(buildTools(), "get_request_trace")
+	if !ok {
+		b.Fatal("no get_request_trace tool")
+	}
+	deps := &ToolDeps{logManager: fake}
+	args := map[string]any{"log_id": "root"}
+	ctx := context.Background()
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := tool.execute(ctx, deps, args); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

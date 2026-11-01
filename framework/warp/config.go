@@ -3,6 +3,7 @@ package warp
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -197,10 +198,17 @@ func (s *Service) ConfigView(ctx context.Context) (ConfigView, error) {
 // SaveConfig validates and stores a configuration, returning the view a caller
 // would get from ConfigView afterwards. Validation failures wrap
 // ErrInvalidConfig; anything else is a store error.
+//
+// Saves in one process run one at a time, from the first read to the last write:
+// each one decides what to retire and whether to create a namespace from the row
+// it read, so two at once could decide from the same row. That says nothing about
+// another node, which is why a failed save never deletes the namespace it made.
 func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigView, error) {
 	if s.store == nil {
 		return ConfigView{}, ErrUnavailable
 	}
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	// Stored values first, then validation. Validation expands omitted fields
 	// into defaults, so anything merged afterwards is merging into values that
 	// are no longer distinguishable from a deliberate choice.
@@ -220,7 +228,7 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 	// save was then rejected, and surfaced whatever the store said about a
 	// dimension mismatch in place of the ErrInvalidConfig the request earned.
 	// Set only when this save is the one that created the namespace, so a failing
-	// write can undo its own work without touching anybody else's.
+	// write can name what it left behind.
 	createdNamespace := ""
 	retired := retiredNamespaces(previous)
 	// Compared as effective namespaces, not raw strings. A legacy row storing ""
@@ -232,7 +240,27 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		normalizedNamespace(previous.LogVectorStoreNamespace) == normalizedNamespace(input.LogVectorStoreNamespace) {
 		return ConfigView{}, fmt.Errorf("%w: log_vector_store_namespace must change when the embedding provider, model or dimension changes", ErrInvalidConfig)
 	}
-	if embeddingSpaceChanged(previous, input) && s.backfillJobs != nil {
+	// A save that clears the stored space's provider, model or dimension leaves no
+	// record of what the namespace holds, so a later save naming any space would
+	// not see a change and could index a different model into it. Clearing the
+	// space therefore moves to a new namespace, as changing it does.
+	if embeddingSpaceCleared(previous, input) &&
+		normalizedNamespace(previous.LogVectorStoreNamespace) == normalizedNamespace(input.LogVectorStoreNamespace) {
+		return ConfigView{}, fmt.Errorf("%w: log_vector_store_namespace must change when the embedding provider, model or dimension is cleared", ErrInvalidConfig)
+	}
+	// A retired namespace keeps the vectors of the space it was retired from,
+	// and nothing records which space that was. The store accepts any reuse at
+	// the same dimension, so moving back onto one would search, and then index
+	// into, a mix of two embedding spaces. A new namespace is always safe.
+	if target := normalizedNamespace(input.LogVectorStoreNamespace); previous != nil &&
+		target != normalizedNamespace(previous.LogVectorStoreNamespace) &&
+		slices.ContainsFunc(retired, func(name string) bool { return normalizedNamespace(name) == target }) {
+		return ConfigView{}, fmt.Errorf("%w: log_vector_store_namespace %q was retired and may still hold vectors from an earlier embedding configuration; choose a namespace that has not been used before", ErrInvalidConfig, target)
+	}
+	// Clearing the space is a change a running backfill's frozen signature sees, so
+	// it waits for the job and retires the namespace it leaves, as changing it does.
+	spaceReplaced := embeddingSpaceChanged(previous, input) || embeddingSpaceCleared(previous, input)
+	if spaceReplaced && s.backfillJobs != nil {
 		active, activeErr := s.backfillJobs.GetInFlightSidekiqJobByKind(ctx, BackfillJobKind)
 		if activeErr != nil {
 			return ConfigView{}, activeErr
@@ -245,17 +273,16 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 	// namespace, not "no namespace", so the raw check skipped retiring the very
 	// namespace a legacy row had been indexed under - and retiring "" would
 	// have named nothing anyway.
-	if embeddingSpaceChanged(previous, input) {
+	if spaceReplaced {
 		retired = appendUnique(retired, normalizedNamespace(previous.LogVectorStoreNamespace))
 	}
 	if input.Enabled {
 		// Still ahead of the write: a namespace that cannot be created is a save
 		// that cannot work, and the config must not claim otherwise.
 		//
-		// createdNamespace records whether this call is the one that made it, so a
-		// failing write can undo only its own work. A namespace that already
-		// existed may hold vectors a previous configuration still indexes and is
-		// never touched.
+		// createdNamespace records whether this call is the one that made it. A
+		// namespace that already existed may hold vectors a previous configuration
+		// still indexes.
 		created, err := ensureWarpNamespace(ctx, s.vectorStore, input.LogVectorStoreNamespace, input.EmbeddingDimension)
 		if err != nil {
 			return ConfigView{}, fmt.Errorf("ensure warp vector namespace: %w", err)
@@ -299,19 +326,13 @@ func (s *Service) SaveConfig(ctx context.Context, input *ConfigInput) (ConfigVie
 		row.SystemPromptSuffix = &input.SystemPromptSuffix
 	}
 	if err := s.store.UpsertWarpConfig(ctx, row); err != nil {
-		// Compensate: the namespace this save created is empty and no stored
-		// config points at it, so leaving it behind is a leak that the next save
-		// under a different name never reclaims. Only the one created here - a
-		// pre-existing namespace belongs to whatever configuration is still live.
-		//
-		// A concurrent save that created the same namespace between our check and
-		// our create would lose it here. That window is narrower than the
-		// unconditional leak it replaces, and both saves are the same operator
-		// action on one settings page.
-		if createdNamespace != "" && s.vectorStore != nil {
-			if cleanupErr := s.vectorStore.DeleteNamespace(ctx, createdNamespace); cleanupErr != nil {
-				s.warnf("failed to remove warp vector namespace %s after a failed config save: %v", createdNamespace, cleanupErr)
-			}
+		// The namespace this save created is left in place. saveMu serializes saves
+		// in this process, but a save on another node can store a config pointing at
+		// it at any moment, including between a read-back and a delete, and deleting
+		// a live index loses every vector in it. An empty namespace left behind is the
+		// cheaper mistake.
+		if createdNamespace != "" {
+			s.warnf("warp vector namespace %s was created for a config save that failed; it is kept, since another node may already use it", createdNamespace)
 		}
 		return ConfigView{}, err
 	}
@@ -619,6 +640,15 @@ func embeddingSpaceChanged(row *tables.TableWarpConfig, input *ConfigInput) bool
 		return true
 	}
 	return row.EmbeddingProvider != string(input.EmbeddingProvider) || row.EmbeddingModel != input.EmbeddingModel || row.EmbeddingDimension != input.EmbeddingDimension
+}
+
+// embeddingSpaceCleared reports whether a write leaves out part of a complete
+// stored embedding space (provider, model or dimension), erasing its identity.
+func embeddingSpaceCleared(row *tables.TableWarpConfig, input *ConfigInput) bool {
+	if row == nil || row.EmbeddingProvider == "" || row.EmbeddingModel == "" || row.EmbeddingDimension <= 0 || input == nil {
+		return false
+	}
+	return input.EmbeddingProvider == "" || input.EmbeddingModel == "" || input.EmbeddingDimension <= 0
 }
 
 // normalizedNamespace matches what EffectiveLogVectorStoreNamespace resolves to,

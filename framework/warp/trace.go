@@ -2,6 +2,7 @@ package warp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -165,7 +166,12 @@ func getRequestTraceTool() Tool {
 			// A row's own id can equal its parent_request_id on a corrupted or
 			// deliberately self-referencing row; treating that as "has a parent"
 			// would recurse into fetching itself as its own root.
-			if entry.ParentRequestID != nil && *entry.ParentRequestID != "" && *entry.ParentRequestID != entry.ID {
+			//
+			// Only a fallback hop's parent is its chain's root. A primary request
+			// carries the caller's session id there instead (session baggage), and
+			// following that replaced the request with a lookup of a string that is
+			// usually no log at all - or, on a collision, an unrelated request.
+			if entry.FallbackIndex > 0 && entry.ParentRequestID != nil && *entry.ParentRequestID != "" && *entry.ParentRequestID != entry.ID {
 				rootID = *entry.ParentRequestID
 				root, err = deps.logManager.GetLog(ctx, rootID)
 				if err != nil {
@@ -186,7 +192,20 @@ func getRequestTraceTool() Tool {
 			nodes := make([]traceNode, 0, 1+len(children.Logs))
 			nodes = append(nodes, traceFromLog(root))
 			for i := range children.Logs {
-				nodes = append(nodes, traceFromLog(&children.Logs[i]))
+				// Search returns list rows, which carry none of a row's error
+				// details, attempts, plugin or routing logs, or overhead - the
+				// diagnostics a trace is for. It only finds the hops; each is
+				// then read in full, through the caller's context like the root.
+				child := &children.Logs[i]
+				full, err := deps.logManager.GetLog(ctx, child.ID)
+				// A hop gone since the search (retention) keeps its list row.
+				if err != nil && !errors.Is(err, logstore.ErrNotFound) {
+					return nil, fmt.Errorf("could not load fallback request %s: %w", child.ID, err)
+				}
+				if full != nil && full.ID == child.ID {
+					child = full
+				}
+				nodes = append(nodes, traceFromLog(child))
 			}
 			sort.Slice(nodes, func(i, j int) bool { return nodes[i].FallbackIndex < nodes[j].FallbackIndex })
 

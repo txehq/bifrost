@@ -68,7 +68,8 @@ type Service struct {
 	// after construction. Every reader takes it, not just the ones near SetLogReader:
 	// an unguarded read elsewhere is the same race, just harder to find. A logging plugin enabled at runtime rebinds them while
 	// requests are already being served.
-	mu sync.RWMutex
+	mu     sync.RWMutex
+	saveMu sync.Mutex // serializes SaveConfig; see its doc comment
 	// closed records that Shutdown ran, so a later rebind cannot revive a
 	// service whose lifecycle is over.
 	closed bool
@@ -204,6 +205,7 @@ func NewService(store configstore.ConfigStore, opts ...Option) *Service {
 			// search is the only thing that goes missing.
 			if hydrator, ok := service.logs.(SemanticHydrator); ok {
 				service.semantic = NewSemanticSearcher(service.store, service.vectorStore, service.embed, hydrator)
+				service.semantic.price = service.embeddingPrice()
 			}
 		}
 	}
@@ -323,7 +325,23 @@ func (s *Service) buildSemanticSearcher() *SemanticSearcher {
 	if !ok {
 		return nil
 	}
-	return NewSemanticSearcher(s.store, s.vectorStore, s.embed, hydrator)
+	searcher := NewSemanticSearcher(s.store, s.vectorStore, s.embed, hydrator)
+	searcher.price = s.embeddingPrice()
+	return searcher
+}
+
+// embeddingPrice prices one embedding call on the configured embedding model's
+// rate card, or is nil without a model catalog. A nil cost means no pricing row
+// resolved.
+func (s *Service) embeddingPrice() func(*schemas.BifrostLLMUsage, *schemas.WarpConfig) *schemas.BifrostCost {
+	if s.catalog == nil {
+		return nil
+	}
+	catalog := s.catalog
+	return func(usage *schemas.BifrostLLMUsage, config *schemas.WarpConfig) *schemas.BifrostCost {
+		provider, model := schemas.ParseModelString(config.EmbeddingModel, config.EmbeddingProvider)
+		return catalog.CalculateCostBreakdownForUsage(usage, provider, model, schemas.EmbeddingRequest, nil)
+	}
 }
 
 // researchDeps returns the reader and the searcher as one consistent pair.
