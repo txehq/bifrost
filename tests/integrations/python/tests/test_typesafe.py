@@ -698,6 +698,10 @@ def jev_reference():
     return answers
 
 
+# _MATRIX_ROWS lives in one process and test_zzz_report judges it, so under pytest-xdist the whole
+# class stays on one worker (pyproject sets --dist=loadgroup); split across workers the report
+# would count only its own worker's combinations against _min_passing.
+@pytest.mark.xdist_group("decision_emulation_matrix")
 class TestDecisionEmulationMatrix:
     @pytest.mark.parametrize("provider,model", _MATRIX_PAIRS, ids=[f"{p}/{m}" for p, m in _MATRIX_PAIRS])
     def test_provider_model_matches_jev(self, provider, model, jev_reference):

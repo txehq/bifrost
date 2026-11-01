@@ -90,6 +90,7 @@ python_functions = "test_*"
 
 # Output formatting
 addopts = [
+    "--dist=loadgroup",  # honor xdist_group; ungrouped tests still spread across workers
     "-v",
     "-s",  # Show print statements (no output capture)
     "--tb=short",
