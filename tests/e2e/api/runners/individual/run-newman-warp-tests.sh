@@ -59,6 +59,9 @@ WARP_DB="${WARP_DB:-bifrost_warp_e2e}"
 # never forwards a caller's key unless allow_direct_keys is on and the request
 # sends x-bf-direct-key, which this server does not.
 WARP_UPSTREAM_BIFROST="${WARP_UPSTREAM_BIFROST%/}"
+# The fresh gateway has no admin account, so the OSS setup lock refuses every /api call - all of
+# Warp's - without this token. It goes into the server's config.json and onto every request.
+SETUP_TOKEN="${BIFROST_E2E_SETUP_TOKEN:-${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}}"
 REPORTERS="cli"
 VERBOSE=""
 BAIL=""
@@ -95,6 +98,7 @@ while [[ $# -gt 0 ]]; do
             echo "  WARP_DB                              database to drop and recreate (default bifrost_warp_e2e)"
             echo "  WEAVIATE_HOST                        default localhost:9000"
             echo "  WEAVIATE_GRPC_HOST                   optional, e.g. localhost:50051 (default: HTTP only)"
+            echo "  BIFROST_E2E_SETUP_TOKEN              setup token the fresh server is configured with and sent (default: bifrost-e2e-setup-token)"
             exit 0 ;;
         *) echo -e "${RED}Unknown option: $1${NC}"; exit 1 ;;
     esac
@@ -189,6 +193,7 @@ EOF
     cat > "$dir/config.json" <<EOF
 {
   "\$schema": "https://www.getbifrost.ai/schema",
+  "setup_token": "$SETUP_TOKEN",
   "client": {
     "drop_excess_requests": false,
     "initial_pool_size": 50,
@@ -240,8 +245,12 @@ echo -e "${YELLOW}Seeding logs...${NC}"
     echo -e "${RED}Error: seeding failed${NC}"; cat "$WORK_DIR/seed.log"; exit 1; }
 grep -E "^(inserted|refreshed|incident window)" "$WORK_DIR/seed.log" || true
 
-cmd=(newman run "$COLLECTION"
+SETUP_COLLECTION="$WORK_DIR/$(basename "$COLLECTION" .postman_collection.json)-setup-token.postman_collection.json"
+node "$SCRIPT_DIR/../add-setup-token-header.mjs" "$COLLECTION" "$SETUP_COLLECTION"
+
+cmd=(newman run "$SETUP_COLLECTION"
     --env-var "base_url=http://localhost:$PORT"
+    --env-var "setup_token=$SETUP_TOKEN"
     --env-var "warp_model=$WARP_MODEL"
     --env-var "warp_embedding_model=$WARP_EMBEDDING_MODEL"
     --env-var "warp_namespace=$WARP_NAMESPACE"

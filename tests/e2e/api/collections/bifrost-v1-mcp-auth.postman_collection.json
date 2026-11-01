@@ -1410,8 +1410,19 @@
                   "if (mode === 'headers') { pm.test('session consent gate runs in both/oauth modes', function () { pm.expect(true).to.be.true; }); return; }",
                   "// The JWT from the virtual-key flow carries a real credential, so enforcing",
                   "// auth on inference leaves it acceptable (within its access_token_ttl).",
-                  "pm.test('virtual-key-identity JWT connects when auth is enforced (not 401)', function () {",
-                  "  pm.expect(pm.response.code, pm.response.text()).to.not.equal(401);",
+                  "// Connecting means initialize succeeds: a 403 or 500 is as much a failure as a 401.",
+                  "pm.test('virtual-key-identity JWT connects when auth is enforced (initialize succeeds)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.be.within(200, 299);",
+                  "  var text = pm.response.text(), msg = null;",
+                  "  try { msg = JSON.parse(text); } catch (e) {",
+                  "    // A streamable-HTTP server may answer as SSE: the JSON-RPC message is the data line.",
+                  "    var data = text.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); });",
+                  "    try { msg = JSON.parse(data[data.length - 1]); } catch (e2) {}",
+                  "  }",
+                  "  pm.expect(msg, 'a JSON-RPC message: ' + text).to.be.an('object');",
+                  "  pm.expect(msg.error, 'JSON-RPC error: ' + text).to.equal(undefined);",
+                  "  pm.expect(msg.result, 'JSON-RPC result: ' + text).to.be.an('object');",
+                  "  pm.expect(msg.result.protocolVersion, 'initialize result protocolVersion: ' + text).to.be.a('string');",
                   "});"
                 ]
               }

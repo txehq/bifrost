@@ -9,7 +9,7 @@ import { buildMidConvSystemCacheParityFolder } from "./lib/midconv-system-cache-
 import { buildCrossProviderCacheMatrixFolder } from "./lib/crossprovider-cache-matrix.mjs";
 import { buildDirectCacheParityFolder } from "./lib/direct-cache-parity.mjs";
 import { injectChainedVarGuards } from "./lib/chained-vars.mjs";
-import { routeScriptCallsThroughSetupToken } from "./lib/setup-token.mjs";
+import { routeScriptCallsThroughSetupToken, setupTokenRowPrerequest } from "./lib/setup-token.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -384,8 +384,8 @@ const guardedCount = injectChainedVarGuards(collection);
 // ...) run against the python profile, which sets setup_token and has no admin account, so
 // every row carries the header. The value defaults to that profile's token; override it
 // with `--env-var setupToken=...`. Inference routes ignore the header, and so does /api once
-// dashboard auth is enabled. Lockout rows remove it in their own prerequest, which runs
-// after this collection-level one.
+// dashboard auth is enabled. Rows aimed anywhere but {{baseUrl}} never get it. Lockout rows
+// remove it in their own prerequest, which runs after this collection-level one.
 const SETUP_TOKEN_VAR = "setupToken";
 collection.variable = Array.isArray(collection.variable) ? collection.variable : [];
 if (!collection.variable.some((v) => v.key === SETUP_TOKEN_VAR)) {
@@ -396,12 +396,7 @@ collection.event.unshift({
   listen: "prerequest",
   script: {
     type: "text/javascript",
-    exec: [
-      `var __setupToken = pm.variables.get('${SETUP_TOKEN_VAR}');`,
-      "if (__setupToken) {",
-      "  pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: __setupToken });",
-      "}",
-    ],
+    exec: setupTokenRowPrerequest(SETUP_TOKEN_VAR),
   },
 });
 

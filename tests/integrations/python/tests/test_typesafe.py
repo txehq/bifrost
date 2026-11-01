@@ -527,6 +527,19 @@ _AGREEMENT_FAIL_THRESHOLD = _MATRIX.get("_agreement_fail_threshold", 0.7)
 # non-availability error (Perplexity returns a bare "invalid request" when the
 # 30-question schema is too large) do we retry one question at a time and merge.
 _SPLIT_PROVIDERS = set(_MATRIX.get("_split_question_providers", []))
+
+# How a capability-limited provider rejects a decision schema it cannot take: Perplexity's sonar
+# answers choice and score questions with a 400 "invalid request". Only that shape is a capability
+# SKIP; a 500 (emulation returned no decision), a 400 for any other reason, or any other status from
+# the same provider is a defect and FAILS, exactly as it would for every other provider.
+_CAPABILITY_REJECTION_MARKERS = ("invalid request", "invalid_request")
+
+
+def _is_capability_rejection(provider, status_code, text):
+    if provider not in _SPLIT_PROVIDERS or status_code != 400:
+        return False
+    low = text.lower()
+    return any(marker in low for marker in _CAPABILITY_REJECTION_MARKERS)
 _JEV_MODEL = "typesafe/jev-1.13.0"
 
 
@@ -698,9 +711,9 @@ class TestDecisionEmulationMatrix:
                 _MATRIX_ROWS.append({"model_id": model_id, "status": "SKIP", "agree": 0, "total": total, "latency_ms": latency_ms, "tokens": None, "cost": "-", "detail": detail})
                 pytest.skip(f"{model_id}: {detail}")
             # Capability-limited providers (e.g. Perplexity's sonar rejects choice/score
-            # decision schemas): the split was attempted and could not complete the set,
+            # decision schemas): the split was attempted and the provider rejected the schema,
             # so skip rather than fail - the identical schema works on every other provider.
-            if provider in _SPLIT_PROVIDERS:
+            if _is_capability_rejection(provider, r["status"], r["text"]):
                 _MATRIX_ROWS.append({"model_id": model_id, "status": "SKIP", "agree": 0, "total": total, "latency_ms": latency_ms, "tokens": None, "cost": "-", "detail": "capability-limited - " + detail})
                 pytest.skip(f"{model_id}: capability-limited - {detail}")
             # A malformed request we built (400) or emulation returning no decision (500): defect.

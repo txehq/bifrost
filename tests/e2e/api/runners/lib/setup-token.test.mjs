@@ -1,7 +1,7 @@
 // Unit tests for routing in-script calls through the setup token. Run directly:
 // `node setup-token.test.mjs`. Same shape as chained-vars.test.mjs next door.
 import assert from "node:assert";
-import { SEND_HELPER, setupTokenHelper, routeScriptCallsThroughSetupToken } from "./setup-token.mjs";
+import { SEND_HELPER, setupTokenHelper, setupTokenRowPrerequest, routeScriptCallsThroughSetupToken } from "./setup-token.mjs";
 
 let passed = 0;
 function test(name, fn) {
@@ -75,6 +75,32 @@ test("scripts that make no call, or manage the token themselves, are left alone,
   const once = JSON.stringify(collection);
   assert.equal(routeScriptCallsThroughSetupToken(collection, "setupToken"), 0);
   assert.equal(JSON.stringify(collection), once);
+});
+
+// Runs the row prerequest against a stub pm whose request has the given (unresolved) URL and
+// returns the headers it set.
+function rowHeaders(rawUrl, vars = { setupToken: "tok", baseUrl: BASE }) {
+  const headers = {};
+  const pm = {
+    variables: { get: (k) => vars[k], replaceIn: (s) => String(s).replace(/\{\{(\w+)\}\}/g, (m, k) => (k in vars ? vars[k] : m)) },
+    request: { url: { toString: () => rawUrl }, headers: { upsert: (h) => { headers[h.key] = h.value; } } },
+  };
+  new Function("pm", setupTokenRowPrerequest("setupToken").join("\n"))(pm);
+  return headers;
+}
+
+test("a row's own request gets the token only when it targets this gateway", () => {
+  assert.deepEqual(rowHeaders("{{baseUrl}}/api/providers"), { "X-Bifrost-Setup-Token": "tok" });
+  assert.deepEqual(rowHeaders(`${BASE}/v1/chat/completions`), { "X-Bifrost-Setup-Token": "tok" });
+  assert.deepEqual(rowHeaders("{{baseUrl}}/api/providers", { setupToken: "tok", baseUrl: `${BASE}/` }), { "X-Bifrost-Setup-Token": "tok" });
+  // direct-cache-parity legs call providers directly; the operator's credential must stay home.
+  assert.deepEqual(rowHeaders("https://api.openai.com/v1/chat/completions"), {});
+  assert.deepEqual(rowHeaders("https://api.anthropic.com/v1/messages"), {});
+  assert.deepEqual(rowHeaders("https://generativelanguage.googleapis.com/v1beta/models/m:generateContent"), {});
+  assert.deepEqual(rowHeaders(`${BASE}.evil.example/api/providers`), {});
+  assert.deepEqual(rowHeaders("http://127.0.0.1:8791/__reset"), {});
+  assert.deepEqual(rowHeaders("{{baseUrl}}/api/providers", { setupToken: "tok" }), {});
+  assert.deepEqual(rowHeaders("{{baseUrl}}/api/providers", { baseUrl: BASE }), {});
 });
 
 console.log(`${passed} passed`);

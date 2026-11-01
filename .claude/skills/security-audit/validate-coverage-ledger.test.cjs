@@ -490,6 +490,35 @@ test("rejects reassignment owner reuse and evidence mixing", () => {
   assert(errorsFor([unordered]).some((error) => error.includes("strictly increasing")));
 });
 
+test("archives local checks that share one artifact within an attempt", () => {
+  const shared = [
+    localCheck("hunter-1"),
+    localCheck("hunter-1", { invariant: "The route checks object ownership on delete.", result: "The same fixture run covered delete." }),
+  ];
+  // Valid as the current attempt, so archiving the same evidence must stay valid too.
+  const current = unit({ status: "in_progress", local_checks: shared });
+  assert.deepEqual(errorsFor([current]).filter((error) => error.includes("artifact")), []);
+  const archived = unit({
+    attempts: [archivedAttempt({ local_checks: shared })],
+    wave: 2,
+    status: "in_progress",
+    agent_id: "hunter-2",
+  });
+  assert.deepEqual(errorsFor([archived]), []);
+
+  // Reuse across attempts is still rejected.
+  const reused = unit({
+    attempts: [
+      archivedAttempt({ local_checks: shared }),
+      archivedAttempt({ wave: 2, agent_id: "hunter-2", local_checks: [localCheck("hunter-2", { artifact: shared[0].artifact })] }),
+    ],
+    wave: 3,
+    status: "in_progress",
+    agent_id: "hunter-3",
+  });
+  assert(errorsFor([reused]).some((error) => error.includes("artifact from an earlier attempt cannot be reused")));
+});
+
 test("rejects unsafe paths and malformed fingerprints", () => {
   for (const value of [
     "/etc/passwd",

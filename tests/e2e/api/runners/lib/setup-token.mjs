@@ -41,6 +41,22 @@ export function setupTokenHelper(tokenVar) {
   ];
 }
 
+// The collection-level prerequest that adds the token to each row's own request. It adds it only
+// when the row targets this gateway ({{baseUrl}}), so a row aimed at a provider directly (the
+// direct-cache-parity legs call OpenAI, Anthropic and Google) never carries the operator's
+// credential off the gateway. The URL is resolved first because variables are still unexpanded
+// when a prerequest runs.
+export function setupTokenRowPrerequest(tokenVar) {
+  return [
+    `var __setupToken = pm.variables.get('${tokenVar}'), __base = String(pm.variables.get('baseUrl') || '').replace(/\\/+$/, '');`,
+    "var __url = String(pm.variables.replaceIn(pm.request.url.toString()));",
+    "var __ours = __base !== '' && __url.indexOf(__base) === 0 && (__url.length === __base.length || '/?#'.indexOf(__url.charAt(__base.length)) !== -1);",
+    "if (__setupToken && __ours) {",
+    `  pm.request.headers.upsert({ key: '${TOKEN_HEADER}', value: __setupToken });`,
+    "}",
+  ];
+}
+
 // Rewrites every collection, folder and request script that calls pm.sendRequest to go through
 // the helper, and returns how many scripts it rewrote. Running it again changes nothing.
 export function routeScriptCallsThroughSetupToken(collection, tokenVar) {

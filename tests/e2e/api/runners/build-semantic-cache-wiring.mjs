@@ -578,8 +578,10 @@ function folderD() {
     write("D22 chat completions write", "chat", chat("D22: reply with one word: ready."), [H.key("d22")], { save: "d22" }),
     hit("D22 chat completions hits", "chat", chat("D22: reply with one word: ready."), [H.key("d22")], { same: "d22" }),
     miss("D22 the same text on /v1/responses misses", "responses", responses("D22: reply with one word: ready."), [H.key("d22")], { distinct: ["d22"] }),
-    infer("D23 unknown model: A is an error", "chat", chat("D23: reply.", { model: "openai/gpt-scw-does-not-exist" }), [H.key("d23")], { status: "4xx", outcome: "none" }),
-    infer("D23 unknown model: B is still an error", "chat", chat("D23: reply.", { model: "openai/gpt-scw-does-not-exist" }), [H.key("d23")], { status: "4xx", outcome: "none" }, { wait: 2 }),
+    // OpenAI's 404 for the model, not just any 4xx: an auth failure or a rate limit never reached
+    // the unknown-model path these two exist to see.
+    infer("D23 unknown model: A is an error", "chat", chat("D23: reply.", { model: "openai/gpt-scw-does-not-exist" }), [H.key("d23")], { status: 404, message: "gpt-scw-does-not-exist", outcome: "none" }),
+    infer("D23 unknown model: B is still an error", "chat", chat("D23: reply.", { model: "openai/gpt-scw-does-not-exist" }), [H.key("d23")], { status: 404, message: "gpt-scw-does-not-exist", outcome: "none" }, { wait: 2 }),
     infer("D24 input_tokens is not cached", "inputTokens", { model: MODEL, input: "D24: hello there" }, [H.key("d24")], { outcome: "none" }),
     putPlugin("D cleanup: direct baseline", DIRECT()),
   ]);

@@ -127,6 +127,15 @@ export class ConfigSettingsPage extends BasePage {
     await this.page.getByTestId(`client-settings-extra-fields-placement-option-${value}`).click()
   }
 
+  // A save is confirmed by its success toast or, when the toast is missed, by the save button
+  // going back to disabled once nothing is pending.
+  private async waitForSaveConfirmation(saveButton: Locator): Promise<void> {
+    await Promise.race([
+      this.getToast('success').waitFor({ state: 'visible', timeout: 10000 }),
+      expect.poll(async () => await saveButton.isDisabled().catch(() => false), { timeout: 10000 }).toBe(true),
+    ])
+  }
+
   async saveSettings(): Promise<void> {
     await this.saveBtn.click()
     await this.waitForSaveConfirmation(this.saveBtn)

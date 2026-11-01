@@ -246,6 +246,11 @@ export function createWarpLib(pm) {
       } catch (err) {
         failures.push("response is not JSON: " + pm.response.text().slice(0, 300));
       }
+      // null, false, 0, "" or an array carries no answer, and would skip every check below.
+      if (!failures.length && (body === null || typeof body !== "object" || Array.isArray(body))) {
+        failures.push("response is not a JSON object: " + pm.response.text().slice(0, 300));
+        body = null;
+      }
     }
 
     if (body && body.question && (c.expect || {}).question !== "required" && (c.expect || {}).question !== "forbidden" && state.asked < MAX_QUESTIONS) {
