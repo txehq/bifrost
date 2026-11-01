@@ -362,7 +362,7 @@ if grep -q '^env_key' "$CODEX_HOME/config.toml" && [ -z "$OPENAI_API_KEY" ]; the
   echo "Missing environment variable: OPENAI_API_KEY" >&2
   exit 7
 fi
-mkdir -p "$CODEX_HOME/sessions"
+[ -d "$CODEX_HOME/sessions" ] || mkdir "$CODEX_HOME/sessions"
 prior=0
 [ -f "$CODEX_HOME/sessions/rollout.jsonl" ] && prior=$(wc -l <"$CODEX_HOME/sessions/rollout.jsonl")
 echo '{"turn":1}' >>"$CODEX_HOME/sessions/rollout.jsonl"
@@ -444,26 +444,29 @@ func TestWireLauncherHistorySurvivesLaunches(t *testing.T) {
 	first := mustLaunch(t, home, stub, g, virtualKey)
 	second := mustLaunch(t, home, stub, g, virtualKey)
 	third := mustLaunch(t, home, stub, g, virtualKey)
-	if first.codexHome != second.codexHome || second.codexHome != third.codexHome {
-		t.Fatalf("launches used different homes: %q %q %q", first.codexHome, second.codexHome, third.codexHome)
-	}
 	if first.prior != 0 || second.prior != 1 || third.prior != 2 {
 		t.Fatalf("sessions seen by each launch = %d, %d, %d; want 0, 1, 2", first.prior, second.prior, third.prior)
 	}
+	if _, err := os.Stat(first.codexHome); !os.IsNotExist(err) {
+		t.Fatalf("the launch's home outlived it: %v", err)
+	}
 }
 
-func TestWireLauncherHomeIsPrivate(t *testing.T) {
+func TestWireLauncherStoreIsPrivate(t *testing.T) {
 	g, home, stub := startGateway(t, false, true), t.TempDir(), installStub(t)
-	launched := mustLaunch(t, home, stub, g, virtualKey)
-	if !strings.HasPrefix(launched.codexHome, filepath.Join(home, ".bifrost", "codex-home")+"/") {
-		t.Fatalf("CODEX_HOME = %q, want it inside this user's home", launched.codexHome)
+	mustLaunch(t, home, stub, g, virtualKey)
+	stores, err := filepath.Glob(filepath.Join(home, ".bifrost", "codex-home", "*"))
+	if err != nil || len(stores) != 1 {
+		t.Fatalf("session stores = %v, %v; want one", stores, err)
 	}
-	info, err := os.Stat(launched.codexHome)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != 0o700 {
-		t.Fatalf("launcher home mode = %o, want 700", got)
+	for _, path := range []string{stores[0], filepath.Join(stores[0], "sessions")} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o700 {
+			t.Fatalf("%s mode = %o, want 700", path, got)
+		}
 	}
 }
 
@@ -473,7 +476,7 @@ func TestWireLauncherKeepsCredentialsInTheEnvironment(t *testing.T) {
 	if err := os.MkdirAll(userCodex, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	userConfig := "model_reasoning_effort = \"high\"\n"
+	userConfig := "[mcp_servers.local.env]\nTOKEN = \"sk-config-secret-wire\"\n"
 	userAuth := `{"auth_mode":"apikey","OPENAI_API_KEY":"sk-user-own-wire"}`
 	if err := os.WriteFile(filepath.Join(userCodex, "config.toml"), []byte(userConfig), 0o600); err != nil {
 		t.Fatal(err)
@@ -490,6 +493,9 @@ func TestWireLauncherKeepsCredentialsInTheEnvironment(t *testing.T) {
 	}
 	if files := filesContaining(t, home, "sk-user-own-wire"); len(files) != 1 {
 		t.Fatalf("the user's own key was copied: %v", files)
+	}
+	if files := filesContaining(t, home, "sk-config-secret-wire"); len(files) != 1 {
+		t.Fatalf("a copy of the user's config outlived the launch: %v", files)
 	}
 	for name, want := range map[string]string{"config.toml": userConfig, "auth.json": userAuth} {
 		got, err := os.ReadFile(filepath.Join(userCodex, name))
@@ -510,20 +516,12 @@ func TestWireLauncherIsolatesUsers(t *testing.T) {
 
 func TestWireLauncherEndpointChange(t *testing.T) {
 	first, second, home, stub := startGateway(t, false, true), startGateway(t, false, true), t.TempDir(), installStub(t)
-	onFirst := mustLaunch(t, home, stub, first, virtualKey)
-	onSecond := mustLaunch(t, home, stub, second, virtualKey)
-	if onSecond.prior != 0 {
+	mustLaunch(t, home, stub, first, virtualKey)
+	if onSecond := mustLaunch(t, home, stub, second, virtualKey); onSecond.prior != 0 {
 		t.Fatalf("the second gateway's launch saw %d sessions of the first", onSecond.prior)
 	}
-	if back := mustLaunch(t, home, stub, first, virtualKey); back.prior != 1 || back.codexHome != onFirst.codexHome {
-		t.Fatalf("back on the first gateway: %+v, want its one earlier session in %q", back, onFirst.codexHome)
-	}
-	config, err := os.ReadFile(filepath.Join(onSecond.codexHome, "config.toml"))
-	if err != nil {
-		t.Fatalf("read the second gateway's config: %v", err)
-	}
-	if !strings.Contains(string(config), second.URL) || strings.Contains(string(config), first.URL) {
-		t.Fatalf("the second launch's config names the wrong endpoint:\n%s", config)
+	if back := mustLaunch(t, home, stub, first, virtualKey); back.prior != 1 {
+		t.Fatalf("back on the first gateway: %+v, want its one earlier session", back)
 	}
 }
 
@@ -562,7 +560,7 @@ func TestWireConfigureSavesAKeyADirectLaunchCanUse(t *testing.T) {
 	if out.exit != 0 {
 		t.Fatalf("configure exit %d\n%s", out.exit, out.all())
 	}
-	if strings.Contains(config, "env_key") || !strings.Contains(config, "requires_openai_auth = true") || !strings.Contains(config, `cli_auth_credentials_store = "file"`) {
+	if strings.Contains(config, "env_key") || !strings.Contains(config, "requires_openai_auth = true") {
 		t.Fatalf("a saved key must be read from auth.json, a direct launch has no environment key:\n%s", config)
 	}
 	if strings.Contains(config, virtualKey) {
@@ -593,55 +591,43 @@ func TestWireConfigureSavesAKeyADirectLaunchCanUse(t *testing.T) {
 	}
 }
 
-// TestWireConfigureKeyringUserIsRestored pins the saved-key store change for someone
-// on keyring storage: the other fields of auth.json survive it, nothing is read out
-// of a keyring, and `unconfigure` puts both files back byte for byte.
-func TestWireConfigureKeyringUserIsRestored(t *testing.T) {
-	g, home, stub := startGateway(t, false, true), t.TempDir(), installStub(t)
-	userCodex := filepath.Join(home, ".codex")
-	if err := os.MkdirAll(userCodex, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	userConfig := `cli_auth_credentials_store = "keyring"` + "\n"
-	userAuth := `{"tokens":{"id_token":"keep-me-wire"}}`
-	configPath, authPath := filepath.Join(userCodex, "config.toml"), filepath.Join(userCodex, "auth.json")
-	if err := os.WriteFile(configPath, []byte(userConfig), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(authPath, []byte(userAuth), 0o600); err != nil {
-		t.Fatal(err)
-	}
+// TestWireConfigureRefusesKeyringStorage pins that a saved key does not override an
+// explicit credential store: the refusal comes before any write, leaves no receipt to
+// undo, and the launcher still works for that user.
+func TestWireConfigureRefusesKeyringStorage(t *testing.T) {
+	for _, store := range []string{"keyring", "auto"} {
+		t.Run(store, func(t *testing.T) {
+			g, home, stub := startGateway(t, false, true), t.TempDir(), installStub(t)
+			userCodex := filepath.Join(home, ".codex")
+			if err := os.MkdirAll(userCodex, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			userConfig := fmt.Sprintf("cli_auth_credentials_store = %q\n", store)
+			userAuth := `{"tokens":{"id_token":"keep-me-wire"}}`
+			configPath, authPath := filepath.Join(userCodex, "config.toml"), filepath.Join(userCodex, "auth.json")
+			if err := os.WriteFile(configPath, []byte(userConfig), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(authPath, []byte(userAuth), 0o600); err != nil {
+				t.Fatal(err)
+			}
 
-	out := runCLI(t, home, map[string]string{"PATH": stub, "BIFROST_VIRTUAL_KEY": virtualKey}, "--base-url", g.URL, "configure", "codex")
-	if out.exit != 0 {
-		t.Fatalf("configure exit %d\n%s", out.exit, out.all())
-	}
-	config, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(config), `cli_auth_credentials_store = "file"`) || strings.Contains(string(config), "keyring") {
-		t.Fatalf("saved key would not be read under keyring storage:\n%s", config)
-	}
-	auth, err := os.ReadFile(authPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(auth), "keep-me-wire") || !strings.Contains(string(auth), virtualKey) {
-		t.Fatalf("auth.json lost a field or the key: %s", auth)
-	}
-	if info, err := os.Stat(authPath); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("auth.json = %v, %v; want mode 600", info, err)
-	}
-
-	out = runCLI(t, home, map[string]string{"PATH": stub}, "--base-url", g.URL, "unconfigure", "codex")
-	if out.exit != 0 {
-		t.Fatalf("unconfigure exit %d\n%s", out.exit, out.all())
-	}
-	for path, want := range map[string]string{configPath: userConfig, authPath: userAuth} {
-		got, err := os.ReadFile(path)
-		if err != nil || string(got) != want {
-			t.Fatalf("%s after unconfigure = %q, %v; want the original", path, got, err)
-		}
+			out := runCLI(t, home, map[string]string{"PATH": stub, "BIFROST_VIRTUAL_KEY": virtualKey}, "--base-url", g.URL, "configure", "codex")
+			if out.exit == 0 || !strings.Contains(out.stderr, "bifrost run codex") {
+				t.Fatalf("configure under %s storage: exit %d, stderr %q; want a refusal naming the launcher", store, out.exit, out.stderr)
+			}
+			if strings.Contains(out.all(), virtualKey) {
+				t.Fatalf("the refusal printed the key:\n%s", out.all())
+			}
+			for path, want := range map[string]string{configPath: userConfig, authPath: userAuth} {
+				if got, err := os.ReadFile(path); err != nil || string(got) != want {
+					t.Fatalf("a refused configure changed %s: %q, %v", path, got, err)
+				}
+			}
+			if receipts, _ := filepath.Glob(filepath.Join(home, ".bifrost", "receipts", "*")); len(receipts) != 0 {
+				t.Fatalf("a refused configure left receipts: %v", receipts)
+			}
+			mustLaunch(t, home, stub, g, virtualKey)
+		})
 	}
 }

@@ -430,36 +430,59 @@ func TestCodexWriteNativeConfigSkipsAuthForDummyKey(t *testing.T) {
 	}
 }
 
-// TestCodexWriteNativeConfigStoresKeyWhereCodexReadsIt pins that a saved key works
-// under a user's keyring setting: Codex reads auth.json only with file storage.
-func TestCodexWriteNativeConfigStoresKeyWhereCodexReadsIt(t *testing.T) {
-	for _, existing := range []string{
-		"",
-		`cli_auth_credentials_store = "keyring"` + "\n",
-		`cli_auth_credentials_store = "auto"` + "\n",
-		`cli_auth_credentials_store = "file"` + "\n",
+// TestCodexWriteNativeConfigRefusesAnotherCredentialStore pins that a saved key never
+// overrides the user's store: Codex reads auth.json only with file storage, and the
+// setting decides what every provider in that home authenticates with. Nothing is
+// written when it refuses.
+func TestCodexWriteNativeConfigRefusesAnotherCredentialStore(t *testing.T) {
+	for _, tc := range []struct {
+		line    string
+		refused bool
+	}{
+		{"", false},
+		{`cli_auth_credentials_store = "file"`, false},
+		{`cli_auth_credentials_store = 'file' # default`, false},
+		{`cli_auth_credentials_store = "keyring"`, true},
+		{`cli_auth_credentials_store = "auto"`, true},
+		{`cli_auth_credentials_store = "ephemeral"`, true},
+		{`"cli_auth_credentials_store" = "keyring"`, true},
+		{"[profiles.work]\n" + `cli_auth_credentials_store = "keyring"`, false},
 	} {
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		if existing != "" {
-			if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+		t.Run(tc.line, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			dir := filepath.Join(home, ".codex")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(existing), 0o600); err != nil {
+			userConfig, userAuth := tc.line+"\n", `{"tokens":{"id_token":"keep-me"}}`
+			if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(userConfig), 0o600); err != nil {
 				t.Fatal(err)
 			}
-		}
-		if err := codexWriteNativeConfig("http://localhost:8080/openai/v1", "sk-bf-test", ""); err != nil {
-			t.Fatal(err)
-		}
-		configured, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		got := string(configured)
-		if !strings.Contains(got, `cli_auth_credentials_store = "file"`) || strings.Contains(got, "keyring") || strings.Contains(got, `"auto"`) {
-			t.Fatalf("saved key would not be read, config:\n%s", got)
-		}
+			if err := os.WriteFile(filepath.Join(dir, "auth.json"), []byte(userAuth), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			err := codexWriteNativeConfig("http://localhost:8080/openai/v1", "sk-bf-test", "")
+			if !tc.refused {
+				if err != nil {
+					t.Fatalf("codexWriteNativeConfig() error = %v", err)
+				}
+				auth, readErr := os.ReadFile(filepath.Join(dir, "auth.json"))
+				if readErr != nil || !strings.Contains(string(auth), "keep-me") || !strings.Contains(string(auth), "sk-bf-test") {
+					t.Fatalf("auth.json = %s, %v; want the key added and its other fields kept", auth, readErr)
+				}
+				assertMode(t, filepath.Join(dir, "auth.json"), 0o600)
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "bifrost run codex") {
+				t.Fatalf("err = %v, want a refusal naming the launcher", err)
+			}
+			for name, want := range map[string]string{"config.toml": userConfig, "auth.json": userAuth} {
+				if got, readErr := os.ReadFile(filepath.Join(dir, name)); readErr != nil || string(got) != want {
+					t.Fatalf("a refused configure changed %s: %q, %v", name, got, readErr)
+				}
+			}
+		})
 	}
 }
 
@@ -513,10 +536,11 @@ func TestCodexWriteNativeConfigChangingToKeylessGatewayDropsStoredAuth(t *testin
 	}
 }
 
-// codexLaunchHome runs codexPreLaunch and returns the CODEX_HOME it selected.
-func codexLaunchHome(t *testing.T, baseURL, apiKey string) string {
+// codexLaunchHome runs codexPreLaunch and returns the CODEX_HOME it selected. The
+// launch ends with the test, or earlier through the returned cleanup.
+func codexLaunchHome(t *testing.T, baseURL, apiKey, model string) (string, func()) {
 	t.Helper()
-	environment, cleanup, err := codexPreLaunch(baseURL, apiKey, "gpt-test")
+	environment, cleanup, err := codexPreLaunch(baseURL, apiKey, model)
 	if err != nil {
 		t.Fatalf("codexPreLaunch() error = %v", err)
 	}
@@ -528,7 +552,7 @@ func codexLaunchHome(t *testing.T, baseURL, apiKey string) string {
 	if codexHome == "" {
 		t.Fatal("codexPreLaunch() set no CODEX_HOME")
 	}
-	return codexHome
+	return codexHome, cleanup
 }
 
 func readCodexConfig(t *testing.T, codexHome string) string {
@@ -540,15 +564,55 @@ func readCodexConfig(t *testing.T, codexHome string) string {
 	return string(configured)
 }
 
-func TestCodexPreLaunchUsesPersistentLauncherHome(t *testing.T) {
+// writeCodexSession records one session line the way a launched Codex does.
+func writeCodexSession(t *testing.T, codexHome string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(codexHome, "sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(filepath.Join(codexHome, "sessions", "rollout.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+	defer file.Close()
+	if _, err := file.WriteString("{\"turn\":1}\n"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func hasCodexSession(codexHome string) bool {
+	_, err := os.Stat(filepath.Join(codexHome, "sessions", "rollout.jsonl"))
+	return err == nil
+}
+
+// codexStoreFiles lists every file kept under the user's Codex session stores.
+func codexStoreFiles(t *testing.T, home string) []string {
+	t.Helper()
+	var files []string
+	err := filepath.WalkDir(filepath.Join(home, ".bifrost", "codex-home"), func(path string, entry os.DirEntry, err error) error {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func TestCodexPreLaunchKeepsSessionsAcrossLaunches(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
 
-	codexHome := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test")
-	if !strings.HasPrefix(codexHome, filepath.Join(home, ".bifrost", "codex-home")+string(filepath.Separator)) {
-		t.Fatalf("CODEX_HOME = %q, want a launcher home under the user's Bifrost directory", codexHome)
-	}
+	codexHome, cleanup := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test", "gpt-test")
 	configured := readCodexConfig(t, codexHome)
 	if !strings.Contains(configured, `model_provider = "bifrost"`) {
 		t.Fatalf("launcher config missing Bifrost provider:\n%s", configured)
@@ -563,60 +627,85 @@ func TestCodexPreLaunchUsesPersistentLauncherHome(t *testing.T) {
 	}
 
 	// A session written by the launched Codex survives its exit, so it can be resumed.
-	history := filepath.Join(codexHome, "sessions", "rollout.jsonl")
-	if err := os.MkdirAll(filepath.Dir(history), 0o700); err != nil {
-		t.Fatal(err)
+	writeCodexSession(t, codexHome)
+	cleanup()
+	if _, err := os.Stat(codexHome); !os.IsNotExist(err) {
+		t.Fatalf("the launch's home outlived it: %v", err)
 	}
-	if err := os.WriteFile(history, []byte(`{"turn":1}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if again := codexLaunchHome(t, "http://localhost:8080/openai/", "sk-bf-test"); again != codexHome {
-		t.Fatalf("second launch used %q, want the same launcher home %q", again, codexHome)
-	}
-	if _, err := os.Stat(history); err != nil {
-		t.Fatalf("launcher session history was lost across launches: %v", err)
+	again, _ := codexLaunchHome(t, "http://localhost:8080/openai/", "sk-bf-test", "gpt-test")
+	if !hasCodexSession(again) {
+		t.Fatal("launcher session history was lost across launches")
 	}
 }
 
-// TestCodexPreLaunchKeepsEachGatewaySeparate pins that no launcher state crosses
-// gateways: a shared config.toml could send one launch's key to the other gateway,
-// and a shared history could resend one gateway's transcript to the other.
+func TestCodexPreLaunchSharesTheStateDatabasePerGateway(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "")
+	sqliteHome := func(baseURL string) string {
+		environment, cleanup, err := codexPreLaunch(baseURL, "sk-bf-test", "gpt-test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(cleanup)
+		path := envValue(environment, "CODEX_SQLITE_HOME")
+		if !strings.HasPrefix(path, filepath.Join(home, ".bifrost", "codex-home")+string(filepath.Separator)) {
+			t.Fatalf("CODEX_SQLITE_HOME = %q, want it in the user's session store", path)
+		}
+		return path
+	}
+	first := sqliteHome("http://localhost:8080/openai")
+	if again := sqliteHome("http://localhost:8080/openai"); again != first {
+		t.Fatalf("one gateway got two state databases: %q %q", first, again)
+	}
+	if other := sqliteHome("https://gateway.example/openai"); other == first {
+		t.Fatalf("two gateways share a state database: %q", other)
+	}
+}
+
+// TestCodexPreLaunchKeepsEachGatewaySeparate pins that no session crosses gateways: a
+// shared history could resend one gateway's transcript to the other.
 func TestCodexPreLaunchKeepsEachGatewaySeparate(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
 
-	first := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test")
-	second := codexLaunchHome(t, "https://gateway.example/openai", "sk-bf-other")
-	if first == second {
-		t.Fatalf("both gateways share launcher home %q", first)
-	}
-	if configured := readCodexConfig(t, first); !strings.Contains(configured, `base_url = "http://localhost:8080/openai/v1"`) {
-		t.Fatalf("first gateway's config was overwritten:\n%s", configured)
+	first, _ := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test", "gpt-test")
+	writeCodexSession(t, first)
+	second, _ := codexLaunchHome(t, "https://gateway.example/openai", "sk-bf-other", "gpt-test")
+	if hasCodexSession(second) {
+		t.Fatal("a session recorded on one gateway is visible on another")
 	}
 	if configured := readCodexConfig(t, second); !strings.Contains(configured, `base_url = "https://gateway.example/openai/v1"`) {
 		t.Fatalf("second gateway's config has the wrong endpoint:\n%s", configured)
 	}
-	if strings.Contains(first+second, "gateway.example") {
-		t.Fatalf("launcher home paths expose the gateway: %q %q", first, second)
+	if files := strings.Join(codexStoreFiles(t, home), " "); strings.Contains(files, "gateway.example") {
+		t.Fatalf("store paths expose the gateway: %s", files)
 	}
 }
 
-// TestCodexPreLaunchLeavesTheUsersCredentialStore pins that only a saved key changes
-// the store: a launch reads its key from the environment.
-func TestCodexPreLaunchLeavesTheUsersCredentialStore(t *testing.T) {
+// TestCodexPreLaunchKeepsConcurrentLaunchesApart pins that two running launches on one
+// gateway neither overwrite each other's config nor lose each other's sessions.
+func TestCodexPreLaunchKeepsConcurrentLaunchesApart(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
-	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
-		t.Fatal(err)
+	const endpoint = "http://localhost:8080/openai"
+
+	first, _ := codexLaunchHome(t, endpoint, "sk-bf-test", "gpt-first")
+	second, _ := codexLaunchHome(t, endpoint, "sk-bf-test", "gpt-second")
+	if first == second {
+		t.Fatalf("concurrent launches share %q", first)
 	}
-	userConfig := `cli_auth_credentials_store = "keyring"` + "\n"
-	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(userConfig), 0o600); err != nil {
-		t.Fatal(err)
+	if configured := readCodexConfig(t, first); !strings.Contains(configured, `model = "gpt-first"`) {
+		t.Fatalf("the second launch overwrote the first one's config:\n%s", configured)
 	}
-	if got := readCodexConfig(t, codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test")); !strings.Contains(got, `cli_auth_credentials_store = "keyring"`) {
-		t.Fatalf("launcher config changed the user's credential store:\n%s", got)
+	if configured := readCodexConfig(t, second); !strings.Contains(configured, `model = "gpt-second"`) {
+		t.Fatalf("second launch has the wrong model:\n%s", configured)
+	}
+	writeCodexSession(t, first)
+	if !hasCodexSession(second) {
+		t.Fatal("concurrent launches on one gateway do not share sessions")
 	}
 }
 
@@ -624,17 +713,19 @@ func TestCodexPreLaunchKeepsEachUserSeparate(t *testing.T) {
 	t.Setenv("CODEX_HOME", "")
 	userA, userB := t.TempDir(), t.TempDir()
 	t.Setenv("HOME", userA)
-	homeA := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test")
+	homeA, _ := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test", "gpt-test")
+	writeCodexSession(t, homeA)
 	t.Setenv("HOME", userB)
-	homeB := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test")
-	if !strings.HasPrefix(homeA, userA) || !strings.HasPrefix(homeB, userB) {
-		t.Fatalf("launcher homes %q and %q are not under their users %q and %q", homeA, homeB, userA, userB)
+	homeB, _ := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-test", "gpt-test")
+	if hasCodexSession(homeB) {
+		t.Fatal("one user's session is visible to another")
 	}
 }
 
-// TestCodexPreLaunchKeepsCredentialsOutOfLauncherHome pins that the persistent home
-// holds neither the launcher's key nor a copy of the user's Codex authentication.
-func TestCodexPreLaunchKeepsCredentialsOutOfLauncherHome(t *testing.T) {
+// TestCodexPreLaunchLeavesNoCredentialBehind pins that what persists is session state
+// alone: not the launch's key, a copy of the user's Codex authentication, or the
+// user's config.toml with whatever secrets it holds.
+func TestCodexPreLaunchLeavesNoCredentialBehind(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
@@ -646,13 +737,37 @@ func TestCodexPreLaunchKeepsCredentialsOutOfLauncherHome(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(userHome, "auth.json"), []byte(userAuth), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	userConfig := "[mcp_servers.local.env]\nTOKEN = \"sk-config-secret\"\n"
+	if err := os.WriteFile(filepath.Join(userHome, "config.toml"), []byte(userConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-	codexHome := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-secret")
+	codexHome, cleanup := codexLaunchHome(t, "http://localhost:8080/openai", "sk-bf-secret", "gpt-test")
 	if _, err := os.Stat(filepath.Join(codexHome, "auth.json")); !os.IsNotExist(err) {
 		t.Fatalf("launcher home holds an auth.json: %v", err)
 	}
-	if configured := readCodexConfig(t, codexHome); strings.Contains(configured, "sk-bf-secret") || strings.Contains(configured, "sk-user-own") {
+	configured := readCodexConfig(t, codexHome)
+	if !strings.Contains(configured, "sk-config-secret") {
+		t.Fatalf("the launch lost the user's MCP setting:\n%s", configured)
+	}
+	if strings.Contains(configured, "sk-bf-secret") || strings.Contains(configured, "sk-user-own") {
 		t.Fatalf("launcher config holds a credential:\n%s", configured)
+	}
+	writeCodexSession(t, codexHome)
+	cleanup()
+	for _, path := range codexStoreFiles(t, home) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range []string{"sk-bf-secret", "sk-user-own", "sk-config-secret"} {
+			if strings.Contains(string(data), secret) {
+				t.Fatalf("%s outlived the launch in %s", secret, path)
+			}
+		}
+		if name := filepath.Base(path); name == "config.toml" || name == "auth.json" {
+			t.Fatalf("%s outlived the launch", path)
+		}
 	}
 	original, err := os.ReadFile(filepath.Join(userHome, "auth.json"))
 	if err != nil {
@@ -671,134 +786,164 @@ func TestCodexPreLaunchFollowsKeyedAndKeylessLaunches(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
 	const endpoint = "http://localhost:8080/openai"
+	config := func(apiKey string) string {
+		t.Helper()
+		codexHome, _ := codexLaunchHome(t, endpoint, apiKey, "gpt-test")
+		return readCodexConfig(t, codexHome)
+	}
 
-	keyless := readCodexConfig(t, codexLaunchHome(t, endpoint, "dummy-key"))
-	if strings.Contains(keyless, "env_key") || !strings.Contains(keyless, `requires_openai_auth = false`) {
+	if keyless := config("dummy-key"); strings.Contains(keyless, "env_key") || !strings.Contains(keyless, `requires_openai_auth = false`) {
 		t.Fatalf("keyless launch must name no credential:\n%s", keyless)
 	}
-	keyed := readCodexConfig(t, codexLaunchHome(t, endpoint, "sk-bf-test"))
-	if !strings.Contains(keyed, `env_key = "OPENAI_API_KEY"`) {
+	if keyed := config("sk-bf-test"); !strings.Contains(keyed, `env_key = "OPENAI_API_KEY"`) {
 		t.Fatalf("keyed launch must read the launcher-supplied key:\n%s", keyed)
 	}
-	keyless = readCodexConfig(t, codexLaunchHome(t, endpoint, ""))
-	if strings.Contains(keyless, "env_key") {
+	if keyless := config(""); strings.Contains(keyless, "env_key") {
 		t.Fatalf("keyless launch kept the keyed launch's env_key:\n%s", keyless)
 	}
 }
 
-// TestCodexPreLaunchForgetsARemovedUserConfig pins that the persistent home does not
-// keep preferences, or any secret in them, after the user removes their config.
-func TestCodexPreLaunchForgetsARemovedUserConfig(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("CODEX_HOME", "")
-	userHome := filepath.Join(home, ".codex")
-	if err := os.MkdirAll(userHome, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	userConfig := filepath.Join(userHome, "config.toml")
-	if err := os.WriteFile(userConfig, []byte("model_reasoning_effort = \"high\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	const endpoint = "http://localhost:8080/openai"
-	if configured := readCodexConfig(t, codexLaunchHome(t, endpoint, "sk-bf-test")); !strings.Contains(configured, "model_reasoning_effort") {
-		t.Fatalf("launcher config lost the user's preference:\n%s", configured)
-	}
-	if err := os.Remove(userConfig); err != nil {
-		t.Fatal(err)
-	}
-	configured := readCodexConfig(t, codexLaunchHome(t, endpoint, "sk-bf-test"))
-	if strings.Contains(configured, "model_reasoning_effort") {
-		t.Fatalf("launcher config kept a preference the user removed:\n%s", configured)
-	}
-	if !strings.Contains(configured, `model_provider = "bifrost"`) {
-		t.Fatalf("launcher config lost its provider:\n%s", configured)
-	}
-}
-
 // TestCodexPreLaunchInsideALauncherSession covers a launch from a shell the launcher
-// started, whose CODEX_HOME is already the launcher home.
+// started, whose CODEX_HOME is the outer launch's home.
 func TestCodexPreLaunchInsideALauncherSession(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "")
 	const endpoint = "http://localhost:8080/openai"
-	codexHome := codexLaunchHome(t, endpoint, "sk-bf-test")
-	configPath := filepath.Join(codexHome, "config.toml")
-	if err := os.WriteFile(configPath, []byte("model_reasoning_effort = \"high\"\n"), 0o600); err != nil {
+	outer, _ := codexLaunchHome(t, endpoint, "sk-bf-test", "gpt-test")
+	if err := os.WriteFile(filepath.Join(outer, "config.toml"), []byte("model_reasoning_effort = \"high\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("CODEX_HOME", codexHome)
-	if again := codexLaunchHome(t, endpoint, "sk-bf-test"); again != codexHome {
-		t.Fatalf("nested launch used %q, want %q", again, codexHome)
-	}
-	configured := readCodexConfig(t, codexHome)
+	t.Setenv("CODEX_HOME", outer)
+	inner, _ := codexLaunchHome(t, endpoint, "sk-bf-test", "gpt-test")
+	configured := readCodexConfig(t, inner)
 	if !strings.Contains(configured, "model_reasoning_effort") || !strings.Contains(configured, `model_provider = "bifrost"`) {
-		t.Fatalf("nested launch must update the config in place:\n%s", configured)
+		t.Fatalf("nested launch must start from the outer config:\n%s", configured)
 	}
 }
 
-func TestCodexPreLaunchProtectsLauncherHome(t *testing.T) {
+// TestLinkCodexSessionStateLeavesNoPartialLinks pins the fallback where linking fails:
+// a launch either has all of its session state in the store or none of it.
+func TestLinkCodexSessionStateLeavesNoPartialLinks(t *testing.T) {
+	store, codexHome := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(codexHome, "archived_sessions"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if linkCodexSessionState(codexHome, store) {
+		t.Fatal("linkCodexSessionState() reported success over an existing file")
+	}
+	for _, name := range []string{"history.jsonl", "sessions"} {
+		if _, err := os.Lstat(filepath.Join(codexHome, name)); !os.IsNotExist(err) {
+			t.Fatalf("a partial link to %s was left behind: %v", name, err)
+		}
+	}
+}
+
+func TestCodexPreLaunchProtectsSessionStore(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX modes and unprivileged symlinks only")
 	}
 	t.Setenv("CODEX_HOME", "")
 	const endpoint = "http://localhost:8080/openai"
-
-	t.Run("new home is owner-only", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		codexHome := codexLaunchHome(t, endpoint, "sk-bf-test")
-		assertMode(t, codexHome, 0o700)
-		assertMode(t, filepath.Join(codexHome, "config.toml"), 0o600)
-	})
-
-	t.Run("loose home is tightened", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		codexHome := codexLaunchHome(t, endpoint, "sk-bf-test")
-		if err := os.Chmod(codexHome, 0o755); err != nil {
+	// storeOf runs one launch and returns the store it created.
+	storeOf := func(t *testing.T) string {
+		t.Helper()
+		environment, cleanup, err := codexPreLaunch(endpoint, "sk-bf-test", "gpt-test")
+		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Chmod(filepath.Join(codexHome, "config.toml"), 0o644); err != nil {
-			t.Fatal(err)
+		t.Cleanup(cleanup)
+		return filepath.Dir(envValue(environment, "CODEX_SQLITE_HOME"))
+	}
+
+	t.Run("new store is owner-only", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		store := storeOf(t)
+		for _, path := range []string{store, filepath.Join(store, "sessions"), filepath.Join(store, "archived_sessions"), filepath.Join(store, "state")} {
+			assertMode(t, path, 0o700)
 		}
-		codexLaunchHome(t, endpoint, "sk-bf-test")
-		assertMode(t, codexHome, 0o700)
-		assertMode(t, filepath.Join(codexHome, "config.toml"), 0o600)
+		assertMode(t, filepath.Join(store, "history.jsonl"), 0o600)
 	})
 
-	t.Run("symlinked home is refused", func(t *testing.T) {
+	t.Run("loose store is tightened", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
-		codexHome := codexLaunchHome(t, endpoint, "sk-bf-test")
-		if err := os.RemoveAll(codexHome); err != nil {
+		store := storeOf(t)
+		if err := os.Chmod(filepath.Join(store, "sessions"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(store, "history.jsonl"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		storeOf(t)
+		assertMode(t, filepath.Join(store, "sessions"), 0o700)
+		assertMode(t, filepath.Join(store, "history.jsonl"), 0o600)
+	})
+
+	t.Run("symlinked store is refused", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		store := storeOf(t)
+		if err := os.RemoveAll(store); err != nil {
 			t.Fatal(err)
 		}
 		shared := t.TempDir()
 		if err := os.Chmod(shared, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Symlink(shared, codexHome); err != nil {
+		if err := os.Symlink(shared, store); err != nil {
 			t.Fatal(err)
 		}
 		if _, _, err := codexPreLaunch(endpoint, "sk-bf-test", "gpt-test"); err == nil {
-			t.Fatal("codexPreLaunch() followed a symlinked launcher home")
-		}
-		if entries, err := os.ReadDir(shared); err != nil || len(entries) != 0 {
-			t.Fatalf("symlink target was written: %v %v", entries, err)
+			t.Fatal("codexPreLaunch() followed a symlinked session store")
 		}
 		assertMode(t, shared, 0o755)
 	})
 
-	t.Run("file in its place is refused", func(t *testing.T) {
+	t.Run("symlinked sessions are refused", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
-		codexHome := codexLaunchHome(t, endpoint, "sk-bf-test")
-		if err := os.RemoveAll(codexHome); err != nil {
+		store := storeOf(t)
+		sessions := filepath.Join(store, "sessions")
+		if err := os.RemoveAll(sessions); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(codexHome, nil, 0o600); err != nil {
+		if err := os.Symlink(t.TempDir(), sessions); err != nil {
 			t.Fatal(err)
 		}
 		if _, _, err := codexPreLaunch(endpoint, "sk-bf-test", "gpt-test"); err == nil {
-			t.Fatal("codexPreLaunch() accepted a file as its launcher home")
+			t.Fatal("codexPreLaunch() followed symlinked sessions")
+		}
+	})
+
+	t.Run("symlinked history is refused", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		store := storeOf(t)
+		history := filepath.Join(store, "history.jsonl")
+		if err := os.Remove(history); err != nil {
+			t.Fatal(err)
+		}
+		shared := filepath.Join(t.TempDir(), "shared-history")
+		if err := os.WriteFile(shared, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(shared, history); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := codexPreLaunch(endpoint, "sk-bf-test", "gpt-test"); err == nil {
+			t.Fatal("codexPreLaunch() followed symlinked history")
+		}
+		assertMode(t, shared, 0o644)
+	})
+
+	t.Run("file in its place is refused", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		store := storeOf(t)
+		if err := os.RemoveAll(store); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(store, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := codexPreLaunch(endpoint, "sk-bf-test", "gpt-test"); err == nil {
+			t.Fatal("codexPreLaunch() accepted a file as its session store")
 		}
 	})
 }

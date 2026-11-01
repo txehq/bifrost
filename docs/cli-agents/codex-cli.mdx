@@ -46,20 +46,22 @@ Make sure `openai/gpt-5` (or the model you choose) appears in
 `bifrost models list` before launching, or the request is rejected.
 </Note>
 
-Bifrost runs Codex with its own `CODEX_HOME`, one owner-only directory per gateway
-endpoint (`~/.bifrost/codex-home/<endpoint digest>`), and declares a `bifrost`
-model provider. Each launch copies the user's `config.toml` in first, preserving
-MCP servers, project trust entries, reasoning preferences, and other non-auth
-settings before replacing the model-provider routing. The user's normal
-authentication and session history remain isolated. Session history from these
-launches stays in that directory after Codex exits, so a later launch on the same
-gateway can resume it, and another gateway never sees it. Delete the directory to
-remove it. Launches on one gateway share its `config.toml`, so the last one's model
-wins for any Codex process that reads the file afterwards.
+Bifrost creates an isolated temporary `CODEX_HOME` for the launched process and
+declares a `bifrost` model provider. It copies the user's `config.toml` first,
+preserving MCP servers, project trust entries, reasoning preferences, and other
+non-auth settings before replacing the model-provider routing. The user's
+normal authentication and session history remain isolated, and the temporary
+home, with any changes Codex makes to it, is removed when the process exits.
+Session state from these launches stays in an owner-only store for that gateway
+endpoint (`~/.bifrost/codex-home/<endpoint digest>`), so a later launch on the
+same gateway can resume it, and another gateway never sees it. Session history
+holds your prompts and responses; delete the directory to remove it. On a system
+that cannot create symbolic links, such as Windows without the privilege, the
+launch says so and keeps no history.
 
 Enterprise SSO and virtual keys are both supported. With SSO, Codex receives
 the current Bifrost agent access token only in its child-process environment.
-The token is not written to the launcher's Codex provider configuration.
+The token is not written to the temporary Codex provider configuration.
 
 <Warning>
 Codex currently receives one agent access token when the process starts. If a

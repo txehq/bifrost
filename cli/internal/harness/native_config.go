@@ -117,27 +117,33 @@ func claudeTierModelEnvMap(model string) map[string]string {
 	}
 }
 
-// codexPreLaunch points Codex at the launcher's own Codex home for this gateway,
-// with a Bifrost Responses provider. Keeping it separate from the user's Codex home
-// prevents a launcher session from overwriting the user's authentication or
-// configuration; keeping it persistent lets the next launch resume its sessions.
-// The user's config.toml is copied in on every launch, so later preference changes
-// still apply, and the credential stays in the child process environment.
+// codexPreLaunch gives each launch its own temporary Codex home with a Bifrost
+// Responses provider, seeded from the user's config.toml and removed on exit, so a
+// copy of that file and any secret in it never outlives the launch, and concurrent
+// launches keep their own model and endpoint. Only session state is kept: it lives
+// in a store per gateway, linked into the temporary home, so the next launch on that
+// gateway can resume it. Session history holds prompts and responses, which is why
+// the store is owner-only; the credential stays in the child process environment.
 func codexPreLaunch(baseURL, apiKey string, model string) ([]string, func(), error) {
-	launcherHome, err := codexLauncherHome(baseURL)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := ensurePrivateDirectory(launcherHome); err != nil {
-		return nil, nil, fmt.Errorf("prepare launcher Codex home: %w", err)
-	}
 	sourceHome, err := codexUserHome()
 	if err != nil {
 		return nil, nil, err
 	}
-	targetConfig := filepath.Join(launcherHome, "config.toml")
+	store, err := codexSessionStore(baseURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := prepareCodexSessionStore(store); err != nil {
+		return nil, nil, fmt.Errorf("prepare Codex session store: %w", err)
+	}
+	temporaryHome, err := os.MkdirTemp("", "bifrost-codex-home-*")
+	if err != nil {
+		return nil, nil, fmt.Errorf("create temporary Codex home: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(temporaryHome) }
 	existing, readErr := os.ReadFile(filepath.Join(sourceHome, "config.toml"))
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		cleanup()
 		return nil, nil, fmt.Errorf("read Codex config: %w", readErr)
 	}
 	// env_key fails a launch that supplies no key, so a keyless gateway names none.
@@ -145,20 +151,34 @@ func codexPreLaunch(baseURL, apiKey string, model string) ([]string, func(), err
 	if codexHasKey(apiKey) {
 		auth = codexAuthEnvironment
 	}
-	// One atomic write, from the user's config alone: preferences they have since
-	// removed do not outlive them here, and a launch starting alongside this one
-	// never reads the user's routing with this launch's key in its environment.
-	if err := config.WriteAtomic(targetConfig, codexRenderConfigTOML(existing, baseURL, model, auth), 0o600); err != nil {
-		return nil, nil, fmt.Errorf("write launcher Codex config: %w", err)
+	configured := codexRenderConfigTOML(existing, baseURL, model, auth)
+	if err := config.WriteAtomic(filepath.Join(temporaryHome, "config.toml"), configured, 0o600); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("write temporary Codex config: %w", err)
 	}
-	return []string{"CODEX_HOME=" + launcherHome}, func() {}, nil
+	environment := []string{"CODEX_HOME=" + temporaryHome}
+	if linkCodexSessionState(temporaryHome, store) {
+		environment = append(environment, "CODEX_SQLITE_HOME="+filepath.Join(store, codexStateDirectory))
+	} else {
+		// The launch still works, with its sessions removed along with the home.
+		fmt.Fprintln(os.Stderr, "bifrost: this system cannot link Codex session history, so this session will not be kept after exit")
+	}
+	return environment, cleanup, nil
 }
 
-// codexLauncherHome is the launcher's Codex home for one gateway, next to the
-// Bifrost CLI's own state (~/.bifrost/codex-home/<endpoint digest>). One home per
-// endpoint keeps concurrent launches on two gateways from sharing a config.toml, and
-// a session recorded against one gateway from being resumed, and resent, to another.
-func codexLauncherHome(baseURL string) (string, error) {
+const (
+	codexStateDirectory = "state"
+	codexHistoryFile    = "history.jsonl"
+)
+
+// codexSessionDirectories are the directories Codex keeps session rollouts in.
+var codexSessionDirectories = []string{"sessions", "archived_sessions"}
+
+// codexSessionStore is the store of one gateway's Codex sessions, next to the Bifrost
+// CLI's own state (~/.bifrost/codex-home/<endpoint digest>). One store per endpoint
+// keeps a session recorded against one gateway from being resumed, and resent, to
+// another.
+func codexSessionStore(baseURL string) (string, error) {
 	statePath, err := config.DefaultStatePath()
 	if err != nil {
 		return "", err
@@ -167,9 +187,39 @@ func codexLauncherHome(baseURL string) (string, error) {
 	return filepath.Join(filepath.Dir(statePath), "codex-home", hex.EncodeToString(digest[:8])), nil
 }
 
+// prepareCodexSessionStore creates the store owner-only, tightens whatever already
+// exists, and refuses a symlink or the wrong file type: history outlives the launch,
+// so it must not land wherever a link points.
+func prepareCodexSessionStore(store string) error {
+	directories := []string{store, filepath.Join(store, codexStateDirectory)}
+	for _, name := range codexSessionDirectories {
+		directories = append(directories, filepath.Join(store, name))
+	}
+	for _, directory := range directories {
+		if err := ensurePrivateDirectory(directory); err != nil {
+			return err
+		}
+	}
+	history := filepath.Join(store, codexHistoryFile)
+	file, err := os.OpenFile(history, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	info, err := os.Lstat(history)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", history)
+	}
+	return os.Chmod(history, 0o600)
+}
+
 // ensurePrivateDirectory creates path owner-only, tightens one that already exists,
-// and refuses a symlink or a file: session history outlives the launch, so it must
-// not land wherever a link points.
+// and refuses a symlink or a file in its place.
 func ensurePrivateDirectory(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return err
@@ -182,6 +232,22 @@ func ensurePrivateDirectory(path string) error {
 		return fmt.Errorf("%s is not a directory", path)
 	}
 	return os.Chmod(path, 0o700)
+}
+
+// linkCodexSessionState links the store's session state into a temporary home. It
+// reports false, with no link left behind, where links are unavailable, such as
+// Windows without the privilege.
+func linkCodexSessionState(temporaryHome, store string) bool {
+	names := append([]string{codexHistoryFile}, codexSessionDirectories...)
+	for index, name := range names {
+		if err := os.Symlink(filepath.Join(store, name), filepath.Join(temporaryHome, name)); err != nil {
+			for _, linked := range names[:index] {
+				_ = os.Remove(filepath.Join(temporaryHome, linked))
+			}
+			return false
+		}
+	}
+	return true
 }
 
 func codexUserHome() (string, error) {
@@ -208,6 +274,12 @@ func codexWriteNativeConfig(baseURL, apiKey, model string) error {
 	}
 
 	dir := filepath.Join(home, ".codex")
+	hasKey := codexHasKey(apiKey)
+	if hasKey {
+		if err := refuseCodexCredentialStore(filepath.Join(dir, "config.toml")); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create codex config dir: %w", err)
 	}
@@ -215,13 +287,57 @@ func codexWriteNativeConfig(baseURL, apiKey, model string) error {
 	// A direct launch has no launcher-supplied OPENAI_API_KEY, so the provider
 	// reads the key saved in auth.json, or sends none at all.
 	auth := codexAuthNone
-	if codexHasKey(apiKey) {
+	if hasKey {
 		if err := codexWriteAuth(filepath.Join(dir, "auth.json"), strings.TrimSpace(apiKey)); err != nil {
 			return err
 		}
 		auth = codexAuthStored
 	}
 	return codexWriteConfigTOML(filepath.Join(dir, "config.toml"), baseURL, model, auth)
+}
+
+// refuseCodexCredentialStore rejects a config whose credentials do not live in
+// auth.json, where Codex would not read the saved key. Changing the setting is the
+// user's call: it decides what every provider in that Codex home authenticates with.
+func refuseCodexCredentialStore(path string) error {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read codex config: %w", err)
+	}
+	store := topLevelTOMLString(data, "cli_auth_credentials_store")
+	if store == "" || store == "file" {
+		return nil
+	}
+	return fmt.Errorf("Codex keeps its credentials in %q storage (cli_auth_credentials_store), so it would not read a saved key; use 'bifrost run codex', which saves none, or set cli_auth_credentials_store = \"file\" in %s yourself", store, path)
+}
+
+// topLevelTOMLString returns the string value of key before the first table, or "".
+func topLevelTOMLString(data []byte, key string) string {
+	for _, line := range strings.Split(string(data), "\n") {
+		if isTOMLTableHeader(line) {
+			return ""
+		}
+		if _, ok := matchTopLevelTOMLKey(line, map[string]string{key: ""}); !ok {
+			continue
+		}
+		_, value, _ := strings.Cut(line, "=")
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return ""
+		}
+		quote := value[0]
+		if quote != '"' && quote != '\'' {
+			return value
+		}
+		if end := strings.IndexByte(value[1:], quote); end >= 0 {
+			return value[1 : end+1]
+		}
+		return ""
+	}
+	return ""
 }
 
 // codexHasKey reports whether apiKey is a real credential, not the launcher's
@@ -287,10 +403,6 @@ func codexRenderConfigTOML(existing []byte, baseURL, model string, auth codexPro
 	targets := map[string]string{"model_provider": "bifrost"}
 	if m := strings.TrimSpace(model); m != "" {
 		targets["model"] = m
-	}
-	if auth == codexAuthStored {
-		// The key is saved in auth.json, which keyring and auto storage do not read.
-		targets["cli_auth_credentials_store"] = "file"
 	}
 	existing = removeTopLevelTOMLKeys(existing, map[string]struct{}{
 		"openai_base_url": {},
