@@ -704,3 +704,19 @@ func TestWireUnconfigureKeepsALoginMadeLater(t *testing.T) {
 		})
 	}
 }
+
+// TestWireConfigureRefusesARemoteHTTPGateway pins that no key is saved for Codex to send
+// in plain text; `configure` makes no gateway request, so nothing else would refuse it.
+func TestWireConfigureRefusesARemoteHTTPGateway(t *testing.T) {
+	home, stub := t.TempDir(), installStub(t)
+	out := runCLI(t, home, map[string]string{"PATH": stub, "BIFROST_VIRTUAL_KEY": virtualKey}, "--base-url", "http://gateway.invalid", "configure", "codex")
+	if out.exit == 0 || !strings.Contains(out.stderr, "HTTPS is required") {
+		t.Fatalf("configure for a remote HTTP gateway: exit %d, stderr %q", out.exit, out.stderr)
+	}
+	if strings.Contains(out.all(), virtualKey) {
+		t.Fatalf("the refusal printed the key:\n%s", out.all())
+	}
+	if files := filesContaining(t, home, virtualKey); len(files) != 0 {
+		t.Fatalf("the key was saved: %v", files)
+	}
+}

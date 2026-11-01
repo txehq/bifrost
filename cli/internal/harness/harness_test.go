@@ -465,6 +465,28 @@ func TestCodexWriteNativeConfigStaysOutOfCodexCredentialSelection(t *testing.T) 
 	}
 }
 
+// TestCodexWriteNativeConfigRefusesAnInsecureGateway pins that a key is not saved for
+// Codex to send in plain text: Codex does not go through the CLI's transport checks.
+func TestCodexWriteNativeConfigRefusesAnInsecureGateway(t *testing.T) {
+	for _, baseURL := range []string{"http://gateway.example/openai", "ftp://gateway.example/openai"} {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		if err := codexWriteNativeConfig(baseURL, "sk-bf-test", ""); err == nil {
+			t.Fatalf("codexWriteNativeConfig(%s) saved a key", baseURL)
+		}
+		if _, err := os.Stat(filepath.Join(home, ".codex")); !os.IsNotExist(err) {
+			t.Fatalf("a refused configure wrote to the Codex home: %v", err)
+		}
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for _, baseURL := range []string{"http://127.0.0.1:8080/openai", "http://localhost:8080/openai", "https://gateway.example/openai"} {
+		if err := codexWriteNativeConfig(baseURL, "sk-bf-test", ""); err != nil {
+			t.Fatalf("codexWriteNativeConfig(%s) = %v", baseURL, err)
+		}
+	}
+}
+
 func TestCodexWriteNativeConfigEscapesTheKey(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

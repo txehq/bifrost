@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/capsohq/bifrost/cli/internal/client"
 	"github.com/capsohq/bifrost/cli/internal/config"
 )
 
@@ -274,6 +275,11 @@ func codexWriteNativeConfig(baseURL, apiKey, model string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("resolve home dir: %w", err)
+	}
+
+	// Codex would send the key to this URL itself, past the CLI's own transport checks.
+	if _, err := client.BuildEndpoint(baseURL, "/", nil); err != nil {
+		return err
 	}
 
 	dir := filepath.Join(home, ".codex")
