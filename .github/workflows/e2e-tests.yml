@@ -14,7 +14,7 @@ permissions:
 jobs:
   test-e2e-ui:
     name: E2E UI (Playwright)
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 45
     permissions:
       contents: read

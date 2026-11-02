@@ -49,6 +49,14 @@ jobs:
       - name: Check egress allowlists
         run: ./.github/workflows/scripts/check-egress-allowlist.sh
 
+      - name: Check every job names a runner the fork has
+        if: ${{ !cancelled() }}
+        run: python3 .github/workflows/scripts/check-runner-labels.py
+
+      - name: Check fork release guards
+        if: ${{ !cancelled() }}
+        run: ./.github/workflows/scripts/release-fork-binaries.test.sh
+
       - name: Check version-format guard
         run: ./.github/workflows/scripts/version-format.test.sh
 

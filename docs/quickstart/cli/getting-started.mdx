@@ -62,6 +62,10 @@ When a context has both an SSO session and a virtual key, the CLI sends one infe
     ```
 
     To update an existing installation later, run `bifrost update`.
+
+    <Note>
+      The installer above serves upstream builds. Builds of the txehq fork are published only as assets on [its GitHub releases](https://github.com/txehq/bifrost/releases?q=cli%2Fv), with a `SHA256SUMS` file: download the asset for your platform, check it, and put it on your `PATH` as `bifrost`. A fork build makes no update check, and its `bifrost update` points back to those releases.
+    </Note>
   </Step>
   <Step title="Verify the installation">
     Open a new terminal and run:

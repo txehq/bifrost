@@ -38,6 +38,9 @@ jobs:
     # https://codspeed.io/docs/benchmarks/go
     # The org's Default runner group must "Allow public repositories", or the
     # jobs queue without ever starting.
+    # Forks without CodSpeed's managed runners opt in explicitly; otherwise the job
+    # would queue until GitHub cancels it.
+    if: vars.BIFROST_CODSPEED_ENABLED == 'true'
     runs-on: codspeed-macro
     timeout-minutes: 45
 

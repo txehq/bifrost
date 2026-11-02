@@ -1,9 +1,13 @@
 package update
 
 import (
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -107,5 +111,67 @@ func TestStageUpdateBinaryCopiesIntoTargetDirectory(t *testing.T) {
 		t.Fatalf("read staged file: %v", err)
 	} else if string(got) != "new-binary" {
 		t.Fatalf("staged file contents = %q, want %q", string(got), "new-binary")
+	}
+}
+
+type countingTransport struct{ calls atomic.Int32 }
+
+func (c *countingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	c.calls.Add(1)
+	return nil, errors.New("no network in this test")
+}
+
+func useChannel(t *testing.T, channel string) *countingTransport {
+	t.Helper()
+	transport := &countingTransport{}
+	previousTransport, previousChannel := http.DefaultTransport, releaseChannel
+	http.DefaultTransport, releaseChannel = transport, channel
+	t.Cleanup(func() { http.DefaultTransport, releaseChannel = previousTransport, previousChannel })
+	t.Setenv("BIFROST_NO_UPDATE_CHECK", "")
+	return transport
+}
+
+func TestForkBuildNeverReachesUpstream(t *testing.T) {
+	transport := useChannel(t, forkChannel)
+
+	if result := doCheck("v1.0.1-sync.1", filepath.Join(t.TempDir(), "state.json")); result != nil {
+		t.Fatalf("doCheck = %+v, want nil", result)
+	}
+	err := RunSelfUpdate("v1.0.1-sync.1")
+	if err == nil {
+		t.Fatal("RunSelfUpdate succeeded on a fork build")
+	}
+	if !strings.Contains(err.Error(), "github.com/txehq/bifrost/releases") || !strings.Contains(err.Error(), "SHA256SUMS") {
+		t.Fatalf("error %q does not say where to get a release", err)
+	}
+	if strings.Contains(err.Error(), "getmaxim") {
+		t.Fatalf("error %q names upstream's host", err)
+	}
+	if got := transport.calls.Load(); got != 0 {
+		t.Fatalf("fork build made %d HTTP requests", got)
+	}
+}
+
+func TestUpstreamBuildKeepsUpdating(t *testing.T) {
+	transport := useChannel(t, "")
+
+	if result := doCheck("v1.0.0", filepath.Join(t.TempDir(), "state.json")); result != nil {
+		t.Fatalf("doCheck = %+v, want nil on a failed fetch", result)
+	}
+	if got := transport.calls.Load(); got != 1 {
+		t.Fatalf("doCheck made %d requests, want 1", got)
+	}
+	if err := RunSelfUpdate("v1.0.0"); err == nil || !strings.Contains(err.Error(), "check latest version") {
+		t.Fatalf("RunSelfUpdate = %v, want a fetch failure", err)
+	}
+	if got := transport.calls.Load(); got != 2 {
+		t.Fatalf("RunSelfUpdate reached the network %d times in total, want 2", got)
+	}
+}
+
+func TestUnknownChannelIsNotAForkBuild(t *testing.T) {
+	useChannel(t, "other")
+	if isForkBuild() {
+		t.Fatal("an unknown channel counted as the fork")
 	}
 }

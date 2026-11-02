@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   check-version:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     outputs:
       version: ${{ steps.get-version.outputs.version }}
       tag_exists: ${{ steps.check-tag.outputs.exists }}
@@ -60,7 +60,7 @@ jobs:
   test-cli:
     needs: [check-version]
     if: needs.check-version.outputs.tag_exists == 'false' && needs.check-version.outputs.has_changelog == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
       contents: read
     steps:
@@ -87,7 +87,7 @@ jobs:
   release-cli:
     needs: [check-version, test-cli]
     if: needs.check-version.outputs.tag_exists == 'false' && needs.check-version.outputs.has_changelog == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
       contents: write
     outputs:
@@ -115,8 +115,10 @@ jobs:
           git config user.name "GitHub Actions Bot"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      # Upstream's R2 path. The fork has no bucket of its own and publishes below.
       - name: Release CLI
         id: release
+        if: github.repository == 'maximhq/bifrost'
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
@@ -125,10 +127,44 @@ jobs:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: ./.github/workflows/scripts/release-cli.sh "${{ needs.check-version.outputs.version }}"
 
+      - name: Publish fork CLI release
+        if: github.repository == 'txehq/bifrost'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: ./.github/workflows/scripts/release-fork-binaries.sh publish cli "$VERSION"
+
+  verify-cli-release:
+    needs: [check-version, release-cli]
+    if: github.repository == 'txehq/bifrost' && needs.check-version.outputs.tag_exists == 'false' && needs.check-version.outputs.has_changelog == 'true' && needs.release-cli.result == 'success'
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            release-assets.githubusercontent.com:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Verify the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check-version.outputs.version }}
+        run: ./.github/workflows/scripts/release-fork-binaries.sh verify cli "$VERSION"
+
   push-mintlify-changelog:
     needs: [check-version, release-cli]
     if: needs.check-version.outputs.tag_exists == 'false' && needs.check-version.outputs.has_changelog == 'true' && needs.release-cli.result == 'success'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     permissions:
       contents: read
     steps:

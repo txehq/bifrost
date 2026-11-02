@@ -1,1 +1,1 @@
-- feat: initial release of the Bifrost migration CLI
+- feat: first release from this fork, with the `github.com/capsohq/bifrost` module path and Go 1.27.3

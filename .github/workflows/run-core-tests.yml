@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   authorize:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     steps:
       - name: Verify repository member access
         env:
@@ -30,7 +30,7 @@ jobs:
 
   run-core-tests:
     needs: authorize
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 360
     env:
       MAXIM_API_KEY: ${{ secrets.MAXIM_API_KEY }}
