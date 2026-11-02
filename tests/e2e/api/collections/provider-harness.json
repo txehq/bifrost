@@ -291492,6 +291492,136 @@
           }
         }
       ]
+    },
+    {
+      "name": "278. ElevenLabs speech stream keeps its final chunk (elevenlabs speech stream final chunk)",
+      "description": "Pins TXE-5677. The ElevenLabs speech-stream read loop checked the read error before forwarding the bytes of the same read, so when the upstream answered with Content-Length and returned its last bytes together with io.EOF, those bytes were dropped and speech.audio.done was still sent: a short answer arrived as done with no audio, a longer one lost up to 4 KB of its end (TXE-4880's reproduction on v2.1.1 and v2.3.2). The loop now forwards the bytes first and handles the error after. These cases go through /v1/audio/speech with stream_format sse on the built-in elevenlabs provider. Case A is a short input, the shape that lost all of its audio: against a Content-Length upstream it is red on the old loop (done with no audio) and green on the fix. Case B is a longer input whose stream spans several reads and pins the several-delta contract; the client cannot know how many bytes the upstream sent (the gateway strips Content-Length from the headers it forwards), so B does not detect a lost tail. Both require non-empty audio, exactly one speech.audio.done as the last speech event, and no error event. Whether the live upstream answers with Content-Length decides whether the old loop lost bytes there; the byte-exact red/green pins are the Go tests TestElevenlabsSpeechStream* in core/streamfallback_test.go.",
+      "item": [
+        {
+          "name": "A. elevenlabs/eleven_turbo_v2_5 short input SSE speech stream delivers audio before done (elevenlabs speech stream final chunk)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('short ElevenLabs SSE speech stream carries audio, then one done', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'expected SSE, got ' + ct).to.include('text/event-stream');",
+                  "  var deltas = 0, bytes = 0, done = 0, afterDone = 0, errors = [];",
+                  "  (pm.response.text() || '').split('\\n').forEach(function (l) {",
+                  "    if (l.indexOf('data: ') !== 0) { return; }",
+                  "    var p = l.slice(6).trim();",
+                  "    if (p === '[DONE]') { return; }",
+                  "    var j = JSON.parse(p);",
+                  "    if (j.error) { errors.push(p); return; }",
+                  "    if (done > 0) { afterDone++; }",
+                  "    if (j.type === 'speech.audio.delta') {",
+                  "      deltas++;",
+                  "      var a = j.audio || '';",
+                  "      var pad = (a.match(/=+$/) || [''])[0].length;",
+                  "      bytes += a.length * 3 / 4 - pad;",
+                  "    } else if (j.type === 'speech.audio.done') { done++; }",
+                  "  });",
+                  "  pm.expect(errors, 'error events: ' + errors.join(' | ')).to.be.empty;",
+                  "  pm.expect(deltas, 'speech.audio.delta events: ' + pm.response.text().slice(0, 500)).to.be.above(0);",
+                  "  pm.expect(bytes, 'decoded audio bytes').to.be.above(0);",
+                  "  pm.expect(done, 'speech.audio.done events').to.equal(1);",
+                  "  pm.expect(afterDone, 'speech events after speech.audio.done').to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"elevenlabs/eleven_turbo_v2_5\",\n  \"input\": \"Hi.\",\n  \"voice\": \"21m00Tcm4TlvDq8ikWAM\",\n  \"stream_format\": \"sse\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "B. elevenlabs/eleven_turbo_v2_5 longer input SSE speech stream spans several deltas, then one done (elevenlabs speech stream final chunk)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('longer ElevenLabs SSE speech stream spans several deltas, then one done', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'expected SSE, got ' + ct).to.include('text/event-stream');",
+                  "  var deltas = 0, bytes = 0, done = 0, afterDone = 0, errors = [];",
+                  "  (pm.response.text() || '').split('\\n').forEach(function (l) {",
+                  "    if (l.indexOf('data: ') !== 0) { return; }",
+                  "    var p = l.slice(6).trim();",
+                  "    if (p === '[DONE]') { return; }",
+                  "    var j = JSON.parse(p);",
+                  "    if (j.error) { errors.push(p); return; }",
+                  "    if (done > 0) { afterDone++; }",
+                  "    if (j.type === 'speech.audio.delta') {",
+                  "      deltas++;",
+                  "      var a = j.audio || '';",
+                  "      var pad = (a.match(/=+$/) || [''])[0].length;",
+                  "      bytes += a.length * 3 / 4 - pad;",
+                  "    } else if (j.type === 'speech.audio.done') { done++; }",
+                  "  });",
+                  "  pm.expect(errors, 'error events: ' + errors.join(' | ')).to.be.empty;",
+                  "  pm.expect(deltas, 'speech.audio.delta events').to.be.above(1);",
+                  "  pm.expect(bytes, 'decoded audio bytes').to.be.above(4096);",
+                  "  pm.expect(done, 'speech.audio.done events').to.equal(1);",
+                  "  pm.expect(afterDone, 'speech events after speech.audio.done').to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"elevenlabs/eleven_turbo_v2_5\",\n  \"input\": \"The quick brown fox jumps over the lazy dog, then rests in the shade of an old oak tree.\",\n  \"voice\": \"21m00Tcm4TlvDq8ikWAM\",\n  \"stream_format\": \"sse\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
