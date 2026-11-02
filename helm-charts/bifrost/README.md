@@ -4,9 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/txehq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.49
+**Latest Version:** 2.1.50
 
 ## Changelog
+
+### 2.1.50
+
+The txehq fork chart for transport v2.3.4. It supersedes 2.1.49 as the stable chart; no values, templates or schema change:
+
+- `appVersion` is now `2.3.4`, so an empty `image.tag` selects `v2.3.4`. That transport fixes the UBI9 image's Docker health check; the chart's own Kubernetes probes were not affected.
 
 ### 2.1.49
 
@@ -897,7 +903,7 @@ Or equivalently on the command line:
 
 ```bash
 helm install bifrost bifrost/bifrost \
-  --set image.tag=v2.3.3 \
+  --set image.tag=v2.3.4 \
   --set podSecurityContext.runAsUser=null \
   --set podSecurityContext.fsGroup=null \
   --set securityContext.runAsUser=null
@@ -1376,7 +1382,7 @@ The chart includes pre-configured examples in `values-examples/`:
 # From Helm repository
 helm install bifrost bifrost/bifrost \
   -f https://raw.githubusercontent.com/txehq/bifrost/main/helm-charts/bifrost/values-examples/postgres-only.yaml \
-  --set image.tag=v2.3.3
+  --set image.tag=v2.3.4
 
 # From local source
 helm install bifrost ./bifrost -f ./bifrost/values-examples/postgres-only.yaml
@@ -1458,7 +1464,7 @@ bifrost:
 helm repo update
 
 # Upgrade release
-helm upgrade bifrost bifrost/bifrost --set image.tag=v2.3.3
+helm upgrade bifrost bifrost/bifrost --set image.tag=v2.3.4
 
 # Or with custom values
 helm upgrade bifrost bifrost/bifrost -f my-values.yaml
