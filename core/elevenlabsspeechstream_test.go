@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -64,6 +65,19 @@ func (u *elevenlabsStreamUpstream) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		flusher.Flush()
 		time.Sleep(100 * time.Millisecond)
 		u.write(w, elevenlabsStreamAudio)
+	case "gzip":
+		// TXE-4880 复现里 gzip 编码的 Content-Length 响应同样丢失结尾
+		var compressed bytes.Buffer
+		writer := gzip.NewWriter(&compressed)
+		if _, err := writer.Write(elevenlabsStreamAudio); err != nil {
+			t.Errorf("gzip upstream body: %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Errorf("close gzip writer: %v", err)
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Length", strconv.Itoa(compressed.Len()))
+		u.write(w, compressed.Bytes())
 	case "truncated":
 		// 声明 100 字节只写出一部分，服务端随后关闭连接
 		w.Header().Set("Content-Length", "100")
@@ -201,6 +215,17 @@ func TestElevenlabsSpeechStreamMultiChunkResponse(t *testing.T) {
 	}
 	if !result.done || len(result.errors) != 0 {
 		t.Fatalf("multi-chunk response done=%v errors=%v, want done and no error", result.done, result.errors)
+	}
+}
+
+func TestElevenlabsSpeechStreamGzipResponse(t *testing.T) {
+	client, _ := newElevenlabsStreamClient(t)
+	result := runElevenlabsSpeechStream(t, client, "gzip")
+	if !bytes.Equal(result.audio, elevenlabsStreamAudio) {
+		t.Fatalf("gzip response audio has %d bytes, want the %d decompressed bytes", len(result.audio), len(elevenlabsStreamAudio))
+	}
+	if !result.done || len(result.errors) != 0 {
+		t.Fatalf("gzip response done=%v errors=%v, want done and no error", result.done, result.errors)
 	}
 }
 
