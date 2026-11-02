@@ -38,13 +38,13 @@ kubectl get secret <pull-secret-name> -o jsonpath='{.data.\.dockerconfigjson}' |
 ```
 
 Common causes:
-- `image.tag` not set - the chart requires it; the pod will not start without it
+- `ImagePullBackOff` on `ghcr.io/txehq/bifrost` - the image is private; set `imagePullSecrets` to a secret holding a token with `read:packages`
 - Pull secret missing or expired (ECR tokens expire after 12 hours)
 - Incorrect `image.repository` for enterprise registry
 
 ```bash
 # Fix: set the correct tag
-helm upgrade bifrost bifrost/bifrost --reuse-values --set image.tag=v1.4.11
+helm upgrade bifrost bifrost/bifrost --reuse-values --set image.tag=v2.3.2
 ```
 
 ### PVC not binding (`Pending`)
@@ -94,7 +94,6 @@ kubectl logs -l app.kubernetes.io/name=bifrost --previous --tail=50
 # Common causes shown in logs:
 # "encryption key is not initialized" → no key provided; optional, but data will be stored in plaintext
 # "failed to connect to database" → see Database section below
-# "image.tag is required" → set image.tag in values
 ```
 
 ---
@@ -332,7 +331,7 @@ kubectl get pvc
 helm upgrade bifrost bifrost/bifrost \
   --reuse-values \
   --set storage.persistence.existingClaim=<your-old-pvc-name> \
-  --set image.tag=v1.4.11
+  --set image.tag=v2.3.2
 ```
 
 ### Data lost after upgrade

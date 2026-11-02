@@ -83,7 +83,7 @@ unset POSTGRES_PASSWORD
 
 cat > bifrost-values.yaml <<EOF
 image:
-  repository: docker.io/maximhq/bifrost
+  repository: ghcr.io/txehq/bifrost
   tag: "${BIFROST_VERSION}"
 
 replicaCount: 1
@@ -144,7 +144,7 @@ kubectl get storageclass
 
 cat > bifrost-values.yaml <<EOF
 image:
-  repository: docker.io/maximhq/bifrost
+  repository: ghcr.io/txehq/bifrost
   tag: "${BIFROST_VERSION}"
 
 replicaCount: 1
@@ -172,7 +172,7 @@ Replace `<STORAGE_CLASS>` with a class returned by `kubectl get storageclass`. T
 ### Step 3: Install Bifrost
 
 ```bash
-helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
+helm repo add bifrost https://txehq.github.io/bifrost/helm-charts
 helm repo update
 
 helm upgrade --install bifrost bifrost/bifrost \

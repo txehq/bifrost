@@ -46,9 +46,7 @@
 
 # Image configuration
 image:
-  repository: docker.io/capsohq/bifrost
   pullPolicy: IfNotPresent
-  tag: "v1.3.55"
 
 replicaCount: 1
 

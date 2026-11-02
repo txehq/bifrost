@@ -23,7 +23,7 @@
         },
         "tag": {
           "type": "string",
-          "description": "Image tag (required - validated at template render time)"
+          "description": "Image tag; empty selects v<Chart appVersion>"
         }
       }
     },

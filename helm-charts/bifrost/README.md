@@ -2,11 +2,20 @@
 
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/bifrost)](https://artifacthub.io/packages/helm/bifrost/bifrost)
 
-Official Helm charts for deploying [Bifrost](https://github.com/capsohq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
+Official Helm charts for deploying [Bifrost](https://github.com/txehq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.48 (prerelease 2.1.49-sync.23 carries the changes below; install it with `--devel`)
+**Latest Version:** 2.1.48 (prerelease 2.1.49-sync.24 carries the changes below; install it with `--devel`)
 
 ## Changelog
+
+### 2.1.49-sync.24 (prerelease)
+
+The prerelease chart for transport v2.3.3-sync.24:
+
+- `image.repository` now defaults to `ghcr.io/txehq/bifrost`, and an empty `image.tag` selects `v<appVersion>`, so the chart no longer needs a tag to render. An explicit `image.repository` or `image.tag` still wins
+- The image is private: set `imagePullSecrets` to pull it. See [Image Configuration](#image-configuration)
+- `appVersion` is now `2.3.3-sync.24`, and `sources` names this repository
+- The chart is published at `https://txehq.github.io/bifrost/helm-charts` and `oci://ghcr.io/txehq/helm-charts/bifrost`
 
 ### 2.1.49-sync.23 (prerelease)
 
@@ -790,13 +799,13 @@ Since Kubernetes doesn't allow in-place conversion from Deployment to StatefulSe
 
 ```bash
 # Add the Bifrost Helm repository
-helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
+helm repo add bifrost https://txehq.github.io/bifrost/helm-charts
 
 # Update your local Helm chart repository cache
 helm repo update
 
 # Install Bifrost with default configuration (SQLite storage)
-helm install bifrost bifrost/bifrost --set image.tag=v1.4.3
+helm install bifrost bifrost/bifrost --set imagePullSecrets[0].name=ghcr-pull
 ```
 
 ## Prerequisites
@@ -811,11 +820,11 @@ helm install bifrost bifrost/bifrost --set image.tag=v1.4.3
 
 ```bash
 # Add repository
-helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
+helm repo add bifrost https://txehq.github.io/bifrost/helm-charts
 helm repo update
 
 # Install with default values
-helm install bifrost bifrost/bifrost --set image.tag=v1.4.3
+helm install bifrost bifrost/bifrost --set imagePullSecrets[0].name=ghcr-pull
 
 # Or install with custom values
 helm install bifrost bifrost/bifrost -f my-values.yaml
@@ -825,11 +834,11 @@ helm install bifrost bifrost/bifrost -f my-values.yaml
 
 ```bash
 # Clone the repository
-git clone https://github.com/maximhq/bifrost.git
+git clone https://github.com/txehq/bifrost.git
 cd bifrost/helm-charts
 
 # Install from local chart
-helm install bifrost ./bifrost --set image.tag=v1.5.2
+helm install bifrost ./bifrost --set imagePullSecrets[0].name=ghcr-pull
 ```
 
 ### Interactive Installation
@@ -879,7 +888,7 @@ Or equivalently on the command line:
 
 ```bash
 helm install bifrost bifrost/bifrost \
-  --set image.tag=v1.6.4 \
+  --set image.tag=v2.3.2 \
   --set podSecurityContext.runAsUser=null \
   --set podSecurityContext.fsGroup=null \
   --set securityContext.runAsUser=null
@@ -907,13 +916,30 @@ needed.
 
 ### Image Configuration
 
-| Parameter          | Description                    | Default                     |
-| ------------------ | ------------------------------ | --------------------------- |
-| `image.repository` | Container image repository     | `docker.io/maximhq/bifrost` |
-| `image.tag`        | Container image tag (required) | `""`                        |
-| `image.pullPolicy` | Image pull policy              | `IfNotPresent`              |
+| Parameter          | Description                                  | Default                |
+| ------------------ | -------------------------------------------- | ---------------------- |
+| `image.repository` | Container image repository                   | `ghcr.io/txehq/bifrost` |
+| `image.tag`        | Container image tag; empty is `v<appVersion>` | `""`                   |
+| `image.pullPolicy` | Image pull policy                            | `IfNotPresent`         |
+| `imagePullSecrets` | Secrets used to pull the image               | `[]`                   |
 
-> **Important:** You must specify the `image.tag`. See available tags at [Docker Hub](https://hub.docker.com/r/maximhq/bifrost/tags).
+Images are tagged with a `v` prefix, and `-ubi9` selects the UBI9 image (for example `v2.3.3-sync.24-ubi9`). The `ghcr.io/txehq/bifrost` package is private, so create a pull secret from a token with `read:packages`:
+
+```bash
+kubectl create secret docker-registry ghcr-pull --docker-server=ghcr.io \
+  --docker-username=<github-user> --docker-password=<token-with-read:packages>
+```
+
+```yaml
+imagePullSecrets:
+  - name: ghcr-pull
+```
+
+Prerelease charts need `--devel` or an exact `--version`. The chart is also published as an OCI artifact, which requires `helm registry login ghcr.io` with a token that has `read:packages`:
+
+```bash
+helm pull oci://ghcr.io/txehq/helm-charts/bifrost --version <chart-version>
+```
 
 ### Enterprise Private Registry
 
@@ -1329,8 +1355,8 @@ The chart includes pre-configured examples in `values-examples/`:
 ```bash
 # From Helm repository
 helm install bifrost bifrost/bifrost \
-  -f https://raw.githubusercontent.com/maximhq/bifrost/main/helm-charts/bifrost/values-examples/postgres-only.yaml \
-  --set image.tag=v1.5.2
+  -f https://raw.githubusercontent.com/txehq/bifrost/main/helm-charts/bifrost/values-examples/postgres-only.yaml \
+  --set image.tag=v2.3.2
 
 # From local source
 helm install bifrost ./bifrost -f ./bifrost/values-examples/postgres-only.yaml
@@ -1412,7 +1438,7 @@ bifrost:
 helm repo update
 
 # Upgrade release
-helm upgrade bifrost bifrost/bifrost --set image.tag=v1.5.2
+helm upgrade bifrost bifrost/bifrost --set image.tag=v2.3.2
 
 # Or with custom values
 helm upgrade bifrost bifrost/bifrost -f my-values.yaml
@@ -1519,8 +1545,8 @@ kubectl get secret bifrost -o yaml
 ## Resources
 
 - [Bifrost Documentation](https://docs.getbifrost.ai)
-- [GitHub Repository](https://github.com/maximhq/bifrost)
-- [Docker Hub](https://hub.docker.com/r/maximhq/bifrost)
+- [GitHub Repository](https://github.com/txehq/bifrost)
+- [Container image](https://github.com/orgs/txehq/packages/container/package/bifrost)
 - [Discord Community](https://discord.gg/exN5KAydbU)
 
 ## License
