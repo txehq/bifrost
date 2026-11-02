@@ -804,8 +804,9 @@ helm repo add bifrost https://txehq.github.io/bifrost/helm-charts
 # Update your local Helm chart repository cache
 helm repo update
 
-# Install Bifrost with default configuration (SQLite storage)
-helm install bifrost bifrost/bifrost --set imagePullSecrets[0].name=ghcr-pull
+# Install Bifrost with default configuration (SQLite storage). The image is
+# private: create the ghcr-pull secret first, see Image Configuration.
+helm install bifrost bifrost/bifrost --set 'imagePullSecrets[0].name=ghcr-pull'
 ```
 
 ## Prerequisites
@@ -824,7 +825,7 @@ helm repo add bifrost https://txehq.github.io/bifrost/helm-charts
 helm repo update
 
 # Install with default values
-helm install bifrost bifrost/bifrost --set imagePullSecrets[0].name=ghcr-pull
+helm install bifrost bifrost/bifrost --set 'imagePullSecrets[0].name=ghcr-pull'
 
 # Or install with custom values
 helm install bifrost bifrost/bifrost -f my-values.yaml
@@ -838,7 +839,7 @@ git clone https://github.com/txehq/bifrost.git
 cd bifrost/helm-charts
 
 # Install from local chart
-helm install bifrost ./bifrost --set imagePullSecrets[0].name=ghcr-pull
+helm install bifrost ./bifrost --set 'imagePullSecrets[0].name=ghcr-pull'
 ```
 
 ### Interactive Installation

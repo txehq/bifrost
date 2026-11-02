@@ -38,6 +38,17 @@ helm pull oci://ghcr.io/txehq/helm-charts/bifrost --version <chart-version>
 
 ## Step 2 - Install
 
+The image `ghcr.io/txehq/bifrost` is private, so create a pull secret from a token with `read:packages`. The examples below reference it:
+
+```bash
+read -rs GHCR_TOKEN
+kubectl create secret docker-registry ghcr-pull \
+  --docker-server=ghcr.io \
+  --docker-username=<github-user> \
+  --docker-password="${GHCR_TOKEN}"
+unset GHCR_TOKEN
+```
+
 <Note>
 The Helm chart ships ready-made values files under `helm-charts/bifrost/values-examples/`.
 For example: `sqlite-only.yaml`, `production-ha.yaml`, `external-postgres.yaml`, and `secrets-from-k8s.yaml`.
@@ -55,6 +66,7 @@ kubectl create secret generic bifrost-encryption-key \
 
 helm install bifrost bifrost/bifrost \
   --set image.tag=v2.3.2 \
+  --set 'imagePullSecrets[0].name=ghcr-pull' \
   --set bifrost.encryptionKeySecret.name="bifrost-encryption-key" \
   --set bifrost.encryptionKeySecret.key="encryption-key"
 ```
@@ -73,6 +85,7 @@ kubectl create secret generic provider-keys \
 
 helm install bifrost bifrost/bifrost \
   --set image.tag=v2.3.2 \
+  --set 'imagePullSecrets[0].name=ghcr-pull' \
   --set bifrost.encryptionKeySecret.name="bifrost-encryption-key" \
   --set bifrost.encryptionKeySecret.key="encryption-key" \
   --set 'bifrost.providers.openai.keys[0].name=primary' \
@@ -104,6 +117,9 @@ kubectl create secret generic provider-keys \
 # production.yaml
 image:
   tag: "v2.3.2"
+
+imagePullSecrets:
+  - name: ghcr-pull
 
 replicaCount: 3
 

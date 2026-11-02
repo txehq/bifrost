@@ -49,6 +49,8 @@ For a zonal cluster, replace `--region` with `--zone` and set the corresponding 
 
 ### Step 2: Create secrets and Helm values
 
+The image `ghcr.io/txehq/bifrost` is private. Set `GHCR_USERNAME` to your GitHub user; the first command below reads a token with `read:packages` without echoing it, and the `ghcr-pull` secret it creates is referenced from the Helm values.
+
 The encryption key protects persisted credentials. Create it once, keep it unchanged after Bifrost writes encrypted data, and use the same value for every replica. Replacing the key makes existing encrypted values unreadable.
 
 ```bash
@@ -56,6 +58,15 @@ kubectl create namespace bifrost \
   --dry-run=client -o yaml | kubectl apply -f -
 
 read -r -s -p 'Stable Bifrost encryption key: ' BIFROST_ENCRYPTION_KEY; echo
+read -rs GHCR_TOKEN
+kubectl create secret docker-registry ghcr-pull \
+  --namespace bifrost \
+  --docker-server=ghcr.io \
+  --docker-username="${GHCR_USERNAME}" \
+  --docker-password="${GHCR_TOKEN}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+unset GHCR_TOKEN
+
 kubectl create secret generic bifrost-encryption \
   --namespace bifrost \
   --from-literal=encryption-key="${BIFROST_ENCRYPTION_KEY}" \
@@ -85,6 +96,9 @@ cat > bifrost-values.yaml <<EOF
 image:
   repository: ghcr.io/txehq/bifrost
   tag: "${BIFROST_VERSION}"
+
+imagePullSecrets:
+  - name: ghcr-pull
 
 replicaCount: 1
 
@@ -146,6 +160,9 @@ cat > bifrost-values.yaml <<EOF
 image:
   repository: ghcr.io/txehq/bifrost
   tag: "${BIFROST_VERSION}"
+
+imagePullSecrets:
+  - name: ghcr-pull
 
 replicaCount: 1
 
