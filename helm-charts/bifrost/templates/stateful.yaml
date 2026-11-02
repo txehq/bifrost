@@ -1,9 +1,6 @@
 {{- /* StatefulSet is used for: sqlite mode with persistence enabled and no existingClaim */}}
 {{- $useStatefulSet := and (eq .Values.storage.mode "sqlite") .Values.storage.persistence.enabled (not .Values.storage.persistence.existingClaim) }}
 {{- if $useStatefulSet }}
-{{- if not .Values.image.tag }}
-{{- fail "ERROR: image.tag is required. Please specify the Bifrost image version (e.g., --set image.tag=v1.3.36). See available tags at https://hub.docker.com/r/capsohq/bifrost/tags" }}
-{{- end }}
 {{- include "bifrost.validate" . }}
 apiVersion: apps/v1
 kind: StatefulSet
@@ -59,7 +56,7 @@ spec:
         - name: {{ .Chart.Name }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: {{ include "bifrost.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           {{- with .Values.lifecycle }}
           lifecycle:

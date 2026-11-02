@@ -7,18 +7,23 @@ replicaCount: 1
 
 image:
   # Container image repository
-  # Default: Docker Hub public image
+  # Default: this fork's image on GitHub Container Registry. The package is
+  # private, so a cluster pulling it needs imagePullSecrets (see below).
   # For enterprise customers with private registry, use full URL:
   #   repository: us-west1-docker.pkg.dev/bifrost-enterprise/your-org/bifrost
   #   repository: your-registry.example.com/your-org/bifrost
   #   repository: 123456789.dkr.ecr.us-east-1.amazonaws.com/bifrost
-  repository: docker.io/capsohq/bifrost
+  repository: ghcr.io/txehq/bifrost
   pullPolicy: IfNotPresent
-  # REQUIRED: Specify the image tag (e.g., v1.5.0, latest)
-  # Docker images are tagged with v prefix (e.g., v1.5.0)
-  # See available tags at: https://hub.docker.com/r/capsohq/bifrost/tags
+  # Empty selects v<Chart appVersion>, the image this chart was released with.
+  # Set it to run another version (e.g., v2.3.2, v2.3.3-sync.24-ubi9).
+  # Images are tagged with a v prefix.
   tag: ""
 
+# Needed for the default private image. Create the secret as the README's Image
+# Configuration section shows, then set:
+#   imagePullSecrets:
+#     - name: ghcr-pull
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""

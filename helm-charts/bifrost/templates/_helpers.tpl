@@ -15,6 +15,15 @@
 {{- end }}
 {{- end }}
 
+{{/*
+The Bifrost image. An explicit image.tag is used as given; otherwise the tag is
+v<appVersion>, the only form the release pipeline publishes, whether or not
+appVersion already carries the v.
+*/}}
+{{- define "bifrost.image" -}}
+{{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default (printf "v%s" (.Chart.AppVersion | trimPrefix "v"))) }}
+{{- end }}
+
 {{- define "bifrost.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}

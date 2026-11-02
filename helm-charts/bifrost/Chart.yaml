@@ -2,8 +2,8 @@ apiVersion: v2
 name: bifrost
 description: A Helm chart for deploying Bifrost - AI Gateway with unified interface for multiple providers
 type: application
-version: 2.1.49-sync.23
-appVersion: "2.3.3-sync.23"
+version: 2.1.49-sync.24
+appVersion: "2.3.3-sync.24"
 keywords:
   - ai
   - gateway
@@ -12,7 +12,7 @@ keywords:
   - anthropic
 home: https://www.getmaxim.ai/bifrost
 sources:
-  - https://github.com/capsohq/bifrost
+  - https://github.com/txehq/bifrost
 maintainers:
   - name: Bifrost Team
     email: support@getbifrost.ai
