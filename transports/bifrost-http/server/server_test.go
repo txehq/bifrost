@@ -2529,7 +2529,7 @@ func newCustomAudioGatewayFixture(t *testing.T) *customAudioGatewayFixture {
 	for name, data := range map[string]string{"pricing.json": "{}", "params.json": "{}", "mcp.json": `{"servers":[]}`} {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(data), 0600))
 	}
-	config := fmt.Sprintf(`{"client":{"enable_logging":false,"disable_content_logging":true},"providers":{},"framework":{"pricing":{"pricing_url":%q,"model_parameters_url":%q,"mcp_library_url":%q,"mcp_library_sync_interval":0,"live_models_sync_interval":0}}}`, "file://"+filepath.Join(dir, "pricing.json"), "file://"+filepath.Join(dir, "params.json"), "file://"+filepath.Join(dir, "mcp.json"))
+	config := fmt.Sprintf(`{"setup_token":"txe-5087-setup","client":{"enable_logging":false,"disable_content_logging":true,"enforce_auth_on_inference":false},"providers":{},"framework":{"pricing":{"pricing_url":%q,"model_parameters_url":%q,"mcp_library_url":%q,"mcp_library_sync_interval":0,"live_models_sync_interval":0}}}`, "file://"+filepath.Join(dir, "pricing.json"), "file://"+filepath.Join(dir, "params.json"), "file://"+filepath.Join(dir, "mcp.json"))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(config), 0600))
 	gateway, base, stop := startCustomAudioGateway(t, dir)
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -2546,6 +2546,9 @@ func (f *customAudioGatewayFixture) call(method, path, body, contentType string,
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("x-bf-api-key", f.selectedName)
+	if strings.HasPrefix(path, "/api/") {
+		req.Header.Set(handlers.SetupTokenHeader, "txe-5087-setup")
+	}
 	resp, err := f.client.Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
