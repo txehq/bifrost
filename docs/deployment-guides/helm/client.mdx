@@ -20,7 +20,7 @@ A larger pool reduces latency spikes under burst load at the cost of higher base
 ```yaml
 # client-pool.yaml
 image:
-  tag: "v2.3.3"
+  tag: "v2.3.4"
 
 bifrost:
   client:
@@ -95,7 +95,7 @@ bifrost:
 
 ```bash
 helm install bifrost bifrost/bifrost \
-  --set image.tag=v2.3.3 \
+  --set image.tag=v2.3.4 \
   --set bifrost.client.enforceGovernanceHeader=true
 ```
 
@@ -189,7 +189,7 @@ bifrost:
 
 ```bash
 helm install bifrost bifrost/bifrost \
-  --set image.tag=v2.3.3 \
+  --set image.tag=v2.3.4 \
   -f encryption-values.yaml
 ```
 
@@ -270,7 +270,7 @@ bifrost:
 ```yaml
 # client-full.yaml
 image:
-  tag: "v2.3.3"
+  tag: "v2.3.4"
 
 bifrost:
   encryptionKeySecret:

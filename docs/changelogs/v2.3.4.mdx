@@ -1,0 +1,33 @@
+---
+title: "v2.3.4"
+description: "v2.3.4 changelog - 2026-11-02"
+---
+<Tabs>
+  <Tab title="Docker">
+    The image is private: log in with a token that has `read:packages`.
+
+    ```bash
+    docker login ghcr.io
+    docker pull ghcr.io/txehq/bifrost:v2.3.4
+    docker run -p 8080:8080 ghcr.io/txehq/bifrost:v2.3.4
+    ```
+  </Tab>
+  <Tab title="Bifrost CLI">
+    Download the asset for your platform from this repository's [`cli/v*` releases](https://github.com/txehq/bifrost/releases), check it against `SHA256SUMS`, and put it on your `PATH` as `bifrost`.
+  </Tab>
+</Tabs>
+
+<Update label="Bifrost(HTTP)" description="2.3.4">
+## 🐞 Fixed
+
+- The UBI9 image's Docker health check runs `curl`. It ran `curl-minimal`, a package name and not a command, so Docker, Compose and anything else reading the image's health status reported a working container as unhealthy. The defect is in every earlier UBI9 image, `v2.3.3-ubi9` and `v2.3.2-ubi9` included; those stay published unchanged. Kubernetes deployments that use the Helm chart's own probes were not affected
+
+## 🍴 Fork changes (txehq/bifrost)
+
+- chore: v2.3.4 changes the UBI9 Dockerfile's health check, a release check, versions and documentation only, no gateway code. It replaces v2.3.3 as `latest` and `latest-ubi9`
+- chore: Workflow Lint checks that the command each production Dockerfile uses for its health check exists in that image's pinned base
+- chore: the Helm chart is 2.1.50, the stable chart; `appVersion` is 2.3.4
+- note: the CLI and Migration CLI are unchanged: v1.0.1 and v0.1.1 remain their stable releases
+- note: this release publishes images and the Helm chart. The image and the OCI chart are private packages, so pulling them needs a token with `read:packages`; the `@maximhq` npm packages and the upstream download host do not serve this fork's builds
+
+</Update>

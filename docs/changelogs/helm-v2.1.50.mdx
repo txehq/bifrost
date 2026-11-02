@@ -1,0 +1,14 @@
+---
+title: "v2.1.50"
+description: "Helm v2.1.50 changelog - 2026-11-02"
+---
+
+<Update label="Bifrost Helm" description="v2.1.50">
+
+## Changelog
+
+The txehq fork chart for transport v2.3.4. It supersedes 2.1.49 as the stable chart; no values, templates or schema change.
+
+- `appVersion` is now `2.3.4`, so an empty `image.tag` selects `v2.3.4`. That transport fixes the UBI9 image's Docker health check; the chart's own Kubernetes probes were not affected.
+
+</Update>
