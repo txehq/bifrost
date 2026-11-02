@@ -8,11 +8,12 @@ set -euo pipefail
 # The one decision made here is the release's prerelease flag. A chart version
 # with a hyphen (2.1.46-sync.3) is a prerelease, exactly as the transport
 # release treats its own versions (release-bifrost-http-finalize.sh): the
-# GitHub release is created with --prerelease, so it never becomes the
-# repository's "latest" release, and Helm clients skip it unless asked for
-# prereleases (--devel). A plain MAJOR.MINOR.PATCH is created as before, with
-# no flag. Before this script the workflow inlined `gh release create` with no
-# flag at all, and every chart release took "latest".
+# GitHub release is created with --prerelease, and Helm clients skip it unless
+# asked for prereleases (--devel). A plain MAJOR.MINOR.PATCH is a regular
+# release. Every chart release is --latest=false: GH latest is the transport's.
+# Before this, a stable chart took "latest" when it published, minutes into the
+# same push whose CLI jobs fail if "latest" moves while they publish, and those
+# jobs cannot be re-run once their tag exists.
 #
 # The version is validated before it reaches gh: the same shape the release
 # pipeline's version guard accepts (MAJOR.MINOR.PATCH with an optional -suffix,
@@ -96,7 +97,7 @@ TAG="helm-chart-v$CHART_VERSION"
 PRERELEASE_FLAG=""
 if [[ "$CHART_VERSION" == *-* ]]; then
   PRERELEASE_FLAG="--prerelease"
-  log "$CHART_VERSION is a prerelease: $TAG is created with --prerelease and never takes the latest release"
+  log "$CHART_VERSION is a prerelease: $TAG is created with --prerelease"
 else
   log "$CHART_VERSION is a stable version: $TAG is created as a regular release"
 fi
@@ -107,6 +108,7 @@ gh release create "$TAG" "$PACKAGE" \
   --target "$TARGET" \
   --title "Helm Chart v$CHART_VERSION" \
   --notes "Helm chart release for Bifrost v$CHART_VERSION" \
+  --latest=false \
   $PRERELEASE_FLAG
 
 log "created $TAG from $PACKAGE at $TARGET"
