@@ -10,6 +10,7 @@ on:
       - ".github/workflows/**"
       - "**/go.mod"
       - "**/version"
+      - "transports/Dockerfile*"
 
 permissions:
   contents: read
@@ -159,6 +160,32 @@ jobs:
       - name: Check the bifrost-http release finalizes
         if: ${{ !cancelled() }}
         run: ./.github/workflows/scripts/release-bifrost-http-finalize.test.sh
+
+  dockerfile-health:
+    name: Image health commands exist in their base images
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 10
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            *.quay.io:443
+            *.redhat.com:443
+            auth.docker.io:443
+            github.com:443
+            production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
+            registry-1.docker.io:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Neither production Dockerfile is built in a pull request, and the release's image
+      # test builds Dockerfile.local, so a health command that does not exist reaches users.
+      - name: Check each health command exists in its pinned base image
+        run: ./.github/workflows/scripts/dockerfile-health.test.sh
 
   helm-publish-index:
     name: Helm index publication keeps fork history

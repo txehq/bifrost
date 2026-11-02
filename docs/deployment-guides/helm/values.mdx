@@ -18,7 +18,7 @@ Good for a single field or quick experiments:
 
 ```bash
 helm install bifrost bifrost/bifrost \
-  --set image.tag=v2.3.3 \
+  --set image.tag=v2.3.4 \
   --set replicaCount=3 \
   --set bifrost.client.initialPoolSize=500
 ```
@@ -31,7 +31,7 @@ Recommended for anything beyond a couple of fields:
 # Create your values file
 cat > my-values.yaml <<'EOF'
 image:
-  tag: "v2.3.3"
+  tag: "v2.3.4"
 
 replicaCount: 2
 
@@ -73,13 +73,13 @@ helm install bifrost bifrost/bifrost \
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `image.repository` | Container image repository | `docker.io/maximhq/bifrost` |
-| `image.tag` | Image version (e.g. `v2.3.3`); empty selects `v<appVersion>` | `""` |
+| `image.tag` | Image version (e.g. `v2.3.4`); empty selects `v<appVersion>` | `""` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `imagePullSecrets` | List of pull secret names for private registries | `[]` |
 
 ```bash
 # Always specify the tag - the chart will not start without it
-helm install bifrost bifrost/bifrost --set image.tag=v2.3.3
+helm install bifrost bifrost/bifrost --set image.tag=v2.3.4
 ```
 
 ### Replicas & Autoscaling
@@ -335,7 +335,7 @@ Install from an example file directly:
 ```bash
 helm install bifrost bifrost/bifrost \
   -f https://raw.githubusercontent.com/maximhq/bifrost/main/helm-charts/bifrost/values-examples/production-ha.yaml \
-  --set image.tag=v2.3.3
+  --set image.tag=v2.3.4
 ```
 
 ---
@@ -379,7 +379,7 @@ A quick-reference table of the most commonly used top-level parameters:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `image.tag` | Bifrost image version (e.g., `v2.3.3`); empty selects `v<appVersion>` | `""` |
+| `image.tag` | Bifrost image version (e.g., `v2.3.4`); empty selects `v<appVersion>` | `""` |
 | `replicaCount` | Number of replicas | `1` |
 | `storage.mode` | Storage backend (`sqlite` or `postgres`) | `sqlite` |
 | `storage.persistence.size` | PVC size for SQLite | `10Gi` |
@@ -425,7 +425,7 @@ A production-ready values file combining the most common settings:
 ```yaml
 # my-values.yaml
 image:
-  tag: "v2.3.3"
+  tag: "v2.3.4"
 
 replicaCount: 3
 
@@ -521,7 +521,7 @@ Simple setup for local testing. SQLite, single replica, no autoscaling.
 
 ```bash
 helm install bifrost bifrost/bifrost \
-  --set image.tag=v2.3.3 \
+  --set image.tag=v2.3.4 \
   --set 'bifrost.providers.openai.keys[0].name=dev-key' \
   --set 'bifrost.providers.openai.keys[0].value=sk-your-key' \
   --set 'bifrost.providers.openai.keys[0].weight=1'
@@ -547,7 +547,7 @@ kubectl create secret generic provider-keys \
 ```yaml
 # multi-provider.yaml
 image:
-  tag: "v2.3.3"
+  tag: "v2.3.4"
 
 bifrost:
   encryptionKey: "your-encryption-key"
@@ -610,7 +610,7 @@ kubectl create secret generic postgres-credentials \
 ```yaml
 # external-db.yaml
 image:
-  tag: "v2.3.3"
+  tag: "v2.3.4"
 
 storage:
   mode: postgres
@@ -658,7 +658,7 @@ kubectl create secret generic provider-keys \
 ```yaml
 # ai-workload.yaml
 image:
-  tag: "v2.3.3"
+  tag: "v2.3.4"
 
 storage:
   mode: postgres
@@ -740,7 +740,7 @@ kubectl create secret generic qdrant-credentials \
 ```yaml
 # secrets-only.yaml
 image:
-  tag: "v2.3.3"
+  tag: "v2.3.4"
 
 storage:
   mode: postgres

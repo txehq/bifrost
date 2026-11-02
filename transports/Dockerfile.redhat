@@ -124,10 +124,10 @@ USER 1001
 VOLUME ["${APP_DIR}"]
 EXPOSE $APP_PORT
 
-# curl-minimal is pre-installed in ubi9-minimal and is a drop-in for curl.
+# ubi9-minimal pre-installs the curl-minimal package, whose command is curl.
 # start-period is raised to 15s to allow the Go service time to run migrations
 # before the first liveness probe fires.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-  CMD curl-minimal -f -s http://127.0.0.1:${APP_PORT}/health || exit 1
+  CMD curl -f -s http://127.0.0.1:${APP_PORT}/health || exit 1
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["/app/main"]

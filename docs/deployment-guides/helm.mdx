@@ -72,7 +72,7 @@ kubectl create secret generic bifrost-encryption-key \
   --from-literal=encryption-key="$(openssl rand -base64 32)"
 
 helm install bifrost bifrost/bifrost \
-  --set image.tag=v2.3.3 \
+  --set image.tag=v2.3.4 \
   --set 'imagePullSecrets[0].name=ghcr-pull' \
   --set bifrost.encryptionKeySecret.name="bifrost-encryption-key" \
   --set bifrost.encryptionKeySecret.key="encryption-key"
@@ -91,7 +91,7 @@ kubectl create secret generic provider-keys \
   --from-literal=openai-api-key='sk-your-key'
 
 helm install bifrost bifrost/bifrost \
-  --set image.tag=v2.3.3 \
+  --set image.tag=v2.3.4 \
   --set 'imagePullSecrets[0].name=ghcr-pull' \
   --set bifrost.encryptionKeySecret.name="bifrost-encryption-key" \
   --set bifrost.encryptionKeySecret.key="encryption-key" \
@@ -123,7 +123,7 @@ kubectl create secret generic provider-keys \
 ```yaml
 # production.yaml
 image:
-  tag: "v2.3.3"
+  tag: "v2.3.4"
 
 imagePullSecrets:
   - name: ghcr-pull
@@ -539,7 +539,7 @@ helm upgrade bifrost bifrost/bifrost -f your-values.yaml
 # Upgrade and override a single field
 helm upgrade bifrost bifrost/bifrost \
   --reuse-values \
-  --set image.tag=v2.3.3
+  --set image.tag=v2.3.4
 ```
 
 ### Rollback

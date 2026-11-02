@@ -44,7 +44,7 @@ Common causes:
 
 ```bash
 # Fix: set the correct tag
-helm upgrade bifrost bifrost/bifrost --reuse-values --set image.tag=v2.3.3
+helm upgrade bifrost bifrost/bifrost --reuse-values --set image.tag=v2.3.4
 ```
 
 ### PVC not binding (`Pending`)
@@ -331,7 +331,7 @@ kubectl get pvc
 helm upgrade bifrost bifrost/bifrost \
   --reuse-values \
   --set storage.persistence.existingClaim=<your-old-pvc-name> \
-  --set image.tag=v2.3.3
+  --set image.tag=v2.3.4
 ```
 
 ### Data lost after upgrade
