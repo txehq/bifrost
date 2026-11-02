@@ -59,13 +59,18 @@ kubectl create namespace bifrost \
 
 read -r -s -p 'Stable Bifrost encryption key: ' BIFROST_ENCRYPTION_KEY; echo
 read -rs GHCR_TOKEN
-kubectl create secret docker-registry ghcr-pull \
-  --namespace bifrost \
-  --docker-server=ghcr.io \
-  --docker-username="${GHCR_USERNAME}" \
-  --docker-password="${GHCR_TOKEN}" \
-  --dry-run=client -o yaml | kubectl apply -f -
-unset GHCR_TOKEN
+GHCR_AUTH=$(printf '%s:%s' "${GHCR_USERNAME}" "${GHCR_TOKEN}" | base64 | tr -d '\n')
+GHCR_CONFIG=$(printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "${GHCR_AUTH}" | base64 | tr -d '\n')
+kubectl apply --namespace bifrost -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ghcr-pull
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: ${GHCR_CONFIG}
+EOF
+unset GHCR_TOKEN GHCR_AUTH GHCR_CONFIG
 
 kubectl create secret generic bifrost-encryption \
   --namespace bifrost \

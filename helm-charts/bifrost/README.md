@@ -924,11 +924,22 @@ needed.
 | `image.pullPolicy` | Image pull policy                            | `IfNotPresent`         |
 | `imagePullSecrets` | Secrets used to pull the image               | `[]`                   |
 
-Images are tagged with a `v` prefix, and `-ubi9` selects the UBI9 image (for example `v2.3.3-sync.24-ubi9`). The `ghcr.io/txehq/bifrost` package is private, so create a pull secret from a token with `read:packages`:
+Images are tagged with a `v` prefix, and `-ubi9` selects the UBI9 image (for example `v2.3.3-sync.24-ubi9`). The `ghcr.io/txehq/bifrost` package is private, so create a pull secret from a token with `read:packages`. Set `GHCR_USERNAME` to your GitHub user; the first command reads the token without echoing it:
 
 ```bash
-kubectl create secret docker-registry ghcr-pull --docker-server=ghcr.io \
-  --docker-username=<github-user> --docker-password=<token-with-read:packages>
+read -rs GHCR_TOKEN
+GHCR_AUTH=$(printf '%s:%s' "${GHCR_USERNAME}" "${GHCR_TOKEN}" | base64 | tr -d '\n')
+GHCR_CONFIG=$(printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "${GHCR_AUTH}" | base64 | tr -d '\n')
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ghcr-pull
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: ${GHCR_CONFIG}
+EOF
+unset GHCR_TOKEN GHCR_AUTH GHCR_CONFIG
 ```
 
 ```yaml

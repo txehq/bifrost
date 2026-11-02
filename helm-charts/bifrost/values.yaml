@@ -20,11 +20,8 @@ image:
   # Images are tagged with a v prefix.
   tag: ""
 
-# Needed for the default private image. Create the secret from a token with
-# read:packages:
-#   kubectl create secret docker-registry ghcr-pull --docker-server=ghcr.io \
-#     --docker-username=<github-user> --docker-password=<token>
-# then set:
+# Needed for the default private image. Create the secret as the README's Image
+# Configuration section shows, then set:
 #   imagePullSecrets:
 #     - name: ghcr-pull
 imagePullSecrets: []
