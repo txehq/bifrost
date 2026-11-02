@@ -47,13 +47,23 @@ source "$(dirname "$0")/changelog-utils.sh"
 # The commit's date, not the wall clock, so a rerun writes the same page.
 CURRENT_DATE=$(TZ=UTC0 git log -1 --format=%cd --date=format-local:%Y-%m-%d HEAD)
 
-# Preparing changelog file
-CHANGELOG_BODY="---
-title: \"$VERSION\"
-description: \"$VERSION changelog - $CURRENT_DATE\"
----
-<Tabs>
-  <Tab title=\"NPX\">
+# The fork's builds reach users through its own private image and GitHub releases: the
+# @maximhq npm packages serve upstream's binaries, so its pages never point at them.
+if [ "${GITHUB_REPOSITORY:-}" = "txehq/bifrost" ]; then
+  INSTALL_TABS="  <Tab title=\"Docker\">
+    The image is private: log in with a token that has \`read:packages\`.
+
+    \`\`\`bash
+    docker login ghcr.io
+    docker pull $DOCKER_IMAGE:$VERSION
+    docker run -p 8080:8080 $DOCKER_IMAGE:$VERSION
+    \`\`\`
+  </Tab>
+  <Tab title=\"Bifrost CLI\">
+    Download the asset for your platform from this repository's [\`cli/v*\` releases](https://github.com/txehq/bifrost/releases), check it against \`SHA256SUMS\`, and put it on your \`PATH\` as \`bifrost\`.
+  </Tab>"
+else
+  INSTALL_TABS="  <Tab title=\"NPX\">
     \`\`\`bash
     npx -y @maximhq/bifrost --transport-version $VERSION
     \`\`\`
@@ -63,7 +73,16 @@ description: \"$VERSION changelog - $CURRENT_DATE\"
     docker pull $DOCKER_IMAGE:$VERSION
     docker run -p 8080:8080 $DOCKER_IMAGE:$VERSION
     \`\`\`
-  </Tab>
+  </Tab>"
+fi
+
+# Preparing changelog file
+CHANGELOG_BODY="---
+title: \"$VERSION\"
+description: \"$VERSION changelog - $CURRENT_DATE\"
+---
+<Tabs>
+$INSTALL_TABS
 </Tabs>
 "
 

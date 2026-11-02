@@ -1,1 +1,2 @@
 - feat: first release from this fork, with the `github.com/capsohq/bifrost` module path and Go 1.27.3
+- chore: stable release of v0.1.1-sync.1

@@ -294,6 +294,25 @@ grep -q 'inside the checkout' "$OUT" || fail "$label: no inside-the-checkout err
 [ -z "$(find "$WORK/drift/patches" -name '*.patch' 2>/dev/null)" ] || fail "$label: wrote a patch into the checkout"
 rm -rf "$WORK/drift/patches"
 
+# --- docs changelog tabs follow the repository -----------------------------------------
+GITHUB_REPOSITORY=txehq/bifrost GITHUB_REPOSITORY_OWNER=txehq run_script "$WORK/clean" push-mintlify-changelog.sh 2.1.2
+label="fork docs changelog"
+PAGE="$(cat "$WORK/clean/docs/changelogs/v2.1.2.mdx" 2>/dev/null)"
+[ "$STATUS" -eq 0 ] || fail "$label: exit $STATUS"
+grep -q 'npx' <<<"$PAGE" && fail "$label: the page has an npx install"
+grep -q 'ghcr.io/txehq/bifrost:v2.1.2' <<<"$PAGE" || fail "$label: the page has no GHCR image"
+grep -q 'Bifrost CLI' <<<"$PAGE" || fail "$label: the page has no CLI tab"
+"$REAL_GIT" -C "$WORK/clean" checkout -q -- .
+"$REAL_GIT" -C "$WORK/clean" clean -qfd
+GITHUB_REPOSITORY=maximhq/bifrost GITHUB_REPOSITORY_OWNER=maximhq run_script "$WORK/clean" push-mintlify-changelog.sh 2.1.2
+label="upstream docs changelog"
+PAGE="$(cat "$WORK/clean/docs/changelogs/v2.1.2.mdx" 2>/dev/null)"
+[ "$STATUS" -eq 0 ] || fail "$label: exit $STATUS"
+grep -q 'npx -y @maximhq/bifrost --transport-version v2.1.2' <<<"$PAGE" || fail "$label: the page lost its npx install"
+grep -q 'Bifrost CLI' <<<"$PAGE" && fail "$label: the page gained the fork's CLI tab"
+"$REAL_GIT" -C "$WORK/clean" checkout -q -- .
+"$REAL_GIT" -C "$WORK/clean" clean -qfd
+
 # --- docs changelog: a pending patch inside the allowlist, dated from the commit --------
 run_script "$WORK/clean" push-mintlify-changelog.sh 2.1.2
 label="docs changelog"

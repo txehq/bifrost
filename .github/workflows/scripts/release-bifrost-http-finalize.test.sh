@@ -70,6 +70,30 @@ if grep -q -- "Bifrost HTTP v$VERSION" "$WORK/gh-args"; then pass "release is ti
 
 if grep -qx 'success=true' "$WORK/output"; then pass "step output reports success"; else fail "no success=true in step output"; fi
 
+# The notes follow the repository: the fork's never send a user to the upstream npm package.
+if grep -q 'docker login ghcr.io' "$WORK/gh-args" && grep -q "ghcr.io/txehq/bifrost:v$VERSION" "$WORK/gh-args" \
+  && grep -q 'releases](https://github.com/txehq/bifrost/releases)' "$WORK/gh-args"; then
+  pass "fork notes give the GHCR image and the fork's CLI assets"
+else
+  fail "fork notes are missing the GHCR image or the CLI assets"
+fi
+if grep -q 'npx @maximhq/bifrost' "$WORK/gh-args"; then fail "fork notes point at the upstream npm package"; else pass "fork notes have no npx install"; fi
+
+git -C "$WORK/clone" tag -d "transports/v$VERSION" >/dev/null
+git -C "$WORK/origin.git" tag -d "transports/v$VERSION" >/dev/null
+(cd "$WORK/clone" && PATH="$WORK/bin:$PATH" GH_TOKEN=fixture GITHUB_REPOSITORY=maximhq/bifrost \
+  GITHUB_REPOSITORY_OWNER=maximhq GITHUB_OUTPUT="$WORK/output" R2_ENDPOINT='' R2_BUCKET='' \
+  bash ./.github/workflows/scripts/release-bifrost-http-finalize.sh "$VERSION") > "$WORK/log" 2>&1
+RC=$?
+if [ "$RC" -eq 0 ]; then pass "finalize succeeds for upstream"; else fail "upstream finalize failed (rc=$RC): $(tail -5 "$WORK/log")"; fi
+if grep -q "npx @maximhq/bifrost --transport-version v$VERSION" "$WORK/gh-args" \
+  && grep -q "docker run -p 8080:8080 ghcr.io/maximhq/bifrost:v$VERSION" "$WORK/gh-args" \
+  && ! grep -q 'docker login ghcr.io' "$WORK/gh-args"; then
+  pass "upstream notes are unchanged"
+else
+  fail "upstream notes changed"
+fi
+
 if [ "$FAILURES" -gt 0 ]; then
   echo "$FAILURES check(s) failed"
   exit 1

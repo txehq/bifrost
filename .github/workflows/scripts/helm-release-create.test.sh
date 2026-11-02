@@ -10,7 +10,8 @@ set -uo pipefail
 # release and taken the repository's "latest" release away from the published
 # stable chart. The flag decision now lives in a script, so both paths are
 # exercised here against a gh shim that records its arguments: a stable
-# version gets no flag, a hyphenated one gets --prerelease, and a version or
+# version gets no --prerelease, a hyphenated one does, both are --latest=false
+# so GH latest stays the transport's, and a version or
 # package that is not what it claims never reaches gh. One package is written
 # the way `helm package` re-marshals Chart.yaml (keys sorted, maintainers[].name
 # ahead of the chart's name): the first release run read that nested name and
@@ -138,6 +139,7 @@ check "the package is the release asset" gh_arg "$STABLE"
 check "the target commit is passed" gh_arg 0123456789abcdef0123456789abcdef01234567
 check "the repository is passed" gh_arg txehq/bifrost
 check "a stable version gets no --prerelease" not gh_arg --prerelease
+check "a stable version does not take GH latest" gh_arg --latest=false
 check "the log names the stable path" grep -q "is a stable version" "$ROOT/log"
 
 echo "prerelease chart version"
@@ -148,6 +150,7 @@ check "the tag is helm-chart-v2.1.46-sync.3" gh_arg helm-chart-v2.1.46-sync.3
 check "the package is the release asset" gh_arg "$PRE"
 check "a hyphenated version gets --prerelease" gh_arg --prerelease
 check "--prerelease is passed exactly once" [ "$(gh_arg_count --prerelease)" = "1" ]
+check "a prerelease does not take GH latest either" gh_arg --latest=false
 check "the log names the prerelease path" grep -q "is a prerelease" "$ROOT/log"
 
 echo "a package as helm writes it: nested keys ahead of the chart's own"

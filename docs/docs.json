@@ -2018,11 +2018,17 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v2.3.2",
-              "changelogs/v2.3.1",
-              "changelogs/v2.3.0",
-              "changelogs/v2.2.6",
-              "changelogs/v2.2.5",
+              "changelogs/v2.3.3",
+              {
+                "group": "October 2026",
+                "pages": [
+                  "changelogs/v2.3.2",
+                  "changelogs/v2.3.1",
+                  "changelogs/v2.3.0",
+                  "changelogs/v2.2.6",
+                  "changelogs/v2.2.5"
+                ]
+              },
               {
                 "group": "September 2026",
                 "pages": [
@@ -2393,7 +2399,14 @@
             "item": "Bifrost CLI",
             "icon": "laptop-code",
             "pages": [
-              "changelogs/cli-v1.0.0",
+              "changelogs/cli-v1.0.1",
+              "changelogs/cli-v1.0.1-sync.1",
+              {
+                "group": "October 2026",
+                "pages": [
+                  "changelogs/cli-v1.0.0"
+                ]
+              },
               {
                 "group": "June 2026",
                 "pages": [
@@ -2422,6 +2435,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.49",
               "changelogs/helm-v2.1.49-sync.24",
               "changelogs/helm-v2.1.49-sync.23",
               "changelogs/helm-v2.1.49-sync.22",

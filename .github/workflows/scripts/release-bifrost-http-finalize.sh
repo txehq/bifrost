@@ -139,11 +139,23 @@ The following plugin versions are compatible with this release:
   done
 fi
 
-BODY="## Bifrost HTTP Transport Release v$VERSION
+# The fork's builds reach users through its own private image and GitHub releases: the
+# @maximhq npm packages serve upstream's binaries, so this repository never points at them.
+if [[ "${GITHUB_REPOSITORY:-}" == "txehq/bifrost" ]]; then
+  INSTALLATION="### Installation
 
-$CHANGELOG_BODY
+#### Docker
+The image is private: log in with a token that has \`read:packages\`.
 
-### Installation
+\`\`\`bash
+docker login ghcr.io
+docker run -p 8080:8080 ghcr.io/txehq/bifrost:v$VERSION
+\`\`\`
+
+#### Bifrost CLI
+Download the asset for your platform from this repository's [\`cli/v*\` releases](https://github.com/txehq/bifrost/releases), check it against \`SHA256SUMS\`, and put it on your \`PATH\` as \`bifrost\`. The \`@maximhq\` npm packages and the upstream download host do not serve this fork's builds."
+else
+  INSTALLATION="### Installation
 
 #### Docker
 \`\`\`bash
@@ -153,7 +165,14 @@ docker run -p 8080:8080 ghcr.io/${GITHUB_REPOSITORY_OWNER:-capsohq}/bifrost:v$VE
 #### Binary Download
 \`\`\`bash
 npx @maximhq/bifrost --transport-version v$VERSION
-\`\`\`
+\`\`\`"
+fi
+
+BODY="## Bifrost HTTP Transport Release v$VERSION
+
+$CHANGELOG_BODY
+
+$INSTALLATION
 
 ### Docker Images
 - **\`ghcr.io/${GITHUB_REPOSITORY_OWNER:-capsohq}/bifrost:v$VERSION\`** - This specific version
