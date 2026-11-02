@@ -1,15 +1,23 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2339,3 +2347,461 @@ func TestGovernanceInMemoryStoreProvidersSurviveEdits(t *testing.T) {
 	_, leaked := providers[schemas.Gemini]
 	assert.False(t, leaked, "the returned map is a snapshot, not the live map")
 }
+
+func startCustomAudioGateway(t *testing.T, dir string) (*BifrostHTTPServer, string, func()) {
+	t.Helper()
+	log := bifrost.NewNoOpLogger()
+	SetLogger(log)
+	lib.SetLogger(log)
+	handlers.SetLogger(log)
+	s := NewBifrostHTTPServer("txe5087", embed.FS{})
+	s.AppDir = dir
+	require.NoError(t, s.Bootstrap(context.Background()))
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	done := make(chan error, 1)
+	go func() { done <- s.Server.Serve(listener) }()
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			s.shutdownGracefully()
+			require.NoError(t, <-done)
+			require.ErrorIs(t, listener.Close(), net.ErrClosed)
+		})
+	}
+	t.Cleanup(stop)
+	return s, "http://" + listener.Addr().String(), stop
+}
+
+type customAudioUpstream struct {
+	t                  *testing.T
+	server             *httptest.Server
+	audio              []byte
+	speechCalls        atomic.Int32
+	transcriptionCalls atomic.Int32
+	selectedKey        atomic.Value
+	cancelled          chan struct{}
+}
+
+func (u *customAudioUpstream) serveChat(w http.ResponseWriter, r *http.Request) {
+	t := u.t
+	if r.URL.Path == "/openai/v1/models" || r.URL.Path == "/anthropic/v1/models" {
+		w.Header().Set("Content-Type", "application/json")
+		_, err := io.WriteString(w, `{"data":[{"id":"owned-chat","object":"model","type":"model","display_name":"Owned chat"}]}`)
+		require.NoError(t, err)
+		return
+	}
+	if r.URL.Path == "/openai/v1/chat/completions" {
+		require.Equal(t, "Bearer owned-openai-value", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, err := io.WriteString(w, `{"id":"chatcmpl-owned","object":"chat.completion","model":"owned-chat","choices":[{"index":0,"message":{"role":"assistant","content":"Owned chat"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		require.NoError(t, err)
+		return
+	}
+	if r.URL.Path == "/anthropic/v1/messages" {
+		require.Equal(t, "owned-anthropic-value", r.Header.Get("x-api-key"))
+		w.Header().Set("Content-Type", "application/json")
+		_, err := io.WriteString(w, `{"id":"msg-owned","type":"message","role":"assistant","model":"owned-chat","content":[{"type":"text","text":"Owned chat"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+		require.NoError(t, err)
+		return
+	}
+	t.Fatalf("unexpected chat upstream path: %s", r.URL.Path)
+}
+
+// ServeHTTP 校验并记录任务自有 upstream 的请求。
+func (u *customAudioUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	t := u.t
+	if strings.HasPrefix(r.URL.Path, "/openai/") || strings.HasPrefix(r.URL.Path, "/anthropic/") {
+		u.serveChat(w, r)
+		return
+	}
+	if r.URL.Path == "/reseller/v1/models" {
+		w.Header().Set("Content-Type", "application/json")
+		_, err := io.WriteString(w, `[{"model_id":"eleven_turbo_v2_5","name":"Owned speech","can_do_text_to_speech":true}]`)
+		require.NoError(t, err)
+		return
+	}
+	u.selectedKey.Store(r.Header.Get("xi-api-key"))
+	if r.URL.Path == "/reseller/v1/speech-to-text" {
+		u.serveTranscription(w, r)
+		return
+	}
+	u.serveSpeech(w, r)
+}
+
+func (u *customAudioUpstream) serveTranscription(w http.ResponseWriter, r *http.Request) {
+	t := u.t
+	u.transcriptionCalls.Add(1)
+	require.NoError(t, r.ParseMultipartForm(1024*1024))
+	require.Equal(t, "scribe_v2", r.FormValue("model_id"))
+	file, _, err := r.FormFile("file")
+	require.NoError(t, err)
+	data, err := io.ReadAll(file)
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+	require.Equal(t, []byte("owned-upload"), data)
+	w.Header().Set("Content-Type", "application/json")
+	_, err = io.WriteString(w, `{"text":"Owned transcription","language_code":"eng","language_probability":1,"words":[],"audio_duration_secs":1}`)
+	require.NoError(t, err)
+}
+
+func (u *customAudioUpstream) serveSpeech(w http.ResponseWriter, r *http.Request) {
+	t, audio := u.t, u.audio
+	require.True(t, r.URL.Path == "/reseller/v1/text-to-speech/owned-voice" || r.URL.Path == "/reseller/v1/text-to-speech/owned-voice/stream", r.URL.Path)
+	u.speechCalls.Add(1)
+	var request struct {
+		Text  string `json:"text"`
+		Model string `json:"model_id"`
+	}
+	require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+	require.Equal(t, "eleven_turbo_v2_5", request.Model)
+	if request.Text == "fail" {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, err := io.WriteString(w, `{"detail":{"status":"owned_failure","message":"controlled failure"}}`)
+		require.NoError(t, err)
+		return
+	}
+	w.Header().Set("Content-Type", "audio/mpeg")
+	w.Header().Set("request-id", "owned-request")
+	w.Header().Set("x-character-count", "5")
+	if request.Text == "empty" {
+		w.Header().Set("Content-Length", "0")
+		return
+	}
+	if request.Text == "truncated" {
+		w.Header().Set("Content-Length", "100")
+		_, err := io.WriteString(w, "partial-audio")
+		require.NoError(t, err)
+		w.(http.Flusher).Flush()
+		return
+	}
+	if request.Text == "short" {
+		w.Header().Set("Content-Length", "28")
+		_, err := io.WriteString(w, "TXE-5087-owned-audio-payload")
+		require.NoError(t, err)
+		return
+	}
+	if request.Text == "cancel" {
+		_, err := w.Write(audio)
+		require.NoError(t, err)
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+			u.cancelled <- struct{}{}
+		case <-time.After(5 * time.Second):
+			t.Error("upstream stream was not cancelled")
+		}
+		return
+	}
+	if request.Text == "slow" {
+		_, err := w.Write(audio)
+		require.NoError(t, err)
+		w.(http.Flusher).Flush()
+		time.Sleep(1200 * time.Millisecond)
+	}
+	_, err := w.Write(audio)
+	require.NoError(t, err)
+}
+
+const customAudioProvider = "tkp-native-elevenlabs"
+const customAudioPolicy = `{"base_provider_type":"elevenlabs","allowed_requests":{"list_models":true,"speech":true,"speech_stream":true,"transcription":true}}`
+
+type customAudioGatewayFixture struct {
+	t            *testing.T
+	upstream     *customAudioUpstream
+	gateway      *BifrostHTTPServer
+	base         string
+	dir          string
+	stop         func()
+	client       *http.Client
+	selectedName string
+	network      string
+	settings     string
+	keys         []byte
+}
+
+func newCustomAudioGatewayFixture(t *testing.T) *customAudioGatewayFixture {
+	t.Helper()
+	upstream := &customAudioUpstream{t: t, audio: bytes.Repeat([]byte("owned-audio"), 512), cancelled: make(chan struct{}, 1)}
+	upstream.server = httptest.NewServer(upstream)
+	t.Cleanup(upstream.server.Close)
+	dir := t.TempDir()
+	for name, data := range map[string]string{"pricing.json": "{}", "params.json": "{}", "mcp.json": `{"servers":[]}`} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(data), 0600))
+	}
+	config := fmt.Sprintf(`{"setup_token":"txe-5087-setup","client":{"enable_logging":false,"disable_content_logging":true,"enforce_auth_on_inference":false},"providers":{},"framework":{"pricing":{"pricing_url":%q,"model_parameters_url":%q,"mcp_library_url":%q,"mcp_library_sync_interval":0,"live_models_sync_interval":0}}}`, "file://"+filepath.Join(dir, "pricing.json"), "file://"+filepath.Join(dir, "params.json"), "file://"+filepath.Join(dir, "mcp.json"))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(config), 0600))
+	gateway, base, stop := startCustomAudioGateway(t, dir)
+	client := &http.Client{Timeout: 10 * time.Second}
+	network := fmt.Sprintf(`{"base_url":%q,"allow_private_network":true,"default_request_timeout_in_seconds":1,"max_retries":0,"retry_backoff_initial":500,"retry_backoff_max":5000}`, upstream.server.URL+"/reseller")
+	return &customAudioGatewayFixture{t: t, upstream: upstream, gateway: gateway, base: base, dir: dir, stop: stop,
+		client: client, selectedName: "owned-selected", network: network,
+		settings: `"network_config":` + network + `,"concurrency_and_buffer_size":{"concurrency":1000,"buffer_size":5000},"custom_provider_config":` + customAudioPolicy}
+}
+
+func (f *customAudioGatewayFixture) call(method, path, body, contentType string, want int) ([]byte, http.Header) {
+	t := f.t
+	t.Helper()
+	req, err := http.NewRequest(method, f.base+path, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("x-bf-api-key", f.selectedName)
+	if strings.HasPrefix(path, "/api/") {
+		req.Header.Set(handlers.SetupTokenHeader, "txe-5087-setup")
+	}
+	resp, err := f.client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, want, resp.StatusCode, string(data))
+	return data, resp.Header
+}
+
+func (f *customAudioGatewayFixture) registerAndUpdate() {
+	t, call, provider := f.t, f.call, customAudioProvider
+	t.Helper()
+	settings := f.settings
+	call("POST", "/api/providers", `{"provider":"`+provider+`",`+settings+`}`, "application/json", 200)
+	for _, key := range []string{"owned-other", "owned-selected"} {
+		call("POST", "/api/providers/"+provider+"/keys", fmt.Sprintf(`{"name":%q,"value":%q,"models":["*"],"weight":1}`, key, key+"-value"), "application/json", 200)
+	}
+	f.assertContract(true)
+	f.keys, _ = call("GET", "/api/providers/"+provider+"/keys", "", "application/json", 200)
+	call("PUT", "/api/providers/"+provider, `{`+settings+`}`, "application/json", 200)
+	f.assertKeys()
+	call("PUT", "/api/providers/"+provider, `{"custom_provider_config":`+customAudioPolicy+`}`, "application/json", 400)
+	f.assertKeys()
+	f.assertContract(true)
+}
+
+func (f *customAudioGatewayFixture) assertKeys() {
+	f.t.Helper()
+	updated, _ := f.call("GET", "/api/providers/"+customAudioProvider+"/keys", "", "application/json", 200)
+	require.JSONEq(f.t, string(f.keys), string(updated))
+}
+
+func (f *customAudioGatewayFixture) assertContract(speechAllowed bool) {
+	t, call, provider := f.t, f.call, customAudioProvider
+	t.Helper()
+	data, _ := call("GET", "/api/providers/"+provider, "", "application/json", 200)
+	var cfg handlers.ProviderResponse
+	require.NoError(t, json.Unmarshal(data, &cfg))
+	require.Equal(t, schemas.ModelProvider(provider), cfg.Name)
+	require.Equal(t, schemas.SupportedBaseProviders, cfg.SupportedBaseProviders)
+	require.Equal(t, "active", cfg.ProviderStatus)
+	require.Equal(t, f.upstream.server.URL+"/reseller", cfg.NetworkConfig.BaseURL)
+	require.Contains(t, string(data), `"max_retries":0`)
+	require.Equal(t, 500*time.Millisecond, cfg.NetworkConfig.RetryBackoffInitial)
+	require.Equal(t, 5*time.Second, cfg.NetworkConfig.RetryBackoffMax)
+	require.Equal(t, schemas.ConcurrencyAndBufferSize{Concurrency: 1000, BufferSize: 5000}, cfg.ConcurrencyAndBufferSize)
+	require.Equal(t, schemas.Elevenlabs, cfg.CustomProviderConfig.BaseProviderType)
+	require.True(t, cfg.CustomProviderConfig.AllowedRequests.ListModels)
+	require.Equal(t, speechAllowed, cfg.CustomProviderConfig.AllowedRequests.Speech)
+	require.True(t, cfg.CustomProviderConfig.AllowedRequests.SpeechStream)
+	require.True(t, cfg.CustomProviderConfig.AllowedRequests.Transcription)
+}
+
+func (f *customAudioGatewayFixture) setSpeechAllowed(allowed bool) {
+	f.t.Helper()
+	policy := fmt.Sprintf(`{"base_provider_type":"elevenlabs","allowed_requests":{"list_models":true,"speech":%t,"speech_stream":true,"transcription":true}}`, allowed)
+	settings := `"network_config":` + f.network + `,"concurrency_and_buffer_size":{"concurrency":1000,"buffer_size":5000},"custom_provider_config":` + policy
+	f.call("PUT", "/api/providers/"+customAudioProvider, `{`+settings+`}`, "application/json", 200)
+}
+
+func (f *customAudioGatewayFixture) speech(text, stream string, want int) ([]byte, http.Header) {
+	f.t.Helper()
+	return f.call("POST", "/v1/audio/speech", fmt.Sprintf(`{"model":"%s/eleven_turbo_v2_5","voice":"owned-voice","input":%q%s}`, customAudioProvider, text, stream), "application/json", want)
+}
+
+func (f *customAudioGatewayFixture) assertSpeech() {
+	t, speech, provider := f.t, f.speech, customAudioProvider
+	t.Helper()
+	audio := f.upstream.audio
+	data, headers := speech("hello", "", 200)
+	require.Equal(t, audio, data)
+	require.Equal(t, provider, headers.Get(lib.HeaderBifrostProvider))
+	require.Equal(t, "owned-selected-value", f.upstream.selectedKey.Load())
+	data, headers = speech("slow", `,"stream_format":"sse"`, 200)
+	require.Contains(t, string(data), "speech.audio.done")
+	require.Equal(t, append(append([]byte{}, audio...), audio...), decodeCustomAudio(t, data))
+	require.Equal(t, provider, headers.Get(lib.HeaderBifrostProvider))
+	data, _ = speech("short", `,"stream_format":"sse"`, 200)
+	require.Equal(t, []byte("TXE-5087-owned-audio-payload"), decodeCustomAudio(t, data))
+	data, _ = speech("empty", `,"stream_format":"sse"`, 200)
+	require.Empty(t, decodeCustomAudio(t, data))
+	require.Contains(t, string(data), "speech.audio.done")
+	data, _ = speech("truncated", `,"stream_format":"sse"`, 200)
+	require.Equal(t, []byte("partial-audio"), decodeCustomAudio(t, data))
+	require.Contains(t, string(data), `"error"`)
+	require.NotContains(t, string(data), "speech.audio.done")
+}
+
+func decodeCustomAudio(t *testing.T, data []byte) []byte {
+	t.Helper()
+	var result []byte
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "data: {") {
+			continue
+		}
+		var event struct {
+			Type  string `json:"type"`
+			Audio []byte `json:"audio"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event))
+		if event.Type == "speech.audio.delta" {
+			result = append(result, event.Audio...)
+		}
+	}
+	return result
+}
+
+func customAudioUpload(t *testing.T) (string, string) {
+	t.Helper()
+	var upload bytes.Buffer
+	writer := multipart.NewWriter(&upload)
+	require.NoError(t, writer.WriteField("model", customAudioProvider+"/scribe_v2"))
+	file, err := writer.CreateFormFile("file", "owned.wav")
+	require.NoError(t, err)
+	_, err = file.Write([]byte("owned-upload"))
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+	return upload.String(), writer.FormDataContentType()
+}
+
+func (f *customAudioGatewayFixture) assertTranscription() {
+	t := f.t
+	t.Helper()
+	body, contentType := customAudioUpload(t)
+	data, headers := f.call("POST", "/v1/audio/transcriptions", body, contentType, 200)
+	require.Contains(t, string(data), "Owned transcription")
+	require.Equal(t, customAudioProvider, headers.Get(lib.HeaderBifrostProvider))
+	require.Equal(t, "owned-selected-value", f.upstream.selectedKey.Load())
+	require.EqualValues(t, 1, f.upstream.transcriptionCalls.Load())
+}
+
+func (f *customAudioGatewayFixture) assertOneUpstreamAttempt() {
+	f.t.Helper()
+	before := f.upstream.speechCalls.Load()
+	f.speech("fail", "", 503)
+	require.Equal(f.t, before+1, f.upstream.speechCalls.Load())
+}
+
+func (f *customAudioGatewayFixture) assertCancellation() {
+	t, provider := f.t, customAudioProvider
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, "POST", f.base+"/v1/audio/speech", strings.NewReader(fmt.Sprintf(`{"model":"%s/eleven_turbo_v2_5","voice":"owned-voice","input":"cancel","stream_format":"sse"}`, provider)))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-bf-api-key", "owned-selected")
+	resp, err := f.client.Do(req)
+	require.NoError(t, err)
+	require.Equal(t, 200, resp.StatusCode)
+	cancel()
+	require.NoError(t, resp.Body.Close())
+	select {
+	case <-f.upstream.cancelled:
+	case <-time.After(6 * time.Second):
+		t.Fatal("gateway did not cancel upstream stream")
+	}
+}
+
+func (f *customAudioGatewayFixture) assertPolicy() {
+	t, call, speech, provider := f.t, f.call, f.speech, customAudioProvider
+	t.Helper()
+	body, contentType := customAudioUpload(t)
+	for _, operation := range []string{"speech", "speech_stream", "transcription"} {
+		policy := fmt.Sprintf(`{"base_provider_type":"elevenlabs","allowed_requests":{"list_models":true,"speech":%t,"speech_stream":%t,"transcription":%t}}`, operation != "speech", operation != "speech_stream", operation != "transcription")
+		settings := `"network_config":` + f.network + `,"concurrency_and_buffer_size":{"concurrency":1000,"buffer_size":5000},"custom_provider_config":` + policy
+		call("PUT", "/api/providers/"+provider, `{`+settings+`}`, "application/json", 200)
+		before := f.upstream.speechCalls.Load() + f.upstream.transcriptionCalls.Load()
+		switch operation {
+		case "speech":
+			speech("hello", "", 400)
+		case "speech_stream":
+			speech("hello", `,"stream_format":"sse"`, 400)
+		case "transcription":
+			call("POST", "/v1/audio/transcriptions", body, contentType, 400)
+		}
+		require.Equal(t, before, f.upstream.speechCalls.Load()+f.upstream.transcriptionCalls.Load(), operation)
+	}
+	call("POST", "/api/providers", `{"provider":"owned-unsupported","custom_provider_config":{"base_provider_type":"azure"}}`, "application/json", 400)
+}
+
+func (f *customAudioGatewayFixture) assertControlProviders() {
+	t, call := f.t, f.call
+	t.Helper()
+	for _, channel := range []struct{ name, base, prefix, key string }{
+		{"elevenlabs", "", "/reseller", "owned-builtin"},
+		{"owned-openai-custom", "openai", "/openai", "owned-openai"},
+		{"owned-anthropic-custom", "anthropic", "/anthropic", "owned-anthropic"},
+	} {
+		custom := ""
+		if channel.base != "" {
+			custom = fmt.Sprintf(`,"custom_provider_config":{"base_provider_type":%q}`, channel.base)
+		}
+		call("POST", "/api/providers", fmt.Sprintf(`{"provider":%q,"network_config":{"base_url":%q,"allow_private_network":true,"max_retries":0}%s}`, channel.name, f.upstream.server.URL+channel.prefix, custom), "application/json", 200)
+		call("POST", "/api/providers/"+channel.name+"/keys", fmt.Sprintf(`{"name":%q,"value":%q,"models":["*"],"weight":1}`, channel.key, channel.key+"-value"), "application/json", 200)
+		f.selectedName = channel.key
+		var data []byte
+		var headers http.Header
+		if channel.base == "" {
+			data, headers = call("POST", "/v1/audio/speech", `{"model":"elevenlabs/eleven_turbo_v2_5","voice":"owned-voice","input":"hello"}`, "application/json", 200)
+			require.Equal(t, f.upstream.audio, data)
+			require.Equal(t, "owned-builtin-value", f.upstream.selectedKey.Load())
+			data, _ = call("POST", "/v1/audio/speech", `{"model":"elevenlabs/eleven_turbo_v2_5","voice":"owned-voice","input":"short","stream_format":"sse"}`, "application/json", 200)
+			require.Equal(t, []byte("TXE-5087-owned-audio-payload"), decodeCustomAudio(t, data))
+		} else {
+			data, headers = call("POST", "/v1/chat/completions", fmt.Sprintf(`{"model":"%s/owned-chat","messages":[{"role":"user","content":"hello"}],"max_tokens":8}`, channel.name), "application/json", 200)
+			require.Contains(t, string(data), "Owned chat")
+		}
+		require.Equal(t, channel.name, headers.Get(lib.HeaderBifrostProvider))
+	}
+}
+
+func (f *customAudioGatewayFixture) assertKeyStatusSnapshot() {
+	t, gateway := f.t, f.gateway
+	provider := schemas.ModelProvider(customAudioProvider)
+	t.Helper()
+	snapshot, err := gateway.Config.GetProviderConfigRaw(provider)
+	require.NoError(t, err)
+	oldKey := snapshot.Keys[0]
+	gateway.updateKeyStatus(context.Background(), []schemas.KeyStatus{{
+		Provider: provider,
+		KeyID:    oldKey.ID,
+		Status:   schemas.KeyStatusListModelsFailed,
+		Error:    &schemas.BifrostError{Error: &schemas.ErrorField{Message: "owned status update"}},
+	}})
+	require.Equal(t, oldKey.Status, snapshot.Keys[0].Status)
+	require.Equal(t, oldKey.Description, snapshot.Keys[0].Description)
+	updated, err := gateway.Config.GetProviderConfigRaw(provider)
+	require.NoError(t, err)
+	require.Equal(t, schemas.KeyStatusListModelsFailed, updated.Keys[0].Status)
+	require.Equal(t, "owned status update", updated.Keys[0].Description)
+}
+
+func TestCustomElevenlabsGateway(t *testing.T) {
+	f := newCustomAudioGatewayFixture(t)
+	f.registerAndUpdate()
+	f.assertSpeech()
+	f.assertTranscription()
+	f.assertOneUpstreamAttempt()
+	f.setSpeechAllowed(false)
+	f.assertContract(false)
+	f.assertKeys()
+	f.stop()
+	f.gateway, f.base, f.stop = startCustomAudioGateway(t, f.dir)
+	f.assertContract(false)
+	f.assertKeys()
+	f.setSpeechAllowed(true)
+	f.assertContract(true)
+	f.assertOneUpstreamAttempt()
+	f.assertCancellation()
+	f.assertPolicy()
+	f.assertControlProviders()
+	f.assertKeyStatusSnapshot()
+	f.stop()
+}
+
+// reloadVirtualKeyConfigStore provides the persistence calls used by ReloadVirtualKey.

@@ -89,12 +89,29 @@
       "allOf": [
         {
           "if": {
-            "properties": { "mcp_server_auth_mode": { "enum": ["oauth", "both"] } },
-            "required": ["mcp_server_auth_mode"]
+            "properties": {
+              "mcp_server_auth_mode": {
+                "enum": [
+                  "both",
+                  "oauth"
+                ]
+              }
+            },
+            "required": [
+              "mcp_server_auth_mode"
+            ]
           },
           "then": {
-            "required": ["oauth2_server_config"],
-            "properties": { "oauth2_server_config": { "required": ["issuer_url"] } }
+            "required": [
+              "oauth2_server_config"
+            ],
+            "properties": {
+              "oauth2_server_config": {
+                "required": [
+                  "issuer_url"
+                ]
+              }
+            }
           }
         }
       ],
@@ -534,7 +551,21 @@
           "properties": {
             "allowed_redirect_uris": {
               "type": "array",
-              "items": { "anyOf": [{ "type": "string", "const": "*" }, { "type": "string", "format": "uri", "not": { "pattern": "\\*" } }] },
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "*"
+                  },
+                  {
+                    "type": "string",
+                    "format": "uri",
+                    "not": {
+                      "pattern": "\\*"
+                    }
+                  }
+                ]
+              },
               "default": [],
               "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries. Remote callbacks are denied by default; a bare \"*\" entry allows any https callback; private-use scheme callbacks still need an exact entry, and partial wildcards are rejected. Changing this list through the API requires dashboard authentication."
             },
@@ -584,36 +615,7 @@
           "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'."
         }
       },
-      "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "mcp_server_auth_mode": {
-                "enum": [
-                  "both",
-                  "oauth"
-                ]
-              }
-            },
-            "required": [
-              "mcp_server_auth_mode"
-            ]
-          },
-          "then": {
-            "required": [
-              "oauth2_server_config"
-            ],
-            "properties": {
-              "oauth2_server_config": {
-                "required": [
-                  "issuer_url"
-                ]
-              }
-            }
-          }
-        }
-      ]
+      "additionalProperties": false
     },
     "framework": {
       "type": "object",
@@ -1092,7 +1094,7 @@
               },
               "source_id": {
                 "type": "string",
-                "description": "Optional external source identifier (e.g. SCIM group ID) used to map this team to an upstream system. Unique when set."
+                "description": "Stable external source identifier for team synchronization"
               },
               "customer_id": {
                 "type": "string",
@@ -1105,10 +1107,6 @@
               "rate_limit_id": {
                 "type": "string",
                 "description": "Associated rate limit ID"
-              },
-              "source_id": {
-                "type": "string",
-                "description": "Stable external source identifier for team synchronization"
               },
               "business_unit_id": {
                 "type": "string",
@@ -2288,7 +2286,10 @@
             "type": "array",
             "maxItems": 32,
             "uniqueItems": true,
-            "items": { "type": "string", "pattern": "^https?://[^@/?#\\s]+$" },
+            "items": {
+              "type": "string",
+              "pattern": "^https?://[^@/?#\\s]+$"
+            },
             "description": "Additional HTTP(S) origins permitted to receive runtime credentials and client certificates. Include scheme and optional port, without paths, queries, fragments, or userinfo. The agent card origin is permitted automatically."
           },
           "virtual_key_ids": {
@@ -4719,7 +4720,11 @@
                     },
                     "otel_llmobs_conversion": {
                       "type": "string",
-                      "enum": ["disabled", "inherit", "enabled"],
+                      "enum": [
+                        "disabled",
+                        "inherit",
+                        "enabled"
+                      ],
                       "description": "Whether Datadog builds its own LLM Observability spans from Bifrost's APM trace. 'disabled' opts the trace out so Datadog does not duplicate the spans Bifrost already sends; 'inherit' leaves the decision to upstream services on the same trace; 'enabled' opts in (default: disabled)",
                       "default": "disabled"
                     },
@@ -5456,13 +5461,19 @@
         "signals": {
           "type": "array",
           "maxItems": 12,
-          "items": { "type": "string", "maxLength": 300 },
+          "items": {
+            "type": "string",
+            "maxLength": 300
+          },
           "description": "Replaces this tier's shipped signals. Omit to use the default."
         },
         "examples": {
           "type": "array",
           "maxItems": 12,
-          "items": { "type": "string", "maxLength": 300 },
+          "items": {
+            "type": "string",
+            "maxLength": 300
+          },
           "description": "Replaces this tier's shipped examples. Omit to use the default."
         }
       },
@@ -5588,7 +5599,9 @@
         },
         "excluded_attributes": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Span attribute names to drop before export, matched exactly (e.g. \"gen_ai.request.tools\"). Unknown names are ignored.",
           "default": []
         },
@@ -6056,7 +6069,9 @@
           "description": "Registered agent name granted to this virtual key"
         }
       },
-      "required": ["agent_name"],
+      "required": [
+        "agent_name"
+      ],
       "additionalProperties": false
     },
     "virtual_key_mcp_config": {
@@ -6892,7 +6907,7 @@
                 "client_credentials",
                 "jwt_bearer"
               ],
-              "description": "client_credentials (RFC 6749 §4.4) or jwt_bearer (RFC 7523: Bifrost signs an assertion with private_key)."
+              "description": "client_credentials (RFC 6749 \u00a74.4) or jwt_bearer (RFC 7523: Bifrost signs an assertion with private_key)."
             },
             "token_url": {
               "type": "string",
@@ -12848,49 +12863,25 @@
         "base_provider_type": {
           "type": "string",
           "enum": [
-            "openai",
-            "azure",
             "anthropic",
             "bedrock",
-            "bedrock_mantle",
             "cohere",
-            "vertex",
-            "mistral",
-            "ollama",
-            "groq",
-            "opencode-go",
-            "opencode-zen",
-            "sgl",
-            "parasail",
-            "perplexity",
-            "cerebras",
-            "databricks",
             "deepseek",
-            "gemini",
-            "deepseek",
-            "glm",
-            "github-copilot",
-            "openrouter",
             "elevenlabs",
-            "huggingface",
-            "nebius",
+            "gemini",
+            "glm",
+            "minimax",
+            "modelark",
+            "moonshot",
+            "openai",
             "qwen",
             "xai",
-            "replicate",
-            "vllm",
-            "runway",
-            "minimax",
-            "moonshot",
-            "modelark",
             "volcengine",
-            "runware",
-            "fireworks",
-            "sarvam",
-            "wafer",
-            "cloudflare",
+            "huggingface",
+            "replicate",
             "typesafe"
           ],
-          "description": "Base provider type to extend"
+          "description": "Supported base provider type to extend. ElevenLabs custom channels use their configured base_url and xi-api-key for model discovery, speech, streamed speech and transcription."
         },
         "request_path_overrides": {
           "type": "object",
@@ -13197,10 +13188,17 @@
                         "header_name"
                       ],
                       "not": {
-                        "required": ["header_value", "header_contains"],
+                        "required": [
+                          "header_value",
+                          "header_contains"
+                        ],
                         "properties": {
-                          "header_value": { "pattern": "\\S" },
-                          "header_contains": { "pattern": "\\S" }
+                          "header_value": {
+                            "pattern": "\\S"
+                          },
+                          "header_contains": {
+                            "pattern": "\\S"
+                          }
                         }
                       },
                       "additionalProperties": false
@@ -13215,8 +13213,14 @@
               },
               "default_cooldown": {
                 "anyOf": [
-                  { "type": "string", "pattern": "^(|0|(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|\u00b5s|\u03bcs|ms|s|m|h))+)$" },
-                  { "type": "integer", "minimum": 0 }
+                  {
+                    "type": "string",
+                    "pattern": "^(|0|(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|\u00b5s|\u03bcs|ms|s|m|h))+)$"
+                  },
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  }
                 ],
                 "description": "How long to keep the circuit open when no header-based cooldown is available. A Go duration string such as '30s', '5m' or '1m30s', or integer nanoseconds. Empty or omitted means 30s."
               },
@@ -13433,9 +13437,15 @@
           "type": "object",
           "description": "Per-tier overrides of the shipped decision-model definitions, signals, and examples. Any tier or field left out sends the default.",
           "properties": {
-            "SIMPLE": { "$ref": "#/$defs/complexity_decision_tier_criteria" },
-            "MEDIUM": { "$ref": "#/$defs/complexity_decision_tier_criteria" },
-            "COMPLEX": { "$ref": "#/$defs/complexity_decision_tier_criteria" }
+            "SIMPLE": {
+              "$ref": "#/$defs/complexity_decision_tier_criteria"
+            },
+            "MEDIUM": {
+              "$ref": "#/$defs/complexity_decision_tier_criteria"
+            },
+            "COMPLEX": {
+              "$ref": "#/$defs/complexity_decision_tier_criteria"
+            }
           },
           "additionalProperties": false
         }

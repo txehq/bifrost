@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -14,6 +15,38 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCopyResponseForCallerOwnsMetadataAcrossResponseTypes(t *testing.T) {
+	typeOfResponse := reflect.TypeOf(schemas.BifrostResponse{})
+	for i := 0; i < typeOfResponse.NumField(); i++ {
+		fieldMeta := typeOfResponse.Field(i)
+		// LiveSessionLog is logging-only metadata and has no ExtraFields slot.
+		if fieldMeta.Name == "LiveSession" {
+			continue
+		}
+		t.Run(fieldMeta.Name, func(t *testing.T) {
+			response := &schemas.BifrostResponse{}
+			field := reflect.ValueOf(response).Elem().Field(i)
+			field.Set(reflect.New(field.Type().Elem()))
+			copied := copyResponseForCaller(response)
+			copied.PopulateExtraFields(schemas.SpeechRequest, "tkp-audio", "requested", "resolved")
+			require.Empty(t, response.GetExtraFields().Provider)
+			require.Empty(t, response.GetExtraFields().RequestType)
+			require.Equal(t, schemas.ModelProvider("tkp-audio"), copied.GetExtraFields().Provider)
+			copied.PopulateRoutingInfo(schemas.RoutingInfo{Provider: "tkp-routed", Model: "routed"})
+			require.Empty(t, response.GetExtraFields().RoutingInfo.Provider)
+			require.Equal(t, schemas.ModelProvider("tkp-routed"), copied.GetExtraFields().RoutingInfo.Provider)
+		})
+	}
+}
+
+func TestCopyResponseForCallerSharesReadOnlyAudio(t *testing.T) {
+	audio := []byte("owned-audio")
+	response := &schemas.BifrostResponse{SpeechResponse: &schemas.BifrostSpeechResponse{Audio: audio}}
+	copied := copyResponseForCaller(response)
+	require.NotSame(t, response.SpeechResponse, copied.SpeechResponse)
+	require.Same(t, &response.SpeechResponse.Audio[0], &copied.SpeechResponse.Audio[0])
+}
 
 func TestValidateExternalURL(t *testing.T) {
 	tests := []struct {

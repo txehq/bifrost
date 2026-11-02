@@ -3726,112 +3726,7 @@ func (s *BifrostHTTPServer) Start() error {
 	select {
 	case sig := <-sigChan:
 		logger.Info("received signal %v, initiating graceful shutdown...", sig)
-		if s.IntegrationHandler != nil {
-			logger.Info("closing realtime transport sessions...")
-			s.IntegrationHandler.Close()
-		}
-		if s.wsLiveHandler != nil {
-			s.wsLiveHandler.Close()
-		}
-		if s.webrtcLiveHandler != nil {
-			s.webrtcLiveHandler.Close()
-		}
-		// Create shutdown context with timeout
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		// Perform graceful shutdown
-		if err := s.Server.Shutdown(); err != nil {
-			logger.Error("error during graceful shutdown: %v", err)
-		} else {
-			logger.Info("server gracefully shutdown")
-		}
-		// Cancelling main context
-		if s.cancel != nil {
-			s.cancel()
-		}
-		// Wait for shutdown to complete or timeout
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			// Warp first. Its indexer workers call s.Client.EmbeddingRequest (and its
-			// chat turns s.Client.ResponsesRequest), and
-			// LogIndexer.Close waits for them - so shutting the client down first
-			// cancelled its context underneath work that was still being waited on,
-			// and pending indexing failed during an orderly shutdown.
-			if s.WarpHandler != nil {
-				logger.Info("shutting down warp...")
-				s.WarpHandler.Shutdown()
-				logger.Info("warp shutdown completed")
-			}
-			logger.Info("closing agent gateway...")
-			s.CloseAgentGateway()
-			logger.Info("shutting down bifrost client...")
-			s.Client.Shutdown()
-			logger.Info("bifrost client shutdown completed")
-			logger.Info("cleaning up storage engines...")
-			// Cleanup server-specific components
-			if s.LogsCleaner != nil {
-				logger.Info("stopping log retention cleaner...")
-				s.LogsCleaner.StopCleanupRoutine()
-			}
-			if s.AsyncJobCleaner != nil {
-				logger.Info("stopping async job cleaner...")
-				s.AsyncJobCleaner.StopCleanupRoutine()
-			}
-			if s.WebhookDispatcher != nil {
-				logger.Info("stopping webhook dispatcher...")
-				s.WebhookDispatcher.Stop()
-			}
-			if s.WSTicketStore != nil {
-				logger.Info("stopping ws ticket store...")
-				s.WSTicketStore.Stop()
-			}
-			if s.TempTokenSweepWorker != nil {
-				logger.Info("stopping temp-token sweep worker...")
-				s.TempTokenSweepWorker.Stop()
-			}
-			if s.OAuth2SweepWorker != nil {
-				logger.Info("stopping oauth2 sweep worker...")
-				s.OAuth2SweepWorker.stop()
-				s.OAuth2SweepWorker = nil
-			}
-			if s.GovernanceHandler != nil {
-				s.GovernanceHandler.StopExpiryCleanupScheduler()
-			}
-			if s.SidekiqDispatcherStop != nil {
-				logger.Info("stopping sidekiq dispatcher...")
-				s.SidekiqDispatcherStop()
-			}
-			logger.Info("stopping live model refresher...")
-			s.stopLiveModelRefresher()
-			if s.SidekiqRunner != nil {
-				logger.Info("stopping sidekiq runner...")
-				s.SidekiqRunner.Shutdown()
-			}
-			if s.devPprofHandler != nil {
-				logger.Info("stopping dev pprof handler...")
-				s.devPprofHandler.Cleanup()
-			}
-			if s.skillsServingHandler != nil {
-				s.skillsServingHandler.Close()
-			}
-			if s.wsPool != nil {
-				logger.Info("closing websocket connection pool...")
-				s.wsPool.Close()
-			}
-			// Cleanup Config and all its background components
-			if s.Config != nil {
-				s.Config.Close(shutdownCtx)
-			}
-			logger.Info("storage engines cleanup completed")
-		}()
-		select {
-		case <-done:
-			logger.Info("cleanup completed")
-		case <-shutdownCtx.Done():
-			logger.Warn("cleanup timed out after 30 seconds")
-		}
-
+		s.shutdownGracefully()
 	case err := <-errChan:
 		s.cleanupAfterServeError()
 		return err
@@ -3860,4 +3755,116 @@ func (s *BifrostHTTPServer) cleanupAfterServeError() {
 	if s.skillsServingHandler != nil {
 		s.skillsServingHandler.Close()
 	}
+}
+
+func (s *BifrostHTTPServer) shutdownGracefully() {
+	if s.IntegrationHandler != nil {
+		logger.Info("closing realtime transport sessions...")
+		s.IntegrationHandler.Close()
+	}
+	if s.wsLiveHandler != nil {
+		s.wsLiveHandler.Close()
+	}
+	if s.webrtcLiveHandler != nil {
+		s.webrtcLiveHandler.Close()
+	}
+	// Create shutdown context with timeout
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// Perform graceful shutdown
+	if err := s.Server.Shutdown(); err != nil {
+		logger.Error("error during graceful shutdown: %v", err)
+	} else {
+		logger.Info("server gracefully shutdown")
+	}
+	// Cancelling main context
+	if s.cancel != nil {
+		s.cancel()
+	}
+	// Wait for shutdown to complete or timeout
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.cleanupResources(shutdownCtx)
+	}()
+	select {
+	case <-done:
+		logger.Info("cleanup completed")
+	case <-shutdownCtx.Done():
+		logger.Warn("cleanup timed out after 30 seconds")
+	}
+}
+
+func (s *BifrostHTTPServer) cleanupResources(shutdownCtx context.Context) {
+	// Warp first. Its indexer workers call s.Client.EmbeddingRequest (and its
+	// chat turns s.Client.ResponsesRequest), and
+	// LogIndexer.Close waits for them - so shutting the client down first
+	// cancelled its context underneath work that was still being waited on,
+	// and pending indexing failed during an orderly shutdown.
+	if s.WarpHandler != nil {
+		logger.Info("shutting down warp...")
+		s.WarpHandler.Shutdown()
+		logger.Info("warp shutdown completed")
+	}
+	logger.Info("closing agent gateway...")
+	s.CloseAgentGateway()
+	logger.Info("shutting down bifrost client...")
+	s.Client.Shutdown()
+	logger.Info("bifrost client shutdown completed")
+	logger.Info("cleaning up storage engines...")
+	// Cleanup server-specific components
+	if s.LogsCleaner != nil {
+		logger.Info("stopping log retention cleaner...")
+		s.LogsCleaner.StopCleanupRoutine()
+	}
+	if s.AsyncJobCleaner != nil {
+		logger.Info("stopping async job cleaner...")
+		s.AsyncJobCleaner.StopCleanupRoutine()
+	}
+	if s.WebhookDispatcher != nil {
+		logger.Info("stopping webhook dispatcher...")
+		s.WebhookDispatcher.Stop()
+	}
+	if s.WSTicketStore != nil {
+		logger.Info("stopping ws ticket store...")
+		s.WSTicketStore.Stop()
+	}
+	if s.TempTokenSweepWorker != nil {
+		logger.Info("stopping temp-token sweep worker...")
+		s.TempTokenSweepWorker.Stop()
+	}
+	if s.OAuth2SweepWorker != nil {
+		logger.Info("stopping oauth2 sweep worker...")
+		s.OAuth2SweepWorker.stop()
+		s.OAuth2SweepWorker = nil
+	}
+	if s.GovernanceHandler != nil {
+		s.GovernanceHandler.StopExpiryCleanupScheduler()
+	}
+	if s.SidekiqDispatcherStop != nil {
+		logger.Info("stopping sidekiq dispatcher...")
+		s.SidekiqDispatcherStop()
+	}
+	logger.Info("stopping live model refresher...")
+	s.stopLiveModelRefresher()
+	if s.SidekiqRunner != nil {
+		logger.Info("stopping sidekiq runner...")
+		s.SidekiqRunner.Shutdown()
+	}
+	if s.devPprofHandler != nil {
+		logger.Info("stopping dev pprof handler...")
+		s.devPprofHandler.Cleanup()
+	}
+	if s.skillsServingHandler != nil {
+		s.skillsServingHandler.Close()
+	}
+	if s.wsPool != nil {
+		logger.Info("closing websocket connection pool...")
+		s.wsPool.Close()
+	}
+	// Cleanup Config and all its background components
+	if s.Config != nil {
+		s.Config.Close(shutdownCtx)
+	}
+	logger.Info("storage engines cleanup completed")
 }

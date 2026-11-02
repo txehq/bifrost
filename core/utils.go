@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -24,6 +25,22 @@ const (
 	ProviderAutoResolveErrorMessage = schemas.ProviderAutoResolveErrorMessage
 	ModelAutoResolveErrorMessage    = schemas.ModelAutoResolveErrorMessage
 )
+
+// 复制 response 容器以隔离调用方的 metadata 写入，保留只读 payload 的引用。
+func copyResponseForCaller(response *schemas.BifrostResponse) *schemas.BifrostResponse {
+	copied := *response
+	fields := reflect.ValueOf(&copied).Elem()
+	for i := 0; i < fields.NumField(); i++ {
+		field := fields.Field(i)
+		if field.IsNil() {
+			continue
+		}
+		container := reflect.New(field.Elem().Type())
+		container.Elem().Set(field.Elem())
+		field.Set(container)
+	}
+	return &copied
+}
 
 // dynamicallyConfigurableProviders is the list of providers that can be dynamically configured.
 // Excluding providers that require extra configuration (e.g. Ollama, SGL, vLLM).

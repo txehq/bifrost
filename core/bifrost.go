@@ -6473,8 +6473,13 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		populateLatencyExtraFields(msg.Context, result)
 		resp, bifrostErr := pipeline.RunPostLLMHooks(msg.Context, result, nil, pluginCount)
 		if bifrostErr != nil {
+			copied := *bifrostErr
+			bifrostErr = &copied
 			bifrostErr.PopulateExtraFields(req.RequestType, provider, model, model)
 		} else if resp != nil {
+			if pluginCount > 0 {
+				resp = copyResponseForCaller(resp)
+			}
 			resp.PopulateExtraFields(req.RequestType, provider, model, model)
 		}
 		drainAndAttachPluginLogs(msg.Context)
@@ -6511,8 +6516,13 @@ func (bifrost *Bifrost) tryRequest(ctx *schemas.BifrostContext, req *schemas.Bif
 		}
 		resp, bifrostErrPtr = pipeline.RunPostLLMHooks(msg.Context, nil, bifrostErrPtr, pluginCount)
 		if bifrostErrPtr != nil {
+			copied := *bifrostErrPtr
+			bifrostErrPtr = &copied
 			bifrostErrPtr.PopulateExtraFields(req.RequestType, provider, model, model)
 		} else if resp != nil {
+			if pluginCount > 0 {
+				resp = copyResponseForCaller(resp)
+			}
 			resp.PopulateExtraFields(req.RequestType, provider, model, model)
 		}
 		drainAndAttachPluginLogs(msg.Context)
@@ -8331,16 +8341,22 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						heldBackError.Store(true)
 						return nil, err
 					}
-					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
+					pluginCount := len(*bifrost.llmPlugins.Load())
+					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, pluginCount)
 					if IsFinalChunk(ctx) {
 						drainAndAttachPluginLogs(ctx)
 						heldBackError.Store(false)
 					}
 					if bifrostErr != nil {
+						copiedErr := *bifrostErr
+						bifrostErr = &copiedErr
 						bifrostErr.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						bifrostErr.PopulateRoutingInfo(perAttemptRoutingInfo)
 						resp = nil // Errors take precedence in the emitted chunk.
 					} else if resp != nil {
+						if pluginCount > 0 {
+							resp = copyResponseForCaller(resp)
+						}
 						resp.PopulateExtraFields(attemptRequestType, provider.GetProviderKey(), originalModelRequested, attemptResolvedModel)
 						resp.PopulateRoutingInfo(perAttemptRoutingInfo)
 					}

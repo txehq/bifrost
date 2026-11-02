@@ -17,6 +17,52 @@ Think of custom providers as "multiple views" of the same underlying provider - 
 - **Custom Naming**: Use descriptive names like "openai-production" or "openai-staging"
 - **Provider Reuse**: Maximize the value of your existing provider accounts
 
+## ElevenLabs reseller channels
+
+Set `base_provider_type` to `elevenlabs` to give an ElevenLabs-compatible reseller its own provider name, URL and keys. The driver appends native paths such as `/v1/text-to-speech/{voice_id}` and `/v1/speech-to-text` to `network_config.base_url` and authenticates with the selected key in `xi-api-key`.
+
+```json
+{
+  "providers": {
+    "tkp-elevenlabs-reseller": {
+      "keys": [
+        {
+          "name": "reseller-key",
+          "value": "env.ELEVENLABS_RESELLER_API_KEY",
+          "models": ["*"],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "https://reseller.example",
+        "max_retries": 0,
+        "retry_backoff_initial": 500,
+        "retry_backoff_max": 5000
+      },
+      "concurrency_and_buffer_size": {
+        "concurrency": 1000,
+        "buffer_size": 5000
+      },
+      "custom_provider_config": {
+        "base_provider_type": "elevenlabs",
+        "allowed_requests": {
+          "list_models": true,
+          "speech": true,
+          "speech_stream": true,
+          "transcription": true
+        }
+      }
+    }
+  }
+}
+```
+
+For admin API registration, send the provider's name in `provider` together with these network, concurrency and custom-provider settings to `POST /api/providers`. Add each key separately through `POST /api/providers/tkp-elevenlabs-reseller/keys`. Read the final provider status after adding keys. Provider configuration updates use `PUT /api/providers/tkp-elevenlabs-reseller`; keys stay on their dedicated endpoints.
+
+`GET /api/providers/{provider}` includes `supported_base_providers`, the gateway's supported custom-driver names. Check that this array contains `elevenlabs` before migrating an existing channel to its native dialect.
+
+Route speech and transcription with model names such as `tkp-elevenlabs-reseller/eleven_turbo_v2_5` and `tkp-elevenlabs-reseller/scribe_v2`. Speech streaming uses `stream_format: "sse"`. The response's `x-bifrost-provider` header identifies the custom channel. `max_retries: 0` is returned explicitly by the admin API and permits one upstream attempt; disabled operations are rejected before dispatch. Configuration and keys persist across gateway restarts.
+
 ## How to Configure
 
 Custom providers are configured using the `custom_provider_config` field, which extends the standard provider configuration. The main purpose is to create multiple instances of the same base provider, each with different request type restrictions.

@@ -13,10 +13,35 @@ import (
 	"testing"
 	"time"
 
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/vectorstore"
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/stretchr/testify/require"
 )
+
+func TestCustomBaseProviderSchemaContracts(t *testing.T) {
+	schema := loadLocalSchema(t)
+	_, filename, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	openAPI, err := os.ReadFile(filepath.Join(filepath.Dir(filename), "..", "..", "..", "docs", "openapi", "openapi.json"))
+	require.NoError(t, err)
+	for name, values := range map[string][]byte{"config": schema, "openapi": openAPI} {
+		path := "$defs.custom_provider_config.properties.base_provider_type.enum"
+		if name == "openapi" {
+			path = "components.schemas.CustomBaseProvider.enum"
+		}
+		var actual []schemas.ModelProvider
+		for _, value := range providerUtils.GetJSONField(values, path).Array() {
+			actual = append(actual, schemas.ModelProvider(value.String()))
+		}
+		require.ElementsMatch(t, schemas.SupportedBaseProviders, actual, name)
+	}
+	// Named custom providers ride providers.additionalProperties=true on current
+	// main, so JSON-Schema cannot refuse azure/vertex/unknown here. Runtime
+	// SupportedBaseProviders remains the allowlist (covered by config/handler tests).
+	require.Contains(t, schemas.SupportedBaseProviders, schemas.Elevenlabs)
+}
 
 // loadLocalSchema reads the local config.schema.json for use in tests,
 // avoiding remote fetches during test execution.
