@@ -454,17 +454,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 				return
 			}
 			n, err := bodyStream.Read(buffer)
-			if err != nil {
-				// If context was cancelled/timed out, let defer handle it
-				if ctx.Err() != nil {
-					return
-				}
-				if err == io.EOF {
-					break
-				}
-				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-				provider.logger.Warn("Error reading stream: %v", err)
-				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
+			if ctx.Err() != nil {
 				return
 			}
 
@@ -489,6 +479,15 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 				}
 
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, response, nil, nil), responseChan, postHookSpanFinalizer)
+			}
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				provider.logger.Warn("Error reading stream: %v", err)
+				providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
+				return
 			}
 		}
 
