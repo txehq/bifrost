@@ -4,9 +4,17 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/txehq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.48 (prerelease 2.1.49-sync.24 carries the changes below; install it with `--devel`)
+**Latest Version:** 2.1.49
 
 ## Changelog
+
+### 2.1.49
+
+The txehq fork chart for transport v2.3.3. It supersedes 2.1.48 as the stable chart and carries everything the 2.1.49-sync.1 to 2.1.49-sync.24 prereleases did (their entries follow); since 2.1.49-sync.24 only `appVersion` changed:
+
+- `appVersion` is now `2.3.3`, so an empty `image.tag` selects `v2.3.3`. Plain `helm install` and `helm search` now pick this chart without `--devel`.
+- Compared with 2.1.48: `image.repository` defaults to `ghcr.io/txehq/bifrost`, `image.tag` is optional, `sources` names this repository, and a provider's `networkConfig.extra_headers` value may be a structured secret reference.
+- The image is private: set `imagePullSecrets` to pull it. See [Image Configuration](#image-configuration)
 
 ### 2.1.49-sync.24 (prerelease)
 
@@ -889,7 +897,7 @@ Or equivalently on the command line:
 
 ```bash
 helm install bifrost bifrost/bifrost \
-  --set image.tag=v2.3.2 \
+  --set image.tag=v2.3.3 \
   --set podSecurityContext.runAsUser=null \
   --set podSecurityContext.fsGroup=null \
   --set securityContext.runAsUser=null
@@ -1368,7 +1376,7 @@ The chart includes pre-configured examples in `values-examples/`:
 # From Helm repository
 helm install bifrost bifrost/bifrost \
   -f https://raw.githubusercontent.com/txehq/bifrost/main/helm-charts/bifrost/values-examples/postgres-only.yaml \
-  --set image.tag=v2.3.2
+  --set image.tag=v2.3.3
 
 # From local source
 helm install bifrost ./bifrost -f ./bifrost/values-examples/postgres-only.yaml
@@ -1450,7 +1458,7 @@ bifrost:
 helm repo update
 
 # Upgrade release
-helm upgrade bifrost bifrost/bifrost --set image.tag=v2.3.2
+helm upgrade bifrost bifrost/bifrost --set image.tag=v2.3.3
 
 # Or with custom values
 helm upgrade bifrost bifrost/bifrost -f my-values.yaml
