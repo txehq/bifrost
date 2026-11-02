@@ -1,0 +1,17 @@
+---
+title: "v2.1.49-sync.24"
+description: "Helm v2.1.49-sync.24 prerelease changelog - 2026-11-02"
+---
+
+<Update label="Bifrost Helm" description="v2.1.49-sync.24 (prerelease)">
+
+## Changelog
+
+Prerelease of the txehq fork for transport v2.3.3-sync.24; the published chart stays 2.1.48 until a stable version supersedes it. Install this one with `helm install --devel` or `--version 2.1.49-sync.24`.
+
+- `image.repository` now defaults to `ghcr.io/txehq/bifrost`, and an empty `image.tag` selects `v<appVersion>`, so the chart no longer needs a tag to render. An explicit `image.repository` or `image.tag` still wins.
+- The image is private: set `imagePullSecrets` to a secret holding a token with `read:packages`.
+- `appVersion` is now `2.3.3-sync.24`, and `sources` names this repository.
+- The chart is published at `https://txehq.github.io/bifrost/helm-charts` and `oci://ghcr.io/txehq/helm-charts/bifrost`.
+
+</Update>

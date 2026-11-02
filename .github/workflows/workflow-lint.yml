@@ -194,6 +194,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: ./.github/workflows/scripts/helm-publish-oci.test.sh
 
+      # helm template only: the default image, its v tag and explicit overrides.
+      - name: Check Helm chart image defaults
+        if: ${{ !cancelled() }}
+        run: ./.github/workflows/scripts/helm-chart-image-default.test.sh
+
       # gh is a shim on PATH: a stable chart version is released plain, a
       # hyphenated one with --prerelease, and the workflow delegates to the script.
       - name: Check Helm release flags

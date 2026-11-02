@@ -26,16 +26,40 @@ If you use PostgreSQL for Bifrost storage, ensure the database is UTF8 encoded. 
 ## Step 1 - Add the Helm Repository
 
 ```bash
-helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
+helm repo add bifrost https://txehq.github.io/bifrost/helm-charts
 helm repo update
+```
+
+Prerelease charts need `--devel` or an exact `--version`. The chart is also an OCI artifact, which requires `helm registry login ghcr.io` with a token that has `read:packages`:
+
+```bash
+helm pull oci://ghcr.io/txehq/helm-charts/bifrost --version <chart-version>
 ```
 
 ## Step 2 - Install
 
+The image `ghcr.io/txehq/bifrost` is private, so create a pull secret from a token with `read:packages`. Set `GHCR_USERNAME` to your GitHub user; the first command reads the token without echoing it. The examples below reference the secret:
+
+```bash
+read -rs GHCR_TOKEN
+GHCR_AUTH=$(printf '%s:%s' "${GHCR_USERNAME}" "${GHCR_TOKEN}" | base64 | tr -d '\n')
+GHCR_CONFIG=$(printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "${GHCR_AUTH}" | base64 | tr -d '\n')
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ghcr-pull
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: ${GHCR_CONFIG}
+EOF
+unset GHCR_TOKEN GHCR_AUTH GHCR_CONFIG
+```
+
 <Note>
 The Helm chart ships ready-made values files under `helm-charts/bifrost/values-examples/`.
 For example: `sqlite-only.yaml`, `production-ha.yaml`, `external-postgres.yaml`, and `secrets-from-k8s.yaml`.
-See the full list here: https://github.com/capsohq/bifrost/tree/main/helm-charts/bifrost/values-examples
+See the full list here: https://github.com/txehq/bifrost/tree/main/helm-charts/bifrost/values-examples
 </Note>
 
 <Tabs>
@@ -48,7 +72,8 @@ kubectl create secret generic bifrost-encryption-key \
   --from-literal=encryption-key="$(openssl rand -base64 32)"
 
 helm install bifrost bifrost/bifrost \
-  --set image.tag=v1.4.11 \
+  --set image.tag=v2.3.2 \
+  --set 'imagePullSecrets[0].name=ghcr-pull' \
   --set bifrost.encryptionKeySecret.name="bifrost-encryption-key" \
   --set bifrost.encryptionKeySecret.key="encryption-key"
 ```
@@ -66,7 +91,8 @@ kubectl create secret generic provider-keys \
   --from-literal=openai-api-key='sk-your-key'
 
 helm install bifrost bifrost/bifrost \
-  --set image.tag=v1.4.11 \
+  --set image.tag=v2.3.2 \
+  --set 'imagePullSecrets[0].name=ghcr-pull' \
   --set bifrost.encryptionKeySecret.name="bifrost-encryption-key" \
   --set bifrost.encryptionKeySecret.key="encryption-key" \
   --set 'bifrost.providers.openai.keys[0].name=primary' \
@@ -97,7 +123,10 @@ kubectl create secret generic provider-keys \
 ```yaml
 # production.yaml
 image:
-  tag: "v1.4.11"
+  tag: "v2.3.2"
+
+imagePullSecrets:
+  - name: ghcr-pull
 
 replicaCount: 3
 
@@ -197,7 +226,7 @@ helm install bifrost bifrost/bifrost -f production.yaml
 </Tabs>
 
 <Note>
-`image.tag` is required - the chart will not start without it. Check [Docker Hub](https://hub.docker.com/r/maximhq/bifrost/tags) for available versions.
+`image.repository` defaults to `ghcr.io/txehq/bifrost` and an empty `image.tag` selects `v<appVersion>`, the image the chart was released with. Set `image.tag` to run another version. The image is private: create a pull secret from a token with `read:packages` and set `imagePullSecrets`, as the [chart README](https://github.com/txehq/bifrost/blob/main/helm-charts/bifrost/README.md#image-configuration) shows.
 </Note>
 
 ## Step 3 - Verify
@@ -248,7 +277,7 @@ Enterprise customers receive dedicated container images in a private registry, a
 ## Step 1 - Add the Helm Repository
 
 ```bash
-helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
+helm repo add bifrost https://txehq.github.io/bifrost/helm-charts
 helm repo update
 ```
 
@@ -510,7 +539,7 @@ helm upgrade bifrost bifrost/bifrost -f your-values.yaml
 # Upgrade and override a single field
 helm upgrade bifrost bifrost/bifrost \
   --reuse-values \
-  --set image.tag=v1.4.11
+  --set image.tag=v2.3.2
 ```
 
 ### Rollback
@@ -627,9 +656,9 @@ curl http://localhost:8080/health
 
 ## Resources
 
-- [Helm Chart Repository](https://github.com/capsohq/bifrost/tree/main/helm-charts)
+- [Helm Chart Repository](https://github.com/txehq/bifrost/tree/main/helm-charts)
 - [Artifact Hub](https://artifacthub.io/packages/helm/bifrost/bifrost)
-- [Example Configurations](https://github.com/capsohq/bifrost/tree/main/helm-charts/bifrost/values-examples)
+- [Example Configurations](https://github.com/txehq/bifrost/tree/main/helm-charts/bifrost/values-examples)
 - [GitHub Issues](https://github.com/capsohq/bifrost/issues)
 
 ## Next Steps

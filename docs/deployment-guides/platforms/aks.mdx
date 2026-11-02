@@ -47,6 +47,8 @@ Continue only after the nodes report `Ready`.
 
 ### Step 2: Create secrets and Helm values
 
+The image `ghcr.io/txehq/bifrost` is private. Set `GHCR_USERNAME` to your GitHub user; the first command below reads a token with `read:packages` without echoing it, and the `ghcr-pull` secret it creates is referenced from the Helm values.
+
 The encryption key protects persisted credentials. Create it once, keep it unchanged after Bifrost writes encrypted data, and use the same value for every replica. Replacing the key makes existing encrypted values unreadable.
 
 ```bash
@@ -54,6 +56,20 @@ kubectl create namespace bifrost \
   --dry-run=client -o yaml | kubectl apply -f -
 
 read -r -s -p 'Stable Bifrost encryption key: ' BIFROST_ENCRYPTION_KEY; echo
+read -rs GHCR_TOKEN
+GHCR_AUTH=$(printf '%s:%s' "${GHCR_USERNAME}" "${GHCR_TOKEN}" | base64 | tr -d '\n')
+GHCR_CONFIG=$(printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "${GHCR_AUTH}" | base64 | tr -d '\n')
+kubectl apply --namespace bifrost -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ghcr-pull
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: ${GHCR_CONFIG}
+EOF
+unset GHCR_TOKEN GHCR_AUTH GHCR_CONFIG
+
 kubectl create secret generic bifrost-encryption \
   --namespace bifrost \
   --from-literal=encryption-key="${BIFROST_ENCRYPTION_KEY}" \
@@ -81,8 +97,11 @@ unset POSTGRES_PASSWORD
 
 cat > bifrost-values.yaml <<EOF
 image:
-  repository: docker.io/maximhq/bifrost
+  repository: ghcr.io/txehq/bifrost
   tag: "${BIFROST_VERSION}"
+
+imagePullSecrets:
+  - name: ghcr-pull
 
 replicaCount: 1
 
@@ -142,8 +161,11 @@ kubectl get storageclass
 
 cat > bifrost-values.yaml <<EOF
 image:
-  repository: docker.io/maximhq/bifrost
+  repository: ghcr.io/txehq/bifrost
   tag: "${BIFROST_VERSION}"
+
+imagePullSecrets:
+  - name: ghcr-pull
 
 replicaCount: 1
 
@@ -170,7 +192,7 @@ Replace `<STORAGE_CLASS>` with a class returned by `kubectl get storageclass`. T
 ### Step 3: Install Bifrost
 
 ```bash
-helm repo add bifrost https://maximhq.github.io/bifrost/helm-charts
+helm repo add bifrost https://txehq.github.io/bifrost/helm-charts
 helm repo update
 
 helm upgrade --install bifrost bifrost/bifrost \
