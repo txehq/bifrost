@@ -19,7 +19,12 @@ import (
 func TestCopyResponseForCallerOwnsMetadataAcrossResponseTypes(t *testing.T) {
 	typeOfResponse := reflect.TypeOf(schemas.BifrostResponse{})
 	for i := 0; i < typeOfResponse.NumField(); i++ {
-		t.Run(typeOfResponse.Field(i).Name, func(t *testing.T) {
+		fieldMeta := typeOfResponse.Field(i)
+		// LiveSessionLog is logging-only metadata and has no ExtraFields slot.
+		if fieldMeta.Name == "LiveSession" {
+			continue
+		}
+		t.Run(fieldMeta.Name, func(t *testing.T) {
 			response := &schemas.BifrostResponse{}
 			field := reflect.ValueOf(response).Elem().Field(i)
 			field.Set(reflect.New(field.Type().Elem()))
