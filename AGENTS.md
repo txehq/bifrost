@@ -10,6 +10,44 @@ GitHub: `maximhq/bifrost`
 
 ---
 
+## New Tokun
+
+The Tokun rebuild is done on the `new-tokun` branches of txe (`txehq/txe`) and of this fork,
+in the batches and items of the plan,
+`~/Projects/Obsidian/TXE/Project Tokun/Specs/Tokun 实施计划.md`, which has the detail.
+`main` and `new-tokun` do not merge into each other until the rebuild returns to `main`.
+
+- **No pull request into `new-tokun`.** Each item is developed on its own branch, named,
+  committed and cited as in txe (txe's `docs/workflow/CONTRACT.md` §Instance attribution).
+  When it passes the local tests, rebase it onto `origin/new-tokun`, merge it with
+  `git merge --ff-only` and push. Nothing waits for CI; the ticket's status is set by hand.
+- **The local tests**, run on the committed, rebased change; all of them pass before the merge:
+  - the Go tests of every module the change touches ([Build, Test & Dev Commands](#build-test--dev-commands), [Testing](#testing));
+  - `cd tools/todocheck && GOWORK=off go run . -root ../.. -batches BATCHES`;
+  - txe's end-to-end environment running this worktree: its `ops/local/tokun-e2e/up --bifrost-src <this worktree>`,
+    then its `test`, then `up --bifrost-src branch` to put the fork's `new-tokun` back (txe's
+    `ops/local/tokun-e2e/README.md`). A change that goes with a txe change is checked with
+    txe's `merge-check --bifrost-src <this worktree>`, which runs both.
+- **A piece left for a later batch is a placeholder**: a one-line `TODO(tokun-B<n>)`
+  comment saying what is to be added, where `B<n>` is the batch that removes it; under it
+  a line starting with `阶段：` that names the batch that put it in and the plan item whose
+  completion removes it; then stand-in code returning a plain default. Both lines are
+  Chinese, with the comment token of the file:
+
+  ```go
+  // TODO(tokun-B2): 按其余六种检查方式判断候选是否满足请求
+  // 阶段：B1 放入；B2-A1「九种检查方式」完成时删除这两行和占位
+  func (c *checklist) satisfiesRest(req *Request, cand *Candidate) bool { return true }
+  ```
+
+- **`tools/todocheck` checks every placeholder** (the command above): the second line is
+  there, and no placeholder of a closed batch is left. `BATCHES` at the root lists the
+  closed batches, one per line (`B1`); the change that removes a batch's last placeholders
+  adds its line. `tools/todocheck` is its own module, outside `go.work`, so no Bifrost
+  module builds it; txe has the same program (`cmd/tools/todocheck`) and `tokun/BATCHES`.
+
+---
+
 ## Repository Layout
 
 ```
