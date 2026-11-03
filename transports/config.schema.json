@@ -4170,7 +4170,7 @@
           },
           "name": {
             "type": "string",
-            "description": "Name of the plugin (built-in: telemetry, prompts, logging, governance, maxim, semantic_cache, otel, or custom plugin name)"
+            "description": "Name of the plugin (built-in: telemetry, prompts, logging, governance, maxim, semantic_cache, otel, tokun, or custom plugin name)"
           },
           "config": {
             "type": "object",
@@ -4435,6 +4435,36 @@
                   },
                   "required": [
                     "api_key"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "name": {
+                  "const": "tokun"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "type": "object",
+                  "description": "Configuration for the tokun routing plugin. Once enabled, every inference request must carry a valid signed route plan (tk-route-plan, tk-route-plan-sig) or is answered 401, and is dispatched only to the upstreams and keys the plan lists.",
+                  "properties": {
+                    "signing_keys": {
+                      "type": "string",
+                      "description": "Secret reference (env.<NAME> or vault.<path>) whose value is a JSON object of route plan signing key id to secret, e.g. {\"gw-2026-11\": \"...\"}. Every id listed verifies, so a rotation adds the new id beside the old one in the Secret and removes the old one once every signer has switched."
+                    }
+                  },
+                  "required": [
+                    "signing_keys"
                   ],
                   "additionalProperties": false
                 }

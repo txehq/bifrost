@@ -682,6 +682,10 @@ func newDecompressReader(r io.Reader, encoding string) (io.Reader, func(), error
 	}
 }
 
+// fastHTTPUserValuePreAuthValues holds the values pre-auth hooks put on their context, for
+// TransportInterceptorMiddleware to put on its own.
+const fastHTTPUserValuePreAuthValues = "__bifrost_pre_auth_values"
+
 // TransportPreAuthInterceptorMiddleware runs the pre-auth phase of the plugin pipeline.
 // It converts the fasthttp request to a serializable HTTPRequest, runs every plugin implementing
 // HTTPTransportPreAuthHook, and applies modifications back to the fasthttp context — so the
@@ -752,8 +756,15 @@ func TransportPreAuthInterceptorMiddleware(config *lib.Config) schemas.BifrostHT
 			}
 			// Adding user values so later middlewares, hooks and handlers observe anything
 			// a pre-auth plugin stashed on the context.
-			for key, value := range bifrostCtx.GetUserValues() {
+			preAuthValues := bifrostCtx.GetUserValues()
+			for key, value := range preAuthValues {
 				ctx.SetUserValue(key, value)
+			}
+			// The transport hooks after authentication run on a context of their own, which
+			// cannot read the request's user values; TransportInterceptorMiddleware seeds it
+			// with these.
+			if len(preAuthValues) > 0 {
+				ctx.SetUserValue(fastHTTPUserValuePreAuthValues, preAuthValues)
 			}
 			next(ctx)
 		}
@@ -773,6 +784,13 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			}
 			// Get or create BifrostContext from fasthttp context
 			bifrostCtx := getBifrostContextFromFastHTTP(ctx)
+			// What pre-auth hooks put on their context is visible to this phase's hooks too,
+			// as it is to the handlers and the LLM hooks.
+			if preAuthValues, ok := ctx.UserValue(fastHTTPUserValuePreAuthValues).(map[any]any); ok {
+				for key, value := range preAuthValues {
+					bifrostCtx.SetValue(key, value)
+				}
+			}
 			// Transport pre-hooks run before the inference path stamps the
 			// catalog, so stamp it here too — otherwise ctx.GetModelInfo would
 			// be nil in HTTPTransportPreHook but populated in every other hook.
@@ -1155,6 +1173,17 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) b
 		logger.Error("request method/path mismatch: %s %s != %s %s", req.Method, req.Path, string(ctx.Method()), string(ctx.Path()))
 		SendError(ctx, fasthttp.StatusConflict, "request method/path was modified by a plugin, this is not allowed")
 		return false
+	}
+	// Remove the headers a plugin deleted from the map, before applying the rest, so a header
+	// a plugin re-added under another spelling stays.
+	var removed []string
+	for key := range ctx.Request.Header.All() {
+		if _, kept := req.Headers[string(key)]; !kept {
+			removed = append(removed, string(key))
+		}
+	}
+	for _, key := range removed {
+		ctx.Request.Header.Del(key)
 	}
 	// Apply headers
 	for key, value := range req.Headers {

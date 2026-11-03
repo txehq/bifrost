@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -3881,8 +3882,9 @@ func TestTracingMiddleware_AccessLogIncludesRequestID(t *testing.T) {
 // fakePreAuthPlugin is a minimal HTTPTransportPlugin whose pre-auth hook is supplied per test;
 // the remaining transport hooks are inert.
 type fakePreAuthPlugin struct {
-	name string
-	hook func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
+	name    string
+	hook    func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error)
+	preHook func(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) // optional
 }
 
 func (p *fakePreAuthPlugin) GetName() string { return p.name }
@@ -3893,7 +3895,10 @@ func (p *fakePreAuthPlugin) HTTPTransportPreAuthHook(ctx *schemas.BifrostContext
 	return p.hook(ctx, req)
 }
 
-func (p *fakePreAuthPlugin) HTTPTransportPreHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+func (p *fakePreAuthPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	if p.preHook != nil {
+		p.preHook(ctx, req)
+	}
 	return nil, nil
 }
 
@@ -4090,6 +4095,97 @@ func TestTransportPreAuthInterceptorMiddleware_NoPlugins(t *testing.T) {
 
 	if !nextCalled {
 		t.Error("expected the request to pass straight through when no plugin implements the hook")
+	}
+}
+
+// TestTransportPreAuthInterceptorMiddleware_HeaderDeletionReachesNext asserts a header a hook
+// deletes from the request map is gone from the request, so neither authentication nor an
+// upstream sees it, while a header it re-adds under another spelling stays.
+func TestTransportPreAuthInterceptorMiddleware_HeaderDeletionReachesNext(t *testing.T) {
+	config := preAuthTestConfig(&fakePreAuthPlugin{
+		name: "header-remover",
+		hook: func(_ *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+			delete(req.Headers, "X-Credential")
+			delete(req.Headers, "X-Renamed")
+			req.Headers["x-renamed"] = "re-added"
+			return nil, nil
+		},
+	})
+
+	var seenCredential, seenRenamed, seenKept []byte
+	handler := TransportPreAuthInterceptorMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+		seenCredential = ctx.Request.Header.Peek("x-credential")
+		seenRenamed = ctx.Request.Header.Peek("x-renamed")
+		seenKept = ctx.Request.Header.Peek("x-kept")
+	})
+
+	ctx := preAuthTestCtx()
+	ctx.Request.Header.Set("X-Credential", "secret")
+	ctx.Request.Header.Set("X-Renamed", "original")
+	ctx.Request.Header.Set("X-Kept", "kept")
+	handler(ctx)
+
+	if seenCredential != nil {
+		t.Errorf("expected the deleted header to be gone, got %q", seenCredential)
+	}
+	if string(seenRenamed) != "re-added" {
+		t.Errorf("expected the re-added header, got %q", seenRenamed)
+	}
+	if string(seenKept) != "kept" {
+		t.Errorf("expected an untouched header to stay, got %q", seenKept)
+	}
+}
+
+// TestTransportPreAuthInterceptorMiddleware_ValuesVisibleToTransportHooks asserts what a
+// pre-auth hook puts on its context is visible to the transport hooks that run after
+// authentication, which get a context of their own.
+func TestTransportPreAuthInterceptorMiddleware_ValuesVisibleToTransportHooks(t *testing.T) {
+	const key schemas.BifrostContextKey = "pre-auth-test-value"
+	var seen any
+	config := preAuthTestConfig(&fakePreAuthPlugin{
+		name: "stasher",
+		hook: func(ctx *schemas.BifrostContext, _ *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+			ctx.SetValue(key, "stashed before authentication")
+			return nil, nil
+		},
+		preHook: func(ctx *schemas.BifrostContext, _ *schemas.HTTPRequest) {
+			seen = ctx.Value(key)
+		},
+	})
+
+	handler := TransportPreAuthInterceptorMiddleware(config)(
+		TransportInterceptorMiddleware(config)(func(_ *fasthttp.RequestCtx) {}),
+	)
+	handler(preAuthTestCtx())
+
+	if seen != "stashed before authentication" {
+		t.Errorf("expected the transport pre-hook to see the pre-auth value, got %v", seen)
+	}
+}
+
+// BenchmarkTransportPreAuthInterceptorMiddleware measures the pre-auth phase with one hook that
+// changes nothing, on a request with a dozen headers.
+func BenchmarkTransportPreAuthInterceptorMiddleware(b *testing.B) {
+	config := preAuthTestConfig(&fakePreAuthPlugin{
+		name: "no-op",
+		hook: func(*schemas.BifrostContext, *schemas.HTTPRequest) (*schemas.HTTPResponse, error) { return nil, nil },
+	})
+	handler := TransportPreAuthInterceptorMiddleware(config)(func(*fasthttp.RequestCtx) {})
+	body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`)
+	var req fasthttp.Request
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, nil, nil)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		ctx.Request.Reset()
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.SetRequestURI("/v1/chat/completions")
+		ctx.Request.Header.SetContentType("application/json")
+		for h := range 10 {
+			ctx.Request.Header.Set("X-Bench-"+strconv.Itoa(h), "value")
+		}
+		ctx.Request.SetBody(body)
+		handler(ctx)
 	}
 }
 

@@ -56,6 +56,7 @@ import (
 	"github.com/capsohq/bifrost/plugins/routing/rules"
 	"github.com/capsohq/bifrost/plugins/semanticcache"
 	"github.com/capsohq/bifrost/plugins/telemetry"
+	"github.com/capsohq/bifrost/plugins/tokun"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -143,6 +144,7 @@ var builtinPluginNames = []string{
 	compat.PluginName,
 	maxim.PluginName,
 	routing.PluginName,
+	tokun.PluginName,
 }
 
 func GetBuiltinPluginNames() []string {

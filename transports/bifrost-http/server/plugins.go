@@ -17,6 +17,7 @@ import (
 	"github.com/capsohq/bifrost/plugins/routing"
 	"github.com/capsohq/bifrost/plugins/semanticcache"
 	"github.com/capsohq/bifrost/plugins/telemetry"
+	"github.com/capsohq/bifrost/plugins/tokun"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/handlers"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 )
@@ -196,6 +197,13 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 	case modelcatalogresolver.PluginName:
 		return modelcatalogresolver.Init(bifrostConfig.ModelCatalog, logger)
 
+	case tokun.PluginName:
+		tokunConfig, err := MarshalPluginConfig[tokun.Config](pluginConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal tokun plugin config: %w", err)
+		}
+		return tokun.Init(tokunConfig, logger)
+
 	default:
 		return nil, fmt.Errorf("unknown built-in plugin: %s", name)
 	}
@@ -362,6 +370,21 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 	// including post_builtin ones like the enterprise load balancer (which would otherwise run
 	// after this builtin and never get a chance to pick the provider first).
 	s.Config.SetPluginOrderInfo(modelcatalogresolver.PluginName, schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(math.MaxInt))
+
+	// 11. Tokun routing, only when its entry in PluginConfigs is enabled. Once loaded, every
+	// inference request needs a valid signed route plan, so a configured plugin that cannot
+	// start (no signing key) stops the server. It runs after
+	// every other routing plugin, so the plan's provider, model, fallbacks and key pin are the
+	// final ones; the catalog resolver after it fills a provider only when none is set.
+	tokunConfig := s.getPluginConfig(tokun.PluginName)
+	if tokunConfig != nil && tokunConfig.Enabled {
+		if err := s.registerPluginWithStatus(ctx, tokun.PluginName, nil, tokunConfig.Config, true); err != nil {
+			return fmt.Errorf("tokun plugin: %w", err)
+		}
+	} else {
+		s.markPluginDisabled(tokun.PluginName)
+	}
+	s.Config.SetPluginOrderInfo(tokun.PluginName, schemas.Ptr(schemas.PluginPlacementPostBuiltin), schemas.Ptr(math.MaxInt-1))
 
 	return nil
 }
