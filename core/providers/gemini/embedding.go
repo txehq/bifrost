@@ -228,12 +228,49 @@ func ToGeminiEmbedContentResponse(bifrostResp *schemas.BifrostEmbeddingResponse)
 	embedding := GeminiEmbedding{
 		Values: append([]float64(nil), values...),
 	}
+	out := &GeminiEmbedContentResponse{UsageMetadata: embeddingUsageMetadata(bifrostResp.Usage)}
 	if bifrostResp.Usage != nil {
 		embedding.Statistics = &ContentEmbeddingStatistics{
 			TokenCount: int32(bifrostResp.Usage.PromptTokens),
 		}
 	}
-	return &GeminiEmbedContentResponse{Embedding: embedding}
+	out.Embedding = embedding
+	return out
+}
+
+// embeddingUsageMetadata is an embedding response's token usage in the usageMetadata
+// Gemini reports it in; nil when the upstream reported none.
+func embeddingUsageMetadata(usage *schemas.BifrostLLMUsage) *GenerateContentResponseUsageMetadata {
+	if usage == nil {
+		return nil
+	}
+	total := usage.TotalTokens
+	if total == 0 {
+		total = usage.PromptTokens
+	}
+	return &GenerateContentResponseUsageMetadata{PromptTokenCount: int32(usage.PromptTokens), TotalTokenCount: int32(total)}
+}
+
+// ToGeminiPredictEmbeddingResponse converts a BifrostEmbeddingResponse to the predictions
+// shape of the text embeddings API on :predict. A prediction carries its own token count
+// when it is the only one; the request's total is in usageMetadata.
+func ToGeminiPredictEmbeddingResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *GeminiPredictEmbeddingResponse {
+	if bifrostResp == nil || len(bifrostResp.Data) == 0 {
+		return nil
+	}
+	out := &GeminiPredictEmbeddingResponse{Predictions: make([]GeminiPredictEmbedding, len(bifrostResp.Data)),
+		UsageMetadata: embeddingUsageMetadata(bifrostResp.Usage)}
+	for i, d := range bifrostResp.Data {
+		values := d.Embedding.EmbeddingArray
+		if values == nil && len(d.Embedding.Embedding2DArray) > 0 {
+			values = d.Embedding.Embedding2DArray[0]
+		}
+		out.Predictions[i].Embeddings.Values = append([]float64(nil), values...)
+	}
+	if bifrostResp.Usage != nil && len(bifrostResp.Data) == 1 {
+		out.Predictions[0].Embeddings.Statistics = &GeminiPredictEmbeddingStatistics{TokenCount: bifrostResp.Usage.PromptTokens}
+	}
+	return out
 }
 
 // ToGeminiEmbeddingResponse converts a BifrostResponse with embedding data to Gemini's embedding response format
@@ -259,11 +296,8 @@ func ToGeminiEmbeddingResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *G
 	if len(geminiResp.Embeddings) == 1 {
 		geminiResp.Embedding = &geminiResp.Embeddings[0]
 	}
-	if bifrostResp.Usage != nil {
-		geminiResp.Metadata = &EmbedContentMetadata{
-			BillableCharacterCount: int32(bifrostResp.Usage.PromptTokens),
-		}
-	}
+	// The token total is usage, not a character count.
+	geminiResp.UsageMetadata = embeddingUsageMetadata(bifrostResp.Usage)
 	return geminiResp
 }
 
@@ -577,6 +611,23 @@ func (request *GeminiGenerationRequest) ToBifrostEmbeddingRequest(ctx *schemas.B
 			items = append(items, schemas.EmbeddingInputItem{Content: converted})
 		}
 		bifrostReq.Input = items
+		return bifrostReq
+	}
+
+	// The text embeddings API on :predict: one item per instance's content, with the
+	// request's output dimensionality and truncation.
+	for _, instance := range request.Instances {
+		if instance.Content == nil {
+			continue
+		}
+		item := schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: instance.Content}}}
+		if instance.TaskType != nil || instance.Title != nil {
+			item.Params = &schemas.EmbeddingParameters{TaskType: instance.TaskType, Title: instance.Title}
+		}
+		bifrostReq.Input = append(bifrostReq.Input, item)
+	}
+	if p := request.Parameters; len(bifrostReq.Input) > 0 && p != nil && (p.OutputDimensionality != nil || p.AutoTruncate != nil) {
+		bifrostReq.Params = &schemas.EmbeddingParameters{Dimensions: p.OutputDimensionality, AutoTruncate: p.AutoTruncate}
 	}
 
 	return bifrostReq

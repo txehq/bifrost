@@ -231,10 +231,16 @@ func (s *GeminiSessionID) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ImagenInstance represents a single instance in an Imagen request
+// ImagenInstance represents a single instance of a :predict request. An Imagen instance
+// carries a prompt; a text-embedding instance (the text embeddings API on :predict) carries
+// content, with an optional task type and title.
 type ImagenInstance struct {
 	Prompt          string                 `json:"prompt,omitempty"`
 	ReferenceImages []ImagenReferenceImage `json:"referenceImages,omitempty"`
+
+	Content  *string `json:"content,omitempty"`
+	TaskType *string `json:"task_type,omitempty"`
+	Title    *string `json:"title,omitempty"`
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -2298,7 +2304,34 @@ type GeminiEmbeddingResponse struct {
 
 // GeminiEmbedContentResponse is the wire format for a single :embedContent response.
 type GeminiEmbedContentResponse struct {
-	Embedding GeminiEmbedding `json:"embedding"`
+	Embedding     GeminiEmbedding                       `json:"embedding"`
+	UsageMetadata *GenerateContentResponseUsageMetadata `json:"usageMetadata,omitempty"`
+}
+
+// GeminiPredictEmbeddingResponse is the wire format of the text embeddings API on :predict.
+// UsageMetadata carries the request's token total, which a converted response knows only
+// for the request as a whole.
+type GeminiPredictEmbeddingResponse struct {
+	Predictions   []GeminiPredictEmbedding              `json:"predictions"`
+	UsageMetadata *GenerateContentResponseUsageMetadata `json:"usageMetadata,omitempty"`
+}
+
+// GeminiPredictEmbedding is one prediction of a :predict embedding response.
+type GeminiPredictEmbedding struct {
+	Embeddings GeminiPredictEmbeddingValues `json:"embeddings"`
+}
+
+// GeminiPredictEmbeddingValues is a prediction's vector, and its statistics when the
+// prediction's own token count is known.
+type GeminiPredictEmbeddingValues struct {
+	Values     []float64                         `json:"values"`
+	Statistics *GeminiPredictEmbeddingStatistics `json:"statistics,omitempty"`
+}
+
+// GeminiPredictEmbeddingStatistics is the statistics object of the text embeddings API.
+type GeminiPredictEmbeddingStatistics struct {
+	TokenCount int  `json:"token_count"`
+	Truncated  bool `json:"truncated"`
 }
 
 // GeminiEmbedding represents a single embedding in the response
@@ -3178,6 +3211,10 @@ type GeminiImagenParameters struct {
 	IncludeRaiReason        *bool                `json:"includeRaiReason,omitempty"`        // Whether to include the RAI filtered reason
 	IncludeSafetyAttributes *bool                `json:"includeSafetyAttributes,omitempty"` // Whether to include safety attributes
 	StorageUri              *string              `json:"storageUri,omitempty"`              // Storage URI for the image
+
+	// Text-embedding parameters of a :predict request.
+	AutoTruncate         *bool `json:"autoTruncate,omitempty"`
+	OutputDimensionality *int  `json:"outputDimensionality,omitempty"`
 }
 
 type ImagenOutputOptions struct {
