@@ -5585,25 +5585,21 @@ func HandleOpenAIImageEditRequest(
 	for k, v := range authHeaders {
 		req.Header.Set(k, v)
 	}
-	req.Header.Set("Content-Type", "multipart/form-data")
-
-	// Create multipart form
-	// Time the multipart encode as the request-marshal phase.
+	// Encode the multipart form, or the JSON form when an input image is a URL.
+	// Time the encode as the request-marshal phase.
 	mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	if err := parseImageEditFormDataBodyFromRequest(writer, openaiReq, providerName); err != nil {
+	bodyData, contentType, encodeErr := encodeImageEditBody(openaiReq, providerName)
+	if encodeErr != nil {
 		if mt != nil {
-			mt.EndSpan(mh, schemas.SpanStatusError, "multipart encode failed")
+			mt.EndSpan(mh, schemas.SpanStatusError, "image edit encode failed")
 		}
-		return nil, err
+		return nil, encodeErr
 	}
 	if mt != nil {
 		mt.EndSpan(mh, schemas.SpanStatusOk, "")
 	}
 
-	req.Header.SetContentType(writer.FormDataContentType())
-	bodyData := body.Bytes()
+	req.Header.SetContentType(contentType)
 	timedSetBody(ctx, req, bodyData)
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
@@ -5719,15 +5715,13 @@ func HandleOpenAIImageEditStreamRequest(
 	if postRequestConverter != nil {
 		reqBody = postRequestConverter(reqBody)
 	}
-	// Create multipart form
-	// Time the multipart encode as the request-marshal phase.
+	// Encode the multipart form, or the JSON form when an input image is a URL.
+	// Time the encode as the request-marshal phase.
 	mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-
-	if bifrostErr := parseImageEditFormDataBodyFromRequest(writer, reqBody, providerName); bifrostErr != nil {
+	bodyData, contentType, bifrostErr := encodeImageEditBody(reqBody, providerName)
+	if bifrostErr != nil {
 		if mt != nil {
-			mt.EndSpan(mh, schemas.SpanStatusError, "multipart encode failed")
+			mt.EndSpan(mh, schemas.SpanStatusError, "image edit encode failed")
 		}
 		return nil, bifrostErr
 	}
@@ -5737,7 +5731,7 @@ func HandleOpenAIImageEditStreamRequest(
 
 	// Prepare OpenAI headers
 	headers := map[string]string{
-		"Content-Type":  writer.FormDataContentType(),
+		"Content-Type":  contentType,
 		"Accept":        "text/event-stream",
 		"Cache-Control": "no-cache",
 	}
@@ -5763,7 +5757,7 @@ func HandleOpenAIImageEditStreamRequest(
 		req.Header.Set(key, value)
 	}
 
-	req.SetBody(body.Bytes())
+	req.SetBody(bodyData)
 
 	startTime := time.Now()
 	// Make the request

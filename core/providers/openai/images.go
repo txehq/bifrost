@@ -1,11 +1,14 @@
 package openai
 
 import (
+	"bytes"
+	"encoding/base64"
 	"fmt"
 	"mime/multipart"
 	"net/http"
 	"strconv"
 
+	"github.com/bytedance/sonic"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 )
@@ -120,6 +123,100 @@ func ToOpenAIImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Open
 	}
 
 	return req
+}
+
+// encodeImageEditBody returns the upstream body of POST /v1/images/edits and its content
+// type. An edit that names any input image by URL only goes as JSON, where images[] and the
+// mask are {"image_url": ...} objects and in-memory bytes become data URLs; the multipart
+// form has no part for a URL, so it would carry an empty file instead.
+func encodeImageEditBody(openaiReq *OpenAIImageEditRequest, providerName schemas.ModelProvider) ([]byte, string, *schemas.BifrostError) {
+	if imageEditUsesURLs(openaiReq) {
+		body, err := imageEditJSONBody(openaiReq)
+		if err != nil {
+			return nil, "", err
+		}
+		return body, "application/json", nil
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := parseImageEditFormDataBodyFromRequest(writer, openaiReq, providerName); err != nil {
+		return nil, "", err
+	}
+	return body.Bytes(), writer.FormDataContentType(), nil
+}
+
+func imageEditUsesURLs(openaiReq *OpenAIImageEditRequest) bool {
+	if openaiReq.Input == nil {
+		return false
+	}
+	for _, image := range openaiReq.Input.Images {
+		if len(image.Image) == 0 && image.URL != "" {
+			return true
+		}
+	}
+	return false
+}
+
+type openAIImageEditReference struct {
+	ImageURL string `json:"image_url"`
+}
+
+func imageEditReference(data []byte, url string) openAIImageEditReference {
+	if len(data) == 0 {
+		return openAIImageEditReference{ImageURL: url}
+	}
+	mimeType := http.DetectContentType(data)
+	if mimeType != "image/jpeg" && mimeType != "image/webp" {
+		mimeType = "image/png"
+	}
+	return openAIImageEditReference{ImageURL: "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data)}
+}
+
+func imageEditJSONBody(openaiReq *OpenAIImageEditRequest) ([]byte, *schemas.BifrostError) {
+	body := map[string]interface{}{}
+	for k, v := range openaiReq.ExtraParams {
+		body[k] = v
+	}
+	body["model"] = openaiReq.Model
+	body["prompt"] = openaiReq.Input.Prompt
+	images := make([]openAIImageEditReference, 0, len(openaiReq.Input.Images))
+	for _, image := range openaiReq.Input.Images {
+		images = append(images, imageEditReference(image.Image, image.URL))
+	}
+	body["images"] = images
+	if len(openaiReq.Mask) > 0 {
+		body["mask"] = imageEditReference(openaiReq.Mask, "")
+	}
+	if openaiReq.Stream != nil && *openaiReq.Stream {
+		body["stream"] = true
+	}
+	for name, value := range map[string]*int{
+		"n":                  openaiReq.N,
+		"partial_images":     openaiReq.PartialImages,
+		"output_compression": openaiReq.OutputCompression,
+	} {
+		if value != nil {
+			body[name] = *value
+		}
+	}
+	for name, value := range map[string]*string{
+		"size":            openaiReq.Size,
+		"response_format": openaiReq.ResponseFormat,
+		"quality":         openaiReq.Quality,
+		"background":      openaiReq.Background,
+		"input_fidelity":  openaiReq.InputFidelity,
+		"output_format":   openaiReq.OutputFormat,
+		"user":            openaiReq.User,
+	} {
+		if value != nil {
+			body[name] = *value
+		}
+	}
+	encoded, err := sonic.Marshal(body)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to encode image edit request", err)
+	}
+	return encoded, nil
 }
 
 func parseImageEditFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAIImageEditRequest, providerName schemas.ModelProvider) *schemas.BifrostError {

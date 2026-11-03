@@ -3,6 +3,7 @@ package bedrock
 import (
 	"encoding/base64"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 
@@ -34,6 +35,43 @@ func mapQualityToBedrock(quality *string) *string {
 	}
 }
 
+// The converters below consume keys from Params.ExtraParams by deleting them. The caller's
+// request is reused for the next attempt (a fallback or a retry), so each converter works on
+// its own copy of the map and the next attempt still sees every key.
+
+func ownImageGenerationExtraParams(request *schemas.BifrostImageGenerationRequest) *schemas.BifrostImageGenerationRequest {
+	if request == nil || request.Params == nil || request.Params.ExtraParams == nil {
+		return request
+	}
+	own := *request
+	params := *request.Params
+	params.ExtraParams = maps.Clone(request.Params.ExtraParams)
+	own.Params = &params
+	return &own
+}
+
+func ownImageVariationExtraParams(request *schemas.BifrostImageVariationRequest) *schemas.BifrostImageVariationRequest {
+	if request == nil || request.Params == nil || request.Params.ExtraParams == nil {
+		return request
+	}
+	own := *request
+	params := *request.Params
+	params.ExtraParams = maps.Clone(request.Params.ExtraParams)
+	own.Params = &params
+	return &own
+}
+
+func ownImageEditExtraParams(request *schemas.BifrostImageEditRequest) *schemas.BifrostImageEditRequest {
+	if request == nil || request.Params == nil || request.Params.ExtraParams == nil {
+		return request
+	}
+	own := *request
+	params := *request.Params
+	params.ExtraParams = maps.Clone(request.Params.ExtraParams)
+	own.Params = &params
+	return &own
+}
+
 // isStabilityAIModel returns true if the model is a Stability AI model (contains "stability.")
 func isStabilityAIModel(model string) bool {
 	return strings.Contains(strings.ToLower(model), "stability.")
@@ -53,6 +91,7 @@ func ToStabilityAIImageGenerationRequest(request *schemas.BifrostImageGeneration
 	if request == nil {
 		return nil, fmt.Errorf("request is nil")
 	}
+	request = ownImageGenerationExtraParams(request)
 	if request.Input == nil {
 		return nil, fmt.Errorf("request input is required")
 	}
@@ -94,6 +133,7 @@ func ToBedrockImageGenerationRequest(request *schemas.BifrostImageGenerationRequ
 	if request == nil {
 		return nil, fmt.Errorf("request is nil")
 	}
+	request = ownImageGenerationExtraParams(request)
 
 	if request.Input == nil {
 		return nil, fmt.Errorf("request input is required")
@@ -178,6 +218,7 @@ func ToBedrockImageVariationRequest(request *schemas.BifrostImageVariationReques
 	if request == nil {
 		return nil, fmt.Errorf("request is nil")
 	}
+	request = ownImageVariationExtraParams(request)
 
 	if request.Input == nil || request.Input.Image.Image == nil || len(request.Input.Image.Image) == 0 {
 		return nil, fmt.Errorf("request.Input.Image is required")
@@ -279,6 +320,7 @@ func ToBedrockImageEditRequest(request *schemas.BifrostImageEditRequest) (*Bedro
 	if request == nil || request.Input == nil {
 		return nil, fmt.Errorf("request or input is nil")
 	}
+	request = ownImageEditExtraParams(request)
 
 	if len(request.Input.Images) == 0 || len(request.Input.Images[0].Image) == 0 {
 		return nil, fmt.Errorf("at least one image is required")
@@ -509,6 +551,7 @@ func ToStabilityAIImageEditRequest(request *schemas.BifrostImageEditRequest, dep
 	if request == nil || request.Input == nil {
 		return nil, fmt.Errorf("request or input is nil")
 	}
+	request = ownImageEditExtraParams(request)
 
 	var taskType string
 	if request.Params != nil && request.Params.Type != nil {

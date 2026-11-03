@@ -768,6 +768,45 @@ func ToGeminiImageGenerationResponse(ctx context.Context, bifrostResp *schemas.B
 	return geminiResp, nil
 }
 
+// ToGeminiImageGenerationStreamResponse converts one image stream event into a
+// streamGenerateContent chunk. A completed image becomes a chunk with one inlineData part
+// and the usage reported with it. A partial image has no Gemini counterpart (Gemini streams
+// whole images), so it yields nil and the route writes nothing for it.
+func ToGeminiImageGenerationStreamResponse(ctx context.Context, event *schemas.BifrostImageGenerationStreamResponse) (*GenerateContentResponse, error) {
+	if event == nil {
+		return nil, nil
+	}
+	if event.Type != schemas.ImageGenerationEventTypeCompleted && event.Type != schemas.ImageEditEventTypeCompleted {
+		return nil, nil
+	}
+	data := event.B64JSON
+	if data == "" && event.URL != "" {
+		downloaded, err := downloadImageFromURL(ctx, event.URL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to download image from URL: %w", err)
+		}
+		data = downloaded
+	}
+	mimeType := "image/png"
+	if event.OutputFormat != "" {
+		if converted := convertOutputFormatToMimeType(event.OutputFormat); converted != "" {
+			mimeType = converted
+		}
+	}
+	return &GenerateContentResponse{
+		ResponseID: event.ID,
+		Candidates: []*Candidate{{
+			Index: int32(event.Index),
+			Content: &Content{
+				Role:  RoleModel,
+				Parts: []*Part{{InlineData: &Blob{Data: data, MIMEType: mimeType}}},
+			},
+			FinishReason: FinishReasonStop,
+		}},
+		UsageMetadata: convertBifrostImageUsageToGeminiUsageMetadata(event.Usage),
+	}, nil
+}
+
 func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *GeminiGenerationRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil || len(bifrostReq.Input.Images) == 0 {
 		return nil
