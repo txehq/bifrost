@@ -3149,17 +3149,8 @@ func (s *BifrostHTTPServer) PrepareCommonMiddlewares() []schemas.BifrostHTTPMidd
 	commonMiddlewares := []schemas.BifrostHTTPMiddleware{}
 	// Copy the matched route template saved by the router (SaveMatchedRoutePath) into a
 	// stable, router-agnostic user value so metrics middlewares below can label by route
-	// template instead of the raw URL path.
-	commonMiddlewares = append(commonMiddlewares, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
-		return func(ctx *fasthttp.RequestCtx) {
-			if route, ok := ctx.UserValue(router.MatchedRoutePathParam).(string); ok && route != "" {
-				ctx.SetUserValue(string(schemas.BifrostContextKeyHTTPRoute), route)
-				// Drop the router's randomized key so it doesn't leak into request PathParams.
-				ctx.RemoveUserValue(router.MatchedRoutePathParam)
-			}
-			next(ctx)
-		}
-	})
+	// template instead of the raw URL path, and transport plugins see it.
+	commonMiddlewares = append(commonMiddlewares, handlers.HTTPRouteMiddleware())
 	// Preparing middlewares
 	commonMiddlewares = append(commonMiddlewares, s.prometheusHTTPMiddleware())
 	// OTel HTTP metrics (http_requests_total etc., pushed via OTLP). The otel plugin is

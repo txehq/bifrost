@@ -4187,6 +4187,8 @@ func BenchmarkTransportInterceptorMiddlewares(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// fasthttp clears a connection's user values between requests; so does the benchmark.
 		ctx.ResetUserValues()
+		// The matched route template the server's HTTPRouteMiddleware records.
+		ctx.SetUserValue(string(schemas.BifrostContextKeyHTTPRoute), "/v1/chat/completions")
 		ctx.Request.Reset()
 		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 		ctx.Request.SetRequestURI("/v1/chat/completions")

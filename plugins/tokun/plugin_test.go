@@ -270,6 +270,7 @@ func TestPreAuthHookRemovesThePlanAndTheCallersRouting(t *testing.T) {
 	req := &schemas.HTTPRequest{
 		Method: http.MethodPost,
 		Path:   "/v1/chat/completions",
+		Route:  "/v1/chat/completions",
 		Headers: map[string]string{
 			"Tk-Route-Plan":         planHeader,
 			"tk-route-plan-sig":     signatureHeader,
@@ -308,6 +309,7 @@ func TestPreAuthHookAnswers401(t *testing.T) {
 	req := &schemas.HTTPRequest{
 		Method:  http.MethodPost,
 		Path:    "/v1/chat/completions",
+		Route:   "/v1/chat/completions",
 		Headers: map[string]string{HeaderRoutePlan: planHeader, HeaderRoutePlanSignature: signatureHeader},
 		Body:    []byte(testBody + " "),
 	}
@@ -328,6 +330,75 @@ func TestPreAuthHookAnswers401(t *testing.T) {
 	}
 	if ctx.Value(requestStateKey) != nil {
 		t.Fatal("a refused request carries a request state")
+	}
+}
+
+// The route is refused before the plan is read: a valid plan does not open a route tokun does not
+// offer, and the refusal does not use up its send_id.
+func TestPreAuthHookRefusesByRoute(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, route string
+		status              int
+		code                rejection
+	}{
+		{"WebSocket Responses", http.MethodGet, "/v1/responses", http.StatusNotFound, rejectNotOffered},
+		{"live session", http.MethodPost, "/openai/v1/live/sessions", http.StatusNotFound, rejectNotOffered},
+		{"MCP", http.MethodPost, "/mcp", http.StatusNotFound, rejectNotOffered},
+		{"Agent Gateway push callback", http.MethodPost, "/agents/a2a/{name}/push/callback", http.StatusNotFound, rejectNotOffered},
+		{"realtime WebSocket", http.MethodGet, "/v1/realtime", http.StatusNotImplemented, rejectNotImplemented},
+		{"realtime client secret", http.MethodPost, "/openai/v1/realtime/client_secrets", http.StatusNotImplemented, rejectNotImplemented},
+		{"a route the plugin does not know", http.MethodPost, "/v1/unknown", http.StatusInternalServerError, rejectUnclassified},
+		{"no route recorded", http.MethodPost, "", http.StatusInternalServerError, rejectUnclassified},
+		{"a known template under another method", http.MethodPut, "/v1/chat/completions", http.StatusInternalServerError, rejectUnclassified},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := testPlugin(t, map[string]string{"gw-2026-11": "gateway-secret"})
+			planHeader, signatureHeader := validSigning("snd_route").headers(t)
+			req := &schemas.HTTPRequest{
+				Method:  tc.method,
+				Path:    "/requested/path",
+				Route:   tc.route,
+				Headers: map[string]string{HeaderRoutePlan: planHeader, HeaderRoutePlanSignature: signatureHeader},
+				Body:    []byte(testBody),
+			}
+			ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+			resp, err := plugin.HTTPTransportPreAuthHook(ctx, req)
+			if err != nil || resp == nil || resp.StatusCode != tc.status {
+				t.Fatalf("hook = %+v, %v; want %d", resp, err, tc.status)
+			}
+			var body rejectionBody
+			if err := json.Unmarshal(resp.Body, &body); err != nil {
+				t.Fatalf("body %s: %v", resp.Body, err)
+			}
+			if body.Error.Type != routeRejectionType || body.Error.Code != tc.code || body.Error.Message == "" {
+				t.Fatalf("body = %+v, want type %s, code %s", body, routeRejectionType, tc.code)
+			}
+			if ctx.Value(requestStateKey) != nil || plugin.sendIDs.size() != 0 {
+				t.Fatal("a refused route read the plan")
+			}
+		})
+	}
+}
+
+// Every class the table lists is reachable, and the realtime routes are the only 501s.
+func TestRouteClasses(t *testing.T) {
+	counts := map[string]int{}
+	for _, entry := range ClassifiedRoutes() {
+		method, template, _ := strings.Cut(entry, " ")
+		class := RouteClass(method, template)
+		if class == "" {
+			t.Fatalf("%s is listed without a class", entry)
+		}
+		counts[class]++
+		if (class == "not_implemented") != strings.Contains(template, "/realtime") {
+			t.Errorf("%s is %s", entry, class)
+		}
+	}
+	if counts["plan"] == 0 || counts["not_offered"] == 0 || counts["not_implemented"] == 0 {
+		t.Fatalf("classes = %v", counts)
+	}
+	if got := RouteClass("PUT", "/v1/chat/completions"); got != "" {
+		t.Fatalf("an unlisted method of a listed template is %q", got)
 	}
 }
 
@@ -510,7 +581,7 @@ func BenchmarkPreAuthHook(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		// The transport hands the hook a pooled request, as here.
 		req := schemas.AcquireHTTPRequest()
-		req.Method, req.Path, req.Body = http.MethodPost, "/v1/chat/completions", body
+		req.Method, req.Path, req.Route, req.Body = http.MethodPost, "/v1/chat/completions", "/v1/chat/completions", body
 		req.Headers[HeaderRoutePlan] = signed[i].plan
 		req.Headers[HeaderRoutePlanSignature] = signed[i].signature
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

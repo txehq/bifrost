@@ -27,51 +27,52 @@ keys do not resolve stops the server.
 Without the entry, or with `"enabled": false`, the plugin is not loaded and no request
 reaches it.
 
-## Routes that need a signed plan once it is on
+## Routes, once it is on
 
-The plugin is an HTTP transport plugin, and the pre-auth phase runs on every route
-registered with the inference middlewares (`RegisterInferenceRoutes` in
-`transports/bifrost-http/server/server.go`). Once the plugin is loaded, every request on
-these routes needs a valid plan, or it is answered 401 with
-`{"error": {"type": "tokun_route_plan_rejected", "code": "<reason>", ...}}`:
+The plugin is an HTTP transport plugin, and its pre-auth hook runs on every route registered
+with the inference middlewares (`RegisterInferenceRoutes` in
+`transports/bifrost-http/server/server.go`). The hook decides by the route the request matched
+(its method and route template, `HTTPRequest.Route`) before it reads the plan, so a refused
+route never uses up the request's `send_id`. Every route has a class in `routes.go`:
 
-| Routes | Handler |
-| --- | --- |
-| `/v1/chat/completions`, `/v1/completions`, `/v1/responses` and its `compact`, `input_tokens`, `{response_id}`, `cancel` and `input_items` routes, `/v1/embeddings`, `/v1/audio/speech`, `/v1/audio/transcriptions`, `/v1/images/*`, `/v1/videos/*`, `/v1/rerank`, `/v1/ocr`, `/v1/decisions`, `/v1/models`, `/v1/models/{model}`, `/v1/batches/*`, `/v1/files/*`, `/v1/containers/*` | inference handler |
-| `/v1/async/*`, the submissions and the `{job_id}` polls | async handler |
-| `/openai/*`, `/anthropic/*`, `/genai/*`, `/bedrock/*`, `/cohere/*`, `/litellm/*`, `/langchain/*`, `/pydanticai/*`, `/cursor/*`, `/typesafe/*` | SDK integration routers |
-| `/openai_passthrough/*`, `/anthropic_passthrough/*`, `/azure_passthrough/*`, `/bedrock_passthrough/*`, `/runware_passthrough/*`, `/genai_passthrough/*`, `/chatgpt_passthrough/*` | passthrough routers |
-| WebSocket `/v1/responses` and `/openai/v1/responses` | WebSocket Responses |
-| `/v1/realtime`, `/v1/realtime/calls`, `/v1/realtime/client_secrets`, `/v1/realtime/sessions`, each also under `/openai` | realtime (WebSocket, WebRTC, client secrets) |
-| `/v1/live/sessions`, `/v1/live/sessions/{session_id}/attach`, `/v1/live/sessions/{session_id}/content`, each also under `/openai` | live sessions and live control |
-| `/v1/mcp/tool/execute`, `/mcp`, `/mcp/{slug}` | MCP tool execution and Bifrost's MCP server |
-| `/agents/a2a/{name}` with its `/json-rpc`, `/rest/*` and `/.well-known/agent-card.json` routes, and `/agents/a2a/{name}/push/callback` | Agent Gateway |
+| Class | Routes | Answer |
+| --- | --- | --- |
+| Needs a signed plan | The inference handler (`/v1/chat/completions`, `/v1/completions`, the HTTP `/v1/responses` routes, `/v1/embeddings`, `/v1/audio/*`, `/v1/images/*`, `/v1/videos/*`, `/v1/rerank`, `/v1/ocr`, `/v1/decisions`, `/v1/models`, `/v1/batches/*`, `/v1/files/*`, `/v1/containers/*`); `/v1/async/*` submissions and polls; the SDK routers under `/openai`, `/anthropic`, `/genai`, `/bedrock`, `/cohere`, `/litellm`, `/langchain`, `/pydanticai`, `/cursor`, `/typesafe`; the passthrough routers (`/*_passthrough/*`) | 401 when the plan does not hold; otherwise dispatched inside the plan |
+| Not one of tokun's endpoint types | WebSocket Responses (the GET upgrades of `/v1/responses`, `/openai/responses`, `/openai/v1/responses`, `/openai/openai/responses`); live sessions and live control (`/v1/live/sessions`, `.../{session_id}/attach`, `.../{session_id}/content`, each also under `/openai` and `/openai/v1`); MCP (`/v1/mcp/tool/execute`, `/mcp`, `/mcp/{slug}`); the Agent Gateway (`/agents/a2a/{name}/json-rpc`, `/rest/*`, `/.well-known/agent-card.json` and `/push/callback`) | 404, code `tokun_route_not_offered` |
+| The realtime conversation | `/v1/realtime` (WebSocket), `/v1/realtime/calls` (WebRTC), `/v1/realtime/client_secrets`, `/v1/realtime/sessions`, each also under `/openai` (and `/openai/openai` where Bifrost registers it) | 501, code `tokun_route_not_implemented` |
+| Not in the table | A route Bifrost registers that `routes.go` does not list | 500, code `tokun_route_unclassified` |
+
+The 404, 501 and 500 bodies are `{"error": {"type": "tokun_route_rejected", "code": "<code>",
+"message": "<detail>"}}`; a refused plan's is the same with type `tokun_route_plan_rejected`.
+
+Why each route is refused or not:
+
+- **The routes that need a plan** are dispatched through Bifrost core on the request's context
+  (`handleRequest`, `handleStreamRequest`; an async job's context carries the submission's
+  context values), so `PreRequestHook` applies the plan: the request reaches only the upstreams
+  and keys the plan lists, at most once per pod before the plan expires. Requests that call no
+  upstream (a models listing, a file, batch or container operation, an async poll) need a plan
+  too.
+- **WebSocket Responses, live sessions, MCP and the Agent Gateway** are not endpoint types of
+  tokun (the table of endpoint types in *Tokun 平台功能设计*), so no plan opens them. The
+  WebSocket and live handlers also build the context of each request on the connection from the
+  headers captured at the upgrade, which do not carry the plan, so a plan could not bind what
+  such a connection dispatches.
+- **The realtime conversation** is the endpoint type `audio.realtime.openai`, which batch 3
+  implements (B3-10): a plan will be verified on the request that opens the connection, creates
+  the call or creates the client secret, will bind what the connection dispatches, and the
+  connection will not outlive the plan. Until then these routes answer 501, as the request
+  types batch 3 adds do. The 501 is a placeholder (`TODO(tokun-B3)` in `routes.go`).
+- **A route not in the table** is refused, so a route added to Bifrost is closed until it is
+  classified. The server's `TestTokunRouteClassesCoverEveryInferenceRoute` registers the routes
+  as the server does and fails for every registered route without a class and every listed
+  route Bifrost no longer registers.
 
 The management API (`/api/*`), `/health`, `/metrics` and the web UI are registered with the
-API middlewares and are not affected.
+API middlewares; the plugin does not see them.
 
-Every request on these routes needs a plan, including the ones that call no upstream: a
-models listing, a file, batch or container operation, an async poll, an MCP call, an Agent
-Gateway call. A plan lists at least one key, and the body length it signs is the bytes
-actually sent (0 for a GET). MCP clients of `/mcp`, Agent Gateway clients and the upstream
-agents that post to the push callback cannot sign a plan, so with the plugin on the Bifrost
-deployment serves tokun's gateway, task-worker and health probe only.
-
-Whether the plan then decides where the request goes depends on the route:
-
-| Routes | The plan decides the upstream and key |
-| --- | --- |
-| Inference handler, SDK integration routers, passthrough routers | Yes. The request runs through `handleRequest` or `handleStreamRequest` on the request's context, and `PreRequestHook` sets the primary and the fallbacks from the plan. |
-| `/v1/async/*` submissions | Yes, when the job runs: the job's context carries the request's context values (`AsyncJobExecutor.SubmitJob`), and the job runs through `handleRequest`. The plan's `expires_at` is checked at the submission only. |
-| WebSocket `/v1/responses`, `/v1/realtime` over WebSocket, `/v1/live/sessions` (WebSocket and WebRTC) and its `attach` route | No. The plan is verified on the request that opens the connection or session, but the handler builds the context of every request it makes from the captured headers (`createBifrostContextFromAuth`), which do not carry the plugin's state: the caller's provider and model and Bifrost's key selection decide. |
-| `/v1/realtime/calls` (WebRTC) | No. `PreRequestHook` runs on the call's context, but the handler keeps the caller's provider and model and does not read the routing back. |
-| `/v1/realtime/client_secrets`, `/v1/realtime/sessions` | No. The handler selects the provider key itself (`SelectKeyForProviderRequestType`); no plugin hook runs. |
-| MCP, Agent Gateway, live control | No upstream provider is called with a provider key. |
-
-On the routes the plan does not decide, a verified plan opens a connection or makes a call
-outside the upstreams and keys it lists, and a connection may outlive the plan's
-`expires_at`. Tokun's gateway does not use these routes in batch 1. Realtime routing is part
-of plan item B3-10; the WebSocket Responses route and live sessions have no plan item yet.
+A plan lists at least one key, and the body length it signs is the bytes actually sent (0 for
+a GET).
 
 ## What the plugin keeps
 

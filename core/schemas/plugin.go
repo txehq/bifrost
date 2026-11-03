@@ -47,6 +47,10 @@ type HTTPRequest struct {
 	Query      map[string]string `json:"query"`
 	Body       []byte            `json:"body"`
 	PathParams map[string]string `json:"path_params"` // Path variables extracted from the URL pattern (e.g., {model})
+	// Route is the template of the route the request matched, such as "/v1/files/{file_id}", as
+	// the router registered it; the HTTP transport sets it, and it is empty when the router did
+	// not record the match.
+	Route string `json:"route"`
 
 	// deletedHeaders are the Headers keys DeleteHeader removed.
 	deletedHeaders []string
@@ -220,6 +224,7 @@ func ReleaseHTTPRequest(req *HTTPRequest) {
 	// Reset fields
 	req.Method = ""
 	req.Path = ""
+	req.Route = ""
 	req.Body = nil
 	httpRequestPool.Put(req)
 }

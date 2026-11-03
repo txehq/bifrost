@@ -11,10 +11,11 @@ import (
 //
 //	{"name": "tokun", "enabled": true, "config": {"signing_keys": "env.TOKUN_ROUTE_PLAN_SIGNING_KEYS"}}
 //
-// The plugin is loaded only when such an entry exists and is enabled. Once loaded, every route
-// registered with the inference middlewares needs a signed route plan, including the MCP,
-// async, realtime, live and Agent Gateway routes; README.md lists them and what the plugin
-// does on each.
+// The plugin is loaded only when such an entry exists and is enabled. Once loaded, it answers
+// every route registered with the inference middlewares by the route's class (routes.go): the
+// routes dispatched through Bifrost core need a signed route plan; WebSocket Responses, live
+// sessions, MCP and the Agent Gateway are refused with 404 and the realtime conversation with
+// 501. README.md lists the routes and the reasons.
 type Config struct {
 	// SigningKeys holds the route plan signing keys as a JSON object of key id to secret,
 	// {"gw-2026-11": "...", "tw-2026-11": "...", "hp-2026-11": "..."}: one key each for the

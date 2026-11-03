@@ -946,6 +946,8 @@ func BuildHTTPRequestFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.HTTPRequest
 	req := schemas.AcquireHTTPRequest()
 	req.Method = string(ctx.Method())
 	req.Path = string(ctx.Path())
+	// The matched route template the server's route middleware recorded.
+	req.Route, _ = ctx.UserValue(string(schemas.BifrostContextKeyHTTPRoute)).(string)
 
 	// Copy headers
 	for key, value := range ctx.Request.Header.All() {

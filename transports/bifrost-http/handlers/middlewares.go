@@ -30,6 +30,7 @@ import (
 	"github.com/capsohq/bifrost/plugins/governance"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/fasthttp/router"
 	ws "github.com/fasthttp/websocket"
 	"github.com/google/uuid"
 	"github.com/valyala/fasthttp"
@@ -686,6 +687,23 @@ func newDecompressReader(r io.Reader, encoding string) (io.Reader, func(), error
 // TransportInterceptorMiddleware to put on its own.
 const fastHTTPUserValuePreAuthValues = "__bifrost_pre_auth_values"
 
+// HTTPRouteMiddleware copies the matched route template the router saved
+// (router.SaveMatchedRoutePath) into a stable, router-agnostic user value,
+// schemas.BifrostContextKeyHTTPRoute, so metrics middlewares can label by route template instead
+// of the raw URL path and transport plugins see it as HTTPRequest.Route.
+func HTTPRouteMiddleware() schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if route, ok := ctx.UserValue(router.MatchedRoutePathParam).(string); ok && route != "" {
+				ctx.SetUserValue(string(schemas.BifrostContextKeyHTTPRoute), route)
+				// Drop the router's randomized key so it doesn't leak into request PathParams.
+				ctx.RemoveUserValue(router.MatchedRoutePathParam)
+			}
+			next(ctx)
+		}
+	}
+}
+
 // TransportPreAuthInterceptorMiddleware runs the pre-auth phase of the plugin pipeline.
 // It converts the fasthttp request to a serializable HTTPRequest, runs every plugin implementing
 // HTTPTransportPreAuthHook, and applies modifications back to the fasthttp context — so the
@@ -1116,6 +1134,8 @@ func getBifrostContextFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.BifrostCon
 func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 	req.Method = string(ctx.Method())
 	req.Path = string(ctx.Path())
+	// The matched route template HTTPRouteMiddleware recorded.
+	req.Route, _ = ctx.UserValue(string(schemas.BifrostContextKeyHTTPRoute)).(string)
 
 	// Copy headers
 	for key, value := range ctx.Request.Header.All() {

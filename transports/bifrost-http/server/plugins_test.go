@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,9 +25,9 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/configstore"
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
+	"github.com/capsohq/bifrost/framework/logstore"
 	"github.com/capsohq/bifrost/plugins/tokun"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/handlers"
-	"github.com/capsohq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 
 	plannerv1 "github.com/capsohq/txe/tokun/proto/gen/go/tokun/planner/v1"
@@ -243,11 +244,8 @@ func TestTokunPluginRoutesInsideTheSignedPlan(t *testing.T) {
 	}
 	t.Cleanup(client.Shutdown)
 
-	r := router.New()
-	integrations.NewOpenAIRouter(client, config, nil, bifrost.NewNoOpLogger()).RegisterRoutes(r,
-		handlers.TransportPreAuthInterceptorMiddleware(config),
-		handlers.TransportInterceptorMiddleware(config),
-	)
+	// Every inference route, registered as the server registers them.
+	r := inferenceRouter(t, config, client)
 
 	// The caller names a provider, a model, a fallback and a key outside the plan.
 	body := `{"model":"up-x/caller-model","messages":[{"role":"user","content":"hi"}],"fallbacks":["up-x/caller-fallback"]}`
@@ -255,11 +253,11 @@ func TestTokunPluginRoutesInsideTheSignedPlan(t *testing.T) {
 		status int
 		body   string
 	}
-	send := func(t *testing.T, headers map[string]string, body string) reply {
+	sendTo := func(t *testing.T, method, uri string, headers map[string]string, body string) reply {
 		t.Helper()
 		var req fasthttp.Request
-		req.Header.SetMethod(fasthttp.MethodPost)
-		req.SetRequestURI("/openai/v1/chat/completions")
+		req.Header.SetMethod(method)
+		req.SetRequestURI(uri)
 		req.Header.SetContentType("application/json")
 		req.Header.Set("x-bf-api-key-id", "key-a3")
 		req.Header.Set("tk-trace", "forwarded")
@@ -271,6 +269,10 @@ func TestTokunPluginRoutesInsideTheSignedPlan(t *testing.T) {
 		ctx.Init(&req, nil, nil)
 		r.Handler(ctx)
 		return reply{status: ctx.Response.StatusCode(), body: string(ctx.Response.Body())}
+	}
+	send := func(t *testing.T, headers map[string]string, body string) reply {
+		t.Helper()
+		return sendTo(t, fasthttp.MethodPost, "/openai/v1/chat/completions", headers, body)
 	}
 	signed := func(t *testing.T, signer planSigner, plan *routingv1.RoutePlan, sendID string) map[string]string {
 		planHeader, signatureHeader := signer.headers(t, plan, sendID, len(body), time.Now().Add(time.Minute))
@@ -388,4 +390,140 @@ func TestTokunPluginRoutesInsideTheSignedPlan(t *testing.T) {
 			}
 		})
 	}
+
+	// The route decides before the plan: a route tokun does not offer is 404 and the realtime
+	// conversation 501, whatever plan the request carries. Every refusal below carries the same
+	// valid plan, and the plan route after them accepts it, so no refusal used up its send_id.
+	routeRefusals := []struct {
+		name, method, uri string
+		status            int
+		code              string
+	}{
+		{"WebSocket Responses", fasthttp.MethodGet, "/v1/responses", http.StatusNotFound, "tokun_route_not_offered"},
+		{"live session", fasthttp.MethodPost, "/v1/live/sessions", http.StatusNotFound, "tokun_route_not_offered"},
+		{"Bifrost's MCP server", fasthttp.MethodPost, "/mcp", http.StatusNotFound, "tokun_route_not_offered"},
+		{"MCP tool execution", fasthttp.MethodPost, "/v1/mcp/tool/execute", http.StatusNotFound, "tokun_route_not_offered"},
+		{"realtime WebSocket", fasthttp.MethodGet, "/v1/realtime", http.StatusNotImplemented, "tokun_route_not_implemented"},
+		{"realtime WebRTC call", fasthttp.MethodPost, "/v1/realtime/calls", http.StatusNotImplemented, "tokun_route_not_implemented"},
+		{"realtime client secret", fasthttp.MethodPost, "/v1/realtime/client_secrets", http.StatusNotImplemented, "tokun_route_not_implemented"},
+		{"realtime session under /openai", fasthttp.MethodPost, "/openai/v1/realtime/sessions", http.StatusNotImplemented, "tokun_route_not_implemented"},
+	}
+	refusedRouteHeaders := signed(t, newKey, tokunTestPlan("req_route"), "snd_route")
+	for _, refusal := range routeRefusals {
+		t.Run(fmt.Sprintf("%d: %s", refusal.status, refusal.name), func(t *testing.T) {
+			upstreams.reset()
+			got := sendTo(t, refusal.method, refusal.uri, refusedRouteHeaders, body)
+			if got.status != refusal.status {
+				t.Fatalf("status %d: %s, want %d", got.status, got.body, refusal.status)
+			}
+			var answer struct {
+				Error struct {
+					Type    string `json:"type"`
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal([]byte(got.body), &answer); err != nil {
+				t.Fatalf("body %q: %v", got.body, err)
+			}
+			if answer.Error.Type != "tokun_route_rejected" || answer.Error.Code != refusal.code || answer.Error.Message == "" {
+				t.Fatalf("body %s, want code %s", got.body, refusal.code)
+			}
+			if served := upstreams.served(); len(served) != 0 {
+				t.Fatalf("a refused request reached %v", served)
+			}
+			if ids := observer.take(); len(ids) != 0 {
+				t.Fatalf("a refused request entered Bifrost core as %v", ids)
+			}
+		})
+	}
+
+	t.Run("a plan route of the inference handler, with the plan the refused routes carried", func(t *testing.T) {
+		upstreams.reset()
+		got := sendTo(t, fasthttp.MethodPost, "/v1/chat/completions", refusedRouteHeaders, body)
+		if got.status != http.StatusOK {
+			t.Fatalf("status %d: %s", got.status, got.body)
+		}
+		if served := upstreams.served(); !reflect.DeepEqual(served, []string{"up-a/secret-key-a1"}) {
+			t.Fatalf("served by %v, want up-a with key-a1 only", served)
+		}
+		if ids := observer.take(); !reflect.DeepEqual(ids, []string{"snd_route"}) {
+			t.Errorf("core saw request ids %v, want the send_id", ids)
+		}
+	})
+}
+
+// inferenceRouter registers every inference route on a router the way the server does: the
+// router records the matched route template, and the routes run the common route middleware, the
+// pre-auth transport phase and the transport phase after authentication. The authentication
+// middleware is left out, as with enforce_auth_on_inference off. It sets config's WebSocket
+// defaults, which the WebSocket handlers read.
+func inferenceRouter(t *testing.T, config *lib.Config, client *bifrost.Bifrost) *router.Router {
+	t.Helper()
+	handlers.SetLogger(bifrost.NewNoOpLogger())
+	lib.SetLogger(bifrost.NewNoOpLogger())
+	config.WebSocketConfig = &schemas.WebSocketConfig{}
+	config.WebSocketConfig.CheckAndSetDefaults()
+	s := &BifrostHTTPServer{Config: config, Client: client, Router: router.New()}
+	s.Router.SaveMatchedRoutePath = true
+	if err := s.InitializeAgentGateway(context.Background(), nil, nil); err != nil {
+		t.Fatalf("initialize the Agent Gateway: %v", err)
+	}
+	t.Cleanup(s.CloseAgentGateway)
+	if err := s.RegisterInferenceRoutes(context.Background(),
+		handlers.HTTPRouteMiddleware(),
+		handlers.TransportPreAuthInterceptorMiddleware(config),
+		handlers.TransportInterceptorMiddleware(config),
+	); err != nil {
+		t.Fatalf("register the inference routes: %v", err)
+	}
+	t.Cleanup(func() { s.IntegrationHandler.Close() })
+	return s.Router
+}
+
+// TestTokunRouteClassesCoverEveryInferenceRoute lists the routes RegisterInferenceRoutes
+// actually registers, with every optional handler on (the Agent Gateway and the async routes),
+// and requires each to have a tokun route class; a route added to Bifrost without a class fails
+// here. Every route the plugin classifies must also be registered, so the table holds no route
+// Bifrost no longer has.
+func TestTokunRouteClassesCoverEveryInferenceRoute(t *testing.T) {
+	SetLogger(agentGatewayRouteLogger{})
+	t.Cleanup(func() { SetLogger(nil) })
+	config := &lib.Config{
+		ConfigStore:      &agentGatewayRouteStore{},
+		ClientConfig:     &configstore.ClientConfig{},
+		Providers:        map[schemas.ModelProvider]configstore.ProviderConfig{},
+		AsyncJobExecutor: logstore.NewAsyncJobExecutor(nil, nil, nil, nil, bifrost.NewNoOpLogger()),
+	}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: lib.NewBaseAccount(config), Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("init Bifrost: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	r := inferenceRouter(t, config, client)
+
+	registered := map[string]bool{}
+	classes := map[string]int{}
+	for method, templates := range r.List() {
+		for _, template := range templates {
+			registered[method+" "+template] = true
+			class := tokun.RouteClass(method, template)
+			if class == "" {
+				t.Errorf("%s %s has no tokun route class: add it to plugins/tokun/routes.go", method, template)
+				continue
+			}
+			classes[class]++
+		}
+	}
+	for _, route := range tokun.ClassifiedRoutes() {
+		if !registered[route] {
+			t.Errorf("plugins/tokun/routes.go classifies %s, which Bifrost does not register", route)
+		}
+	}
+	if len(registered) == 0 || classes["plan"] == 0 || classes["not_offered"] == 0 || classes["not_implemented"] == 0 {
+		t.Fatalf("registered %d routes, classes %v", len(registered), classes)
+	}
+	t.Logf("%d inference routes: %v", len(registered), classes)
 }

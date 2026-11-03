@@ -1,9 +1,10 @@
 // Package tokun is the tokun routing plugin. The tokun gateway sends each request with a
 // signed route plan (tokun.routing.v1.RoutePlan in tk-route-plan, its RoutePlanSignature in
-// tk-route-plan-sig). The plugin verifies the plan before authentication and answers 401 when
-// it does not hold, so the request never enters Bifrost core; it then dispatches the request
-// only to the upstreams and keys the plan lists, primary first and the rest as Bifrost
-// fallbacks, each attempt with its own key pinned.
+// tk-route-plan-sig). Before authentication the plugin refuses the routes tokun does not offer
+// (routes.go) and verifies the plan, answering 401 when it does not hold, so a refused request
+// never enters Bifrost core; it then dispatches the request only to the upstreams and keys the
+// plan lists, primary first and the rest as Bifrost fallbacks, each attempt with its own key
+// pinned.
 package tokun
 
 import (
@@ -49,12 +50,29 @@ func (p *Plugin) GetName() string { return PluginName }
 // Cleanup implements schemas.BasePlugin.
 func (p *Plugin) Cleanup() error { return nil }
 
-// HTTPTransportPreAuthHook verifies the route plan before authentication. A request whose
-// plan fails any check is answered 401 here and never reaches authentication or Bifrost
-// core. A verified plan and its signature are removed from the request with the caller's own
-// key and session routing headers; the send_id becomes the id Bifrost processes the request
-// under, and session affinity is off, so the chain keeps the plan's order.
+// HTTPTransportPreAuthHook refuses the routes tokun does not offer, then verifies the route plan,
+// all before authentication; a refused request never reaches authentication or Bifrost core.
+// The route decides first (routeClasses): a route that is not one of tokun's endpoint types is
+// answered 404, the realtime conversation 501, and a route the plugin does not know 500. On the
+// other routes a request whose plan fails any check is answered 401. A verified plan and its
+// signature are removed from the request with the caller's own key and session routing headers;
+// the send_id becomes the id Bifrost processes the request under, and session affinity is off,
+// so the chain keeps the plan's order.
 func (p *Plugin) HTTPTransportPreAuthHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
+	switch classifyRoute(req.Method, req.Route) {
+	case routePlan:
+	case routeNotOffered:
+		// These routes are not tokun's endpoint types (the WebSocket Responses API, live
+		// sessions, MCP, the Agent Gateway): tokun does not offer them, so no plan opens them.
+		return p.refuse(req, http.StatusNotFound, routeRejectionType, &refusal{rejectNotOffered,
+			fmt.Sprintf("%s %s is not one of tokun's endpoint types", req.Method, req.Route)}), nil
+	case routeNotImplemented:
+		return p.refuse(req, http.StatusNotImplemented, routeRejectionType, &refusal{rejectNotImplemented,
+			fmt.Sprintf("%s %s, the realtime conversation, is not implemented", req.Method, req.Route)}), nil
+	default:
+		return p.refuse(req, http.StatusInternalServerError, routeRejectionType, &refusal{rejectUnclassified,
+			fmt.Sprintf("%s %s (route %q) has no tokun route class", req.Method, req.Path, req.Route)}), nil
+	}
 	verified, refused := p.verify(
 		req.CaseInsensitiveHeaderLookup(HeaderRoutePlan),
 		req.CaseInsensitiveHeaderLookup(HeaderRoutePlanSignature),
@@ -62,12 +80,7 @@ func (p *Plugin) HTTPTransportPreAuthHook(ctx *schemas.BifrostContext, req *sche
 		time.Now(),
 	)
 	if refused != nil {
-		p.logger.Warn("tokun: refused a route plan on %s %s: %s: %s", req.Method, req.Path, refused.reason, refused.detail)
-		return &schemas.HTTPResponse{
-			StatusCode: http.StatusUnauthorized,
-			Headers:    map[string]string{"Content-Type": "application/json"},
-			Body:       refused.body(),
-		}, nil
+		return p.refuse(req, http.StatusUnauthorized, rejectionType, refused), nil
 	}
 	req.DeleteHeader(HeaderRoutePlan)
 	req.DeleteHeader(HeaderRoutePlanSignature)
@@ -78,6 +91,16 @@ func (p *Plugin) HTTPTransportPreAuthHook(ctx *schemas.BifrostContext, req *sche
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, verified.claims.GetSendId())
 	ctx.SetValue(schemas.BifrostContextKeySessionAffinity, false)
 	return nil, nil
+}
+
+// refuse answers a refused request with the error body {"error": {"type", "code", "message"}}.
+func (p *Plugin) refuse(req *schemas.HTTPRequest, status int, errorType string, refused *refusal) *schemas.HTTPResponse {
+	p.logger.Warn("tokun: refused %s %s with %d: %s: %s", req.Method, req.Path, status, refused.reason, refused.detail)
+	return &schemas.HTTPResponse{
+		StatusCode: status,
+		Headers:    map[string]string{"Content-Type": "application/json"},
+		Body:       refused.body(errorType),
+	}
 }
 
 // HTTPTransportPreHook has nothing to do: the plan was verified and removed before

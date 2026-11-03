@@ -21,10 +21,22 @@ const (
 	HeaderRoutePlanSignature = "tk-route-plan-sig" // tokun.routing.v1.RoutePlanSignature
 )
 
-// rejection names why a route plan was refused. It is the code of the 401 body, so the
-// gateway can tell a refused plan from a refused virtual key.
+// rejection names why a request was refused. It is the code of the error body, so the gateway
+// can tell a refused plan or route from a refused virtual key.
 type rejection string
 
+// Refusals of the route, decided before the plan is read.
+const (
+	// The route is not one of tokun's endpoint types (404).
+	rejectNotOffered rejection = "tokun_route_not_offered"
+	// The route is the realtime conversation, not implemented yet (501).
+	rejectNotImplemented rejection = "tokun_route_not_implemented"
+	// The route has no class in routeClasses (500): Bifrost registered a route this plugin does
+	// not know.
+	rejectUnclassified rejection = "tokun_route_unclassified"
+)
+
+// Refusals of the plan (401).
 const (
 	rejectMissing      rejection = "route_plan_missing"
 	rejectMalformed    rejection = "route_plan_malformed"
@@ -144,11 +156,14 @@ type rejectionError struct {
 	Message string    `json:"message"`
 }
 
-// rejectionType is the error type of every refused route plan.
-const rejectionType = "tokun_route_plan_rejected"
+// Error types of the refusal bodies.
+const (
+	rejectionType      = "tokun_route_plan_rejected" // the plan was refused
+	routeRejectionType = "tokun_route_rejected"      // the route was refused
+)
 
-func (r *refusal) body() []byte {
-	data, err := json.Marshal(rejectionBody{Error: rejectionError{Type: rejectionType, Code: r.reason, Message: r.detail}})
+func (r *refusal) body(errorType string) []byte {
+	data, err := json.Marshal(rejectionBody{Error: rejectionError{Type: errorType, Code: r.reason, Message: r.detail}})
 	if err != nil {
 		panic(fmt.Sprintf("tokun: encode a rejection body: %v", err))
 	}
