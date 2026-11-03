@@ -7105,6 +7105,12 @@ func executeRequestWithRetries[T any](
 ) (result T, bifrostError *schemas.BifrostError) {
 	var attempts int
 	isStreamRequest := IsStreamRequestType(requestType)
+	// The provider's retry budget, lowered for this request when the caller asked for
+	// fewer (x-bf-max-retries): a request that generates media must not be generated twice.
+	maxRetries := config.NetworkConfig.MaxRetries
+	if capped, ok := ctx.Value(schemas.BifrostContextKeyMaxRetries).(int); ok && capped < maxRetries {
+		maxRetries = capped
+	}
 
 	// Emit the terminal routing-engine entry on every return path — including
 	// early returns from key-selection failures and tracer-missing — so the
@@ -7176,7 +7182,7 @@ func executeRequestWithRetries[T any](
 	// it. Used to skip backoff: the payload changed, so there is nothing to wait out.
 	lastWasEncryptedContentStrip := false
 
-	for attempts = 0; attempts <= config.NetworkConfig.MaxRetries+extraAttempts; attempts++ {
+	for attempts = 0; attempts <= maxRetries+extraAttempts; attempts++ {
 		ctx.SetValue(schemas.BifrostContextKeyNumberOfRetries, attempts)
 
 		// Reset the trail on the first attempt so a reused or shared context (bifrost.ctx)
@@ -7241,7 +7247,7 @@ func executeRequestWithRetries[T any](
 				// key. When the selection finds none, whether because every key is dead or
 				// because the pool filter admits none of the live ones, the last upstream
 				// error is the answer, as it was before the walk existed.
-				grantedAttempt := attempts > config.NetworkConfig.MaxRetries+extraAttempts-permanentGrants
+				grantedAttempt := attempts > maxRetries+extraAttempts-permanentGrants
 				// Only collapse into 502 upstream_credentials_exhausted when keyProvider
 				// explicitly signals "every key is dead" via the errAllKeysDead sentinel.
 				// Any other error (custom selector failure, etc.) propagates unchanged so
@@ -7330,7 +7336,7 @@ func executeRequestWithRetries[T any](
 			}
 			// Report the budget including any extra attempt granted by the
 			// encrypted-reasoning fail-soft, so the counter never reads "1/0".
-			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, config.NetworkConfig.MaxRetries+extraAttempts, model, retryMsg)
+			logger.Debug("retrying request (attempt %d/%d) for model %s: %s", attempts, maxRetries+extraAttempts, model, retryMsg)
 
 			// Skip backoff only when (a) we genuinely rotated to a different credential AND
 			// (b) the previous failure was a *permanent* per-key error (a rejected credential,
@@ -7361,7 +7367,7 @@ func executeRequestWithRetries[T any](
 				}
 				keyNote = fmt.Sprintf("; %s=%s", rotationNote, currentKey.Name)
 			}
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Retry %d/%d for %s/%s (previous attempt failed: %s%s)", attempts, config.NetworkConfig.MaxRetries+extraAttempts, providerKey, model, routingErrorSummary(bifrostError), keyNote))
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Retry %d/%d for %s/%s (previous attempt failed: %s%s)", attempts, maxRetries+extraAttempts, providerKey, model, routingErrorSummary(bifrostError), keyNote))
 
 			// A context that ends before the retry is dispatched ends the loop: the
 			// worker is freed and the request ends as a cancellation instead of
@@ -7764,7 +7770,7 @@ func executeRequestWithRetries[T any](
 		// an extra attempt, which makes what would otherwise have been the final attempt
 		// non-terminal; comparing against MaxRetries alone would drop its rotation candidate
 		// and under-report the trail.
-		if lastWasPerKeyFailure && keyProvider != nil && attempts < config.NetworkConfig.MaxRetries+extraAttempts {
+		if lastWasPerKeyFailure && keyProvider != nil && attempts < maxRetries+extraAttempts {
 			if trail, ok := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); ok && len(trail) > 0 {
 				pendingRotationAttemptIdx = len(trail) - 1
 			}

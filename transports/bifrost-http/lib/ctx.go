@@ -734,6 +734,14 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
+		// Per-request retry cap: the request is retried at most this many times, and never
+		// more than its provider is configured for.
+		if keyStr == "x-bf-max-retries" {
+			if n, err := strconv.Atoi(strings.TrimSpace(string(value))); err == nil && n >= 0 {
+				bifrostCtx.SetValue(schemas.BifrostContextKeyMaxRetries, n)
+			}
+			return true
+		}
 		if keyStr == "x-bf-store-raw-request-response" {
 			if b, err := strconv.ParseBool(string(value)); err == nil {
 				bifrostCtx.SetValue(schemas.BifrostContextKeyStoreRawRequestResponse, b)
