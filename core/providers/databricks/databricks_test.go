@@ -1742,7 +1742,7 @@ func TestDatabricksDecisionRejectsLocally(t *testing.T) {
 		Role: "user",
 		Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
 			{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("Is the damage in img_1 covered?")},
-			{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("img_1"), Data: []byte("\x89PNG\r\n\x1a\n")},
+			{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("img_1"), Data: schemas.DecisionData{File: []byte("\x89PNG\r\n\x1a\n")}},
 		}},
 	}}}
 	cases := map[string]struct {
