@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"reflect"
 	"runtime"
@@ -412,37 +413,56 @@ func TestRouteDispatchesOnlyInsideThePlan(t *testing.T) {
 		}}
 	}
 
-	t.Run("every entry in plan order", func(t *testing.T) {
-		state := &requestState{plan: testPlan()}
-		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
-		req := newRequest()
-		plugin.route(ctx, req, state)
+	// The order the same seed draws for plan, as Bifrost targets.
+	drawnTargets := func(plan *routingv1.RoutePlan, seed uint64) []schemas.Fallback {
+		var targets []schemas.Fallback
+		for _, e := range drawOrder(plan, seeded(seed)) {
+			targets = append(targets, schemas.Fallback{Provider: schemas.ModelProvider(e.upstream.GetBifrostProvider()), Model: e.upstream.GetForwardModel(), KeyID: e.key.GetKeyId()})
+		}
+		return targets
+	}
 
-		provider, model, fallbacks := req.GetRequestFields()
-		if provider != "up-a" || model != "model-a" {
-			t.Fatalf("primary = %s/%s, want up-a/model-a", provider, model)
+	t.Run("every entry in drawn order", func(t *testing.T) {
+		// Seeds that draw each of the plan's entries as the primary.
+		primaries := map[string]bool{}
+		for seed := uint64(1); seed <= 256; seed++ {
+			plugin.SeedDraws(seed)
+			state := &requestState{plan: testPlan()}
+			ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+			req := newRequest()
+			plugin.route(ctx, req, state)
+
+			want := drawnTargets(testPlan(), seed)
+			provider, model, fallbacks := req.GetRequestFields()
+			if provider != want[0].Provider || model != want[0].Model {
+				t.Fatalf("seed %d: primary = %s/%s, want %s/%s", seed, provider, model, want[0].Provider, want[0].Model)
+			}
+			if got := ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID); got != want[0].KeyID {
+				t.Fatalf("seed %d: pinned key = %v, want %s", seed, got, want[0].KeyID)
+			}
+			if !reflect.DeepEqual(fallbacks, want[1:]) {
+				t.Fatalf("seed %d: fallbacks = %+v, want %+v", seed, fallbacks, want[1:])
+			}
+			if !reflect.DeepEqual(state.chain, []int{0, 1, 2}) || len(state.order) != 3 || len(state.skipped) != 0 {
+				t.Fatalf("seed %d: chain %v, order %d entries, skipped %v", seed, state.chain, len(state.order), state.skipped)
+			}
+			primaries[want[0].KeyID] = true
 		}
-		if got := ctx.Value(schemas.BifrostContextKeyRoutingPinnedAPIKeyID); got != "key-a1" {
-			t.Fatalf("pinned key = %v, want key-a1", got)
-		}
-		want := []schemas.Fallback{{Provider: "up-a", Model: "model-a", KeyID: "key-a2"}, {Provider: "up-b", Model: "model-b", KeyID: "key-b1"}}
-		if !reflect.DeepEqual(fallbacks, want) {
-			t.Fatalf("fallbacks = %+v, want %+v", fallbacks, want)
-		}
-		if !reflect.DeepEqual(state.chain, []int{0, 1, 2}) || len(state.order) != 3 || len(state.skipped) != 0 {
-			t.Fatalf("chain %v, order %d entries, skipped %v", state.chain, len(state.order), state.skipped)
+		if len(primaries) != 3 {
+			t.Fatalf("256 seeds drew %v as primaries, want each of the three keys", primaries)
 		}
 	})
 
 	t.Run("at most max_attempts entries", func(t *testing.T) {
 		plan := testPlan()
 		plan.MaxAttempts = 2
+		plugin.SeedDraws(7)
 		state := &requestState{plan: plan}
 		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 		req := newRequest()
 		plugin.route(ctx, req, state)
 		_, _, fallbacks := req.GetRequestFields()
-		if want := []schemas.Fallback{{Provider: "up-a", Model: "model-a", KeyID: "key-a2"}}; !reflect.DeepEqual(fallbacks, want) {
+		if want := drawnTargets(plan, 7)[1:2]; !reflect.DeepEqual(fallbacks, want) {
 			t.Fatalf("fallbacks = %+v, want %+v", fallbacks, want)
 		}
 		if !reflect.DeepEqual(state.chain, []int{0, 1}) {
@@ -454,7 +474,7 @@ func TestRouteDispatchesOnlyInsideThePlan(t *testing.T) {
 // A send none of whose entries this Bifrost can send fails before any upstream is called.
 func TestPreLLMHookFailsASendWithNothingToSend(t *testing.T) {
 	plugin := testPlugin(t, map[string]string{"gw-2026-11": "gateway-secret"})
-	state := &requestState{plan: testPlan(), order: drawOrder(testPlan())}
+	state := &requestState{plan: testPlan(), order: drawOrder(testPlan(), seeded(1))}
 	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 	ctx.SetValue(requestStateKey, state)
 	_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{})
@@ -589,6 +609,54 @@ func BenchmarkPreAuthHook(b *testing.B) {
 			b.Fatalf("refused: %v %v", resp, err)
 		}
 		schemas.ReleaseHTTPRequest(req)
+	}
+}
+
+// benchPlan is a plan of 10 providers, each with 5 upstreams of 3 keys: the upstreams alternate
+// between the request's format and a converted one, the last two providers and each provider's
+// last upstream score below their thresholds, and one upstream in five has no registered limit.
+func benchPlan() *routingv1.RoutePlan {
+	plan := &routingv1.RoutePlan{RequestId: testRequestID, RequestRate: 200, StaleAfterSeconds: 30, Threshold: 0.6}
+	for p := 0; p < 10; p++ {
+		provider := &routingv1.RouteProvider{
+			ProviderId:        fmt.Sprintf("provider-%d", p),
+			Score:             0.9 - 0.04*float64(p),
+			Uncertainty:       0.02 + 0.005*float64(p),
+			UpstreamThreshold: 0.7,
+		}
+		for u := 0; u < 5; u++ {
+			upstream := &routingv1.RouteUpstream{
+				UpstreamId:      int64(100*p + u),
+				Interface:       fmt.Sprintf("%d:text.chat.openai-chat", 100*p+u),
+				BifrostProvider: fmt.Sprintf("up-%d-%d", p, u),
+				ForwardModel:    "model",
+				Score:           0.85 - 0.05*float64(u),
+				Uncertainty:     0.03,
+				Capacity:        40 + 10*float64(u),
+				SameFormat:      u%2 == 0,
+			}
+			if u == 3 {
+				upstream.Capacity = 0
+			}
+			for k := 0; k < 3; k++ {
+				upstream.Keys = append(upstream.Keys, &plannerv1.KeyShare{KeyId: fmt.Sprintf("key-%d-%d-%d", p, u, k), Share: 0.2 + 0.1*float64(k)})
+			}
+			provider.Upstreams = append(provider.Upstreams, upstream)
+		}
+		plan.Providers = append(plan.Providers, provider)
+	}
+	return plan
+}
+
+// BenchmarkDrawOrder measures the selection curve on benchPlan: 10 providers, 50 upstreams and
+// 150 keys, drawn from the global source as in production.
+func BenchmarkDrawOrder(b *testing.B) {
+	plan := benchPlan()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if order := drawOrder(plan, rand.Float64); len(order) != 150 {
+			b.Fatalf("drew %d entries, want 150", len(order))
+		}
 	}
 }
 

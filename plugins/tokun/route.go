@@ -1,6 +1,9 @@
 package tokun
 
 import (
+	"math/rand/v2"
+	"sync"
+
 	"github.com/capsohq/bifrost/core/schemas"
 
 	plannerv1 "github.com/capsohq/txe/tokun/proto/gen/go/tokun/planner/v1"
@@ -26,14 +29,19 @@ type requestState struct {
 }
 
 // entry is one {provider, upstream, key} of the drawn order with the share the selection
-// curve gave it in each layer.
+// curve gave it in each layer: the fields of a RouteAttempts.order item (DrawnCandidate), whose
+// same_format is the upstream's. A share is the probability that the candidate comes first in
+// its layer and group, so within the group that comes first (same_format, when the plan has any)
+// the product of the three is the probability that the entry was drawn as the primary.
 type entry struct {
-	provider       *routingv1.RouteProvider
-	upstream       *routingv1.RouteUpstream
-	key            *plannerv1.KeyShare
-	providerShare  float64
-	upstreamShare  float64
-	keyShare       float64
+	provider      *routingv1.RouteProvider
+	upstream      *routingv1.RouteUpstream
+	key           *plannerv1.KeyShare
+	providerShare float64
+	upstreamShare float64
+	keyShare      float64
+	// belowThreshold is set when the provider scored below the plan's threshold or the upstream
+	// below its provider's upstream threshold, so the entry was ranked by score, not drawn.
 	belowThreshold bool
 }
 
@@ -44,14 +52,96 @@ type skippedEntry struct {
 	reason string
 }
 
-// TODO(tokun-B1): 按选择曲线分组（同格式在前）、按资格和 erfc 权重算出供应商和上游两层的份额，加上地板值、按余量截取，再不放回抽取供应商、上游和 key 的顺序，记下每一层的份额，低于阈值的候选按分数排在这一层的最后
-// 阶段：B1 放入；B1-D5「选择曲线」完成时删除这两行和占位
-func drawOrder(plan *routingv1.RoutePlan) []entry {
-	var order []entry
-	for _, provider := range plan.GetProviders() {
+// SeedDraws makes the selection curve draw from one generator seeded with seed, shared by all
+// requests under a lock, in place of math/rand/v2's global source, so that a test sending its
+// requests one after another can reproduce the orders they are drawn in. Call it before the
+// plugin serves a request.
+func (p *Plugin) SeedDraws(seed uint64) {
+	var mu sync.Mutex
+	generator := rand.New(rand.NewPCG(seed, seed))
+	p.uniform = func() float64 {
+		mu.Lock()
+		defer mu.Unlock()
+		return generator.Float64()
+	}
+}
+
+// drawOrder draws the order of every {provider, upstream, key} in the plan by the selection
+// curve (Hot Path · 选择曲线), with uniform as the source of the uniform numbers.
+//
+// The upstreams of the request's format (same_format) form the first group and the converted ones
+// the second; each group is drawn on its own and the first comes first, so every same-format
+// entry is tried before any converted one. In a group, the providers that have upstreams in it
+// are one layer, drawn at the plan's request_rate; under each provider drawn, its upstreams in
+// the group are the next layer, drawn at the rate the provider took (its share of request_rate);
+// under each upstream, its keys are drawn by the planner's shares. A provider's capacity is that
+// of its upstreams in the group that take its traffic (providerCapacity).
+func drawOrder(plan *routingv1.RoutePlan, uniform func() float64) []entry {
+	providers := plan.GetProviders()
+	entries, widest := 0, 0
+	for _, provider := range providers {
+		widest = max(widest, len(provider.GetUpstreams()))
 		for _, upstream := range provider.GetUpstreams() {
-			for _, key := range upstream.GetKeys() {
-				order = append(order, entry{provider: provider, upstream: upstream, key: key})
+			entries += len(upstream.GetKeys())
+			widest = max(widest, len(upstream.GetKeys()))
+		}
+	}
+	order := make([]entry, 0, entries)
+	// One scratch array for the three layers in progress: a group's providers, one provider's
+	// upstreams and one upstream's keys.
+	scratch := make([]candidate, len(providers)+2*widest)
+	providerLayer := scratch[:len(providers):len(providers)]
+	upstreamLayer := scratch[len(providers) : len(providers)+widest : len(providers)+widest]
+	keyLayer := scratch[len(providers)+widest:]
+
+	rate, staleAfter := plan.GetRequestRate(), plan.GetStaleAfterSeconds()
+	for _, sameFormat := range [...]bool{true, false} {
+		drawnProviders := providerLayer[:0]
+		for i, provider := range providers {
+			capacity, inGroup := providerCapacity(provider, sameFormat)
+			if !inGroup {
+				continue
+			}
+			drawnProviders = append(drawnProviders, candidate{
+				index: i, score: provider.GetScore(), uncertainty: provider.GetUncertainty(), capacity: capacity,
+			})
+		}
+		rank(drawnProviders, plan.GetThreshold(), rate, staleAfter, uniform)
+
+		for _, p := range drawnProviders {
+			provider := providers[p.index]
+			upstreams := provider.GetUpstreams()
+			drawnUpstreams := upstreamLayer[:0]
+			for j, upstream := range upstreams {
+				if upstream.GetSameFormat() != sameFormat {
+					continue
+				}
+				drawnUpstreams = append(drawnUpstreams, candidate{
+					index: j, score: upstream.GetScore(), uncertainty: upstream.GetUncertainty(), capacity: upstream.GetCapacity(),
+				})
+			}
+			rank(drawnUpstreams, provider.GetUpstreamThreshold(), p.share*rate, staleAfter, uniform)
+
+			for _, u := range drawnUpstreams {
+				upstream := upstreams[u.index]
+				keys := upstream.GetKeys()
+				drawnKeys := keyLayer[:0]
+				for k, key := range keys {
+					drawnKeys = append(drawnKeys, candidate{index: k, share: key.GetShare()})
+				}
+				rankKeys(drawnKeys, uniform)
+
+				for _, k := range drawnKeys {
+					order = append(order, entry{
+						provider:       provider,
+						upstream:       upstream,
+						key:            keys[k.index],
+						providerShare:  p.share,
+						upstreamShare:  u.share,
+						keyShare:       k.share,
+						belowThreshold: !p.drawn || !u.drawn,
+					})
+				}
 			}
 		}
 	}
@@ -73,7 +163,7 @@ func (p *Plugin) bifrostTarget(e entry) (schemas.Fallback, string) {
 // fallbacks or key the caller named is replaced. Entries Bifrost does not have are left
 // out, and at most max_attempts entries are sent.
 func (p *Plugin) route(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, state *requestState) {
-	state.order = drawOrder(state.plan)
+	state.order = drawOrder(state.plan, p.uniform)
 	maxAttempts := int(state.plan.GetMaxAttempts())
 	targets := make([]schemas.Fallback, 0, len(state.order))
 	state.chain = make([]int, 0, len(state.order))

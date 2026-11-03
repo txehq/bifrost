@@ -5,9 +5,10 @@ The tokun gateway sends each request to Bifrost with a signed route plan:
 in `tk-route-plan-sig` (contracts in `txeproto/`, copied from txe's `tokun/proto`). The
 plugin verifies the plan in `HTTPTransportPreAuthHook`, before authentication, and answers
 401 when it does not hold. It then dispatches the request only to the upstreams and keys
-the plan lists: the primary and the Bifrost fallbacks are the plan's entries in order, each
-with its own key pinned. The design is in *Tokun Hot Path 重构* (sections Bifrost, 路由计划,
-签名路由计划); the plan items are New Tokun B1-D4 to B1-D8.
+the plan lists: the primary and the Bifrost fallbacks are the plan's entries in the order the
+selection curve draws, each with its own key pinned. The design is in *Tokun Hot Path 重构*
+(sections Bifrost, 路由计划, 签名路由计划, 选择曲线); the plan items are New Tokun B1-D4 to
+B1-D8.
 
 ## Turning it on
 
@@ -73,6 +74,43 @@ API middlewares; the plugin does not see them.
 
 A plan lists at least one key, and the body length it signs is the bytes actually sent (0 for
 a GET).
+
+## The order of a send
+
+`PreRequestHook` draws the order of the plan's `{provider, upstream, key}` entries by the
+selection curve of *Tokun Hot Path 重构* (`drawOrder` in `route.go`, the curve in `curve.go`),
+and the first entry is the primary, the rest Bifrost's fallbacks:
+
+- **Groups**: the upstreams of the request's format (`same_format`) form the first group and the
+  converted ones the second; each group is drawn on its own, and every entry of the first comes
+  before any of the second. A provider with upstreams in both groups is drawn in each, with its
+  upstreams of that group.
+- **Layers**: in a group, the providers are drawn at the plan's `request_rate`; under each
+  provider, its upstreams of the group are drawn at the rate the provider took (its final share
+  of `request_rate`); under each upstream, its keys are drawn by the planner's shares.
+- **A provider or upstream layer**: the candidates that score at least the layer's threshold
+  (`threshold`, or the provider's `upstream_threshold`) are drawn and the others follow by
+  score; when none does, all are ranked by score. The weight is `erfc(z / √2)` of how far a
+  candidate trails the top in their uncertainty, the share `w / Σw`, the final share
+  `φ + (1 − n × φ) × s` with `φ = min(1 / (λ × T), 1 / n)` and `T = stale_after_seconds`, then cut
+  to `capacity / λ` with the excess going to the others in proportion to their shares, until
+  none is over; when the capacities together cannot take λ, the shares are their proportions.
+  A capacity of 0 is no limit. A provider's capacity is that of its upstreams in the group that
+  take its requests: those at or above its upstream threshold, or the top-scored when none is;
+  0 when one of those has no limit.
+- **Keys**: the keys of a share above 0 are drawn by their part of the upstream's total; keys of
+  share 0 follow in the plan's order.
+- **The draw**: without replacement, by `u^(1/p)` for a uniform `u`, largest first (kept as
+  `ln(u)/p`, which ranks the same). The numbers come from `math/rand/v2`'s global source, so
+  every request draws its own; `SeedDraws` fixes a seed for tests.
+- **What is recorded**: each entry keeps its final share in each layer and whether its provider
+  or its upstream scored below its threshold, the fields of `RouteAttempts.order`. A share is the
+  probability that the candidate comes first in its layer and group (1 for the first of a layer
+  ranked by score, 0 for the others ranked by score), so in the first group the product of the
+  three is the probability that the entry was drawn as the primary.
+
+The curve has no coefficients of its own. `BenchmarkDrawOrder` measures it on a plan of 10
+providers, 50 upstreams and 150 keys.
 
 ## What the plugin keeps
 

@@ -163,20 +163,61 @@ func (s planSigner) headers(t *testing.T, plan *routingv1.RoutePlan, sendID stri
 	return base64.StdEncoding.EncodeToString(planBytes), base64.StdEncoding.EncodeToString(signature)
 }
 
-// tokunTestPlan lists up-a (keys key-a1, key-a2) and then up-b (key-b1). The Bifrost entries
-// also hold key-a3 on up-a and the provider up-x, which the plan does not list.
+// tokunTestPlan lists up-a (keys key-a1, key-a2) and then up-b (key-b1), and draws them in that
+// order every time: provider-b scores below the threshold and key-a2 has share 0, so the
+// selection curve ranks both last in their layers. The Bifrost entries also hold key-a3 on up-a
+// and the provider up-x, which the plan does not list.
 func tokunTestPlan(requestID string) *routingv1.RoutePlan {
 	return &routingv1.RoutePlan{
 		RequestId: requestID,
+		Threshold: 0.75,
 		Providers: []*routingv1.RouteProvider{
 			{ProviderId: "provider-a", Score: 0.8, Upstreams: []*routingv1.RouteUpstream{{
 				UpstreamId: 1, Interface: "1:text.chat.openai-chat", BifrostProvider: "up-a", ForwardModel: "model-a",
-				Keys: []*plannerv1.KeyShare{{KeyId: "key-a1", Share: 1}, {KeyId: "key-a2", Share: 1}},
+				Keys: []*plannerv1.KeyShare{{KeyId: "key-a1", Share: 1}, {KeyId: "key-a2", Share: 0}},
 			}}},
 			{ProviderId: "provider-b", Score: 0.7, Upstreams: []*routingv1.RouteUpstream{{
 				UpstreamId: 2, Interface: "2:text.chat.openai-chat", BifrostProvider: "up-b", ForwardModel: "model-b",
 				Keys: []*plannerv1.KeyShare{{KeyId: "key-b1", Share: 1}},
 			}}},
+		},
+	}
+}
+
+// tokunDrawPlan has providers of close scores, several upstreams and several keys, so the
+// selection curve draws a different order for most seeds:
+//   - provider-a: up-a (keys key-a1, key-a2) in the request's format, and up-c (key-c1, key-c2),
+//     converted;
+//   - provider-b: up-b (key-b1) and up-d (key-d1, key-d2), both in the request's format;
+//   - provider-e: up-e (key-e1) in the request's format, scoring below the threshold.
+//
+// So every order is provider-a's up-a and provider-b's upstreams in a drawn order, then key-e1,
+// then up-c's two keys in a drawn order.
+func tokunDrawPlan(requestID string) *routingv1.RoutePlan {
+	upstream := func(id int64, name string, score float64, sameFormat bool, keys ...string) *routingv1.RouteUpstream {
+		shares := make([]*plannerv1.KeyShare, 0, len(keys))
+		for _, key := range keys {
+			shares = append(shares, &plannerv1.KeyShare{KeyId: key, Share: 1})
+		}
+		return &routingv1.RouteUpstream{
+			UpstreamId: id, Interface: fmt.Sprintf("%d:text.chat.openai-chat", id), BifrostProvider: name, ForwardModel: "model-" + name,
+			Score: score, Uncertainty: 0.05, SameFormat: sameFormat, Keys: shares,
+		}
+	}
+	return &routingv1.RoutePlan{
+		RequestId: requestID, RequestRate: 10, StaleAfterSeconds: 30, Threshold: 0.5,
+		Providers: []*routingv1.RouteProvider{
+			{ProviderId: "provider-a", Score: 0.8, Uncertainty: 0.05, UpstreamThreshold: 0.4, Upstreams: []*routingv1.RouteUpstream{
+				upstream(1, "up-a", 0.8, true, "key-a1", "key-a2"),
+				upstream(3, "up-c", 0.7, false, "key-c1", "key-c2"),
+			}},
+			{ProviderId: "provider-b", Score: 0.78, Uncertainty: 0.05, UpstreamThreshold: 0.4, Upstreams: []*routingv1.RouteUpstream{
+				upstream(2, "up-b", 0.8, true, "key-b1"),
+				upstream(4, "up-d", 0.79, true, "key-d1", "key-d2"),
+			}},
+			{ProviderId: "provider-e", Score: 0.3, Uncertainty: 0.05, UpstreamThreshold: 0.4, Upstreams: []*routingv1.RouteUpstream{
+				upstream(5, "up-e", 0.8, true, "key-e1"),
+			}},
 		},
 	}
 }
@@ -214,6 +255,9 @@ func TestTokunPluginRoutesInsideTheSignedPlan(t *testing.T) {
 		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 			"up-a": providerEntry("up-a", "key-a1", "key-a2", "key-a3"),
 			"up-b": providerEntry("up-b", "key-b1"),
+			"up-c": providerEntry("up-c", "key-c1", "key-c2"),
+			"up-d": providerEntry("up-d", "key-d1", "key-d2"),
+			"up-e": providerEntry("up-e", "key-e1"),
 			"up-x": providerEntry("up-x", "key-x1"),
 		},
 	}
@@ -305,7 +349,7 @@ func TestTokunPluginRoutesInsideTheSignedPlan(t *testing.T) {
 		}
 	})
 
-	t.Run("fallbacks in plan order, one key each", func(t *testing.T) {
+	t.Run("fallbacks in the drawn order, one key each", func(t *testing.T) {
 		upstreams.reset("secret-key-a1", "secret-key-a2")
 		got := send(t, signed(t, newKey, tokunTestPlan("req_fallbacks"), "snd_fallbacks"), body)
 		if got.status != http.StatusOK {
@@ -331,6 +375,68 @@ func TestTokunPluginRoutesInsideTheSignedPlan(t *testing.T) {
 			t.Fatalf("served by %v, want %v", served, want)
 		}
 		observer.take()
+	})
+
+	// Every upstream of tokunDrawPlan fails, so each send tries the whole drawn order. The same
+	// seed sends to the same upstreams and keys in the same order; other seeds draw other orders.
+	t.Run("the primary and the fallbacks are drawn, the same for the same seed", func(t *testing.T) {
+		failing := []string{"secret-key-a1", "secret-key-a2", "secret-key-b1", "secret-key-c1", "secret-key-c2", "secret-key-d1", "secret-key-d2", "secret-key-e1"}
+		tokunPlugin := plugin.(*tokun.Plugin)
+		sendDrawn := func(t *testing.T, seed uint64, sendID string) []string {
+			t.Helper()
+			upstreams.reset(failing...)
+			tokunPlugin.SeedDraws(seed)
+			got := send(t, signed(t, newKey, tokunDrawPlan("req_"+sendID), sendID), body)
+			if got.status == http.StatusOK {
+				t.Fatalf("status %d, want the last attempt's failure", got.status)
+			}
+			if ids := observer.take(); !reflect.DeepEqual(ids, []string{sendID}) {
+				t.Fatalf("core saw request ids %v, want the send_id", ids)
+			}
+			return upstreams.served()
+		}
+		upstreamOf := func(call string) string { name, _, _ := strings.Cut(call, "/"); return name }
+		// runs counts the runs of consecutive calls with the same value of what.
+		runs := func(calls []string, what func(string) string) int {
+			n := 0
+			for i, call := range calls {
+				if i == 0 || what(call) != what(calls[i-1]) {
+					n++
+				}
+			}
+			return n
+		}
+		providerOf := func(call string) string {
+			return map[string]string{"up-a": "provider-a", "up-b": "provider-b", "up-d": "provider-b"}[upstreamOf(call)]
+		}
+
+		orders := map[string]bool{}
+		primaries := map[string]bool{}
+		for seed := uint64(1); seed <= 12; seed++ {
+			served := sendDrawn(t, seed, fmt.Sprintf("snd_draw_%d", seed))
+			if again := sendDrawn(t, seed, fmt.Sprintf("snd_draw_%d_again", seed)); !reflect.DeepEqual(again, served) {
+				t.Fatalf("seed %d sent to %v, then to %v", seed, served, again)
+			}
+			if len(served) != len(failing) {
+				t.Fatalf("seed %d: sent to %v, want every key of the plan once", seed, served)
+			}
+			// The same-format group: provider-a's up-a and provider-b's two upstreams, each
+			// provider's and each upstream's calls together, then provider-e below the threshold.
+			// The converted group, up-c, follows.
+			sameFormat, below, converted := served[:5], served[5], served[6:]
+			if runs(sameFormat, providerOf) != 2 || runs(sameFormat, upstreamOf) != 3 || below != "up-e/secret-key-e1" {
+				t.Fatalf("seed %d: sent to %v, want provider-a's and provider-b's upstreams, then up-e", seed, served)
+			}
+			if upstreamOf(converted[0]) != "up-c" || upstreamOf(converted[1]) != "up-c" {
+				t.Fatalf("seed %d: sent to %v, want up-c's keys last", seed, served)
+			}
+			orders[strings.Join(served, " ")] = true
+			primaries[served[0]] = true
+		}
+		if len(orders) < 6 || len(primaries) < 3 {
+			t.Fatalf("12 seeds drew %d orders and %d primaries (%v), want them to differ", len(orders), len(primaries), primaries)
+		}
+		t.Logf("12 seeds drew %d orders and %d primaries", len(orders), len(primaries))
 	})
 
 	t.Run("the key being rotated out still verifies", func(t *testing.T) {

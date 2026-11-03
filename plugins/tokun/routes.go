@@ -65,24 +65,31 @@ func buildRouteClasses() map[string]map[string]routeClass {
 	return classes
 }
 
-// classifyRoute returns the class of the route a request matched.
+// classifyRoute returns the class of the route a request matched, routeUnclassified for a route
+// the table does not list (and for a request without a route template).
 func classifyRoute(method, template string) routeClass {
-	return routeClasses[method][template]
+	class, classified := routeClasses[method][template]
+	if !classified {
+		return routeUnclassified
+	}
+	return class
 }
 
 // RouteClass names the class of a route of Bifrost's HTTP transport, by method and route
 // template: "plan", "not_offered" or "not_implemented", and "" for a route the plugin does not
 // classify.
 func RouteClass(method, template string) string {
-	switch classifyRoute(method, template) {
+	switch class := classifyRoute(method, template); class {
 	case routePlan:
 		return "plan"
 	case routeNotOffered:
 		return "not_offered"
 	case routeNotImplemented:
 		return "not_implemented"
-	default:
+	case routeUnclassified:
 		return ""
+	default:
+		panic(fmt.Sprintf("tokun: route class %d has no name", class))
 	}
 }
 
@@ -135,7 +142,7 @@ var notOfferedRoutes = []route{
 }
 
 // TODO(tokun-B3): 实时对话的路由按签名计划处理：只在打开连接、创建通话或创建 client secret 的请求上验证计划，连接期间的调度受计划约束，连接寿命不超过计划的有效期
-// 阶段：B1-D4 放入；B3-10「实时对话」完成时删除这两行和占位
+// 阶段：B1 放入；B3-10「实时对话」完成时删除这两行和占位
 var notImplementedRoutes = []route{
 	{"GET", "/v1/realtime"},
 	{"POST", "/v1/realtime"},

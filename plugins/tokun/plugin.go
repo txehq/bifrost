@@ -9,6 +9,7 @@ package tokun
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"time"
 
@@ -32,6 +33,9 @@ var callerRoutingHeaders = []string{"x-bf-api-key-id", "x-bf-api-key", "x-bf-dir
 type Plugin struct {
 	keys    map[string][]byte
 	sendIDs *sendIDLedger
+	// uniform is the source of the uniform numbers in [0, 1) the selection curve draws with:
+	// math/rand/v2's global source, so every request draws its own numbers (SeedDraws).
+	uniform func() float64
 	logger  schemas.Logger
 }
 
@@ -41,7 +45,7 @@ func Init(config *Config, logger schemas.Logger) (*Plugin, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Plugin{keys: keys, sendIDs: newSendIDLedger(), logger: logger}, nil
+	return &Plugin{keys: keys, sendIDs: newSendIDLedger(), uniform: rand.Float64, logger: logger}, nil
 }
 
 // GetName implements schemas.BasePlugin.
@@ -59,7 +63,7 @@ func (p *Plugin) Cleanup() error { return nil }
 // the send_id becomes the id Bifrost processes the request under, and session affinity is off,
 // so the chain keeps the plan's order.
 func (p *Plugin) HTTPTransportPreAuthHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
-	switch classifyRoute(req.Method, req.Route) {
+	switch class := classifyRoute(req.Method, req.Route); class {
 	case routePlan:
 	case routeNotOffered:
 		// These routes are not tokun's endpoint types (the WebSocket Responses API, live
@@ -69,9 +73,13 @@ func (p *Plugin) HTTPTransportPreAuthHook(ctx *schemas.BifrostContext, req *sche
 	case routeNotImplemented:
 		return p.refuse(req, http.StatusNotImplemented, routeRejectionType, &refusal{rejectNotImplemented,
 			fmt.Sprintf("%s %s, the realtime conversation, is not implemented", req.Method, req.Route)}), nil
-	default:
+	case routeUnclassified:
+		// A route the table does not list, or a request without a route template: closed until
+		// routes.go classifies it.
 		return p.refuse(req, http.StatusInternalServerError, routeRejectionType, &refusal{rejectUnclassified,
 			fmt.Sprintf("%s %s (route %q) has no tokun route class", req.Method, req.Path, req.Route)}), nil
+	default:
+		panic(fmt.Sprintf("tokun: route class %d has no answer", class))
 	}
 	verified, refused := p.verify(
 		req.CaseInsensitiveHeaderLookup(HeaderRoutePlan),
