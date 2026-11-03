@@ -7,8 +7,8 @@
 package tokun
 
 import (
+	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -69,24 +69,15 @@ func (p *Plugin) HTTPTransportPreAuthHook(ctx *schemas.BifrostContext, req *sche
 			Body:       refused.body(),
 		}, nil
 	}
-	deleteHeader(req, HeaderRoutePlan)
-	deleteHeader(req, HeaderRoutePlanSignature)
+	req.DeleteHeader(HeaderRoutePlan)
+	req.DeleteHeader(HeaderRoutePlanSignature)
 	for _, name := range callerRoutingHeaders {
-		deleteHeader(req, name)
+		req.DeleteHeader(name)
 	}
 	ctx.SetValue(requestStateKey, &requestState{plan: verified.plan, claims: verified.claims})
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, verified.claims.GetSendId())
 	ctx.SetValue(schemas.BifrostContextKeySessionAffinity, false)
 	return nil, nil
-}
-
-// deleteHeader removes every spelling of the header name from the request.
-func deleteHeader(req *schemas.HTTPRequest, name string) {
-	for key := range req.Headers {
-		if strings.EqualFold(key, name) {
-			delete(req.Headers, key)
-		}
-	}
 }
 
 // HTTPTransportPreHook has nothing to do: the plan was verified and removed before
@@ -133,35 +124,86 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 	return nil
 }
 
-// PreLLMHook runs before each attempt. It fails a send none of whose plan entries is on this
-// Bifrost, and otherwise rewrites the request for the attempt's entry.
+// PreLLMHook runs before each attempt. It fails a send whose plan was never applied to the
+// request or none of whose entries is on this Bifrost, and an attempt whose index is not one of
+// the entries sent; otherwise it rewrites the request for the attempt's entry.
 func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	state, ok := ctx.Value(requestStateKey).(*requestState)
 	if !ok {
 		return req, nil, nil
 	}
+	if state.order == nil {
+		return req, &schemas.LLMPluginShortCircuit{Error: notAppliedError()}, nil
+	}
 	if len(state.chain) == 0 {
 		return req, &schemas.LLMPluginShortCircuit{Error: unroutableError()}, nil
 	}
-	attempt, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
+	attempt, fault := attemptIndex(ctx, state)
+	if fault != nil {
+		return req, &schemas.LLMPluginShortCircuit{Error: fault}, nil
+	}
 	return p.rewriteAttempt(ctx, req, state.order[state.chain[attempt]]), nil, nil
 }
 
-// PostLLMHook runs after each attempt and records it.
+// PostLLMHook runs after each attempt and records it. A send PreLLMHook failed before any
+// attempt passes through as it is.
 func (p *Plugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	state, ok := ctx.Value(requestStateKey).(*requestState)
 	if !ok || len(state.chain) == 0 {
 		return resp, bifrostErr, nil
 	}
-	attempt, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int)
+	attempt, fault := attemptIndex(ctx, state)
+	if fault != nil {
+		return nil, fault, nil
+	}
 	return resp, p.recordAttempt(ctx, state, attempt, resp, bifrostErr), nil
+}
+
+// attemptIndex returns the position in state.chain of the attempt the hook runs for.
+//
+// Core sets BifrostContextKeyFallbackIndex before every attempt that handleRequest,
+// handleStreamRequest and continueOnServedRoute make: 0 for the primary, i+1 for fallback i.
+// The WebSocket Responses, realtime and live paths run the hooks through RunStreamPreHooks and
+// RunRealtimeTurnPreHooks, which never set it; each of those makes one attempt, the primary. So
+// an absent index is the primary. An index of another type, or one outside the entries sent,
+// fails the attempt.
+func attemptIndex(ctx *schemas.BifrostContext, state *requestState) (int, *schemas.BifrostError) {
+	attempt := 0
+	if value := ctx.Value(schemas.BifrostContextKeyFallbackIndex); value != nil {
+		index, ok := value.(int)
+		if !ok {
+			return 0, attemptFault(fmt.Sprintf("the attempt index is a %T, not an int", value))
+		}
+		attempt = index
+	}
+	if attempt < 0 || attempt >= len(state.chain) {
+		return 0, attemptFault(fmt.Sprintf("attempt %d is not one of the %d plan entries sent", attempt, len(state.chain)))
+	}
+	return attempt, nil
 }
 
 // unroutableError fails a send whose plan has no entry this Bifrost can send. Nothing is
 // tried, so there is nothing to fall back to.
 func unroutableError() *schemas.BifrostError {
-	status := http.StatusServiceUnavailable
-	errorType := "tokun_route_plan_unroutable"
+	return sendError(http.StatusServiceUnavailable, "tokun_route_plan_unroutable",
+		"no provider entry or key of the route plan is on this Bifrost")
+}
+
+// notAppliedError fails a send that reached an attempt without PreRequestHook applying its plan:
+// a route that runs the LLM hooks without the pre-request phase dispatches by its own choice,
+// so the send could leave the plan.
+func notAppliedError() *schemas.BifrostError {
+	return sendError(http.StatusNotImplemented, "tokun_route_plan_not_applied",
+		"this route dispatches without applying the route plan")
+}
+
+// attemptFault fails an attempt core numbered outside the plan entries the plugin sent.
+func attemptFault(detail string) *schemas.BifrostError {
+	return sendError(http.StatusInternalServerError, "tokun_attempt_index_invalid", detail)
+}
+
+// sendError is a failure of the whole send: nothing falls back from it.
+func sendError(status int, errorType, message string) *schemas.BifrostError {
 	allowFallbacks := false
 	return &schemas.BifrostError{
 		IsBifrostError: true,
@@ -170,7 +212,7 @@ func unroutableError() *schemas.BifrostError {
 		AllowFallbacks: &allowFallbacks,
 		Error: &schemas.ErrorField{
 			Type:    &errorType,
-			Message: "no provider entry or key of the route plan is on this Bifrost",
+			Message: message,
 		},
 	}
 }

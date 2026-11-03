@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -396,6 +398,103 @@ func TestPreLLMHookFailsASendWithNothingToSend(t *testing.T) {
 	}
 }
 
+// A send that reaches an attempt without PreRequestHook applying its plan (a route that
+// dispatches by its own choice) fails before any upstream is called.
+func TestPreLLMHookFailsASendWhosePlanWasNotApplied(t *testing.T) {
+	plugin := testPlugin(t, map[string]string{"gw-2026-11": "gateway-secret"})
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	ctx.SetValue(requestStateKey, &requestState{plan: testPlan()})
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shortCircuit == nil || shortCircuit.Error == nil || *shortCircuit.Error.Type != "tokun_route_plan_not_applied" {
+		t.Fatalf("short circuit = %+v, want tokun_route_plan_not_applied", shortCircuit)
+	}
+	if *shortCircuit.Error.AllowFallbacks {
+		t.Fatal("the failure allows fallbacks")
+	}
+}
+
+// routedState is the state of a send of testPlan after PreRequestHook: three entries sent.
+func routedState(t testing.TB, plugin *Plugin) *requestState {
+	t.Helper()
+	state := &requestState{plan: testPlan()}
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}
+	plugin.route(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req, state)
+	if len(state.chain) != 3 {
+		t.Fatalf("chain = %v, want three entries", state.chain)
+	}
+	return state
+}
+
+// The attempt index core sets picks the entry; an absent index is the primary; an index of
+// another type or outside the entries sent fails the attempt in both hooks.
+func TestAttemptIndex(t *testing.T) {
+	plugin := testPlugin(t, map[string]string{"gw-2026-11": "gateway-secret"})
+	state := routedState(t, plugin)
+
+	for _, tc := range []struct {
+		name  string
+		index any // nil leaves the index unset
+		want  int
+	}{
+		{name: "unset is the primary", index: nil, want: 0},
+		{name: "primary", index: 0, want: 0},
+		{name: "first fallback", index: 1, want: 1},
+		{name: "last fallback", index: 2, want: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+			if tc.index != nil {
+				ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, tc.index)
+			}
+			got, fault := attemptIndex(ctx, state)
+			if fault != nil || got != tc.want {
+				t.Fatalf("attemptIndex = %d, %+v; want %d", got, fault, tc.want)
+			}
+			ctx.SetValue(requestStateKey, state)
+			if _, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{}); shortCircuit != nil || err != nil {
+				t.Fatalf("PreLLMHook = %+v, %v; want the attempt to go ahead", shortCircuit, err)
+			}
+			resp := &schemas.BifrostResponse{}
+			if gotResp, gotErr, err := plugin.PostLLMHook(ctx, resp, nil); gotResp != resp || gotErr != nil || err != nil {
+				t.Fatalf("PostLLMHook = %v, %+v, %v; want the response unchanged", gotResp, gotErr, err)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name  string
+		index any
+	}{
+		{name: "int64", index: int64(1)},
+		{name: "string", index: "1"},
+		{name: "negative", index: -1},
+		{name: "past the entries sent", index: 3},
+	} {
+		t.Run("fails: "+tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, tc.index)
+			if _, fault := attemptIndex(ctx, state); fault == nil {
+				t.Fatalf("attemptIndex accepted %#v", tc.index)
+			}
+			ctx.SetValue(requestStateKey, state)
+			_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{})
+			if err != nil || shortCircuit == nil || shortCircuit.Error == nil {
+				t.Fatalf("PreLLMHook = %+v, %v; want the attempt failed", shortCircuit, err)
+			}
+			if *shortCircuit.Error.Type != "tokun_attempt_index_invalid" || *shortCircuit.Error.StatusCode != http.StatusInternalServerError || *shortCircuit.Error.AllowFallbacks {
+				t.Fatalf("PreLLMHook error = %+v", shortCircuit.Error)
+			}
+			gotResp, gotErr, err := plugin.PostLLMHook(ctx, &schemas.BifrostResponse{}, nil)
+			if err != nil || gotResp != nil || gotErr == nil || *gotErr.Type != "tokun_attempt_index_invalid" {
+				t.Fatalf("PostLLMHook = %v, %+v, %v; want the response replaced by the failure", gotResp, gotErr, err)
+			}
+		})
+	}
+}
+
 // BenchmarkPreAuthHook measures verifying and removing a signed plan of two providers and three
 // keys: two base64 decodes, three protobuf decodes, one HMAC and one SHA-256 of the plan.
 func BenchmarkPreAuthHook(b *testing.B) {
@@ -409,17 +508,139 @@ func BenchmarkPreAuthHook(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		req := &schemas.HTTPRequest{
-			Method:  http.MethodPost,
-			Path:    "/v1/chat/completions",
-			Headers: map[string]string{HeaderRoutePlan: signed[i].plan, HeaderRoutePlanSignature: signed[i].signature},
-			Body:    body,
-		}
+		// The transport hands the hook a pooled request, as here.
+		req := schemas.AcquireHTTPRequest()
+		req.Method, req.Path, req.Body = http.MethodPost, "/v1/chat/completions", body
+		req.Headers[HeaderRoutePlan] = signed[i].plan
+		req.Headers[HeaderRoutePlanSignature] = signed[i].signature
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		if resp, err := plugin.HTTPTransportPreAuthHook(ctx, req); resp != nil || err != nil {
 			b.Fatalf("refused: %v %v", resp, err)
 		}
+		schemas.ReleaseHTTPRequest(req)
 	}
+}
+
+// BenchmarkPreRequestHook measures applying a plan of two providers and three keys to a request,
+// and passing over a request that carries no plan.
+func BenchmarkPreRequestHook(b *testing.B) {
+	plugin := testPlugin(b, map[string]string{"gw-2026-11": "gateway-secret"})
+	plan := testPlan()
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}
+	b.Run("with plan", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		state := &requestState{plan: plan}
+		ctx.SetValue(requestStateKey, state)
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			// A new send's state: the order, chain and fallbacks are built for every request.
+			state.order, state.chain, state.skipped = nil, nil, nil
+			req.ChatRequest.Provider, req.ChatRequest.Model, req.ChatRequest.Fallbacks = "caller-provider", "caller-model", nil
+			if err := plugin.PreRequestHook(ctx, req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("without plan", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if err := plugin.PreRequestHook(ctx, req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+// BenchmarkPreLLMHook measures one attempt's pre-hook: a fallback of a routed send, and a request
+// that carries no plan.
+func BenchmarkPreLLMHook(b *testing.B) {
+	plugin := testPlugin(b, map[string]string{"gw-2026-11": "gateway-secret"})
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}
+	b.Run("with plan", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(requestStateKey, routedState(b, plugin))
+		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, shortCircuit, err := plugin.PreLLMHook(ctx, req); shortCircuit != nil || err != nil {
+				b.Fatalf("PreLLMHook = %+v, %v", shortCircuit, err)
+			}
+		}
+	})
+	b.Run("without plan", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, shortCircuit, err := plugin.PreLLMHook(ctx, req); shortCircuit != nil || err != nil {
+				b.Fatalf("PreLLMHook = %+v, %v", shortCircuit, err)
+			}
+		}
+	})
+}
+
+// BenchmarkPostLLMHook measures one attempt's post-hook: a fallback of a routed send, and a
+// request that carries no plan.
+func BenchmarkPostLLMHook(b *testing.B) {
+	plugin := testPlugin(b, map[string]string{"gw-2026-11": "gateway-secret"})
+	resp := &schemas.BifrostResponse{}
+	b.Run("with plan", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(requestStateKey, routedState(b, plugin))
+		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if got, gotErr, err := plugin.PostLLMHook(ctx, resp, nil); got != resp || gotErr != nil || err != nil {
+				b.Fatalf("PostLLMHook = %v, %+v, %v", got, gotErr, err)
+			}
+		}
+	})
+	b.Run("without plan", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if got, gotErr, err := plugin.PostLLMHook(ctx, resp, nil); got != resp || gotErr != nil || err != nil {
+				b.Fatalf("PostLLMHook = %v, %+v, %v", got, gotErr, err)
+			}
+		}
+	})
+}
+
+// BenchmarkSendIDLedgerClaim measures recording an accepted send_id, and reports the memory the
+// ledger retains for each send it holds (retained-B/send), measured over 100000 sends. The
+// send_id string itself is not counted: protobuf decoding allocated it, and the ledger keeps it
+// alive (30 bytes, a 32-byte allocation, for "snd_" and a ULID).
+func BenchmarkSendIDLedgerClaim(b *testing.B) {
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(time.Hour)
+	const held = 100000
+	ids := make([]string, held+b.N)
+	for i := range ids {
+		// The length of a real one: "snd_" and 26 characters.
+		ids[i] = fmt.Sprintf("snd_%026d", i)
+	}
+
+	ledger := newSendIDLedger()
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	for _, id := range ids[:held] {
+		ledger.claim(id, expiresAt, now)
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	retained := float64(after.HeapAlloc-before.HeapAlloc) / held
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for _, id := range ids[held:] {
+		if !ledger.claim(id, expiresAt, now) {
+			b.Fatal("a new send_id was refused")
+		}
+	}
+	b.StopTimer()
+	b.ReportMetric(retained, "retained-B/send")
+	runtime.KeepAlive(ids)
 }
 
 func TestConfigSigningKeys(t *testing.T) {

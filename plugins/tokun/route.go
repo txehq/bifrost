@@ -76,6 +76,7 @@ func (p *Plugin) route(ctx *schemas.BifrostContext, req *schemas.BifrostRequest,
 	state.order = drawOrder(state.plan)
 	maxAttempts := int(state.plan.GetMaxAttempts())
 	targets := make([]schemas.Fallback, 0, len(state.order))
+	state.chain = make([]int, 0, len(state.order))
 	for i, e := range state.order {
 		if maxAttempts > 0 && len(targets) == maxAttempts {
 			break

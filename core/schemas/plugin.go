@@ -47,11 +47,33 @@ type HTTPRequest struct {
 	Query      map[string]string `json:"query"`
 	Body       []byte            `json:"body"`
 	PathParams map[string]string `json:"path_params"` // Path variables extracted from the URL pattern (e.g., {model})
+
+	// deletedHeaders are the Headers keys DeleteHeader removed.
+	deletedHeaders []string
 }
 
 // CaseInsensitiveHeaderLookup looks up a header key in a case-insensitive manner
 func (req *HTTPRequest) CaseInsensitiveHeaderLookup(key string) string {
 	return caseInsensitiveLookup(req.Headers, key)
+}
+
+// DeleteHeader removes every spelling of the header name from Headers, and the HTTP transport
+// then removes the header from the request it hands on. Deleting a key from Headers directly
+// leaves the header on the request: the transport sets the keys Headers holds and removes only
+// the ones DeleteHeader recorded, so a hook that deletes nothing adds no work to the request.
+func (req *HTTPRequest) DeleteHeader(name string) {
+	for key := range req.Headers {
+		if strings.EqualFold(key, name) {
+			delete(req.Headers, key)
+			req.deletedHeaders = append(req.deletedHeaders, key)
+		}
+	}
+}
+
+// DeletedHeaders returns the Headers keys DeleteHeader removed, in the spelling they had. A key
+// set again after its deletion is in Headers as well, and the transport keeps that header.
+func (req *HTTPRequest) DeletedHeaders() []string {
+	return req.deletedHeaders
 }
 
 // CaseInsensitiveQueryLookup looks up a query key in a case-insensitive manner
@@ -193,6 +215,8 @@ func ReleaseHTTPRequest(req *HTTPRequest) {
 	clear(req.Headers)
 	clear(req.Query)
 	clear(req.PathParams)
+	clear(req.deletedHeaders)
+	req.deletedHeaders = req.deletedHeaders[:0]
 	// Reset fields
 	req.Method = ""
 	req.Path = ""

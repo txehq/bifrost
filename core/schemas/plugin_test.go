@@ -189,6 +189,23 @@ func TestHTTPRequest_CaseInsensitiveHeaderLookup(t *testing.T) {
 	}
 }
 
+func TestHTTPRequest_DeleteHeader(t *testing.T) {
+	req := AcquireHTTPRequest()
+	req.Headers["Tk-Route-Plan"] = "plan"
+	req.Headers["tk-route-plan"] = "plan, another spelling"
+	req.Headers["Content-Type"] = "application/json"
+
+	req.DeleteHeader("TK-ROUTE-PLAN")
+	req.DeleteHeader("X-Absent")
+
+	assert.Equal(t, map[string]string{"Content-Type": "application/json"}, req.Headers)
+	assert.ElementsMatch(t, []string{"Tk-Route-Plan", "tk-route-plan"}, req.DeletedHeaders())
+
+	// A pooled request carries no deletions into its next use.
+	ReleaseHTTPRequest(req)
+	assert.Empty(t, AcquireHTTPRequest().DeletedHeaders())
+}
+
 func TestHTTPRequest_CaseInsensitiveQueryLookup(t *testing.T) {
 	tests := []struct {
 		name     string

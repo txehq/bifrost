@@ -11,7 +11,10 @@ import (
 //
 //	{"name": "tokun", "enabled": true, "config": {"signing_keys": "env.TOKUN_ROUTE_PLAN_SIGNING_KEYS"}}
 //
-// The plugin is loaded only when such an entry exists and is enabled.
+// The plugin is loaded only when such an entry exists and is enabled. Once loaded, every route
+// registered with the inference middlewares needs a signed route plan, including the MCP,
+// async, realtime, live and Agent Gateway routes; README.md lists them and what the plugin
+// does on each.
 type Config struct {
 	// SigningKeys holds the route plan signing keys as a JSON object of key id to secret,
 	// {"gw-2026-11": "...", "tw-2026-11": "...", "hp-2026-11": "..."}: one key each for the

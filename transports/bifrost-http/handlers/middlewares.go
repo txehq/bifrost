@@ -762,8 +762,13 @@ func TransportPreAuthInterceptorMiddleware(config *lib.Config) schemas.BifrostHT
 			}
 			// The transport hooks after authentication run on a context of their own, which
 			// cannot read the request's user values; TransportInterceptorMiddleware seeds it
-			// with these.
-			if len(preAuthValues) > 0 {
+			// with these. This phase put only the model catalog on bifrostCtx, which the next
+			// phase stamps again, so the values go on only when a hook added some.
+			stamped := 0
+			if config.ModelCatalog != nil {
+				stamped = 1
+			}
+			if len(preAuthValues) > stamped {
 				ctx.SetUserValue(fastHTTPUserValuePreAuthValues, preAuthValues)
 			}
 			next(ctx)
@@ -1174,15 +1179,9 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) b
 		SendError(ctx, fasthttp.StatusConflict, "request method/path was modified by a plugin, this is not allowed")
 		return false
 	}
-	// Remove the headers a plugin deleted from the map, before applying the rest, so a header
-	// a plugin re-added under another spelling stays.
-	var removed []string
-	for key := range ctx.Request.Header.All() {
-		if _, kept := req.Headers[string(key)]; !kept {
-			removed = append(removed, string(key))
-		}
-	}
-	for _, key := range removed {
+	// Remove the headers a plugin deleted with DeleteHeader before applying the rest, so a
+	// header a plugin set again after deleting it stays.
+	for _, key := range req.DeletedHeaders() {
 		ctx.Request.Header.Del(key)
 	}
 	// Apply headers

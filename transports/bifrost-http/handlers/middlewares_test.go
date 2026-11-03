@@ -28,6 +28,7 @@ import (
 	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/encrypt"
+	"github.com/capsohq/bifrost/framework/modelcatalog"
 	"github.com/capsohq/bifrost/framework/temptoken"
 	"github.com/capsohq/bifrost/framework/tracing"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
@@ -4099,14 +4100,14 @@ func TestTransportPreAuthInterceptorMiddleware_NoPlugins(t *testing.T) {
 }
 
 // TestTransportPreAuthInterceptorMiddleware_HeaderDeletionReachesNext asserts a header a hook
-// deletes from the request map is gone from the request, so neither authentication nor an
-// upstream sees it, while a header it re-adds under another spelling stays.
+// deletes with DeleteHeader is gone from the request, so neither authentication nor an
+// upstream sees it, while a header it sets again after deleting it stays.
 func TestTransportPreAuthInterceptorMiddleware_HeaderDeletionReachesNext(t *testing.T) {
 	config := preAuthTestConfig(&fakePreAuthPlugin{
 		name: "header-remover",
 		hook: func(_ *schemas.BifrostContext, req *schemas.HTTPRequest) (*schemas.HTTPResponse, error) {
-			delete(req.Headers, "X-Credential")
-			delete(req.Headers, "X-Renamed")
+			req.DeleteHeader("x-credential")
+			req.DeleteHeader("X-Renamed")
 			req.Headers["x-renamed"] = "re-added"
 			return nil, nil
 		},
@@ -4163,26 +4164,35 @@ func TestTransportPreAuthInterceptorMiddleware_ValuesVisibleToTransportHooks(t *
 	}
 }
 
-// BenchmarkTransportPreAuthInterceptorMiddleware measures the pre-auth phase with one hook that
-// changes nothing, on a request with a dozen headers.
-func BenchmarkTransportPreAuthInterceptorMiddleware(b *testing.B) {
+// BenchmarkTransportInterceptorMiddlewares measures both transport plugin phases, before and after
+// authentication, around a handler that does nothing, on a request with a dozen headers. A model
+// catalog is configured and the one transport plugin's hooks change nothing: a server whose
+// loaded transport plugins do no work in these phases, as the built-in ones do not.
+func BenchmarkTransportInterceptorMiddlewares(b *testing.B) {
 	config := preAuthTestConfig(&fakePreAuthPlugin{
 		name: "no-op",
 		hook: func(*schemas.BifrostContext, *schemas.HTTPRequest) (*schemas.HTTPResponse, error) { return nil, nil },
 	})
-	handler := TransportPreAuthInterceptorMiddleware(config)(func(*fasthttp.RequestCtx) {})
+	config.ModelCatalog = modelcatalog.NewTestCatalog(nil)
+	handler := TransportPreAuthInterceptorMiddleware(config)(TransportInterceptorMiddleware(config)(func(*fasthttp.RequestCtx) {}))
 	body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}]}`)
+	headers := make([]string, 10)
+	for h := range headers {
+		headers[h] = "X-Bench-" + strconv.Itoa(h)
+	}
 	var req fasthttp.Request
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Init(&req, nil, nil)
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
+		// fasthttp clears a connection's user values between requests; so does the benchmark.
+		ctx.ResetUserValues()
 		ctx.Request.Reset()
 		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 		ctx.Request.SetRequestURI("/v1/chat/completions")
 		ctx.Request.Header.SetContentType("application/json")
-		for h := range 10 {
-			ctx.Request.Header.Set("X-Bench-"+strconv.Itoa(h), "value")
+		for _, name := range headers {
+			ctx.Request.Header.Set(name, "value")
 		}
 		ctx.Request.SetBody(body)
 		handler(ctx)
