@@ -3,7 +3,6 @@ package integrations
 import (
 	"bytes"
 	"fmt"
-	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/providers/gemini"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/kvstore"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
@@ -509,22 +509,15 @@ func resolveLargePayloadMetadata(bifrostCtx *schemas.BifrostContext) *schemas.La
 	}
 }
 
-// ParseProviderScopedVideoID parses a provider-scoped video ID in the form "id:provider".
-// The ID portion is automatically URL-decoded to restore the original ID.
+// ParseProviderScopedVideoID parses a provider-scoped video ID in the form "id:provider",
+// split at the last colon. The ID portion stays in the escaped form Bifrost issued: every
+// video provider decodes it once in StripVideoIDProviderSuffix, so decoding it here too
+// would turn an upstream "%41" into "A".
 func ParseProviderScopedVideoID(videoID string) (schemas.ModelProvider, string, error) {
-	parts := strings.SplitN(videoID, ":", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	provider, rawID, ok := providerUtils.SplitProviderScopedVideoID(videoID)
+	if !ok {
 		return "", "", fmt.Errorf("video_id must be in id:provider format")
 	}
-	provider := schemas.ModelProvider(parts[1])
-	rawID := parts[0]
-
-	// URL decode the ID to restore original characters (e.g., %2F -> /)
-	// This handles IDs from all providers that may contain special characters
-	if decoded, err := url.PathUnescape(rawID); err == nil {
-		rawID = decoded
-	}
-
 	return provider, rawID, nil
 }
 

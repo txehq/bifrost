@@ -24,6 +24,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/capsohq/bifrost/core/providers/typesafe"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework/modelcatalog"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
@@ -3554,18 +3555,16 @@ func (h *CompletionHandler) videoRetrieve(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid video_id encoding")
 		return
 	}
-	idParts := strings.SplitN(decodedID, ":", 2)
-	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+	provider, rawID, ok := providerUtils.SplitProviderScopedVideoID(decodedID)
+	if !ok {
 		SendError(ctx, fasthttp.StatusBadRequest, "video_id must be in id:provider format")
 		return
 	}
 
-	provider := schemas.ModelProvider(idParts[1])
-
 	// Build Bifrost video retrieve request
 	bifrostVideoReq := &schemas.BifrostVideoRetrieveRequest{
 		Provider: provider,
-		ID:       idParts[0],
+		ID:       rawID,
 	}
 
 	// Convert context
@@ -3607,8 +3606,8 @@ func (h *CompletionHandler) videoDownload(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid video_id encoding")
 		return
 	}
-	idParts := strings.SplitN(decodedID, ":", 2)
-	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+	provider, rawID, ok := providerUtils.SplitProviderScopedVideoID(decodedID)
+	if !ok {
 		SendError(ctx, fasthttp.StatusBadRequest, "video_id must be in id:provider format")
 		return
 	}
@@ -3618,8 +3617,8 @@ func (h *CompletionHandler) videoDownload(ctx *fasthttp.RequestCtx) {
 
 	// Build Bifrost video download request
 	bifrostVideoReq := &schemas.BifrostVideoDownloadRequest{
-		Provider: schemas.ModelProvider(idParts[1]),
-		ID:       idParts[0],
+		Provider: provider,
+		ID:       rawID,
 	}
 
 	if variant != "" {
@@ -3727,16 +3726,16 @@ func (h *CompletionHandler) videoDelete(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid video_id encoding")
 		return
 	}
-	idParts := strings.SplitN(decodedID, ":", 2)
-	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+	provider, rawID, ok := providerUtils.SplitProviderScopedVideoID(decodedID)
+	if !ok {
 		SendError(ctx, fasthttp.StatusBadRequest, "video_id must be in id:provider format")
 		return
 	}
 
 	// Build Bifrost video delete request
 	bifrostVideoReq := &schemas.BifrostVideoDeleteRequest{
-		Provider: schemas.ModelProvider(idParts[1]),
-		ID:       idParts[0],
+		Provider: provider,
+		ID:       rawID,
 	}
 
 	// Convert context
@@ -3778,8 +3777,8 @@ func (h *CompletionHandler) videoRemix(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid video_id encoding")
 		return
 	}
-	idParts := strings.SplitN(decodedID, ":", 2)
-	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+	provider, rawID, ok := providerUtils.SplitProviderScopedVideoID(decodedID)
+	if !ok {
 		SendError(ctx, fasthttp.StatusBadRequest, "video_id must be in id:provider format")
 		return
 	}
@@ -3797,8 +3796,6 @@ func (h *CompletionHandler) videoRemix(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	provider := schemas.ModelProvider(idParts[1])
-
 	extraParams, err := extractExtraParams(ctx.PostBody(), videoRemixParamsKnownFields)
 	if err != nil {
 		logger.Warn("Failed to extract extra params: %v", err)
@@ -3809,7 +3806,7 @@ func (h *CompletionHandler) videoRemix(ctx *fasthttp.RequestCtx) {
 	// Build Bifrost video remix request
 	bifrostVideoReq := &schemas.BifrostVideoRemixRequest{
 		Provider: provider,
-		ID:       idParts[0],
+		ID:       rawID,
 		Input: &schemas.VideoGenerationInput{
 			Prompt: req.VideoGenerationInput.Prompt,
 		},
