@@ -25,30 +25,28 @@ const (
 
 // FeatureRecord is the value of every record on tk.routing.features.v1, the
 // history data pack. The topic is compacted; the record key is
-// FeatureRecord.key, so the topic holds the latest record of every subject.
-// The routing-features worker merges the run signals, the ClickHouse minute
-// and hour statistics (read only up to ClickHouse's write progress), the
-// TokenFeeds external measurements and the probe results, and writes a
-// subject again only when its data changed, every signals.publish_interval.
-// Every planner keeps the whole topic in memory: it starts from the newest
-// FeaturesCheckpoint and consumes from the checkpoint's offsets.
+// FeatureRecord.key, one per interface and one per key, so the topic holds the
+// latest record of every subject. The routing-features worker merges the run
+// signals, the ClickHouse minute and hour statistics (read only up to
+// ClickHouse's write progress), the TokenFeeds external measurements and the
+// probe results, and writes a subject again only when its data changed, every
+// signals.publish_interval. Every planner keeps the whole topic in memory: it
+// starts from the newest FeaturesCheckpoint and consumes from the checkpoint's
+// offsets. An interface's model, provider and upstream come from the planner
+// catalog projection.
 //
 // Sources are never blended with fixed weights: every series names its source
 // and its sample counts. A window without data is absent, and data_through
 // stays at the last observation.
 type FeatureRecord struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// "interface:<interface>", "key:<key_id>", "binding:<upstream_id>|<provider_id>",
-	// "aggregate:<scope>:<scope_id>".
+	// "interface:<interface>" or "key:<key_id>".
 	Key string `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
 	// Types that are valid to be assigned to Subject:
 	//
 	//	*FeatureRecord_Interface
 	//	*FeatureRecord_UpstreamKey
-	//	*FeatureRecord_Binding
-	//	*FeatureRecord_Aggregate
 	Subject       isFeatureRecord_Subject `protobuf_oneof:"subject"`
-	UpdatedAt     *timestamppb.Timestamp  `protobuf:"bytes,6,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -115,31 +113,6 @@ func (x *FeatureRecord) GetUpstreamKey() *KeyFeatures {
 	return nil
 }
 
-func (x *FeatureRecord) GetBinding() *BindingUsage {
-	if x != nil {
-		if x, ok := x.Subject.(*FeatureRecord_Binding); ok {
-			return x.Binding
-		}
-	}
-	return nil
-}
-
-func (x *FeatureRecord) GetAggregate() *AggregateFeatures {
-	if x != nil {
-		if x, ok := x.Subject.(*FeatureRecord_Aggregate); ok {
-			return x.Aggregate
-		}
-	}
-	return nil
-}
-
-func (x *FeatureRecord) GetUpdatedAt() *timestamppb.Timestamp {
-	if x != nil {
-		return x.UpdatedAt
-	}
-	return nil
-}
-
 type isFeatureRecord_Subject interface {
 	isFeatureRecord_Subject()
 }
@@ -152,31 +125,14 @@ type FeatureRecord_UpstreamKey struct {
 	UpstreamKey *KeyFeatures `protobuf:"bytes,3,opt,name=upstream_key,json=upstreamKey,proto3,oneof"`
 }
 
-type FeatureRecord_Binding struct {
-	Binding *BindingUsage `protobuf:"bytes,4,opt,name=binding,proto3,oneof"`
-}
-
-type FeatureRecord_Aggregate struct {
-	Aggregate *AggregateFeatures `protobuf:"bytes,5,opt,name=aggregate,proto3,oneof"`
-}
-
 func (*FeatureRecord_Interface) isFeatureRecord_Subject() {}
 
 func (*FeatureRecord_UpstreamKey) isFeatureRecord_Subject() {}
 
-func (*FeatureRecord_Binding) isFeatureRecord_Subject() {}
-
-func (*FeatureRecord_Aggregate) isFeatureRecord_Subject() {}
-
 type InterfaceFeatures struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	Interface string                 `protobuf:"bytes,1,opt,name=interface,proto3" json:"interface,omitempty"`
-	// Identity, so planners can compare the interface with the same model on
-	// other providers and the same upstream on other models.
-	ModelId       string          `protobuf:"bytes,2,opt,name=model_id,json=modelId,proto3" json:"model_id,omitempty"`
-	ProviderId    string          `protobuf:"bytes,3,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"`
-	UpstreamId    int64           `protobuf:"varint,4,opt,name=upstream_id,json=upstreamId,proto3" json:"upstream_id,omitempty"`
-	EndpointType  string          `protobuf:"bytes,5,opt,name=endpoint_type,json=endpointType,proto3" json:"endpoint_type,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// "<offering_id>:<endpoint_type_id>".
+	Interface     string          `protobuf:"bytes,1,opt,name=interface,proto3" json:"interface,omitempty"`
 	Metrics       []*MetricSeries `protobuf:"bytes,6,rep,name=metrics,proto3" json:"metrics,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -219,34 +175,6 @@ func (x *InterfaceFeatures) GetInterface() string {
 	return ""
 }
 
-func (x *InterfaceFeatures) GetModelId() string {
-	if x != nil {
-		return x.ModelId
-	}
-	return ""
-}
-
-func (x *InterfaceFeatures) GetProviderId() string {
-	if x != nil {
-		return x.ProviderId
-	}
-	return ""
-}
-
-func (x *InterfaceFeatures) GetUpstreamId() int64 {
-	if x != nil {
-		return x.UpstreamId
-	}
-	return 0
-}
-
-func (x *InterfaceFeatures) GetEndpointType() string {
-	if x != nil {
-		return x.EndpointType
-	}
-	return ""
-}
-
 func (x *InterfaceFeatures) GetMetrics() []*MetricSeries {
 	if x != nil {
 		return x.Metrics
@@ -257,7 +185,6 @@ func (x *InterfaceFeatures) GetMetrics() []*MetricSeries {
 type KeyFeatures struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	KeyId         string                 `protobuf:"bytes,1,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
-	UpstreamId    int64                  `protobuf:"varint,2,opt,name=upstream_id,json=upstreamId,proto3" json:"upstream_id,omitempty"`
 	Metrics       []*MetricSeries        `protobuf:"bytes,3,rep,name=metrics,proto3" json:"metrics,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -300,181 +227,7 @@ func (x *KeyFeatures) GetKeyId() string {
 	return ""
 }
 
-func (x *KeyFeatures) GetUpstreamId() int64 {
-	if x != nil {
-		return x.UpstreamId
-	}
-	return 0
-}
-
 func (x *KeyFeatures) GetMetrics() []*MetricSeries {
-	if x != nil {
-		return x.Metrics
-	}
-	return nil
-}
-
-// Contract usage of one binding in its current period.
-type BindingUsage struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	UpstreamId    int64                  `protobuf:"varint,1,opt,name=upstream_id,json=upstreamId,proto3" json:"upstream_id,omitempty"`
-	ProviderId    string                 `protobuf:"bytes,2,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"`
-	PeriodStart   *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=period_start,json=periodStart,proto3" json:"period_start,omitempty"`
-	PeriodEnd     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=period_end,json=periodEnd,proto3" json:"period_end,omitempty"`
-	TargetMicros  int64                  `protobuf:"varint,5,opt,name=target_micros,json=targetMicros,proto3" json:"target_micros,omitempty"`
-	UsedMicros    int64                  `protobuf:"varint,6,opt,name=used_micros,json=usedMicros,proto3" json:"used_micros,omitempty"`
-	DataThrough   *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=data_through,json=dataThrough,proto3" json:"data_through,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *BindingUsage) Reset() {
-	*x = BindingUsage{}
-	mi := &file_tokun_routing_v1_features_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *BindingUsage) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*BindingUsage) ProtoMessage() {}
-
-func (x *BindingUsage) ProtoReflect() protoreflect.Message {
-	mi := &file_tokun_routing_v1_features_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use BindingUsage.ProtoReflect.Descriptor instead.
-func (*BindingUsage) Descriptor() ([]byte, []int) {
-	return file_tokun_routing_v1_features_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *BindingUsage) GetUpstreamId() int64 {
-	if x != nil {
-		return x.UpstreamId
-	}
-	return 0
-}
-
-func (x *BindingUsage) GetProviderId() string {
-	if x != nil {
-		return x.ProviderId
-	}
-	return ""
-}
-
-func (x *BindingUsage) GetPeriodStart() *timestamppb.Timestamp {
-	if x != nil {
-		return x.PeriodStart
-	}
-	return nil
-}
-
-func (x *BindingUsage) GetPeriodEnd() *timestamppb.Timestamp {
-	if x != nil {
-		return x.PeriodEnd
-	}
-	return nil
-}
-
-func (x *BindingUsage) GetTargetMicros() int64 {
-	if x != nil {
-		return x.TargetMicros
-	}
-	return 0
-}
-
-func (x *BindingUsage) GetUsedMicros() int64 {
-	if x != nil {
-		return x.UsedMicros
-	}
-	return 0
-}
-
-func (x *BindingUsage) GetDataThrough() *timestamppb.Timestamp {
-	if x != nil {
-		return x.DataThrough
-	}
-	return nil
-}
-
-// The same metrics pooled over a group of interfaces. Planners take priors
-// for an interface without data of its own from these: its model's
-// interfaces, its upstream's interfaces, then its endpoint type's.
-type AggregateFeatures struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// model (scope_id "<model_id>|<endpoint_type>"), upstream (scope_id
-	// "<upstream_id>|<endpoint_type>"), endpoint_type.
-	Scope   string `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`
-	ScopeId string `protobuf:"bytes,2,opt,name=scope_id,json=scopeId,proto3" json:"scope_id,omitempty"`
-	// Interfaces pooled.
-	Members       int32           `protobuf:"varint,3,opt,name=members,proto3" json:"members,omitempty"`
-	Metrics       []*MetricSeries `protobuf:"bytes,4,rep,name=metrics,proto3" json:"metrics,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AggregateFeatures) Reset() {
-	*x = AggregateFeatures{}
-	mi := &file_tokun_routing_v1_features_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AggregateFeatures) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AggregateFeatures) ProtoMessage() {}
-
-func (x *AggregateFeatures) ProtoReflect() protoreflect.Message {
-	mi := &file_tokun_routing_v1_features_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AggregateFeatures.ProtoReflect.Descriptor instead.
-func (*AggregateFeatures) Descriptor() ([]byte, []int) {
-	return file_tokun_routing_v1_features_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *AggregateFeatures) GetScope() string {
-	if x != nil {
-		return x.Scope
-	}
-	return ""
-}
-
-func (x *AggregateFeatures) GetScopeId() string {
-	if x != nil {
-		return x.ScopeId
-	}
-	return ""
-}
-
-func (x *AggregateFeatures) GetMembers() int32 {
-	if x != nil {
-		return x.Members
-	}
-	return 0
-}
-
-func (x *AggregateFeatures) GetMetrics() []*MetricSeries {
 	if x != nil {
 		return x.Metrics
 	}
@@ -485,9 +238,10 @@ func (x *AggregateFeatures) GetMetrics() []*MetricSeries {
 type MetricSeries struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// success_rate, ttft_ms, output_tps, throttle_rate, auth_failure_rate,
-	// tool_call_error_rate, structured_output_error_rate, capability_failure_rate,
-	// cache_hit_ratio, cache_prediction_ratio (reported over predicted hits),
-	// task_success_rate, task_duration_ms, task_failure_cost_micros, uptime.
+	// tool_call_error_rate, structured_output_error_rate,
+	// capability_failure_rate, cache_hit_ratio, cache_prediction_gap (reported
+	// over predicted cache reads), uptime, task_success_rate, task_duration_ms,
+	// task_failure_cost_micros.
 	Metric string `protobuf:"bytes,1,opt,name=metric,proto3" json:"metric,omitempty"`
 	// own_attempts, probe, tokenfeeds/openrouter, tokenfeeds/artificial_analysis.
 	Source string `protobuf:"bytes,2,opt,name=source,proto3" json:"source,omitempty"`
@@ -500,8 +254,8 @@ type MetricSeries struct {
 	// End of the last observation.
 	DataThrough *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=data_through,json=dataThrough,proto3" json:"data_through,omitempty"`
 	// Variance of the change between adjacent minutes per second, from this
-	// subject's own history: the drift variance q of the builtin planner's
-	// local level model. Absent until the subject has history.
+	// subject's own history in ClickHouse: the drift variance q of the builtin
+	// planner's local level model. Absent until the subject has history.
 	DriftVariancePerSecond *float64 `protobuf:"fixed64,7,opt,name=drift_variance_per_second,json=driftVariancePerSecond,proto3,oneof" json:"drift_variance_per_second,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
@@ -509,7 +263,7 @@ type MetricSeries struct {
 
 func (x *MetricSeries) Reset() {
 	*x = MetricSeries{}
-	mi := &file_tokun_routing_v1_features_proto_msgTypes[5]
+	mi := &file_tokun_routing_v1_features_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -521,7 +275,7 @@ func (x *MetricSeries) String() string {
 func (*MetricSeries) ProtoMessage() {}
 
 func (x *MetricSeries) ProtoReflect() protoreflect.Message {
-	mi := &file_tokun_routing_v1_features_proto_msgTypes[5]
+	mi := &file_tokun_routing_v1_features_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -534,7 +288,7 @@ func (x *MetricSeries) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetricSeries.ProtoReflect.Descriptor instead.
 func (*MetricSeries) Descriptor() ([]byte, []int) {
-	return file_tokun_routing_v1_features_proto_rawDescGZIP(), []int{5}
+	return file_tokun_routing_v1_features_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *MetricSeries) GetMetric() string {
@@ -603,7 +357,7 @@ type MetricWindow struct {
 
 func (x *MetricWindow) Reset() {
 	*x = MetricWindow{}
-	mi := &file_tokun_routing_v1_features_proto_msgTypes[6]
+	mi := &file_tokun_routing_v1_features_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -615,7 +369,7 @@ func (x *MetricWindow) String() string {
 func (*MetricWindow) ProtoMessage() {}
 
 func (x *MetricWindow) ProtoReflect() protoreflect.Message {
-	mi := &file_tokun_routing_v1_features_proto_msgTypes[6]
+	mi := &file_tokun_routing_v1_features_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -628,7 +382,7 @@ func (x *MetricWindow) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetricWindow.ProtoReflect.Descriptor instead.
 func (*MetricWindow) Descriptor() ([]byte, []int) {
-	return file_tokun_routing_v1_features_proto_rawDescGZIP(), []int{6}
+	return file_tokun_routing_v1_features_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *MetricWindow) GetStart() *timestamppb.Timestamp {
@@ -713,9 +467,8 @@ func (*MetricWindow_Sum) isMetricWindow_Value() {}
 
 // Written by the routing-features worker to object storage zstd-compressed.
 type FeaturesCheckpoint struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	CreatedAt *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	Records   []*FeatureRecord       `protobuf:"bytes,2,rep,name=records,proto3" json:"records,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Records []*FeatureRecord       `protobuf:"bytes,2,rep,name=records,proto3" json:"records,omitempty"`
 	// Topic offset of the first record after the checkpoint, per partition.
 	Offsets       []*PartitionOffset `protobuf:"bytes,3,rep,name=offsets,proto3" json:"offsets,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -724,7 +477,7 @@ type FeaturesCheckpoint struct {
 
 func (x *FeaturesCheckpoint) Reset() {
 	*x = FeaturesCheckpoint{}
-	mi := &file_tokun_routing_v1_features_proto_msgTypes[7]
+	mi := &file_tokun_routing_v1_features_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -736,7 +489,7 @@ func (x *FeaturesCheckpoint) String() string {
 func (*FeaturesCheckpoint) ProtoMessage() {}
 
 func (x *FeaturesCheckpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_tokun_routing_v1_features_proto_msgTypes[7]
+	mi := &file_tokun_routing_v1_features_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -749,14 +502,7 @@ func (x *FeaturesCheckpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FeaturesCheckpoint.ProtoReflect.Descriptor instead.
 func (*FeaturesCheckpoint) Descriptor() ([]byte, []int) {
-	return file_tokun_routing_v1_features_proto_rawDescGZIP(), []int{7}
-}
-
-func (x *FeaturesCheckpoint) GetCreatedAt() *timestamppb.Timestamp {
-	if x != nil {
-		return x.CreatedAt
-	}
-	return nil
+	return file_tokun_routing_v1_features_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *FeaturesCheckpoint) GetRecords() []*FeatureRecord {
@@ -783,7 +529,7 @@ type PartitionOffset struct {
 
 func (x *PartitionOffset) Reset() {
 	*x = PartitionOffset{}
-	mi := &file_tokun_routing_v1_features_proto_msgTypes[8]
+	mi := &file_tokun_routing_v1_features_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -795,7 +541,7 @@ func (x *PartitionOffset) String() string {
 func (*PartitionOffset) ProtoMessage() {}
 
 func (x *PartitionOffset) ProtoReflect() protoreflect.Message {
-	mi := &file_tokun_routing_v1_features_proto_msgTypes[8]
+	mi := &file_tokun_routing_v1_features_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -808,7 +554,7 @@ func (x *PartitionOffset) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PartitionOffset.ProtoReflect.Descriptor instead.
 func (*PartitionOffset) Descriptor() ([]byte, []int) {
-	return file_tokun_routing_v1_features_proto_rawDescGZIP(), []int{8}
+	return file_tokun_routing_v1_features_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *PartitionOffset) GetPartition() int32 {
@@ -829,47 +575,19 @@ var File_tokun_routing_v1_features_proto protoreflect.FileDescriptor
 
 const file_tokun_routing_v1_features_proto_rawDesc = "" +
 	"\n" +
-	"\x1ftokun/routing/v1/features.proto\x12\x10tokun.routing.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xf1\x02\n" +
+	"\x1ftokun/routing/v1/features.proto\x12\x10tokun.routing.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe7\x01\n" +
 	"\rFeatureRecord\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12C\n" +
 	"\tinterface\x18\x02 \x01(\v2#.tokun.routing.v1.InterfaceFeaturesH\x00R\tinterface\x12B\n" +
-	"\fupstream_key\x18\x03 \x01(\v2\x1d.tokun.routing.v1.KeyFeaturesH\x00R\vupstreamKey\x12:\n" +
-	"\abinding\x18\x04 \x01(\v2\x1e.tokun.routing.v1.BindingUsageH\x00R\abinding\x12C\n" +
-	"\taggregate\x18\x05 \x01(\v2#.tokun.routing.v1.AggregateFeaturesH\x00R\taggregate\x129\n" +
-	"\n" +
-	"updated_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAtB\t\n" +
-	"\asubject\"\xed\x01\n" +
+	"\fupstream_key\x18\x03 \x01(\v2\x1d.tokun.routing.v1.KeyFeaturesH\x00R\vupstreamKeyB\t\n" +
+	"\asubjectJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\abindingR\taggregateR\n" +
+	"updated_at\"\xb6\x01\n" +
 	"\x11InterfaceFeatures\x12\x1c\n" +
-	"\tinterface\x18\x01 \x01(\tR\tinterface\x12\x19\n" +
-	"\bmodel_id\x18\x02 \x01(\tR\amodelId\x12\x1f\n" +
-	"\vprovider_id\x18\x03 \x01(\tR\n" +
-	"providerId\x12\x1f\n" +
-	"\vupstream_id\x18\x04 \x01(\x03R\n" +
-	"upstreamId\x12#\n" +
-	"\rendpoint_type\x18\x05 \x01(\tR\fendpointType\x128\n" +
-	"\ametrics\x18\x06 \x03(\v2\x1e.tokun.routing.v1.MetricSeriesR\ametrics\"\x7f\n" +
+	"\tinterface\x18\x01 \x01(\tR\tinterface\x128\n" +
+	"\ametrics\x18\x06 \x03(\v2\x1e.tokun.routing.v1.MetricSeriesR\ametricsJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\bmodel_idR\vprovider_idR\vupstream_idR\rendpoint_type\"q\n" +
 	"\vKeyFeatures\x12\x15\n" +
-	"\x06key_id\x18\x01 \x01(\tR\x05keyId\x12\x1f\n" +
-	"\vupstream_id\x18\x02 \x01(\x03R\n" +
-	"upstreamId\x128\n" +
-	"\ametrics\x18\x03 \x03(\v2\x1e.tokun.routing.v1.MetricSeriesR\ametrics\"\xcf\x02\n" +
-	"\fBindingUsage\x12\x1f\n" +
-	"\vupstream_id\x18\x01 \x01(\x03R\n" +
-	"upstreamId\x12\x1f\n" +
-	"\vprovider_id\x18\x02 \x01(\tR\n" +
-	"providerId\x12=\n" +
-	"\fperiod_start\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\vperiodStart\x129\n" +
-	"\n" +
-	"period_end\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tperiodEnd\x12#\n" +
-	"\rtarget_micros\x18\x05 \x01(\x03R\ftargetMicros\x12\x1f\n" +
-	"\vused_micros\x18\x06 \x01(\x03R\n" +
-	"usedMicros\x12=\n" +
-	"\fdata_through\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\vdataThrough\"\x98\x01\n" +
-	"\x11AggregateFeatures\x12\x14\n" +
-	"\x05scope\x18\x01 \x01(\tR\x05scope\x12\x19\n" +
-	"\bscope_id\x18\x02 \x01(\tR\ascopeId\x12\x18\n" +
-	"\amembers\x18\x03 \x01(\x05R\amembers\x128\n" +
-	"\ametrics\x18\x04 \x03(\v2\x1e.tokun.routing.v1.MetricSeriesR\ametrics\"\xd8\x02\n" +
+	"\x06key_id\x18\x01 \x01(\tR\x05keyId\x128\n" +
+	"\ametrics\x18\x03 \x03(\v2\x1e.tokun.routing.v1.MetricSeriesR\ametricsJ\x04\b\x02\x10\x03R\vupstream_id\"\xd8\x02\n" +
 	"\fMetricSeries\x12\x16\n" +
 	"\x06metric\x18\x01 \x01(\tR\x06metric\x12\x16\n" +
 	"\x06source\x18\x02 \x01(\tR\x06source\x12!\n" +
@@ -888,12 +606,11 @@ const file_tokun_routing_v1_features_proto_rawDesc = "" +
 	"\x05ratio\x18\x04 \x01(\x01H\x00R\x05ratio\x12\x18\n" +
 	"\x06sketch\x18\x05 \x01(\fH\x00R\x06sketch\x12\x12\n" +
 	"\x03sum\x18\x06 \x01(\x01H\x00R\x03sumB\a\n" +
-	"\x05value\"\xc7\x01\n" +
+	"\x05value\"\x9e\x01\n" +
 	"\x12FeaturesCheckpoint\x129\n" +
-	"\n" +
-	"created_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\arecords\x18\x02 \x03(\v2\x1f.tokun.routing.v1.FeatureRecordR\arecords\x12;\n" +
-	"\aoffsets\x18\x03 \x03(\v2!.tokun.routing.v1.PartitionOffsetR\aoffsets\"G\n" +
+	"\aoffsets\x18\x03 \x03(\v2!.tokun.routing.v1.PartitionOffsetR\aoffsetsJ\x04\b\x01\x10\x02R\n" +
+	"created_at\"G\n" +
 	"\x0fPartitionOffset\x12\x1c\n" +
 	"\tpartition\x18\x01 \x01(\x05R\tpartition\x12\x16\n" +
 	"\x06offset\x18\x02 \x01(\x03R\x06offsetB\xcd\x01\n" +
@@ -911,44 +628,34 @@ func file_tokun_routing_v1_features_proto_rawDescGZIP() []byte {
 	return file_tokun_routing_v1_features_proto_rawDescData
 }
 
-var file_tokun_routing_v1_features_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_tokun_routing_v1_features_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_tokun_routing_v1_features_proto_goTypes = []any{
 	(*FeatureRecord)(nil),         // 0: tokun.routing.v1.FeatureRecord
 	(*InterfaceFeatures)(nil),     // 1: tokun.routing.v1.InterfaceFeatures
 	(*KeyFeatures)(nil),           // 2: tokun.routing.v1.KeyFeatures
-	(*BindingUsage)(nil),          // 3: tokun.routing.v1.BindingUsage
-	(*AggregateFeatures)(nil),     // 4: tokun.routing.v1.AggregateFeatures
-	(*MetricSeries)(nil),          // 5: tokun.routing.v1.MetricSeries
-	(*MetricWindow)(nil),          // 6: tokun.routing.v1.MetricWindow
-	(*FeaturesCheckpoint)(nil),    // 7: tokun.routing.v1.FeaturesCheckpoint
-	(*PartitionOffset)(nil),       // 8: tokun.routing.v1.PartitionOffset
-	(*timestamppb.Timestamp)(nil), // 9: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),   // 10: google.protobuf.Duration
+	(*MetricSeries)(nil),          // 3: tokun.routing.v1.MetricSeries
+	(*MetricWindow)(nil),          // 4: tokun.routing.v1.MetricWindow
+	(*FeaturesCheckpoint)(nil),    // 5: tokun.routing.v1.FeaturesCheckpoint
+	(*PartitionOffset)(nil),       // 6: tokun.routing.v1.PartitionOffset
+	(*timestamppb.Timestamp)(nil), // 7: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),   // 8: google.protobuf.Duration
 }
 var file_tokun_routing_v1_features_proto_depIdxs = []int32{
 	1,  // 0: tokun.routing.v1.FeatureRecord.interface:type_name -> tokun.routing.v1.InterfaceFeatures
 	2,  // 1: tokun.routing.v1.FeatureRecord.upstream_key:type_name -> tokun.routing.v1.KeyFeatures
-	3,  // 2: tokun.routing.v1.FeatureRecord.binding:type_name -> tokun.routing.v1.BindingUsage
-	4,  // 3: tokun.routing.v1.FeatureRecord.aggregate:type_name -> tokun.routing.v1.AggregateFeatures
-	9,  // 4: tokun.routing.v1.FeatureRecord.updated_at:type_name -> google.protobuf.Timestamp
-	5,  // 5: tokun.routing.v1.InterfaceFeatures.metrics:type_name -> tokun.routing.v1.MetricSeries
-	5,  // 6: tokun.routing.v1.KeyFeatures.metrics:type_name -> tokun.routing.v1.MetricSeries
-	9,  // 7: tokun.routing.v1.BindingUsage.period_start:type_name -> google.protobuf.Timestamp
-	9,  // 8: tokun.routing.v1.BindingUsage.period_end:type_name -> google.protobuf.Timestamp
-	9,  // 9: tokun.routing.v1.BindingUsage.data_through:type_name -> google.protobuf.Timestamp
-	5,  // 10: tokun.routing.v1.AggregateFeatures.metrics:type_name -> tokun.routing.v1.MetricSeries
-	6,  // 11: tokun.routing.v1.MetricSeries.windows:type_name -> tokun.routing.v1.MetricWindow
-	9,  // 12: tokun.routing.v1.MetricSeries.data_through:type_name -> google.protobuf.Timestamp
-	9,  // 13: tokun.routing.v1.MetricWindow.start:type_name -> google.protobuf.Timestamp
-	10, // 14: tokun.routing.v1.MetricWindow.length:type_name -> google.protobuf.Duration
-	9,  // 15: tokun.routing.v1.FeaturesCheckpoint.created_at:type_name -> google.protobuf.Timestamp
-	0,  // 16: tokun.routing.v1.FeaturesCheckpoint.records:type_name -> tokun.routing.v1.FeatureRecord
-	8,  // 17: tokun.routing.v1.FeaturesCheckpoint.offsets:type_name -> tokun.routing.v1.PartitionOffset
-	18, // [18:18] is the sub-list for method output_type
-	18, // [18:18] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	3,  // 2: tokun.routing.v1.InterfaceFeatures.metrics:type_name -> tokun.routing.v1.MetricSeries
+	3,  // 3: tokun.routing.v1.KeyFeatures.metrics:type_name -> tokun.routing.v1.MetricSeries
+	4,  // 4: tokun.routing.v1.MetricSeries.windows:type_name -> tokun.routing.v1.MetricWindow
+	7,  // 5: tokun.routing.v1.MetricSeries.data_through:type_name -> google.protobuf.Timestamp
+	7,  // 6: tokun.routing.v1.MetricWindow.start:type_name -> google.protobuf.Timestamp
+	8,  // 7: tokun.routing.v1.MetricWindow.length:type_name -> google.protobuf.Duration
+	0,  // 8: tokun.routing.v1.FeaturesCheckpoint.records:type_name -> tokun.routing.v1.FeatureRecord
+	6,  // 9: tokun.routing.v1.FeaturesCheckpoint.offsets:type_name -> tokun.routing.v1.PartitionOffset
+	10, // [10:10] is the sub-list for method output_type
+	10, // [10:10] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_tokun_routing_v1_features_proto_init() }
@@ -959,11 +666,9 @@ func file_tokun_routing_v1_features_proto_init() {
 	file_tokun_routing_v1_features_proto_msgTypes[0].OneofWrappers = []any{
 		(*FeatureRecord_Interface)(nil),
 		(*FeatureRecord_UpstreamKey)(nil),
-		(*FeatureRecord_Binding)(nil),
-		(*FeatureRecord_Aggregate)(nil),
 	}
-	file_tokun_routing_v1_features_proto_msgTypes[5].OneofWrappers = []any{}
-	file_tokun_routing_v1_features_proto_msgTypes[6].OneofWrappers = []any{
+	file_tokun_routing_v1_features_proto_msgTypes[3].OneofWrappers = []any{}
+	file_tokun_routing_v1_features_proto_msgTypes[4].OneofWrappers = []any{
 		(*MetricWindow_Ratio)(nil),
 		(*MetricWindow_Sketch)(nil),
 		(*MetricWindow_Sum)(nil),
@@ -974,7 +679,7 @@ func file_tokun_routing_v1_features_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tokun_routing_v1_features_proto_rawDesc), len(file_tokun_routing_v1_features_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

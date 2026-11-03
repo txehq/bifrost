@@ -31,3 +31,9 @@ under `tokun/proto/gen/go/tokun/`, at the same paths under `tokun/`. txe's
 
   Point `TXE_REPO` at a checkout of txe's `new-tokun`, or at the txe worktree of
   a change that goes with this one.
+
+- **Where it runs**: in this fork's local tests before a merge into `new-tokun`
+  (`AGENTS.md` §New Tokun), and in txe's `ops/local/tokun-e2e/merge-check`
+  whenever a txe change touches `tokun/proto`: on the `--bifrost-src` worktree,
+  or else on the latest commit of this fork's `new-tokun`. A txe contract
+  change merges together with its copy here.

@@ -90,7 +90,7 @@ func (Settlement) EnumDescriptor() ([]byte, []int) {
 // LeaseClosed follows every Charge drawn on that lease in the same partition,
 // so ledger-writer always writes the charges before it closes the lease.
 //
-// Amounts are micro-USD unless a field names another currency.
+// Amounts are micro-USD.
 type BillingEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Event:
@@ -226,9 +226,9 @@ type Charge struct {
 	CatalogSeq int64 `protobuf:"varint,7,opt,name=catalog_seq,json=catalogSeq,proto3" json:"catalog_seq,omitempty"`
 	// Retail price version fixed at admission; settlement prices at it.
 	PriceVersion int64 `protobuf:"varint,8,opt,name=price_version,json=priceVersion,proto3" json:"price_version,omitempty"`
-	// Amount held at admission.
-	HoldMicros   int64  `protobuf:"varint,9,opt,name=hold_micros,json=holdMicros,proto3" json:"hold_micros,omitempty"`
-	EndpointType string `protobuf:"bytes,10,opt,name=endpoint_type,json=endpointType,proto3" json:"endpoint_type,omitempty"`
+	// Amount held at admission; the hold accuracy per endpoint type compares it
+	// with charge_micros.
+	HoldMicros int64 `protobuf:"varint,9,opt,name=hold_micros,json=holdMicros,proto3" json:"hold_micros,omitempty"`
 	// Name resolution of the request.
 	RequestedModel string `protobuf:"bytes,11,opt,name=requested_model,json=requestedModel,proto3" json:"requested_model,omitempty"`
 	// real, virtual, pool, anonymous, user_alias.
@@ -236,15 +236,16 @@ type Charge struct {
 	// The call name the request resolved to before pool member selection.
 	ResolvedName      string `protobuf:"bytes,13,opt,name=resolved_name,json=resolvedName,proto3" json:"resolved_name,omitempty"`
 	ResolutionVersion int64  `protobuf:"varint,14,opt,name=resolution_version,json=resolutionVersion,proto3" json:"resolution_version,omitempty"`
-	// What served the request.
+	// Public provider id of the provider model that served the request.
 	ProviderId string `protobuf:"bytes,15,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"`
-	// "<provider_id>/<model_id>".
+	// The provider model that served the request, "<provider_id>/<model_id>";
+	// the charge is priced at its retail prices.
 	ProviderOfferingId string `protobuf:"bytes,16,opt,name=provider_offering_id,json=providerOfferingId,proto3" json:"provider_offering_id,omitempty"`
-	// request_model_id of the provider model; the codename for an anonymous
-	// model.
+	// request_model_id of that provider model; the codename for an anonymous
+	// model, whose list price the charge carries.
 	RequestModelId string `protobuf:"bytes,17,opt,name=request_model_id,json=requestModelId,proto3" json:"request_model_id,omitempty"`
-	UpstreamId     int64  `protobuf:"varint,18,opt,name=upstream_id,json=upstreamId,proto3" json:"upstream_id,omitempty"`
-	// "<offering_id>:<endpoint_type_id>".
+	// The interface and key that served it, "<offering_id>:<endpoint_type_id>";
+	// the cost is booked per upstream and key.
 	Interface string `protobuf:"bytes,19,opt,name=interface,proto3" json:"interface,omitempty"`
 	KeyId     string `protobuf:"bytes,20,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
 	// Usage, list price, discounts and final amount per billing item.
@@ -274,12 +275,10 @@ type Charge struct {
 	// Async task id; empty for synchronous and streaming requests.
 	TaskId string `protobuf:"bytes,33,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
 	// Who settled the charge.
-	Settlement Settlement `protobuf:"varint,34,opt,name=settlement,proto3,enum=tokun.events.v1.Settlement" json:"settlement,omitempty"`
-	// Official-channel price of the same usage at the reference prices.
-	OfficialMicros int64                  `protobuf:"varint,35,opt,name=official_micros,json=officialMicros,proto3" json:"official_micros,omitempty"`
-	Ts             *timestamppb.Timestamp `protobuf:"bytes,36,opt,name=ts,proto3" json:"ts,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	Settlement    Settlement             `protobuf:"varint,34,opt,name=settlement,proto3,enum=tokun.events.v1.Settlement" json:"settlement,omitempty"`
+	Ts            *timestamppb.Timestamp `protobuf:"bytes,36,opt,name=ts,proto3" json:"ts,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Charge) Reset() {
@@ -386,13 +385,6 @@ func (x *Charge) GetHoldMicros() int64 {
 	return 0
 }
 
-func (x *Charge) GetEndpointType() string {
-	if x != nil {
-		return x.EndpointType
-	}
-	return ""
-}
-
 func (x *Charge) GetRequestedModel() string {
 	if x != nil {
 		return x.RequestedModel
@@ -440,13 +432,6 @@ func (x *Charge) GetRequestModelId() string {
 		return x.RequestModelId
 	}
 	return ""
-}
-
-func (x *Charge) GetUpstreamId() int64 {
-	if x != nil {
-		return x.UpstreamId
-	}
-	return 0
 }
 
 func (x *Charge) GetInterface() string {
@@ -559,13 +544,6 @@ func (x *Charge) GetSettlement() Settlement {
 		return x.Settlement
 	}
 	return Settlement_SETTLEMENT_UNSPECIFIED
-}
-
-func (x *Charge) GetOfficialMicros() int64 {
-	if x != nil {
-		return x.OfficialMicros
-	}
-	return 0
 }
 
 func (x *Charge) GetTs() *timestamppb.Timestamp {
@@ -909,11 +887,11 @@ type AttemptCost struct {
 	Interface  string `protobuf:"bytes,4,opt,name=interface,proto3" json:"interface,omitempty"`
 	KeyId      string `protobuf:"bytes,5,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
 	CostMicros int64  `protobuf:"varint,6,opt,name=cost_micros,json=costMicros,proto3" json:"cost_micros,omitempty"`
-	// The cost as the upstream reported it, in reported_currency.
-	ReportedMicros   int64  `protobuf:"varint,7,opt,name=reported_micros,json=reportedMicros,proto3" json:"reported_micros,omitempty"`
-	ReportedCurrency string `protobuf:"bytes,8,opt,name=reported_currency,json=reportedCurrency,proto3" json:"reported_currency,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// The cost the upstream reported for a failed submission (the task
+	// contract's cost field).
+	ReportedMicros int64 `protobuf:"varint,7,opt,name=reported_micros,json=reportedMicros,proto3" json:"reported_micros,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *AttemptCost) Reset() {
@@ -995,13 +973,6 @@ func (x *AttemptCost) GetReportedMicros() int64 {
 	return 0
 }
 
-func (x *AttemptCost) GetReportedCurrency() string {
-	if x != nil {
-		return x.ReportedCurrency
-	}
-	return ""
-}
-
 type RatingTrace struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	FormulaVersion string                 `protobuf:"bytes,1,opt,name=formula_version,json=formulaVersion,proto3" json:"formula_version,omitempty"`
@@ -1058,7 +1029,6 @@ type RatingTraceStep struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// e.g. list_price, discount, floor, total.
 	Step          string           `protobuf:"bytes,1,opt,name=step,proto3" json:"step,omitempty"`
-	BillingItem   string           `protobuf:"bytes,2,opt,name=billing_item,json=billingItem,proto3" json:"billing_item,omitempty"`
 	In            *structpb.Struct `protobuf:"bytes,3,opt,name=in,proto3" json:"in,omitempty"`
 	Out           *structpb.Struct `protobuf:"bytes,4,opt,name=out,proto3" json:"out,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -1098,13 +1068,6 @@ func (*RatingTraceStep) Descriptor() ([]byte, []int) {
 func (x *RatingTraceStep) GetStep() string {
 	if x != nil {
 		return x.Step
-	}
-	return ""
-}
-
-func (x *RatingTraceStep) GetBillingItem() string {
-	if x != nil {
-		return x.BillingItem
 	}
 	return ""
 }
@@ -1700,9 +1663,7 @@ type LeaseClosed struct {
 	AppliedMicros int64 `protobuf:"varint,6,opt,name=applied_micros,json=appliedMicros,proto3" json:"applied_micros,omitempty"`
 	// closed (returned by its pod), reaped (closed by the reaper after
 	// lease.ttl and lease.reap_grace).
-	State string `protobuf:"bytes,7,opt,name=state,proto3" json:"state,omitempty"`
-	// graceful_shutdown, expired, reaped.
-	Reason        string                 `protobuf:"bytes,8,opt,name=reason,proto3" json:"reason,omitempty"`
+	State         string                 `protobuf:"bytes,7,opt,name=state,proto3" json:"state,omitempty"`
 	ClosedAt      *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=closed_at,json=closedAt,proto3" json:"closed_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1787,13 +1748,6 @@ func (x *LeaseClosed) GetState() string {
 	return ""
 }
 
-func (x *LeaseClosed) GetReason() string {
-	if x != nil {
-		return x.Reason
-	}
-	return ""
-}
-
 func (x *LeaseClosed) GetClosedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.ClosedAt
@@ -1802,7 +1756,8 @@ func (x *LeaseClosed) GetClosedAt() *timestamppb.Timestamp {
 }
 
 // A direct-mode or async-task hold released without a charge: the request
-// failed, or the task failed or expired.
+// failed, or the task failed or expired, or a canceled task the provider
+// model's rule does not charge for.
 type HoldReleased struct {
 	state        protoimpl.MessageState `protogen:"open.v1"`
 	HoldId       string                 `protobuf:"bytes,1,opt,name=hold_id,json=holdId,proto3" json:"hold_id,omitempty"`
@@ -1915,7 +1870,7 @@ const file_tokun_events_v1_charge_proto_rawDesc = "" +
 	"\x0fstream_progress\x18\x02 \x01(\v2\x1f.tokun.events.v1.StreamProgressH\x00R\x0estreamProgress\x12A\n" +
 	"\flease_closed\x18\x03 \x01(\v2\x1c.tokun.events.v1.LeaseClosedH\x00R\vleaseClosed\x12D\n" +
 	"\rhold_released\x18\x04 \x01(\v2\x1d.tokun.events.v1.HoldReleasedH\x00R\fholdReleasedB\a\n" +
-	"\x05event\"\xf4\f\n" +
+	"\x05event\"\xc4\f\n" +
 	"\x06Charge\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1d\n" +
@@ -1929,9 +1884,7 @@ const file_tokun_events_v1_charge_proto_rawDesc = "" +
 	"catalogSeq\x12#\n" +
 	"\rprice_version\x18\b \x01(\x03R\fpriceVersion\x12\x1f\n" +
 	"\vhold_micros\x18\t \x01(\x03R\n" +
-	"holdMicros\x12#\n" +
-	"\rendpoint_type\x18\n" +
-	" \x01(\tR\fendpointType\x12'\n" +
+	"holdMicros\x12'\n" +
 	"\x0frequested_model\x18\v \x01(\tR\x0erequestedModel\x12\x1b\n" +
 	"\tname_kind\x18\f \x01(\tR\bnameKind\x12#\n" +
 	"\rresolved_name\x18\r \x01(\tR\fresolvedName\x12-\n" +
@@ -1939,9 +1892,7 @@ const file_tokun_events_v1_charge_proto_rawDesc = "" +
 	"\vprovider_id\x18\x0f \x01(\tR\n" +
 	"providerId\x120\n" +
 	"\x14provider_offering_id\x18\x10 \x01(\tR\x12providerOfferingId\x12(\n" +
-	"\x10request_model_id\x18\x11 \x01(\tR\x0erequestModelId\x12\x1f\n" +
-	"\vupstream_id\x18\x12 \x01(\x03R\n" +
-	"upstreamId\x12\x1c\n" +
+	"\x10request_model_id\x18\x11 \x01(\tR\x0erequestModelId\x12\x1c\n" +
 	"\tinterface\x18\x13 \x01(\tR\tinterface\x12\x15\n" +
 	"\x06key_id\x18\x14 \x01(\tR\x05keyId\x121\n" +
 	"\x05lines\x18\x15 \x03(\v2\x1b.tokun.events.v1.RatingLineR\x05lines\x12\x1f\n" +
@@ -1962,8 +1913,7 @@ const file_tokun_events_v1_charge_proto_rawDesc = "" +
 	"\atask_id\x18! \x01(\tR\x06taskId\x12;\n" +
 	"\n" +
 	"settlement\x18\" \x01(\x0e2\x1b.tokun.events.v1.SettlementR\n" +
-	"settlement\x12'\n" +
-	"\x0fofficial_micros\x18# \x01(\x03R\x0eofficialMicros\x12*\n" +
+	"settlement\x12*\n" +
 	"\x02ts\x18$ \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\x1a<\n" +
 	"\x0eDiscountsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
@@ -1971,7 +1921,8 @@ const file_tokun_events_v1_charge_proto_rawDesc = "" +
 	"\x11RuleVersionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01B\t\n" +
-	"\afunding\"\xa9\x04\n" +
+	"\afundingJ\x04\b\n" +
+	"\x10\vJ\x04\b\x12\x10\x13J\x04\b#\x10$R\rendpoint_typeR\vupstream_idR\x0fofficial_micros\"\xa9\x04\n" +
 	"\n" +
 	"RatingLine\x12!\n" +
 	"\fbilling_item\x18\x01 \x01(\tR\vbillingItem\x12\x1a\n" +
@@ -2008,7 +1959,7 @@ const file_tokun_events_v1_charge_proto_rawDesc = "" +
 	"costMicros\x1a7\n" +
 	"\tTierEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8d\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xf9\x01\n" +
 	"\vAttemptCost\x12\x17\n" +
 	"\asend_id\x18\x01 \x01(\tR\x06sendId\x12\x18\n" +
 	"\aattempt\x18\x02 \x01(\x05R\aattempt\x12\x1f\n" +
@@ -2018,16 +1969,14 @@ const file_tokun_events_v1_charge_proto_rawDesc = "" +
 	"\x06key_id\x18\x05 \x01(\tR\x05keyId\x12\x1f\n" +
 	"\vcost_micros\x18\x06 \x01(\x03R\n" +
 	"costMicros\x12'\n" +
-	"\x0freported_micros\x18\a \x01(\x03R\x0ereportedMicros\x12+\n" +
-	"\x11reported_currency\x18\b \x01(\tR\x10reportedCurrency\"n\n" +
+	"\x0freported_micros\x18\a \x01(\x03R\x0ereportedMicrosJ\x04\b\b\x10\tR\x11reported_currency\"n\n" +
 	"\vRatingTrace\x12'\n" +
 	"\x0fformula_version\x18\x01 \x01(\tR\x0eformulaVersion\x126\n" +
-	"\x05steps\x18\x02 \x03(\v2 .tokun.events.v1.RatingTraceStepR\x05steps\"\x9c\x01\n" +
+	"\x05steps\x18\x02 \x03(\v2 .tokun.events.v1.RatingTraceStepR\x05steps\"\x8d\x01\n" +
 	"\x0fRatingTraceStep\x12\x12\n" +
-	"\x04step\x18\x01 \x01(\tR\x04step\x12!\n" +
-	"\fbilling_item\x18\x02 \x01(\tR\vbillingItem\x12'\n" +
+	"\x04step\x18\x01 \x01(\tR\x04step\x12'\n" +
 	"\x02in\x18\x03 \x01(\v2\x17.google.protobuf.StructR\x02in\x12)\n" +
-	"\x03out\x18\x04 \x01(\v2\x17.google.protobuf.StructR\x03out\"\xb9\x01\n" +
+	"\x03out\x18\x04 \x01(\v2\x17.google.protobuf.StructR\x03outJ\x04\b\x02\x10\x03R\fbilling_item\"\xb9\x01\n" +
 	"\n" +
 	"PoolCharge\x12$\n" +
 	"\x0emodel_group_id\x18\x01 \x01(\tR\fmodelGroupId\x12.\n" +
@@ -2081,7 +2030,7 @@ const file_tokun_events_v1_charge_proto_rawDesc = "" +
 	"\ramount_micros\x18\x04 \x01(\x03R\famountMicros\"d\n" +
 	"\x0eStreamProgress\x12!\n" +
 	"\fprogress_seq\x18\x01 \x01(\x03R\vprogressSeq\x12/\n" +
-	"\x06charge\x18\x02 \x01(\v2\x17.tokun.events.v1.ChargeR\x06charge\"\xb9\x02\n" +
+	"\x06charge\x18\x02 \x01(\v2\x17.tokun.events.v1.ChargeR\x06charge\"\xaf\x02\n" +
 	"\vLeaseClosed\x12\x19\n" +
 	"\blease_id\x18\x01 \x01(\tR\aleaseId\x12\x1d\n" +
 	"\n" +
@@ -2090,9 +2039,8 @@ const file_tokun_events_v1_charge_proto_rawDesc = "" +
 	"\x06holder\x18\x04 \x01(\tR\x06holder\x12%\n" +
 	"\x0egranted_micros\x18\x05 \x01(\x03R\rgrantedMicros\x12%\n" +
 	"\x0eapplied_micros\x18\x06 \x01(\x03R\rappliedMicros\x12\x14\n" +
-	"\x05state\x18\a \x01(\tR\x05state\x12\x16\n" +
-	"\x06reason\x18\b \x01(\tR\x06reason\x127\n" +
-	"\tclosed_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\bclosedAt\"\xaa\x02\n" +
+	"\x05state\x18\a \x01(\tR\x05state\x127\n" +
+	"\tclosed_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\bclosedAtJ\x04\b\b\x10\tR\x06reason\"\xaa\x02\n" +
 	"\fHoldReleased\x12\x17\n" +
 	"\ahold_id\x18\x01 \x01(\tR\x06holdId\x12\x1d\n" +
 	"\n" +

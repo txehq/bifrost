@@ -23,55 +23,6 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type OutcomePhase int32
-
-const (
-	OutcomePhase_OUTCOME_PHASE_UNSPECIFIED OutcomePhase = 0
-	OutcomePhase_OUTCOME_PHASE_REQUEST     OutcomePhase = 1
-	OutcomePhase_OUTCOME_PHASE_TASK        OutcomePhase = 2
-)
-
-// Enum value maps for OutcomePhase.
-var (
-	OutcomePhase_name = map[int32]string{
-		0: "OUTCOME_PHASE_UNSPECIFIED",
-		1: "OUTCOME_PHASE_REQUEST",
-		2: "OUTCOME_PHASE_TASK",
-	}
-	OutcomePhase_value = map[string]int32{
-		"OUTCOME_PHASE_UNSPECIFIED": 0,
-		"OUTCOME_PHASE_REQUEST":     1,
-		"OUTCOME_PHASE_TASK":        2,
-	}
-)
-
-func (x OutcomePhase) Enum() *OutcomePhase {
-	p := new(OutcomePhase)
-	*p = x
-	return p
-}
-
-func (x OutcomePhase) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (OutcomePhase) Descriptor() protoreflect.EnumDescriptor {
-	return file_tokun_events_v1_request_outcome_proto_enumTypes[0].Descriptor()
-}
-
-func (OutcomePhase) Type() protoreflect.EnumType {
-	return &file_tokun_events_v1_request_outcome_proto_enumTypes[0]
-}
-
-func (x OutcomePhase) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use OutcomePhase.Descriptor instead.
-func (OutcomePhase) EnumDescriptor() ([]byte, []int) {
-	return file_tokun_events_v1_request_outcome_proto_rawDescGZIP(), []int{0}
-}
-
 // RequestOutcome is the value of every record on
 // tk.events.request-outcomes.v1, keyed by the decimal account_id. The gateway
 // writes one per request after the response ends; a write that fails is
@@ -79,15 +30,9 @@ func (OutcomePhase) EnumDescriptor() ([]byte, []int) {
 // tk_request_outcomes and a materialized view expands attempts into
 // tk_upstream_attempts. It carries metadata, usage and amounts only, never
 // request or response content.
-//
-// An async task has two records with the same request_id: the gateway's for
-// the submit request (OUTCOME_PHASE_REQUEST, attempts until an upstream
-// accepted), and the task-worker's when the task ends (OUTCOME_PHASE_TASK,
-// every later submission and the result).
 type RequestOutcome struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	RequestId string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	Phase     OutcomePhase           `protobuf:"varint,2,opt,name=phase,proto3,enum=tokun.events.v1.OutcomePhase" json:"phase,omitempty"`
 	// The request id the client sent, recorded as given.
 	ClientRequestId string `protobuf:"bytes,3,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
 	AccountId       int64  `protobuf:"varint,4,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
@@ -95,17 +40,13 @@ type RequestOutcome struct {
 	// HMAC of the session key; empty without a session.
 	SessionHash string `protobuf:"bytes,6,opt,name=session_hash,json=sessionHash,proto3" json:"session_hash,omitempty"`
 	// When the gateway received the request.
-	Ts            *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=ts,proto3" json:"ts,omitempty"`
-	CatalogSeq    int64                  `protobuf:"varint,8,opt,name=catalog_seq,json=catalogSeq,proto3" json:"catalog_seq,omitempty"`
-	EndpointType  string                 `protobuf:"bytes,9,opt,name=endpoint_type,json=endpointType,proto3" json:"endpoint_type,omitempty"`
-	RequestFormat string                 `protobuf:"bytes,10,opt,name=request_format,json=requestFormat,proto3" json:"request_format,omitempty"`
-	// Operation role, e.g. call, count_tokens, submit.
-	Operation string `protobuf:"bytes,11,opt,name=operation,proto3" json:"operation,omitempty"`
+	Ts           *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=ts,proto3" json:"ts,omitempty"`
+	CatalogSeq   int64                  `protobuf:"varint,8,opt,name=catalog_seq,json=catalogSeq,proto3" json:"catalog_seq,omitempty"`
+	EndpointType string                 `protobuf:"bytes,9,opt,name=endpoint_type,json=endpointType,proto3" json:"endpoint_type,omitempty"`
 	// The path as received and the normalisation rules applied:
 	// missing_version, repeated_version, extra_prefix, extra_slash, case.
 	RawPath    string          `protobuf:"bytes,12,opt,name=raw_path,json=rawPath,proto3" json:"raw_path,omitempty"`
 	PathRules  []string        `protobuf:"bytes,13,rep,name=path_rules,json=pathRules,proto3" json:"path_rules,omitempty"`
-	Stream     bool            `protobuf:"varint,14,opt,name=stream,proto3" json:"stream,omitempty"`
 	Resolution *NameResolution `protobuf:"bytes,15,opt,name=resolution,proto3" json:"resolution,omitempty"`
 	Routing    *RoutingRecord  `protobuf:"bytes,16,opt,name=routing,proto3" json:"routing,omitempty"`
 	Planning   *PlanningRecord `protobuf:"bytes,17,opt,name=planning,proto3" json:"planning,omitempty"`
@@ -123,14 +64,11 @@ type RequestOutcome struct {
 	// Every attempt of every send, flattened; tk_upstream_attempts rows.
 	Attempts     []*AttemptRecord    `protobuf:"bytes,24,rep,name=attempts,proto3" json:"attempts,omitempty"`
 	Unregistered *UnregisteredRecord `protobuf:"bytes,25,opt,name=unregistered,proto3" json:"unregistered,omitempty"`
-	// Parameters removed before sending (tokun-stripped-params).
-	StrippedParams []string            `protobuf:"bytes,26,rep,name=stripped_params,json=strippedParams,proto3" json:"stripped_params,omitempty"`
-	Features       *v1.RequestFeatures `protobuf:"bytes,27,opt,name=features,proto3" json:"features,omitempty"`
+	Features     *v1.RequestFeatures `protobuf:"bytes,27,opt,name=features,proto3" json:"features,omitempty"`
 	// customer, health_probe, onboarding_probe, route_probe.
 	TrafficClass string `protobuf:"bytes,28,opt,name=traffic_class,json=trafficClass,proto3" json:"traffic_class,omitempty"`
-	// Set on an async task.
-	TaskId string `protobuf:"bytes,29,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
-	// The name resolution marked the request for identity hiding.
+	// The name resolution marked the request for identity hiding; public
+	// statistics leave it out.
 	Anonymous     bool `protobuf:"varint,30,opt,name=anonymous,proto3" json:"anonymous,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -171,13 +109,6 @@ func (x *RequestOutcome) GetRequestId() string {
 		return x.RequestId
 	}
 	return ""
-}
-
-func (x *RequestOutcome) GetPhase() OutcomePhase {
-	if x != nil {
-		return x.Phase
-	}
-	return OutcomePhase_OUTCOME_PHASE_UNSPECIFIED
 }
 
 func (x *RequestOutcome) GetClientRequestId() string {
@@ -229,20 +160,6 @@ func (x *RequestOutcome) GetEndpointType() string {
 	return ""
 }
 
-func (x *RequestOutcome) GetRequestFormat() string {
-	if x != nil {
-		return x.RequestFormat
-	}
-	return ""
-}
-
-func (x *RequestOutcome) GetOperation() string {
-	if x != nil {
-		return x.Operation
-	}
-	return ""
-}
-
 func (x *RequestOutcome) GetRawPath() string {
 	if x != nil {
 		return x.RawPath
@@ -255,13 +172,6 @@ func (x *RequestOutcome) GetPathRules() []string {
 		return x.PathRules
 	}
 	return nil
-}
-
-func (x *RequestOutcome) GetStream() bool {
-	if x != nil {
-		return x.Stream
-	}
-	return false
 }
 
 func (x *RequestOutcome) GetResolution() *NameResolution {
@@ -341,13 +251,6 @@ func (x *RequestOutcome) GetUnregistered() *UnregisteredRecord {
 	return nil
 }
 
-func (x *RequestOutcome) GetStrippedParams() []string {
-	if x != nil {
-		return x.StrippedParams
-	}
-	return nil
-}
-
 func (x *RequestOutcome) GetFeatures() *v1.RequestFeatures {
 	if x != nil {
 		return x.Features
@@ -358,13 +261,6 @@ func (x *RequestOutcome) GetFeatures() *v1.RequestFeatures {
 func (x *RequestOutcome) GetTrafficClass() string {
 	if x != nil {
 		return x.TrafficClass
-	}
-	return ""
-}
-
-func (x *RequestOutcome) GetTaskId() string {
-	if x != nil {
-		return x.TaskId
 	}
 	return ""
 }
@@ -390,9 +286,8 @@ type NameResolution struct {
 	SelectorConfidence *float64 `protobuf:"fixed64,7,opt,name=selector_confidence,json=selectorConfidence,proto3,oneof" json:"selector_confidence,omitempty"`
 	ResolvedName       string   `protobuf:"bytes,8,opt,name=resolved_name,json=resolvedName,proto3" json:"resolved_name,omitempty"`
 	ResolutionVersion  int64    `protobuf:"varint,9,opt,name=resolution_version,json=resolutionVersion,proto3" json:"resolution_version,omitempty"`
-	// The real model the request was routed on.
-	ModelId string `protobuf:"bytes,10,opt,name=model_id,json=modelId,proto3" json:"model_id,omitempty"`
-	// Pool fields when the name is a pool.
+	// Pool fields when the name is a pool: statistics are kept per pool and per
+	// member.
 	ModelGroupId        string `protobuf:"bytes,11,opt,name=model_group_id,json=modelGroupId,proto3" json:"model_group_id,omitempty"`
 	ModelGroupVersion   int64  `protobuf:"varint,12,opt,name=model_group_version,json=modelGroupVersion,proto3" json:"model_group_version,omitempty"`
 	ExecutedPublicModel string `protobuf:"bytes,13,opt,name=executed_public_model,json=executedPublicModel,proto3" json:"executed_public_model,omitempty"`
@@ -493,13 +388,6 @@ func (x *NameResolution) GetResolutionVersion() int64 {
 	return 0
 }
 
-func (x *NameResolution) GetModelId() string {
-	if x != nil {
-		return x.ModelId
-	}
-	return ""
-}
-
 func (x *NameResolution) GetModelGroupId() string {
 	if x != nil {
 		return x.ModelGroupId
@@ -543,16 +431,9 @@ type RoutingRecord struct {
 	Candidates []*CandidateRecord `protobuf:"bytes,10,rep,name=candidates,proto3" json:"candidates,omitempty"`
 	Chosen     *CandidateRef      `protobuf:"bytes,11,opt,name=chosen,proto3" json:"chosen,omitempty"`
 	// Trial settings computed alongside, never used for forwarding.
-	Trial            *TrialRecord `protobuf:"bytes,12,opt,name=trial,proto3" json:"trial,omitempty"`
-	ServiceTiers     []string     `protobuf:"bytes,13,rep,name=service_tiers,json=serviceTiers,proto3" json:"service_tiers,omitempty"`
-	Sticky           bool         `protobuf:"varint,14,opt,name=sticky,proto3" json:"sticky,omitempty"`
-	FallbacksAllowed bool         `protobuf:"varint,15,opt,name=fallbacks_allowed,json=fallbacksAllowed,proto3" json:"fallbacks_allowed,omitempty"`
-	MaxAttempts      int32        `protobuf:"varint,16,opt,name=max_attempts,json=maxAttempts,proto3" json:"max_attempts,omitempty"`
-	FallbackModels   []string     `protobuf:"bytes,17,rep,name=fallback_models,json=fallbackModels,proto3" json:"fallback_models,omitempty"`
-	// Settings the account locked and the request tried to change.
-	LockedOverrides []string `protobuf:"bytes,18,rep,name=locked_overrides,json=lockedOverrides,proto3" json:"locked_overrides,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	Trial         *TrialRecord `protobuf:"bytes,12,opt,name=trial,proto3" json:"trial,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RoutingRecord) Reset() {
@@ -669,48 +550,6 @@ func (x *RoutingRecord) GetTrial() *TrialRecord {
 	return nil
 }
 
-func (x *RoutingRecord) GetServiceTiers() []string {
-	if x != nil {
-		return x.ServiceTiers
-	}
-	return nil
-}
-
-func (x *RoutingRecord) GetSticky() bool {
-	if x != nil {
-		return x.Sticky
-	}
-	return false
-}
-
-func (x *RoutingRecord) GetFallbacksAllowed() bool {
-	if x != nil {
-		return x.FallbacksAllowed
-	}
-	return false
-}
-
-func (x *RoutingRecord) GetMaxAttempts() int32 {
-	if x != nil {
-		return x.MaxAttempts
-	}
-	return 0
-}
-
-func (x *RoutingRecord) GetFallbackModels() []string {
-	if x != nil {
-		return x.FallbackModels
-	}
-	return nil
-}
-
-func (x *RoutingRecord) GetLockedOverrides() []string {
-	if x != nil {
-		return x.LockedOverrides
-	}
-	return nil
-}
-
 type CandidateRecord struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	ProviderId  string                 `protobuf:"bytes,1,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"`
@@ -720,17 +559,17 @@ type CandidateRecord struct {
 	Score       float64                `protobuf:"fixed64,5,opt,name=score,proto3" json:"score,omitempty"`
 	Uncertainty float64                `protobuf:"fixed64,6,opt,name=uncertainty,proto3" json:"uncertainty,omitempty"`
 	// Probability the selection curve drew this candidate first.
-	Share           float64           `protobuf:"fixed64,7,opt,name=share,proto3" json:"share,omitempty"`
-	EstChargeMicros int64             `protobuf:"varint,8,opt,name=est_charge_micros,json=estChargeMicros,proto3" json:"est_charge_micros,omitempty"`
-	EstCostMicros   int64             `protobuf:"varint,9,opt,name=est_cost_micros,json=estCostMicros,proto3" json:"est_cost_micros,omitempty"`
-	TtftMsP90       *float64          `protobuf:"fixed64,10,opt,name=ttft_ms_p90,json=ttftMsP90,proto3,oneof" json:"ttft_ms_p90,omitempty"`
-	OutputTpsP50    *float64          `protobuf:"fixed64,11,opt,name=output_tps_p50,json=outputTpsP50,proto3,oneof" json:"output_tps_p50,omitempty"`
-	SuccessRate     *float64          `protobuf:"fixed64,12,opt,name=success_rate,json=successRate,proto3,oneof" json:"success_rate,omitempty"`
-	FidelityScore   *float64          `protobuf:"fixed64,13,opt,name=fidelity_score,json=fidelityScore,proto3,oneof" json:"fidelity_score,omitempty"`
-	SameFormat      bool              `protobuf:"varint,14,opt,name=same_format,json=sameFormat,proto3" json:"same_format,omitempty"`
-	Cache           *v1.CacheEstimate `protobuf:"bytes,15,opt,name=cache,proto3" json:"cache,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	Share           float64  `protobuf:"fixed64,7,opt,name=share,proto3" json:"share,omitempty"`
+	EstChargeMicros int64    `protobuf:"varint,8,opt,name=est_charge_micros,json=estChargeMicros,proto3" json:"est_charge_micros,omitempty"`
+	EstCostMicros   int64    `protobuf:"varint,9,opt,name=est_cost_micros,json=estCostMicros,proto3" json:"est_cost_micros,omitempty"`
+	TtftMsP90       *float64 `protobuf:"fixed64,10,opt,name=ttft_ms_p90,json=ttftMsP90,proto3,oneof" json:"ttft_ms_p90,omitempty"`
+	OutputTpsP50    *float64 `protobuf:"fixed64,11,opt,name=output_tps_p50,json=outputTpsP50,proto3,oneof" json:"output_tps_p50,omitempty"`
+	SuccessRate     *float64 `protobuf:"fixed64,12,opt,name=success_rate,json=successRate,proto3,oneof" json:"success_rate,omitempty"`
+	FidelityScore   *float64 `protobuf:"fixed64,13,opt,name=fidelity_score,json=fidelityScore,proto3,oneof" json:"fidelity_score,omitempty"`
+	// The prompt cache estimate the candidate was planned with.
+	Cache         *v1.CacheEstimate `protobuf:"bytes,15,opt,name=cache,proto3" json:"cache,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CandidateRecord) Reset() {
@@ -854,13 +693,6 @@ func (x *CandidateRecord) GetFidelityScore() float64 {
 	return 0
 }
 
-func (x *CandidateRecord) GetSameFormat() bool {
-	if x != nil {
-		return x.SameFormat
-	}
-	return false
-}
-
 func (x *CandidateRecord) GetCache() *v1.CacheEstimate {
 	if x != nil {
 		return x.Cache
@@ -940,7 +772,9 @@ type TrialRecord struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Policy string                 `protobuf:"bytes,1,opt,name=policy,proto3" json:"policy,omitempty"`
 	// Interface the trial settings would have drawn first.
-	WouldChoose   string         `protobuf:"bytes,2,opt,name=would_choose,json=wouldChoose,proto3" json:"would_choose,omitempty"`
+	WouldChoose string `protobuf:"bytes,2,opt,name=would_choose,json=wouldChoose,proto3" json:"would_choose,omitempty"`
+	// Estimates of the candidate the trial settings would have drawn first,
+	// for the comparison shown when the trial ends.
 	Estimate      *RouteEstimate `protobuf:"bytes,3,opt,name=estimate,proto3" json:"estimate,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1012,9 +846,7 @@ type PlanningRecord struct {
 	// Data versions the planner reported.
 	DataVersions map[string]int64 `protobuf:"bytes,7,rep,name=data_versions,json=dataVersions,proto3" json:"data_versions,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	// Shadow planners' results on the same request.
-	Shadows []*ShadowPlan `protobuf:"bytes,8,rep,name=shadows,proto3" json:"shadows,omitempty"`
-	// Time the planner took, microseconds.
-	DurationUs    int64 `protobuf:"varint,9,opt,name=duration_us,json=durationUs,proto3" json:"duration_us,omitempty"`
+	Shadows       []*ShadowPlan `protobuf:"bytes,8,rep,name=shadows,proto3" json:"shadows,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1105,21 +937,14 @@ func (x *PlanningRecord) GetShadows() []*ShadowPlan {
 	return nil
 }
 
-func (x *PlanningRecord) GetDurationUs() int64 {
-	if x != nil {
-		return x.DurationUs
-	}
-	return 0
-}
-
 type ShadowPlan struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	PlannerId      string                 `protobuf:"bytes,1,opt,name=planner_id,json=plannerId,proto3" json:"planner_id,omitempty"`
 	PlannerVersion string                 `protobuf:"bytes,2,opt,name=planner_version,json=plannerVersion,proto3" json:"planner_version,omitempty"`
 	// invalid, error, timeout; empty when valid.
-	Error         string             `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	Error string `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	// Its score and uncertainty for every candidate.
 	Candidates    []*CandidateRecord `protobuf:"bytes,4,rep,name=candidates,proto3" json:"candidates,omitempty"`
-	WouldChoose   *CandidateRef      `protobuf:"bytes,5,opt,name=would_choose,json=wouldChoose,proto3" json:"would_choose,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1182,22 +1007,14 @@ func (x *ShadowPlan) GetCandidates() []*CandidateRecord {
 	return nil
 }
 
-func (x *ShadowPlan) GetWouldChoose() *CandidateRef {
-	if x != nil {
-		return x.WouldChoose
-	}
-	return nil
-}
-
 type RouteEstimate struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	Interface       string                 `protobuf:"bytes,1,opt,name=interface,proto3" json:"interface,omitempty"`
-	EstCostMicros   int64                  `protobuf:"varint,2,opt,name=est_cost_micros,json=estCostMicros,proto3" json:"est_cost_micros,omitempty"`
-	EstChargeMicros int64                  `protobuf:"varint,3,opt,name=est_charge_micros,json=estChargeMicros,proto3" json:"est_charge_micros,omitempty"`
-	EstTtftMs       *float64               `protobuf:"fixed64,4,opt,name=est_ttft_ms,json=estTtftMs,proto3,oneof" json:"est_ttft_ms,omitempty"`
-	EstCacheHit     *float64               `protobuf:"fixed64,5,opt,name=est_cache_hit,json=estCacheHit,proto3,oneof" json:"est_cache_hit,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Interface     string                 `protobuf:"bytes,1,opt,name=interface,proto3" json:"interface,omitempty"`
+	EstCostMicros int64                  `protobuf:"varint,2,opt,name=est_cost_micros,json=estCostMicros,proto3" json:"est_cost_micros,omitempty"`
+	EstTtftMs     *float64               `protobuf:"fixed64,4,opt,name=est_ttft_ms,json=estTtftMs,proto3,oneof" json:"est_ttft_ms,omitempty"`
+	EstCacheHit   *float64               `protobuf:"fixed64,5,opt,name=est_cache_hit,json=estCacheHit,proto3,oneof" json:"est_cache_hit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RouteEstimate) Reset() {
@@ -1244,13 +1061,6 @@ func (x *RouteEstimate) GetEstCostMicros() int64 {
 	return 0
 }
 
-func (x *RouteEstimate) GetEstChargeMicros() int64 {
-	if x != nil {
-		return x.EstChargeMicros
-	}
-	return 0
-}
-
 func (x *RouteEstimate) GetEstTtftMs() float64 {
 	if x != nil && x.EstTtftMs != nil {
 		return *x.EstTtftMs
@@ -1271,9 +1081,7 @@ type OutcomeResult struct {
 	StatusCode int32 `protobuf:"varint,1,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`
 	// tokun error code, e.g. capability_unsatisfied, model_not_found; the
 	// upstream's error code when an upstream error was returned.
-	ErrorCode string `protobuf:"bytes,2,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
-	// key, upstream, request; empty on success.
-	ErrorScope          string   `protobuf:"bytes,3,opt,name=error_scope,json=errorScope,proto3" json:"error_scope,omitempty"`
+	ErrorCode           string   `protobuf:"bytes,2,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
 	TtftMs              *float64 `protobuf:"fixed64,4,opt,name=ttft_ms,json=ttftMs,proto3,oneof" json:"ttft_ms,omitempty"`
 	TotalMs             float64  `protobuf:"fixed64,5,opt,name=total_ms,json=totalMs,proto3" json:"total_ms,omitempty"`
 	OutputTps           *float64 `protobuf:"fixed64,6,opt,name=output_tps,json=outputTps,proto3,oneof" json:"output_tps,omitempty"`
@@ -1283,13 +1091,10 @@ type OutcomeResult struct {
 	CacheWrite_5MTokens int64    `protobuf:"varint,10,opt,name=cache_write_5m_tokens,json=cacheWrite5mTokens,proto3" json:"cache_write_5m_tokens,omitempty"`
 	CacheWrite_1HTokens int64    `protobuf:"varint,11,opt,name=cache_write_1h_tokens,json=cacheWrite1hTokens,proto3" json:"cache_write_1h_tokens,omitempty"`
 	CacheHit            *float64 `protobuf:"fixed64,12,opt,name=cache_hit,json=cacheHit,proto3,oneof" json:"cache_hit,omitempty"`
-	HoldMicros          int64    `protobuf:"varint,13,opt,name=hold_micros,json=holdMicros,proto3" json:"hold_micros,omitempty"`
 	CostMicros          int64    `protobuf:"varint,14,opt,name=cost_micros,json=costMicros,proto3" json:"cost_micros,omitempty"`
 	ChargeMicros        int64    `protobuf:"varint,15,opt,name=charge_micros,json=chargeMicros,proto3" json:"charge_micros,omitempty"`
-	// The client disconnected before the response ended.
-	ClientCanceled bool `protobuf:"varint,16,opt,name=client_canceled,json=clientCanceled,proto3" json:"client_canceled,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *OutcomeResult) Reset() {
@@ -1332,13 +1137,6 @@ func (x *OutcomeResult) GetStatusCode() int32 {
 func (x *OutcomeResult) GetErrorCode() string {
 	if x != nil {
 		return x.ErrorCode
-	}
-	return ""
-}
-
-func (x *OutcomeResult) GetErrorScope() string {
-	if x != nil {
-		return x.ErrorScope
 	}
 	return ""
 }
@@ -1406,13 +1204,6 @@ func (x *OutcomeResult) GetCacheHit() float64 {
 	return 0
 }
 
-func (x *OutcomeResult) GetHoldMicros() int64 {
-	if x != nil {
-		return x.HoldMicros
-	}
-	return 0
-}
-
 func (x *OutcomeResult) GetCostMicros() int64 {
 	if x != nil {
 		return x.CostMicros
@@ -1425,13 +1216,6 @@ func (x *OutcomeResult) GetChargeMicros() int64 {
 		return x.ChargeMicros
 	}
 	return 0
-}
-
-func (x *OutcomeResult) GetClientCanceled() bool {
-	if x != nil {
-		return x.ClientCanceled
-	}
-	return false
 }
 
 type SwitchRecord struct {
@@ -1503,9 +1287,8 @@ type SendRecord struct {
 	// fallback_model, deployment_group, retry; empty for the first send.
 	Reason string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
 	// The real model this send routed (differs on fallback models).
-	ModelId           string                 `protobuf:"bytes,4,opt,name=model_id,json=modelId,proto3" json:"model_id,omitempty"`
-	BifrostDeployment string                 `protobuf:"bytes,5,opt,name=bifrost_deployment,json=bifrostDeployment,proto3" json:"bifrost_deployment,omitempty"`
-	SentAt            *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=sent_at,json=sentAt,proto3" json:"sent_at,omitempty"`
+	ModelId           string `protobuf:"bytes,4,opt,name=model_id,json=modelId,proto3" json:"model_id,omitempty"`
+	BifrostDeployment string `protobuf:"bytes,5,opt,name=bifrost_deployment,json=bifrostDeployment,proto3" json:"bifrost_deployment,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -1575,13 +1358,6 @@ func (x *SendRecord) GetBifrostDeployment() string {
 	return ""
 }
 
-func (x *SendRecord) GetSentAt() *timestamppb.Timestamp {
-	if x != nil {
-		return x.SentAt
-	}
-	return nil
-}
-
 // One attempt; one tk_upstream_attempts row.
 type AttemptRecord struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
@@ -1594,7 +1370,8 @@ type AttemptRecord struct {
 	Interface  string                 `protobuf:"bytes,6,opt,name=interface,proto3" json:"interface,omitempty"`
 	StartedAt  *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
 	// healthobs outcome; skipped for an entry the plugin did not send.
-	Outcome    string `protobuf:"bytes,8,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	Outcome string `protobuf:"bytes,8,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	// HTTP status of the upstream response; 0 when none arrived.
 	StatusCode int32  `protobuf:"varint,9,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`
 	ErrorScope string `protobuf:"bytes,10,opt,name=error_scope,json=errorScope,proto3" json:"error_scope,omitempty"`
 	ErrorClass string `protobuf:"bytes,11,opt,name=error_class,json=errorClass,proto3" json:"error_class,omitempty"`
@@ -1603,7 +1380,6 @@ type AttemptRecord struct {
 	// Unregistered body paths or feature values the upstream error named.
 	RejectedUnregistered    []string `protobuf:"bytes,13,rep,name=rejected_unregistered,json=rejectedUnregistered,proto3" json:"rejected_unregistered,omitempty"`
 	SkipReason              string   `protobuf:"bytes,14,opt,name=skip_reason,json=skipReason,proto3" json:"skip_reason,omitempty"`
-	SameFormat              bool     `protobuf:"varint,15,opt,name=same_format,json=sameFormat,proto3" json:"same_format,omitempty"`
 	CacheDialect            string   `protobuf:"bytes,16,opt,name=cache_dialect,json=cacheDialect,proto3" json:"cache_dialect,omitempty"`
 	PredictedCacheHitTokens int64    `protobuf:"varint,17,opt,name=predicted_cache_hit_tokens,json=predictedCacheHitTokens,proto3" json:"predicted_cache_hit_tokens,omitempty"`
 	ReportedCacheReadTokens *int64   `protobuf:"varint,18,opt,name=reported_cache_read_tokens,json=reportedCacheReadTokens,proto3,oneof" json:"reported_cache_read_tokens,omitempty"`
@@ -1611,17 +1387,14 @@ type AttemptRecord struct {
 	TotalMs                 float64  `protobuf:"fixed64,20,opt,name=total_ms,json=totalMs,proto3" json:"total_ms,omitempty"`
 	UpstreamMs              float64  `protobuf:"fixed64,21,opt,name=upstream_ms,json=upstreamMs,proto3" json:"upstream_ms,omitempty"`
 	OutputTps               *float64 `protobuf:"fixed64,22,opt,name=output_tps,json=outputTps,proto3,oneof" json:"output_tps,omitempty"`
-	InputTokens             int64    `protobuf:"varint,23,opt,name=input_tokens,json=inputTokens,proto3" json:"input_tokens,omitempty"`
-	OutputTokens            int64    `protobuf:"varint,24,opt,name=output_tokens,json=outputTokens,proto3" json:"output_tokens,omitempty"`
-	CostMicros              int64    `protobuf:"varint,25,opt,name=cost_micros,json=costMicros,proto3" json:"cost_micros,omitempty"`
+	// Cost booked for this attempt's upstream and key.
+	CostMicros int64 `protobuf:"varint,25,opt,name=cost_micros,json=costMicros,proto3" json:"cost_micros,omitempty"`
 	// Tool call arguments that failed to parse, and structured output that did
 	// not match its schema, in this attempt's response.
 	ToolCallErrors         int32 `protobuf:"varint,26,opt,name=tool_call_errors,json=toolCallErrors,proto3" json:"tool_call_errors,omitempty"`
 	StructuredOutputErrors int32 `protobuf:"varint,27,opt,name=structured_output_errors,json=structuredOutputErrors,proto3" json:"structured_output_errors,omitempty"`
-	// Async task submission: the upstream's task id.
-	UpstreamTaskId string `protobuf:"bytes,28,opt,name=upstream_task_id,json=upstreamTaskId,proto3" json:"upstream_task_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *AttemptRecord) Reset() {
@@ -1752,13 +1525,6 @@ func (x *AttemptRecord) GetSkipReason() string {
 	return ""
 }
 
-func (x *AttemptRecord) GetSameFormat() bool {
-	if x != nil {
-		return x.SameFormat
-	}
-	return false
-}
-
 func (x *AttemptRecord) GetCacheDialect() string {
 	if x != nil {
 		return x.CacheDialect
@@ -1808,20 +1574,6 @@ func (x *AttemptRecord) GetOutputTps() float64 {
 	return 0
 }
 
-func (x *AttemptRecord) GetInputTokens() int64 {
-	if x != nil {
-		return x.InputTokens
-	}
-	return 0
-}
-
-func (x *AttemptRecord) GetOutputTokens() int64 {
-	if x != nil {
-		return x.OutputTokens
-	}
-	return 0
-}
-
 func (x *AttemptRecord) GetCostMicros() int64 {
 	if x != nil {
 		return x.CostMicros
@@ -1841,13 +1593,6 @@ func (x *AttemptRecord) GetStructuredOutputErrors() int32 {
 		return x.StructuredOutputErrors
 	}
 	return 0
-}
-
-func (x *AttemptRecord) GetUpstreamTaskId() string {
-	if x != nil {
-		return x.UpstreamTaskId
-	}
-	return ""
 }
 
 type UnregisteredRecord struct {
@@ -1960,12 +1705,10 @@ var File_tokun_events_v1_request_outcome_proto protoreflect.FileDescriptor
 
 const file_tokun_events_v1_request_outcome_proto_rawDesc = "" +
 	"\n" +
-	"%tokun/events/v1/request_outcome.proto\x12\x0ftokun.events.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1etokun/planner/v1/planner.proto\"\xe0\n" +
-	"\n" +
+	"%tokun/events/v1/request_outcome.proto\x12\x0ftokun.events.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1etokun/planner/v1/planner.proto\"\xf4\t\n" +
 	"\x0eRequestOutcome\x12\x1d\n" +
 	"\n" +
-	"request_id\x18\x01 \x01(\tR\trequestId\x123\n" +
-	"\x05phase\x18\x02 \x01(\x0e2\x1d.tokun.events.v1.OutcomePhaseR\x05phase\x12*\n" +
+	"request_id\x18\x01 \x01(\tR\trequestId\x12*\n" +
 	"\x11client_request_id\x18\x03 \x01(\tR\x0fclientRequestId\x12\x1d\n" +
 	"\n" +
 	"account_id\x18\x04 \x01(\x03R\taccountId\x12#\n" +
@@ -1974,14 +1717,10 @@ const file_tokun_events_v1_request_outcome_proto_rawDesc = "" +
 	"\x02ts\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\x12\x1f\n" +
 	"\vcatalog_seq\x18\b \x01(\x03R\n" +
 	"catalogSeq\x12#\n" +
-	"\rendpoint_type\x18\t \x01(\tR\fendpointType\x12%\n" +
-	"\x0erequest_format\x18\n" +
-	" \x01(\tR\rrequestFormat\x12\x1c\n" +
-	"\toperation\x18\v \x01(\tR\toperation\x12\x19\n" +
+	"\rendpoint_type\x18\t \x01(\tR\fendpointType\x12\x19\n" +
 	"\braw_path\x18\f \x01(\tR\arawPath\x12\x1d\n" +
 	"\n" +
-	"path_rules\x18\r \x03(\tR\tpathRules\x12\x16\n" +
-	"\x06stream\x18\x0e \x01(\bR\x06stream\x12?\n" +
+	"path_rules\x18\r \x03(\tR\tpathRules\x12?\n" +
 	"\n" +
 	"resolution\x18\x0f \x01(\v2\x1f.tokun.events.v1.NameResolutionR\n" +
 	"resolution\x128\n" +
@@ -1994,12 +1733,11 @@ const file_tokun_events_v1_request_outcome_proto_rawDesc = "" +
 	"\x06switch\x18\x16 \x01(\v2\x1d.tokun.events.v1.SwitchRecordR\x06switch\x121\n" +
 	"\x05sends\x18\x17 \x03(\v2\x1b.tokun.events.v1.SendRecordR\x05sends\x12:\n" +
 	"\battempts\x18\x18 \x03(\v2\x1e.tokun.events.v1.AttemptRecordR\battempts\x12G\n" +
-	"\funregistered\x18\x19 \x01(\v2#.tokun.events.v1.UnregisteredRecordR\funregistered\x12'\n" +
-	"\x0fstripped_params\x18\x1a \x03(\tR\x0estrippedParams\x12=\n" +
+	"\funregistered\x18\x19 \x01(\v2#.tokun.events.v1.UnregisteredRecordR\funregistered\x12=\n" +
 	"\bfeatures\x18\x1b \x01(\v2!.tokun.planner.v1.RequestFeaturesR\bfeatures\x12#\n" +
-	"\rtraffic_class\x18\x1c \x01(\tR\ftrafficClass\x12\x17\n" +
-	"\atask_id\x18\x1d \x01(\tR\x06taskId\x12\x1c\n" +
-	"\tanonymous\x18\x1e \x01(\bR\tanonymous\"\xc4\x04\n" +
+	"\rtraffic_class\x18\x1c \x01(\tR\ftrafficClass\x12\x1c\n" +
+	"\tanonymous\x18\x1e \x01(\bR\tanonymousJ\x04\b\x02\x10\x03J\x04\b\n" +
+	"\x10\vJ\x04\b\v\x10\fJ\x04\b\x0e\x10\x0fJ\x04\b\x1a\x10\x1bJ\x04\b\x1d\x10\x1eR\x05phaseR\x0erequest_formatR\toperationR\x06streamR\x0fstripped_paramsR\atask_id\"\xb9\x04\n" +
 	"\x0eNameResolution\x12'\n" +
 	"\x0frequested_model\x18\x01 \x01(\tR\x0erequestedModel\x12:\n" +
 	"\x19requested_model_truncated\x18\x02 \x01(\bR\x17requestedModelTruncated\x12\x1b\n" +
@@ -2011,13 +1749,12 @@ const file_tokun_events_v1_request_outcome_proto_rawDesc = "" +
 	"selectorId\x124\n" +
 	"\x13selector_confidence\x18\a \x01(\x01H\x00R\x12selectorConfidence\x88\x01\x01\x12#\n" +
 	"\rresolved_name\x18\b \x01(\tR\fresolvedName\x12-\n" +
-	"\x12resolution_version\x18\t \x01(\x03R\x11resolutionVersion\x12\x19\n" +
-	"\bmodel_id\x18\n" +
-	" \x01(\tR\amodelId\x12$\n" +
+	"\x12resolution_version\x18\t \x01(\x03R\x11resolutionVersion\x12$\n" +
 	"\x0emodel_group_id\x18\v \x01(\tR\fmodelGroupId\x12.\n" +
 	"\x13model_group_version\x18\f \x01(\x03R\x11modelGroupVersion\x122\n" +
 	"\x15executed_public_model\x18\r \x01(\tR\x13executedPublicModelB\x16\n" +
-	"\x14_selector_confidence\"\xe2\b\n" +
+	"\x14_selector_confidenceJ\x04\b\n" +
+	"\x10\vR\bmodel_id\"\x80\b\n" +
 	"\rRoutingRecord\x12\x1a\n" +
 	"\bstrategy\x18\x01 \x01(\tR\bstrategy\x12E\n" +
 	"\aweights\x18\x02 \x03(\v2+.tokun.events.v1.RoutingRecord.WeightsEntryR\aweights\x12\x16\n" +
@@ -2034,13 +1771,7 @@ const file_tokun_events_v1_request_outcome_proto_rawDesc = "" +
 	" \x03(\v2 .tokun.events.v1.CandidateRecordR\n" +
 	"candidates\x125\n" +
 	"\x06chosen\x18\v \x01(\v2\x1d.tokun.events.v1.CandidateRefR\x06chosen\x122\n" +
-	"\x05trial\x18\f \x01(\v2\x1c.tokun.events.v1.TrialRecordR\x05trial\x12#\n" +
-	"\rservice_tiers\x18\r \x03(\tR\fserviceTiers\x12\x16\n" +
-	"\x06sticky\x18\x0e \x01(\bR\x06sticky\x12+\n" +
-	"\x11fallbacks_allowed\x18\x0f \x01(\bR\x10fallbacksAllowed\x12!\n" +
-	"\fmax_attempts\x18\x10 \x01(\x05R\vmaxAttempts\x12'\n" +
-	"\x0ffallback_models\x18\x11 \x03(\tR\x0efallbackModels\x12)\n" +
-	"\x10locked_overrides\x18\x12 \x03(\tR\x0flockedOverrides\x1a:\n" +
+	"\x05trial\x18\f \x01(\v2\x1c.tokun.events.v1.TrialRecordR\x05trial\x1a:\n" +
 	"\fWeightsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01\x1a:\n" +
@@ -2052,7 +1783,7 @@ const file_tokun_events_v1_request_outcome_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\x1a=\n" +
 	"\x0fTargetsMetEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\bR\x05value:\x028\x01\"\xed\x04\n" +
+	"\x05value\x18\x02 \x01(\bR\x05value:\x028\x01J\x04\b\r\x10\x0eJ\x04\b\x0e\x10\x0fJ\x04\b\x0f\x10\x10J\x04\b\x10\x10\x11J\x04\b\x11\x10\x12J\x04\b\x12\x10\x13R\rservice_tiersR\x06stickyR\x11fallbacks_allowedR\fmax_attemptsR\x0ffallback_modelsR\x10locked_overrides\"\xdf\x04\n" +
 	"\x0fCandidateRecord\x12\x1f\n" +
 	"\vprovider_id\x18\x01 \x01(\tR\n" +
 	"providerId\x12\x1f\n" +
@@ -2069,14 +1800,12 @@ const file_tokun_events_v1_request_outcome_proto_rawDesc = "" +
 	" \x01(\x01H\x00R\tttftMsP90\x88\x01\x01\x12)\n" +
 	"\x0eoutput_tps_p50\x18\v \x01(\x01H\x01R\foutputTpsP50\x88\x01\x01\x12&\n" +
 	"\fsuccess_rate\x18\f \x01(\x01H\x02R\vsuccessRate\x88\x01\x01\x12*\n" +
-	"\x0efidelity_score\x18\r \x01(\x01H\x03R\rfidelityScore\x88\x01\x01\x12\x1f\n" +
-	"\vsame_format\x18\x0e \x01(\bR\n" +
-	"sameFormat\x125\n" +
+	"\x0efidelity_score\x18\r \x01(\x01H\x03R\rfidelityScore\x88\x01\x01\x125\n" +
 	"\x05cache\x18\x0f \x01(\v2\x1f.tokun.planner.v1.CacheEstimateR\x05cacheB\x0e\n" +
 	"\f_ttft_ms_p90B\x11\n" +
 	"\x0f_output_tps_p50B\x0f\n" +
 	"\r_success_rateB\x11\n" +
-	"\x0f_fidelity_score\"\x85\x01\n" +
+	"\x0f_fidelity_scoreJ\x04\b\x0e\x10\x0fR\vsame_format\"\x85\x01\n" +
 	"\fCandidateRef\x12\x1f\n" +
 	"\vprovider_id\x18\x01 \x01(\tR\n" +
 	"providerId\x12\x1f\n" +
@@ -2087,7 +1816,7 @@ const file_tokun_events_v1_request_outcome_proto_rawDesc = "" +
 	"\vTrialRecord\x12\x16\n" +
 	"\x06policy\x18\x01 \x01(\tR\x06policy\x12!\n" +
 	"\fwould_choose\x18\x02 \x01(\tR\vwouldChoose\x12:\n" +
-	"\bestimate\x18\x03 \x01(\v2\x1e.tokun.events.v1.RouteEstimateR\bestimate\"\xed\x03\n" +
+	"\bestimate\x18\x03 \x01(\v2\x1e.tokun.events.v1.RouteEstimateR\bestimate\"\xdf\x03\n" +
 	"\x0ePlanningRecord\x12\x1d\n" +
 	"\n" +
 	"planner_id\x18\x01 \x01(\tR\tplannerId\x12'\n" +
@@ -2099,12 +1828,11 @@ const file_tokun_events_v1_request_outcome_proto_rawDesc = "" +
 	"candidates\x126\n" +
 	"\x17excluded_by_constraints\x18\x06 \x01(\x05R\x15excludedByConstraints\x12V\n" +
 	"\rdata_versions\x18\a \x03(\v21.tokun.events.v1.PlanningRecord.DataVersionsEntryR\fdataVersions\x125\n" +
-	"\ashadows\x18\b \x03(\v2\x1b.tokun.events.v1.ShadowPlanR\ashadows\x12\x1f\n" +
-	"\vduration_us\x18\t \x01(\x03R\n" +
-	"durationUs\x1a?\n" +
+	"\ashadows\x18\b \x03(\v2\x1b.tokun.events.v1.ShadowPlanR\ashadows\x1a?\n" +
 	"\x11DataVersionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\xee\x01\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01J\x04\b\t\x10\n" +
+	"R\vduration_us\"\xc0\x01\n" +
 	"\n" +
 	"ShadowPlan\x12\x1d\n" +
 	"\n" +
@@ -2113,23 +1841,19 @@ const file_tokun_events_v1_request_outcome_proto_rawDesc = "" +
 	"\x05error\x18\x03 \x01(\tR\x05error\x12@\n" +
 	"\n" +
 	"candidates\x18\x04 \x03(\v2 .tokun.events.v1.CandidateRecordR\n" +
-	"candidates\x12@\n" +
-	"\fwould_choose\x18\x05 \x01(\v2\x1d.tokun.events.v1.CandidateRefR\vwouldChoose\"\xf1\x01\n" +
+	"candidatesJ\x04\b\x05\x10\x06R\fwould_choose\"\xde\x01\n" +
 	"\rRouteEstimate\x12\x1c\n" +
 	"\tinterface\x18\x01 \x01(\tR\tinterface\x12&\n" +
-	"\x0fest_cost_micros\x18\x02 \x01(\x03R\restCostMicros\x12*\n" +
-	"\x11est_charge_micros\x18\x03 \x01(\x03R\x0festChargeMicros\x12#\n" +
+	"\x0fest_cost_micros\x18\x02 \x01(\x03R\restCostMicros\x12#\n" +
 	"\vest_ttft_ms\x18\x04 \x01(\x01H\x00R\testTtftMs\x88\x01\x01\x12'\n" +
 	"\rest_cache_hit\x18\x05 \x01(\x01H\x01R\vestCacheHit\x88\x01\x01B\x0e\n" +
 	"\f_est_ttft_msB\x10\n" +
-	"\x0e_est_cache_hit\"\x82\x05\n" +
+	"\x0e_est_cache_hitJ\x04\b\x03\x10\x04R\x11est_charge_micros\"\xd4\x04\n" +
 	"\rOutcomeResult\x12\x1f\n" +
 	"\vstatus_code\x18\x01 \x01(\x05R\n" +
 	"statusCode\x12\x1d\n" +
 	"\n" +
-	"error_code\x18\x02 \x01(\tR\terrorCode\x12\x1f\n" +
-	"\verror_scope\x18\x03 \x01(\tR\n" +
-	"errorScope\x12\x1c\n" +
+	"error_code\x18\x02 \x01(\tR\terrorCode\x12\x1c\n" +
 	"\attft_ms\x18\x04 \x01(\x01H\x00R\x06ttftMs\x88\x01\x01\x12\x19\n" +
 	"\btotal_ms\x18\x05 \x01(\x01R\atotalMs\x12\"\n" +
 	"\n" +
@@ -2141,29 +1865,25 @@ const file_tokun_events_v1_request_outcome_proto_rawDesc = "" +
 	" \x01(\x03R\x12cacheWrite5mTokens\x121\n" +
 	"\x15cache_write_1h_tokens\x18\v \x01(\x03R\x12cacheWrite1hTokens\x12 \n" +
 	"\tcache_hit\x18\f \x01(\x01H\x02R\bcacheHit\x88\x01\x01\x12\x1f\n" +
-	"\vhold_micros\x18\r \x01(\x03R\n" +
-	"holdMicros\x12\x1f\n" +
 	"\vcost_micros\x18\x0e \x01(\x03R\n" +
 	"costMicros\x12#\n" +
-	"\rcharge_micros\x18\x0f \x01(\x03R\fchargeMicros\x12'\n" +
-	"\x0fclient_canceled\x18\x10 \x01(\bR\x0eclientCanceledB\n" +
+	"\rcharge_micros\x18\x0f \x01(\x03R\fchargeMicrosB\n" +
 	"\n" +
 	"\b_ttft_msB\r\n" +
 	"\v_output_tpsB\f\n" +
 	"\n" +
-	"_cache_hit\"u\n" +
+	"_cache_hitJ\x04\b\x03\x10\x04J\x04\b\r\x10\x0eJ\x04\b\x10\x10\x11R\verror_scopeR\vhold_microsR\x0fclient_canceled\"u\n" +
 	"\fSwitchRecord\x12\x1a\n" +
 	"\bswitched\x18\x01 \x01(\bR\bswitched\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\x121\n" +
-	"\x15est_cache_loss_micros\x18\x03 \x01(\x03R\x12estCacheLossMicros\"\xd2\x01\n" +
+	"\x15est_cache_loss_micros\x18\x03 \x01(\x03R\x12estCacheLossMicros\"\xac\x01\n" +
 	"\n" +
 	"SendRecord\x12\x17\n" +
 	"\asend_id\x18\x01 \x01(\tR\x06sendId\x12\x14\n" +
 	"\x05round\x18\x02 \x01(\x05R\x05round\x12\x16\n" +
 	"\x06reason\x18\x03 \x01(\tR\x06reason\x12\x19\n" +
 	"\bmodel_id\x18\x04 \x01(\tR\amodelId\x12-\n" +
-	"\x12bifrost_deployment\x18\x05 \x01(\tR\x11bifrostDeployment\x123\n" +
-	"\asent_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x06sentAt\"\xdb\b\n" +
+	"\x12bifrost_deployment\x18\x05 \x01(\tR\x11bifrostDeploymentJ\x04\b\x06\x10\aR\asent_at\"\x9c\b\n" +
 	"\rAttemptRecord\x12\x17\n" +
 	"\asend_id\x18\x01 \x01(\tR\x06sendId\x12\x18\n" +
 	"\aattempt\x18\x02 \x01(\x05R\aattempt\x12\x1f\n" +
@@ -2188,9 +1908,7 @@ const file_tokun_events_v1_request_outcome_proto_rawDesc = "" +
 	"capability\x123\n" +
 	"\x15rejected_unregistered\x18\r \x03(\tR\x14rejectedUnregistered\x12\x1f\n" +
 	"\vskip_reason\x18\x0e \x01(\tR\n" +
-	"skipReason\x12\x1f\n" +
-	"\vsame_format\x18\x0f \x01(\bR\n" +
-	"sameFormat\x12#\n" +
+	"skipReason\x12#\n" +
 	"\rcache_dialect\x18\x10 \x01(\tR\fcacheDialect\x12;\n" +
 	"\x1apredicted_cache_hit_tokens\x18\x11 \x01(\x03R\x17predictedCacheHitTokens\x12@\n" +
 	"\x1areported_cache_read_tokens\x18\x12 \x01(\x03H\x00R\x17reportedCacheReadTokens\x88\x01\x01\x12\x1c\n" +
@@ -2199,18 +1917,15 @@ const file_tokun_events_v1_request_outcome_proto_rawDesc = "" +
 	"\vupstream_ms\x18\x15 \x01(\x01R\n" +
 	"upstreamMs\x12\"\n" +
 	"\n" +
-	"output_tps\x18\x16 \x01(\x01H\x02R\toutputTps\x88\x01\x01\x12!\n" +
-	"\finput_tokens\x18\x17 \x01(\x03R\vinputTokens\x12#\n" +
-	"\routput_tokens\x18\x18 \x01(\x03R\foutputTokens\x12\x1f\n" +
+	"output_tps\x18\x16 \x01(\x01H\x02R\toutputTps\x88\x01\x01\x12\x1f\n" +
 	"\vcost_micros\x18\x19 \x01(\x03R\n" +
 	"costMicros\x12(\n" +
 	"\x10tool_call_errors\x18\x1a \x01(\x05R\x0etoolCallErrors\x128\n" +
-	"\x18structured_output_errors\x18\x1b \x01(\x05R\x16structuredOutputErrors\x12(\n" +
-	"\x10upstream_task_id\x18\x1c \x01(\tR\x0eupstreamTaskIdB\x1d\n" +
+	"\x18structured_output_errors\x18\x1b \x01(\x05R\x16structuredOutputErrorsB\x1d\n" +
 	"\x1b_reported_cache_read_tokensB\n" +
 	"\n" +
 	"\b_ttft_msB\r\n" +
-	"\v_output_tps\"\x8e\x02\n" +
+	"\v_output_tpsJ\x04\b\x0f\x10\x10J\x04\b\x17\x10\x18J\x04\b\x18\x10\x19J\x04\b\x1c\x10\x1dR\vsame_formatR\finput_tokensR\routput_tokensR\x10upstream_task_id\"\x8e\x02\n" +
 	"\x12UnregisteredRecord\x12\x1d\n" +
 	"\n" +
 	"body_paths\x18\x01 \x03(\tR\tbodyPaths\x12\x18\n" +
@@ -2220,11 +1935,7 @@ const file_tokun_events_v1_request_outcome_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x124\n" +
 	"\x05value\x18\x02 \x01(\v2\x1e.tokun.events.v1.FeatureValuesR\x05value:\x028\x01\"'\n" +
 	"\rFeatureValues\x12\x16\n" +
-	"\x06values\x18\x01 \x03(\tR\x06values*`\n" +
-	"\fOutcomePhase\x12\x1d\n" +
-	"\x19OUTCOME_PHASE_UNSPECIFIED\x10\x00\x12\x19\n" +
-	"\x15OUTCOME_PHASE_REQUEST\x10\x01\x12\x16\n" +
-	"\x12OUTCOME_PHASE_TASK\x10\x02B\xcc\x01\n" +
+	"\x06values\x18\x01 \x03(\tR\x06valuesB\xcc\x01\n" +
 	"\x13com.tokun.events.v1B\x13RequestOutcomeProtoP\x01ZBgithub.com/capsohq/txe/tokun/proto/gen/go/tokun/events/v1;eventsv1\xa2\x02\x03TEX\xaa\x02\x0fTokun.Events.V1\xca\x02\x0fTokun\\Events\\V1\xe2\x02\x1bTokun\\Events\\V1\\GPBMetadata\xea\x02\x11Tokun::Events::V1b\x06proto3"
 
 var (
@@ -2239,71 +1950,66 @@ func file_tokun_events_v1_request_outcome_proto_rawDescGZIP() []byte {
 	return file_tokun_events_v1_request_outcome_proto_rawDescData
 }
 
-var file_tokun_events_v1_request_outcome_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_tokun_events_v1_request_outcome_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
 var file_tokun_events_v1_request_outcome_proto_goTypes = []any{
-	(OutcomePhase)(0),             // 0: tokun.events.v1.OutcomePhase
-	(*RequestOutcome)(nil),        // 1: tokun.events.v1.RequestOutcome
-	(*NameResolution)(nil),        // 2: tokun.events.v1.NameResolution
-	(*RoutingRecord)(nil),         // 3: tokun.events.v1.RoutingRecord
-	(*CandidateRecord)(nil),       // 4: tokun.events.v1.CandidateRecord
-	(*CandidateRef)(nil),          // 5: tokun.events.v1.CandidateRef
-	(*TrialRecord)(nil),           // 6: tokun.events.v1.TrialRecord
-	(*PlanningRecord)(nil),        // 7: tokun.events.v1.PlanningRecord
-	(*ShadowPlan)(nil),            // 8: tokun.events.v1.ShadowPlan
-	(*RouteEstimate)(nil),         // 9: tokun.events.v1.RouteEstimate
-	(*OutcomeResult)(nil),         // 10: tokun.events.v1.OutcomeResult
-	(*SwitchRecord)(nil),          // 11: tokun.events.v1.SwitchRecord
-	(*SendRecord)(nil),            // 12: tokun.events.v1.SendRecord
-	(*AttemptRecord)(nil),         // 13: tokun.events.v1.AttemptRecord
-	(*UnregisteredRecord)(nil),    // 14: tokun.events.v1.UnregisteredRecord
-	(*FeatureValues)(nil),         // 15: tokun.events.v1.FeatureValues
-	nil,                           // 16: tokun.events.v1.RoutingRecord.WeightsEntry
-	nil,                           // 17: tokun.events.v1.RoutingRecord.SourcesEntry
-	nil,                           // 18: tokun.events.v1.RoutingRecord.ExcludedEntry
-	nil,                           // 19: tokun.events.v1.RoutingRecord.TargetsMetEntry
-	nil,                           // 20: tokun.events.v1.PlanningRecord.DataVersionsEntry
-	nil,                           // 21: tokun.events.v1.UnregisteredRecord.FeatureValuesEntry
-	(*timestamppb.Timestamp)(nil), // 22: google.protobuf.Timestamp
-	(*v1.RequestFeatures)(nil),    // 23: tokun.planner.v1.RequestFeatures
-	(*v1.CacheEstimate)(nil),      // 24: tokun.planner.v1.CacheEstimate
+	(*RequestOutcome)(nil),        // 0: tokun.events.v1.RequestOutcome
+	(*NameResolution)(nil),        // 1: tokun.events.v1.NameResolution
+	(*RoutingRecord)(nil),         // 2: tokun.events.v1.RoutingRecord
+	(*CandidateRecord)(nil),       // 3: tokun.events.v1.CandidateRecord
+	(*CandidateRef)(nil),          // 4: tokun.events.v1.CandidateRef
+	(*TrialRecord)(nil),           // 5: tokun.events.v1.TrialRecord
+	(*PlanningRecord)(nil),        // 6: tokun.events.v1.PlanningRecord
+	(*ShadowPlan)(nil),            // 7: tokun.events.v1.ShadowPlan
+	(*RouteEstimate)(nil),         // 8: tokun.events.v1.RouteEstimate
+	(*OutcomeResult)(nil),         // 9: tokun.events.v1.OutcomeResult
+	(*SwitchRecord)(nil),          // 10: tokun.events.v1.SwitchRecord
+	(*SendRecord)(nil),            // 11: tokun.events.v1.SendRecord
+	(*AttemptRecord)(nil),         // 12: tokun.events.v1.AttemptRecord
+	(*UnregisteredRecord)(nil),    // 13: tokun.events.v1.UnregisteredRecord
+	(*FeatureValues)(nil),         // 14: tokun.events.v1.FeatureValues
+	nil,                           // 15: tokun.events.v1.RoutingRecord.WeightsEntry
+	nil,                           // 16: tokun.events.v1.RoutingRecord.SourcesEntry
+	nil,                           // 17: tokun.events.v1.RoutingRecord.ExcludedEntry
+	nil,                           // 18: tokun.events.v1.RoutingRecord.TargetsMetEntry
+	nil,                           // 19: tokun.events.v1.PlanningRecord.DataVersionsEntry
+	nil,                           // 20: tokun.events.v1.UnregisteredRecord.FeatureValuesEntry
+	(*timestamppb.Timestamp)(nil), // 21: google.protobuf.Timestamp
+	(*v1.RequestFeatures)(nil),    // 22: tokun.planner.v1.RequestFeatures
+	(*v1.CacheEstimate)(nil),      // 23: tokun.planner.v1.CacheEstimate
 }
 var file_tokun_events_v1_request_outcome_proto_depIdxs = []int32{
-	0,  // 0: tokun.events.v1.RequestOutcome.phase:type_name -> tokun.events.v1.OutcomePhase
-	22, // 1: tokun.events.v1.RequestOutcome.ts:type_name -> google.protobuf.Timestamp
-	2,  // 2: tokun.events.v1.RequestOutcome.resolution:type_name -> tokun.events.v1.NameResolution
-	3,  // 3: tokun.events.v1.RequestOutcome.routing:type_name -> tokun.events.v1.RoutingRecord
-	7,  // 4: tokun.events.v1.RequestOutcome.planning:type_name -> tokun.events.v1.PlanningRecord
-	9,  // 5: tokun.events.v1.RequestOutcome.chosen_estimate:type_name -> tokun.events.v1.RouteEstimate
-	9,  // 6: tokun.events.v1.RequestOutcome.default_estimate:type_name -> tokun.events.v1.RouteEstimate
-	10, // 7: tokun.events.v1.RequestOutcome.result:type_name -> tokun.events.v1.OutcomeResult
-	11, // 8: tokun.events.v1.RequestOutcome.switch:type_name -> tokun.events.v1.SwitchRecord
-	12, // 9: tokun.events.v1.RequestOutcome.sends:type_name -> tokun.events.v1.SendRecord
-	13, // 10: tokun.events.v1.RequestOutcome.attempts:type_name -> tokun.events.v1.AttemptRecord
-	14, // 11: tokun.events.v1.RequestOutcome.unregistered:type_name -> tokun.events.v1.UnregisteredRecord
-	23, // 12: tokun.events.v1.RequestOutcome.features:type_name -> tokun.planner.v1.RequestFeatures
-	16, // 13: tokun.events.v1.RoutingRecord.weights:type_name -> tokun.events.v1.RoutingRecord.WeightsEntry
-	17, // 14: tokun.events.v1.RoutingRecord.sources:type_name -> tokun.events.v1.RoutingRecord.SourcesEntry
-	18, // 15: tokun.events.v1.RoutingRecord.excluded:type_name -> tokun.events.v1.RoutingRecord.ExcludedEntry
-	19, // 16: tokun.events.v1.RoutingRecord.targets_met:type_name -> tokun.events.v1.RoutingRecord.TargetsMetEntry
-	4,  // 17: tokun.events.v1.RoutingRecord.candidates:type_name -> tokun.events.v1.CandidateRecord
-	5,  // 18: tokun.events.v1.RoutingRecord.chosen:type_name -> tokun.events.v1.CandidateRef
-	6,  // 19: tokun.events.v1.RoutingRecord.trial:type_name -> tokun.events.v1.TrialRecord
-	24, // 20: tokun.events.v1.CandidateRecord.cache:type_name -> tokun.planner.v1.CacheEstimate
-	9,  // 21: tokun.events.v1.TrialRecord.estimate:type_name -> tokun.events.v1.RouteEstimate
-	20, // 22: tokun.events.v1.PlanningRecord.data_versions:type_name -> tokun.events.v1.PlanningRecord.DataVersionsEntry
-	8,  // 23: tokun.events.v1.PlanningRecord.shadows:type_name -> tokun.events.v1.ShadowPlan
-	4,  // 24: tokun.events.v1.ShadowPlan.candidates:type_name -> tokun.events.v1.CandidateRecord
-	5,  // 25: tokun.events.v1.ShadowPlan.would_choose:type_name -> tokun.events.v1.CandidateRef
-	22, // 26: tokun.events.v1.SendRecord.sent_at:type_name -> google.protobuf.Timestamp
-	22, // 27: tokun.events.v1.AttemptRecord.started_at:type_name -> google.protobuf.Timestamp
-	21, // 28: tokun.events.v1.UnregisteredRecord.feature_values:type_name -> tokun.events.v1.UnregisteredRecord.FeatureValuesEntry
-	15, // 29: tokun.events.v1.UnregisteredRecord.FeatureValuesEntry.value:type_name -> tokun.events.v1.FeatureValues
-	30, // [30:30] is the sub-list for method output_type
-	30, // [30:30] is the sub-list for method input_type
-	30, // [30:30] is the sub-list for extension type_name
-	30, // [30:30] is the sub-list for extension extendee
-	0,  // [0:30] is the sub-list for field type_name
+	21, // 0: tokun.events.v1.RequestOutcome.ts:type_name -> google.protobuf.Timestamp
+	1,  // 1: tokun.events.v1.RequestOutcome.resolution:type_name -> tokun.events.v1.NameResolution
+	2,  // 2: tokun.events.v1.RequestOutcome.routing:type_name -> tokun.events.v1.RoutingRecord
+	6,  // 3: tokun.events.v1.RequestOutcome.planning:type_name -> tokun.events.v1.PlanningRecord
+	8,  // 4: tokun.events.v1.RequestOutcome.chosen_estimate:type_name -> tokun.events.v1.RouteEstimate
+	8,  // 5: tokun.events.v1.RequestOutcome.default_estimate:type_name -> tokun.events.v1.RouteEstimate
+	9,  // 6: tokun.events.v1.RequestOutcome.result:type_name -> tokun.events.v1.OutcomeResult
+	10, // 7: tokun.events.v1.RequestOutcome.switch:type_name -> tokun.events.v1.SwitchRecord
+	11, // 8: tokun.events.v1.RequestOutcome.sends:type_name -> tokun.events.v1.SendRecord
+	12, // 9: tokun.events.v1.RequestOutcome.attempts:type_name -> tokun.events.v1.AttemptRecord
+	13, // 10: tokun.events.v1.RequestOutcome.unregistered:type_name -> tokun.events.v1.UnregisteredRecord
+	22, // 11: tokun.events.v1.RequestOutcome.features:type_name -> tokun.planner.v1.RequestFeatures
+	15, // 12: tokun.events.v1.RoutingRecord.weights:type_name -> tokun.events.v1.RoutingRecord.WeightsEntry
+	16, // 13: tokun.events.v1.RoutingRecord.sources:type_name -> tokun.events.v1.RoutingRecord.SourcesEntry
+	17, // 14: tokun.events.v1.RoutingRecord.excluded:type_name -> tokun.events.v1.RoutingRecord.ExcludedEntry
+	18, // 15: tokun.events.v1.RoutingRecord.targets_met:type_name -> tokun.events.v1.RoutingRecord.TargetsMetEntry
+	3,  // 16: tokun.events.v1.RoutingRecord.candidates:type_name -> tokun.events.v1.CandidateRecord
+	4,  // 17: tokun.events.v1.RoutingRecord.chosen:type_name -> tokun.events.v1.CandidateRef
+	5,  // 18: tokun.events.v1.RoutingRecord.trial:type_name -> tokun.events.v1.TrialRecord
+	23, // 19: tokun.events.v1.CandidateRecord.cache:type_name -> tokun.planner.v1.CacheEstimate
+	8,  // 20: tokun.events.v1.TrialRecord.estimate:type_name -> tokun.events.v1.RouteEstimate
+	19, // 21: tokun.events.v1.PlanningRecord.data_versions:type_name -> tokun.events.v1.PlanningRecord.DataVersionsEntry
+	7,  // 22: tokun.events.v1.PlanningRecord.shadows:type_name -> tokun.events.v1.ShadowPlan
+	3,  // 23: tokun.events.v1.ShadowPlan.candidates:type_name -> tokun.events.v1.CandidateRecord
+	21, // 24: tokun.events.v1.AttemptRecord.started_at:type_name -> google.protobuf.Timestamp
+	20, // 25: tokun.events.v1.UnregisteredRecord.feature_values:type_name -> tokun.events.v1.UnregisteredRecord.FeatureValuesEntry
+	14, // 26: tokun.events.v1.UnregisteredRecord.FeatureValuesEntry.value:type_name -> tokun.events.v1.FeatureValues
+	27, // [27:27] is the sub-list for method output_type
+	27, // [27:27] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_tokun_events_v1_request_outcome_proto_init() }
@@ -2321,14 +2027,13 @@ func file_tokun_events_v1_request_outcome_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tokun_events_v1_request_outcome_proto_rawDesc), len(file_tokun_events_v1_request_outcome_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      0,
 			NumMessages:   21,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
 		GoTypes:           file_tokun_events_v1_request_outcome_proto_goTypes,
 		DependencyIndexes: file_tokun_events_v1_request_outcome_proto_depIdxs,
-		EnumInfos:         file_tokun_events_v1_request_outcome_proto_enumTypes,
 		MessageInfos:      file_tokun_events_v1_request_outcome_proto_msgTypes,
 	}.Build()
 	File_tokun_events_v1_request_outcome_proto = out.File

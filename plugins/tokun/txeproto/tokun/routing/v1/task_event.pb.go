@@ -37,10 +37,6 @@ const (
 	TaskEventType_TASK_EVENT_TYPE_SUCCEEDED TaskEventType = 4
 	// No candidate or not enough time is left; the task failed.
 	TaskEventType_TASK_EVENT_TYPE_FAILED TaskEventType = 5
-	// The task was canceled on the user's request.
-	TaskEventType_TASK_EVENT_TYPE_CANCELED TaskEventType = 6
-	// The task passed its deadline.
-	TaskEventType_TASK_EVENT_TYPE_EXPIRED TaskEventType = 7
 )
 
 // Enum value maps for TaskEventType.
@@ -52,8 +48,6 @@ var (
 		3: "TASK_EVENT_TYPE_FAILED_OVER",
 		4: "TASK_EVENT_TYPE_SUCCEEDED",
 		5: "TASK_EVENT_TYPE_FAILED",
-		6: "TASK_EVENT_TYPE_CANCELED",
-		7: "TASK_EVENT_TYPE_EXPIRED",
 	}
 	TaskEventType_value = map[string]int32{
 		"TASK_EVENT_TYPE_UNSPECIFIED":       0,
@@ -62,8 +56,6 @@ var (
 		"TASK_EVENT_TYPE_FAILED_OVER":       3,
 		"TASK_EVENT_TYPE_SUCCEEDED":         4,
 		"TASK_EVENT_TYPE_FAILED":            5,
-		"TASK_EVENT_TYPE_CANCELED":          6,
-		"TASK_EVENT_TYPE_EXPIRED":           7,
 	}
 )
 
@@ -108,13 +100,12 @@ type TaskEvent struct {
 	// Bifrost's provider job table.
 	TaskId string `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3" json:"task_id,omitempty"`
 	// Per task, starting at 1 and increasing by one with every event.
-	Seq        int64                  `protobuf:"varint,2,opt,name=seq,proto3" json:"seq,omitempty"`
-	Type       TaskEventType          `protobuf:"varint,3,opt,name=type,proto3,enum=tokun.routing.v1.TaskEventType" json:"type,omitempty"`
-	OccurredAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=occurred_at,json=occurredAt,proto3" json:"occurred_at,omitempty"`
+	Seq  int64         `protobuf:"varint,2,opt,name=seq,proto3" json:"seq,omitempty"`
+	Type TaskEventType `protobuf:"varint,3,opt,name=type,proto3,enum=tokun.routing.v1.TaskEventType" json:"type,omitempty"`
 	// The upstream submission this event is about, counted from 1 within the
-	// task; 0 for FAILED, CANCELED and EXPIRED when no submission is running.
+	// task; 0 for FAILED.
 	Attempt int32 `protobuf:"varint,5,opt,name=attempt,proto3" json:"attempt,omitempty"`
-	// The send that carried the plan this submission came from.
+	// The send_id the gateway generated for this submission.
 	SendId     string `protobuf:"bytes,6,opt,name=send_id,json=sendId,proto3" json:"send_id,omitempty"`
 	ProviderId string `protobuf:"bytes,7,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"`
 	UpstreamId int64  `protobuf:"varint,8,opt,name=upstream_id,json=upstreamId,proto3" json:"upstream_id,omitempty"`
@@ -124,22 +115,22 @@ type TaskEvent struct {
 	// The upstream's task id. Kept inside tokun; (upstream_id,
 	// upstream_task_id) is unique.
 	UpstreamTaskId string `protobuf:"bytes,11,opt,name=upstream_task_id,json=upstreamTaskId,proto3" json:"upstream_task_id,omitempty"`
-	// The upstream status read at status_path when the event was raised.
+	// The status Bifrost read from the upstream with this submission's key
+	// (the task contract's status_path) when it raised the event; a callback's
+	// content is only a notice.
 	UpstreamStatus string `protobuf:"bytes,12,opt,name=upstream_status,json=upstreamStatus,proto3" json:"upstream_status,omitempty"`
 	// On a failed submission: request or upstream, from the task contract's
 	// error_scopes; and the upstream's error category.
 	ErrorScope    string `protobuf:"bytes,13,opt,name=error_scope,json=errorScope,proto3" json:"error_scope,omitempty"`
 	UpstreamError string `protobuf:"bytes,14,opt,name=upstream_error,json=upstreamError,proto3" json:"upstream_error,omitempty"`
 	// Cost the upstream reported for this submission (the task contract's
-	// cost_path), in millionths of currency. Booked as COGS; whether the user
-	// pays it follows the provider model's rule.
-	UpstreamReportedCostMicros int64 `protobuf:"varint,15,opt,name=upstream_reported_cost_micros,json=upstreamReportedCostMicros,proto3" json:"upstream_reported_cost_micros,omitempty"`
-	// ISO 4217 code of upstream_reported_cost_micros.
-	UpstreamReportedCostCurrency string                 `protobuf:"bytes,16,opt,name=upstream_reported_cost_currency,json=upstreamReportedCostCurrency,proto3" json:"upstream_reported_cost_currency,omitempty"`
-	SubmittedAt                  *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=submitted_at,json=submittedAt,proto3" json:"submitted_at,omitempty"`
-	EndedAt                      *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
-	unknownFields                protoimpl.UnknownFields
-	sizeCache                    protoimpl.SizeCache
+	// cost_path), micro-USD. Booked as COGS; whether the user pays it follows
+	// the provider model's rule.
+	UpstreamReportedCostMicros int64                  `protobuf:"varint,15,opt,name=upstream_reported_cost_micros,json=upstreamReportedCostMicros,proto3" json:"upstream_reported_cost_micros,omitempty"`
+	SubmittedAt                *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=submitted_at,json=submittedAt,proto3" json:"submitted_at,omitempty"`
+	EndedAt                    *timestamppb.Timestamp `protobuf:"bytes,18,opt,name=ended_at,json=endedAt,proto3" json:"ended_at,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *TaskEvent) Reset() {
@@ -191,13 +182,6 @@ func (x *TaskEvent) GetType() TaskEventType {
 		return x.Type
 	}
 	return TaskEventType_TASK_EVENT_TYPE_UNSPECIFIED
-}
-
-func (x *TaskEvent) GetOccurredAt() *timestamppb.Timestamp {
-	if x != nil {
-		return x.OccurredAt
-	}
-	return nil
 }
 
 func (x *TaskEvent) GetAttempt() int32 {
@@ -277,13 +261,6 @@ func (x *TaskEvent) GetUpstreamReportedCostMicros() int64 {
 	return 0
 }
 
-func (x *TaskEvent) GetUpstreamReportedCostCurrency() string {
-	if x != nil {
-		return x.UpstreamReportedCostCurrency
-	}
-	return ""
-}
-
 func (x *TaskEvent) GetSubmittedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.SubmittedAt
@@ -302,13 +279,11 @@ var File_tokun_routing_v1_task_event_proto protoreflect.FileDescriptor
 
 const file_tokun_routing_v1_task_event_proto_rawDesc = "" +
 	"\n" +
-	"!tokun/routing/v1/task_event.proto\x12\x10tokun.routing.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xed\x05\n" +
+	"!tokun/routing/v1/task_event.proto\x12\x10tokun.routing.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa3\x05\n" +
 	"\tTaskEvent\x12\x17\n" +
 	"\atask_id\x18\x01 \x01(\tR\x06taskId\x12\x10\n" +
 	"\x03seq\x18\x02 \x01(\x03R\x03seq\x123\n" +
-	"\x04type\x18\x03 \x01(\x0e2\x1f.tokun.routing.v1.TaskEventTypeR\x04type\x12;\n" +
-	"\voccurred_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"occurredAt\x12\x18\n" +
+	"\x04type\x18\x03 \x01(\x0e2\x1f.tokun.routing.v1.TaskEventTypeR\x04type\x12\x18\n" +
 	"\aattempt\x18\x05 \x01(\x05R\aattempt\x12\x17\n" +
 	"\asend_id\x18\x06 \x01(\tR\x06sendId\x12\x1f\n" +
 	"\vprovider_id\x18\a \x01(\tR\n" +
@@ -323,19 +298,16 @@ const file_tokun_routing_v1_task_event_proto_rawDesc = "" +
 	"\verror_scope\x18\r \x01(\tR\n" +
 	"errorScope\x12%\n" +
 	"\x0eupstream_error\x18\x0e \x01(\tR\rupstreamError\x12A\n" +
-	"\x1dupstream_reported_cost_micros\x18\x0f \x01(\x03R\x1aupstreamReportedCostMicros\x12E\n" +
-	"\x1fupstream_reported_cost_currency\x18\x10 \x01(\tR\x1cupstreamReportedCostCurrency\x12=\n" +
+	"\x1dupstream_reported_cost_micros\x18\x0f \x01(\x03R\x1aupstreamReportedCostMicros\x12=\n" +
 	"\fsubmitted_at\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\vsubmittedAt\x125\n" +
-	"\bended_at\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\aendedAt*\x8d\x02\n" +
+	"\bended_at\x18\x12 \x01(\v2\x1a.google.protobuf.TimestampR\aendedAtJ\x04\b\x04\x10\x05J\x04\b\x10\x10\x11R\voccurred_atR\x1fupstream_reported_cost_currency*\x91\x02\n" +
 	"\rTaskEventType\x12\x1f\n" +
 	"\x1bTASK_EVENT_TYPE_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19TASK_EVENT_TYPE_SUBMITTED\x10\x01\x12%\n" +
 	"!TASK_EVENT_TYPE_SUBMISSION_FAILED\x10\x02\x12\x1f\n" +
 	"\x1bTASK_EVENT_TYPE_FAILED_OVER\x10\x03\x12\x1d\n" +
 	"\x19TASK_EVENT_TYPE_SUCCEEDED\x10\x04\x12\x1a\n" +
-	"\x16TASK_EVENT_TYPE_FAILED\x10\x05\x12\x1c\n" +
-	"\x18TASK_EVENT_TYPE_CANCELED\x10\x06\x12\x1b\n" +
-	"\x17TASK_EVENT_TYPE_EXPIRED\x10\aB\xce\x01\n" +
+	"\x16TASK_EVENT_TYPE_FAILED\x10\x05\"\x04\b\x06\x10\x06\"\x04\b\a\x10\a*\x18TASK_EVENT_TYPE_CANCELED*\x17TASK_EVENT_TYPE_EXPIREDB\xce\x01\n" +
 	"\x14com.tokun.routing.v1B\x0eTaskEventProtoP\x01ZDgithub.com/capsohq/txe/tokun/proto/gen/go/tokun/routing/v1;routingv1\xa2\x02\x03TRX\xaa\x02\x10Tokun.Routing.V1\xca\x02\x10Tokun\\Routing\\V1\xe2\x02\x1cTokun\\Routing\\V1\\GPBMetadata\xea\x02\x12Tokun::Routing::V1b\x06proto3"
 
 var (
@@ -359,14 +331,13 @@ var file_tokun_routing_v1_task_event_proto_goTypes = []any{
 }
 var file_tokun_routing_v1_task_event_proto_depIdxs = []int32{
 	0, // 0: tokun.routing.v1.TaskEvent.type:type_name -> tokun.routing.v1.TaskEventType
-	2, // 1: tokun.routing.v1.TaskEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	2, // 2: tokun.routing.v1.TaskEvent.submitted_at:type_name -> google.protobuf.Timestamp
-	2, // 3: tokun.routing.v1.TaskEvent.ended_at:type_name -> google.protobuf.Timestamp
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	2, // 1: tokun.routing.v1.TaskEvent.submitted_at:type_name -> google.protobuf.Timestamp
+	2, // 2: tokun.routing.v1.TaskEvent.ended_at:type_name -> google.protobuf.Timestamp
+	3, // [3:3] is the sub-list for method output_type
+	3, // [3:3] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_tokun_routing_v1_task_event_proto_init() }

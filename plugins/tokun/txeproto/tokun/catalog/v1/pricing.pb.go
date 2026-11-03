@@ -164,7 +164,6 @@ type ReferencePrice struct {
 	Currency      string                 `protobuf:"bytes,7,opt,name=currency,proto3" json:"currency,omitempty"`
 	Source        string                 `protobuf:"bytes,8,opt,name=source,proto3" json:"source,omitempty"`
 	ObservedAt    *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
-	EffectiveFrom *timestamppb.Timestamp `protobuf:"bytes,10,opt,name=effective_from,json=effectiveFrom,proto3" json:"effective_from,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -258,13 +257,6 @@ func (x *ReferencePrice) GetSource() string {
 func (x *ReferencePrice) GetObservedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.ObservedAt
-	}
-	return nil
-}
-
-func (x *ReferencePrice) GetEffectiveFrom() *timestamppb.Timestamp {
-	if x != nil {
-		return x.EffectiveFrom
 	}
 	return nil
 }
@@ -415,7 +407,6 @@ type CostPrice struct {
 	Tier           map[string]string      `protobuf:"bytes,3,rep,name=tier,proto3" json:"tier,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	UnitCostMicros int64                  `protobuf:"varint,4,opt,name=unit_cost_micros,json=unitCostMicros,proto3" json:"unit_cost_micros,omitempty"`
 	PricePer       int64                  `protobuf:"varint,5,opt,name=price_per,json=pricePer,proto3" json:"price_per,omitempty"`
-	Currency       string                 `protobuf:"bytes,6,opt,name=currency,proto3" json:"currency,omitempty"`
 	EffectiveFrom  *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=effective_from,json=effectiveFrom,proto3" json:"effective_from,omitempty"`
 	EffectiveTo    *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=effective_to,json=effectiveTo,proto3" json:"effective_to,omitempty"`
 	PriceVersion   int64                  `protobuf:"varint,9,opt,name=price_version,json=priceVersion,proto3" json:"price_version,omitempty"`
@@ -491,13 +482,6 @@ func (x *CostPrice) GetPricePer() int64 {
 	return 0
 }
 
-func (x *CostPrice) GetCurrency() string {
-	if x != nil {
-		return x.Currency
-	}
-	return ""
-}
-
 func (x *CostPrice) GetEffectiveFrom() *timestamppb.Timestamp {
 	if x != nil {
 		return x.EffectiveFrom
@@ -550,10 +534,8 @@ type HoldProfile struct {
 	Quantities map[string]string `protobuf:"bytes,5,rep,name=quantities,proto3" json:"quantities,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Realtime only: minutes held per segment.
 	SegmentMinutes int64 `protobuf:"varint,6,opt,name=segment_minutes,json=segmentMinutes,proto3" json:"segment_minutes,omitempty"`
-	// active, disabled.
-	Status        string `protobuf:"bytes,7,opt,name=status,proto3" json:"status,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *HoldProfile) Reset() {
@@ -628,13 +610,6 @@ func (x *HoldProfile) GetSegmentMinutes() int64 {
 	return 0
 }
 
-func (x *HoldProfile) GetStatus() string {
-	if x != nil {
-		return x.Status
-	}
-	return ""
-}
-
 var File_tokun_catalog_v1_pricing_proto protoreflect.FileDescriptor
 
 const file_tokun_catalog_v1_pricing_proto_rawDesc = "" +
@@ -647,7 +622,7 @@ const file_tokun_catalog_v1_pricing_proto_rawDesc = "" +
 	"\fusage_source\x18\x04 \x01(\v2\x1d.tokun.catalog.v1.UsageSourceR\vusageSource\"9\n" +
 	"\vUsageSource\x12\x12\n" +
 	"\x04from\x18\x01 \x01(\tR\x04from\x12\x16\n" +
-	"\x06method\x18\x02 \x01(\tR\x06method\"\xb5\x04\n" +
+	"\x06method\x18\x02 \x01(\tR\x06method\"\x81\x04\n" +
 	"\x0eReferencePrice\x12 \n" +
 	"\bmodel_id\x18\x01 \x01(\tB\x05\xa2\xbb\x18\x01\x01R\amodelId\x120\n" +
 	"\x10endpoint_pattern\x18\x02 \x01(\tB\x05\xa2\xbb\x18\x01\x01R\x0fendpointPattern\x12(\n" +
@@ -658,12 +633,11 @@ const file_tokun_catalog_v1_pricing_proto_rawDesc = "" +
 	"\bcurrency\x18\a \x01(\tB\x05\xa2\xbb\x18\x01\x01R\bcurrency\x12\x1d\n" +
 	"\x06source\x18\b \x01(\tB\x05\xa2\xbb\x18\x01\x01R\x06source\x12B\n" +
 	"\vobserved_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampB\x05\xa2\xbb\x18\x01\x01R\n" +
-	"observedAt\x12H\n" +
-	"\x0eeffective_from\x18\n" +
-	" \x01(\v2\x1a.google.protobuf.TimestampB\x05\xa2\xbb\x18\x01\x01R\reffectiveFrom\x1a7\n" +
+	"observedAt\x1a7\n" +
 	"\tTierEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x8b\x05\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\n" +
+	"\x10\vR\x0eeffective_from\"\x8b\x05\n" +
 	"\vRetailPrice\x12\"\n" +
 	"\tcall_name\x18\x01 \x01(\tB\x05\xa2\xbb\x18\x01\x01R\bcallName\x12&\n" +
 	"\vprovider_id\x18\x02 \x01(\tB\x05\xa2\xbb\x18\x01\x01R\n" +
@@ -681,14 +655,13 @@ const file_tokun_catalog_v1_pricing_proto_rawDesc = "" +
 	"\fprice_source\x18\f \x01(\tR\vpriceSource\x1a7\n" +
 	"\tTierEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xe1\x04\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xce\x04\n" +
 	"\tCostPrice\x12)\n" +
 	"\finterface_id\x18\x01 \x01(\tB\x06\xa2\xbb\x18\x02\x02\x03R\vinterfaceId\x12)\n" +
 	"\fbilling_item\x18\x02 \x01(\tB\x06\xa2\xbb\x18\x02\x02\x03R\vbillingItem\x12A\n" +
 	"\x04tier\x18\x03 \x03(\v2%.tokun.catalog.v1.CostPrice.TierEntryB\x06\xa2\xbb\x18\x02\x02\x03R\x04tier\x12/\n" +
 	"\x10unit_cost_micros\x18\x04 \x01(\x03B\x05\xa2\xbb\x18\x01\x03R\x0eunitCostMicros\x12\"\n" +
-	"\tprice_per\x18\x05 \x01(\x03B\x05\xa2\xbb\x18\x01\x03R\bpricePer\x12!\n" +
-	"\bcurrency\x18\x06 \x01(\tB\x05\xa2\xbb\x18\x01\x03R\bcurrency\x12H\n" +
+	"\tprice_per\x18\x05 \x01(\x03B\x05\xa2\xbb\x18\x01\x03R\bpricePer\x12H\n" +
 	"\x0eeffective_from\x18\a \x01(\v2\x1a.google.protobuf.TimestampB\x05\xa2\xbb\x18\x01\x03R\reffectiveFrom\x12D\n" +
 	"\feffective_to\x18\b \x01(\v2\x1a.google.protobuf.TimestampB\x05\xa2\xbb\x18\x01\x03R\veffectiveTo\x12*\n" +
 	"\rprice_version\x18\t \x01(\x03B\x05\xa2\xbb\x18\x01\x03R\fpriceVersion\x12$\n" +
@@ -698,7 +671,7 @@ const file_tokun_catalog_v1_pricing_proto_rawDesc = "" +
 	"\fcontract_ref\x18\v \x01(\tB\x05\xa2\xbb\x18\x01\x04R\vcontractRef\x1a7\n" +
 	"\tTierEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xed\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x06\x10\aR\bcurrency\"\xe3\x02\n" +
 	"\vHoldProfile\x12&\n" +
 	"\x0fhold_profile_id\x18\x01 \x01(\tR\rholdProfileId\x12)\n" +
 	"\x10endpoint_pattern\x18\x02 \x01(\tR\x0fendpointPattern\x12\x19\n" +
@@ -707,11 +680,10 @@ const file_tokun_catalog_v1_pricing_proto_rawDesc = "" +
 	"\n" +
 	"quantities\x18\x05 \x03(\v2-.tokun.catalog.v1.HoldProfile.QuantitiesEntryR\n" +
 	"quantities\x12'\n" +
-	"\x0fsegment_minutes\x18\x06 \x01(\x03R\x0esegmentMinutes\x12\x16\n" +
-	"\x06status\x18\a \x01(\tR\x06status\x1a=\n" +
+	"\x0fsegment_minutes\x18\x06 \x01(\x03R\x0esegmentMinutes\x1a=\n" +
 	"\x0fQuantitiesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\xcc\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\a\x10\bR\x06statusB\xcc\x01\n" +
 	"\x14com.tokun.catalog.v1B\fPricingProtoP\x01ZDgithub.com/capsohq/txe/tokun/proto/gen/go/tokun/catalog/v1;catalogv1\xa2\x02\x03TCX\xaa\x02\x10Tokun.Catalog.V1\xca\x02\x10Tokun\\Catalog\\V1\xe2\x02\x1cTokun\\Catalog\\V1\\GPBMetadata\xea\x02\x12Tokun::Catalog::V1b\x06proto3"
 
 var (
@@ -744,19 +716,18 @@ var file_tokun_catalog_v1_pricing_proto_depIdxs = []int32{
 	1,  // 0: tokun.catalog.v1.BillingItem.usage_source:type_name -> tokun.catalog.v1.UsageSource
 	6,  // 1: tokun.catalog.v1.ReferencePrice.tier:type_name -> tokun.catalog.v1.ReferencePrice.TierEntry
 	10, // 2: tokun.catalog.v1.ReferencePrice.observed_at:type_name -> google.protobuf.Timestamp
-	10, // 3: tokun.catalog.v1.ReferencePrice.effective_from:type_name -> google.protobuf.Timestamp
-	7,  // 4: tokun.catalog.v1.RetailPrice.tier:type_name -> tokun.catalog.v1.RetailPrice.TierEntry
-	10, // 5: tokun.catalog.v1.RetailPrice.effective_from:type_name -> google.protobuf.Timestamp
-	10, // 6: tokun.catalog.v1.RetailPrice.effective_to:type_name -> google.protobuf.Timestamp
-	8,  // 7: tokun.catalog.v1.CostPrice.tier:type_name -> tokun.catalog.v1.CostPrice.TierEntry
-	10, // 8: tokun.catalog.v1.CostPrice.effective_from:type_name -> google.protobuf.Timestamp
-	10, // 9: tokun.catalog.v1.CostPrice.effective_to:type_name -> google.protobuf.Timestamp
-	9,  // 10: tokun.catalog.v1.HoldProfile.quantities:type_name -> tokun.catalog.v1.HoldProfile.QuantitiesEntry
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	7,  // 3: tokun.catalog.v1.RetailPrice.tier:type_name -> tokun.catalog.v1.RetailPrice.TierEntry
+	10, // 4: tokun.catalog.v1.RetailPrice.effective_from:type_name -> google.protobuf.Timestamp
+	10, // 5: tokun.catalog.v1.RetailPrice.effective_to:type_name -> google.protobuf.Timestamp
+	8,  // 6: tokun.catalog.v1.CostPrice.tier:type_name -> tokun.catalog.v1.CostPrice.TierEntry
+	10, // 7: tokun.catalog.v1.CostPrice.effective_from:type_name -> google.protobuf.Timestamp
+	10, // 8: tokun.catalog.v1.CostPrice.effective_to:type_name -> google.protobuf.Timestamp
+	9,  // 9: tokun.catalog.v1.HoldProfile.quantities:type_name -> tokun.catalog.v1.HoldProfile.QuantitiesEntry
+	10, // [10:10] is the sub-list for method output_type
+	10, // [10:10] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_tokun_catalog_v1_pricing_proto_init() }

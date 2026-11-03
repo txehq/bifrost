@@ -94,9 +94,10 @@ func (x *Lab) GetIcon() string {
 }
 
 type Series struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SeriesId      string                 `protobuf:"bytes,1,opt,name=series_id,json=seriesId,proto3" json:"series_id,omitempty"`
-	LabId         string                 `protobuf:"bytes,2,opt,name=lab_id,json=labId,proto3" json:"lab_id,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	SeriesId string                 `protobuf:"bytes,1,opt,name=series_id,json=seriesId,proto3" json:"series_id,omitempty"`
+	// The lab whose product line this is.
+	LabId         string `protobuf:"bytes,2,opt,name=lab_id,json=labId,proto3" json:"lab_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -613,9 +614,7 @@ type CallName struct {
 	Listed bool        `protobuf:"varint,11,opt,name=listed,proto3" json:"listed,omitempty"`
 	Access *NameAccess `protobuf:"bytes,12,opt,name=access,proto3" json:"access,omitempty"`
 	// Codename of an anonymous model.
-	Codename string `protobuf:"bytes,13,opt,name=codename,proto3" json:"codename,omitempty"`
-	// draft, active, revealed, retired. Only active and revealed names resolve.
-	Status        string `protobuf:"bytes,14,opt,name=status,proto3" json:"status,omitempty"`
+	Codename      string `protobuf:"bytes,13,opt,name=codename,proto3" json:"codename,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -752,13 +751,6 @@ func (x *CallName) GetAccess() *NameAccess {
 func (x *CallName) GetCodename() string {
 	if x != nil {
 		return x.Codename
-	}
-	return ""
-}
-
-func (x *CallName) GetStatus() string {
-	if x != nil {
-		return x.Status
 	}
 	return ""
 }
@@ -980,8 +972,12 @@ type AnonymousTarget struct {
 	RevealKeepsOwnPrice bool `protobuf:"varint,6,opt,name=reveal_keeps_own_price,json=revealKeepsOwnPrice,proto3" json:"reveal_keeps_own_price,omitempty"`
 	// After the reveal: publish the statistics collected before it.
 	RevealPublishesPriorStats bool `protobuf:"varint,7,opt,name=reveal_publishes_prior_stats,json=revealPublishesPriorStats,proto3" json:"reveal_publishes_prior_stats,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	// draft (visible to operators with the permission only), live (users see
+	// the codename), revealed (the codename points at the real model), retired
+	// (the codename takes no requests). Only live and revealed names resolve.
+	State         string `protobuf:"bytes,8,opt,name=state,proto3" json:"state,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AnonymousTarget) Reset() {
@@ -1061,6 +1057,13 @@ func (x *AnonymousTarget) GetRevealPublishesPriorStats() bool {
 		return x.RevealPublishesPriorStats
 	}
 	return false
+}
+
+func (x *AnonymousTarget) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
 }
 
 type NameAccess struct {
@@ -1324,7 +1327,7 @@ const file_tokun_catalog_v1_identity_proto_rawDesc = "" +
 	"\vexternal_id\x18\x03 \x01(\tR\n" +
 	"externalId\x12\x1d\n" +
 	"\n" +
-	"valid_from\x18\x04 \x01(\tR\tvalidFrom\"\xe1\x04\n" +
+	"valid_from\x18\x04 \x01(\tR\tvalidFrom\"\xd0\x04\n" +
 	"\bCallName\x12\x19\n" +
 	"\x04name\x18\x01 \x01(\tB\x05\xa2\xbb\x18\x01\x01R\x04name\x12\x1b\n" +
 	"\tmatch_key\x18\x02 \x01(\tR\bmatchKey\x12*\n" +
@@ -1339,9 +1342,8 @@ const file_tokun_catalog_v1_identity_proto_rawDesc = "" +
 	" \x03(\tB\x05\xa2\xbb\x18\x01\x01R\aaliases\x12\x16\n" +
 	"\x06listed\x18\v \x01(\bR\x06listed\x124\n" +
 	"\x06access\x18\f \x01(\v2\x1c.tokun.catalog.v1.NameAccessR\x06access\x12!\n" +
-	"\bcodename\x18\r \x01(\tB\x05\xa2\xbb\x18\x01\x01R\bcodename\x12\x1d\n" +
-	"\x06status\x18\x0e \x01(\tB\x05\xa2\xbb\x18\x01\x01R\x06statusB\b\n" +
-	"\x06target\"\xa2\x01\n" +
+	"\bcodename\x18\r \x01(\tB\x05\xa2\xbb\x18\x01\x01R\bcodenameB\b\n" +
+	"\x06targetJ\x04\b\x0e\x10\x0fR\x06status\"\xa2\x01\n" +
 	"\rVirtualTarget\x12\x19\n" +
 	"\x04rule\x18\x01 \x01(\tB\x05\xa2\xbb\x18\x01\x01R\x04rule\x126\n" +
 	"\x06params\x18\x02 \x01(\v2\x17.google.protobuf.StructB\x05\xa2\xbb\x18\x01\x01R\x06params\x12\x1f\n" +
@@ -1357,7 +1359,7 @@ const file_tokun_catalog_v1_identity_proto_rawDesc = "" +
 	"\fpricing_mode\x18\x05 \x01(\tB\x05\xa2\xbb\x18\x01\x01R\vpricingMode\x12(\n" +
 	"\fshow_members\x18\x06 \x01(\bB\x05\xa2\xbb\x18\x01\x01R\vshowMembers\x12\x1d\n" +
 	"\n" +
-	"auto_apply\x18\a \x01(\bR\tautoApply\"\x91\x03\n" +
+	"auto_apply\x18\a \x01(\bR\tautoApply\"\xaf\x03\n" +
 	"\x0fAnonymousTarget\x12!\n" +
 	"\bmodel_id\x18\x01 \x01(\tB\x06\xa2\xbb\x18\x02\x03\x04R\amodelId\x128\n" +
 	"\x14allowed_provider_ids\x18\x02 \x03(\tB\x06\xa2\xbb\x18\x02\x03\x04R\x12allowedProviderIds\x12*\n" +
@@ -1365,7 +1367,8 @@ const file_tokun_catalog_v1_identity_proto_rawDesc = "" +
 	"\treveal_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampB\x05\xa2\xbb\x18\x01\x04R\brevealAt\x121\n" +
 	"\x11revealed_model_id\x18\x05 \x01(\tB\x05\xa2\xbb\x18\x01\x04R\x0frevealedModelId\x12:\n" +
 	"\x16reveal_keeps_own_price\x18\x06 \x01(\bB\x05\xa2\xbb\x18\x01\x04R\x13revealKeepsOwnPrice\x12F\n" +
-	"\x1creveal_publishes_prior_stats\x18\a \x01(\bB\x05\xa2\xbb\x18\x01\x04R\x19revealPublishesPriorStats\"^\n" +
+	"\x1creveal_publishes_prior_stats\x18\a \x01(\bB\x05\xa2\xbb\x18\x01\x04R\x19revealPublishesPriorStats\x12\x1c\n" +
+	"\x05state\x18\b \x01(\tB\x06\xa2\xbb\x18\x02\x03\x04R\x05state\"^\n" +
 	"\n" +
 	"NameAccess\x12\x12\n" +
 	"\x04mode\x18\x01 \x01(\tR\x04mode\x12\x1b\n" +

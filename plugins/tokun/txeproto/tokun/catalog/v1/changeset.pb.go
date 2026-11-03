@@ -195,9 +195,8 @@ type Changeset struct {
 	EffectiveAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=effective_at,json=effectiveAt,proto3" json:"effective_at,omitempty"`
 	Author      string                 `protobuf:"bytes,4,opt,name=author,proto3" json:"author,omitempty"`
 	// English.
-	Summary     string                 `protobuf:"bytes,5,opt,name=summary,proto3" json:"summary,omitempty"`
-	Changes     []*Change              `protobuf:"bytes,6,rep,name=changes,proto3" json:"changes,omitempty"`
-	CommittedAt *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=committed_at,json=committedAt,proto3" json:"committed_at,omitempty"`
+	Summary string    `protobuf:"bytes,5,opt,name=summary,proto3" json:"summary,omitempty"`
+	Changes []*Change `protobuf:"bytes,6,rep,name=changes,proto3" json:"changes,omitempty"`
 	// operator, csv_import, review_queue, rule_job, operating_switch,
 	// model_selector, translation, import, revert.
 	Source string `protobuf:"bytes,8,opt,name=source,proto3" json:"source,omitempty"`
@@ -275,13 +274,6 @@ func (x *Changeset) GetSummary() string {
 func (x *Changeset) GetChanges() []*Change {
 	if x != nil {
 		return x.Changes
-	}
-	return nil
-}
-
-func (x *Changeset) GetCommittedAt() *timestamppb.Timestamp {
-	if x != nil {
-		return x.CommittedAt
 	}
 	return nil
 }
@@ -1102,11 +1094,7 @@ type ChangesetRef struct {
 	EffectiveAt *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=effective_at,json=effectiveAt,proto3" json:"effective_at,omitempty"`
 	// Object storage key of the zstd-compressed serialized Changeset, already
 	// filtered to this topic's projection.
-	Object string `protobuf:"bytes,4,opt,name=object,proto3" json:"object,omitempty"`
-	// Size of the compressed object.
-	CompressedBytes int64 `protobuf:"varint,5,opt,name=compressed_bytes,json=compressedBytes,proto3" json:"compressed_bytes,omitempty"`
-	// SHA-256 of the compressed object.
-	Sha256        []byte `protobuf:"bytes,6,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	Object        string `protobuf:"bytes,4,opt,name=object,proto3" json:"object,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1167,20 +1155,6 @@ func (x *ChangesetRef) GetObject() string {
 		return x.Object
 	}
 	return ""
-}
-
-func (x *ChangesetRef) GetCompressedBytes() int64 {
-	if x != nil {
-		return x.CompressedBytes
-	}
-	return 0
-}
-
-func (x *ChangesetRef) GetSha256() []byte {
-	if x != nil {
-		return x.Sha256
-	}
-	return nil
 }
 
 // A full projection at one seq, written by catalog-checkpointer to object
@@ -1344,17 +1318,16 @@ const file_tokun_catalog_v1_changeset_proto_rawDesc = "" +
 	"\tchangeset\x18\x01 \x01(\v2\x1b.tokun.catalog.v1.ChangesetH\x00R\tchangeset\x12;\n" +
 	"\theartbeat\x18\x02 \x01(\v2\x1b.tokun.catalog.v1.HeartbeatH\x00R\theartbeat\x12E\n" +
 	"\rchangeset_ref\x18\x03 \x01(\v2\x1e.tokun.catalog.v1.ChangesetRefH\x00R\fchangesetRefB\t\n" +
-	"\amessage\"\xee\x02\n" +
+	"\amessage\"\xc3\x02\n" +
 	"\tChangeset\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12!\n" +
 	"\fchangeset_id\x18\x02 \x01(\tR\vchangesetId\x12=\n" +
 	"\feffective_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\veffectiveAt\x12\x16\n" +
 	"\x06author\x18\x04 \x01(\tR\x06author\x12\x18\n" +
 	"\asummary\x18\x05 \x01(\tR\asummary\x122\n" +
-	"\achanges\x18\x06 \x03(\v2\x18.tokun.catalog.v1.ChangeR\achanges\x12=\n" +
-	"\fcommitted_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\vcommittedAt\x12\x16\n" +
+	"\achanges\x18\x06 \x03(\v2\x18.tokun.catalog.v1.ChangeR\achanges\x12\x16\n" +
 	"\x06source\x18\b \x01(\tR\x06source\x120\n" +
-	"\x14reverts_changeset_id\x18\t \x01(\tR\x12revertsChangesetId\"\x8d\x02\n" +
+	"\x14reverts_changeset_id\x18\t \x01(\tR\x12revertsChangesetIdJ\x04\b\a\x10\bR\fcommitted_at\"\x8d\x02\n" +
 	"\x06Change\x12*\n" +
 	"\x02op\x18\x01 \x01(\x0e2\x1a.tokun.catalog.v1.ChangeOpR\x02op\x120\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x1c.tokun.catalog.v1.EntityKindR\x04kind\x12\x10\n" +
@@ -1407,14 +1380,12 @@ const file_tokun_catalog_v1_changeset_proto_rawDesc = "" +
 	"\x06entity\"I\n" +
 	"\tHeartbeat\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12*\n" +
-	"\x02ts\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\"\xdd\x01\n" +
+	"\x02ts\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\"\xc0\x01\n" +
 	"\fChangesetRef\x12\x10\n" +
 	"\x03seq\x18\x01 \x01(\x03R\x03seq\x12!\n" +
 	"\fchangeset_id\x18\x02 \x01(\tR\vchangesetId\x12=\n" +
 	"\feffective_at\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\veffectiveAt\x12\x16\n" +
-	"\x06object\x18\x04 \x01(\tR\x06object\x12)\n" +
-	"\x10compressed_bytes\x18\x05 \x01(\x03R\x0fcompressedBytes\x12\x16\n" +
-	"\x06sha256\x18\x06 \x01(\fR\x06sha256\"\xa3\x02\n" +
+	"\x06object\x18\x04 \x01(\tR\x06objectJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\x10compressed_bytesR\x06sha256\"\xa3\x02\n" +
 	"\n" +
 	"Checkpoint\x12<\n" +
 	"\n" +
@@ -1507,61 +1478,60 @@ var file_tokun_catalog_v1_changeset_proto_depIdxs = []int32{
 	6,  // 2: tokun.catalog.v1.CatalogMessage.changeset_ref:type_name -> tokun.catalog.v1.ChangesetRef
 	9,  // 3: tokun.catalog.v1.Changeset.effective_at:type_name -> google.protobuf.Timestamp
 	3,  // 4: tokun.catalog.v1.Changeset.changes:type_name -> tokun.catalog.v1.Change
-	9,  // 5: tokun.catalog.v1.Changeset.committed_at:type_name -> google.protobuf.Timestamp
-	0,  // 6: tokun.catalog.v1.Change.op:type_name -> tokun.catalog.v1.ChangeOp
-	10, // 7: tokun.catalog.v1.Change.kind:type_name -> tokun.catalog.v1.EntityKind
-	4,  // 8: tokun.catalog.v1.Change.value:type_name -> tokun.catalog.v1.Entity
-	4,  // 9: tokun.catalog.v1.Change.before:type_name -> tokun.catalog.v1.Entity
-	11, // 10: tokun.catalog.v1.Entity.lab:type_name -> tokun.catalog.v1.Lab
-	12, // 11: tokun.catalog.v1.Entity.series:type_name -> tokun.catalog.v1.Series
-	13, // 12: tokun.catalog.v1.Entity.family:type_name -> tokun.catalog.v1.Family
-	14, // 13: tokun.catalog.v1.Entity.model:type_name -> tokun.catalog.v1.Model
-	15, // 14: tokun.catalog.v1.Entity.model_external_id:type_name -> tokun.catalog.v1.ModelExternalId
-	16, // 15: tokun.catalog.v1.Entity.call_name:type_name -> tokun.catalog.v1.CallName
-	17, // 16: tokun.catalog.v1.Entity.redirect:type_name -> tokun.catalog.v1.Redirect
-	18, // 17: tokun.catalog.v1.Entity.provider:type_name -> tokun.catalog.v1.Provider
-	19, // 18: tokun.catalog.v1.Entity.provider_offering:type_name -> tokun.catalog.v1.ProviderOffering
-	20, // 19: tokun.catalog.v1.Entity.upstream:type_name -> tokun.catalog.v1.Upstream
-	21, // 20: tokun.catalog.v1.Entity.upstream_key:type_name -> tokun.catalog.v1.UpstreamKey
-	22, // 21: tokun.catalog.v1.Entity.upstream_binding:type_name -> tokun.catalog.v1.UpstreamBinding
-	23, // 22: tokun.catalog.v1.Entity.offering:type_name -> tokun.catalog.v1.Offering
-	24, // 23: tokun.catalog.v1.Entity.interface:type_name -> tokun.catalog.v1.Interface
-	25, // 24: tokun.catalog.v1.Entity.operating_switch:type_name -> tokun.catalog.v1.OperatingSwitch
-	26, // 25: tokun.catalog.v1.Entity.endpoint_segment_value:type_name -> tokun.catalog.v1.EndpointSegmentValue
-	27, // 26: tokun.catalog.v1.Entity.endpoint_type:type_name -> tokun.catalog.v1.EndpointType
-	28, // 27: tokun.catalog.v1.Entity.request_format:type_name -> tokun.catalog.v1.RequestFormat
-	29, // 28: tokun.catalog.v1.Entity.path_prefix:type_name -> tokun.catalog.v1.PathPrefix
-	30, // 29: tokun.catalog.v1.Entity.conversion_route:type_name -> tokun.catalog.v1.ConversionRoute
-	31, // 30: tokun.catalog.v1.Entity.request_field_category:type_name -> tokun.catalog.v1.RequestFieldCategory
-	32, // 31: tokun.catalog.v1.Entity.capability_group:type_name -> tokun.catalog.v1.CapabilityGroup
-	33, // 32: tokun.catalog.v1.Entity.capability_definition:type_name -> tokun.catalog.v1.CapabilityDefinition
-	34, // 33: tokun.catalog.v1.Entity.capability_option:type_name -> tokun.catalog.v1.CapabilityOption
-	35, // 34: tokun.catalog.v1.Entity.capability_value:type_name -> tokun.catalog.v1.CapabilityValue
-	36, // 35: tokun.catalog.v1.Entity.billing_item:type_name -> tokun.catalog.v1.BillingItem
-	37, // 36: tokun.catalog.v1.Entity.reference_price:type_name -> tokun.catalog.v1.ReferencePrice
-	38, // 37: tokun.catalog.v1.Entity.retail_price:type_name -> tokun.catalog.v1.RetailPrice
-	39, // 38: tokun.catalog.v1.Entity.cost_price:type_name -> tokun.catalog.v1.CostPrice
-	40, // 39: tokun.catalog.v1.Entity.hold_profile:type_name -> tokun.catalog.v1.HoldProfile
-	41, // 40: tokun.catalog.v1.Entity.leaderboard:type_name -> tokun.catalog.v1.Leaderboard
-	42, // 41: tokun.catalog.v1.Entity.leaderboard_entry:type_name -> tokun.catalog.v1.LeaderboardEntry
-	43, // 42: tokun.catalog.v1.Entity.locale:type_name -> tokun.catalog.v1.Locale
-	44, // 43: tokun.catalog.v1.Entity.localized_text:type_name -> tokun.catalog.v1.LocalizedText
-	45, // 44: tokun.catalog.v1.Entity.routing_preset:type_name -> tokun.catalog.v1.RoutingPreset
-	46, // 45: tokun.catalog.v1.Entity.routing_scenario:type_name -> tokun.catalog.v1.RoutingScenario
-	47, // 46: tokun.catalog.v1.Entity.planner_assignment:type_name -> tokun.catalog.v1.PlannerAssignment
-	9,  // 47: tokun.catalog.v1.Heartbeat.ts:type_name -> google.protobuf.Timestamp
-	9,  // 48: tokun.catalog.v1.ChangesetRef.effective_at:type_name -> google.protobuf.Timestamp
-	48, // 49: tokun.catalog.v1.Checkpoint.projection:type_name -> tokun.catalog.v1.Projection
-	9,  // 50: tokun.catalog.v1.Checkpoint.created_at:type_name -> google.protobuf.Timestamp
-	8,  // 51: tokun.catalog.v1.Checkpoint.entries:type_name -> tokun.catalog.v1.CheckpointEntry
-	2,  // 52: tokun.catalog.v1.Checkpoint.pending:type_name -> tokun.catalog.v1.Changeset
-	10, // 53: tokun.catalog.v1.CheckpointEntry.kind:type_name -> tokun.catalog.v1.EntityKind
-	4,  // 54: tokun.catalog.v1.CheckpointEntry.value:type_name -> tokun.catalog.v1.Entity
-	55, // [55:55] is the sub-list for method output_type
-	55, // [55:55] is the sub-list for method input_type
-	55, // [55:55] is the sub-list for extension type_name
-	55, // [55:55] is the sub-list for extension extendee
-	0,  // [0:55] is the sub-list for field type_name
+	0,  // 5: tokun.catalog.v1.Change.op:type_name -> tokun.catalog.v1.ChangeOp
+	10, // 6: tokun.catalog.v1.Change.kind:type_name -> tokun.catalog.v1.EntityKind
+	4,  // 7: tokun.catalog.v1.Change.value:type_name -> tokun.catalog.v1.Entity
+	4,  // 8: tokun.catalog.v1.Change.before:type_name -> tokun.catalog.v1.Entity
+	11, // 9: tokun.catalog.v1.Entity.lab:type_name -> tokun.catalog.v1.Lab
+	12, // 10: tokun.catalog.v1.Entity.series:type_name -> tokun.catalog.v1.Series
+	13, // 11: tokun.catalog.v1.Entity.family:type_name -> tokun.catalog.v1.Family
+	14, // 12: tokun.catalog.v1.Entity.model:type_name -> tokun.catalog.v1.Model
+	15, // 13: tokun.catalog.v1.Entity.model_external_id:type_name -> tokun.catalog.v1.ModelExternalId
+	16, // 14: tokun.catalog.v1.Entity.call_name:type_name -> tokun.catalog.v1.CallName
+	17, // 15: tokun.catalog.v1.Entity.redirect:type_name -> tokun.catalog.v1.Redirect
+	18, // 16: tokun.catalog.v1.Entity.provider:type_name -> tokun.catalog.v1.Provider
+	19, // 17: tokun.catalog.v1.Entity.provider_offering:type_name -> tokun.catalog.v1.ProviderOffering
+	20, // 18: tokun.catalog.v1.Entity.upstream:type_name -> tokun.catalog.v1.Upstream
+	21, // 19: tokun.catalog.v1.Entity.upstream_key:type_name -> tokun.catalog.v1.UpstreamKey
+	22, // 20: tokun.catalog.v1.Entity.upstream_binding:type_name -> tokun.catalog.v1.UpstreamBinding
+	23, // 21: tokun.catalog.v1.Entity.offering:type_name -> tokun.catalog.v1.Offering
+	24, // 22: tokun.catalog.v1.Entity.interface:type_name -> tokun.catalog.v1.Interface
+	25, // 23: tokun.catalog.v1.Entity.operating_switch:type_name -> tokun.catalog.v1.OperatingSwitch
+	26, // 24: tokun.catalog.v1.Entity.endpoint_segment_value:type_name -> tokun.catalog.v1.EndpointSegmentValue
+	27, // 25: tokun.catalog.v1.Entity.endpoint_type:type_name -> tokun.catalog.v1.EndpointType
+	28, // 26: tokun.catalog.v1.Entity.request_format:type_name -> tokun.catalog.v1.RequestFormat
+	29, // 27: tokun.catalog.v1.Entity.path_prefix:type_name -> tokun.catalog.v1.PathPrefix
+	30, // 28: tokun.catalog.v1.Entity.conversion_route:type_name -> tokun.catalog.v1.ConversionRoute
+	31, // 29: tokun.catalog.v1.Entity.request_field_category:type_name -> tokun.catalog.v1.RequestFieldCategory
+	32, // 30: tokun.catalog.v1.Entity.capability_group:type_name -> tokun.catalog.v1.CapabilityGroup
+	33, // 31: tokun.catalog.v1.Entity.capability_definition:type_name -> tokun.catalog.v1.CapabilityDefinition
+	34, // 32: tokun.catalog.v1.Entity.capability_option:type_name -> tokun.catalog.v1.CapabilityOption
+	35, // 33: tokun.catalog.v1.Entity.capability_value:type_name -> tokun.catalog.v1.CapabilityValue
+	36, // 34: tokun.catalog.v1.Entity.billing_item:type_name -> tokun.catalog.v1.BillingItem
+	37, // 35: tokun.catalog.v1.Entity.reference_price:type_name -> tokun.catalog.v1.ReferencePrice
+	38, // 36: tokun.catalog.v1.Entity.retail_price:type_name -> tokun.catalog.v1.RetailPrice
+	39, // 37: tokun.catalog.v1.Entity.cost_price:type_name -> tokun.catalog.v1.CostPrice
+	40, // 38: tokun.catalog.v1.Entity.hold_profile:type_name -> tokun.catalog.v1.HoldProfile
+	41, // 39: tokun.catalog.v1.Entity.leaderboard:type_name -> tokun.catalog.v1.Leaderboard
+	42, // 40: tokun.catalog.v1.Entity.leaderboard_entry:type_name -> tokun.catalog.v1.LeaderboardEntry
+	43, // 41: tokun.catalog.v1.Entity.locale:type_name -> tokun.catalog.v1.Locale
+	44, // 42: tokun.catalog.v1.Entity.localized_text:type_name -> tokun.catalog.v1.LocalizedText
+	45, // 43: tokun.catalog.v1.Entity.routing_preset:type_name -> tokun.catalog.v1.RoutingPreset
+	46, // 44: tokun.catalog.v1.Entity.routing_scenario:type_name -> tokun.catalog.v1.RoutingScenario
+	47, // 45: tokun.catalog.v1.Entity.planner_assignment:type_name -> tokun.catalog.v1.PlannerAssignment
+	9,  // 46: tokun.catalog.v1.Heartbeat.ts:type_name -> google.protobuf.Timestamp
+	9,  // 47: tokun.catalog.v1.ChangesetRef.effective_at:type_name -> google.protobuf.Timestamp
+	48, // 48: tokun.catalog.v1.Checkpoint.projection:type_name -> tokun.catalog.v1.Projection
+	9,  // 49: tokun.catalog.v1.Checkpoint.created_at:type_name -> google.protobuf.Timestamp
+	8,  // 50: tokun.catalog.v1.Checkpoint.entries:type_name -> tokun.catalog.v1.CheckpointEntry
+	2,  // 51: tokun.catalog.v1.Checkpoint.pending:type_name -> tokun.catalog.v1.Changeset
+	10, // 52: tokun.catalog.v1.CheckpointEntry.kind:type_name -> tokun.catalog.v1.EntityKind
+	4,  // 53: tokun.catalog.v1.CheckpointEntry.value:type_name -> tokun.catalog.v1.Entity
+	54, // [54:54] is the sub-list for method output_type
+	54, // [54:54] is the sub-list for method input_type
+	54, // [54:54] is the sub-list for extension type_name
+	54, // [54:54] is the sub-list for extension extendee
+	0,  // [0:54] is the sub-list for field type_name
 }
 
 func init() { file_tokun_catalog_v1_changeset_proto_init() }

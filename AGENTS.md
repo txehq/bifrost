@@ -24,6 +24,12 @@ in the batches and items of the plan,
 - **The local tests**, run on the committed, rebased change; all of them pass before the merge:
   - the Go tests of every module the change touches ([Build, Test & Dev Commands](#build-test--dev-commands), [Testing](#testing));
   - `cd tools/todocheck && GOWORK=off go run . -root ../.. -batches BATCHES`;
+  - the copy of txe's Tokun contracts compared with txe's:
+    `cd plugins/tokun/txeproto && TXE_REPO=<txe checkout> go test ./...`, with
+    `TXE_REPO` a checkout of txe's `new-tokun`, or the txe worktree of a
+    contract change that goes with this one (`plugins/tokun/txeproto/README.md`).
+    txe's `merge-check` runs the same test on the Bifrost source it uses
+    whenever a txe change touches `tokun/proto`;
   - txe's end-to-end environment running this worktree: its `ops/local/tokun-e2e/up --bifrost-src <this worktree>`,
     then its `test`, then `up --bifrost-src branch` to put the fork's `new-tokun` back (txe's
     `ops/local/tokun-e2e/README.md`). A change that goes with a txe change is checked with

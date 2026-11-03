@@ -25,7 +25,8 @@ const (
 // same number and documents the entity's change key: the string that
 // identifies one entity of the kind in Change.key, in tk_catalog_changes and
 // in checkpoints. Keys use only lower-case English letters, digits and
-// "._:-/|*".
+// "._:-/|*=,". A tier key is the tier's parameters as "name=value" sorted by
+// name and joined with ","; the base tier is "base".
 type EntityKind int32
 
 const (
@@ -83,7 +84,7 @@ const (
 	EntityKind_ENTITY_KIND_CAPABILITY_VALUE EntityKind = 25
 	// billing_item.
 	EntityKind_ENTITY_KIND_BILLING_ITEM EntityKind = 26
-	// "<model_id>|<endpoint_pattern>|<billing_item>|<tier key>|<effective_from>".
+	// "<model_id>|<endpoint_pattern>|<billing_item>|<tier key>|<observed_at in Unix seconds>".
 	EntityKind_ENTITY_KIND_REFERENCE_PRICE EntityKind = 27
 	// "<call name>|<provider_id or empty>|<endpoint_pattern>|<billing_item>|<tier key>|<price_version>".
 	EntityKind_ENTITY_KIND_RETAIL_PRICE EntityKind = 28
@@ -103,7 +104,7 @@ const (
 	EntityKind_ENTITY_KIND_ROUTING_PRESET EntityKind = 35
 	// id.
 	EntityKind_ENTITY_KIND_ROUTING_SCENARIO EntityKind = 36
-	// assignment_id.
+	// "<plugin_kind>|<scope>|<scope_id>|<planner_id>".
 	EntityKind_ENTITY_KIND_PLANNER_ASSIGNMENT EntityKind = 37
 )
 

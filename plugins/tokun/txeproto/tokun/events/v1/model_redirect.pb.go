@@ -32,8 +32,6 @@ const (
 // once.
 type ModelRedirectDecision struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
-	RequestId       string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	RequestedModel  string                 `protobuf:"bytes,2,opt,name=requested_model,json=requestedModel,proto3" json:"requested_model,omitempty"`
 	MatchKey        string                 `protobuf:"bytes,3,opt,name=match_key,json=matchKey,proto3" json:"match_key,omitempty"`
 	EndpointType    string                 `protobuf:"bytes,4,opt,name=endpoint_type,json=endpointType,proto3" json:"endpoint_type,omitempty"`
 	AccountId       int64                  `protobuf:"varint,5,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
@@ -44,7 +42,8 @@ type ModelRedirectDecision struct {
 	Response *v1.SelectModelResponse `protobuf:"bytes,8,opt,name=response,proto3" json:"response,omitempty"`
 	// active, pending.
 	State string `protobuf:"bytes,9,opt,name=state,proto3" json:"state,omitempty"`
-	// on, shadow.
+	// Mode of the assignment row that called the selector: on, shadow. A
+	// shadow-mode result is only a pending binding for operators to evaluate.
 	Mode          string                 `protobuf:"bytes,10,opt,name=mode,proto3" json:"mode,omitempty"`
 	CatalogSeq    int64                  `protobuf:"varint,11,opt,name=catalog_seq,json=catalogSeq,proto3" json:"catalog_seq,omitempty"`
 	Ts            *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=ts,proto3" json:"ts,omitempty"`
@@ -80,20 +79,6 @@ func (x *ModelRedirectDecision) ProtoReflect() protoreflect.Message {
 // Deprecated: Use ModelRedirectDecision.ProtoReflect.Descriptor instead.
 func (*ModelRedirectDecision) Descriptor() ([]byte, []int) {
 	return file_tokun_events_v1_model_redirect_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *ModelRedirectDecision) GetRequestId() string {
-	if x != nil {
-		return x.RequestId
-	}
-	return ""
-}
-
-func (x *ModelRedirectDecision) GetRequestedModel() string {
-	if x != nil {
-		return x.RequestedModel
-	}
-	return ""
 }
 
 func (x *ModelRedirectDecision) GetMatchKey() string {
@@ -170,11 +155,8 @@ var File_tokun_events_v1_model_redirect_proto protoreflect.FileDescriptor
 
 const file_tokun_events_v1_model_redirect_proto_rawDesc = "" +
 	"\n" +
-	"$tokun/events/v1/model_redirect.proto\x12\x0ftokun.events.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a%tokun/planner/v1/model_selector.proto\"\xc7\x03\n" +
-	"\x15ModelRedirectDecision\x12\x1d\n" +
-	"\n" +
-	"request_id\x18\x01 \x01(\tR\trequestId\x12'\n" +
-	"\x0frequested_model\x18\x02 \x01(\tR\x0erequestedModel\x12\x1b\n" +
+	"$tokun/events/v1/model_redirect.proto\x12\x0ftokun.events.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a%tokun/planner/v1/model_selector.proto\"\xa8\x03\n" +
+	"\x15ModelRedirectDecision\x12\x1b\n" +
 	"\tmatch_key\x18\x03 \x01(\tR\bmatchKey\x12#\n" +
 	"\rendpoint_type\x18\x04 \x01(\tR\fendpointType\x12\x1d\n" +
 	"\n" +
@@ -188,7 +170,8 @@ const file_tokun_events_v1_model_redirect_proto_rawDesc = "" +
 	" \x01(\tR\x04mode\x12\x1f\n" +
 	"\vcatalog_seq\x18\v \x01(\x03R\n" +
 	"catalogSeq\x12*\n" +
-	"\x02ts\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\x02tsB\xcb\x01\n" +
+	"\x02ts\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\x02tsJ\x04\b\x01\x10\x02J\x04\b\x02\x10\x03R\n" +
+	"request_idR\x0frequested_modelB\xcb\x01\n" +
 	"\x13com.tokun.events.v1B\x12ModelRedirectProtoP\x01ZBgithub.com/capsohq/txe/tokun/proto/gen/go/tokun/events/v1;eventsv1\xa2\x02\x03TEX\xaa\x02\x0fTokun.Events.V1\xca\x02\x0fTokun\\Events\\V1\xe2\x02\x1bTokun\\Events\\V1\\GPBMetadata\xea\x02\x11Tokun::Events::V1b\x06proto3"
 
 var (

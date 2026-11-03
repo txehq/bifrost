@@ -182,11 +182,7 @@ type Candidate struct {
 	// Contract usage target of the binding and usage so far this period.
 	Commitment *UpstreamCommitment `protobuf:"bytes,9,opt,name=commitment,proto3" json:"commitment,omitempty"`
 	// Prompt cache estimate under this interface's cache dialect.
-	Cache *CacheEstimate `protobuf:"bytes,10,opt,name=cache,proto3" json:"cache,omitempty"`
-	// True when the interface uses the request's format and is sent as is;
-	// false when Bifrost converts the request. Same-format candidates are tried
-	// before converted ones whatever their scores.
-	SameFormat    bool `protobuf:"varint,11,opt,name=same_format,json=sameFormat,proto3" json:"same_format,omitempty"`
+	Cache         *CacheEstimate `protobuf:"bytes,10,opt,name=cache,proto3" json:"cache,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -289,13 +285,6 @@ func (x *Candidate) GetCache() *CacheEstimate {
 		return x.Cache
 	}
 	return nil
-}
-
-func (x *Candidate) GetSameFormat() bool {
-	if x != nil {
-		return x.SameFormat
-	}
-	return false
 }
 
 type CacheEstimate struct {
@@ -573,11 +562,14 @@ type RequestFeatures struct {
 	// params.reasoning_budget); empty and 0 when absent.
 	ReasoningEffort       string `protobuf:"bytes,11,opt,name=reasoning_effort,json=reasoningEffort,proto3" json:"reasoning_effort,omitempty"`
 	ReasoningBudgetTokens int64  `protobuf:"varint,12,opt,name=reasoning_budget_tokens,json=reasoningBudgetTokens,proto3" json:"reasoning_budget_tokens,omitempty"`
-	HasResponseFormat     bool   `protobuf:"varint,13,opt,name=has_response_format,json=hasResponseFormat,proto3" json:"has_response_format,omitempty"`
-	HasCacheControl       bool   `protobuf:"varint,14,opt,name=has_cache_control,json=hasCacheControl,proto3" json:"has_cache_control,omitempty"`
-	// Request parameters that size the work of an image, audio, video or 3D
-	// request, keyed by the logical parameter key: "params.seconds",
-	// "params.resolution", "params.n", "params.size", "params.quality".
+	// The request asks for structured output (response_format and its
+	// equivalents).
+	HasResponseFormat bool `protobuf:"varint,13,opt,name=has_response_format,json=hasResponseFormat,proto3" json:"has_response_format,omitempty"`
+	// The request carries prompt cache breakpoints (cache_control).
+	HasCacheControl bool `protobuf:"varint,14,opt,name=has_cache_control,json=hasCacheControl,proto3" json:"has_cache_control,omitempty"`
+	// Task parameters of the request, such as duration, resolution and count,
+	// keyed by the logical parameter key: "params.seconds",
+	// "params.resolution", "params.n".
 	Params        map[string]*structpb.Value `protobuf:"bytes,15,rep,name=params,proto3" json:"params,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1036,7 +1028,7 @@ const file_tokun_planner_v1_planner_proto_rawDesc = "" +
 	"\x06intent\x18\v \x01(\v2\x1f.tokun.planner.v1.RoutingIntentR\x06intent\x1aC\n" +
 	"\x15SnapshotVersionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\xe9\x03\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\xdb\x03\n" +
 	"\tCandidate\x12\x1c\n" +
 	"\tinterface\x18\x01 \x01(\tR\tinterface\x12#\n" +
 	"\rforward_model\x18\x02 \x01(\tR\fforwardModel\x120\n" +
@@ -1052,9 +1044,7 @@ const file_tokun_planner_v1_planner_proto_rawDesc = "" +
 	"commitment\x18\t \x01(\v2$.tokun.planner.v1.UpstreamCommitmentR\n" +
 	"commitment\x125\n" +
 	"\x05cache\x18\n" +
-	" \x01(\v2\x1f.tokun.planner.v1.CacheEstimateR\x05cache\x12\x1f\n" +
-	"\vsame_format\x18\v \x01(\bR\n" +
-	"sameFormat\"\xef\x01\n" +
+	" \x01(\v2\x1f.tokun.planner.v1.CacheEstimateR\x05cacheJ\x04\b\v\x10\fR\vsame_format\"\xef\x01\n" +
 	"\rCacheEstimate\x12\x18\n" +
 	"\adialect\x18\x01 \x01(\tR\adialect\x12\x1d\n" +
 	"\n" +

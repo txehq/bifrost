@@ -897,9 +897,7 @@ type OperatingSwitch struct {
 	// disabled, draining.
 	Status string `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
 	// English.
-	Reason        string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
-	SetBy         string                 `protobuf:"bytes,5,opt,name=set_by,json=setBy,proto3" json:"set_by,omitempty"`
-	SetAt         *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=set_at,json=setAt,proto3" json:"set_at,omitempty"`
+	Reason        string `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -960,20 +958,6 @@ func (x *OperatingSwitch) GetReason() string {
 		return x.Reason
 	}
 	return ""
-}
-
-func (x *OperatingSwitch) GetSetBy() string {
-	if x != nil {
-		return x.SetBy
-	}
-	return ""
-}
-
-func (x *OperatingSwitch) GetSetAt() *timestamppb.Timestamp {
-	if x != nil {
-		return x.SetAt
-	}
-	return nil
 }
 
 var File_tokun_catalog_v1_supply_proto protoreflect.FileDescriptor
@@ -1074,16 +1058,14 @@ const file_tokun_catalog_v1_supply_proto_rawDesc = "" +
 	" \x01(\tB\x06\xa2\xbb\x18\x02\x02\x03R\x0fupstreamModelId\x1aE\n" +
 	"\x17UpstreamOperationsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x81\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xd3\x01\n" +
 	"\x0fOperatingSwitch\x12E\n" +
 	"\vtarget_kind\x18\x01 \x01(\x0e2\x1c.tokun.catalog.v1.EntityKindB\x06\xa2\xbb\x18\x02\x02\x03R\n" +
 	"targetKind\x12%\n" +
 	"\n" +
 	"target_key\x18\x02 \x01(\tB\x06\xa2\xbb\x18\x02\x02\x03R\ttargetKey\x12\x1e\n" +
 	"\x06status\x18\x03 \x01(\tB\x06\xa2\xbb\x18\x02\x02\x03R\x06status\x12\x16\n" +
-	"\x06reason\x18\x04 \x01(\tR\x06reason\x12\x15\n" +
-	"\x06set_by\x18\x05 \x01(\tR\x05setBy\x121\n" +
-	"\x06set_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x05setAtB\xcb\x01\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reasonJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aR\x06set_byR\x06set_atB\xcb\x01\n" +
 	"\x14com.tokun.catalog.v1B\vSupplyProtoP\x01ZDgithub.com/capsohq/txe/tokun/proto/gen/go/tokun/catalog/v1;catalogv1\xa2\x02\x03TCX\xaa\x02\x10Tokun.Catalog.V1\xca\x02\x10Tokun\\Catalog\\V1\xe2\x02\x1cTokun\\Catalog\\V1\\GPBMetadata\xea\x02\x12Tokun::Catalog::V1b\x06proto3"
 
 var (
@@ -1123,12 +1105,11 @@ var file_tokun_catalog_v1_supply_proto_depIdxs = []int32{
 	12, // 4: tokun.catalog.v1.Interface.registry_subject:type_name -> tokun.catalog.v1.RegistrySubject
 	9,  // 5: tokun.catalog.v1.Interface.upstream_operations:type_name -> tokun.catalog.v1.Interface.UpstreamOperationsEntry
 	13, // 6: tokun.catalog.v1.OperatingSwitch.target_kind:type_name -> tokun.catalog.v1.EntityKind
-	11, // 7: tokun.catalog.v1.OperatingSwitch.set_at:type_name -> google.protobuf.Timestamp
-	8,  // [8:8] is the sub-list for method output_type
-	8,  // [8:8] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	7,  // [7:7] is the sub-list for method output_type
+	7,  // [7:7] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_tokun_catalog_v1_supply_proto_init() }

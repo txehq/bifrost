@@ -590,10 +590,8 @@ type RoutingScenario struct {
 	Routing *structpb.Struct `protobuf:"bytes,2,opt,name=routing,proto3" json:"routing,omitempty"`
 	// Traffic features under which the scenario is suggested, e.g.
 	// {"stream_ratio": {"lte": 0.1}}.
-	SuggestWhen *structpb.Struct `protobuf:"bytes,3,opt,name=suggest_when,json=suggestWhen,proto3" json:"suggest_when,omitempty"`
-	Order       int32            `protobuf:"varint,4,opt,name=order,proto3" json:"order,omitempty"`
-	// draft, active, deprecated.
-	Status        string `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
+	SuggestWhen   *structpb.Struct `protobuf:"bytes,3,opt,name=suggest_when,json=suggestWhen,proto3" json:"suggest_when,omitempty"`
+	Order         int32            `protobuf:"varint,4,opt,name=order,proto3" json:"order,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -656,45 +654,36 @@ func (x *RoutingScenario) GetOrder() int32 {
 	return 0
 }
 
-func (x *RoutingScenario) GetStatus() string {
-	if x != nil {
-		return x.Status
-	}
-	return ""
-}
-
 // tk_planner_assignments: which planner or model selector serves which
-// traffic. A scope's rows split traffic by weight; an account sticks to one
+// traffic. It reaches the gateway's in-memory snapshot through the catalog
+// changelog. A scope's rows split traffic by weight; an account sticks to one
 // row through hash(salt, account_id), or a request through its hash when
 // by_request is set.
 type PlannerAssignment struct {
-	state        protoimpl.MessageState `protogen:"open.v1"`
-	AssignmentId string                 `protobuf:"bytes,1,opt,name=assignment_id,json=assignmentId,proto3" json:"assignment_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
 	// planner, model_selector.
 	PluginKind string `protobuf:"bytes,2,opt,name=plugin_kind,json=pluginKind,proto3" json:"plugin_kind,omitempty"`
 	// global, model, account, credential.
-	Scope   string `protobuf:"bytes,3,opt,name=scope,proto3" json:"scope,omitempty"`
+	Scope string `protobuf:"bytes,3,opt,name=scope,proto3" json:"scope,omitempty"`
+	// The model, account or credential id; empty for global.
 	ScopeId string `protobuf:"bytes,4,opt,name=scope_id,json=scopeId,proto3" json:"scope_id,omitempty"`
 	// e.g. "builtin/cost-health@1", "remote/latency-model@7".
 	PlannerId string `protobuf:"bytes,5,opt,name=planner_id,json=plannerId,proto3" json:"planner_id,omitempty"`
-	// gRPC target of a remote planner, e.g. "dns:///latency-model.planner:443";
-	// empty for a builtin one.
-	Target string `protobuf:"bytes,6,opt,name=target,proto3" json:"target,omitempty"`
-	Weight int32  `protobuf:"varint,7,opt,name=weight,proto3" json:"weight,omitempty"`
+	Weight    int32  `protobuf:"varint,7,opt,name=weight,proto3" json:"weight,omitempty"`
 	// on, shadow.
-	Mode      string `protobuf:"bytes,8,opt,name=mode,proto3" json:"mode,omitempty"`
-	Salt      string `protobuf:"bytes,9,opt,name=salt,proto3" json:"salt,omitempty"`
-	ByRequest bool   `protobuf:"varint,10,opt,name=by_request,json=byRequest,proto3" json:"by_request,omitempty"`
+	Mode string `protobuf:"bytes,8,opt,name=mode,proto3" json:"mode,omitempty"`
+	Salt string `protobuf:"bytes,9,opt,name=salt,proto3" json:"salt,omitempty"`
+	// Pick the row by the request's hash instead of hash(salt, account_id).
+	ByRequest bool `protobuf:"varint,10,opt,name=by_request,json=byRequest,proto3" json:"by_request,omitempty"`
 	// New rows default to planner.default_timeout or
 	// planner.model_selector.default_timeout.
 	TimeoutMs int32 `protobuf:"varint,11,opt,name=timeout_ms,json=timeoutMs,proto3" json:"timeout_ms,omitempty"`
-	SendBody  bool  `protobuf:"varint,12,opt,name=send_body,json=sendBody,proto3" json:"send_body,omitempty"`
-	// Bodies larger than this are not sent even with send_body.
+	// Send the request body to the planner.
+	SendBody bool `protobuf:"varint,12,opt,name=send_body,json=sendBody,proto3" json:"send_body,omitempty"`
+	// Size limit of the body sent with send_body: a larger body is not sent.
 	SendBodyMaxBytes int64 `protobuf:"varint,13,opt,name=send_body_max_bytes,json=sendBodyMaxBytes,proto3" json:"send_body_max_bytes,omitempty"`
-	// active, disabled.
-	Status        string `protobuf:"bytes,14,opt,name=status,proto3" json:"status,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *PlannerAssignment) Reset() {
@@ -727,13 +716,6 @@ func (*PlannerAssignment) Descriptor() ([]byte, []int) {
 	return file_tokun_catalog_v1_content_proto_rawDescGZIP(), []int{7}
 }
 
-func (x *PlannerAssignment) GetAssignmentId() string {
-	if x != nil {
-		return x.AssignmentId
-	}
-	return ""
-}
-
 func (x *PlannerAssignment) GetPluginKind() string {
 	if x != nil {
 		return x.PluginKind
@@ -758,13 +740,6 @@ func (x *PlannerAssignment) GetScopeId() string {
 func (x *PlannerAssignment) GetPlannerId() string {
 	if x != nil {
 		return x.PlannerId
-	}
-	return ""
-}
-
-func (x *PlannerAssignment) GetTarget() string {
-	if x != nil {
-		return x.Target
 	}
 	return ""
 }
@@ -816,13 +791,6 @@ func (x *PlannerAssignment) GetSendBodyMaxBytes() int64 {
 		return x.SendBodyMaxBytes
 	}
 	return 0
-}
-
-func (x *PlannerAssignment) GetStatus() string {
-	if x != nil {
-		return x.Status
-	}
-	return ""
 }
 
 var File_tokun_catalog_v1_content_proto protoreflect.FileDescriptor
@@ -880,22 +848,19 @@ const file_tokun_catalog_v1_content_proto_rawDesc = "" +
 	"\x06status\x18\b \x01(\tB\x05\xa2\xbb\x18\x01\x01R\x06status\"V\n" +
 	"\vSuffixAlias\x12\x1b\n" +
 	"\x05alias\x18\x01 \x01(\tB\x05\xa2\xbb\x18\x01\x01R\x05alias\x12*\n" +
-	"\rservice_tiers\x18\x02 \x03(\tB\x05\xa2\xbb\x18\x01\x01R\fserviceTiers\"\xda\x01\n" +
+	"\rservice_tiers\x18\x02 \x03(\tB\x05\xa2\xbb\x18\x01\x01R\fserviceTiers\"\xc9\x01\n" +
 	"\x0fRoutingScenario\x12\x15\n" +
 	"\x02id\x18\x01 \x01(\tB\x05\xa2\xbb\x18\x01\x01R\x02id\x128\n" +
 	"\arouting\x18\x02 \x01(\v2\x17.google.protobuf.StructB\x05\xa2\xbb\x18\x01\x01R\arouting\x12:\n" +
 	"\fsuggest_when\x18\x03 \x01(\v2\x17.google.protobuf.StructR\vsuggestWhen\x12\x1b\n" +
-	"\x05order\x18\x04 \x01(\x05B\x05\xa2\xbb\x18\x01\x01R\x05order\x12\x1d\n" +
-	"\x06status\x18\x05 \x01(\tB\x05\xa2\xbb\x18\x01\x01R\x06status\"\xac\x03\n" +
-	"\x11PlannerAssignment\x12#\n" +
-	"\rassignment_id\x18\x01 \x01(\tR\fassignmentId\x12\x1f\n" +
+	"\x05order\x18\x04 \x01(\x05B\x05\xa2\xbb\x18\x01\x01R\x05orderJ\x04\b\x05\x10\x06R\x06status\"\x88\x03\n" +
+	"\x11PlannerAssignment\x12\x1f\n" +
 	"\vplugin_kind\x18\x02 \x01(\tR\n" +
 	"pluginKind\x12\x14\n" +
 	"\x05scope\x18\x03 \x01(\tR\x05scope\x12\x19\n" +
 	"\bscope_id\x18\x04 \x01(\tR\ascopeId\x12\x1d\n" +
 	"\n" +
 	"planner_id\x18\x05 \x01(\tR\tplannerId\x12\x16\n" +
-	"\x06target\x18\x06 \x01(\tR\x06target\x12\x16\n" +
 	"\x06weight\x18\a \x01(\x05R\x06weight\x12\x12\n" +
 	"\x04mode\x18\b \x01(\tR\x04mode\x12\x12\n" +
 	"\x04salt\x18\t \x01(\tR\x04salt\x12\x1d\n" +
@@ -905,8 +870,7 @@ const file_tokun_catalog_v1_content_proto_rawDesc = "" +
 	"\n" +
 	"timeout_ms\x18\v \x01(\x05R\ttimeoutMs\x12\x1b\n" +
 	"\tsend_body\x18\f \x01(\bR\bsendBody\x12-\n" +
-	"\x13send_body_max_bytes\x18\r \x01(\x03R\x10sendBodyMaxBytes\x12\x16\n" +
-	"\x06status\x18\x0e \x01(\tR\x06status:\a\xaa\xbb\x18\x03\x01\x02\x04B\xcc\x01\n" +
+	"\x13send_body_max_bytes\x18\r \x01(\x03R\x10sendBodyMaxBytes:\a\xaa\xbb\x18\x03\x01\x02\x04J\x04\b\x01\x10\x02J\x04\b\x06\x10\aJ\x04\b\x0e\x10\x0fR\rassignment_idR\x06targetR\x06statusB\xcc\x01\n" +
 	"\x14com.tokun.catalog.v1B\fContentProtoP\x01ZDgithub.com/capsohq/txe/tokun/proto/gen/go/tokun/catalog/v1;catalogv1\xa2\x02\x03TCX\xaa\x02\x10Tokun.Catalog.V1\xca\x02\x10Tokun\\Catalog\\V1\xe2\x02\x1cTokun\\Catalog\\V1\\GPBMetadata\xea\x02\x12Tokun::Catalog::V1b\x06proto3"
 
 var (

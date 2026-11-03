@@ -152,13 +152,8 @@ type InterfaceSignal struct {
 	ToolCallErrors         int64            `protobuf:"varint,17,opt,name=tool_call_errors,json=toolCallErrors,proto3" json:"tool_call_errors,omitempty"`
 	StructuredOutputErrors int64            `protobuf:"varint,18,opt,name=structured_output_errors,json=structuredOutputErrors,proto3" json:"structured_output_errors,omitempty"`
 	Keys                   []*KeySignal     `protobuf:"bytes,19,rep,name=keys,proto3" json:"keys,omitempty"`
-	// Async task submissions that finished in the window.
-	TaskSuccesses int64 `protobuf:"varint,20,opt,name=task_successes,json=taskSuccesses,proto3" json:"task_successes,omitempty"`
-	TaskFailures  int64 `protobuf:"varint,21,opt,name=task_failures,json=taskFailures,proto3" json:"task_failures,omitempty"`
-	// Task durations, same encoding as ttft_sketch.
-	TaskDurationSketch []byte `protobuf:"bytes,22,opt,name=task_duration_sketch,json=taskDurationSketch,proto3" json:"task_duration_sketch,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *InterfaceSignal) Reset() {
@@ -324,27 +319,6 @@ func (x *InterfaceSignal) GetKeys() []*KeySignal {
 	return nil
 }
 
-func (x *InterfaceSignal) GetTaskSuccesses() int64 {
-	if x != nil {
-		return x.TaskSuccesses
-	}
-	return 0
-}
-
-func (x *InterfaceSignal) GetTaskFailures() int64 {
-	if x != nil {
-		return x.TaskFailures
-	}
-	return 0
-}
-
-func (x *InterfaceSignal) GetTaskDurationSketch() []byte {
-	if x != nil {
-		return x.TaskDurationSketch
-	}
-	return nil
-}
-
 type KeySignal struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	KeyId     string                 `protobuf:"bytes,1,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
@@ -451,12 +425,11 @@ type ExternalStatus struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// e.g. "tokenfeeds/lab_status".
 	Source string `protobuf:"bytes,1,opt,name=source,proto3" json:"source,omitempty"`
-	// lab, provider, upstream.
+	// lab, provider.
 	SubjectKind string `protobuf:"bytes,2,opt,name=subject_kind,json=subjectKind,proto3" json:"subject_kind,omitempty"`
 	SubjectId   string `protobuf:"bytes,3,opt,name=subject_id,json=subjectId,proto3" json:"subject_id,omitempty"`
 	// none, minor, major, maintenance.
-	Status     string                 `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
-	ObservedAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=observed_at,json=observedAt,proto3" json:"observed_at,omitempty"`
+	Status string `protobuf:"bytes,4,opt,name=status,proto3" json:"status,omitempty"`
 	// Interfaces the status applies to, resolved from the catalog.
 	Interfaces    []string `protobuf:"bytes,6,rep,name=interfaces,proto3" json:"interfaces,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -521,13 +494,6 @@ func (x *ExternalStatus) GetStatus() string {
 	return ""
 }
 
-func (x *ExternalStatus) GetObservedAt() *timestamppb.Timestamp {
-	if x != nil {
-		return x.ObservedAt
-	}
-	return nil
-}
-
 func (x *ExternalStatus) GetInterfaces() []string {
 	if x != nil {
 		return x.Interfaces
@@ -548,7 +514,7 @@ const file_tokun_routing_v1_signals_proto_rawDesc = "" +
 	"\n" +
 	"interfaces\x18\x05 \x03(\v2!.tokun.routing.v1.InterfaceSignalR\n" +
 	"interfaces\x12<\n" +
-	"\bexternal\x18\x06 \x03(\v2 .tokun.routing.v1.ExternalStatusR\bexternal\"\xd3\t\n" +
+	"\bexternal\x18\x06 \x03(\v2 .tokun.routing.v1.ExternalStatusR\bexternal\"\x9c\t\n" +
 	"\x0fInterfaceSignal\x12\x1c\n" +
 	"\tinterface\x18\x01 \x01(\tR\tinterface\x12!\n" +
 	"\finput_bucket\x18\x02 \x01(\tR\vinputBucket\x12\x1a\n" +
@@ -570,10 +536,7 @@ const file_tokun_routing_v1_signals_proto_rawDesc = "" +
 	"\x13capability_failures\x18\x10 \x03(\v29.tokun.routing.v1.InterfaceSignal.CapabilityFailuresEntryR\x12capabilityFailures\x12(\n" +
 	"\x10tool_call_errors\x18\x11 \x01(\x03R\x0etoolCallErrors\x128\n" +
 	"\x18structured_output_errors\x18\x12 \x01(\x03R\x16structuredOutputErrors\x12/\n" +
-	"\x04keys\x18\x13 \x03(\v2\x1b.tokun.routing.v1.KeySignalR\x04keys\x12%\n" +
-	"\x0etask_successes\x18\x14 \x01(\x03R\rtaskSuccesses\x12#\n" +
-	"\rtask_failures\x18\x15 \x01(\x03R\ftaskFailures\x120\n" +
-	"\x14task_duration_sketch\x18\x16 \x01(\fR\x12taskDurationSketch\x1a?\n" +
+	"\x04keys\x18\x13 \x03(\v2\x1b.tokun.routing.v1.KeySignalR\x04keys\x1a?\n" +
 	"\x11ErrorClassesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\x1a>\n" +
@@ -582,7 +545,7 @@ const file_tokun_routing_v1_signals_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\x1aE\n" +
 	"\x17CapabilityFailuresEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\xfd\x01\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01J\x04\b\x14\x10\x15J\x04\b\x15\x10\x16J\x04\b\x16\x10\x17R\x0etask_successesR\rtask_failuresR\x14task_duration_sketch\"\xfd\x01\n" +
 	"\tKeySignal\x12\x15\n" +
 	"\x06key_id\x18\x01 \x01(\tR\x05keyId\x12\x1a\n" +
 	"\brequests\x18\x02 \x01(\x03R\brequests\x12\x16\n" +
@@ -591,18 +554,16 @@ const file_tokun_routing_v1_signals_proto_rawDesc = "" +
 	"\rauth_failures\x18\x05 \x01(\x03R\fauthFailures\x12\x1a\n" +
 	"\binflight\x18\x06 \x01(\x03R\binflight\x12!\n" +
 	"\finput_tokens\x18\a \x01(\x03R\vinputTokens\x12#\n" +
-	"\routput_tokens\x18\b \x01(\x03R\foutputTokens\"\xdf\x01\n" +
+	"\routput_tokens\x18\b \x01(\x03R\foutputTokens\"\xb5\x01\n" +
 	"\x0eExternalStatus\x12\x16\n" +
 	"\x06source\x18\x01 \x01(\tR\x06source\x12!\n" +
 	"\fsubject_kind\x18\x02 \x01(\tR\vsubjectKind\x12\x1d\n" +
 	"\n" +
 	"subject_id\x18\x03 \x01(\tR\tsubjectId\x12\x16\n" +
-	"\x06status\x18\x04 \x01(\tR\x06status\x12;\n" +
-	"\vobserved_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"observedAt\x12\x1e\n" +
+	"\x06status\x18\x04 \x01(\tR\x06status\x12\x1e\n" +
 	"\n" +
 	"interfaces\x18\x06 \x03(\tR\n" +
-	"interfacesB\xcc\x01\n" +
+	"interfacesJ\x04\b\x05\x10\x06R\vobserved_atB\xcc\x01\n" +
 	"\x14com.tokun.routing.v1B\fSignalsProtoP\x01ZDgithub.com/capsohq/txe/tokun/proto/gen/go/tokun/routing/v1;routingv1\xa2\x02\x03TRX\xaa\x02\x10Tokun.Routing.V1\xca\x02\x10Tokun\\Routing\\V1\xe2\x02\x1cTokun\\Routing\\V1\\GPBMetadata\xea\x02\x12Tokun::Routing::V1b\x06proto3"
 
 var (
@@ -638,12 +599,11 @@ var file_tokun_routing_v1_signals_proto_depIdxs = []int32{
 	5, // 5: tokun.routing.v1.InterfaceSignal.error_scopes:type_name -> tokun.routing.v1.InterfaceSignal.ErrorScopesEntry
 	6, // 6: tokun.routing.v1.InterfaceSignal.capability_failures:type_name -> tokun.routing.v1.InterfaceSignal.CapabilityFailuresEntry
 	2, // 7: tokun.routing.v1.InterfaceSignal.keys:type_name -> tokun.routing.v1.KeySignal
-	7, // 8: tokun.routing.v1.ExternalStatus.observed_at:type_name -> google.protobuf.Timestamp
-	9, // [9:9] is the sub-list for method output_type
-	9, // [9:9] is the sub-list for method input_type
-	9, // [9:9] is the sub-list for extension type_name
-	9, // [9:9] is the sub-list for extension extendee
-	0, // [0:9] is the sub-list for field type_name
+	8, // [8:8] is the sub-list for method output_type
+	8, // [8:8] is the sub-list for method input_type
+	8, // [8:8] is the sub-list for extension type_name
+	8, // [8:8] is the sub-list for extension extendee
+	0, // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_tokun_routing_v1_signals_proto_init() }

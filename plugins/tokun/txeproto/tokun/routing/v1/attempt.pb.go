@@ -120,11 +120,14 @@ type DrawnCandidate struct {
 	UpstreamShare float64 `protobuf:"fixed64,6,opt,name=upstream_share,json=upstreamShare,proto3" json:"upstream_share,omitempty"`
 	// Share of the key among its upstream's keys.
 	KeyShare float64 `protobuf:"fixed64,7,opt,name=key_share,json=keyShare,proto3" json:"key_share,omitempty"`
-	// Scored below its layer's threshold and ranked after the drawn entries.
+	// Scored below its layer's threshold: not drawn, ranked by score at the end
+	// of the layer's fallbacks.
 	BelowThreshold bool `protobuf:"varint,8,opt,name=below_threshold,json=belowThreshold,proto3" json:"below_threshold,omitempty"`
-	SameFormat     bool `protobuf:"varint,9,opt,name=same_format,json=sameFormat,proto3" json:"same_format,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// The interface uses the request's format: in the group drawn ahead of the
+	// converted candidates.
+	SameFormat    bool `protobuf:"varint,9,opt,name=same_format,json=sameFormat,proto3" json:"same_format,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DrawnCandidate) Reset() {
@@ -229,11 +232,6 @@ type RouteAttempt struct {
 	UpstreamId int64  `protobuf:"varint,3,opt,name=upstream_id,json=upstreamId,proto3" json:"upstream_id,omitempty"`
 	Interface  string `protobuf:"bytes,4,opt,name=interface,proto3" json:"interface,omitempty"`
 	KeyId      string `protobuf:"bytes,5,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
-	// healthobs outcome codes: success, failure, client_cancel,
-	// first_output_timeout, stall_timeout, truncated, abandoned,
-	// request_rejected, governance_refused, superseded; skipped when the plugin
-	// did not send this entry.
-	Outcome string `protobuf:"bytes,6,opt,name=outcome,proto3" json:"outcome,omitempty"`
 	// HTTP status of the upstream response; 0 when no response arrived.
 	StatusCode int32 `protobuf:"varint,7,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`
 	// key (401, 403, 429), upstream (402, quota exhausted, 5xx, connection
@@ -256,8 +254,10 @@ type RouteAttempt struct {
 	// Set when the plugin skipped the entry without sending:
 	// provider_not_synced or key_not_synced (Bifrost does not have the entry or
 	// key yet).
-	SkipReason    string `protobuf:"bytes,15,opt,name=skip_reason,json=skipReason,proto3" json:"skip_reason,omitempty"`
-	SameFormat    bool   `protobuf:"varint,16,opt,name=same_format,json=sameFormat,proto3" json:"same_format,omitempty"`
+	SkipReason string `protobuf:"bytes,15,opt,name=skip_reason,json=skipReason,proto3" json:"skip_reason,omitempty"`
+	// The attempt was sent in the request's format as is; false when the
+	// target provider converted it.
+	SameFormat    bool `protobuf:"varint,16,opt,name=same_format,json=sameFormat,proto3" json:"same_format,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -323,13 +323,6 @@ func (x *RouteAttempt) GetInterface() string {
 func (x *RouteAttempt) GetKeyId() string {
 	if x != nil {
 		return x.KeyId
-	}
-	return ""
-}
-
-func (x *RouteAttempt) GetOutcome() string {
-	if x != nil {
-		return x.Outcome
 	}
 	return ""
 }
@@ -427,7 +420,7 @@ const file_tokun_routing_v1_attempt_proto_rawDesc = "" +
 	"\tkey_share\x18\a \x01(\x01R\bkeyShare\x12'\n" +
 	"\x0fbelow_threshold\x18\b \x01(\bR\x0ebelowThreshold\x12\x1f\n" +
 	"\vsame_format\x18\t \x01(\bR\n" +
-	"sameFormat\"\xfa\x04\n" +
+	"sameFormat\"\xef\x04\n" +
 	"\fRouteAttempt\x12\x14\n" +
 	"\x05index\x18\x01 \x01(\x05R\x05index\x12\x1f\n" +
 	"\vprovider_id\x18\x02 \x01(\tR\n" +
@@ -435,8 +428,7 @@ const file_tokun_routing_v1_attempt_proto_rawDesc = "" +
 	"\vupstream_id\x18\x03 \x01(\x03R\n" +
 	"upstreamId\x12\x1c\n" +
 	"\tinterface\x18\x04 \x01(\tR\tinterface\x12\x15\n" +
-	"\x06key_id\x18\x05 \x01(\tR\x05keyId\x12\x18\n" +
-	"\aoutcome\x18\x06 \x01(\tR\aoutcome\x12\x1f\n" +
+	"\x06key_id\x18\x05 \x01(\tR\x05keyId\x12\x1f\n" +
 	"\vstatus_code\x18\a \x01(\x05R\n" +
 	"statusCode\x12\x1f\n" +
 	"\verror_scope\x18\b \x01(\tR\n" +
@@ -453,7 +445,7 @@ const file_tokun_routing_v1_attempt_proto_rawDesc = "" +
 	"\vskip_reason\x18\x0f \x01(\tR\n" +
 	"skipReason\x12\x1f\n" +
 	"\vsame_format\x18\x10 \x01(\bR\n" +
-	"sameFormatB\xcc\x01\n" +
+	"sameFormatJ\x04\b\x06\x10\aR\aoutcomeB\xcc\x01\n" +
 	"\x14com.tokun.routing.v1B\fAttemptProtoP\x01ZDgithub.com/capsohq/txe/tokun/proto/gen/go/tokun/routing/v1;routingv1\xa2\x02\x03TRX\xaa\x02\x10Tokun.Routing.V1\xca\x02\x10Tokun\\Routing\\V1\xe2\x02\x1cTokun\\Routing\\V1\\GPBMetadata\xea\x02\x12Tokun::Routing::V1b\x06proto3"
 
 var (

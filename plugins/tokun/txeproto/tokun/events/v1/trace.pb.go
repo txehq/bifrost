@@ -25,28 +25,26 @@ const (
 
 // RequestTrace is the value of every record on tk.events.traces.v1, keyed by
 // the decimal account_id. ch-ingest writes it to tk_request_traces, which only
-// staff can read, kept for traces.retention. Metadata only, never request or
-// response content.
+// staff can read, kept for traces.retention and queried by request_id, account
+// and time. Metadata only, never request or response content.
 type RequestTrace struct {
-	state        protoimpl.MessageState `protogen:"open.v1"`
-	RequestId    string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	AccountId    int64                  `protobuf:"varint,2,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
-	CredentialId int64                  `protobuf:"varint,3,opt,name=credential_id,json=credentialId,proto3" json:"credential_id,omitempty"`
-	Ts           *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=ts,proto3" json:"ts,omitempty"`
-	EndpointType string                 `protobuf:"bytes,5,opt,name=endpoint_type,json=endpointType,proto3" json:"endpoint_type,omitempty"`
-	// Every request path step with its timing.
-	Steps        []*TraceStep    `protobuf:"bytes,6,rep,name=steps,proto3" json:"steps,omitempty"`
-	Planning     *TracePlanning  `protobuf:"bytes,7,opt,name=planning,proto3" json:"planning,omitempty"`
-	Attempts     []*TraceAttempt `protobuf:"bytes,8,rep,name=attempts,proto3" json:"attempts,omitempty"`
-	HoldMicros   int64           `protobuf:"varint,9,opt,name=hold_micros,json=holdMicros,proto3" json:"hold_micros,omitempty"`
-	ChargeMicros int64           `protobuf:"varint,10,opt,name=charge_micros,json=chargeMicros,proto3" json:"charge_micros,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	RequestId string                 `protobuf:"bytes,1,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	AccountId int64                  `protobuf:"varint,2,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	Ts        *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=ts,proto3" json:"ts,omitempty"`
+	// Every request path step with its time.
+	Steps    []*TraceStep    `protobuf:"bytes,6,rep,name=steps,proto3" json:"steps,omitempty"`
+	Planning *TracePlanning  `protobuf:"bytes,7,opt,name=planning,proto3" json:"planning,omitempty"`
+	Attempts []*TraceAttempt `protobuf:"bytes,8,rep,name=attempts,proto3" json:"attempts,omitempty"`
+	// The hold and the charge.
+	HoldMicros   int64 `protobuf:"varint,9,opt,name=hold_micros,json=holdMicros,proto3" json:"hold_micros,omitempty"`
+	ChargeMicros int64 `protobuf:"varint,10,opt,name=charge_micros,json=chargeMicros,proto3" json:"charge_micros,omitempty"`
 	// The request id of the charge whose rating trace belongs to this request;
 	// empty when nothing was charged.
 	RatingTraceId string `protobuf:"bytes,11,opt,name=rating_trace_id,json=ratingTraceId,proto3" json:"rating_trace_id,omitempty"`
 	Anonymous     bool   `protobuf:"varint,12,opt,name=anonymous,proto3" json:"anonymous,omitempty"`
-	StatusCode    int32  `protobuf:"varint,13,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`
-	ErrorCode     string `protobuf:"bytes,14,opt,name=error_code,json=errorCode,proto3" json:"error_code,omitempty"`
-	// OpenTelemetry trace id, hex; empty when the request was not sampled.
+	// OpenTelemetry trace id of the request, hex; empty when the request was
+	// not sampled (tracing.sample_ratio).
 	OtelTraceId   string `protobuf:"bytes,15,opt,name=otel_trace_id,json=otelTraceId,proto3" json:"otel_trace_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -96,25 +94,11 @@ func (x *RequestTrace) GetAccountId() int64 {
 	return 0
 }
 
-func (x *RequestTrace) GetCredentialId() int64 {
-	if x != nil {
-		return x.CredentialId
-	}
-	return 0
-}
-
 func (x *RequestTrace) GetTs() *timestamppb.Timestamp {
 	if x != nil {
 		return x.Ts
 	}
 	return nil
-}
-
-func (x *RequestTrace) GetEndpointType() string {
-	if x != nil {
-		return x.EndpointType
-	}
-	return ""
 }
 
 func (x *RequestTrace) GetSteps() []*TraceStep {
@@ -166,20 +150,6 @@ func (x *RequestTrace) GetAnonymous() bool {
 	return false
 }
 
-func (x *RequestTrace) GetStatusCode() int32 {
-	if x != nil {
-		return x.StatusCode
-	}
-	return 0
-}
-
-func (x *RequestTrace) GetErrorCode() string {
-	if x != nil {
-		return x.ErrorCode
-	}
-	return ""
-}
-
 func (x *RequestTrace) GetOtelTraceId() string {
 	if x != nil {
 		return x.OtelTraceId
@@ -192,9 +162,7 @@ type TraceStep struct {
 	// Plugin step name: path_normalization, format_detection, auth,
 	// rate_limit, read_body, name_resolution, capability_check, hold, balance,
 	// plan, route_plan, forward, rewrite_response, settle, events.
-	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	// From the start of the request.
-	Start         *durationpb.Duration `protobuf:"bytes,2,opt,name=start,proto3" json:"start,omitempty"`
+	Name          string               `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Duration      *durationpb.Duration `protobuf:"bytes,3,opt,name=duration,proto3" json:"duration,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -235,13 +203,6 @@ func (x *TraceStep) GetName() string {
 		return x.Name
 	}
 	return ""
-}
-
-func (x *TraceStep) GetStart() *durationpb.Duration {
-	if x != nil {
-		return x.Start
-	}
-	return nil
 }
 
 func (x *TraceStep) GetDuration() *durationpb.Duration {
@@ -321,11 +282,8 @@ func (x *TracePlanning) GetCandidates() []*TraceCandidate {
 
 type TraceCandidate struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	ProviderId    string                 `protobuf:"bytes,1,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"`
 	Interface     string                 `protobuf:"bytes,2,opt,name=interface,proto3" json:"interface,omitempty"`
 	Score         float64                `protobuf:"fixed64,3,opt,name=score,proto3" json:"score,omitempty"`
-	Uncertainty   float64                `protobuf:"fixed64,4,opt,name=uncertainty,proto3" json:"uncertainty,omitempty"`
-	Share         float64                `protobuf:"fixed64,5,opt,name=share,proto3" json:"share,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -360,13 +318,6 @@ func (*TraceCandidate) Descriptor() ([]byte, []int) {
 	return file_tokun_events_v1_trace_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *TraceCandidate) GetProviderId() string {
-	if x != nil {
-		return x.ProviderId
-	}
-	return ""
-}
-
 func (x *TraceCandidate) GetInterface() string {
 	if x != nil {
 		return x.Interface
@@ -381,34 +332,20 @@ func (x *TraceCandidate) GetScore() float64 {
 	return 0
 }
 
-func (x *TraceCandidate) GetUncertainty() float64 {
-	if x != nil {
-		return x.Uncertainty
-	}
-	return 0
-}
-
-func (x *TraceCandidate) GetShare() float64 {
-	if x != nil {
-		return x.Share
-	}
-	return 0
-}
-
 type TraceAttempt struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SendId        string                 `protobuf:"bytes,1,opt,name=send_id,json=sendId,proto3" json:"send_id,omitempty"`
-	Attempt       int32                  `protobuf:"varint,2,opt,name=attempt,proto3" json:"attempt,omitempty"`
-	ProviderId    string                 `protobuf:"bytes,3,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"`
-	UpstreamId    int64                  `protobuf:"varint,4,opt,name=upstream_id,json=upstreamId,proto3" json:"upstream_id,omitempty"`
-	KeyId         string                 `protobuf:"bytes,5,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
-	Interface     string                 `protobuf:"bytes,6,opt,name=interface,proto3" json:"interface,omitempty"`
-	StatusCode    int32                  `protobuf:"varint,7,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`
-	Outcome       string                 `protobuf:"bytes,8,opt,name=outcome,proto3" json:"outcome,omitempty"`
-	Ttft          *durationpb.Duration   `protobuf:"bytes,9,opt,name=ttft,proto3" json:"ttft,omitempty"`
-	Duration      *durationpb.Duration   `protobuf:"bytes,10,opt,name=duration,proto3" json:"duration,omitempty"`
-	RequestBytes  int64                  `protobuf:"varint,11,opt,name=request_bytes,json=requestBytes,proto3" json:"request_bytes,omitempty"`
-	ResponseBytes int64                  `protobuf:"varint,12,opt,name=response_bytes,json=responseBytes,proto3" json:"response_bytes,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Provider and upstream of the attempt.
+	ProviderId string `protobuf:"bytes,3,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"`
+	UpstreamId int64  `protobuf:"varint,4,opt,name=upstream_id,json=upstreamId,proto3" json:"upstream_id,omitempty"`
+	// HTTP status of the upstream response; 0 when none arrived.
+	StatusCode int32 `protobuf:"varint,7,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`
+	// healthobs outcome of the attempt, as in the request outcome's attempt
+	// record.
+	Outcome  string               `protobuf:"bytes,8,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	Ttft     *durationpb.Duration `protobuf:"bytes,9,opt,name=ttft,proto3" json:"ttft,omitempty"`
+	Duration *durationpb.Duration `protobuf:"bytes,10,opt,name=duration,proto3" json:"duration,omitempty"`
+	// Bytes of the upstream response.
+	ResponseBytes int64 `protobuf:"varint,12,opt,name=response_bytes,json=responseBytes,proto3" json:"response_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -443,20 +380,6 @@ func (*TraceAttempt) Descriptor() ([]byte, []int) {
 	return file_tokun_events_v1_trace_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *TraceAttempt) GetSendId() string {
-	if x != nil {
-		return x.SendId
-	}
-	return ""
-}
-
-func (x *TraceAttempt) GetAttempt() int32 {
-	if x != nil {
-		return x.Attempt
-	}
-	return 0
-}
-
 func (x *TraceAttempt) GetProviderId() string {
 	if x != nil {
 		return x.ProviderId
@@ -469,20 +392,6 @@ func (x *TraceAttempt) GetUpstreamId() int64 {
 		return x.UpstreamId
 	}
 	return 0
-}
-
-func (x *TraceAttempt) GetKeyId() string {
-	if x != nil {
-		return x.KeyId
-	}
-	return ""
-}
-
-func (x *TraceAttempt) GetInterface() string {
-	if x != nil {
-		return x.Interface
-	}
-	return ""
 }
 
 func (x *TraceAttempt) GetStatusCode() int32 {
@@ -513,13 +422,6 @@ func (x *TraceAttempt) GetDuration() *durationpb.Duration {
 	return nil
 }
 
-func (x *TraceAttempt) GetRequestBytes() int64 {
-	if x != nil {
-		return x.RequestBytes
-	}
-	return 0
-}
-
 func (x *TraceAttempt) GetResponseBytes() int64 {
 	if x != nil {
 		return x.ResponseBytes
@@ -531,15 +433,13 @@ var File_tokun_events_v1_trace_proto protoreflect.FileDescriptor
 
 const file_tokun_events_v1_trace_proto_rawDesc = "" +
 	"\n" +
-	"\x1btokun/events/v1/trace.proto\x12\x0ftokun.events.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xdb\x04\n" +
+	"\x1btokun/events/v1/trace.proto\x12\x0ftokun.events.v1\x1a\x1egoogle/protobuf/duration.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xa0\x04\n" +
 	"\fRequestTrace\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12\x1d\n" +
 	"\n" +
-	"account_id\x18\x02 \x01(\x03R\taccountId\x12#\n" +
-	"\rcredential_id\x18\x03 \x01(\x03R\fcredentialId\x12*\n" +
-	"\x02ts\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\x12#\n" +
-	"\rendpoint_type\x18\x05 \x01(\tR\fendpointType\x120\n" +
+	"account_id\x18\x02 \x01(\x03R\taccountId\x12*\n" +
+	"\x02ts\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x02ts\x120\n" +
 	"\x05steps\x18\x06 \x03(\v2\x1a.tokun.events.v1.TraceStepR\x05steps\x12:\n" +
 	"\bplanning\x18\a \x01(\v2\x1e.tokun.events.v1.TracePlanningR\bplanning\x129\n" +
 	"\battempts\x18\b \x03(\v2\x1d.tokun.events.v1.TraceAttemptR\battempts\x12\x1f\n" +
@@ -548,16 +448,12 @@ const file_tokun_events_v1_trace_proto_rawDesc = "" +
 	"\rcharge_micros\x18\n" +
 	" \x01(\x03R\fchargeMicros\x12&\n" +
 	"\x0frating_trace_id\x18\v \x01(\tR\rratingTraceId\x12\x1c\n" +
-	"\tanonymous\x18\f \x01(\bR\tanonymous\x12\x1f\n" +
-	"\vstatus_code\x18\r \x01(\x05R\n" +
-	"statusCode\x12\x1d\n" +
-	"\n" +
-	"error_code\x18\x0e \x01(\tR\terrorCode\x12\"\n" +
-	"\rotel_trace_id\x18\x0f \x01(\tR\votelTraceId\"\x87\x01\n" +
+	"\tanonymous\x18\f \x01(\bR\tanonymous\x12\"\n" +
+	"\rotel_trace_id\x18\x0f \x01(\tR\votelTraceIdJ\x04\b\x03\x10\x04J\x04\b\x05\x10\x06J\x04\b\r\x10\x0eJ\x04\b\x0e\x10\x0fR\rcredential_idR\rendpoint_typeR\vstatus_codeR\n" +
+	"error_code\"c\n" +
 	"\tTraceStep\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12/\n" +
-	"\x05start\x18\x02 \x01(\v2\x19.google.protobuf.DurationR\x05start\x125\n" +
-	"\bduration\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\bduration\"\xbb\x01\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x125\n" +
+	"\bduration\x18\x03 \x01(\v2\x19.google.protobuf.DurationR\bdurationJ\x04\b\x02\x10\x03R\x05start\"\xbb\x01\n" +
 	"\rTracePlanning\x12\x1d\n" +
 	"\n" +
 	"planner_id\x18\x01 \x01(\tR\tplannerId\x12!\n" +
@@ -565,31 +461,22 @@ const file_tokun_events_v1_trace_proto_rawDesc = "" +
 	"\x0ffallback_reason\x18\x03 \x01(\tR\x0efallbackReason\x12?\n" +
 	"\n" +
 	"candidates\x18\x04 \x03(\v2\x1f.tokun.events.v1.TraceCandidateR\n" +
-	"candidates\"\x9d\x01\n" +
-	"\x0eTraceCandidate\x12\x1f\n" +
-	"\vprovider_id\x18\x01 \x01(\tR\n" +
-	"providerId\x12\x1c\n" +
+	"candidates\"w\n" +
+	"\x0eTraceCandidate\x12\x1c\n" +
 	"\tinterface\x18\x02 \x01(\tR\tinterface\x12\x14\n" +
-	"\x05score\x18\x03 \x01(\x01R\x05score\x12 \n" +
-	"\vuncertainty\x18\x04 \x01(\x01R\vuncertainty\x12\x14\n" +
-	"\x05share\x18\x05 \x01(\x01R\x05share\"\xa5\x03\n" +
-	"\fTraceAttempt\x12\x17\n" +
-	"\asend_id\x18\x01 \x01(\tR\x06sendId\x12\x18\n" +
-	"\aattempt\x18\x02 \x01(\x05R\aattempt\x12\x1f\n" +
+	"\x05score\x18\x03 \x01(\x01R\x05scoreJ\x04\b\x01\x10\x02J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\vprovider_idR\vuncertaintyR\x05share\"\xea\x02\n" +
+	"\fTraceAttempt\x12\x1f\n" +
 	"\vprovider_id\x18\x03 \x01(\tR\n" +
 	"providerId\x12\x1f\n" +
 	"\vupstream_id\x18\x04 \x01(\x03R\n" +
-	"upstreamId\x12\x15\n" +
-	"\x06key_id\x18\x05 \x01(\tR\x05keyId\x12\x1c\n" +
-	"\tinterface\x18\x06 \x01(\tR\tinterface\x12\x1f\n" +
+	"upstreamId\x12\x1f\n" +
 	"\vstatus_code\x18\a \x01(\x05R\n" +
 	"statusCode\x12\x18\n" +
 	"\aoutcome\x18\b \x01(\tR\aoutcome\x12-\n" +
 	"\x04ttft\x18\t \x01(\v2\x19.google.protobuf.DurationR\x04ttft\x125\n" +
 	"\bduration\x18\n" +
-	" \x01(\v2\x19.google.protobuf.DurationR\bduration\x12#\n" +
-	"\rrequest_bytes\x18\v \x01(\x03R\frequestBytes\x12%\n" +
-	"\x0eresponse_bytes\x18\f \x01(\x03R\rresponseBytesB\xc3\x01\n" +
+	" \x01(\v2\x19.google.protobuf.DurationR\bduration\x12%\n" +
+	"\x0eresponse_bytes\x18\f \x01(\x03R\rresponseBytesJ\x04\b\x01\x10\x02J\x04\b\x02\x10\x03J\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\v\x10\fR\asend_idR\aattemptR\x06key_idR\tinterfaceR\rrequest_bytesB\xc3\x01\n" +
 	"\x13com.tokun.events.v1B\n" +
 	"TraceProtoP\x01ZBgithub.com/capsohq/txe/tokun/proto/gen/go/tokun/events/v1;eventsv1\xa2\x02\x03TEX\xaa\x02\x0fTokun.Events.V1\xca\x02\x0fTokun\\Events\\V1\xe2\x02\x1bTokun\\Events\\V1\\GPBMetadata\xea\x02\x11Tokun::Events::V1b\x06proto3"
 
@@ -620,16 +507,15 @@ var file_tokun_events_v1_trace_proto_depIdxs = []int32{
 	1, // 1: tokun.events.v1.RequestTrace.steps:type_name -> tokun.events.v1.TraceStep
 	2, // 2: tokun.events.v1.RequestTrace.planning:type_name -> tokun.events.v1.TracePlanning
 	4, // 3: tokun.events.v1.RequestTrace.attempts:type_name -> tokun.events.v1.TraceAttempt
-	6, // 4: tokun.events.v1.TraceStep.start:type_name -> google.protobuf.Duration
-	6, // 5: tokun.events.v1.TraceStep.duration:type_name -> google.protobuf.Duration
-	3, // 6: tokun.events.v1.TracePlanning.candidates:type_name -> tokun.events.v1.TraceCandidate
-	6, // 7: tokun.events.v1.TraceAttempt.ttft:type_name -> google.protobuf.Duration
-	6, // 8: tokun.events.v1.TraceAttempt.duration:type_name -> google.protobuf.Duration
-	9, // [9:9] is the sub-list for method output_type
-	9, // [9:9] is the sub-list for method input_type
-	9, // [9:9] is the sub-list for extension type_name
-	9, // [9:9] is the sub-list for extension extendee
-	0, // [0:9] is the sub-list for field type_name
+	6, // 4: tokun.events.v1.TraceStep.duration:type_name -> google.protobuf.Duration
+	3, // 5: tokun.events.v1.TracePlanning.candidates:type_name -> tokun.events.v1.TraceCandidate
+	6, // 6: tokun.events.v1.TraceAttempt.ttft:type_name -> google.protobuf.Duration
+	6, // 7: tokun.events.v1.TraceAttempt.duration:type_name -> google.protobuf.Duration
+	8, // [8:8] is the sub-list for method output_type
+	8, // [8:8] is the sub-list for method input_type
+	8, // [8:8] is the sub-list for extension type_name
+	8, // [8:8] is the sub-list for extension extendee
+	0, // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_tokun_events_v1_trace_proto_init() }

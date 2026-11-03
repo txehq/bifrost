@@ -24,11 +24,8 @@ const (
 )
 
 type CapabilityGroup struct {
-	state   protoimpl.MessageState `protogen:"open.v1"`
-	GroupId string                 `protobuf:"bytes,1,opt,name=group_id,json=groupId,proto3" json:"group_id,omitempty"`
-	Order   int32                  `protobuf:"varint,2,opt,name=order,proto3" json:"order,omitempty"`
-	// draft, active, deprecated.
-	Status        string `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	GroupId       string                 `protobuf:"bytes,1,opt,name=group_id,json=groupId,proto3" json:"group_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -70,20 +67,8 @@ func (x *CapabilityGroup) GetGroupId() string {
 	return ""
 }
 
-func (x *CapabilityGroup) GetOrder() int32 {
-	if x != nil {
-		return x.Order
-	}
-	return 0
-}
-
-func (x *CapabilityGroup) GetStatus() string {
-	if x != nil {
-		return x.Status
-	}
-	return ""
-}
-
+// The option is written with its full name in this message, where the field
+// `visibility` would otherwise shadow it.
 type CapabilityDefinition struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// "<group>.<name>", English, never changed after publication.
@@ -123,11 +108,8 @@ type CapabilityDefinition struct {
 	Derive string `protobuf:"bytes,16,opt,name=derive,proto3" json:"derive,omitempty"`
 	// CEL derivation per field, e.g. {"max": "limits.output_tokens"}.
 	DeriveFields map[string]string `protobuf:"bytes,17,rep,name=derive_fields,json=deriveFields,proto3" json:"derive_fields,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Scopes the values of this definition belong to. catalog-relay applies
-	// them to every CapabilityValue of the definition.
-	ValueVisibility []Visibility `protobuf:"varint,18,rep,packed,name=value_visibility,json=valueVisibility,proto3,enum=tokun.catalog.v1.Visibility" json:"value_visibility,omitempty"`
-	Filterable      bool         `protobuf:"varint,19,opt,name=filterable,proto3" json:"filterable,omitempty"`
-	Facet           bool         `protobuf:"varint,20,opt,name=facet,proto3" json:"facet,omitempty"`
+	Filterable   bool              `protobuf:"varint,19,opt,name=filterable,proto3" json:"filterable,omitempty"`
+	Facet        bool              `protobuf:"varint,20,opt,name=facet,proto3" json:"facet,omitempty"`
 	// Usable as a routing condition in require and prefer.
 	Routable bool `protobuf:"varint,21,opt,name=routable,proto3" json:"routable,omitempty"`
 	// Read by key in code; cannot be deleted or renamed.
@@ -138,7 +120,10 @@ type CapabilityDefinition struct {
 	// params.* only: where each endpoint type pattern carries the parameter.
 	Variants []*ParameterVariant `protobuf:"bytes,25,rep,name=variants,proto3" json:"variants,omitempty"`
 	// params.* only.
-	Display       *ParameterDisplay `protobuf:"bytes,26,opt,name=display,proto3" json:"display,omitempty"`
+	Display *ParameterDisplay `protobuf:"bytes,26,opt,name=display,proto3" json:"display,omitempty"`
+	// Scopes the values of this definition belong to. catalog-relay applies
+	// them to every CapabilityValue of the definition.
+	Visibility    []Visibility `protobuf:"varint,27,rep,packed,name=visibility,proto3,enum=tokun.catalog.v1.Visibility" json:"visibility,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -292,13 +277,6 @@ func (x *CapabilityDefinition) GetDeriveFields() map[string]string {
 	return nil
 }
 
-func (x *CapabilityDefinition) GetValueVisibility() []Visibility {
-	if x != nil {
-		return x.ValueVisibility
-	}
-	return nil
-}
-
 func (x *CapabilityDefinition) GetFilterable() bool {
 	if x != nil {
 		return x.Filterable
@@ -351,6 +329,13 @@ func (x *CapabilityDefinition) GetVariants() []*ParameterVariant {
 func (x *CapabilityDefinition) GetDisplay() *ParameterDisplay {
 	if x != nil {
 		return x.Display
+	}
+	return nil
+}
+
+func (x *CapabilityDefinition) GetVisibility() []Visibility {
+	if x != nil {
+		return x.Visibility
 	}
 	return nil
 }
@@ -695,7 +680,7 @@ func (x *CapabilityOption) GetOrder() int32 {
 
 // One capability value at one level. Written only in changesets operators
 // confirmed. The relay keeps a value in a projection when one of its
-// definition's value_visibility scopes is in the projection's set, and drops
+// definition's visibility scopes is in the projection's set, and drops
 // values of an anonymous call name's hidden model from the api projection
 // except those the name's public_fields lists.
 type CapabilityValue struct {
@@ -871,11 +856,9 @@ var File_tokun_catalog_v1_capability_proto protoreflect.FileDescriptor
 
 const file_tokun_catalog_v1_capability_proto_rawDesc = "" +
 	"\n" +
-	"!tokun/catalog/v1/capability.proto\x12\x10tokun.catalog.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1etokun/catalog/v1/options.proto\"o\n" +
+	"!tokun/catalog/v1/capability.proto\x12\x10tokun.catalog.v1\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1etokun/catalog/v1/options.proto\"N\n" +
 	"\x0fCapabilityGroup\x12 \n" +
-	"\bgroup_id\x18\x01 \x01(\tB\x05\xa2\xbb\x18\x01\x01R\agroupId\x12\x1b\n" +
-	"\x05order\x18\x02 \x01(\x05B\x05\xa2\xbb\x18\x01\x01R\x05order\x12\x1d\n" +
-	"\x06status\x18\x03 \x01(\tB\x05\xa2\xbb\x18\x01\x01R\x06status\"\xce\n" +
+	"\bgroup_id\x18\x01 \x01(\tB\x05\xa2\xbb\x18\x01\x01R\agroupIdJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\x05orderR\x06status\"\xdb\n" +
 	"\n" +
 	"\x14CapabilityDefinition\x12\x17\n" +
 	"\x03key\x18\x01 \x01(\tB\x05\xa2\xbb\x18\x01\x01R\x03key\x12\x1b\n" +
@@ -898,8 +881,7 @@ const file_tokun_catalog_v1_capability_proto_rawDesc = "" +
 	"\x0eparameter_name\x18\x0e \x01(\tB\x05\xa2\xbb\x18\x01\x01R\rparameterName\x12'\n" +
 	"\x0fsource_priority\x18\x0f \x03(\tR\x0esourcePriority\x12\x16\n" +
 	"\x06derive\x18\x10 \x01(\tR\x06derive\x12]\n" +
-	"\rderive_fields\x18\x11 \x03(\v28.tokun.catalog.v1.CapabilityDefinition.DeriveFieldsEntryR\fderiveFields\x12N\n" +
-	"\x10value_visibility\x18\x12 \x03(\x0e2\x1c.tokun.catalog.v1.VisibilityB\x05\xa2\xbb\x18\x01\x01R\x0fvalueVisibility\x12%\n" +
+	"\rderive_fields\x18\x11 \x03(\v28.tokun.catalog.v1.CapabilityDefinition.DeriveFieldsEntryR\fderiveFields\x12%\n" +
 	"\n" +
 	"filterable\x18\x13 \x01(\bB\x05\xa2\xbb\x18\x01\x01R\n" +
 	"filterable\x12\x1b\n" +
@@ -909,13 +891,16 @@ const file_tokun_catalog_v1_capability_proto_rawDesc = "" +
 	"\x06status\x18\x17 \x01(\tB\x05\xa2\xbb\x18\x01\x01R\x06status\x12\x1b\n" +
 	"\x05order\x18\x18 \x01(\x05B\x05\xa2\xbb\x18\x01\x01R\x05order\x12E\n" +
 	"\bvariants\x18\x19 \x03(\v2\".tokun.catalog.v1.ParameterVariantB\x05\xa2\xbb\x18\x01\x01R\bvariants\x12C\n" +
-	"\adisplay\x18\x1a \x01(\v2\".tokun.catalog.v1.ParameterDisplayB\x05\xa2\xbb\x18\x01\x01R\adisplay\x1aB\n" +
+	"\adisplay\x18\x1a \x01(\v2\".tokun.catalog.v1.ParameterDisplayB\x05\xa2\xbb\x18\x01\x01R\adisplay\x12C\n" +
+	"\n" +
+	"visibility\x18\x1b \x03(\x0e2\x1c.tokun.catalog.v1.VisibilityB\x05\xa2\xbb\x18\x01\x01R\n" +
+	"visibility\x1aB\n" +
 	"\x14AggregateFieldsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a?\n" +
 	"\x11DeriveFieldsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"x\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x12\x10\x13R\x10value_visibility\"x\n" +
 	"\fRequestCheck\x12\x16\n" +
 	"\x06format\x18\x01 \x01(\tR\x06format\x12\x12\n" +
 	"\x04path\x18\x02 \x01(\tR\x04path\x12\x14\n" +
@@ -1000,9 +985,9 @@ var file_tokun_catalog_v1_capability_proto_depIdxs = []int32{
 	8,  // 1: tokun.catalog.v1.CapabilityDefinition.aggregate_fields:type_name -> tokun.catalog.v1.CapabilityDefinition.AggregateFieldsEntry
 	2,  // 2: tokun.catalog.v1.CapabilityDefinition.request_checks:type_name -> tokun.catalog.v1.RequestCheck
 	9,  // 3: tokun.catalog.v1.CapabilityDefinition.derive_fields:type_name -> tokun.catalog.v1.CapabilityDefinition.DeriveFieldsEntry
-	11, // 4: tokun.catalog.v1.CapabilityDefinition.value_visibility:type_name -> tokun.catalog.v1.Visibility
-	3,  // 5: tokun.catalog.v1.CapabilityDefinition.variants:type_name -> tokun.catalog.v1.ParameterVariant
-	4,  // 6: tokun.catalog.v1.CapabilityDefinition.display:type_name -> tokun.catalog.v1.ParameterDisplay
+	3,  // 4: tokun.catalog.v1.CapabilityDefinition.variants:type_name -> tokun.catalog.v1.ParameterVariant
+	4,  // 5: tokun.catalog.v1.CapabilityDefinition.display:type_name -> tokun.catalog.v1.ParameterDisplay
+	11, // 6: tokun.catalog.v1.CapabilityDefinition.visibility:type_name -> tokun.catalog.v1.Visibility
 	7,  // 7: tokun.catalog.v1.CapabilityValue.subject:type_name -> tokun.catalog.v1.CapabilitySubject
 	12, // 8: tokun.catalog.v1.CapabilityValue.value:type_name -> google.protobuf.Value
 	13, // 9: tokun.catalog.v1.CapabilityValue.observed_at:type_name -> google.protobuf.Timestamp

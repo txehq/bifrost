@@ -919,10 +919,8 @@ func (x *MatchCondition) GetPrefix() string {
 
 // tk_path_prefixes: path segments the path normaliser removes from the start.
 type PathPrefix struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	Prefix string                 `protobuf:"bytes,1,opt,name=prefix,proto3" json:"prefix,omitempty"`
-	// active, disabled.
-	Status        string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Prefix        string                 `protobuf:"bytes,1,opt,name=prefix,proto3" json:"prefix,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -960,13 +958,6 @@ func (*PathPrefix) Descriptor() ([]byte, []int) {
 func (x *PathPrefix) GetPrefix() string {
 	if x != nil {
 		return x.Prefix
-	}
-	return ""
-}
-
-func (x *PathPrefix) GetStatus() string {
-	if x != nil {
-		return x.Status
 	}
 	return ""
 }
@@ -1175,9 +1166,7 @@ type RequestFieldCategory struct {
 	Category string `protobuf:"bytes,5,opt,name=category,proto3" json:"category,omitempty"`
 	// For feature_flag: the capability definition whose options are the flag's
 	// values, e.g. "features.anthropic_beta".
-	Capability string `protobuf:"bytes,6,opt,name=capability,proto3" json:"capability,omitempty"`
-	// active, disabled.
-	Status        string `protobuf:"bytes,7,opt,name=status,proto3" json:"status,omitempty"`
+	Capability    string `protobuf:"bytes,6,opt,name=capability,proto3" json:"capability,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1250,13 +1239,6 @@ func (x *RequestFieldCategory) GetCategory() string {
 func (x *RequestFieldCategory) GetCapability() string {
 	if x != nil {
 		return x.Capability
-	}
-	return ""
-}
-
-func (x *RequestFieldCategory) GetStatus() string {
-	if x != nil {
-		return x.Status
 	}
 	return ""
 }
@@ -1354,11 +1336,10 @@ const file_tokun_catalog_v1_endpoint_proto_rawDesc = "" +
 	"\x05query\x18\x02 \x01(\tR\x05query\x12\x18\n" +
 	"\apresent\x18\x03 \x01(\bR\apresent\x12\x16\n" +
 	"\x06equals\x18\x04 \x01(\tR\x06equals\x12\x16\n" +
-	"\x06prefix\x18\x05 \x01(\tR\x06prefix\"<\n" +
+	"\x06prefix\x18\x05 \x01(\tR\x06prefix\"2\n" +
 	"\n" +
 	"PathPrefix\x12\x16\n" +
-	"\x06prefix\x18\x01 \x01(\tR\x06prefix\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status\"\xe8\x02\n" +
+	"\x06prefix\x18\x01 \x01(\tR\x06prefixJ\x04\b\x02\x10\x03R\x06status\"\xe8\x02\n" +
 	"\x0fConversionRoute\x12\x1f\n" +
 	"\vfrom_format\x18\x01 \x01(\tR\n" +
 	"fromFormat\x12(\n" +
@@ -1378,7 +1359,7 @@ const file_tokun_catalog_v1_endpoint_proto_rawDesc = "" +
 	"\x06values\x18\x03 \x03(\v2..tokun.catalog.v1.ParameterMapping.ValuesEntryR\x06values\x1a9\n" +
 	"\vValuesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc5\x01\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbb\x01\n" +
 	"\x14RequestFieldCategory\x12\x1b\n" +
 	"\tformat_id\x18\x01 \x01(\tR\bformatId\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x12\x14\n" +
@@ -1387,8 +1368,7 @@ const file_tokun_catalog_v1_endpoint_proto_rawDesc = "" +
 	"\bcategory\x18\x05 \x01(\tR\bcategory\x12\x1e\n" +
 	"\n" +
 	"capability\x18\x06 \x01(\tR\n" +
-	"capability\x12\x16\n" +
-	"\x06status\x18\a \x01(\tR\x06statusB\xcd\x01\n" +
+	"capabilityJ\x04\b\a\x10\bR\x06statusB\xcd\x01\n" +
 	"\x14com.tokun.catalog.v1B\rEndpointProtoP\x01ZDgithub.com/capsohq/txe/tokun/proto/gen/go/tokun/catalog/v1;catalogv1\xa2\x02\x03TCX\xaa\x02\x10Tokun.Catalog.V1\xca\x02\x10Tokun\\Catalog\\V1\xe2\x02\x1cTokun\\Catalog\\V1\\GPBMetadata\xea\x02\x12Tokun::Catalog::V1b\x06proto3"
 
 var (
