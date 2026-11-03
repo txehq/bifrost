@@ -34,7 +34,12 @@ const integrationOpenAI = "openai"
 //
 // A request whose route keeps no body (one that has none, a multipart upload, a route outside
 // the SDK integrations) always goes out from the typed request.
+//
+// Every attempt carries e's interface_output_tokens (BifrostContextKeyAttemptOutputTokens): the
+// provider sends the caller's max_tokens and thinking budget as written, and a format that
+// requires max_tokens gets interface_output_tokens when the caller wrote none.
 func (p *Plugin) rewriteAttempt(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, state *requestState, e entry) (*schemas.BifrostRequest, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyAttemptOutputTokens, int(e.upstream.GetInterfaceOutputTokens()))
 	if len(state.body) == 0 {
 		state.stripped = nil
 		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)

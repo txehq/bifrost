@@ -3241,6 +3241,46 @@ func clampToModelOutputCeiling(caps schemas.ModelCaps, maxTokens int) int {
 	return maxTokens
 }
 
+// ErrNoAttemptOutputTokens fails a routed attempt that has to send a max_tokens the caller did
+// not write when its routing plugin gave the attempt no output token limit.
+var ErrNoAttemptOutputTokens = errors.New("the routed attempt has no output token limit for the max_tokens the Anthropic Messages format requires")
+
+// attemptOutputTokens is the output token limit a routing plugin gave this attempt
+// (BifrostContextKeyAttemptOutputTokens), and whether it gave one: whether the attempt is routed.
+// A routed attempt sends the caller's max_tokens and thinking budget as written.
+func attemptOutputTokens(ctx *schemas.BifrostContext) (int, bool) {
+	if ctx == nil {
+		return 0, false
+	}
+	limit, routed := ctx.Value(schemas.BifrostContextKeyAttemptOutputTokens).(int)
+	return limit, routed
+}
+
+// defaultMaxTokens is the max_tokens sent for a request that names none: a routed attempt's
+// output token limit, otherwise the model's known output ceiling or AnthropicDefaultMaxTokens.
+func defaultMaxTokens(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) (int, error) {
+	if limit, routed := attemptOutputTokens(ctx); routed {
+		if limit <= 0 {
+			return 0, ErrNoAttemptOutputTokens
+		}
+		return limit, nil
+	}
+	return providerUtils.GetMaxOutputTokensOrDefault(provider, model, AnthropicDefaultMaxTokens), nil
+}
+
+// requestMaxTokens is the max_tokens sent for the value the caller wrote, nil when the caller
+// wrote none (defaultMaxTokens of provider and model). A routed attempt sends the written value as
+// it is; otherwise it is lowered to the output ceiling of caps' model.
+func requestMaxTokens(ctx *schemas.BifrostContext, written *int, caps schemas.ModelCaps, provider schemas.ModelProvider, model string) (int, error) {
+	if written == nil {
+		return defaultMaxTokens(ctx, provider, model)
+	}
+	if _, routed := attemptOutputTokens(ctx); routed {
+		return *written, nil
+	}
+	return clampToModelOutputCeiling(caps, *written), nil
+}
+
 // FilterBetaHeadersForProvider validates that all beta headers are supported by the given provider.
 // Returns an error if a known beta header is not supported by the provider.
 // Unknown headers are forwarded only to Anthropic; for other providers they are silently dropped.

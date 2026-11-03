@@ -18,6 +18,8 @@ package anthropic
 //	go test ./core/providers/anthropic/ -bench Anthropic -benchmem
 
 import (
+	"context"
+	"fmt"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/providers/openai"
@@ -273,6 +275,45 @@ func BenchmarkAnthropicStreamTurnParseAndConvert(b *testing.B) {
 				b.Fatalf("convert stream event %d: %v", i, bifrostErr)
 			}
 		}
+	}
+}
+
+// BenchmarkBuildAnthropicRequestBody measures the request-body builders on a request that no
+// routing plugin routes, for the chat and Responses requests, on the raw-body and typed paths:
+// a max_tokens above the model's known ceiling, clamped, and the thinking budget refitted to it.
+func BenchmarkBuildAnthropicRequestBody(b *testing.B) {
+	const model = "claude-haiku-4-5"
+	body := []byte(`{"model":"claude-haiku-4-5","max_tokens":128000,"thinking":{"type":"enabled","budget_tokens":80000},"messages":[{"role":"user","content":"hi"}]}`)
+	text := "hi"
+	cfg := AnthropicRequestBuildConfig{Provider: schemas.Anthropic, Model: model}
+	for _, raw := range []bool{false, true} {
+		b.Run(fmt.Sprintf("chat/raw=%v", raw), func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, raw)
+			req := &schemas.BifrostChatRequest{Provider: schemas.Anthropic, Model: model, RawRequestBody: body,
+				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}},
+				Params: &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(128000), Reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(80000)}}}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := BuildAnthropicChatRequestBody(ctx, req, cfg); err != nil {
+					b.Fatalf("build: %v", err.Error.Message)
+				}
+			}
+		})
+		b.Run(fmt.Sprintf("responses/raw=%v", raw), func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, raw)
+			role := schemas.ResponsesInputMessageRoleUser
+			req := &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: model, RawRequestBody: body,
+				Input:  []schemas.ResponsesMessage{{Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &text}}},
+				Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(128000), Reasoning: &schemas.ResponsesParametersReasoning{MaxTokens: schemas.Ptr(80000)}}}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := BuildAnthropicResponsesRequestBody(ctx, req, cfg); err != nil {
+					b.Fatalf("build: %v", err.Error.Message)
+				}
+			}
+		})
 	}
 }
 

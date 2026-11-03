@@ -358,14 +358,22 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		messages = messages[:trimmed]
 	}
 
-	anthropicReq := &AnthropicMessageRequest{
-		Model:     bifrostReq.Model,
-		MaxTokens: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, AnthropicDefaultMaxTokens),
-	}
-
 	// capModel is the canonical model string used only for capability/version
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+
+	var writtenMaxTokens *int
+	if bifrostReq.Params != nil {
+		writtenMaxTokens = bifrostReq.Params.MaxCompletionTokens
+	}
+	maxTokens, err := requestMaxTokens(ctx, writtenMaxTokens, caps, bifrostReq.Provider, bifrostReq.Model)
+	if err != nil {
+		return nil, err
+	}
+	anthropicReq := &AnthropicMessageRequest{
+		Model:     bifrostReq.Model,
+		MaxTokens: maxTokens,
+	}
 	// Fable 5.1+ rejects tool_choice "any"/"tool" outright, so every forced
 	// choice below — the caller's and the synthetic structured-output pin — is
 	// dropped and the model answers under the default "auto".
@@ -416,10 +424,6 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			if passthrough, ok := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !ok || !passthrough {
 				reasoningParams, promotedThinking = promoteThinkingFromExtraParams(bifrostReq.Params.ExtraParams["thinking"])
 			}
-		}
-
-		if bifrostReq.Params.MaxCompletionTokens != nil {
-			anthropicReq.MaxTokens = clampToModelOutputCeiling(caps, *bifrostReq.Params.MaxCompletionTokens)
 		}
 
 		// Opus 4.7+ and the Fable/Mythos family reject temperature, top_p, and

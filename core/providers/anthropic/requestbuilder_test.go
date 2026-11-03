@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -1550,6 +1551,92 @@ func TestClampedMaxTokensRefitsThinkingBudget(t *testing.T) {
 					t.Errorf("sent max_tokens=%d budget=%d, want 16000/20000", got.maxTokens, got.budget)
 				}
 			})
+		}
+	}
+}
+
+// An attempt a routing plugin routes (BifrostContextKeyAttemptOutputTokens) sends the caller's
+// max_tokens and thinking budget as written, above the model's ceiling too, and a request that
+// names no max_tokens gets the attempt's output token limit; with no limit it fails. The same
+// requests on an attempt nothing routes are clamped to the ceiling, refitted and filled with it.
+func TestRoutedAttemptSendsTheCallersOutputLimits(t *testing.T) {
+	const haiku = "claude-haiku-4-5-20251001"
+	installMaxOutputRow(t, haiku, 64000)
+
+	type sent struct{ maxTokens, budget int64 }
+	// maxTokens 0 is a request that names no max_tokens; limit nil is an attempt nothing routes.
+	build := func(t *testing.T, provider schemas.ModelProvider, raw, chat bool, limit *int, maxTokens, budget int) (sent, *schemas.BifrostError) {
+		t.Helper()
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, raw)
+		if limit != nil {
+			ctx.SetValue(schemas.BifrostContextKeyAttemptOutputTokens, *limit)
+		}
+		var written *int
+		rawMaxTokens := ""
+		if maxTokens > 0 {
+			written = new(maxTokens)
+			rawMaxTokens = fmt.Sprintf(`"max_tokens":%d,`, maxTokens)
+		}
+		body := fmt.Appendf(nil, `{"model":%q,%s"thinking":{"type":"enabled","budget_tokens":%d},"messages":[{"role":"user","content":"hi"}]}`, haiku, rawMaxTokens, budget)
+		cfg := AnthropicRequestBuildConfig{Provider: provider, Model: haiku}
+		var out []byte
+		var err *schemas.BifrostError
+		if chat {
+			out, err = BuildAnthropicChatRequestBody(ctx, &schemas.BifrostChatRequest{Provider: provider, Model: haiku, RawRequestBody: body,
+				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+				Params: &schemas.ChatParameters{MaxCompletionTokens: written, Reasoning: &schemas.ChatReasoning{MaxTokens: new(budget)}}}, cfg)
+		} else {
+			out, err = BuildAnthropicResponsesRequestBody(ctx, &schemas.BifrostResponsesRequest{Provider: provider, Model: haiku, RawRequestBody: body,
+				Input:  makeSimpleInput("hi"),
+				Params: &schemas.ResponsesParameters{MaxOutputTokens: written, Reasoning: &schemas.ResponsesParametersReasoning{MaxTokens: new(budget)}}}, cfg)
+		}
+		if err != nil {
+			return sent{}, err
+		}
+		return sent{providerUtils.GetJSONField(out, "max_tokens").Int(), providerUtils.GetJSONField(out, "thinking.budget_tokens").Int()}, nil
+	}
+	check := func(t *testing.T, got sent, err *schemas.BifrostError, want sent) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("build: %s: %v", err.Error.Message, err.Error.Error)
+		}
+		if got != want {
+			t.Errorf("sent max_tokens=%d budget=%d, want %d/%d", got.maxTokens, got.budget, want.maxTokens, want.budget)
+		}
+	}
+
+	for _, provider := range []schemas.ModelProvider{schemas.Anthropic, schemas.Vertex} {
+		for _, raw := range []bool{false, true} {
+			for _, chat := range []bool{false, true} {
+				name := fmt.Sprintf("%s/raw=%v/chat=%v", provider, raw, chat)
+				t.Run(name+"/routed_above_ceiling_sent_as_written", func(t *testing.T) {
+					got, err := build(t, provider, raw, chat, new(12345), 128000, 80000)
+					check(t, got, err, sent{128000, 80000})
+				})
+				t.Run(name+"/routed_without_max_tokens_gets_the_attempt_limit", func(t *testing.T) {
+					got, err := build(t, provider, raw, chat, new(12345), 0, 8000)
+					check(t, got, err, sent{12345, 8000})
+				})
+				t.Run(name+"/routed_with_max_tokens_needs_no_limit", func(t *testing.T) {
+					got, err := build(t, provider, raw, chat, new(0), 128000, 80000)
+					check(t, got, err, sent{128000, 80000})
+				})
+				t.Run(name+"/routed_without_max_tokens_or_limit_fails", func(t *testing.T) {
+					_, err := build(t, provider, raw, chat, new(0), 0, 8000)
+					if err == nil || !errors.Is(err.Error.Error, ErrNoAttemptOutputTokens) {
+						t.Fatalf("build error = %+v, want ErrNoAttemptOutputTokens", err)
+					}
+				})
+				t.Run(name+"/not_routed_above_ceiling_clamped", func(t *testing.T) {
+					got, err := build(t, provider, raw, chat, nil, 128000, 80000)
+					check(t, got, err, sent{64000, 51404})
+				})
+				t.Run(name+"/not_routed_without_max_tokens_gets_the_ceiling", func(t *testing.T) {
+					got, err := build(t, provider, raw, chat, nil, 0, 8000)
+					check(t, got, err, sent{64000, 8000})
+				})
+			}
 		}
 	}
 }

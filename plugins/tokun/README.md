@@ -140,6 +140,12 @@ body as Bifrost received it:
   core sets its provider, model and key from the entry. When parameters were removed, the
   request is built again from the stripped body by the route's own converter
   (`BifrostContextKeyRequestBodyConverter`).
+- **Output limits**: every attempt carries its entry's `interface_output_tokens`
+  (`BifrostContextKeyAttemptOutputTokens`). The Anthropic Messages builders then send the
+  caller's `max_tokens` and thinking budget as written, also above the model's known output
+  ceiling, and a request that names no `max_tokens` gets `interface_output_tokens`; with none
+  in the plan such an attempt fails. Without the key (no plan) they lower `max_tokens` to the
+  ceiling, refit the thinking budget below it, and fill a missing one with the ceiling.
 - **The usage the plugin asked for**: on a streamed OpenAI chat or completions request whose
   caller did not ask for usage, `HTTPTransportStreamChunkHook` drops the chunk that carries
   only usage and takes the usage off a chunk that carries output too.

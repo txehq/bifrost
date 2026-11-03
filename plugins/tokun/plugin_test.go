@@ -865,6 +865,32 @@ func TestRewriteAttempt(t *testing.T) {
 			t.Fatal("an attempt without a kept body sends a raw body")
 		}
 	})
+
+	t.Run("every attempt carries its interface_output_tokens", func(t *testing.T) {
+		ctx, req, state, _ := newSend(false)
+		for _, upstream := range []*routingv1.RouteUpstream{
+			{SameFormat: true, ForwardModel: "model-a", InterfaceOutputTokens: 64000},
+			{SameFormat: false, ForwardModel: "model-b", InterfaceOutputTokens: 32000},
+			{SameFormat: false, ForwardModel: "model-c"},
+		} {
+			if _, fault := plugin.rewriteAttempt(ctx, req, state, entry{upstream: upstream}); fault != nil {
+				t.Fatal(fault.Error.Message)
+			}
+			limit, ok := ctx.Value(schemas.BifrostContextKeyAttemptOutputTokens).(int)
+			if !ok || int64(limit) != upstream.GetInterfaceOutputTokens() {
+				t.Fatalf("attempt on %s carries %v, want its interface_output_tokens %d", upstream.GetForwardModel(),
+					ctx.Value(schemas.BifrostContextKeyAttemptOutputTokens), upstream.GetInterfaceOutputTokens())
+			}
+		}
+		noBody := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		if _, fault := plugin.rewriteAttempt(noBody, &schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{}}, &requestState{},
+			entry{upstream: &routingv1.RouteUpstream{InterfaceOutputTokens: 8192}}); fault != nil {
+			t.Fatal(fault.Error.Message)
+		}
+		if limit, _ := noBody.Value(schemas.BifrostContextKeyAttemptOutputTokens).(int); limit != 8192 {
+			t.Fatalf("an attempt of a route that keeps no body carries %d, want 8192", limit)
+		}
+	})
 }
 
 func TestStrippedHeader(t *testing.T) {

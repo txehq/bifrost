@@ -819,17 +819,18 @@ type formatReply struct {
 	stripped string
 }
 
-// formatServer is one Bifrost with the tokun plugin and every inference route, whose provider
-// entries are up-openai (key oa-1) and up-openai-2 (key ob-1), OpenAI's API, up-anthropic (key
-// an-1), Anthropic's, up-cohere (key co-1), Cohere's, and up-bedrock (key bk-1), Bedrock's over
-// TLS, all answered by upstreams.
+// formatServer is one Bifrost with every inference route, whose provider entries are up-openai
+// (key oa-1) and up-openai-2 (key ob-1), OpenAI's API, up-anthropic (key an-1), Anthropic's,
+// up-cohere (key co-1), Cohere's, and up-bedrock (key bk-1), Bedrock's over TLS, all answered by
+// upstreams. send signs plan for the request; a nil plan sends the request without one.
 type formatServer struct {
 	upstreams *formatUpstreams
 	observer  *formatObserver
 	send      func(t *testing.T, uri, body string, plan *routingv1.RoutePlan, sendID string) formatReply
 }
 
-func newFormatServer(t *testing.T) *formatServer {
+// newFormatServer builds a formatServer, with the tokun plugin loaded when withPlugin is set.
+func newFormatServer(t *testing.T, withPlugin bool) *formatServer {
 	t.Helper()
 	previousLogger := logger
 	logger = noopTestLogger{}
@@ -881,17 +882,21 @@ func newFormatServer(t *testing.T) *formatServer {
 	}
 	t.Setenv("TOKUN_TEST_FORMAT_SIGNING_KEYS", `{"gw-2026-11":"gateway-secret"}`)
 	signer := planSigner{keyID: "gw-2026-11", secret: "gateway-secret"}
-	plugin, err := loadBuiltinPlugin(context.Background(), tokun.PluginName, map[string]any{"signing_keys": "env.TOKUN_TEST_FORMAT_SIGNING_KEYS"}, config)
-	if err != nil {
-		t.Fatalf("load the tokun plugin: %v", err)
-	}
-	if err := config.ReloadPlugin(plugin); err != nil {
-		t.Fatalf("register the tokun plugin: %v", err)
-	}
 	observer := &formatObserver{}
+	llmPlugins := []schemas.LLMPlugin{observer}
+	if withPlugin {
+		plugin, err := loadBuiltinPlugin(context.Background(), tokun.PluginName, map[string]any{"signing_keys": "env.TOKUN_TEST_FORMAT_SIGNING_KEYS"}, config)
+		if err != nil {
+			t.Fatalf("load the tokun plugin: %v", err)
+		}
+		if err := config.ReloadPlugin(plugin); err != nil {
+			t.Fatalf("register the tokun plugin: %v", err)
+		}
+		llmPlugins = []schemas.LLMPlugin{plugin.(schemas.LLMPlugin), observer}
+	}
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
 		Account:         lib.NewBaseAccount(config),
-		LLMPlugins:      []schemas.LLMPlugin{plugin.(schemas.LLMPlugin), observer},
+		LLMPlugins:      llmPlugins,
 		Logger:          bifrost.NewNoOpLogger(),
 		InitialPoolSize: 1,
 	})
@@ -903,13 +908,15 @@ func newFormatServer(t *testing.T) *formatServer {
 
 	send := func(t *testing.T, uri, body string, plan *routingv1.RoutePlan, sendID string) formatReply {
 		t.Helper()
-		planHeader, signatureHeader := signer.headers(t, plan, sendID, len(body), time.Now().Add(time.Minute))
 		var req fasthttp.Request
 		req.Header.SetMethod(fasthttp.MethodPost)
 		req.SetRequestURI(uri)
 		req.Header.SetContentType("application/json")
-		req.Header.Set(tokun.HeaderRoutePlan, planHeader)
-		req.Header.Set(tokun.HeaderRoutePlanSignature, signatureHeader)
+		if plan != nil {
+			planHeader, signatureHeader := signer.headers(t, plan, sendID, len(body), time.Now().Add(time.Minute))
+			req.Header.Set(tokun.HeaderRoutePlan, planHeader)
+			req.Header.Set(tokun.HeaderRoutePlanSignature, signatureHeader)
+		}
 		req.SetBodyString(body)
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Init(&req, nil, nil)
@@ -942,11 +949,11 @@ func formatPlan(requestID string, upstreams ...*routingv1.RouteUpstream) *routin
 }
 
 // formatUpstream is a plan entry on the Bifrost provider entry bifrostProvider, whose one key is
-// keyID, sending the model as forwardModel.
+// keyID, sending the model as forwardModel, with an interface output limit of 8192 tokens.
 func formatUpstream(bifrostProvider, keyID, forwardModel string, sameFormat bool, stripParams ...string) *routingv1.RouteUpstream {
 	return &routingv1.RouteUpstream{
 		Interface: "1:" + bifrostProvider, BifrostProvider: bifrostProvider, ForwardModel: forwardModel,
-		SameFormat: sameFormat, StripParams: stripParams,
+		SameFormat: sameFormat, StripParams: stripParams, InterfaceOutputTokens: 8192,
 		Keys: []*plannerv1.KeyShare{{KeyId: keyID, Share: 1}},
 	}
 }
@@ -1091,7 +1098,7 @@ func checkCallerFormat(t *testing.T, uri string, stream bool, got formatReply) {
 // the converted attempt reaches its upstream in the upstream's format; the caller gets its own
 // format back either way.
 func TestTokunPluginSendsEachTextFormatThroughItsIntegration(t *testing.T) {
-	server := newFormatServer(t)
+	server := newFormatServer(t, true)
 	cases := []struct {
 		name, uri, body, callerModel string
 		stream                       bool
@@ -1166,7 +1173,7 @@ func TestTokunPluginSendsEachTextFormatThroughItsIntegration(t *testing.T) {
 // parameters removed are listed in tokun-stripped-params, and a streamed chat completion asks
 // its upstream for usage but returns it to the caller only when the caller asked.
 func TestTokunPluginRewritesEachAttempt(t *testing.T) {
-	server := newFormatServer(t)
+	server := newFormatServer(t, true)
 	const uri = "/openai/v1/chat/completions"
 
 	t.Run("each fallback with its own forward model and strip_params", func(t *testing.T) {
@@ -1306,5 +1313,103 @@ func TestTokunPluginRewritesEachAttempt(t *testing.T) {
 			t.Fatalf("status %d: %s", got.status, got.body)
 		}
 		checkChatStream(t, got, false)
+	})
+}
+
+// The output limits of the requests the output-limit tests send to claude-haiku-4-5, whose known
+// output ceiling is 64000 tokens.
+const (
+	outputLimitModel   = "claude-haiku-4-5"
+	outputLimitCeiling = 64000
+	// The output limit the plan gives the upstream interface.
+	outputLimitInterface = 12345
+)
+
+// anthropicOutputLimits reads max_tokens and thinking.budget_tokens of the one call the Anthropic
+// upstream received.
+func anthropicOutputLimits(t *testing.T, calls []formatCall) (maxTokens, budget int64) {
+	t.Helper()
+	if len(calls) != 1 || calls[0].entry != "up-anthropic" || calls[0].path != "/v1/messages" {
+		t.Fatalf("upstream calls %+v, want one Messages call to up-anthropic", calls)
+	}
+	return gjson.GetBytes(calls[0].body, "max_tokens").Int(), gjson.GetBytes(calls[0].body, "thinking.budget_tokens").Int()
+}
+
+// TestTokunPluginForwardsTheCallersOutputLimits sends requests with a signed plan to
+// claude-haiku-4-5 on the Anthropic provider: the caller's max_tokens above the model's output
+// ceiling and its thinking budget reach the upstream as written, in the request's format and
+// converted, and a converted request that names no output limit gets the plan's
+// interface_output_tokens.
+func TestTokunPluginForwardsTheCallersOutputLimits(t *testing.T) {
+	server := newFormatServer(t, true)
+	upstream := func(sameFormat bool) *routingv1.RouteUpstream {
+		u := formatUpstream("up-anthropic", "an-1", outputLimitModel, sameFormat)
+		u.InterfaceOutputTokens = outputLimitInterface
+		return u
+	}
+
+	t.Run("Messages above the ceiling, in the request's format", func(t *testing.T) {
+		server.upstreams.reset()
+		body := `{"model":"tk/claude","max_tokens":128000 ,"thinking":{"type":"enabled","budget_tokens":80000},"messages":[{"role":"user","content":"hi"}]}`
+		got := server.send(t, "/anthropic/v1/messages", body, formatPlan("req_limits_messages", upstream(true)), "snd_limits_messages")
+		checkCallerFormat(t, "/anthropic/v1/messages", false, got)
+		calls := server.upstreams.take()
+		anthropicOutputLimits(t, calls)
+		if want := forwarded(t, body, "tk/claude", outputLimitModel); !bytes.Equal(calls[0].body, want) {
+			t.Fatalf("the upstream received\n%s\nwant the caller's bytes with only the model changed\n%s", calls[0].body, want)
+		}
+	})
+
+	t.Run("chat completions above the ceiling, converted", func(t *testing.T) {
+		server.upstreams.reset()
+		body := `{"model":"tk/claude","max_completion_tokens":128000,"reasoning":{"max_tokens":80000},"messages":[{"role":"user","content":"hi"}]}`
+		got := server.send(t, "/openai/v1/chat/completions", body, formatPlan("req_limits_chat", upstream(false)), "snd_limits_chat")
+		checkCallerFormat(t, "/openai/v1/chat/completions", false, got)
+		if maxTokens, budget := anthropicOutputLimits(t, server.upstreams.take()); maxTokens != 128000 || budget != 80000 {
+			t.Fatalf("the upstream received max_tokens %d and a thinking budget of %d, want the caller's 128000 and 80000", maxTokens, budget)
+		}
+	})
+
+	for _, tc := range []struct{ name, uri, body string }{
+		{"chat completions", "/openai/v1/chat/completions", `{"model":"tk/claude","messages":[{"role":"user","content":"hi"}]}`},
+		{"Responses", "/openai/v1/responses", `{"model":"tk/claude","input":[{"role":"user","content":"hi"}]}`},
+	} {
+		t.Run(tc.name+" without an output limit, converted", func(t *testing.T) {
+			server.upstreams.reset()
+			got := server.send(t, tc.uri, tc.body, formatPlan("req_limits_default", upstream(false)), "snd_limits_default_"+strings.ReplaceAll(tc.name, " ", "_"))
+			checkCallerFormat(t, tc.uri, false, got)
+			if maxTokens, _ := anthropicOutputLimits(t, server.upstreams.take()); maxTokens != outputLimitInterface {
+				t.Fatalf("the upstream received max_tokens %d, want the plan's interface_output_tokens %d", maxTokens, outputLimitInterface)
+			}
+		})
+	}
+}
+
+// TestBifrostClampsOutputLimitsWithoutTheTokunPlugin sends the converted requests of
+// TestTokunPluginForwardsTheCallersOutputLimits to a Bifrost without the tokun plugin: a
+// max_tokens above claude-haiku-4-5's output ceiling is lowered to it with the thinking budget
+// refitted below it, and a request that names no output limit gets the ceiling.
+func TestBifrostClampsOutputLimitsWithoutTheTokunPlugin(t *testing.T) {
+	server := newFormatServer(t, false)
+	const uri = "/openai/v1/chat/completions"
+	model := "up-anthropic/" + outputLimitModel
+
+	t.Run("above the ceiling", func(t *testing.T) {
+		server.upstreams.reset()
+		body := `{"model":"` + model + `","max_completion_tokens":128000,"reasoning":{"max_tokens":80000},"messages":[{"role":"user","content":"hi"}]}`
+		checkCallerFormat(t, uri, false, server.send(t, uri, body, nil, ""))
+		maxTokens, budget := anthropicOutputLimits(t, server.upstreams.take())
+		if maxTokens != outputLimitCeiling || budget >= outputLimitCeiling {
+			t.Fatalf("the upstream received max_tokens %d and a thinking budget of %d, want %d and a budget below it", maxTokens, budget, outputLimitCeiling)
+		}
+	})
+
+	t.Run("without an output limit", func(t *testing.T) {
+		server.upstreams.reset()
+		body := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}]}`
+		checkCallerFormat(t, uri, false, server.send(t, uri, body, nil, ""))
+		if maxTokens, _ := anthropicOutputLimits(t, server.upstreams.take()); maxTokens != outputLimitCeiling {
+			t.Fatalf("the upstream received max_tokens %d, want the model's ceiling %d", maxTokens, outputLimitCeiling)
+		}
 	})
 }

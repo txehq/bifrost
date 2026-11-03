@@ -247,29 +247,9 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			}
 
 			// Ensure max_tokens is present.
-			if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
-				modelForTokens := cfg.Model
-				if modelForTokens == "" {
-					if r := providerUtils.GetJSONField(jsonBody, "model"); r.Exists() {
-						modelForTokens = r.String()
-					}
-				}
-				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(cfg.Provider, modelForTokens, AnthropicDefaultMaxTokens))
-				if err != nil {
-					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
-				}
-			}
-			if maxTokens := providerUtils.GetJSONField(jsonBody, "max_tokens"); maxTokens.Exists() {
-				if clamped := clampToModelOutputCeiling(schemas.ResolveModelCaps(cfg.Provider, capModel), int(maxTokens.Int())); int64(clamped) != maxTokens.Int() {
-					jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", clamped)
-					if err != nil {
-						return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
-					}
-					jsonBody, err = fitRawThinkingBudget(jsonBody, clamped)
-					if err != nil {
-						return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
-					}
-				}
+			jsonBody, err = setRawMaxTokens(ctx, jsonBody, cfg.Provider, cfg.Model, capModel)
+			if err != nil {
+				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 
 		}
@@ -590,29 +570,9 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 			}
 		}
 
-		if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
-			modelForTokens := cfg.Model
-			if modelForTokens == "" {
-				if r := providerUtils.GetJSONField(jsonBody, "model"); r.Exists() {
-					modelForTokens = r.String()
-				}
-			}
-			jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", providerUtils.GetMaxOutputTokensOrDefault(cfg.Provider, modelForTokens, AnthropicDefaultMaxTokens))
-			if err != nil {
-				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
-			}
-		}
-		if maxTokens := providerUtils.GetJSONField(jsonBody, "max_tokens"); maxTokens.Exists() {
-			if clamped := clampToModelOutputCeiling(schemas.ResolveModelCaps(cfg.Provider, capModel), int(maxTokens.Int())); int64(clamped) != maxTokens.Int() {
-				jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", clamped)
-				if err != nil {
-					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
-				}
-				jsonBody, err = fitRawThinkingBudget(jsonBody, clamped)
-				if err != nil {
-					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
-				}
-			}
+		jsonBody, err = setRawMaxTokens(ctx, jsonBody, cfg.Provider, cfg.Model, capModel)
+		if err != nil {
+			return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 		}
 
 		if cfg.IsStreaming {
@@ -867,4 +827,40 @@ func setBedrockInvokeGuardrailOutcome(resp *schemas.BifrostResponsesResponse, ac
 	if len(trace) > 0 {
 		resp.ProviderExtraFields[BedrockInvokeGuardrailTraceKey] = trace
 	}
+}
+
+// setRawMaxTokens gives a raw Messages body the max_tokens the typed path would send
+// (requestMaxTokens). A body without one gets defaultMaxTokens of provider and the model:
+// cfgModel, else the body's model. On an attempt no routing plugin routes, a value above
+// capModel's output ceiling is lowered to it, and an enabled thinking budget the lowered value
+// no longer covers is refitted; a routed attempt keeps both as the caller wrote them.
+func setRawMaxTokens(ctx *schemas.BifrostContext, jsonBody []byte, provider schemas.ModelProvider, cfgModel, capModel string) ([]byte, error) {
+	if !providerUtils.JSONFieldExists(jsonBody, "max_tokens") {
+		model := cfgModel
+		if model == "" {
+			if r := providerUtils.GetJSONField(jsonBody, "model"); r.Exists() {
+				model = r.String()
+			}
+		}
+		maxTokens, err := defaultMaxTokens(ctx, provider, model)
+		if err != nil {
+			return jsonBody, err
+		}
+		if jsonBody, err = providerUtils.SetJSONField(jsonBody, "max_tokens", maxTokens); err != nil {
+			return jsonBody, err
+		}
+	}
+	if _, routed := attemptOutputTokens(ctx); routed {
+		return jsonBody, nil
+	}
+	written := providerUtils.GetJSONField(jsonBody, "max_tokens").Int()
+	clamped := clampToModelOutputCeiling(schemas.ResolveModelCaps(provider, capModel), int(written))
+	if int64(clamped) == written {
+		return jsonBody, nil
+	}
+	jsonBody, err := providerUtils.SetJSONField(jsonBody, "max_tokens", clamped)
+	if err != nil {
+		return jsonBody, err
+	}
+	return fitRawThinkingBudget(jsonBody, clamped)
 }

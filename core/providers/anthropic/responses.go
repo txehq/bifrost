@@ -4448,16 +4448,21 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	// dropped and the model answers under the default "auto".
 	forcedToolChoiceSupported := caps.SupportsForcedToolChoice(schemas.DefaultSupportsForcedToolChoice(capModel))
 
+	var writtenMaxTokens *int
+	if bifrostReq.Params != nil {
+		writtenMaxTokens = bifrostReq.Params.MaxOutputTokens
+	}
+	maxTokens, err := requestMaxTokens(ctx, writtenMaxTokens, caps, bifrostReq.Provider, capModel)
+	if err != nil {
+		return nil, err
+	}
 	anthropicReq := &AnthropicMessageRequest{
 		Model:     bifrostReq.Model,
-		MaxTokens: providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, capModel, AnthropicDefaultMaxTokens),
+		MaxTokens: maxTokens,
 	}
 
 	// Convert basic parameters
 	if bifrostReq.Params != nil {
-		if bifrostReq.Params.MaxOutputTokens != nil {
-			anthropicReq.MaxTokens = clampToModelOutputCeiling(caps, *bifrostReq.Params.MaxOutputTokens)
-		}
 		// Opus 4.7+ and the Fable/Mythos family reject temperature, top_p, and
 		// top_k with a 400 error.
 		if !caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(caps.Model())) {
