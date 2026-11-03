@@ -287,6 +287,14 @@ func (mc *ReplicateOutput) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("output field is neither a string, array of strings, nor a valid object")
 }
 
+// statusURL is the URL a prediction is polled at, or "" when the response carries none.
+func (p *ReplicatePredictionResponse) statusURL() string {
+	if p.URLs == nil {
+		return ""
+	}
+	return p.URLs.Get
+}
+
 // ReplicatePredictionURLs represents URLs for prediction operations
 type ReplicatePredictionURLs struct {
 	Get    string  `json:"get"`              // URL to get prediction details

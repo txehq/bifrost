@@ -261,6 +261,10 @@ func pollPrediction(
 	logger schemas.Logger,
 	sendBackRawResponse bool,
 ) (*ReplicatePredictionResponse, interface{}, map[string]string, *schemas.BifrostError) {
+	if predictionURL == "" {
+		return nil, nil, nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode,
+			errors.New("the prediction is not finished and its response carries no status URL to poll"))
+	}
 	// Create context with timeout
 	pollCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
@@ -490,7 +494,7 @@ func (provider *ReplicateProvider) TextCompletion(ctx *schemas.BifrostContext, k
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
-			prediction.URLs.Get,
+			prediction.statusURL(),
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
 			provider.logger,
@@ -840,7 +844,7 @@ func (provider *ReplicateProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
-			prediction.URLs.Get,
+			prediction.statusURL(),
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
 			provider.logger,
@@ -1204,7 +1208,7 @@ func (provider *ReplicateProvider) Responses(ctx *schemas.BifrostContext, key sc
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
-			prediction.URLs.Get,
+			prediction.statusURL(),
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
 			provider.logger,
@@ -1826,7 +1830,7 @@ func (provider *ReplicateProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
-			prediction.URLs.Get,
+			prediction.statusURL(),
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
 			provider.logger,
@@ -2253,7 +2257,7 @@ func (provider *ReplicateProvider) ImageEdit(ctx *schemas.BifrostContext, key sc
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
-			prediction.URLs.Get,
+			prediction.statusURL(),
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
 			provider.logger,
