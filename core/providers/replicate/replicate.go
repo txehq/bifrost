@@ -71,9 +71,10 @@ func NewReplicateProvider(config *schemas.ProviderConfig, logger schemas.Logger)
 	}, nil
 }
 
-// GetProviderKey returns the provider identifier for Replicate.
+// GetProviderKey returns the provider identifier: the custom provider's name when it is
+// one, so the core lists it and its video ids route back to it.
 func (provider *ReplicateProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Replicate
+	return providerUtils.GetProviderName(schemas.Replicate, provider.customProviderConfig)
 }
 
 // buildRequestURL builds the request URL with custom provider config support
@@ -2664,7 +2665,7 @@ func (provider *ReplicateProvider) VideoGeneration(ctx *schemas.BifrostContext, 
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
-	bifrostResponse.ID = providerUtils.AddVideoIDProviderSuffix(bifrostResponse.ID, schemas.Replicate)
+	bifrostResponse.ID = providerUtils.AddVideoIDProviderSuffix(bifrostResponse.ID, provider.GetProviderKey())
 
 	// Set extra fields
 	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
