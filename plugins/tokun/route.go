@@ -4,6 +4,8 @@ import (
 	"math/rand/v2"
 	"sync"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/capsohq/bifrost/core/schemas"
 
 	plannerv1 "github.com/capsohq/txe/tokun/proto/gen/go/tokun/planner/v1"
@@ -26,6 +28,30 @@ type requestState struct {
 	chain []int
 	// skipped lists the entries of order that were not sent, with why.
 	skipped []skippedEntry
+	// body is the caller's request body as Bifrost received it, which the integration keeps on
+	// the request (BifrostContextKeyKeepRawRequestBody); nil when the route keeps none. Every
+	// attempt is rewritten from it. It is the transport's own buffer, not a copy.
+	body []byte
+	// openAIStream is a streamed OpenAI chat or completions request: a same-format attempt asks
+	// for usage in the body.
+	openAIStream bool
+	// dropUsage is an openAIStream whose caller did not ask for usage itself: the usage the
+	// stream reports is kept out of the chunks the caller receives.
+	dropUsage bool
+	// stripped lists the strip_params the latest attempt removed from the body.
+	stripped []string
+}
+
+// capture records what every attempt of the send is rewritten from: the caller's body, and
+// whether it is a streamed OpenAI chat or completions request that asked for usage.
+func (state *requestState) capture(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
+	state.body = req.GetRawRequestBody()
+	integration, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string)
+	switch req.RequestType {
+	case schemas.ChatCompletionStreamRequest, schemas.TextCompletionStreamRequest:
+		state.openAIStream = integration == integrationOpenAI && len(state.body) > 0
+	}
+	state.dropUsage = state.openAIStream && !gjson.GetBytes(state.body, "stream_options.include_usage").Bool()
 }
 
 // entry is one {provider, upstream, key} of the drawn order with the share the selection

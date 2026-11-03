@@ -139,6 +139,14 @@ var notOfferedRoutes = []route{
 	{"GET", "/agents/a2a/{name}/rest/{restpath:*}"},
 	{"POST", "/agents/a2a/{name}/rest/{restpath:*}"},
 	{"GET", "/agents/a2a/{name}/.well-known/agent-card.json"},
+	// The Anthropic routers' /v1/messages wildcard: it handles any other path under
+	// /v1/messages as a message to create, and no endpoint type of tokun has such a path. Its
+	// Messages path and the token count are routes of their own.
+	{"POST", "/anthropic/v1/messages/{path:*}"},
+	{"POST", "/cursor/v1/messages/{path:*}"},
+	{"POST", "/langchain/v1/messages/{path:*}"},
+	{"POST", "/litellm/v1/messages/{path:*}"},
+	{"POST", "/pydanticai/v1/messages/{path:*}"},
 }
 
 // TODO(tokun-B3): 实时对话的路由按签名计划处理：只在打开连接、创建通话或创建 client secret 的请求上验证计划，连接期间的调度受计划约束，连接寿命不超过计划的有效期
@@ -421,7 +429,7 @@ var sdkRoutes = []route{
 	{"POST", "/v1/images/generations"},
 	{"POST", "/v1/images/variations"},
 	{"POST", "/v1/messages"},
-	{"POST", "/v1/messages/{path:*}"},
+	{"POST", "/v1/messages/count_tokens"},
 	{"POST", "/v1/rank"},
 	{"POST", "/v1/responses"},
 	{"POST", "/v1/responses/compact"},
@@ -492,7 +500,6 @@ var cursorRoutes = []route{
 	{"POST", "/cursor/v1/complete"},
 	{"POST", "/cursor/v1/messages"},
 	{"POST", "/cursor/v1/messages/count_tokens"},
-	{"POST", "/cursor/v1/messages/{path:*}"},
 	{"GET", "/cursor/v1/models"},
 	{"GET", "/cursor/v1/models/{model:*}"},
 	{"POST", "/cursor/v1/rank"},
@@ -517,7 +524,6 @@ var anthropicRoutes = []route{
 	{"POST", "/anthropic/v1/messages/batches/{batch_id}/cancel"},
 	{"GET", "/anthropic/v1/messages/batches/{batch_id}/results"},
 	{"POST", "/anthropic/v1/messages/count_tokens"},
-	{"POST", "/anthropic/v1/messages/{path:*}"},
 	{"GET", "/anthropic/v1/models"},
 }
 
@@ -554,11 +560,9 @@ var typesafeRoutes = []route{
 	{"POST", "/typesafe/v1/systemone"},
 }
 
-// ownPlanRoutes are single routes of routers whose other routes are listed with a shared set:
-// LangChain's count_tokens, which LiteLLM and PydanticAI do not register, and the ChatGPT
-// passthrough, which registers one method.
+// ownPlanRoutes are single routes of routers whose other routes are listed with a shared set: the
+// ChatGPT passthrough, which registers one method.
 var ownPlanRoutes = []route{
-	{"POST", "/langchain/v1/messages/count_tokens"},
 	{"POST", "/chatgpt_passthrough/backend-api/codex/responses"},
 }
 

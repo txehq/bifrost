@@ -26,6 +26,9 @@ func NewPydanticAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore,
 	// Add Anthropic routes to Pydantic AI for Anthropic API compatibility
 	// Supports: messages API (Claude models)
 	routes = append(routes, CreateAnthropicRouteConfigs("/pydanticai", logger)...)
+	// Add the Anthropic count tokens route, so a count is not taken by the /v1/messages wildcard
+	// and handled as a message to create
+	routes = append(routes, CreateAnthropicCountTokensRouteConfigs("/pydanticai", handlerStore)...)
 	// Add GenAI routes to Pydantic AI for Google Gemini API compatibility
 	// Supports: generateContent, streamGenerateContent, embedContent
 	routes = append(routes, CreateGenAIRouteConfigs("/pydanticai")...)

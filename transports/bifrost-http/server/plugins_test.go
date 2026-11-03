@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -11,12 +12,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/fasthttp/router"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -632,4 +635,676 @@ func TestTokunRouteClassesCoverEveryInferenceRoute(t *testing.T) {
 		t.Fatalf("registered %d routes, classes %v", len(registered), classes)
 	}
 	t.Logf("%d inference routes: %v", len(registered), classes)
+}
+
+// formatCall is one request a format upstream received: the Bifrost provider entry it was sent
+// to, the API path under the entry, the credential and the body bytes.
+type formatCall struct {
+	entry, path, key string
+	body             []byte
+}
+
+// formatUpstreams stands in for the upstream APIs of the provider entries of the text format
+// tests, each entry under its own path prefix: OpenAI's chat completions, Responses and input
+// token count, and Anthropic's Messages and token count, streamed or not. It answers "ok" in
+// the format of the path, and 500 to a credential listed in failing. A streamed chat completion
+// sends its trailing usage-only chunk only when the body asks for it, as OpenAI does.
+type formatUpstreams struct {
+	mu      sync.Mutex
+	calls   []formatCall
+	failing map[string]bool
+}
+
+func (u *formatUpstreams) reset(failing ...string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.calls = nil
+	u.failing = map[string]bool{}
+	for _, key := range failing {
+		u.failing[key] = true
+	}
+}
+
+func (u *formatUpstreams) take() []formatCall {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	calls := u.calls
+	u.calls = nil
+	return calls
+}
+
+func (u *formatUpstreams) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	entry, path, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+	path = "/" + path
+	body, _ := io.ReadAll(r.Body)
+	key := r.Header.Get("x-api-key")
+	if key == "" {
+		key = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	}
+	u.mu.Lock()
+	u.calls = append(u.calls, formatCall{entry: entry, path: path, key: key, body: body})
+	failing := u.failing[key]
+	u.mu.Unlock()
+	if failing {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"type":"error","error":{"type":"api_error","message":"upstream failed"}}`)
+		return
+	}
+	model, err := json.Marshal(gjson.GetBytes(body, "model").String())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	fill := func(template string) string { return strings.ReplaceAll(template, "MODEL", string(model)) }
+	if gjson.GetBytes(body, "stream").Bool() {
+		events := formatStreams[path]
+		if path == "/v1/chat/completions" && gjson.GetBytes(body, "stream_options.include_usage").Bool() {
+			events = append(slices.Clone(events), chatUsageChunk)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range events {
+			_, _ = io.WriteString(w, fill(event)+"\n\n")
+		}
+		if path == "/v1/chat/completions" {
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		}
+		return
+	}
+	answer, ok := formatAnswers[path]
+	if !ok {
+		http.Error(w, "no such API "+path, http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, fill(answer))
+}
+
+// formatAnswers are the non-streamed answers by API path; MODEL is the requested model.
+var formatAnswers = map[string]string{
+	"/v1/chat/completions":       `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":MODEL,"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}`,
+	"/v1/responses":              `{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":MODEL,"output":[{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6}}`,
+	"/v1/responses/input_tokens": `{"object":"response.input_tokens","input_tokens":12}`,
+	"/v1/messages":               `{"id":"msg_1","type":"message","role":"assistant","model":MODEL,"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":1}}`,
+	"/v1/messages/count_tokens":  `{"input_tokens":12}`,
+	"/model/up-model/converse":   `{"output":{"message":{"role":"assistant","content":[{"text":"ok"}]}},"stopReason":"end_turn","usage":{"inputTokens":5,"outputTokens":1,"totalTokens":6},"metrics":{"latencyMs":1}}`,
+	"/v2/chat":                   `{"id":"chat-1","finish_reason":"COMPLETE","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]},"usage":{"billed_units":{"input_tokens":5,"output_tokens":1},"tokens":{"input_tokens":5,"output_tokens":1}}}`,
+}
+
+// chatUsageChunk is the trailing usage-only chunk of a chat completion stream that asked for it.
+const chatUsageChunk = `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":MODEL,"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}`
+
+// formatStreams are the streamed answers by API path. The chat completion's last content chunk
+// carries the finish reason, so the usage the stream reports comes in a chunk of its own.
+var formatStreams = map[string][]string{
+	"/v1/chat/completions": {
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":MODEL,"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":MODEL,"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`,
+	},
+	"/v1/responses": {
+		"event: response.created\n" + `data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","created_at":1,"status":"in_progress","model":MODEL,"output":[]}}`,
+		"event: response.output_item.added\n" + `data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"msg_1","type":"message","status":"in_progress","role":"assistant","content":[]}}`,
+		"event: response.content_part.added\n" + `data: {"type":"response.content_part.added","sequence_number":2,"item_id":"msg_1","output_index":0,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]}}`,
+		"event: response.output_text.delta\n" + `data: {"type":"response.output_text.delta","sequence_number":3,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"ok"}`,
+		"event: response.output_text.done\n" + `data: {"type":"response.output_text.done","sequence_number":4,"item_id":"msg_1","output_index":0,"content_index":0,"text":"ok"}`,
+		"event: response.content_part.done\n" + `data: {"type":"response.content_part.done","sequence_number":5,"item_id":"msg_1","output_index":0,"content_index":0,"part":{"type":"output_text","text":"ok","annotations":[]}}`,
+		"event: response.output_item.done\n" + `data: {"type":"response.output_item.done","sequence_number":6,"output_index":0,"item":{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"ok","annotations":[]}]}}`,
+		"event: response.completed\n" + `data: {"type":"response.completed","sequence_number":7,"response":{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":MODEL,"output":[{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":5,"output_tokens":1,"total_tokens":6}}}`,
+	},
+	"/v1/messages": {
+		"event: message_start\n" + `data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":MODEL,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":1}}}`,
+		"event: content_block_start\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		"event: content_block_delta\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+		"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}`,
+		"event: message_delta\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}`,
+		"event: message_stop\n" + `data: {"type":"message_stop"}`,
+	},
+}
+
+// sseEvent is one event of a server-sent event stream.
+type sseEvent struct{ event, data string }
+
+func sseEvents(body string) []sseEvent {
+	var events []sseEvent
+	for _, block := range strings.Split(body, "\n\n") {
+		var e sseEvent
+		for _, line := range strings.Split(block, "\n") {
+			if name, ok := strings.CutPrefix(line, "event:"); ok {
+				e.event = strings.TrimSpace(name)
+			} else if data, ok := strings.CutPrefix(line, "data:"); ok {
+				e.data = strings.TrimSpace(data)
+			}
+		}
+		if e.data != "" {
+			events = append(events, e)
+		}
+	}
+	return events
+}
+
+// formatObserver is an LLM plugin registered after the tokun plugin: it records the integration
+// and the request type each request reaches core with.
+type formatObserver struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (o *formatObserver) GetName() string { return "tokun-format-observer" }
+func (o *formatObserver) Cleanup() error  { return nil }
+func (o *formatObserver) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	integration, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string)
+	o.mu.Lock()
+	o.seen = append(o.seen, integration+" "+string(req.RequestType))
+	o.mu.Unlock()
+	return nil
+}
+func (o *formatObserver) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (o *formatObserver) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+func (o *formatObserver) take() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	seen := o.seen
+	o.seen = nil
+	return seen
+}
+
+// formatReply is what the caller of a text format test received.
+type formatReply struct {
+	status   int
+	body     string
+	stripped string
+}
+
+// formatServer is one Bifrost with the tokun plugin and every inference route, whose provider
+// entries are up-openai (key oa-1) and up-openai-2 (key ob-1), OpenAI's API, up-anthropic (key
+// an-1), Anthropic's, up-cohere (key co-1), Cohere's, and up-bedrock (key bk-1), Bedrock's over
+// TLS, all answered by upstreams.
+type formatServer struct {
+	upstreams *formatUpstreams
+	observer  *formatObserver
+	send      func(t *testing.T, uri, body string, plan *routingv1.RoutePlan, sendID string) formatReply
+}
+
+func newFormatServer(t *testing.T) *formatServer {
+	t.Helper()
+	previousLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = previousLogger })
+
+	upstreams := &formatUpstreams{}
+	upstreamServer := httptest.NewServer(upstreams)
+	t.Cleanup(upstreamServer.Close)
+	providerEntry := func(name string, base schemas.ModelProvider, keyID string) configstore.ProviderConfig {
+		network := schemas.DefaultNetworkConfig
+		network.BaseURL = upstreamServer.URL + "/" + name
+		network.AllowPrivateNetwork = true
+		network.MaxRetries = 0
+		return configstore.ProviderConfig{
+			Keys:                 []schemas.Key{{ID: keyID, Name: keyID, Value: schemas.SecretVar{Val: keyID}, Models: schemas.WhiteList{"*"}, Weight: 1}},
+			NetworkConfig:        &network,
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: base},
+		}
+	}
+	// Bedrock's runtime host is set per key and called over HTTPS; its upstream sees the API path
+	// under /up-bedrock, as the others see theirs under their entry.
+	bedrockServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.URL.Path = "/up-bedrock" + r.URL.Path
+		upstreams.ServeHTTP(w, r)
+	}))
+	t.Cleanup(bedrockServer.Close)
+	bedrockNetwork := schemas.DefaultNetworkConfig
+	bedrockNetwork.AllowPrivateNetwork = true
+	bedrockNetwork.InsecureSkipVerify = true
+	bedrockNetwork.MaxRetries = 0
+	bedrockEntry := configstore.ProviderConfig{
+		Keys: []schemas.Key{{ID: "bk-1", Name: "bk-1", Value: schemas.SecretVar{Val: "bk-1"}, Models: schemas.WhiteList{"*"}, Weight: 1,
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				Region:    schemas.NewSecretVar("us-east-1"),
+				Endpoints: &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar(strings.TrimPrefix(bedrockServer.URL, "https://"))},
+			}}},
+		NetworkConfig:        &bedrockNetwork,
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Bedrock},
+	}
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{},
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			"up-openai":    providerEntry("up-openai", schemas.OpenAI, "oa-1"),
+			"up-openai-2":  providerEntry("up-openai-2", schemas.OpenAI, "ob-1"),
+			"up-anthropic": providerEntry("up-anthropic", schemas.Anthropic, "an-1"),
+			"up-cohere":    providerEntry("up-cohere", schemas.Cohere, "co-1"),
+			"up-bedrock":   bedrockEntry,
+		},
+	}
+	t.Setenv("TOKUN_TEST_FORMAT_SIGNING_KEYS", `{"gw-2026-11":"gateway-secret"}`)
+	signer := planSigner{keyID: "gw-2026-11", secret: "gateway-secret"}
+	plugin, err := loadBuiltinPlugin(context.Background(), tokun.PluginName, map[string]any{"signing_keys": "env.TOKUN_TEST_FORMAT_SIGNING_KEYS"}, config)
+	if err != nil {
+		t.Fatalf("load the tokun plugin: %v", err)
+	}
+	if err := config.ReloadPlugin(plugin); err != nil {
+		t.Fatalf("register the tokun plugin: %v", err)
+	}
+	observer := &formatObserver{}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account:         lib.NewBaseAccount(config),
+		LLMPlugins:      []schemas.LLMPlugin{plugin.(schemas.LLMPlugin), observer},
+		Logger:          bifrost.NewNoOpLogger(),
+		InitialPoolSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("init Bifrost: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	r := inferenceRouter(t, config, client)
+
+	send := func(t *testing.T, uri, body string, plan *routingv1.RoutePlan, sendID string) formatReply {
+		t.Helper()
+		planHeader, signatureHeader := signer.headers(t, plan, sendID, len(body), time.Now().Add(time.Minute))
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodPost)
+		req.SetRequestURI(uri)
+		req.Header.SetContentType("application/json")
+		req.Header.Set(tokun.HeaderRoutePlan, planHeader)
+		req.Header.Set(tokun.HeaderRoutePlanSignature, signatureHeader)
+		req.SetBodyString(body)
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Init(&req, nil, nil)
+		r.Handler(ctx)
+		// A streamed response is written by its body stream writer.
+		return formatReply{
+			status:   ctx.Response.StatusCode(),
+			body:     string(ctx.Response.Body()),
+			stripped: string(ctx.Response.Header.Peek(tokun.HeaderStrippedParams)),
+		}
+	}
+	return &formatServer{upstreams: upstreams, observer: observer, send: send}
+}
+
+// formatPlan lists each upstream under a provider of its own, each provider scored far below the
+// one before it with almost no uncertainty, so every order of the plan is the order given: the
+// selection curve gives a later provider a share of practically 0.
+func formatPlan(requestID string, upstreams ...*routingv1.RouteUpstream) *routingv1.RoutePlan {
+	plan := &routingv1.RoutePlan{RequestId: requestID, RequestRate: 1e9, StaleAfterSeconds: 30}
+	for i, upstream := range upstreams {
+		score := 0.9 - 0.4*float64(i)
+		upstream.UpstreamId = int64(i + 1)
+		upstream.Score, upstream.Uncertainty = score, 0.001
+		plan.Providers = append(plan.Providers, &routingv1.RouteProvider{
+			ProviderId: fmt.Sprintf("provider-%d", i+1), Score: score, Uncertainty: 0.001,
+			Upstreams: []*routingv1.RouteUpstream{upstream},
+		})
+	}
+	return plan
+}
+
+// formatUpstream is a plan entry on the Bifrost provider entry bifrostProvider, whose one key is
+// keyID, sending the model as forwardModel.
+func formatUpstream(bifrostProvider, keyID, forwardModel string, sameFormat bool, stripParams ...string) *routingv1.RouteUpstream {
+	return &routingv1.RouteUpstream{
+		Interface: "1:" + bifrostProvider, BifrostProvider: bifrostProvider, ForwardModel: forwardModel,
+		SameFormat: sameFormat, StripParams: stripParams,
+		Keys: []*plannerv1.KeyShare{{KeyId: keyID, Share: 1}},
+	}
+}
+
+// The bodies the callers of the text format tests send: odd spacing, a field no format registers,
+// and a model name only tokun knows. Each attempt in the request's format must forward these bytes
+// with only the model changed.
+const (
+	chatCallerBody      = `{"model":"tk/chat-model" , "messages":[{"role":"user","content":"hi"}],"temperature":1,"zz_unknown":{"b":1,"a":[ ]},"max_completion_tokens":64}`
+	responsesCallerBody = `{"model":"tk/responses-model","input":[{"role":"user","content":"hi"}] ,"max_output_tokens":64,"zz_unknown":{"b":1},"store":false}`
+	messagesCallerBody  = `{"model":"tk/claude","max_tokens":64 ,"messages":[{"role":"user","content":"hi"}],"zz_unknown":{"b":1}}`
+	countCallerBody     = `{"model":"tk/claude","messages":[{"role":"user","content":"hi"}] ,"zz_unknown":{"b":1}}`
+	cohereCallerBody    = `{"model":"tk/command","messages":[{"role":"user","content":"hi"}] ,"zz_unknown":{"b":1},"max_tokens":64}`
+	// A Converse body names no model: the model is in the path.
+	converseCallerBody = `{"messages":[{"role":"user","content":[{"text":"hi"}]}] ,"inferenceConfig":{"maxTokens":64},"zz_unknown":{"b":1}}`
+)
+
+// streamed adds "stream":true and extra to the end of a caller body.
+func streamed(body, extra string) string {
+	return strings.TrimSuffix(body, "}") + `,"stream":true` + extra + "}"
+}
+
+// forwarded is body with its model replaced by model, the only change a same-format attempt makes;
+// a body that names no model (from is empty) is forwarded as it is.
+func forwarded(t *testing.T, body, from, model string) []byte {
+	t.Helper()
+	if from == "" {
+		return []byte(body)
+	}
+	old := `"model":"` + from + `"`
+	if strings.Count(body, old) != 1 {
+		t.Fatalf("%s is not in the body once: %s", old, body)
+	}
+	return []byte(strings.Replace(body, old, `"model":"`+model+`"`, 1))
+}
+
+// checkChatStream checks a chat completion stream the caller received: chunks that spell "ok" and
+// end with [DONE], and whether any chunk carries usage.
+func checkChatStream(t *testing.T, got formatReply, wantUsage bool) {
+	t.Helper()
+	events := sseEvents(got.body)
+	if len(events) == 0 || events[len(events)-1].data != "[DONE]" {
+		t.Fatalf("the stream does not end with [DONE]: %s", got.body)
+	}
+	var text strings.Builder
+	usage := false
+	for _, e := range events[:len(events)-1] {
+		chunk := gjson.Parse(e.data)
+		if chunk.Get("object").String() != "chat.completion.chunk" {
+			t.Fatalf("not a chat completion chunk: %s", e.data)
+		}
+		text.WriteString(chunk.Get("choices.0.delta.content").String())
+		if chunk.Get("usage").IsObject() {
+			usage = true
+			if chunk.Get("usage.total_tokens").Int() != 6 {
+				t.Errorf("the usage chunk reports %s", chunk.Get("usage").Raw)
+			}
+		}
+	}
+	if text.String() != "ok" {
+		t.Errorf("the chunks spell %q: %s", text.String(), got.body)
+	}
+	if usage != wantUsage {
+		t.Errorf("a chunk carries usage: %v, want %v: %s", usage, wantUsage, got.body)
+	}
+}
+
+// checkCallerFormat checks that the caller received "ok" in the format of the route it called. A
+// streamed chat completion is one whose caller asked for usage.
+func checkCallerFormat(t *testing.T, uri string, stream bool, got formatReply) {
+	t.Helper()
+	if got.status != http.StatusOK {
+		t.Fatalf("status %d: %s", got.status, got.body)
+	}
+	switch {
+	case strings.HasSuffix(uri, "/chat/completions") && stream:
+		checkChatStream(t, got, true)
+	case strings.HasSuffix(uri, "/chat/completions"):
+		reply := gjson.Parse(got.body)
+		if reply.Get("object").String() != "chat.completion" || reply.Get("choices.0.message.content").String() != "ok" {
+			t.Fatalf("not a chat completion saying ok: %s", got.body)
+		}
+	case strings.HasSuffix(uri, "/responses") && stream:
+		var text strings.Builder
+		completed := false
+		for _, e := range sseEvents(got.body) {
+			event := gjson.Parse(e.data)
+			switch event.Get("type").String() {
+			case "response.output_text.delta":
+				text.WriteString(event.Get("delta").String())
+			case "response.completed":
+				completed = true
+			}
+		}
+		if text.String() != "ok" || !completed {
+			t.Fatalf("not a Responses stream saying ok and completing: %s", got.body)
+		}
+	case strings.HasSuffix(uri, "/responses"):
+		reply := gjson.Parse(got.body)
+		if reply.Get("object").String() != "response" || reply.Get("output.0.content.0.text").String() != "ok" {
+			t.Fatalf("not a response saying ok: %s", got.body)
+		}
+	case strings.HasSuffix(uri, "/messages") && stream:
+		var text strings.Builder
+		var types []string
+		for _, e := range sseEvents(got.body) {
+			event := gjson.Parse(e.data)
+			types = append(types, event.Get("type").String())
+			if event.Get("type").String() == "content_block_delta" {
+				text.WriteString(event.Get("delta.text").String())
+			}
+		}
+		if text.String() != "ok" || len(types) == 0 || types[0] != "message_start" || types[len(types)-1] != "message_stop" {
+			t.Fatalf("not a Messages stream saying ok from message_start to message_stop: %s", got.body)
+		}
+	case strings.HasSuffix(uri, "/messages"):
+		reply := gjson.Parse(got.body)
+		if reply.Get("type").String() != "message" || reply.Get("content.0.text").String() != "ok" {
+			t.Fatalf("not a message saying ok: %s", got.body)
+		}
+	case strings.HasSuffix(uri, "/count_tokens"):
+		if gjson.Get(got.body, "input_tokens").Int() != 12 {
+			t.Fatalf("not a token count of 12: %s", got.body)
+		}
+	case strings.HasSuffix(uri, "/converse"):
+		if gjson.Get(got.body, "output.message.content.0.text").String() != "ok" {
+			t.Fatalf("not a Converse answer saying ok: %s", got.body)
+		}
+	case strings.HasSuffix(uri, "/v2/chat"):
+		if gjson.Get(got.body, "message.content.0.text").String() != "ok" {
+			t.Fatalf("not a Cohere chat answer saying ok: %s", got.body)
+		}
+	default:
+		t.Fatalf("no format check for %s", uri)
+	}
+}
+
+// TestTokunPluginSendsEachTextFormatThroughItsIntegration sends the three text formats and
+// count_tokens, each with a signed plan, into the route of its own integration, streamed and not,
+// with one candidate in the request's format and one the target provider converts. The attempt in
+// the request's format reaches its upstream with the caller's bytes and only the model changed;
+// the converted attempt reaches its upstream in the upstream's format; the caller gets its own
+// format back either way.
+func TestTokunPluginSendsEachTextFormatThroughItsIntegration(t *testing.T) {
+	server := newFormatServer(t)
+	cases := []struct {
+		name, uri, body, callerModel string
+		stream                       bool
+		// enters is the integration and request type core sees.
+		enters string
+		// same is the entry in the request's format and the API path it reaches; other the entry
+		// the target provider converts for, the path it reaches and a field of its format.
+		sameEntry, samePath, otherEntry, otherPath, otherFormatField string
+	}{
+		{"chat completions", "/openai/v1/chat/completions", chatCallerBody, "tk/chat-model", false, "openai chat_completion",
+			"up-openai", "/v1/chat/completions", "up-anthropic", "/v1/messages", "max_tokens"},
+		{"chat completions, streamed", "/openai/v1/chat/completions", streamed(chatCallerBody, `,"stream_options":{"include_usage":true}`), "tk/chat-model", true, "openai chat_completion_stream",
+			"up-openai", "/v1/chat/completions", "up-anthropic", "/v1/messages", "max_tokens"},
+		{"responses", "/openai/v1/responses", responsesCallerBody, "tk/responses-model", false, "openai responses",
+			"up-openai", "/v1/responses", "up-anthropic", "/v1/messages", "max_tokens"},
+		{"responses, streamed", "/openai/v1/responses", streamed(responsesCallerBody, ""), "tk/responses-model", true, "openai responses_stream",
+			"up-openai", "/v1/responses", "up-anthropic", "/v1/messages", "max_tokens"},
+		{"messages", "/anthropic/v1/messages", messagesCallerBody, "tk/claude", false, "anthropic responses",
+			"up-anthropic", "/v1/messages", "up-openai", "/v1/responses", "input"},
+		{"messages, streamed", "/anthropic/v1/messages", streamed(messagesCallerBody, ""), "tk/claude", true, "anthropic responses_stream",
+			"up-anthropic", "/v1/messages", "up-openai", "/v1/responses", "input"},
+		{"count_tokens", "/anthropic/v1/messages/count_tokens", countCallerBody, "tk/claude", false, "anthropic count_tokens",
+			"up-anthropic", "/v1/messages/count_tokens", "up-openai", "/v1/responses/input_tokens", "input"},
+		// The other two integrations whose attempts in their own format send the caller's body.
+		{"bedrock converse", "/bedrock/model/tk-claude/converse", converseCallerBody, "", false, "bedrock responses",
+			"up-bedrock", "/model/up-model/converse", "up-openai", "/v1/responses", "input"},
+		{"cohere chat", "/cohere/v2/chat", cohereCallerBody, "tk/command", false, "cohere chat_completion",
+			"up-cohere", "/v2/chat", "up-anthropic", "/v1/messages", "max_tokens"},
+	}
+	for i, tc := range cases {
+		keyOf := map[string]string{"up-openai": "oa-1", "up-anthropic": "an-1", "up-cohere": "co-1", "up-bedrock": "bk-1"}
+		t.Run(tc.name+": the candidate in the request's format", func(t *testing.T) {
+			server.upstreams.reset()
+			server.observer.take()
+			plan := formatPlan("req_same", formatUpstream(tc.sameEntry, keyOf[tc.sameEntry], "up-model", true))
+			got := server.send(t, tc.uri, tc.body, plan, fmt.Sprintf("snd_same_%d", i))
+			checkCallerFormat(t, tc.uri, tc.stream, got)
+			calls := server.upstreams.take()
+			if len(calls) != 1 || calls[0].entry != tc.sameEntry || calls[0].path != tc.samePath {
+				t.Fatalf("upstream calls %+v, want one to %s%s", calls, tc.sameEntry, tc.samePath)
+			}
+			if want := forwarded(t, tc.body, tc.callerModel, "up-model"); !bytes.Equal(calls[0].body, want) {
+				t.Fatalf("the upstream received\n%s\nwant the caller's bytes with only the model changed\n%s", calls[0].body, want)
+			}
+			if seen := server.observer.take(); !reflect.DeepEqual(seen, []string{tc.enters}) {
+				t.Errorf("core saw %v, want %q", seen, tc.enters)
+			}
+		})
+		t.Run(tc.name+": a candidate the target provider converts for", func(t *testing.T) {
+			server.upstreams.reset()
+			server.observer.take()
+			plan := formatPlan("req_other", formatUpstream(tc.otherEntry, keyOf[tc.otherEntry], "up-model", false))
+			got := server.send(t, tc.uri, tc.body, plan, fmt.Sprintf("snd_other_%d", i))
+			checkCallerFormat(t, tc.uri, tc.stream, got)
+			calls := server.upstreams.take()
+			if len(calls) != 1 || calls[0].entry != tc.otherEntry || calls[0].path != tc.otherPath {
+				t.Fatalf("upstream calls %+v, want one to %s%s", calls, tc.otherEntry, tc.otherPath)
+			}
+			upstreamBody := gjson.ParseBytes(calls[0].body)
+			if upstreamBody.Get("model").String() != "up-model" || !upstreamBody.Get(tc.otherFormatField).Exists() || upstreamBody.Get("zz_unknown").Exists() {
+				t.Fatalf("the upstream received %s, want a converted body with the forward model and %s", calls[0].body, tc.otherFormatField)
+			}
+			if seen := server.observer.take(); !reflect.DeepEqual(seen, []string{tc.enters}) {
+				t.Errorf("core saw %v, want %q", seen, tc.enters)
+			}
+		})
+	}
+}
+
+// TestTokunPluginRewritesEachAttempt runs the rewrites of each attempt end to end: every attempt
+// starts from the caller's body with its own forward model and its own strip_params, the
+// parameters removed are listed in tokun-stripped-params, and a streamed chat completion asks
+// its upstream for usage but returns it to the caller only when the caller asked.
+func TestTokunPluginRewritesEachAttempt(t *testing.T) {
+	server := newFormatServer(t)
+	const uri = "/openai/v1/chat/completions"
+
+	t.Run("each fallback with its own forward model and strip_params", func(t *testing.T) {
+		server.upstreams.reset("oa-1")
+		plan := formatPlan("req_fallbacks",
+			formatUpstream("up-openai", "oa-1", "first-model", true, "temperature"),
+			formatUpstream("up-openai-2", "ob-1", "second-model", true))
+		got := server.send(t, uri, chatCallerBody, plan, "snd_fallbacks")
+		checkCallerFormat(t, uri, false, got)
+		calls := server.upstreams.take()
+		if len(calls) != 2 {
+			t.Fatalf("upstream calls %+v, want two", calls)
+		}
+		firstWant := []byte(strings.Replace(string(forwarded(t, chatCallerBody, "tk/chat-model", "first-model")), `"temperature":1,`, "", 1))
+		if calls[0].entry != "up-openai" || !bytes.Equal(calls[0].body, firstWant) {
+			t.Fatalf("the first attempt sent to %s\n%s\nwant\n%s", calls[0].entry, calls[0].body, firstWant)
+		}
+		if want := forwarded(t, chatCallerBody, "tk/chat-model", "second-model"); calls[1].entry != "up-openai-2" || !bytes.Equal(calls[1].body, want) {
+			t.Fatalf("the second attempt sent to %s\n%s\nwant\n%s", calls[1].entry, calls[1].body, want)
+		}
+		if got.stripped != "" {
+			t.Errorf("tokun-stripped-params = %q, but the attempt that answered removed nothing", got.stripped)
+		}
+	})
+
+	t.Run("strip_params in the request's format", func(t *testing.T) {
+		server.upstreams.reset()
+		plan := formatPlan("req_strip_same", formatUpstream("up-openai", "oa-1", "up-model", true, "temperature", "top_p", "zz_unknown.b"))
+		got := server.send(t, uri, chatCallerBody, plan, "snd_strip_same")
+		checkCallerFormat(t, uri, false, got)
+		calls := server.upstreams.take()
+		want := `{"model":"up-model" , "messages":[{"role":"user","content":"hi"}],"zz_unknown":{"a":[ ]},"max_completion_tokens":64}`
+		if len(calls) != 1 || string(calls[0].body) != want {
+			t.Fatalf("upstream calls %+v, want one with\n%s", calls, want)
+		}
+		if got.stripped != "temperature, zz_unknown.b" {
+			t.Errorf("tokun-stripped-params = %q, want the two parameters the body had", got.stripped)
+		}
+	})
+
+	t.Run("strip_params on a converted attempt", func(t *testing.T) {
+		server.upstreams.reset()
+		plan := formatPlan("req_kept_other", formatUpstream("up-anthropic", "an-1", "up-model", false))
+		checkCallerFormat(t, uri, false, server.send(t, uri, chatCallerBody, plan, "snd_kept_other"))
+		calls := server.upstreams.take()
+		if len(calls) != 1 || gjson.GetBytes(calls[0].body, "temperature").Float() != 1 {
+			t.Fatalf("upstream calls %+v, want the converted body to carry temperature", calls)
+		}
+
+		server.upstreams.reset()
+		plan = formatPlan("req_strip_other", formatUpstream("up-anthropic", "an-1", "up-model", false, "temperature"))
+		got := server.send(t, uri, chatCallerBody, plan, "snd_strip_other")
+		checkCallerFormat(t, uri, false, got)
+		calls = server.upstreams.take()
+		if len(calls) != 1 || calls[0].path != "/v1/messages" || gjson.GetBytes(calls[0].body, "temperature").Exists() || gjson.GetBytes(calls[0].body, "model").String() != "up-model" {
+			t.Fatalf("upstream calls %+v, want one converted body without temperature", calls)
+		}
+		if got.stripped != "temperature" {
+			t.Errorf("tokun-stripped-params = %q, want temperature", got.stripped)
+		}
+	})
+
+	t.Run("strip_params on a converted attempt of a route that reads its path", func(t *testing.T) {
+		// The Converse route takes the model from the path: the stripped body is converted with
+		// the route's own pre-request callback, as the caller's body was.
+		const converse = "/bedrock/model/tk-claude/converse"
+		server.upstreams.reset()
+		plan := formatPlan("req_kept_converse", formatUpstream("up-openai", "oa-1", "up-model", false))
+		checkCallerFormat(t, converse, false, server.send(t, converse, converseCallerBody, plan, "snd_kept_converse"))
+		calls := server.upstreams.take()
+		if len(calls) != 1 || gjson.GetBytes(calls[0].body, "max_output_tokens").Int() != 64 {
+			t.Fatalf("upstream calls %+v, want the converted body to carry max_output_tokens 64", calls)
+		}
+
+		server.upstreams.reset()
+		plan = formatPlan("req_strip_converse", formatUpstream("up-openai", "oa-1", "up-model", false, "inferenceConfig.maxTokens"))
+		got := server.send(t, converse, converseCallerBody, plan, "snd_strip_converse")
+		checkCallerFormat(t, converse, false, got)
+		calls = server.upstreams.take()
+		if len(calls) != 1 || calls[0].path != "/v1/responses" || gjson.GetBytes(calls[0].body, "max_output_tokens").Exists() || gjson.GetBytes(calls[0].body, "model").String() != "up-model" {
+			t.Fatalf("upstream calls %+v, want one Responses body without max_output_tokens", calls)
+		}
+		if got.stripped != "inferenceConfig.maxTokens" {
+			t.Errorf("tokun-stripped-params = %q, want inferenceConfig.maxTokens", got.stripped)
+		}
+	})
+
+	t.Run("an attempt in the request's format after a converted one", func(t *testing.T) {
+		server.upstreams.reset("oa-1")
+		plan := formatPlan("req_switch",
+			formatUpstream("up-openai", "oa-1", "first-model", true),
+			formatUpstream("up-anthropic", "an-1", "second-model", false))
+		checkCallerFormat(t, uri, false, server.send(t, uri, chatCallerBody, plan, "snd_switch"))
+		calls := server.upstreams.take()
+		if len(calls) != 2 || calls[0].path != "/v1/chat/completions" || calls[1].path != "/v1/messages" {
+			t.Fatalf("upstream calls %+v, want the chat completion and then the converted message", calls)
+		}
+		if want := forwarded(t, chatCallerBody, "tk/chat-model", "first-model"); !bytes.Equal(calls[0].body, want) {
+			t.Fatalf("the first attempt sent\n%s\nwant\n%s", calls[0].body, want)
+		}
+		if gjson.GetBytes(calls[1].body, "model").String() != "second-model" || gjson.GetBytes(calls[1].body, "zz_unknown").Exists() {
+			t.Fatalf("the converted attempt sent %s", calls[1].body)
+		}
+	})
+
+	for _, tc := range []struct {
+		name, body, upstreamBody string
+		wantUsage                bool
+	}{
+		{"a caller that asked for usage", streamed(chatCallerBody, `,"stream_options":{"include_usage":true}`),
+			strings.Replace(streamed(chatCallerBody, `,"stream_options":{"include_usage":true}`), "tk/chat-model", "up-model", 1), true},
+		{"a caller that said no usage", streamed(chatCallerBody, `,"stream_options":{"include_usage":false}`),
+			strings.Replace(streamed(chatCallerBody, `,"stream_options":{"include_usage":true}`), "tk/chat-model", "up-model", 1), false},
+		{"a caller that did not ask", streamed(chatCallerBody, ""),
+			strings.Replace(streamed(chatCallerBody, `,"stream_options":{"include_usage":true}`), "tk/chat-model", "up-model", 1), false},
+	} {
+		t.Run("include_usage: "+tc.name, func(t *testing.T) {
+			server.upstreams.reset()
+			plan := formatPlan("req_usage", formatUpstream("up-openai", "oa-1", "up-model", true))
+			got := server.send(t, uri, tc.body, plan, "snd_usage_"+strings.ReplaceAll(tc.name, " ", "_"))
+			if got.status != http.StatusOK {
+				t.Fatalf("status %d: %s", got.status, got.body)
+			}
+			checkChatStream(t, got, tc.wantUsage)
+			calls := server.upstreams.take()
+			if len(calls) != 1 || string(calls[0].body) != tc.upstreamBody {
+				t.Fatalf("upstream calls %+v, want one with\n%s", calls, tc.upstreamBody)
+			}
+		})
+	}
+
+	t.Run("include_usage: a converted attempt of a caller that did not ask", func(t *testing.T) {
+		server.upstreams.reset()
+		plan := formatPlan("req_usage_other", formatUpstream("up-anthropic", "an-1", "up-model", false))
+		got := server.send(t, uri, streamed(chatCallerBody, ""), plan, "snd_usage_other")
+		if got.status != http.StatusOK {
+			t.Fatalf("status %d: %s", got.status, got.body)
+		}
+		checkChatStream(t, got, false)
+	})
 }

@@ -742,6 +742,30 @@ func (g *GenericRouter) RegisterRoutes(r *router.Router, middlewares ...schemas.
 	}
 }
 
+// convertRequestBody builds a request from body, a body in the format of config's route, the way
+// the handler builds one from the caller's body: parsed into the route's request type, completed
+// by the route's pre-request callback from the path and headers of ctx, the request being
+// handled, and converted. It runs while the handler of ctx is running.
+func convertRequestBody(ctx *fasthttp.RequestCtx, config RouteConfig, bifrostCtx *schemas.BifrostContext, body []byte) (*schemas.BifrostRequest, error) {
+	req := config.GetRequestTypeInstance(ctx)
+	if err := parseJSONRequestBody(body, req); err != nil {
+		return nil, err
+	}
+	if config.PreCallback != nil {
+		if err := config.PreCallback(ctx, bifrostCtx, req); err != nil {
+			return nil, fmt.Errorf("pre-request callback: %w", err)
+		}
+	}
+	bifrostReq, err := config.RequestConverter(bifrostCtx, req)
+	if err != nil {
+		return nil, err
+	}
+	if bifrostReq == nil {
+		return nil, errors.New("the request converter returned no request")
+	}
+	return bifrostReq, nil
+}
+
 // createHandler creates a fasthttp handler for the given route configuration.
 // The handler follows this flow:
 // 1. Parse JSON request body into the configured request type (for methods that expect bodies)
@@ -863,7 +887,14 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			}
 		}
 
-		if config.NativePassthroughRequestConverter != nil {
+		// A plugin that decides per attempt whether the caller's body goes out as it is (the tokun
+		// routing plugin) has the body kept whatever this route chose, and gets the converter for
+		// an attempt it sends from a changed body. Such a request is not handed to a native
+		// passthrough, which sends it to one provider in its own format: its attempts may go to
+		// providers of other formats.
+		keepRawRequestBody, _ := bifrostCtx.Value(schemas.BifrostContextKeyKeepRawRequestBody).(bool)
+
+		if config.NativePassthroughRequestConverter != nil && !keepRawRequestBody {
 			passthroughReq, usePassthrough, err := config.NativePassthroughRequestConverter(g.client, ctx, bifrostCtx, req, rawBody)
 			if err != nil {
 				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(err, "failed to prepare native passthrough request"))
@@ -989,8 +1020,16 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "invalid request"))
 			return
 		}
-		if sendRawRequestBody, ok := (*bifrostCtx).Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && sendRawRequestBody {
+		if sendRawRequestBody, _ := bifrostCtx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); sendRawRequestBody || keepRawRequestBody {
 			bifrostReq.SetRawRequestBody(rawBodyForRequest(ctx, rawBody))
+		}
+		// The converter reads ctx, so it is given only to a request served while this handler
+		// runs: an async job runs after the handler has returned.
+		if keepRawRequestBody && len(ctx.Request.Header.Peek(schemas.AsyncHeaderCreate)) == 0 {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyRequestBodyConverter, schemas.RequestBodyConverter(
+				func(convertCtx *schemas.BifrostContext, body []byte) (*schemas.BifrostRequest, error) {
+					return convertRequestBody(ctx, config, convertCtx, body)
+				}))
 		}
 
 		// Extract and parse fallbacks from the request if present

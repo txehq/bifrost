@@ -291622,6 +291622,159 @@
           }
         }
       ]
+    },
+    {
+      "name": "279. Anthropic token counting on the drop-in routers counts tokens (drop-in anthropic count_tokens)",
+      "description": "Pins TXE-5770. The LiteLLM and PydanticAI routers register the Anthropic routes, among them the wildcard POST /v1/messages/{path:*}, but not the token count route that the Anthropic, Cursor and LangChain routers register. So POST /litellm/v1/messages/count_tokens and /pydanticai/v1/messages/count_tokens matched the wildcard and were handled as a message to create: the caller received a generated message (and paid for one) instead of a token count. Both routers now register the count route. Each case sends an Anthropic count_tokens body and requires a token count back and no generated content: A and B are red before the change (a Message comes back) and green after; C, the LangChain router, which always had the route, pins that the three agree. The request types each Anthropic-format route registers and the type core handles are pinned by the Go test TestAnthropicRoutesRequestTypes in transports/bifrost-http/integrations/anthropic_test.go.",
+      "item": [
+        {
+          "name": "A. anthropic/claude-haiku-4-5 /litellm/v1/messages/count_tokens returns a token count (drop-in anthropic count_tokens)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic/claude-haiku-4-5 /litellm count_tokens returns a token count, not a message', function () {",
+                  "  pm.expect(pm.response.code, 'count_tokens failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.input_tokens, 'no input_tokens: ' + pm.response.text()).to.be.a('number');",
+                  "  pm.expect(body.input_tokens, 'input_tokens is not positive: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(body.content, 'the count was handled as a message to create: ' + pm.response.text()).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/v1/messages/count_tokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "v1",
+                "messages",
+                "count_tokens"
+              ]
+            }
+          }
+        },
+        {
+          "name": "B. anthropic/claude-haiku-4-5 /pydanticai/v1/messages/count_tokens returns a token count (drop-in anthropic count_tokens)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic/claude-haiku-4-5 /pydanticai count_tokens returns a token count, not a message', function () {",
+                  "  pm.expect(pm.response.code, 'count_tokens failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.input_tokens, 'no input_tokens: ' + pm.response.text()).to.be.a('number');",
+                  "  pm.expect(body.input_tokens, 'input_tokens is not positive: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(body.content, 'the count was handled as a message to create: ' + pm.response.text()).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/v1/messages/count_tokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "v1",
+                "messages",
+                "count_tokens"
+              ]
+            }
+          }
+        },
+        {
+          "name": "C. anthropic/claude-haiku-4-5 /langchain/v1/messages/count_tokens returns a token count (drop-in anthropic count_tokens)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic/claude-haiku-4-5 /langchain count_tokens returns a token count, not a message', function () {",
+                  "  pm.expect(pm.response.code, 'count_tokens failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.input_tokens, 'no input_tokens: ' + pm.response.text()).to.be.a('number');",
+                  "  pm.expect(body.input_tokens, 'input_tokens is not positive: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(body.content, 'the count was handled as a message to create: ' + pm.response.text()).to.equal(undefined);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"Hello\"}]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/v1/messages/count_tokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "v1",
+                "messages",
+                "count_tokens"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

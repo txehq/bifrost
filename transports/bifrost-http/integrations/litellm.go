@@ -24,6 +24,10 @@ func NewLiteLLMRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, ac
 	// Add Anthropic routes to LiteLLM for Anthropic API compatibility
 	routes = append(routes, CreateAnthropicRouteConfigs("/litellm", logger)...)
 
+	// Add the Anthropic count tokens route, so a count is not taken by the /v1/messages wildcard
+	// and handled as a message to create
+	routes = append(routes, CreateAnthropicCountTokensRouteConfigs("/litellm", handlerStore)...)
+
 	// Add GenAI routes to LiteLLM for Vertex AI compatibility
 	routes = append(routes, CreateGenAIRouteConfigs("/litellm")...)
 

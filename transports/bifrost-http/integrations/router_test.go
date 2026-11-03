@@ -1921,3 +1921,122 @@ func TestPassthroughUpstreamNeverSeesMethodOverrides(t *testing.T) {
 		})
 	}
 }
+
+// inferenceRouteTestAccount configures OpenAI, Bedrock and Cohere with one synthetic key each.
+// A plugin short-circuit answers every request, so no upstream is contacted.
+type inferenceRouteTestAccount struct{}
+
+func (inferenceRouteTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI, schemas.Bedrock, schemas.Cohere}, nil
+}
+
+func (inferenceRouteTestAccount) GetKeysForProvider(_ context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: string(provider) + "-key", Value: *schemas.NewSecretVar("synthetic-key"), Models: schemas.WhiteList{"*"}, Weight: 1}}, nil
+}
+
+func (inferenceRouteTestAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{}, nil
+}
+
+// inferenceRouteAnswer answers every attempt from PreLLMHook with a minimal response of the
+// request's kind and records the request it was handed.
+type inferenceRouteAnswer struct {
+	mu   sync.Mutex
+	last *schemas.BifrostRequest
+}
+
+func (*inferenceRouteAnswer) GetName() string { return "inference-route-answer" }
+func (*inferenceRouteAnswer) Cleanup() error  { return nil }
+func (*inferenceRouteAnswer) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+
+func (p *inferenceRouteAnswer) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	p.mu.Lock()
+	p.last = req
+	p.mu.Unlock()
+	text := "ok"
+	switch {
+	case req.ChatRequest != nil:
+		return req, &schemas.LLMPluginShortCircuit{Response: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			ID: "chatcmpl-1", Object: "chat.completion", Model: req.ChatRequest.Model,
+			Choices: []schemas.BifrostResponseChoice{{
+				FinishReason:                schemas.Ptr("stop"),
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &text}}},
+			}},
+		}}}, nil
+	case req.ResponsesRequest != nil:
+		return req, &schemas.LLMPluginShortCircuit{Response: &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+			ID: schemas.Ptr("resp_1"), Object: "response", Model: req.ResponsesRequest.Model,
+			Output: []schemas.ResponsesMessage{{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesOutputMessageContentTypeText, Text: &text}}},
+			}},
+		}}}, nil
+	}
+	return req, nil, fmt.Errorf("no answer for %s", req.RequestType)
+}
+
+func (*inferenceRouteAnswer) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// inferenceRouteCases are the chat routes of the OpenAI, Bedrock and Cohere integrations, with a
+// body each.
+var inferenceRouteCases = []struct {
+	name, uri, body string
+}{
+	{"openai chat completions", "/openai/v1/chat/completions", `{"model":"openai/gpt-5","messages":[{"role":"user","content":"hi"}],"zz_unknown":{"b":1}}`},
+	{"bedrock converse", "/bedrock/model/anthropic.claude-opus-4-5/converse", `{"messages":[{"role":"user","content":[{"text":"hi"}]}],"inferenceConfig":{"maxTokens":64}}`},
+	{"cohere chat", "/cohere/v2/chat", `{"model":"cohere/command-a","messages":[{"role":"user","content":"hi"}]}`},
+}
+
+// inferenceRouteRouter registers the OpenAI, Bedrock and Cohere integrations on one router, on a
+// Bifrost whose only plugin is answer.
+func inferenceRouteRouter(tb testing.TB, answer *inferenceRouteAnswer) *router.Router {
+	tb.Helper()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: inferenceRouteTestAccount{}, LLMPlugins: []schemas.LLMPlugin{answer}, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1,
+	})
+	if err != nil {
+		tb.Fatalf("init Bifrost: %v", err)
+	}
+	tb.Cleanup(client.Shutdown)
+	r := router.New()
+	store := &mockHandlerStore{}
+	NewOpenAIRouter(client, store, nil, &testLogger{}).RegisterRoutes(r)
+	NewBedrockRouter(client, store, nil, &testLogger{}).RegisterRoutes(r)
+	NewCohereRouter(client, store, nil, &testLogger{}).RegisterRoutes(r)
+	return r
+}
+
+func serveInferenceRoute(r *router.Router, uri, body string, ctx *fasthttp.RequestCtx) {
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI(uri)
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyString(body)
+	r.Handler(ctx)
+}
+
+// BenchmarkInferenceRouteHandler measures the integration handler of the OpenAI, Bedrock and
+// Cohere chat routes from the HTTP request to the converted response, with core answered by a
+// plugin short-circuit: no upstream is called, so the numbers are the transport's and core's.
+func BenchmarkInferenceRouteHandler(b *testing.B) {
+	answer := &inferenceRouteAnswer{}
+	r := inferenceRouteRouter(b, answer)
+	for _, tc := range inferenceRouteCases {
+		b.Run(tc.name, func(b *testing.B) {
+			var check fasthttp.RequestCtx
+			serveInferenceRoute(r, tc.uri, tc.body, &check)
+			if check.Response.StatusCode() != fasthttp.StatusOK {
+				b.Fatalf("status %d: %s", check.Response.StatusCode(), check.Response.Body())
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				var ctx fasthttp.RequestCtx
+				serveInferenceRoute(r, tc.uri, tc.body, &ctx)
+			}
+		})
+	}
+}

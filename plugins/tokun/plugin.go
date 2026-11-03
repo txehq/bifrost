@@ -98,6 +98,9 @@ func (p *Plugin) HTTPTransportPreAuthHook(ctx *schemas.BifrostContext, req *sche
 	ctx.SetValue(requestStateKey, &requestState{plan: verified.plan, claims: verified.claims})
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, verified.claims.GetSendId())
 	ctx.SetValue(schemas.BifrostContextKeySessionAffinity, false)
+	// Each attempt decides whether the caller's body goes out as it is (rewriteAttempt), so the
+	// integration keeps it on the request whatever the route itself would choose.
+	ctx.SetValue(schemas.BifrostContextKeyKeepRawRequestBody, true)
 	return nil, nil
 }
 
@@ -123,18 +126,21 @@ func (p *Plugin) HTTPTransportPostHook(_ *schemas.BifrostContext, _ *schemas.HTT
 	return nil
 }
 
-// HTTPTransportResponseHeadersHook writes the send's attempt record into the response
-// headers, once every switch between attempts is over.
+// HTTPTransportResponseHeadersHook writes the send's attempt record and the parameters the
+// answering attempt removed into the response headers, once every switch between attempts is
+// over.
 func (p *Plugin) HTTPTransportResponseHeadersHook(ctx *schemas.BifrostContext, _ *schemas.HTTPRequest, resp *schemas.HTTPResponseMetadata) error {
 	state, ok := ctx.Value(requestStateKey).(*requestState)
 	if !ok {
 		return nil
 	}
 	p.writeAttempts(state, resp)
+	strippedHeader(state, resp)
 	return nil
 }
 
-// HTTPTransportStreamChunkHook passes each chunk to the caller.
+// HTTPTransportStreamChunkHook passes each chunk to the caller, without the usage the plugin
+// asked for when the caller did not.
 func (p *Plugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, _ *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	state, ok := ctx.Value(requestStateKey).(*requestState)
 	if !ok {
@@ -151,13 +157,15 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 	if !ok {
 		return nil
 	}
+	state.capture(ctx, req)
 	p.route(ctx, req, state)
 	return nil
 }
 
 // PreLLMHook runs before each attempt. It fails a send whose plan was never applied to the
-// request or none of whose entries is on this Bifrost, and an attempt whose index is not one of
-// the entries sent; otherwise it rewrites the request for the attempt's entry.
+// request or none of whose entries is on this Bifrost, an attempt whose index is not one of
+// the entries sent, and an attempt whose request cannot be rewritten; otherwise it rewrites the
+// request for the attempt's entry.
 func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	state, ok := ctx.Value(requestStateKey).(*requestState)
 	if !ok {
@@ -173,7 +181,11 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 	if fault != nil {
 		return req, &schemas.LLMPluginShortCircuit{Error: fault}, nil
 	}
-	return p.rewriteAttempt(ctx, req, state.order[state.chain[attempt]]), nil, nil
+	rewritten, fault := p.rewriteAttempt(ctx, req, state, state.order[state.chain[attempt]])
+	if fault != nil {
+		return req, &schemas.LLMPluginShortCircuit{Error: fault}, nil
+	}
+	return rewritten, nil, nil
 }
 
 // PostLLMHook runs after each attempt and records it. A send PreLLMHook failed before any

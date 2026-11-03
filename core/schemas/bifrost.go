@@ -322,6 +322,8 @@ const (
 	BifrostContextKeyPassthroughHeaders                  BifrostContextKey = "bifrost-anthropic-passthrough-headers"   // map[string][]string (the caller's raw request headers, captured for Anthropic OAuth passthrough where their token is the upstream credential; ONLY the Anthropic provider may forward these — every other provider authenticates with its own configured credentials. Reserved: set by the transport, never by a plugin)
 	BifrostContextKeyURLPath                             BifrostContextKey = "bifrost-extra-url-path"                  // string
 	BifrostContextKeyUseRawRequestBody                   BifrostContextKey = "bifrost-use-raw-request-body"
+	BifrostContextKeyKeepRawRequestBody                  BifrostContextKey = "bifrost-keep-raw-request-body"                    // bool (set by an HTTP transport plugin before the integration converts the request: the integration keeps the caller's body on the request whatever BifrostContextKeyUseRawRequestBody says, and puts its BifrostContextKeyRequestBodyConverter on the context, so a plugin can decide per attempt whether the body is sent as it is)
+	BifrostContextKeyRequestBodyConverter                BifrostContextKey = "bifrost-request-body-converter"                   // RequestBodyConverter (set by the integration of a request whose raw body it keeps and that it serves while its handler runs - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyRawRequestBodyTextRewriter          BifrostContextKey = "bifrost-raw-request-body-text-rewriter"           // RawRequestBodyTextRewriter (set by native integrations because raw passthrough bypasses normalized runtime redaction)
 	BifrostContextKeyRawRequestBodyTextTransformer       BifrostContextKey = "bifrost-raw-request-body-text-transformer"        // RawRequestBodyTextTransformer (set by native integrations for exact provider-managed transformations)
 	BifrostContextKeyRawResponseTextTransformer          BifrostContextKey = "bifrost-raw-response-text-transformer"            // RawResponseTextTransformer (set by native integrations that forward a native non-stream response)
@@ -1267,6 +1269,165 @@ func (br *BifrostRequest) SetRawRequestBody(rawRequestBody []byte) {
 		br.CachedContentDeleteRequest.RawRequestBody = rawRequestBody
 	}
 }
+
+// GetRawRequestBody returns the original body stored on the active request variant, nil when
+// none was stored.
+func (br *BifrostRequest) GetRawRequestBody() []byte {
+	switch {
+	case br.TextCompletionRequest != nil:
+		return br.TextCompletionRequest.RawRequestBody
+	case br.ChatRequest != nil:
+		return br.ChatRequest.RawRequestBody
+	case br.ResponsesRequest != nil:
+		return br.ResponsesRequest.RawRequestBody
+	case br.ResponsesRetrieveRequest != nil:
+		return br.ResponsesRetrieveRequest.RawRequestBody
+	case br.ResponsesDeleteRequest != nil:
+		return br.ResponsesDeleteRequest.RawRequestBody
+	case br.ResponsesCancelRequest != nil:
+		return br.ResponsesCancelRequest.RawRequestBody
+	case br.ResponsesInputItemsRequest != nil:
+		return br.ResponsesInputItemsRequest.RawRequestBody
+	case br.CountTokensRequest != nil:
+		return br.CountTokensRequest.RawRequestBody
+	case br.CompactionRequest != nil:
+		return br.CompactionRequest.RawRequestBody
+	case br.EmbeddingRequest != nil:
+		return br.EmbeddingRequest.RawRequestBody
+	case br.RerankRequest != nil:
+		return br.RerankRequest.RawRequestBody
+	case br.DecisionRequest != nil:
+		return br.DecisionRequest.RawRequestBody
+	case br.OCRRequest != nil:
+		return br.OCRRequest.RawRequestBody
+	case br.SpeechRequest != nil:
+		return br.SpeechRequest.RawRequestBody
+	case br.TranscriptionRequest != nil:
+		return br.TranscriptionRequest.RawRequestBody
+	case br.ImageGenerationRequest != nil:
+		return br.ImageGenerationRequest.RawRequestBody
+	case br.ImageEditRequest != nil:
+		return br.ImageEditRequest.RawRequestBody
+	case br.ImageVariationRequest != nil:
+		return br.ImageVariationRequest.RawRequestBody
+	case br.VideoGenerationRequest != nil:
+		return br.VideoGenerationRequest.RawRequestBody
+	case br.VideoEditRequest != nil:
+		return br.VideoEditRequest.RawRequestBody
+	case br.VideoRemixRequest != nil:
+		return br.VideoRemixRequest.RawRequestBody
+	case br.CachedContentCreateRequest != nil:
+		return br.CachedContentCreateRequest.RawRequestBody
+	case br.CachedContentListRequest != nil:
+		return br.CachedContentListRequest.RawRequestBody
+	case br.CachedContentRetrieveRequest != nil:
+		return br.CachedContentRetrieveRequest.RawRequestBody
+	case br.CachedContentUpdateRequest != nil:
+		return br.CachedContentUpdateRequest.RawRequestBody
+	case br.CachedContentDeleteRequest != nil:
+		return br.CachedContentDeleteRequest.RawRequestBody
+	}
+	return nil
+}
+
+// WithRawRequestBody returns a copy of br whose active request variant is a copy carrying
+// rawRequestBody as its original body. br and its request variant are left as they are, so a
+// request that several attempts share can go out with a different body on each.
+func (br *BifrostRequest) WithRawRequestBody(rawRequestBody []byte) *BifrostRequest {
+	cp := *br
+	switch {
+	case br.TextCompletionRequest != nil:
+		r := *br.TextCompletionRequest
+		cp.TextCompletionRequest = &r
+	case br.ChatRequest != nil:
+		r := *br.ChatRequest
+		cp.ChatRequest = &r
+	case br.ResponsesRequest != nil:
+		r := *br.ResponsesRequest
+		cp.ResponsesRequest = &r
+	case br.ResponsesRetrieveRequest != nil:
+		r := *br.ResponsesRetrieveRequest
+		cp.ResponsesRetrieveRequest = &r
+	case br.ResponsesDeleteRequest != nil:
+		r := *br.ResponsesDeleteRequest
+		cp.ResponsesDeleteRequest = &r
+	case br.ResponsesCancelRequest != nil:
+		r := *br.ResponsesCancelRequest
+		cp.ResponsesCancelRequest = &r
+	case br.ResponsesInputItemsRequest != nil:
+		r := *br.ResponsesInputItemsRequest
+		cp.ResponsesInputItemsRequest = &r
+	case br.CountTokensRequest != nil:
+		r := *br.CountTokensRequest
+		cp.CountTokensRequest = &r
+	case br.CompactionRequest != nil:
+		r := *br.CompactionRequest
+		cp.CompactionRequest = &r
+	case br.EmbeddingRequest != nil:
+		r := *br.EmbeddingRequest
+		cp.EmbeddingRequest = &r
+	case br.RerankRequest != nil:
+		r := *br.RerankRequest
+		cp.RerankRequest = &r
+	case br.DecisionRequest != nil:
+		r := *br.DecisionRequest
+		cp.DecisionRequest = &r
+	case br.OCRRequest != nil:
+		r := *br.OCRRequest
+		cp.OCRRequest = &r
+	case br.SpeechRequest != nil:
+		r := *br.SpeechRequest
+		cp.SpeechRequest = &r
+	case br.TranscriptionRequest != nil:
+		r := *br.TranscriptionRequest
+		cp.TranscriptionRequest = &r
+	case br.ImageGenerationRequest != nil:
+		r := *br.ImageGenerationRequest
+		cp.ImageGenerationRequest = &r
+	case br.ImageEditRequest != nil:
+		r := *br.ImageEditRequest
+		cp.ImageEditRequest = &r
+	case br.ImageVariationRequest != nil:
+		r := *br.ImageVariationRequest
+		cp.ImageVariationRequest = &r
+	case br.VideoGenerationRequest != nil:
+		r := *br.VideoGenerationRequest
+		cp.VideoGenerationRequest = &r
+	case br.VideoEditRequest != nil:
+		r := *br.VideoEditRequest
+		cp.VideoEditRequest = &r
+	case br.VideoRemixRequest != nil:
+		r := *br.VideoRemixRequest
+		cp.VideoRemixRequest = &r
+	case br.CachedContentCreateRequest != nil:
+		r := *br.CachedContentCreateRequest
+		cp.CachedContentCreateRequest = &r
+	case br.CachedContentListRequest != nil:
+		r := *br.CachedContentListRequest
+		cp.CachedContentListRequest = &r
+	case br.CachedContentRetrieveRequest != nil:
+		r := *br.CachedContentRetrieveRequest
+		cp.CachedContentRetrieveRequest = &r
+	case br.CachedContentUpdateRequest != nil:
+		r := *br.CachedContentUpdateRequest
+		cp.CachedContentUpdateRequest = &r
+	case br.CachedContentDeleteRequest != nil:
+		r := *br.CachedContentDeleteRequest
+		cp.CachedContentDeleteRequest = &r
+	}
+	cp.SetRawRequestBody(rawRequestBody)
+	return &cp
+}
+
+// RequestBodyConverter converts a body in the format of the route a request arrived on into the
+// BifrostRequest that route's integration builds from it: the body is parsed, completed from the
+// request's path and headers and converted as the request's own body was, on ctx. The result
+// names the provider and model the body names and has no RequestType; the caller sets them. The
+// integration of a request whose raw body it keeps puts one on the context
+// (BifrostContextKeyRequestBodyConverter) while it handles the request, so a plugin can send an
+// attempt that needs conversion from a body it changed. It is called only during the request's
+// attempts, never after the request was answered.
+type RequestBodyConverter func(ctx *BifrostContext, body []byte) (*BifrostRequest, error)
 
 type MCPRequestType string
 

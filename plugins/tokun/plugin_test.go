@@ -691,8 +691,254 @@ func BenchmarkPreRequestHook(b *testing.B) {
 	})
 }
 
-// BenchmarkPreLLMHook measures one attempt's pre-hook: a fallback of a routed send, and a request
-// that carries no plan.
+func TestStripParams(t *testing.T) {
+	body := []byte(`{"model":"m", "temperature":1,"top_p":1,"tools":[{"type":"function"}],"extra":{"a":1,"b":2}}`)
+	original := string(body)
+	got, stripped, err := stripParams(body, []string{"top_p", "absent", "extra.b", "temperature"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"model":"m","tools":[{"type":"function"}],"extra":{"a":1}}`; string(got) != want {
+		t.Fatalf("stripped body = %s, want %s", got, want)
+	}
+	if !reflect.DeepEqual(stripped, []string{"top_p", "extra.b", "temperature"}) {
+		t.Fatalf("stripped = %v, want the present paths in the plan's order", stripped)
+	}
+	if string(body) != original {
+		t.Fatalf("the caller's body changed: %s", body)
+	}
+
+	got, stripped, err = stripParams(body, []string{"absent"})
+	if err != nil || stripped != nil || &got[0] != &body[0] {
+		t.Fatalf("a body with nothing to strip = %s, %v, %v; want the same bytes", got, stripped, err)
+	}
+}
+
+func TestAskForStreamUsage(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{`{"stream":true}`, `{"stream":true,"stream_options":{"include_usage":true}}`},
+		{`{"stream":true,"stream_options":{"include_usage":false,"x":1}}`, `{"stream":true,"stream_options":{"include_usage":true,"x":1}}`},
+		{`{"stream":true,"stream_options":{"x":1}}`, `{"stream":true,"stream_options":{"x":1,"include_usage":true}}`},
+		{`{"stream":true,"stream_options":null}`, `{"stream":true,"stream_options":{"include_usage":true}}`},
+	} {
+		got, err := askForStreamUsage([]byte(tc.body))
+		if err != nil || string(got) != tc.want {
+			t.Errorf("askForStreamUsage(%s) = %s, %v; want %s", tc.body, got, err, tc.want)
+		}
+	}
+}
+
+func TestRequestStateCapture(t *testing.T) {
+	for _, tc := range []struct {
+		name, integration, body string
+		requestType             schemas.RequestType
+		openAIStream, dropUsage bool
+	}{
+		{"openai stream without usage", "openai", `{"stream":true}`, schemas.ChatCompletionStreamRequest, true, true},
+		{"openai stream that asked for usage", "openai", `{"stream":true,"stream_options":{"include_usage":true}}`, schemas.ChatCompletionStreamRequest, true, false},
+		{"openai completions stream", "openai", `{"stream":true}`, schemas.TextCompletionStreamRequest, true, true},
+		{"openai without a stream", "openai", `{}`, schemas.ChatCompletionRequest, false, false},
+		{"openai responses stream", "openai", `{"stream":true}`, schemas.ResponsesStreamRequest, false, false},
+		{"anthropic stream", "anthropic", `{"stream":true}`, schemas.ResponsesStreamRequest, false, false},
+		{"openai stream without a kept body", "openai", ``, schemas.ChatCompletionStreamRequest, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyIntegrationType, tc.integration)
+			req := &schemas.BifrostRequest{RequestType: tc.requestType}
+			switch tc.requestType {
+			case schemas.TextCompletionStreamRequest:
+				req.TextCompletionRequest = &schemas.BifrostTextCompletionRequest{}
+			case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+				req.ChatRequest = &schemas.BifrostChatRequest{}
+			default:
+				req.ResponsesRequest = &schemas.BifrostResponsesRequest{}
+			}
+			if tc.body != "" {
+				req.SetRawRequestBody([]byte(tc.body))
+			}
+			state := &requestState{}
+			state.capture(ctx, req)
+			if state.openAIStream != tc.openAIStream || state.dropUsage != tc.dropUsage {
+				t.Fatalf("openAIStream %v dropUsage %v, want %v %v", state.openAIStream, state.dropUsage, tc.openAIStream, tc.dropUsage)
+			}
+		})
+	}
+}
+
+// Every attempt is rewritten from the caller's body: the request the attempt is handed keeps it,
+// and an attempt in the request's format goes out from a copy.
+func TestRewriteAttempt(t *testing.T) {
+	plugin := testPlugin(t, map[string]string{"gw-2026-11": "gateway-secret"})
+	body := `{"model":"caller/model","stream":true,"temperature":1,"messages":[]}`
+	newSend := func(sameFormat bool, stripParams ...string) (*schemas.BifrostContext, *schemas.BifrostRequest, *requestState, entry) {
+		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyIntegrationType, integrationOpenAI)
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{RawRequestBody: []byte(body)}}
+		upstream := &routingv1.RouteUpstream{BifrostProvider: "up-a", ForwardModel: "model-a", SameFormat: sameFormat, StripParams: stripParams}
+		state := &requestState{}
+		state.capture(ctx, req)
+		return ctx, req, state, entry{upstream: upstream}
+	}
+
+	t.Run("in the request's format", func(t *testing.T) {
+		ctx, req, state, e := newSend(true, "temperature")
+		got, fault := plugin.rewriteAttempt(ctx, req, state, e)
+		if fault != nil {
+			t.Fatal(fault.Error.Message)
+		}
+		want := `{"model":"model-a","stream":true,"messages":[],"stream_options":{"include_usage":true}}`
+		if string(got.GetRawRequestBody()) != want || got.RequestType != req.RequestType || got.ChatRequest == req.ChatRequest {
+			t.Fatalf("rewritten = %s (a copy: %v), want %s", got.GetRawRequestBody(), got.ChatRequest != req.ChatRequest, want)
+		}
+		if string(req.GetRawRequestBody()) != body || string(state.body) != body {
+			t.Fatalf("the caller's body changed: %s", req.GetRawRequestBody())
+		}
+		if raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); !raw {
+			t.Fatal("the attempt does not send the body as it is")
+		}
+		if !reflect.DeepEqual(state.stripped, []string{"temperature"}) {
+			t.Fatalf("stripped = %v", state.stripped)
+		}
+	})
+
+	t.Run("converted, nothing to strip", func(t *testing.T) {
+		ctx, req, state, e := newSend(false)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		state.stripped = []string{"left by an earlier attempt"}
+		got, fault := plugin.rewriteAttempt(ctx, req, state, e)
+		if fault != nil || got != req {
+			t.Fatalf("rewriteAttempt = %v, %+v; want the request itself", got, fault)
+		}
+		if raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); raw {
+			t.Fatal("a converted attempt sends the raw body")
+		}
+		if state.stripped != nil {
+			t.Fatalf("stripped = %v, want none", state.stripped)
+		}
+	})
+
+	t.Run("converted, stripped, on a route that gave no converter", func(t *testing.T) {
+		ctx, req, state, e := newSend(false, "temperature")
+		_, fault := plugin.rewriteAttempt(ctx, req, state, e)
+		if fault == nil || *fault.Type != "tokun_attempt_rewrite_failed" || *fault.AllowFallbacks {
+			t.Fatalf("rewriteAttempt fault = %+v, want tokun_attempt_rewrite_failed", fault)
+		}
+	})
+
+	t.Run("converted, stripped", func(t *testing.T) {
+		ctx, req, state, e := newSend(false, "temperature")
+		var converted string
+		ctx.SetValue(schemas.BifrostContextKeyRequestBodyConverter, schemas.RequestBodyConverter(func(convertCtx *schemas.BifrostContext, b []byte) (*schemas.BifrostRequest, error) {
+			converted = string(b)
+			// The route's own pre-request callback may choose the raw body again.
+			convertCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+			return &schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{Provider: "caller", Model: "caller/model"}}, nil
+		}))
+		req.ChatRequest.Provider, req.ChatRequest.Model = "up-a", "model-a"
+		got, fault := plugin.rewriteAttempt(ctx, req, state, e)
+		if fault != nil {
+			t.Fatal(fault.Error.Message)
+		}
+		if converted != `{"model":"caller/model","stream":true,"messages":[]}` {
+			t.Fatalf("converted %s, want the body without temperature", converted)
+		}
+		provider, model, fallbacks := got.GetRequestFields()
+		if got.RequestType != req.RequestType || provider != "up-a" || model != "model-a" || fallbacks != nil {
+			t.Fatalf("converted request %s %s/%s %v, want the attempt's", got.RequestType, provider, model, fallbacks)
+		}
+		if raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); raw {
+			t.Fatal("a converted attempt sends the raw body")
+		}
+	})
+
+	t.Run("a route that keeps no body", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}
+		state := &requestState{stripped: []string{"x"}}
+		got, fault := plugin.rewriteAttempt(ctx, req, state, entry{upstream: &routingv1.RouteUpstream{SameFormat: true, StripParams: []string{"x"}}})
+		if fault != nil || got != req || state.stripped != nil {
+			t.Fatalf("rewriteAttempt = %v, %+v, stripped %v; want the request itself", got, fault, state.stripped)
+		}
+		if raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); raw {
+			t.Fatal("an attempt without a kept body sends a raw body")
+		}
+	})
+}
+
+func TestStrippedHeader(t *testing.T) {
+	for _, tc := range []struct {
+		status   int
+		stripped []string
+		want     string
+	}{
+		{http.StatusOK, []string{"temperature", "top_p"}, "temperature, top_p"},
+		{http.StatusOK, nil, ""},
+		{http.StatusBadGateway, []string{"temperature"}, ""},
+	} {
+		resp := &schemas.HTTPResponseMetadata{StatusCode: tc.status, Headers: map[string]string{}}
+		strippedHeader(&requestState{stripped: tc.stripped}, resp)
+		if got := resp.Header(HeaderStrippedParams); got != tc.want {
+			t.Errorf("status %d, stripped %v: header %q, want %q", tc.status, tc.stripped, got, tc.want)
+		}
+	}
+}
+
+func TestFilterChunk(t *testing.T) {
+	plugin := testPlugin(t, map[string]string{"gw-2026-11": "gateway-secret"})
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 1, TotalTokens: 6}
+	text, stop := "ok", "stop"
+	chatChunk := func(usage *schemas.BifrostLLMUsage, choices ...schemas.BifrostResponseChoice) *schemas.BifrostStreamChunk {
+		return &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{Usage: usage, Choices: choices}}
+	}
+	emptyDelta := schemas.BifrostResponseChoice{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{}}}
+	contentDelta := schemas.BifrostResponseChoice{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &text}}}
+	finish := schemas.BifrostResponseChoice{FinishReason: &stop, ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{}}}
+	drop := &requestState{dropUsage: true}
+
+	for _, chunk := range []*schemas.BifrostStreamChunk{chatChunk(usage), chatChunk(usage, emptyDelta),
+		{BifrostTextCompletionResponse: &schemas.BifrostTextCompletionResponse{Usage: usage, Choices: []schemas.BifrostResponseChoice{{}}}}} {
+		if got := plugin.filterChunk(drop, chunk); got != nil {
+			t.Errorf("a usage-only chunk was kept: %+v", got)
+		}
+	}
+	for _, choice := range []schemas.BifrostResponseChoice{contentDelta, finish} {
+		chunk := chatChunk(usage, choice)
+		got := plugin.filterChunk(drop, chunk)
+		if got == nil || got.BifrostChatResponse.Usage != nil || len(got.BifrostChatResponse.Choices) != 1 {
+			t.Fatalf("a chunk with output and usage = %+v, want the output without the usage", got)
+		}
+		if chunk.BifrostChatResponse.Usage != usage {
+			t.Fatal("the chunk the hook was handed changed")
+		}
+	}
+	textChunk := &schemas.BifrostStreamChunk{BifrostTextCompletionResponse: &schemas.BifrostTextCompletionResponse{
+		Usage: usage, Choices: []schemas.BifrostResponseChoice{{TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{Text: &text}}},
+	}}
+	if got := plugin.filterChunk(drop, textChunk); got == nil || got.BifrostTextCompletionResponse.Usage != nil {
+		t.Fatalf("a completions chunk with text and usage = %+v, want the text without the usage", got)
+	}
+	for _, chunk := range []*schemas.BifrostStreamChunk{chatChunk(nil, contentDelta), {BifrostResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{}}} {
+		if got := plugin.filterChunk(drop, chunk); got != chunk {
+			t.Errorf("a chunk without usage changed: %+v", got)
+		}
+	}
+	usageOnly := chatChunk(usage)
+	if got := plugin.filterChunk(&requestState{}, usageOnly); got != usageOnly {
+		t.Fatal("the usage-only chunk of a caller that asked for usage was not passed on")
+	}
+}
+
+// benchChatBody is a streamed chat completion body of about 1 KiB.
+var benchChatBody = []byte(`{"model":"caller/model","stream":true,"temperature":1,"messages":[{"role":"system","content":"` +
+	strings.Repeat("You are a helpful assistant. ", 24) + `"},{"role":"user","content":"` + strings.Repeat("hello ", 60) + `"}]}`)
+
+// BenchmarkPreLLMHook measures one attempt's pre-hook: a fallback of a routed send whose route
+// keeps no body; with the caller's 1 KiB streamed chat body kept, an attempt in the request's
+// format (the model replaced and stream_options.include_usage added in the body, a copy of the
+// request) and a converted attempt without parameters to strip; and a request that carries no
+// plan.
 func BenchmarkPreLLMHook(b *testing.B) {
 	plugin := testPlugin(b, map[string]string{"gw-2026-11": "gateway-secret"})
 	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}
@@ -707,12 +953,85 @@ func BenchmarkPreLLMHook(b *testing.B) {
 			}
 		}
 	})
+	streamReq := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{RawRequestBody: benchChatBody}}
+	for _, sameFormat := range []bool{true, false} {
+		name := "with plan, converted"
+		if sameFormat {
+			name = "with plan, in the request's format"
+		}
+		b.Run(name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyIntegrationType, integrationOpenAI)
+			plan := testPlan()
+			for _, provider := range plan.GetProviders() {
+				for _, upstream := range provider.GetUpstreams() {
+					upstream.SameFormat = sameFormat
+				}
+			}
+			state := &requestState{plan: plan}
+			state.capture(ctx, streamReq)
+			plugin.route(ctx, streamReq, state)
+			ctx.SetValue(requestStateKey, state)
+			ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, shortCircuit, err := plugin.PreLLMHook(ctx, streamReq); shortCircuit != nil || err != nil {
+					b.Fatalf("PreLLMHook = %+v, %v", shortCircuit, err)
+				}
+			}
+		})
+	}
 	b.Run("without plan", func(b *testing.B) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			if _, shortCircuit, err := plugin.PreLLMHook(ctx, req); shortCircuit != nil || err != nil {
 				b.Fatalf("PreLLMHook = %+v, %v", shortCircuit, err)
+			}
+		}
+	})
+}
+
+// BenchmarkStreamChunkHook measures one chunk of a streamed chat completion: a content chunk and
+// the usage-only chunk of a caller that did not ask for usage, a chunk of a caller that did, and
+// a request that carries no plan.
+func BenchmarkStreamChunkHook(b *testing.B) {
+	plugin := testPlugin(b, map[string]string{"gw-2026-11": "gateway-secret"})
+	content := "ok"
+	contentChunk := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+		Choices: []schemas.BifrostResponseChoice{{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &content}}}},
+	}}
+	usageChunk := &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+		Usage:   &schemas.BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 1, TotalTokens: 6},
+		Choices: []schemas.BifrostResponseChoice{{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{}}}},
+	}}
+	for _, tc := range []struct {
+		name      string
+		dropUsage bool
+		chunk     *schemas.BifrostStreamChunk
+		dropped   bool
+	}{
+		{"content chunk, usage not asked for", true, contentChunk, false},
+		{"usage-only chunk, usage not asked for", true, usageChunk, true},
+		{"usage-only chunk, usage asked for", false, usageChunk, false},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(requestStateKey, &requestState{plan: testPlan(), dropUsage: tc.dropUsage})
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if got, err := plugin.HTTPTransportStreamChunkHook(ctx, nil, tc.chunk); err != nil || (got == nil) != tc.dropped {
+					b.Fatalf("HTTPTransportStreamChunkHook = %v, %v", got, err)
+				}
+			}
+		})
+	}
+	b.Run("without plan", func(b *testing.B) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if got, err := plugin.HTTPTransportStreamChunkHook(ctx, nil, usageChunk); got != usageChunk || err != nil {
+				b.Fatalf("HTTPTransportStreamChunkHook = %v, %v", got, err)
 			}
 		}
 	})

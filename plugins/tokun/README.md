@@ -39,7 +39,7 @@ route never uses up the request's `send_id`. Every route has a class in `routes.
 | Class | Routes | Answer |
 | --- | --- | --- |
 | Needs a signed plan | The inference handler (`/v1/chat/completions`, `/v1/completions`, the HTTP `/v1/responses` routes, `/v1/embeddings`, `/v1/audio/*`, `/v1/images/*`, `/v1/videos/*`, `/v1/rerank`, `/v1/ocr`, `/v1/decisions`, `/v1/models`, `/v1/batches/*`, `/v1/files/*`, `/v1/containers/*`); `/v1/async/*` submissions and polls; the SDK routers under `/openai`, `/anthropic`, `/genai`, `/bedrock`, `/cohere`, `/litellm`, `/langchain`, `/pydanticai`, `/cursor`, `/typesafe`; the passthrough routers (`/*_passthrough/*`) | 401 when the plan does not hold; otherwise dispatched inside the plan |
-| Not one of tokun's endpoint types | WebSocket Responses (the GET upgrades of `/v1/responses`, `/openai/responses`, `/openai/v1/responses`, `/openai/openai/responses`); live sessions and live control (`/v1/live/sessions`, `.../{session_id}/attach`, `.../{session_id}/content`, each also under `/openai` and `/openai/v1`); MCP (`/v1/mcp/tool/execute`, `/mcp`, `/mcp/{slug}`); the Agent Gateway (`/agents/a2a/{name}/json-rpc`, `/rest/*`, `/.well-known/agent-card.json` and `/push/callback`) | 404, code `tokun_route_not_offered` |
+| Not one of tokun's endpoint types | WebSocket Responses (the GET upgrades of `/v1/responses`, `/openai/responses`, `/openai/v1/responses`, `/openai/openai/responses`); live sessions and live control (`/v1/live/sessions`, `.../{session_id}/attach`, `.../{session_id}/content`, each also under `/openai` and `/openai/v1`); MCP (`/v1/mcp/tool/execute`, `/mcp`, `/mcp/{slug}`); the Agent Gateway (`/agents/a2a/{name}/json-rpc`, `/rest/*`, `/.well-known/agent-card.json` and `/push/callback`); the Anthropic routers' wildcard `POST /v1/messages/{path:*}` under `/anthropic`, `/cursor`, `/langchain`, `/litellm` and `/pydanticai` | 404, code `tokun_route_not_offered` |
 | The realtime conversation | `/v1/realtime` (WebSocket), `/v1/realtime/calls` (WebRTC), `/v1/realtime/client_secrets`, `/v1/realtime/sessions`, each also under `/openai` (and `/openai/openai` where Bifrost registers it) | 501, code `tokun_route_not_implemented` |
 | Not in the table | A route Bifrost registers that `routes.go` does not list | 500, code `tokun_route_unclassified` |
 
@@ -59,6 +59,10 @@ Why each route is refused or not:
   WebSocket and live handlers also build the context of each request on the connection from the
   headers captured at the upgrade, which do not carry the plan, so a plan could not bind what
   such a connection dispatches.
+- **The `/v1/messages` wildcard** of the Anthropic routers handles any path under
+  `/v1/messages` that has no route of its own as a message to create. Tokun's Messages endpoint
+  type has two paths, `/v1/messages` and `/v1/messages/count_tokens`, each a route of its own
+  under every Anthropic router, so the wildcard serves no endpoint type of tokun.
 - **The realtime conversation** is the endpoint type `audio.realtime.openai`, which batch 3
   implements (B3-10): a plan will be verified on the request that opens the connection, creates
   the call or creates the client secret, will bind what the connection dispatches, and the
@@ -112,11 +116,44 @@ and the first entry is the primary, the rest Bifrost's fallbacks:
 The curve has no coefficients of its own. `BenchmarkDrawOrder` measures it on a plan of 10
 providers, 50 upstreams and 150 keys.
 
+## Each attempt's request
+
+The design is *Tokun Hot Path 重构*, section 请求和响应的改写. Each request enters the
+integration of its format (`/openai/v1/chat/completions`, `/openai/v1/responses`,
+`/anthropic/v1/messages` and its `count_tokens`, `/bedrock/...`, `/cohere/...`), which parses
+it into Bifrost's request; the plan's entries may be of that format (`same_format`) or of any
+other, which the target provider converts to. A verified plan asks the integration to keep the
+caller's body on the request (`BifrostContextKeyKeepRawRequestBody`) and to skip a native
+passthrough, which would send the request to one provider in its own format. Before each
+attempt, `PreLLMHook` rewrites the request for the attempt's entry, always from the caller's
+body as Bifrost received it:
+
+- **`strip_params`**: the entry's parameter paths present in the body are removed, and listed in
+  the response header `tokun-stripped-params` when that attempt answers.
+- **An entry in the request's format** sends the body as it is
+  (`BifrostContextKeyUseRawRequestBody`), changed in place only where it has to be: the
+  top-level `model` becomes the entry's `forward_model`, and a streamed OpenAI chat or
+  completions body gets `stream_options.include_usage`. Fields no format registers reach the
+  upstream unchanged. The provider's own raw-body handling still applies (for example
+  Anthropic's removes `max_tokens` from a token count).
+- **An entry of another format** goes out from the typed request, which the provider converts;
+  core sets its provider, model and key from the entry. When parameters were removed, the
+  request is built again from the stripped body by the route's own converter
+  (`BifrostContextKeyRequestBodyConverter`).
+- **The usage the plugin asked for**: on a streamed OpenAI chat or completions request whose
+  caller did not ask for usage, `HTTPTransportStreamChunkHook` drops the chunk that carries
+  only usage and takes the usage off a chunk that carries output too.
+
+A route that keeps no body (no body at all, a multipart upload, the large-payload path, the
+inference handler outside the SDK integrations) sends every attempt from the typed request.
+
 ## What the plugin keeps
 
 - **Request state**: the verified plan, the drawn order and the attempt chain, on the
   request's context (`requestStateKey`). It is bounded by the plan, which fits in one request
-  header, and is freed with the request.
+  header, and is freed with the request. It refers to the caller's body, the transport's own
+  buffer, without copying it; an attempt in the request's format that changes the body makes
+  its own copy, freed with the attempt.
 - **Accepted `send_id`s**, so a signed plan is used once per pod. Keyed by `send_id`; each
   held send costs about 110 bytes of map and heap entry (measured over 100,000 sends,
   `BenchmarkSendIDLedgerClaim`), plus the 30-byte `send_id` string it keeps alive (a 32-byte

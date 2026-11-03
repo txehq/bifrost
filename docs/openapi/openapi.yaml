@@ -624,6 +624,8 @@ paths:
   # Anthropic-compatible
   /litellm/anthropic/v1/messages:
     $ref: "./paths/integrations/litellm/anthropic.yaml#/messages"
+  /litellm/anthropic/v1/messages/count_tokens:
+    $ref: "./paths/integrations/litellm/anthropic.yaml#/count-tokens"
 
   # GenAI-compatible
   /litellm/genai/v1beta/models:
@@ -716,6 +718,8 @@ paths:
   # Anthropic-compatible
   /pydanticai/anthropic/v1/messages:
     $ref: "./paths/integrations/pydanticai/anthropic.yaml#/messages"
+  /pydanticai/anthropic/v1/messages/count_tokens:
+    $ref: "./paths/integrations/pydanticai/anthropic.yaml#/count-tokens"
 
   # GenAI-compatible
   /pydanticai/genai/v1beta/models:

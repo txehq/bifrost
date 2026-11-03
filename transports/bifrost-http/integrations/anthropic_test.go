@@ -3,14 +3,20 @@ package integrations
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/providers/openai"
 
 	"github.com/bytedance/sonic"
+	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/providers/anthropic"
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/fasthttp/router"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
@@ -1333,5 +1339,179 @@ func TestAnthropicMessagesGPTPromptCacheRollingMarker(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// anthropicRouteRequestTypes is the request type of every Anthropic-format route, by method and
+// path under the router's prefix: what the route registers (GetHTTPRequestType).
+var anthropicRouteRequestTypes = map[string]schemas.RequestType{
+	"POST /v1/complete":                           schemas.TextCompletionRequest,
+	"POST /v1/messages":                           schemas.ResponsesRequest,
+	"POST /v1/messages/{path:*}":                  schemas.ResponsesRequest,
+	"POST /v1/messages/count_tokens":              schemas.CountTokensRequest,
+	"GET /v1/models":                              schemas.ListModelsRequest,
+	"POST /v1/messages/batches":                   schemas.BatchCreateRequest,
+	"GET /v1/messages/batches":                    schemas.BatchListRequest,
+	"GET /v1/messages/batches/{batch_id}":         schemas.BatchRetrieveRequest,
+	"POST /v1/messages/batches/{batch_id}/cancel": schemas.BatchCancelRequest,
+	"GET /v1/messages/batches/{batch_id}/results": schemas.BatchResultsRequest,
+	"POST /v1/files":                              schemas.FileUploadRequest,
+	"GET /v1/files":                               schemas.FileListRequest,
+	"GET /v1/files/{file_id}":                     schemas.FileRetrieveRequest,
+	"DELETE /v1/files/{file_id}":                  schemas.FileDeleteRequest,
+	"GET /v1/files/{file_id}/content":             schemas.FileContentRequest,
+}
+
+// anthropicRouters are the routers that serve the Anthropic format, by prefix.
+func anthropicRouters(client *bifrost.Bifrost, store *mockHandlerStore) map[string]*GenericRouter {
+	logger := &testLogger{}
+	return map[string]*GenericRouter{
+		"/anthropic":  NewAnthropicRouter(client, store, nil, logger).GenericRouter,
+		"/cursor":     NewCursorRouter(client, store, nil, logger).GenericRouter,
+		"/litellm":    NewLiteLLMRouter(client, store, nil, logger).GenericRouter,
+		"/langchain":  NewLangChainRouter(client, store, nil, logger).GenericRouter,
+		"/pydanticai": NewPydanticAIRouter(client, store, nil, logger).GenericRouter,
+	}
+}
+
+// requestTypeRecorder records the request type of every attempt and fails it before any
+// upstream is called.
+type requestTypeRecorder struct {
+	mu   sync.Mutex
+	seen []schemas.RequestType
+}
+
+func (*requestTypeRecorder) GetName() string { return "request-type-recorder" }
+func (*requestTypeRecorder) Cleanup() error  { return nil }
+func (*requestTypeRecorder) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (r *requestTypeRecorder) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	r.mu.Lock()
+	r.seen = append(r.seen, req.RequestType)
+	r.mu.Unlock()
+	status := http.StatusTeapot
+	return req, &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "recorded"}}}, nil
+}
+func (*requestTypeRecorder) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+func (r *requestTypeRecorder) take() []schemas.RequestType {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	seen := r.seen
+	r.seen = nil
+	return seen
+}
+
+// anthropicRouteTestAccount configures the Anthropic provider with one synthetic key.
+type anthropicRouteTestAccount struct{}
+
+func (anthropicRouteTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Anthropic}, nil
+}
+
+func (anthropicRouteTestAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "anthropic-key", Value: *schemas.NewSecretVar("synthetic-key"), Models: schemas.WhiteList{"*"}, Weight: 1}}, nil
+}
+
+func (anthropicRouteTestAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{}, nil
+}
+
+// keepRawRequestBody is a transport middleware that asks for the caller's body to be kept, as the
+// tokun routing plugin does for a request with a verified route plan.
+func keepRawRequestBody(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		bifrostCtx, _ := lib.ConvertToBifrostContext(ctx, nil)
+		bifrostCtx.SetValue(schemas.BifrostContextKeyKeepRawRequestBody, true)
+		next(ctx)
+	}
+}
+
+// TestAnthropicRoutesRequestTypes checks the request type of every Anthropic-format route of
+// every router that serves the format: the type each route registers, and the type core handles
+// for each inference route, streamed and not. Token counting is its own route under every
+// prefix, so a count is never handled as a message to create. A Messages request whose model is
+// on a provider with a native Messages API is a native passthrough; with its body kept for the
+// tokun routing plugin it is a Responses request, whose attempts can go to any format.
+func TestAnthropicRoutesRequestTypes(t *testing.T) {
+	recorder := &requestTypeRecorder{}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: anthropicRouteTestAccount{}, LLMPlugins: []schemas.LLMPlugin{recorder}, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("init Bifrost: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	routers := anthropicRouters(client, &mockHandlerStore{})
+
+	for prefix, g := range routers {
+		t.Run("registered "+prefix, func(t *testing.T) {
+			found := map[string]bool{}
+			for _, route := range g.routes {
+				if route.Type != RouteConfigTypeAnthropic {
+					continue
+				}
+				key := route.Method + " " + strings.TrimPrefix(route.Path, prefix)
+				want, ok := anthropicRouteRequestTypes[key]
+				if !ok {
+					t.Errorf("%s %s is an Anthropic-format route the table does not list", route.Method, route.Path)
+					continue
+				}
+				found[key] = true
+				if got := route.GetHTTPRequestType(&fasthttp.RequestCtx{}); got != want {
+					t.Errorf("%s %s registers request type %s, want %s", route.Method, route.Path, got, want)
+				}
+			}
+			for _, key := range []string{"POST /v1/messages", "POST /v1/messages/count_tokens", "POST /v1/complete"} {
+				if !found[key] {
+					t.Errorf("%s does not register %s", prefix, key)
+				}
+			}
+		})
+	}
+
+	inference := []struct {
+		path, body string
+		// want is the type core handles; wantKept the type with the body kept.
+		want, wantKept schemas.RequestType
+	}{
+		{"/v1/complete", `{"model":"anthropic/claude-test","prompt":"\n\nHuman: hi\n\nAssistant:","max_tokens_to_sample":8}`,
+			schemas.TextCompletionRequest, schemas.TextCompletionRequest},
+		{"/v1/complete", `{"model":"anthropic/claude-test","prompt":"\n\nHuman: hi\n\nAssistant:","max_tokens_to_sample":8,"stream":true}`,
+			schemas.TextCompletionStreamRequest, schemas.TextCompletionStreamRequest},
+		{"/v1/messages", `{"model":"anthropic/claude-test","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`,
+			schemas.PassthroughRequest, schemas.ResponsesRequest},
+		{"/v1/messages", `{"model":"anthropic/claude-test","max_tokens":8,"messages":[{"role":"user","content":"hi"}],"stream":true}`,
+			schemas.PassthroughStreamRequest, schemas.ResponsesStreamRequest},
+		{"/v1/messages/count_tokens", `{"model":"anthropic/claude-test","messages":[{"role":"user","content":"hi"}]}`,
+			schemas.CountTokensRequest, schemas.CountTokensRequest},
+	}
+	for prefix, g := range routers {
+		plain, kept := router.New(), router.New()
+		g.RegisterRoutes(plain)
+		g.RegisterRoutes(kept, keepRawRequestBody)
+		for _, tc := range inference {
+			for _, run := range []struct {
+				name string
+				r    *router.Router
+				want schemas.RequestType
+			}{{"", plain, tc.want}, {", body kept", kept, tc.wantKept}} {
+				t.Run(fmt.Sprintf("handled %s%s%s %s", prefix, tc.path, run.name, run.want), func(t *testing.T) {
+					recorder.take()
+					var ctx fasthttp.RequestCtx
+					ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+					ctx.Request.SetRequestURI(prefix + tc.path)
+					ctx.Request.Header.SetContentType("application/json")
+					ctx.Request.Header.Set("anthropic-version", "2023-06-01")
+					ctx.Request.SetBodyString(tc.body)
+					run.r.Handler(&ctx)
+					if seen := recorder.take(); len(seen) != 1 || seen[0] != run.want {
+						t.Fatalf("core handled %v, want %s (status %d: %s)", seen, run.want, ctx.Response.StatusCode(), ctx.Response.Body())
+					}
+				})
+			}
+		}
 	}
 }

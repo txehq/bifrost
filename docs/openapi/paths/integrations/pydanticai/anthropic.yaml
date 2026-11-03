@@ -41,3 +41,40 @@ messages:
     - BearerAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
+count-tokens:
+  post:
+    operationId: pydanticaiAnthropicCountTokens
+    summary: Count tokens (PydanticAI - Anthropic format)
+    description: |
+      Counts tokens using Anthropic-compatible format via PydanticAI.
+    tags:
+    - PydanticAI Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../../schemas/integrations/anthropic/count-tokens.yaml#/AnthropicCountTokensRequest'
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/count-tokens.yaml#/AnthropicCountTokensResponse'
+      '400':
+        description: Bad request
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+      '500':
+        description: Internal server error
+        content:
+          application/json:
+            schema:
+              $ref: '../../../schemas/integrations/anthropic/common.yaml#/AnthropicError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
