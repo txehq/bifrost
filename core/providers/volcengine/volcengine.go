@@ -931,7 +931,12 @@ func (provider *VolcengineProvider) VideoDownload(ctx *schemas.BifrostContext, k
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, fmt.Sprintf("%s/%s/content", volcenginePathVideos, escapedVideoID)))
@@ -940,28 +945,26 @@ func (provider *VolcengineProvider) VideoDownload(ctx *schemas.BifrostContext, k
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, openai.ParseOpenAIError(resp)
 	}
 
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	content, contentType, owned, finishErr := providerUtils.FinishVideoDownload(ctx, resp, "video/mp4", provider.logger)
+	if finishErr != nil {
+		return nil, finishErr
 	}
-
-	contentType := string(resp.Header.ContentType())
-	if contentType == "" {
-		contentType = "video/mp4"
-	}
+	respOwned = owned
 
 	return &schemas.BifrostVideoDownloadResponse{
 		VideoID:     providerUtils.AddVideoIDProviderSuffix(videoID, provider.GetProviderKey()),
-		Content:     append([]byte(nil), body...),
+		Content:     content,
 		ContentType: contentType,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType: schemas.VideoDownloadRequest,

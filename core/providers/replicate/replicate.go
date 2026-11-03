@@ -2801,19 +2801,26 @@ func (provider *ReplicateProvider) VideoDownload(ctx *schemas.BifrostContext, ke
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
 	req.SetRequestURI(videoUrl)
 	req.Header.SetMethod(http.MethodGet)
 	// Some output URLs are signed and don't need auth, but keep auth if present.
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
 			fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
 			nil), latency)
@@ -2822,15 +2829,11 @@ func (provider *ReplicateProvider) VideoDownload(ctx *schemas.BifrostContext, ke
 	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	content, contentType, owned, finishErr := providerUtils.FinishVideoDownload(ctx, resp, "video/mp4", provider.logger)
+	if finishErr != nil {
+		return nil, finishErr
 	}
-	contentType := string(resp.Header.ContentType())
-	if contentType == "" {
-		contentType = "video/mp4"
-	}
-	content := append([]byte(nil), body...)
+	respOwned = owned
 	bifrostResp := &schemas.BifrostVideoDownloadResponse{
 		VideoID:     request.ID,
 		Content:     content,

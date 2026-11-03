@@ -2813,7 +2813,12 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 		defer fasthttp.ReleaseRequest(req)
-		defer fasthttp.ReleaseResponse(resp)
+		respOwned := true
+		defer func() {
+			if respOwned {
+				fasthttp.ReleaseResponse(resp)
+			}
+		}()
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 		req.SetRequestURI(*videoResp.Videos[0].URL)
 		req.Header.SetMethod(http.MethodGet)
@@ -2843,24 +2848,27 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		}
 		var bifrostErr *schemas.BifrostError
 		var wait func()
-		latency, bifrostErr, wait = providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+		latency, bifrostErr, wait = providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 		defer wait()
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
-		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
+		providerResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
+		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 		if resp.StatusCode() != fasthttp.StatusOK {
+			providerUtils.MaterializeStreamErrorBody(ctx, resp)
 			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
 				fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
 				nil), latency)
 		}
-		body, err := providerUtils.CheckAndDecodeBody(resp)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+		var owned bool
+		var finishErr *schemas.BifrostError
+		content, contentType, owned, finishErr = providerUtils.FinishVideoDownload(ctx, resp, "video/mp4", provider.logger)
+		if finishErr != nil {
+			return nil, finishErr
 		}
-		contentType = string(resp.Header.ContentType())
-		content = append([]byte(nil), body...)
-		providerResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
+		respOwned = owned
 	} else {
 		return nil, providerUtils.NewBifrostOperationError("invalid video output type", nil)
 	}

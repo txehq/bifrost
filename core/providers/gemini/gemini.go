@@ -2563,7 +2563,12 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 		defer fasthttp.ReleaseRequest(req)
-		defer fasthttp.ReleaseResponse(resp)
+		respOwned := true
+		defer func() {
+			if respOwned {
+				fasthttp.ReleaseResponse(resp)
+			}
+		}()
 		// Preserve custom headers and add API key for Gemini file download endpoint.
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 		req.SetRequestURI(*videoResp.Videos[0].URL)
@@ -2571,24 +2576,27 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 		setGeminiAuthHeader(req, key.Value.GetValue())
 		var bifrostErr *schemas.BifrostError
 		var wait func()
-		latency, bifrostErr, wait = providerUtils.MakeRequestWithContextFollowRedirects(ctx, provider.client, req, resp, 5)
+		activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+		latency, bifrostErr, wait = providerUtils.MakeRequestWithContextFollowRedirects(ctx, activeClient, req, resp, 5)
 		defer wait()
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
 		if resp.StatusCode() != fasthttp.StatusOK {
+			providerUtils.MaterializeStreamErrorBody(ctx, resp)
 			provider.logger.Error("failed to download video: status %d", resp.StatusCode())
 			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
 				fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
 				nil,
 			), latency)
 		}
-		body, err := providerUtils.CheckAndDecodeBody(resp)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+		var owned bool
+		var finishErr *schemas.BifrostError
+		content, contentType, owned, finishErr = providerUtils.FinishVideoDownload(ctx, resp, "video/mp4", provider.logger)
+		if finishErr != nil {
+			return nil, finishErr
 		}
-		contentType = string(resp.Header.ContentType())
-		content = append([]byte(nil), body...)
+		respOwned = owned
 	} else {
 		return nil, providerUtils.NewBifrostOperationError("invalid video output type", nil)
 	}

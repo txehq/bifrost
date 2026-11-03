@@ -1581,6 +1581,16 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			return
 		}
 
+		// A download above the threshold is still on the upstream connection: write it
+		// through as it arrives.
+		if isLarge, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool); isLarge {
+			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, videoDownloadResponse.ExtraFields)
+			if !lib.StreamLargeResponseBody(ctx, bifrostCtx) {
+				g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "large response reader not available"))
+			}
+			return
+		}
+
 		if config.VideoDownloadResponseConverter == nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing VideoDownloadResponseConverter for integration"))
 			return

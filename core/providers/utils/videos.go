@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	schemas "github.com/capsohq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // StripVideoIDProviderSuffix removes ":<provider>" from a video ID if present.
@@ -16,6 +17,31 @@ func StripVideoIDProviderSuffix(videoID string, provider schemas.ModelProvider) 
 		return decoded
 	}
 	return stripped
+}
+
+// VideoDownloadStreamThreshold is the size above which a video download is streamed from
+// the upstream to the client instead of being read into memory. Bifrost.VideoDownloadRequest
+// sets it when the caller has not chosen a threshold.
+const VideoDownloadStreamThreshold int64 = 1 << 20
+
+// FinishVideoDownload reads the body of a successful video download response. When the
+// body is larger than the threshold in ctx, it is left on the wire: content is nil, the
+// reader in ctx owns resp and the transport streams it, and owned is false so the caller
+// must not release resp. Otherwise content is an owned copy and owned is true.
+func FinishVideoDownload(ctx *schemas.BifrostContext, resp *fasthttp.Response, defaultContentType string, logger schemas.Logger) (content []byte, contentType string, owned bool, bifrostErr *schemas.BifrostError) {
+	contentType = string(resp.Header.ContentType())
+	if contentType == "" {
+		contentType = defaultContentType
+	}
+	body, isLarge, bifrostErr := FinalizeResponseWithLargeDetection(ctx, resp, logger)
+	if bifrostErr != nil {
+		return nil, "", true, bifrostErr
+	}
+	if isLarge {
+		ctx.SetValue(schemas.BifrostContextKeyLargeResponseContentType, contentType)
+		return nil, contentType, false, nil
+	}
+	return append([]byte(nil), body...), contentType, true, nil
 }
 
 // SplitProviderScopedVideoID splits a provider-scoped video ID "<escaped id>:<provider>"

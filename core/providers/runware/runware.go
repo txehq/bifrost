@@ -539,30 +539,34 @@ func (provider *RunwareProvider) VideoDownload(ctx *schemas.BifrostContext, key 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
 	req.SetRequestURI(videoURL)
 	req.Header.SetMethod(http.MethodGet)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil), latency)
 	}
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	content, contentType, owned, finishErr := providerUtils.FinishVideoDownload(ctx, resp, "video/mp4", provider.logger)
+	if finishErr != nil {
+		return nil, finishErr
 	}
-	contentType := string(resp.Header.ContentType())
-	if contentType == "" {
-		contentType = "video/mp4"
-	}
+	respOwned = owned
 
 	bifrostResp := &schemas.BifrostVideoDownloadResponse{
 		VideoID:     request.ID,
-		Content:     append([]byte(nil), body...),
+		Content:     content,
 		ContentType: contentType,
 	}
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()

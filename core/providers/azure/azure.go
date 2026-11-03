@@ -1380,7 +1380,12 @@ func (provider *AzureProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
 
 	// Set headers
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -1401,7 +1406,8 @@ func (provider *AzureProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 	}
 
 	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -1409,25 +1415,20 @@ func (provider *AzureProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
 	}
 
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	content, contentType, owned, finishErr := providerUtils.FinishVideoDownload(ctx, resp, "video/mp4", provider.logger)
+	if finishErr != nil {
+		return nil, finishErr
 	}
-
-	// Get content type from response
-	contentType := string(resp.Header.ContentType())
-	if contentType == "" {
-		// Default to video/mp4 if not specified
-		contentType = "video/mp4"
-	}
+	respOwned = owned
 
 	// Create response
 	response := &schemas.BifrostVideoDownloadResponse{
 		VideoID:     request.ID,
-		Content:     append([]byte(nil), body...),
+		Content:     content,
 		ContentType: contentType,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: latency.Milliseconds(),

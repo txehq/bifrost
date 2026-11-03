@@ -2439,6 +2439,12 @@ func (bifrost *Bifrost) VideoDownloadRequest(ctx *schemas.BifrostContext, req *s
 		}
 	}
 
+	// A video is streamed to the caller once it outgrows the threshold, so a download
+	// holds at most one threshold's worth of bytes in memory.
+	if threshold, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseThreshold).(int64); threshold <= 0 {
+		ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, providerUtils.VideoDownloadStreamThreshold)
+	}
+
 	bifrostReq := bifrost.getBifrostRequest()
 	bifrostReq.RequestType = schemas.VideoDownloadRequest
 	bifrostReq.VideoDownloadRequest = req
