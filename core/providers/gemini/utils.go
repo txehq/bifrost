@@ -23,6 +23,10 @@ import (
 
 var defaultGeminiImageURLSchemes = []string{"http", "https"}
 
+// videoReferenceURLSchemes are the links a video's reference image may be: a web link, or a
+// Cloud Storage object on Vertex.
+var videoReferenceURLSchemes = []string{"http", "https", "gs"}
+
 // isGemini3Plus returns true if the model is Gemini 3.0 or higher.
 // Uses simple string operations for hot path performance.
 func isGemini3Plus(model string) bool {

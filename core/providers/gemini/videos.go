@@ -255,23 +255,28 @@ func ToGeminiVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 		Prompt: bifrostReq.Input.Prompt,
 	}
 
-	// Handle input reference (image for image-to-video)
+	// Handle input reference (image for image-to-video): inline bytes for a data URL, gcsUri
+	// for a Cloud Storage object (Vertex), and fileData for any other link, which the model
+	// fetches itself. A link was sent with only its MIME type before, so the model got no image.
 	if bifrostReq.Input.InputReference != nil && *bifrostReq.Input.InputReference != "" {
-		// extract mime type and base64 string from input reference
-		sanitizedURL, err := schemas.SanitizeImageURLWithAllowedSchemes(*bifrostReq.Input.InputReference, defaultGeminiImageURLSchemes...)
+		sanitizedURL, err := schemas.SanitizeImageURLWithAllowedSchemes(*bifrostReq.Input.InputReference, videoReferenceURLSchemes...)
 		if err != nil {
 			return nil, fmt.Errorf("invalid input reference: %w", err)
 		}
 		urlInfo := schemas.ExtractURLTypeInfo(sanitizedURL)
-
-		image := &VideoImageData{}
-
-		if urlInfo.DataURLWithoutPrefix != nil {
-			image.BytesBase64Encoded = urlInfo.DataURLWithoutPrefix
-		}
-		image.MimeType = schemas.Ptr("image/png")
+		mimeType := "image/png"
 		if urlInfo.MediaType != nil {
-			image.MimeType = urlInfo.MediaType
+			mimeType = *urlInfo.MediaType
+		}
+
+		image := &VideoImageData{MimeType: schemas.Ptr(mimeType)}
+		switch {
+		case urlInfo.DataURLWithoutPrefix != nil:
+			image.BytesBase64Encoded = urlInfo.DataURLWithoutPrefix
+		case strings.HasPrefix(sanitizedURL, "gs://"):
+			image.GCSURI = schemas.Ptr(sanitizedURL)
+		default:
+			image.FileData = &FileData{FileURI: sanitizedURL, MIMEType: mimeType}
 		}
 
 		instance.Image = image

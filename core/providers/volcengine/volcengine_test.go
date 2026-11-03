@@ -126,15 +126,17 @@ func TestVolcengineResourceIDsStayOnExpectedEndpoint(t *testing.T) {
 			_, bifrostErr := provider.FileContent(newCtx(), keys, &schemas.BifrostFileContentRequest{FileID: id})
 			return bifrostErr
 		}},
-		{"GET video", "GET /contents/generations/tasks/", "", func(id string) *schemas.BifrostError {
+		// Video goes to Ark's task API under the host's API root; a download reads the task
+		// first, whose URL it would then fetch.
+		{"GET video", "GET /api/v3/contents/generations/tasks/", "", func(id string) *schemas.BifrostError {
 			_, bifrostErr := provider.VideoRetrieve(newCtx(), key, &schemas.BifrostVideoRetrieveRequest{ID: id})
 			return bifrostErr
 		}},
-		{"GET video content", "GET /contents/generations/tasks/", "/content", func(id string) *schemas.BifrostError {
+		{"GET video content", "GET /api/v3/contents/generations/tasks/", "", func(id string) *schemas.BifrostError {
 			_, bifrostErr := provider.VideoDownload(newCtx(), key, &schemas.BifrostVideoDownloadRequest{ID: id})
 			return bifrostErr
 		}},
-		{"DELETE video", "DELETE /contents/generations/tasks/", "", func(id string) *schemas.BifrostError {
+		{"DELETE video", "DELETE /api/v3/contents/generations/tasks/", "", func(id string) *schemas.BifrostError {
 			_, bifrostErr := provider.VideoDelete(newCtx(), key, &schemas.BifrostVideoDeleteRequest{ID: id})
 			return bifrostErr
 		}},

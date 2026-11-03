@@ -27,6 +27,7 @@ type BytePlusProvider struct {
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	providerKey         schemas.ModelProvider // The name it answers as: byteplus, or the provider NewArkProvider serves
 }
 
 // NewBytePlusProvider creates a new BytePlus ModelArk provider instance.
@@ -35,6 +36,13 @@ type BytePlusProvider struct {
 // The default base URL is the ap-southeast region; paths carry /api/v3, so another region
 // (ark.eu-west.bytepluses.com) or Volcengine (ark.cn-beijing.volces.com) only changes the host.
 func NewBytePlusProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*BytePlusProvider, error) {
+	return NewArkProvider(config, logger, schemas.BytePlus)
+}
+
+// NewArkProvider is NewBytePlusProvider for a provider that serves the same Ark API under its own
+// name (Volcengine and ModelArk, built in or custom): its errors, responses and video IDs carry
+// providerKey, so the provider's own follow-ups find their task.
+func NewArkProvider(config *schemas.ProviderConfig, logger schemas.Logger, providerKey schemas.ModelProvider) (*BytePlusProvider, error) {
 	config.CheckAndSetDefaults()
 
 	requestTimeout := time.Second * time.Duration(config.NetworkConfig.DefaultRequestTimeoutInSeconds)
@@ -66,12 +74,13 @@ func NewBytePlusProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
+		providerKey:         providerKey,
 	}, nil
 }
 
-// GetProviderKey returns the provider identifier for BytePlus.
+// GetProviderKey returns the provider identifier: BytePlus, or the provider NewArkProvider serves.
 func (provider *BytePlusProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.BytePlus
+	return provider.providerKey
 }
 
 // ListModels lists models for BytePlus from each key's configured models and aliases.
@@ -314,7 +323,7 @@ func (provider *BytePlusProvider) VideoGeneration(ctx *schemas.BifrostContext, k
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToBytePlusVideoGenerationRequest(request)
+			return toArkVideoGenerationRequest(request, providerName)
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr

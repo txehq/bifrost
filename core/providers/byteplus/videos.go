@@ -15,6 +15,12 @@ import (
 // Frame images, reference media and a draft task become content items; resolution, ratio and the rest
 // of Seedance's generation fields are read from size and extra params, and anything unrecognised passes through.
 func ToBytePlusVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRequest) (*BytePlusVideoGenerationRequest, error) {
+	return toArkVideoGenerationRequest(bifrostReq, schemas.BytePlus)
+}
+
+// toArkVideoGenerationRequest is ToBytePlusVideoGenerationRequest for the provider named providerName,
+// whose suffix a draft task's ID carries.
+func toArkVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRequest, providerName schemas.ModelProvider) (*BytePlusVideoGenerationRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil {
 		return nil, providerUtils.InvalidRequestErrorf("prompt is required")
 	}
@@ -32,7 +38,7 @@ func ToBytePlusVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGeneration
 	}
 	if draftTaskID != "" {
 		// Accept the draft's ID as Bifrost returned it, with its provider suffix.
-		draftTaskID = providerUtils.StripVideoIDProviderSuffix(draftTaskID, schemas.BytePlus)
+		draftTaskID = providerUtils.StripVideoIDProviderSuffix(draftTaskID, providerName)
 		req.Content = append(req.Content, BytePlusVideoContentItem{Type: "draft_task", DraftTask: &BytePlusDraftTask{ID: draftTaskID}})
 	}
 	hasFrameImage := false
