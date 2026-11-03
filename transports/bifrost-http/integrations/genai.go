@@ -32,6 +32,10 @@ const isGeminiBatchEmbedContentsRequestContextKey schemas.BifrostContextKey = "b
 // API, whose caller expects the predictions shape back.
 const isGeminiPredictEmbeddingRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-predict-embedding-request"
 
+// isGeminiImagenPredictRequestContextKey marks an Imagen :predict call, whose caller expects
+// the predictions shape back.
+const isGeminiImagenPredictRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-imagen-predict-request"
+
 const isGeminiVideoGenerationRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-video-generation-request"
 
 const isGeminiBatchCreateRequestContextKey schemas.BifrostContextKey = "bifrost-is-gemini-batch-create-request"
@@ -248,6 +252,9 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 			return gemini.ToGeminiCountTokensResponse(resp), nil
 		},
 		ImageGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostImageGenerationResponse) (interface{}, error) {
+			if ctx.Value(isGeminiImagenPredictRequestContextKey) != nil {
+				return gemini.ToImagenPredictResponse(ctx, resp)
+			}
 			return gemini.ToGeminiImageGenerationResponse(ctx, resp)
 		},
 		VideoGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error) {
@@ -1844,6 +1851,9 @@ func extractModelAndRequestType(ctx *fasthttp.RequestCtx) (string, schemas.Reque
 	if isPredict && !isImagenPredict {
 		ctx.SetUserValue(isGeminiPredictEmbeddingRequestContextKey, true)
 		isEmbedding = true
+	}
+	if isImagenPredict {
+		ctx.SetUserValue(isGeminiImagenPredictRequestContextKey, true)
 	}
 
 	if isEmbedding {

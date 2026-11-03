@@ -7,9 +7,9 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-// A :predict call to the text embeddings API is an embedding marked for the predictions
-// shape; an Imagen :predict is neither.
-func TestPredictEmbeddingIsMarkedForThePredictionsShape(t *testing.T) {
+// A :predict call is marked for the predictions shape its caller expects: an embedding
+// for the text embeddings API, an image generation for Imagen.
+func TestPredictIsMarkedForThePredictionsShape(t *testing.T) {
 	for _, tc := range []struct {
 		body      string
 		embedding bool
@@ -22,9 +22,10 @@ func TestPredictEmbeddingIsMarkedForThePredictionsShape(t *testing.T) {
 		ctx.Request.Header.SetMethod("POST")
 		ctx.Request.SetBody([]byte(tc.body))
 		_, got := extractModelAndRequestType(ctx)
-		marked := ctx.UserValue(isGeminiPredictEmbeddingRequestContextKey) != nil
-		if (got == schemas.EmbeddingRequest) != tc.embedding || marked != tc.embedding {
-			t.Errorf("%s: %s, marked %v", tc.body, got, marked)
+		embedding := ctx.UserValue(isGeminiPredictEmbeddingRequestContextKey) != nil
+		imagen := ctx.UserValue(isGeminiImagenPredictRequestContextKey) != nil
+		if (got == schemas.EmbeddingRequest) != tc.embedding || embedding != tc.embedding || imagen == tc.embedding {
+			t.Errorf("%s: %s, embedding %v, imagen %v", tc.body, got, embedding, imagen)
 		}
 	}
 }

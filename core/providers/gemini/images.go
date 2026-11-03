@@ -709,6 +709,34 @@ func (response *GeminiImagenResponse) ToBifrostImageGenerationResponse() *schema
 	return bifrostResp
 }
 
+// ToImagenPredictResponse converts a BifrostImageGenerationResponse to the predictions shape
+// an Imagen :predict caller expects: each image's base64 bytes and MIME type. An image
+// served at a URL is downloaded, as for the generateContent shape.
+func ToImagenPredictResponse(ctx context.Context, bifrostResp *schemas.BifrostImageGenerationResponse) (*GeminiImagenResponse, error) {
+	if bifrostResp == nil {
+		return nil, nil
+	}
+	mimeType := "image/png"
+	if p := bifrostResp.ImageGenerationResponseParameters; p != nil && p.OutputFormat != "" {
+		if m := convertOutputFormatToMimeType(p.OutputFormat); m != "" {
+			mimeType = m
+		}
+	}
+	out := &GeminiImagenResponse{Predictions: make([]GeminiImagenPrediction, 0, len(bifrostResp.Data))}
+	for i := range bifrostResp.Data {
+		data := bifrostResp.Data[i].B64JSON
+		if data == "" && bifrostResp.Data[i].URL != "" {
+			downloaded, err := downloadImageFromURL(ctx, bifrostResp.Data[i].URL)
+			if err != nil {
+				return nil, fmt.Errorf("failed to download image from URL: %w", err)
+			}
+			data = downloaded
+		}
+		out.Predictions = append(out.Predictions, GeminiImagenPrediction{BytesBase64Encoded: data, MimeType: mimeType})
+	}
+	return out, nil
+}
+
 // ToGeminiImageGenerationResponse converts a BifrostImageGenerationResponse back to Gemini format
 func ToGeminiImageGenerationResponse(ctx context.Context, bifrostResp *schemas.BifrostImageGenerationResponse) (*GenerateContentResponse, error) {
 	if bifrostResp == nil {

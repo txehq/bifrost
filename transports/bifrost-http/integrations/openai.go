@@ -430,9 +430,10 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			case *openai.OpenAITranscriptionRequest:
 				return parseTranscriptionMultipartRequest(ctx, req)
 			case *openai.OpenAIImageEditRequest:
-				return parseOpenAIImageEditMultipartRequest(ctx, req)
+				// The deployment in the path names the model (AzureEndpointPreHook).
+				return parseOpenAIImageEdit(ctx, req, false)
 			case *openai.OpenAIImageVariationRequest:
-				return parseOpenAIImageVariationMultipartRequest(ctx, req)
+				return parseOpenAIImageVariation(ctx, req, false)
 			default:
 				// JSON-based request — parse manually here since returning nil
 				// would mean "no error, parsing done" but body wasn't parsed.
@@ -1272,7 +1273,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &openai.OpenAIImageEditRequest{}
 			},
-			RequestParser: parseOpenAIImageEditMultipartRequest, // Handle multipart form parsing
+			RequestParser: parseOpenAIImageEditRequest, // multipart/form-data, or the JSON form with image URLs
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if imageEditReq, ok := req.(*openai.OpenAIImageEditRequest); ok {
 					return &schemas.BifrostRequest{
@@ -3859,8 +3860,119 @@ func videoIDProviderSuffix(videoID string) string {
 	return ""
 }
 
+// openAIImageEditReference is one image of OpenAI's JSON image edit: an image URL (https or a
+// base64 data: URI) or the id of an uploaded file.
+type openAIImageEditReference struct {
+	ImageURL string `json:"image_url"`
+	FileID   string `json:"file_id"`
+}
+
+// openAIImageEditJSON is OpenAI's JSON image edit body
+// (https://developers.openai.com/api/reference/resources/images/methods/edit).
+type openAIImageEditJSON struct {
+	Model             string                     `json:"model"`
+	Prompt            string                     `json:"prompt"`
+	Images            []openAIImageEditReference `json:"images"`
+	Mask              *openAIImageEditReference  `json:"mask"`
+	N                 *int                       `json:"n"`
+	Size              *string                    `json:"size"`
+	Quality           *string                    `json:"quality"`
+	ResponseFormat    *string                    `json:"response_format"`
+	Background        *string                    `json:"background"`
+	InputFidelity     *string                    `json:"input_fidelity"`
+	OutputFormat      *string                    `json:"output_format"`
+	OutputCompression *int                       `json:"output_compression"`
+	PartialImages     *int                       `json:"partial_images"`
+	Stream            *bool                      `json:"stream"`
+	User              *string                    `json:"user"`
+	Fallbacks         []string                   `json:"fallbacks"`
+}
+
+// parseOpenAIImageEditRequest reads an image edit in either of the forms OpenAI's edit
+// endpoint takes: multipart/form-data with the image files, or JSON with image URLs.
+func parseOpenAIImageEditRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
+	return parseOpenAIImageEdit(ctx, req, true)
+}
+
+// parseOpenAIImageEdit reads either form; requireModel is false where the path names it.
+func parseOpenAIImageEdit(ctx *fasthttp.RequestCtx, req interface{}, requireModel bool) error {
+	if strings.HasPrefix(strings.ToLower(string(ctx.Request.Header.ContentType())), "application/json") {
+		return parseOpenAIImageEditJSON(ctx, req, requireModel)
+	}
+	return parseOpenAIImageEditMultipart(ctx, req, requireModel)
+}
+
+// parseOpenAIImageEditJSON reads the JSON form. A data: URI is decoded to the image's bytes
+// and any other URL is carried as one; an uploaded file id, and a mask by URL, have no
+// Bifrost form and are refused rather than dropped.
+func parseOpenAIImageEditJSON(ctx *fasthttp.RequestCtx, req interface{}, requireModel bool) error {
+	imageEditReq, ok := req.(*openai.OpenAIImageEditRequest)
+	if !ok {
+		return errors.New("invalid request type for image edit")
+	}
+	var body openAIImageEditJSON
+	if err := sonic.Unmarshal(ctx.PostBody(), &body); err != nil {
+		return fmt.Errorf("invalid JSON image edit: %w", err)
+	}
+	if body.Model == "" && requireModel {
+		return errors.New("model field is required")
+	}
+	if body.Prompt == "" {
+		return errors.New("prompt field is required")
+	}
+	if len(body.Images) == 0 {
+		return errors.New("at least one image is required")
+	}
+	images := make([]schemas.ImageInput, 0, len(body.Images))
+	for i, ref := range body.Images {
+		if ref.FileID != "" || ref.ImageURL == "" {
+			return fmt.Errorf("images[%d]: only image_url is supported", i)
+		}
+		data, isData, err := decodeImageDataURI(ref.ImageURL)
+		if err != nil {
+			return fmt.Errorf("images[%d]: %w", i, err)
+		}
+		if isData {
+			images = append(images, schemas.ImageInput{Image: data})
+		} else {
+			images = append(images, schemas.ImageInput{URL: ref.ImageURL})
+		}
+	}
+	if body.Mask != nil {
+		data, isData, err := decodeImageDataURI(body.Mask.ImageURL)
+		if err != nil || !isData {
+			return errors.New("mask: only a base64 data: URI is supported")
+		}
+		imageEditReq.Mask = data
+	}
+	imageEditReq.Model = body.Model
+	imageEditReq.Input = &schemas.ImageEditInput{Images: images, Prompt: body.Prompt}
+	imageEditReq.N, imageEditReq.Size, imageEditReq.Quality = body.N, body.Size, body.Quality
+	imageEditReq.ResponseFormat, imageEditReq.Background, imageEditReq.InputFidelity = body.ResponseFormat, body.Background, body.InputFidelity
+	imageEditReq.OutputFormat, imageEditReq.OutputCompression, imageEditReq.PartialImages = body.OutputFormat, body.OutputCompression, body.PartialImages
+	imageEditReq.User, imageEditReq.Stream, imageEditReq.Fallbacks = body.User, body.Stream, body.Fallbacks
+	return nil
+}
+
+// decodeImageDataURI decodes a base64 data: URI; isData is false for any other URL.
+func decodeImageDataURI(uri string) (data []byte, isData bool, err error) {
+	if !strings.HasPrefix(uri, "data:") {
+		return nil, false, nil
+	}
+	meta, payload, ok := strings.Cut(uri, ",")
+	if !ok || !strings.HasSuffix(meta, ";base64") {
+		return nil, true, errors.New("a data: URI must be base64")
+	}
+	data, err = base64.StdEncoding.DecodeString(payload)
+	return data, true, err
+}
+
 // parseOpenAIImageEditMultipartRequest is a RequestParser that handles multipart/form-data for image edit requests
 func parseOpenAIImageEditMultipartRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
+	return parseOpenAIImageEditMultipart(ctx, req, true)
+}
+
+func parseOpenAIImageEditMultipart(ctx *fasthttp.RequestCtx, req interface{}, requireModel bool) error {
 	imageEditReq, ok := req.(*openai.OpenAIImageEditRequest)
 	if !ok {
 		return errors.New("invalid request type for image edit")
@@ -3872,12 +3984,13 @@ func parseOpenAIImageEditMultipartRequest(ctx *fasthttp.RequestCtx, req interfac
 		return err
 	}
 
-	// Extract model (required)
+	// Extract model (required unless the path names it)
 	modelValues := form.Value["model"]
-	if len(modelValues) == 0 || modelValues[0] == "" {
+	if len(modelValues) > 0 && modelValues[0] != "" {
+		imageEditReq.Model = modelValues[0]
+	} else if requireModel {
 		return errors.New("model field is required")
 	}
-	imageEditReq.Model = modelValues[0]
 
 	// Extract prompt (required)
 	promptValues := form.Value["prompt"]
@@ -4046,6 +4159,12 @@ func parseOpenAIImageEditMultipartRequest(ctx *fasthttp.RequestCtx, req interfac
 
 // parseOpenAIImageVariationMultipartRequest parses multipart/form-data for image variation requests
 func parseOpenAIImageVariationMultipartRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
+	return parseOpenAIImageVariation(ctx, req, true)
+}
+
+// parseOpenAIImageVariation reads an image variation; requireModel is false where the path
+// names the model.
+func parseOpenAIImageVariation(ctx *fasthttp.RequestCtx, req interface{}, requireModel bool) error {
 	imageVariationReq, ok := req.(*openai.OpenAIImageVariationRequest)
 	if !ok {
 		return errors.New("invalid request type for image variation")
@@ -4057,12 +4176,13 @@ func parseOpenAIImageVariationMultipartRequest(ctx *fasthttp.RequestCtx, req int
 		return err
 	}
 
-	// Extract model (required)
+	// Extract model (required unless the path names it)
 	modelValues := form.Value["model"]
-	if len(modelValues) == 0 || modelValues[0] == "" {
+	if len(modelValues) > 0 && modelValues[0] != "" {
+		imageVariationReq.Model = modelValues[0]
+	} else if requireModel {
 		return errors.New("model field is required")
 	}
-	imageVariationReq.Model = modelValues[0]
 
 	// Extract image (required) - handle both "image[]" and "image"
 	var imageFiles []*multipart.FileHeader

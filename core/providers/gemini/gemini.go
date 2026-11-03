@@ -2195,9 +2195,161 @@ func (provider *GeminiProvider) handleImagenImageGeneration(ctx *schemas.Bifrost
 	return response, nil
 }
 
-// ImageGenerationStream is not supported by the Gemini provider.
+// ImageGenerationStream streams a Gemini image model's output from :streamGenerateContent
+// (https://ai.google.dev/gemini-api/docs/image-generation). Each image an event carries is
+// one completed image event; an event is held until the next arrives, so the last image is
+// the final chunk and carries the request's usage. Imagen has no stream and is refused.
 func (provider *GeminiProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
+	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.ImageGenerationStreamRequest); err != nil {
+		return nil, err
+	}
+	if schemas.IsImagenModel(request.Model) {
+		return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
+	}
+	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToGeminiImageGenerationRequest(request), nil
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/models/"+request.Model+":streamGenerateContent?alt=sse"))
+	req.Header.SetContentType("application/json")
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	setGeminiAuthHeader(req, key.Value.GetValue())
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+	req.SetBody(jsonBody)
+
+	startTime := time.Now()
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	latency := time.Since(startTime)
+	if err != nil {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		if errors.Is(err, context.Canceled) {
+			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
+				Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestCancelled), Message: schemas.ErrRequestCancelled, Error: err},
+			}, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		}
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
+	go func() {
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
+			}
+			providerUtils.CloseStream(ctx, responseChan)
+		}()
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
+		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx), ctx)
+		defer stopIdleTimeout()
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
+		defer stopCancellation()
+
+		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		send := func(chunk *schemas.BifrostImageGenerationStreamResponse) {
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+				providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, chunk), responseChan, postHookSpanFinalizer)
+		}
+		var held *schemas.BifrostImageGenerationStreamResponse
+		var usage *GenerateContentResponseUsageMetadata
+		images := 0
+		lastChunkTime := startTime
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			data, readErr := sseReader.ReadDataLine()
+			if readErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				if readErr != io.EOF {
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, provider.logger, postHookSpanFinalizer)
+					return
+				}
+				break
+			}
+			parseStart := time.Now()
+			geminiResponse, err := processGeminiStreamChunk(data)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
+			if err != nil {
+				if strings.Contains(err.Error(), "gemini api error") {
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, toGeminiStreamBifrostError(err), responseChan, provider.logger, postHookSpanFinalizer)
+					return
+				}
+				provider.logger.Warn("Failed to process chunk: %v", err)
+				continue
+			}
+			if geminiResponse.UsageMetadata != nil {
+				usage = geminiResponse.UsageMetadata
+			}
+			for _, candidate := range geminiResponse.Candidates {
+				if candidate == nil || candidate.Content == nil {
+					continue
+				}
+				for _, part := range candidate.Content.Parts {
+					if part == nil || part.InlineData == nil || part.InlineData.Data == "" {
+						continue
+					}
+					if held != nil {
+						send(held)
+					}
+					held = &schemas.BifrostImageGenerationStreamResponse{
+						ID: geminiResponse.ResponseID, Type: schemas.ImageGenerationEventTypeCompleted, Index: images,
+						B64JSON: part.InlineData.Data, OutputFormat: convertMimeTypeToExtension(part.InlineData.MIMEType),
+						ExtraFields: schemas.BifrostResponseExtraFields{ChunkIndex: images, Latency: time.Since(lastChunkTime).Milliseconds()},
+					}
+					if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+						held.ExtraFields.RawResponse = string(data)
+					}
+					lastChunkTime = time.Now()
+					images++
+				}
+			}
+		}
+		if held == nil {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.NewBifrostOperationError(
+				"the stream ended without an image", errors.New("no inlineData part in any event")), responseChan, provider.logger, postHookSpanFinalizer)
+			return
+		}
+		held.Usage = convertGeminiUsageMetadataToImageUsage(usage)
+		held.ExtraFields.Latency = time.Since(startTime).Milliseconds()
+		held.BackfillParams(&schemas.BifrostRequest{ImageGenerationRequest: request})
+		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+			providerUtils.ParseAndSetRawRequest(&held.ExtraFields, jsonBody)
+		}
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		send(held)
+	}()
+	return responseChan, nil
 }
 
 // ImageEdit handles image edit requests. For Imagen models, uses the Imagen edit API; otherwise uses Gemini generateContent.
