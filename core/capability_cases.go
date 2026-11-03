@@ -52,7 +52,8 @@ var capabilityDrivers = map[schemas.ModelProvider]map[schemas.RequestType][]capa
 		schemas.EmbeddingRequest:       one("gemini-embedding-001"),
 		schemas.ImageGenerationRequest: {{prefix: "", model: "gemini-3.1-flash-image"}, {prefix: "imagen-", model: "imagen-4.0-generate-001"}},
 		schemas.ImageEditRequest:       {{prefix: "", model: "gemini-3.1-flash-image"}, {prefix: "imagen-", model: "imagen-3.0-capability-001"}},
-		schemas.VideoGenerationRequest: one("veo-3.1-generate-preview"),
+		// Gemini Omni is an interaction on the Interactions API; any other model a Veo operation.
+		schemas.VideoGenerationRequest: {{prefix: "", model: "veo-3.1-generate-preview"}, {prefix: "gemini-omni", model: "gemini-omni-1.1-flash"}},
 	},
 	schemas.Vertex: {
 		schemas.EmbeddingRequest: {{prefix: "", model: "text-embedding-005"}, {prefix: "gemini-embedding-2", model: "gemini-embedding-2"},
@@ -103,6 +104,12 @@ var capabilityDrivers = map[schemas.ModelProvider]map[schemas.RequestType][]capa
 		schemas.EmbeddingRequest:       one("skylark-embedding-large-text"),
 		schemas.ImageGenerationRequest: one("seedream-4-0-250828"),
 		schemas.VideoGenerationRequest: one("seedance-1-0-pro-250528"),
+	},
+	schemas.BytePlus: {
+		schemas.EmbeddingRequest:       one("skylark-embedding-vision-251215"),
+		schemas.ImageGenerationRequest: one("seedream-4-5-251128"),
+		schemas.ImageEditRequest:       one("seedream-4-5-251128"),
+		schemas.VideoGenerationRequest: one("seedance-1-5-pro-251215"),
 	},
 	schemas.Cloudflare: {
 		schemas.EmbeddingRequest: one("@cf/baai/bge-m3"),

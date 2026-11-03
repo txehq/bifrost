@@ -2521,11 +2521,14 @@ func (provider *GeminiProvider) ImageVariation(ctx *schemas.BifrostContext, key 
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
 }
 
-// VideoGeneration creates a video generation operation using Gemini's Veo models.
-// Uses the POST /models/{model}:predictLongRunning endpoint.
+// VideoGeneration creates a video: a Gemini Omni model's as a background interaction
+// (interactions_video.go), a Veo model's as a POST /models/{model}:predictLongRunning operation.
 func (provider *GeminiProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, bifrostReq *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.VideoGenerationRequest); err != nil {
 		return nil, err
+	}
+	if IsInteractionsVideoModel(bifrostReq.Model) {
+		return provider.interactionVideoGeneration(ctx, key, bifrostReq)
 	}
 
 	model := bifrostReq.Model
@@ -2639,6 +2642,12 @@ func (provider *GeminiProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 	operationID := bifrostReq.ID
 
 	operationID = providerUtils.StripVideoIDProviderSuffix(operationID, provider.GetProviderKey())
+	if id, ok, idErr := interactionID(operationID); ok {
+		if idErr != nil {
+			return nil, idErr
+		}
+		return provider.interactionVideoRetrieve(ctx, key, id)
+	}
 	operationPath, idErr := geminiVideoOperationPath(operationID)
 	if idErr != nil {
 		return nil, idErr
@@ -2699,6 +2708,12 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	}
 	if request == nil || request.ID == "" {
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
+	}
+	if id, ok, idErr := interactionID(providerUtils.StripVideoIDProviderSuffix(request.ID, provider.GetProviderKey())); ok {
+		if idErr != nil {
+			return nil, idErr
+		}
+		return provider.interactionVideoDownload(ctx, key, request.ID, id)
 	}
 	// Retrieve operation first so download behavior follows retrieve status.
 	bifrostVideoRetrieveRequest := &schemas.BifrostVideoRetrieveRequest{
@@ -2785,8 +2800,19 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	return bifrostResp, nil
 }
 
-// VideoDelete is not supported by the Gemini provider.
-func (provider *GeminiProvider) VideoDelete(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
+// VideoDelete cancels or deletes a Gemini Omni video interaction; a Veo operation has no delete.
+func (provider *GeminiProvider) VideoDelete(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
+	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.VideoDeleteRequest); err != nil {
+		return nil, err
+	}
+	if request != nil {
+		if id, ok, idErr := interactionID(providerUtils.StripVideoIDProviderSuffix(request.ID, provider.GetProviderKey())); ok {
+			if idErr != nil {
+				return nil, idErr
+			}
+			return provider.interactionVideoDelete(ctx, key, request.ID, id)
+		}
+	}
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDeleteRequest, provider.GetProviderKey())
 }
 

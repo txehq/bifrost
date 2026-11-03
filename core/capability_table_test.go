@@ -49,10 +49,18 @@ func TestCapabilityTableMeasuresTheDrivers(t *testing.T) {
 	if e := row(schemas.OpenAI, schemas.DecisionRequest, "gpt-6-luna"); !e.Implemented {
 		t.Errorf("openai decisions on gpt-6-luna %+v", e)
 	}
-	// Every video driver reads the duration.
+	// Every video driver reads the duration, but Gemini Omni's, whose Interactions API documents
+	// none (https://aistudio.google.com/docs/omni): the model decides the length.
 	for _, e := range entries {
-		if e.RequestType == schemas.VideoGenerationRequest && e.Implemented && slices.Contains(e.IgnoredParams, "seconds") {
-			t.Errorf("%s video_generation %q ignores seconds", e.ProviderType, e.ModelPrefix)
+		omni := e.ProviderType == schemas.Gemini && e.ModelPrefix == "gemini-omni"
+		if e.RequestType == schemas.VideoGenerationRequest && e.Implemented && slices.Contains(e.IgnoredParams, "seconds") != omni {
+			t.Errorf("%s video_generation %q: ignored %v", e.ProviderType, e.ModelPrefix, e.IgnoredParams)
+		}
+	}
+	// Seedance takes Ark's JSON task body on every Ark dialect, generate_audio included.
+	for _, provider := range []schemas.ModelProvider{schemas.BytePlus, schemas.ModelArk, schemas.Volcengine} {
+		if e := row(provider, schemas.VideoGenerationRequest, ""); !e.Implemented || len(e.IgnoredParams) != 0 {
+			t.Errorf("%s video_generation %+v", provider, e)
 		}
 	}
 }
