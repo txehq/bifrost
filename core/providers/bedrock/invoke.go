@@ -310,19 +310,11 @@ func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 		}
 	}
 
-	// Titan uses "inputText" for both embeddings and text generation.
-	// Use the model ID to disambiguate: embedding models contain "embed".
-	if node, _ := sonic.Get(body, "inputText"); node.Exists() {
-		if strings.Contains(strings.ToLower(modelID), "embed") {
-			return schemas.EmbeddingRequest
-		}
-		return schemas.TextCompletionRequest
-	}
-
 	// Cohere embedding: text-only (texts), image-only (images), or mixed (inputs).
-	// Titan multimodal embedding sends inputImage, with inputText optional.
-	// Use model ID to identify embed models, then check for any non-empty payload field.
-	if strings.Contains(strings.ToLower(modelID), "embed") {
+	// Titan multimodal embedding sends inputImage, with inputText optional. These
+	// fields are embedding-only on the invoke surface, so the body decides: a model
+	// routed by provider prefix ("openai/text-3-small") need not say "embed".
+	if taskNode, _ := sonic.Get(body, "taskType"); !taskNode.Exists() {
 		for _, field := range []string{"texts", "images", "inputs", "inputImage"} {
 			if node, _ := sonic.Get(body, field); node.Exists() {
 				if raw, err := node.Raw(); err == nil && raw != "null" && raw != "[]" {
@@ -330,6 +322,24 @@ func DetectInvokeRequestType(body []byte, modelID string) schemas.RequestType {
 				}
 			}
 		}
+	}
+
+	// Titan uses "inputText" for both embeddings and text generation. Text generation
+	// carries textGenerationConfig; the Titan embedding options (dimensions, normalize,
+	// embeddingTypes) mark an embedding; otherwise the model ID decides.
+	if node, _ := sonic.Get(body, "inputText"); node.Exists() {
+		if generation, _ := sonic.Get(body, "textGenerationConfig"); generation.Exists() {
+			return schemas.TextCompletionRequest
+		}
+		for _, field := range []string{"dimensions", "normalize", "embeddingTypes"} {
+			if option, _ := sonic.Get(body, field); option.Exists() {
+				return schemas.EmbeddingRequest
+			}
+		}
+		if strings.Contains(strings.ToLower(modelID), "embed") {
+			return schemas.EmbeddingRequest
+		}
+		return schemas.TextCompletionRequest
 	}
 
 	// taskType-based image routing
@@ -724,6 +734,16 @@ func novaSingleEmbeddingParamsToContent(params *BedrockNovaSingleEmbeddingParams
 	}
 }
 
+// bedrockInvokeEmbeddingEnvelopeKey records which invoke envelope the caller sent, so the
+// response comes back in the same one whichever provider served it.
+const bedrockInvokeEmbeddingEnvelopeKey schemas.BifrostContextKey = "bedrock-invoke-embedding-envelope"
+
+const (
+	bedrockEnvelopeTitan  = "titan"
+	bedrockEnvelopeCohere = "cohere"
+	bedrockEnvelopeNova   = "nova"
+)
+
 // ToBifrostEmbeddingRequest converts the invoke request to a BifrostEmbeddingRequest.
 // Handles the Titan (inputText), Cohere (texts) and Nova (singleEmbeddingParams) formats.
 func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostContext) (*schemas.BifrostEmbeddingRequest, error) {
@@ -735,6 +755,16 @@ func (r *BedrockInvokeRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostCon
 	req := &schemas.BifrostEmbeddingRequest{
 		Provider: provider,
 		Model:    model,
+	}
+	if ctx != nil {
+		switch {
+		case r.SingleEmbeddingParams != nil:
+			ctx.SetValue(bedrockInvokeEmbeddingEnvelopeKey, bedrockEnvelopeNova)
+		case r.InputText != "" || r.InputImage != "":
+			ctx.SetValue(bedrockInvokeEmbeddingEnvelopeKey, bedrockEnvelopeTitan)
+		case len(r.Texts) > 0 || len(r.Images) > 0 || len(r.Inputs) > 0:
+			ctx.SetValue(bedrockInvokeEmbeddingEnvelopeKey, bedrockEnvelopeCohere)
+		}
 	}
 
 	var contents []schemas.EmbeddingInputItem
@@ -1597,16 +1627,23 @@ func ToBedrockEmbeddingInvokeResponse(ctx *schemas.BifrostContext, resp *schemas
 		}
 	}
 
+	// The caller's own envelope wins: a Cohere-shaped request served by another provider
+	// still expects the Cohere envelope back, even for a single input.
+	envelope := ""
+	if ctx != nil {
+		envelope, _ = ctx.Value(bedrockInvokeEmbeddingEnvelopeKey).(string)
+	}
+
 	// Nova labels every vector with the modality it came from, and its separate video
 	// mode returns two for one input, so neither of the other envelopes fits.
-	if schemas.IsNovaModelFamily(ctx, model) {
+	if envelope == bedrockEnvelopeNova || (envelope == "" && schemas.IsNovaModelFamily(ctx, model)) {
 		return toBedrockNovaEmbeddingInvokeResponse(resp), nil
 	}
 
 	// The Titan envelope holds a single input's vectors. A response covering several
 	// inputs — reachable when the invoke route fronts a non-Titan provider — only fits
 	// the multi-embedding envelope; forcing it into Titan's drops all but one vector.
-	if schemas.IsCohereModelFamily(ctx, model) || bedrockDistinctEmbeddingInputs(resp.Data) > 1 {
+	if envelope == bedrockEnvelopeCohere || (envelope == "" && schemas.IsCohereModelFamily(ctx, model)) || bedrockDistinctEmbeddingInputs(resp.Data) > 1 {
 		return toBedrockCohereEmbeddingInvokeResponse(resp), nil
 	}
 	return toBedrockTitanEmbeddingInvokeResponse(resp, tokenCount), nil

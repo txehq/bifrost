@@ -1424,6 +1424,22 @@ func getLargeRequestTypeDetectionThreshold(ctx *fasthttp.RequestCtx) int64 {
 	return schemas.DefaultLargePayloadRequestThresholdBytes
 }
 
+// predictRequestsImage reads what a :predict body asks for from its shape. An instance with
+// a "prompt" is an image generation (Imagen); one with "content" is an embedding (the text
+// embeddings API). The model name decides only when the body says neither (large payloads,
+// whose body is not in memory): a model routed by provider prefix, such as
+// "openai/gpt-image-2", has a name that does not say "imagen".
+func predictRequestsImage(body []byte, model string) bool {
+	first := gjson.GetBytes(body, "instances.0")
+	if first.Get("prompt").Exists() {
+		return true
+	}
+	if first.Get("content").Exists() {
+		return false
+	}
+	return schemas.IsImagenModel(model)
+}
+
 // extractAndSetModelAndRequestType derives GenAI routing flags and configures native Gemini passthrough.
 // GeminiGenerationRequest and GeminiCountTokensRequest also register a path-aware rewriter because
 // their raw bytes otherwise bypass runtime guardrail mutations made to the normalized request.
@@ -1468,10 +1484,8 @@ func extractAndSetModelAndRequestType(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 	}
 
 	// Determine if :predict is for image generation (Imagen) or embedding
-	// Imagen models use :predict for image generation
-	isImagenPredict := isPredict && schemas.IsImagenModel(modelStr)
+	isImagenPredict := isPredict && predictRequestsImage(ctx.PostBody(), modelStr)
 	if isPredict && !isImagenPredict {
-		// :predict for non-Imagen models is embedding
 		isEmbedding = true
 	}
 
@@ -1819,10 +1833,8 @@ func extractModelAndRequestType(ctx *fasthttp.RequestCtx) (string, schemas.Reque
 	}
 
 	// Determine if :predict is for image generation (Imagen) or embedding
-	// Imagen models use :predict for image generation
-	isImagenPredict := isPredict && schemas.IsImagenModel(modelStr)
+	isImagenPredict := isPredict && predictRequestsImage(ctx.PostBody(), modelStr)
 	if isPredict && !isImagenPredict {
-		// :predict for non-Imagen models is embedding
 		isEmbedding = true
 	}
 
