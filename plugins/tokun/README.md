@@ -153,13 +153,76 @@ body as Bifrost received it:
 A route that keeps no body (no body at all, a multipart upload, the large-payload path, the
 inference handler outside the SDK integrations) sends every attempt from the typed request.
 
+## Each attempt, and its record
+
+The design is *Tokun Hot Path 重构*, section 执行和记录 and its 尝试记录合同. Core tries the
+entries in the drawn order, one attempt each (a provider entry's `max_retries` is 0), until one
+answers, the entries sent run out, or the plan's `max_attempts` entries have been sent.
+
+- **Any error moves to the next entry**: the next key of the same upstream, the next upstream,
+  the next provider, whatever the error's scope. When the plan's `stop_scopes`
+  (`routing.stop_scopes`, empty by default) lists the scope of an attempt's error, `PostLLMHook`
+  sets that error's `AllowFallbacks` to false and core stops there (`shouldTryFallbacks` and
+  `shouldContinueWithFallbacks` in `core/bifrost.go`).
+- **Only before the first chunk**: core hands a stream to the transport once its first valid
+  chunk has passed (`CheckFirstStreamChunkForError`, or `CheckStreamPreambleForError` for a
+  stream that opens with events Bifrost holds back, in `executeRequestWithRetries`), and tries no
+  other entry after that; a stream that breaks later ends with an error event to the caller.
+- **The error scope**, by the upstream's status, and by Bifrost's failure classification
+  (`ClassifyFailure` in `core/failureclass.go`, which reads the provider's error code, type and
+  message) where the status does not decide:
+
+  | Scope | Errors |
+  | --- | --- |
+  | `key` | 401, 403, 429; a rate limit, a rejected key, a model this key cannot reach, a location this key's account is refused |
+  | `upstream` | 402 and a quota exhausted (also under a 429 or a 400); 5xx; a connection error; a timeout; a retired model; a failure inside Bifrost; a status Bifrost does not recognise (a 404 for the path) |
+  | `request` | the upstream refused the request itself: invalid, over the context length, refused by moderation (400, 409, 413, 415, 422 with a provider error body) |
+  | none | the caller cancelled |
+
+  A status nothing recognises is `upstream`, not `request`: `request` is claimed only on the
+  upstream's own refusal, since `stop_scopes` may stop on it.
+- **The class** (`error_class`, healthobs' failure classes): `transport` for an attempt no
+  response came back to, `stream_broken` for a stream that failed after its first chunk or event
+  passed, `auth` for 401, 403 and a rejected key, `throttled` for 429 and a rate limit,
+  `upstream_5xx` for 5xx, none for a `request` error (healthobs counts it as a rejected request,
+  not a failure), `upstream_4xx` for the other 4xx.
+- **The record**: `PreLLMHook` notes when each attempt starts and the send's upstream time so
+  far; `PostLLMHook` notes how it ended: the upstream's status (200 for an answer, 0 when no
+  response came back), the scope and class, the upstream's error code (its `code`, or its error
+  type when it has none) and message, the duration, and the upstream time it added. An error
+  Bifrost made itself (a connection error, a timeout, a failure inside Bifrost) carries no
+  upstream code or message. A streamed attempt ends with its first chunk; its later chunks are
+  not recorded.
+- **`tk-route-attempts`**: `HTTPTransportResponseHeadersHook`, which runs just before the
+  response headers are sent, so before a stream's first chunk reaches the caller, writes
+  `tokun.routing.v1.RouteAttempts` as standard base64: `request_id`, `send_id`, `order` (every
+  entry of the drawn order with its three shares, `below_threshold` and `same_format`, as the
+  selection curve left them), and `attempts` in the order of their entries. Besides the attempts
+  made, `attempts` lists the entries the plugin left out (with their `skip_reason`), and the
+  entries core passed over without an attempt before a later one, which have no provider entry
+  on this Bifrost (`provider_not_synced`). An attempt begun and not ended by then is written as
+  one no response came back to. Nothing is recorded after the header is written.
+
+The tests: `TestTokunPluginRoutesInsideTheSignedPlan` in `transports/bifrost-http/server`
+(the `tk-route-attempts` subtests) sends signed plans through the whole Bifrost against upstream
+stand-ins and decodes the header; `TestClassifyAttempt` and the `TestRouteAttempts*` tests here
+cover each error and the record's encoding.
+
 ## What the plugin keeps
 
-- **Request state**: the verified plan, the drawn order and the attempt chain, on the
-  request's context (`requestStateKey`). It is bounded by the plan, which fits in one request
-  header, and is freed with the request. It refers to the caller's body, the transport's own
-  buffer, without copying it; an attempt in the request's format that changes the body makes
-  its own copy, freed with the attempt.
+- **Request state**: the verified plan, the drawn order, the attempt chain and the record of
+  each attempt, on the request's context (`requestStateKey`). It is bounded by the plan, which
+  fits in one request header: one record of 136 bytes for each attempt made, at most one for
+  each entry of the plan, the first kept in the state itself. It is freed with the request.
+  It refers to the caller's body, the transport's own buffer, without copying it; an attempt in
+  the request's format that changes the body makes its own copy, freed with the attempt.
+- **Encoders of `tk-route-attempts`**, in a `sync.Pool`: the messages, the timestamps and the
+  buffer one send's header is built in, so writing it allocates only the header's string. Each
+  keeps the capacity of the largest send it encoded: 136 bytes for each entry of the order, 400
+  for each attempt, and a buffer of 2.4 times the encoded size (the bytes and their base64); on
+  a plan of 150 keys with three attempts, about 50 KiB, for a header of 16 KiB. It holds no
+  string of a request once the header is written, and is freed when the garbage collector
+  empties the pool; the pool holds about as many as headers are written at once.
 - **Accepted `send_id`s**, so a signed plan is used once per pod. Keyed by `send_id`; each
   held send costs about 110 bytes of map and heap entry (measured over 100,000 sends,
   `BenchmarkSendIDLedgerClaim`), plus the 30-byte `send_id` string it keeps alive (a 32-byte

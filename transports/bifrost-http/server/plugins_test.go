@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -45,31 +46,63 @@ type upstreamCall struct {
 	header   http.Header
 }
 
-// tokunUpstreams stands in for the upstream APIs of three Bifrost provider entries, each
-// under its own path. A key listed in failing is answered 500.
+// tokunUpstreams stands in for the upstream APIs of the Bifrost provider entries, each under
+// its own path. A key listed in failing is answered 500, and a key given an answer is answered
+// with it. Any other key is answered "ok"; a streamed request gets its first chunk, and then,
+// once breakStream is closed, a dropped connection.
 type tokunUpstreams struct {
-	mu      sync.Mutex
-	calls   []upstreamCall
-	failing map[string]bool
+	mu          sync.Mutex
+	calls       []upstreamCall
+	failing     map[string]bool
+	answers     map[string]upstreamAnswer
+	breakStream chan struct{}
+}
+
+// upstreamAnswer is an error answer: the HTTP status and the body, or, with status 0, a
+// connection dropped before any response.
+type upstreamAnswer struct {
+	status int
+	body   string
 }
 
 func (u *tokunUpstreams) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	provider, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
 	body, _ := io.ReadAll(r.Body)
 	var request struct {
-		Model string `json:"model"`
+		Model  string `json:"model"`
+		Stream bool   `json:"stream"`
 	}
 	_ = json.Unmarshal(body, &request)
 	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	u.mu.Lock()
 	u.calls = append(u.calls, upstreamCall{provider: provider, key: key, model: request.Model, header: r.Header.Clone()})
 	failing := u.failing[key]
+	answer, answered := u.answers[key]
+	breakStream := u.breakStream
 	u.mu.Unlock()
+	switch {
+	case answered && answer.status == 0:
+		// The connection closes before any byte of a response.
+		panic(http.ErrAbortHandler)
+	case answered:
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(answer.status)
+		_, _ = io.WriteString(w, answer.body)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if failing {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = io.WriteString(w, `{"error":{"message":"upstream failed","type":"server_error"}}`)
 		return
+	}
+	if request.Stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"`+request.Model+`","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}`+"\n\n")
+		w.(http.Flusher).Flush()
+		<-breakStream
+		// The connection closes in the middle of the stream.
+		panic(http.ErrAbortHandler)
 	}
 	_, _ = io.WriteString(w, `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"`+request.Model+`","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
 }
@@ -79,8 +112,28 @@ func (u *tokunUpstreams) reset(failing ...string) {
 	defer u.mu.Unlock()
 	u.calls = nil
 	u.failing = map[string]bool{}
+	u.answers = map[string]upstreamAnswer{}
+	u.breakStream = make(chan struct{})
 	for _, key := range failing {
 		u.failing[key] = true
+	}
+}
+
+// answer makes the upstream answer key with a.
+func (u *tokunUpstreams) answer(key string, a upstreamAnswer) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.answers[key] = a
+}
+
+// breakStreams drops the connection of every stream the upstream holds open.
+func (u *tokunUpstreams) breakStreams() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	select {
+	case <-u.breakStream:
+	default:
+		close(u.breakStream)
 	}
 }
 
@@ -187,6 +240,64 @@ func tokunTestPlan(requestID string) *routingv1.RoutePlan {
 	}
 }
 
+// tokunChainPlan is drawn in one order every time, which steps from a key to the next key of the
+// same upstream, then to the next upstream, then to the next provider: up-a's key-a1, then key-a2
+// (share 0), then up-c's key-c1 (up-c scores below provider-a's upstream threshold), then
+// provider-b's up-b with key-b1 (provider-b scores below the threshold).
+func tokunChainPlan(requestID string) *routingv1.RoutePlan {
+	return &routingv1.RoutePlan{
+		RequestId: requestID,
+		Threshold: 0.75,
+		Providers: []*routingv1.RouteProvider{
+			{ProviderId: "provider-a", Score: 0.8, UpstreamThreshold: 0.5, Upstreams: []*routingv1.RouteUpstream{
+				{UpstreamId: 1, Interface: "1:text.chat.openai-chat", BifrostProvider: "up-a", ForwardModel: "model-a", Score: 0.8,
+					Keys: []*plannerv1.KeyShare{{KeyId: "key-a1", Share: 1}, {KeyId: "key-a2", Share: 0}}},
+				{UpstreamId: 3, Interface: "3:text.chat.openai-chat", BifrostProvider: "up-c", ForwardModel: "model-c", Score: 0.3,
+					Keys: []*plannerv1.KeyShare{{KeyId: "key-c1", Share: 1}}},
+			}},
+			{ProviderId: "provider-b", Score: 0.7, UpstreamThreshold: 0.5, Upstreams: []*routingv1.RouteUpstream{
+				{UpstreamId: 2, Interface: "2:text.chat.openai-chat", BifrostProvider: "up-b", ForwardModel: "model-b", Score: 0.8,
+					Keys: []*plannerv1.KeyShare{{KeyId: "key-b1", Share: 1}}},
+			}},
+		},
+	}
+}
+
+// routeAttempts decodes a tk-route-attempts value.
+func routeAttempts(t *testing.T, value string) *routingv1.RouteAttempts {
+	t.Helper()
+	if value == "" {
+		t.Fatal("the response has no tk-route-attempts")
+	}
+	raw, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		t.Fatalf("tk-route-attempts is not standard base64: %v", err)
+	}
+	var attempts routingv1.RouteAttempts
+	if err := proto.Unmarshal(raw, &attempts); err != nil {
+		t.Fatalf("decode tk-route-attempts: %v", err)
+	}
+	return &attempts
+}
+
+// attemptSummary is the part of a RouteAttempt the flow tests compare: its entry, key, status,
+// error scope and class, the upstream's error code, and the skip reason.
+type attemptSummary struct {
+	index         int32
+	key           string
+	status        int32
+	scope, class  string
+	code, skipped string
+}
+
+func summarize(attempts []*routingv1.RouteAttempt) []attemptSummary {
+	summaries := make([]attemptSummary, 0, len(attempts))
+	for _, a := range attempts {
+		summaries = append(summaries, attemptSummary{a.GetIndex(), a.GetKeyId(), a.GetStatusCode(), a.GetErrorScope(), a.GetErrorClass(), a.GetUpstreamErrorCode(), a.GetSkipReason()})
+	}
+	return summaries
+}
+
 // tokunDrawPlan has providers of close scores, several upstreams and several keys, so the
 // selection curve draws a different order for most seeds:
 //   - provider-a: up-a (keys key-a1, key-a2) in the request's format, and up-c (key-c1, key-c2),
@@ -222,6 +333,56 @@ func tokunDrawPlan(requestID string) *routingv1.RoutePlan {
 				upstream(5, "up-e", 0.8, true, "key-e1"),
 			}},
 		},
+	}
+}
+
+// checkDrawnRecord checks the record of a send of tokunDrawPlan whose every attempt failed: its
+// ids; an order of one entry for each key of the plan, with the plan's ids, in the order the
+// upstreams were called (served); the shares the selection curve drew with, whose products add
+// up to 1 in each group, and only provider-e's entry below a threshold; and one failed attempt
+// for each entry, in the order.
+func checkDrawnRecord(t *testing.T, record *routingv1.RouteAttempts, plan *routingv1.RoutePlan, sendID string, served []string) {
+	t.Helper()
+	if record.GetRequestId() != plan.GetRequestId() || record.GetSendId() != sendID {
+		t.Fatalf("request_id %q, send_id %q", record.GetRequestId(), record.GetSendId())
+	}
+	upstreamOf := map[int64]*routingv1.RouteUpstream{}
+	providerOf := map[int64]string{}
+	for _, provider := range plan.GetProviders() {
+		for _, upstream := range provider.GetUpstreams() {
+			upstreamOf[upstream.GetUpstreamId()], providerOf[upstream.GetUpstreamId()] = upstream, provider.GetProviderId()
+		}
+	}
+	order := record.GetOrder()
+	if len(order) != len(served) {
+		t.Fatalf("order has %d entries, %d upstream calls were made", len(order), len(served))
+	}
+	groupTotal := map[bool]float64{}
+	for i, c := range order {
+		upstream := upstreamOf[c.GetUpstreamId()]
+		if upstream == nil || c.GetProviderId() != providerOf[c.GetUpstreamId()] || c.GetInterface() != upstream.GetInterface() ||
+			c.GetSameFormat() != upstream.GetSameFormat() || served[i] != upstream.GetBifrostProvider()+"/secret-"+c.GetKeyId() {
+			t.Fatalf("order[%d] = %v, the upstream call was %s", i, c, served[i])
+		}
+		if c.GetBelowThreshold() != (c.GetProviderId() == "provider-e") {
+			t.Fatalf("order[%d] = %v, want only provider-e below a threshold", i, c)
+		}
+		groupTotal[c.GetSameFormat()] += c.GetProviderShare() * c.GetUpstreamShare() * c.GetKeyShare()
+	}
+	for sameFormat, total := range groupTotal {
+		if math.Abs(total-1) > 1e-9 {
+			t.Fatalf("the shares' products of the group same_format=%v add up to %v, want 1: %v", sameFormat, total, order)
+		}
+	}
+	attempts := record.GetAttempts()
+	if len(attempts) != len(order) {
+		t.Fatalf("%d attempts, want one for each of the %d entries", len(attempts), len(order))
+	}
+	for i, a := range attempts {
+		if a.GetIndex() != int32(i) || a.GetKeyId() != order[i].GetKeyId() || a.GetUpstreamId() != order[i].GetUpstreamId() || a.GetSameFormat() != order[i].GetSameFormat() ||
+			a.GetStatusCode() != http.StatusInternalServerError || a.GetErrorScope() != "upstream" || a.GetErrorClass() != "upstream_5xx" {
+			t.Fatalf("attempts[%d] = %v, want order entry %d failed with 500", i, a, i)
+		}
 	}
 }
 
@@ -297,11 +458,13 @@ func TestTokunPluginRoutesInsideTheSignedPlan(t *testing.T) {
 	// The caller names a provider, a model, a fallback and a key outside the plan.
 	body := `{"model":"up-x/caller-model","messages":[{"role":"user","content":"hi"}],"fallbacks":["up-x/caller-fallback"]}`
 	type reply struct {
-		status int
-		body   string
+		status   int
+		body     string
+		attempts string // tk-route-attempts
 	}
-	sendTo := func(t *testing.T, method, uri string, headers map[string]string, body string) reply {
-		t.Helper()
+	// request builds the caller's request; the caller's response headers are final once the
+	// router's handler returns, before a streamed body is read.
+	request := func(method, uri string, headers map[string]string, body string) *fasthttp.RequestCtx {
 		var req fasthttp.Request
 		req.Header.SetMethod(method)
 		req.SetRequestURI(uri)
@@ -314,16 +477,24 @@ func TestTokunPluginRoutesInsideTheSignedPlan(t *testing.T) {
 		req.SetBodyString(body)
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Init(&req, nil, nil)
+		return ctx
+	}
+	sendTo := func(t *testing.T, method, uri string, headers map[string]string, body string) reply {
+		t.Helper()
+		ctx := request(method, uri, headers, body)
 		r.Handler(ctx)
-		return reply{status: ctx.Response.StatusCode(), body: string(ctx.Response.Body())}
+		return reply{status: ctx.Response.StatusCode(), body: string(ctx.Response.Body()), attempts: string(ctx.Response.Header.Peek(tokun.HeaderRouteAttempts))}
 	}
 	send := func(t *testing.T, headers map[string]string, body string) reply {
 		t.Helper()
 		return sendTo(t, fasthttp.MethodPost, "/openai/v1/chat/completions", headers, body)
 	}
-	signed := func(t *testing.T, signer planSigner, plan *routingv1.RoutePlan, sendID string) map[string]string {
+	signedFor := func(t *testing.T, signer planSigner, plan *routingv1.RoutePlan, sendID, body string) map[string]string {
 		planHeader, signatureHeader := signer.headers(t, plan, sendID, len(body), time.Now().Add(time.Minute))
 		return map[string]string{tokun.HeaderRoutePlan: planHeader, tokun.HeaderRoutePlanSignature: signatureHeader}
+	}
+	signed := func(t *testing.T, signer planSigner, plan *routingv1.RoutePlan, sendID string) map[string]string {
+		return signedFor(t, signer, plan, sendID, body)
 	}
 
 	t.Run("primary entry with its own key", func(t *testing.T) {
@@ -377,6 +548,15 @@ func TestTokunPluginRoutesInsideTheSignedPlan(t *testing.T) {
 		if served := upstreams.served(); !reflect.DeepEqual(served, want) {
 			t.Fatalf("served by %v, want %v", served, want)
 		}
+		// The record lists the whole order and the two attempts max_attempts let through.
+		record := routeAttempts(t, got.attempts)
+		wantAttempts := []attemptSummary{
+			{index: 0, key: "key-a1", status: 500, scope: "upstream", class: "upstream_5xx", code: "server_error"},
+			{index: 1, key: "key-a2", status: 500, scope: "upstream", class: "upstream_5xx", code: "server_error"},
+		}
+		if len(record.GetOrder()) != 3 || !reflect.DeepEqual(summarize(record.GetAttempts()), wantAttempts) {
+			t.Fatalf("order %v, attempts %+v; want 3 entries and %+v", record.GetOrder(), summarize(record.GetAttempts()), wantAttempts)
+		}
 		observer.take()
 	})
 
@@ -389,14 +569,17 @@ func TestTokunPluginRoutesInsideTheSignedPlan(t *testing.T) {
 			t.Helper()
 			upstreams.reset(failing...)
 			tokunPlugin.SeedDraws(seed)
-			got := send(t, signed(t, newKey, tokunDrawPlan("req_"+sendID), sendID), body)
+			plan := tokunDrawPlan("req_" + sendID)
+			got := send(t, signed(t, newKey, plan, sendID), body)
 			if got.status == http.StatusOK {
 				t.Fatalf("status %d, want the last attempt's failure", got.status)
 			}
 			if ids := observer.take(); !reflect.DeepEqual(ids, []string{sendID}) {
 				t.Fatalf("core saw request ids %v, want the send_id", ids)
 			}
-			return upstreams.served()
+			served := upstreams.served()
+			checkDrawnRecord(t, routeAttempts(t, got.attempts), plan, sendID, served)
+			return served
 		}
 		upstreamOf := func(call string) string { name, _, _ := strings.Cut(call, "/"); return name }
 		// runs counts the runs of consecutive calls with the same value of what.
@@ -440,6 +623,205 @@ func TestTokunPluginRoutesInsideTheSignedPlan(t *testing.T) {
 			t.Fatalf("12 seeds drew %d orders and %d primaries (%v), want them to differ", len(orders), len(primaries), primaries)
 		}
 		t.Logf("12 seeds drew %d orders and %d primaries", len(orders), len(primaries))
+	})
+
+	// The record of every attempt, tk-route-attempts, decoded: each error scope with its class,
+	// status and upstream error code; the switches from a key to the next key of its upstream, to
+	// the next upstream and to the next provider; and routing.stop_scopes.
+	const (
+		invalidKeyBody    = `{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}`
+		rateLimitBody     = `{"error":{"message":"Rate limit reached for requests","type":"requests","code":"rate_limit_exceeded"}}`
+		serverErrorBody   = `{"error":{"message":"upstream failed","type":"server_error"}}`
+		noCreditsBody     = `{"error":{"message":"Insufficient credits","type":"billing_error","code":"insufficient_credits"}}`
+		contextLengthBody = `{"error":{"message":"This model's maximum context length is 8192 tokens","type":"invalid_request_error","code":"context_length_exceeded"}}`
+	)
+	for _, tc := range []struct {
+		name       string
+		answers    map[string]upstreamAnswer
+		stopScopes []string
+		status     int
+		// served lists the upstream calls. When a dropped connection was a pooled one, Bifrost's
+		// HTTP client sends the request again on other connections within the same attempt
+		// (network.StaleConnectionRetryIfErr), as many times as the pool holds idle connections,
+		// so with redials the calls are compared with their repeats collapsed.
+		served   []string
+		redials  bool
+		attempts []attemptSummary
+	}{
+		{
+			name:    "a key, then the next key, the next upstream and the next provider",
+			answers: map[string]upstreamAnswer{"key-a1": {401, invalidKeyBody}, "key-a2": {429, rateLimitBody}, "key-c1": {500, serverErrorBody}},
+			status:  http.StatusOK,
+			served:  []string{"up-a/secret-key-a1", "up-a/secret-key-a2", "up-c/secret-key-c1", "up-b/secret-key-b1"},
+			attempts: []attemptSummary{
+				{index: 0, key: "key-a1", status: 401, scope: "key", class: "auth", code: "invalid_api_key"},
+				{index: 1, key: "key-a2", status: 429, scope: "key", class: "throttled", code: "rate_limit_exceeded"},
+				{index: 2, key: "key-c1", status: 500, scope: "upstream", class: "upstream_5xx", code: "server_error"},
+				{index: 3, key: "key-b1", status: 200},
+			},
+		},
+		{
+			name:    "402 and a dropped connection are the upstream's",
+			answers: map[string]upstreamAnswer{"key-a1": {402, noCreditsBody}, "key-a2": {0, ""}},
+			status:  http.StatusOK,
+			served:  []string{"up-a/secret-key-a1", "up-a/secret-key-a2", "up-c/secret-key-c1"},
+			redials: true,
+			attempts: []attemptSummary{
+				{index: 0, key: "key-a1", status: 402, scope: "upstream", class: "upstream_4xx", code: "insufficient_credits"},
+				{index: 1, key: "key-a2", status: 0, scope: "upstream", class: "transport"},
+				{index: 2, key: "key-c1", status: 200},
+			},
+		},
+		{
+			name:    "a request-scope error moves on when stop_scopes is empty",
+			answers: map[string]upstreamAnswer{"key-a1": {400, contextLengthBody}},
+			status:  http.StatusOK,
+			served:  []string{"up-a/secret-key-a1", "up-a/secret-key-a2"},
+			attempts: []attemptSummary{
+				{index: 0, key: "key-a1", status: 400, scope: "request", code: "context_length_exceeded"},
+				{index: 1, key: "key-a2", status: 200},
+			},
+		},
+		{
+			name:       "stop_scopes [request] stops on a request-scope error",
+			answers:    map[string]upstreamAnswer{"key-a1": {400, contextLengthBody}},
+			stopScopes: []string{"request"},
+			status:     http.StatusBadRequest,
+			served:     []string{"up-a/secret-key-a1"},
+			attempts:   []attemptSummary{{index: 0, key: "key-a1", status: 400, scope: "request", code: "context_length_exceeded"}},
+		},
+		{
+			name:       "stop_scopes [request] moves on after a key-scope error",
+			answers:    map[string]upstreamAnswer{"key-a1": {429, rateLimitBody}},
+			stopScopes: []string{"request"},
+			status:     http.StatusOK,
+			served:     []string{"up-a/secret-key-a1", "up-a/secret-key-a2"},
+			attempts: []attemptSummary{
+				{index: 0, key: "key-a1", status: 429, scope: "key", class: "throttled", code: "rate_limit_exceeded"},
+				{index: 1, key: "key-a2", status: 200},
+			},
+		},
+		{
+			name:       "stop_scopes [upstream] stops on a 500",
+			answers:    map[string]upstreamAnswer{"key-a1": {500, serverErrorBody}},
+			stopScopes: []string{"upstream"},
+			status:     http.StatusInternalServerError,
+			served:     []string{"up-a/secret-key-a1"},
+			attempts:   []attemptSummary{{index: 0, key: "key-a1", status: 500, scope: "upstream", class: "upstream_5xx", code: "server_error"}},
+		},
+	} {
+		t.Run("tk-route-attempts: "+tc.name, func(t *testing.T) {
+			upstreams.reset()
+			for key, answer := range tc.answers {
+				upstreams.answer("secret-"+key, answer)
+			}
+			plan := tokunChainPlan("req_chain")
+			plan.StopScopes = tc.stopScopes
+			sendID := "snd_chain_" + strings.NewReplacer(" ", "_", "[", "", "]", "").Replace(tc.name)
+			got := send(t, signed(t, newKey, plan, sendID), body)
+			if got.status != tc.status {
+				t.Fatalf("status %d: %s, want %d", got.status, got.body, tc.status)
+			}
+			served := upstreams.served()
+			if tc.redials {
+				served = slices.Compact(served)
+			}
+			if !reflect.DeepEqual(served, tc.served) {
+				t.Fatalf("served by %v, want %v", served, tc.served)
+			}
+			record := routeAttempts(t, got.attempts)
+			if record.GetRequestId() != "req_chain" || record.GetSendId() != sendID {
+				t.Fatalf("request_id %q, send_id %q", record.GetRequestId(), record.GetSendId())
+			}
+			var order []string
+			for _, c := range record.GetOrder() {
+				order = append(order, fmt.Sprintf("%s/%d/%s %g %g %g %v", c.GetProviderId(), c.GetUpstreamId(), c.GetKeyId(), c.GetProviderShare(), c.GetUpstreamShare(), c.GetKeyShare(), c.GetBelowThreshold()))
+			}
+			wantOrder := []string{"provider-a/1/key-a1 1 1 1 false", "provider-a/1/key-a2 1 1 0 false", "provider-a/3/key-c1 1 0 1 true", "provider-b/2/key-b1 0 1 1 true"}
+			if !reflect.DeepEqual(order, wantOrder) {
+				t.Fatalf("order %v, want %v", order, wantOrder)
+			}
+			if got := summarize(record.GetAttempts()); !reflect.DeepEqual(got, tc.attempts) {
+				t.Fatalf("attempts %+v, want %+v", got, tc.attempts)
+			}
+			for _, a := range record.GetAttempts() {
+				if a.GetStartedAt() == nil || a.GetDuration() == nil || a.GetUpstreamDuration() == nil {
+					t.Fatalf("attempt %d has no times: %v", a.GetIndex(), a)
+				}
+				if a.GetStatusCode() != 0 && a.GetUpstreamDuration().AsDuration() <= 0 {
+					t.Fatalf("attempt %d was answered but spent no time on the upstream: %v", a.GetIndex(), a)
+				}
+			}
+			observer.take()
+		})
+	}
+
+	// An entry whose provider entry is not on this Bifrost is passed over by core without an
+	// attempt, and recorded as provider_not_synced.
+	t.Run("tk-route-attempts: entries whose provider entry is not on this Bifrost", func(t *testing.T) {
+		upstreams.reset()
+		plan := tokunChainPlan("req_missing")
+		plan.GetProviders()[0].GetUpstreams()[0].BifrostProvider = "up-missing"
+		got := send(t, signed(t, newKey, plan, "snd_missing"), body)
+		if got.status != http.StatusOK {
+			t.Fatalf("status %d: %s", got.status, got.body)
+		}
+		if served := upstreams.served(); !reflect.DeepEqual(served, []string{"up-c/secret-key-c1"}) {
+			t.Fatalf("served by %v, want up-c only", served)
+		}
+		want := []attemptSummary{
+			{index: 0, key: "key-a1", skipped: "provider_not_synced"},
+			{index: 1, key: "key-a2", skipped: "provider_not_synced"},
+			{index: 2, key: "key-c1", status: 200},
+		}
+		if got := summarize(routeAttempts(t, got.attempts).GetAttempts()); !reflect.DeepEqual(got, want) {
+			t.Fatalf("attempts %+v, want %+v", got, want)
+		}
+		observer.take()
+	})
+
+	// A stream switches only before its first chunk, and carries tk-route-attempts before it: the
+	// primary fails, the first fallback streams its first chunk and holds the stream open. The
+	// caller's response headers, final while the upstream still holds the stream, carry the
+	// record; then the upstream drops the connection, and no further entry is tried.
+	t.Run("tk-route-attempts of a stream that breaks after its first chunk", func(t *testing.T) {
+		upstreams.reset()
+		defer upstreams.breakStreams()
+		upstreams.answer("secret-key-a1", upstreamAnswer{500, serverErrorBody})
+		streamBody := `{"model":"up-x/caller-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
+		ctx := request(fasthttp.MethodPost, "/openai/v1/chat/completions", signedFor(t, newKey, tokunChainPlan("req_stream"), "snd_stream", streamBody), streamBody)
+		handled := make(chan struct{})
+		go func() {
+			defer close(handled)
+			r.Handler(ctx)
+		}()
+		select {
+		case <-handled:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the handler did not return while the upstream held the stream open")
+		}
+		if ctx.Response.StatusCode() != http.StatusOK {
+			t.Fatalf("status %d", ctx.Response.StatusCode())
+		}
+		want := []attemptSummary{
+			{index: 0, key: "key-a1", status: 500, scope: "upstream", class: "upstream_5xx", code: "server_error"},
+			{index: 1, key: "key-a2", status: 200},
+		}
+		if got := summarize(routeAttempts(t, string(ctx.Response.Header.Peek(tokun.HeaderRouteAttempts))).GetAttempts()); !reflect.DeepEqual(got, want) {
+			t.Fatalf("attempts %+v, want %+v", got, want)
+		}
+		wantServed := []string{"up-a/secret-key-a1", "up-a/secret-key-a2"}
+		if served := upstreams.served(); !reflect.DeepEqual(served, wantServed) {
+			t.Fatalf("served by %v before the stream broke, want %v", served, wantServed)
+		}
+		upstreams.breakStreams()
+		if streamed := string(ctx.Response.Body()); !strings.Contains(streamed, `"content":"ok"`) {
+			t.Fatalf("the caller did not receive the first chunk: %s", streamed)
+		}
+		if served := upstreams.served(); !reflect.DeepEqual(served, wantServed) {
+			t.Fatalf("served by %v after the stream broke, want %v: the send switched after its first chunk", served, wantServed)
+		}
+		observer.take()
 	})
 
 	t.Run("the key being rotated out still verifies", func(t *testing.T) {

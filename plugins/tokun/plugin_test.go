@@ -6,11 +6,13 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,6 +22,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	bifrost "github.com/capsohq/bifrost/core"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 
 	plannerv1 "github.com/capsohq/txe/tokun/proto/gen/go/tokun/planner/v1"
@@ -956,6 +959,427 @@ func TestFilterChunk(t *testing.T) {
 	}
 }
 
+// providerError is an error an upstream answered with, as a provider builds it.
+func providerError(status int, errorType, code, message string) *schemas.BifrostError {
+	err := &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: message}}
+	if errorType != "" {
+		err.Error.Type = &errorType
+	}
+	if code != "" {
+		err.Error.Code = &code
+	}
+	return err
+}
+
+// Each failure an attempt can end with is recorded with the upstream's status, its error scope
+// and its healthobs class; an error Bifrost made itself carries no upstream error code (own).
+func TestClassifyAttempt(t *testing.T) {
+	cancelled := providerUtils.NewBifrostOperationError(schemas.ErrRequestCancelled, context.Canceled)
+	cancelled.StatusCode, cancelled.Error.Type = schemas.Ptr(499), schemas.Ptr(schemas.RequestCancelled)
+	bifrostOwn := providerUtils.NewBifrostOperationError("no supported key found with id \"key-a1\"", nil)
+	bifrostOwn.StatusCode = schemas.Ptr(http.StatusInternalServerError)
+	streamRead := providerUtils.NewBifrostOperationError("Error reading stream: unexpected EOF", nil)
+	for _, tc := range []struct {
+		name     string
+		err      *schemas.BifrostError
+		answered bool
+		status   int32
+		scope    string
+		class    string
+		own      bool
+	}{
+		{"401, a rejected key", providerError(401, "invalid_request_error", "invalid_api_key", "Incorrect API key provided"), false, 401, scopeKey, classAuth, false},
+		{"403", providerError(403, "permission_error", "", "This key may not use this model"), false, 403, scopeKey, classAuth, false},
+		{"429", providerError(429, "rate_limit_error", "", "Number of requests has exceeded your rate limit"), false, 429, scopeKey, classThrottled, false},
+		{"a quota exhausted under a 429", providerError(429, "insufficient_quota", "insufficient_quota", "You exceeded your current quota"), false, 429, scopeUpstream, classThrottled, false},
+		{"402", providerError(402, "", "", "Payment required"), false, 402, scopeUpstream, classUpstream4xx, false},
+		{"a credit balance run out under a 400", providerError(400, "invalid_request_error", "", "Your credit balance is too low to access the Anthropic API"), false, 400, scopeUpstream, classUpstream4xx, false},
+		{"500", providerError(500, "server_error", "", "The server had an error"), false, 500, scopeUpstream, classUpstream5xx, false},
+		{"529 overloaded", providerError(529, "overloaded_error", "", "Overloaded"), false, 529, scopeUpstream, classUpstream5xx, false},
+		{"a 503 that says rate limit", providerError(503, "", "", "rate limit exceeded, try again"), false, 503, scopeUpstream, classUpstream5xx, false},
+		{"a connection refused", providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, errors.New("dial tcp: connection refused")), false, 0, scopeUpstream, classTransport, true},
+		{"a network error", providerUtils.NewBifrostOperationError(schemas.ErrProviderNetworkError, errors.New("lookup up-a: no such host")), false, 0, scopeUpstream, classTransport, true},
+		{"a timeout", providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, context.DeadlineExceeded), false, 0, scopeUpstream, classTransport, true},
+		{"no first token in time", providerUtils.NewFirstTokenTimeoutError(time.Second), false, 0, scopeUpstream, classTransport, true},
+		{"a failure inside Bifrost", bifrostOwn, false, 0, scopeUpstream, classTransport, true},
+		{"the caller cancelled", cancelled, false, 0, "", "", true},
+		{"over the context length", providerError(400, "invalid_request_error", "context_length_exceeded", "This model's maximum context length is 8192 tokens"), false, 400, scopeRequest, "", false},
+		{"refused by moderation", providerError(400, "invalid_request_error", "content_policy_violation", "Your request was rejected as a result of our safety system"), false, 400, scopeRequest, "", false},
+		{"an invalid request", providerError(400, "invalid_request_error", "", "messages: field required"), false, 400, scopeRequest, "", false},
+		{"413", providerError(413, "request_too_large", "", "Request exceeds the maximum allowed number of bytes"), false, 413, scopeRequest, "", false},
+		{"422", providerError(422, "", "", "Unprocessable entity"), false, 422, scopeRequest, "", false},
+		{"a model this key cannot reach", providerError(404, "invalid_request_error", "model_not_found", "The model `m` does not exist or you do not have access to it"), false, 404, scopeKey, classUpstream4xx, false},
+		{"a retired model", providerError(410, "", "", "The model has been deprecated"), false, 410, scopeUpstream, classUpstream4xx, false},
+		{"a 404 for the path", providerError(404, "", "", ""), false, 404, scopeUpstream, classUpstream4xx, false},
+		{"a rejected key under a 400", providerError(400, "INVALID_ARGUMENT", "", "API key not valid. Please pass a valid API key."), false, 400, scopeKey, classAuth, false},
+		{"a stream that broke after it began", streamRead, true, 200, scopeUpstream, classStreamBroken, true},
+		{"an error event after the stream began", providerError(529, "overloaded_error", "", "Overloaded"), true, 200, scopeUpstream, classStreamBroken, false},
+		{"the caller cancelled a stream that began", cancelled, true, 200, "", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, scope, class, own := classifyAttempt(tc.err, tc.answered)
+			if status != tc.status || scope != tc.scope || class != tc.class || own != tc.own {
+				t.Fatalf("classifyAttempt = %d, %q, %q, own %v; want %d, %q, %q, own %v", status, scope, class, own, tc.status, tc.scope, tc.class, tc.own)
+			}
+		})
+	}
+}
+
+// decodeAttempts decodes the tk-route-attempts header of resp.
+func decodeAttempts(t testing.TB, resp *schemas.HTTPResponseMetadata) *routingv1.RouteAttempts {
+	t.Helper()
+	value := resp.Header(HeaderRouteAttempts)
+	if value == "" {
+		t.Fatalf("no %s in %v", HeaderRouteAttempts, resp.Headers)
+	}
+	raw, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		t.Fatalf("%s is not standard base64: %v", HeaderRouteAttempts, err)
+	}
+	var attempts routingv1.RouteAttempts
+	if err := proto.Unmarshal(raw, &attempts); err != nil {
+		t.Fatalf("decode %s: %v", HeaderRouteAttempts, err)
+	}
+	return &attempts
+}
+
+// writtenAttempts runs the response headers hook on ctx and decodes the record it writes.
+func writtenAttempts(t testing.TB, plugin *Plugin, ctx *schemas.BifrostContext) *routingv1.RouteAttempts {
+	t.Helper()
+	resp := &schemas.HTTPResponseMetadata{StatusCode: http.StatusOK, Headers: map[string]string{}}
+	if err := plugin.HTTPTransportResponseHeadersHook(ctx, nil, resp); err != nil {
+		t.Fatal(err)
+	}
+	return decodeAttempts(t, resp)
+}
+
+// runAttempt runs one attempt of the send on ctx through PreLLMHook and PostLLMHook: the attempt
+// answers when err is nil. It returns the error PostLLMHook hands back to core.
+func runAttempt(t testing.TB, plugin *Plugin, ctx *schemas.BifrostContext, attempt int, err *schemas.BifrostError) *schemas.BifrostError {
+	t.Helper()
+	ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, attempt)
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}
+	if _, shortCircuit, hookErr := plugin.PreLLMHook(ctx, req); shortCircuit != nil || hookErr != nil {
+		t.Fatalf("PreLLMHook = %+v, %v", shortCircuit, hookErr)
+	}
+	var resp *schemas.BifrostResponse
+	if err == nil {
+		resp = &schemas.BifrostResponse{}
+	}
+	_, gotErr, hookErr := plugin.PostLLMHook(ctx, resp, err)
+	if hookErr != nil {
+		t.Fatal(hookErr)
+	}
+	return gotErr
+}
+
+// The record of a send: the whole drawn order entry by entry as the selection curve left it, and
+// the attempts by their position in the order, with the entries the plugin skipped among them.
+func TestRouteAttemptsRecordTheOrderAndEveryAttempt(t *testing.T) {
+	plugin := testPlugin(t, map[string]string{"gw-2026-11": "gateway-secret"})
+	plugin.SeedDraws(11)
+	plan := benchPlan()
+	state := &requestState{plan: plan, claims: &routingv1.RoutePlanClaims{RequestId: plan.GetRequestId(), SendId: "snd_record"}}
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	ctx.SetValue(requestStateKey, state)
+	ctx.ResetUpstreamLatency()
+	plugin.route(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}, state)
+	if len(state.order) != 150 || len(state.chain) != 150 {
+		t.Fatalf("order %d, chain %d entries; want 150", len(state.order), len(state.chain))
+	}
+	// Entries 1 and 4 are left out as route leaves out entries Bifrost does not have.
+	state.skipped = []skippedEntry{{index: 1, reason: "key_not_synced"}, {index: 4, reason: "provider_not_synced"}}
+	state.chain = slices.DeleteFunc(slices.Clone(state.chain), func(i int) bool { return i == 1 || i == 4 })
+
+	failures := []*schemas.BifrostError{
+		providerError(503, "server_error", "", "upstream unavailable"),
+		providerError(401, "invalid_request_error", "invalid_api_key", "Incorrect API key provided"),
+		providerError(400, "invalid_request_error", "context_length_exceeded", "This model's maximum context length is 8192 tokens"),
+	}
+	for attempt, err := range failures {
+		if got := runAttempt(t, plugin, ctx, attempt, err); got != err || got.AllowFallbacks != nil {
+			t.Fatalf("attempt %d: PostLLMHook handed back %+v, want the attempt's error as it was", attempt, got)
+		}
+	}
+	runAttempt(t, plugin, ctx, len(failures), nil)
+
+	record := writtenAttempts(t, plugin, ctx)
+	if record.GetRequestId() != plan.GetRequestId() || record.GetSendId() != "snd_record" {
+		t.Fatalf("request_id %q, send_id %q", record.GetRequestId(), record.GetSendId())
+	}
+	if len(record.GetOrder()) != len(state.order) {
+		t.Fatalf("order has %d entries, want %d", len(record.GetOrder()), len(state.order))
+	}
+	for i, e := range state.order {
+		want := &routingv1.DrawnCandidate{
+			ProviderId: e.provider.GetProviderId(), UpstreamId: e.upstream.GetUpstreamId(), Interface: e.upstream.GetInterface(), KeyId: e.key.GetKeyId(),
+			ProviderShare: e.providerShare, UpstreamShare: e.upstreamShare, KeyShare: e.keyShare,
+			BelowThreshold: e.belowThreshold, SameFormat: e.upstream.GetSameFormat(),
+		}
+		if got := record.GetOrder()[i]; !proto.Equal(got, want) {
+			t.Fatalf("order[%d] = %v, want %v", i, got, want)
+		}
+	}
+	belowThreshold, converted := 0, 0
+	for _, c := range record.GetOrder() {
+		if c.GetBelowThreshold() {
+			belowThreshold++
+		}
+		if !c.GetSameFormat() {
+			converted++
+		}
+	}
+	if belowThreshold == 0 || converted == 0 {
+		t.Fatalf("benchPlan's order has %d entries below a threshold and %d converted, want some of each", belowThreshold, converted)
+	}
+
+	type attemptWant struct {
+		index         int32
+		skip          string
+		status        int32
+		scope, class  string
+		code, message string
+	}
+	wants := []attemptWant{
+		{index: 0, status: 503, scope: scopeUpstream, class: classUpstream5xx, code: "server_error", message: "upstream unavailable"},
+		{index: 1, skip: "key_not_synced"},
+		{index: 2, status: 401, scope: scopeKey, class: classAuth, code: "invalid_api_key", message: "Incorrect API key provided"},
+		{index: 3, status: 400, scope: scopeRequest, code: "context_length_exceeded", message: "This model's maximum context length is 8192 tokens"},
+		{index: 4, skip: "provider_not_synced"},
+		{index: 5, status: 200},
+	}
+	if len(record.GetAttempts()) != len(wants) {
+		t.Fatalf("attempts = %v, want %d", record.GetAttempts(), len(wants))
+	}
+	var previousStart time.Time
+	for i, want := range wants {
+		a := record.GetAttempts()[i]
+		e := state.order[want.index]
+		if a.GetIndex() != want.index || a.GetProviderId() != e.provider.GetProviderId() || a.GetUpstreamId() != e.upstream.GetUpstreamId() ||
+			a.GetInterface() != e.upstream.GetInterface() || a.GetKeyId() != e.key.GetKeyId() || a.GetSameFormat() != e.upstream.GetSameFormat() {
+			t.Fatalf("attempts[%d] = %v, want order entry %d", i, a, want.index)
+		}
+		if a.GetSkipReason() != want.skip || a.GetStatusCode() != want.status || a.GetErrorScope() != want.scope || a.GetErrorClass() != want.class ||
+			a.GetUpstreamErrorCode() != want.code || a.GetUpstreamErrorMessage() != want.message {
+			t.Fatalf("attempts[%d] = %v, want %+v", i, a, want)
+		}
+		if want.skip != "" {
+			if a.GetStartedAt() != nil || a.GetDuration() != nil {
+				t.Fatalf("the skipped attempts[%d] has times: %v", i, a)
+			}
+			continue
+		}
+		started := a.GetStartedAt().AsTime()
+		if started.Before(previousStart) || a.GetDuration().AsDuration() < 0 || a.GetUpstreamDuration().AsDuration() != 0 {
+			t.Fatalf("attempts[%d] started %v (previous %v), took %v, upstream %v", i, started, previousStart, a.GetDuration().AsDuration(), a.GetUpstreamDuration().AsDuration())
+		}
+		previousStart = started
+	}
+
+	// The header is written: an attempt that ends after it changes nothing, and the record stays
+	// the one the header carried.
+	late := providerError(500, "server_error", "", "late")
+	if _, got, err := plugin.PostLLMHook(ctx, nil, late); err != nil || got != late || got.AllowFallbacks != nil {
+		t.Fatalf("PostLLMHook after the header = %+v, %v", got, err)
+	}
+	if again := writtenAttempts(t, plugin, ctx); !proto.Equal(again, record) {
+		t.Fatalf("the record changed after the header was written:\n%v\nwas\n%v", again, record)
+	}
+}
+
+// The time an attempt waited on the upstream is the part of the send's upstream time that
+// accrued between its PreLLMHook and its PostLLMHook.
+func TestRouteAttemptsUpstreamDuration(t *testing.T) {
+	plugin := testPlugin(t, map[string]string{"gw-2026-11": "gateway-secret"})
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	ctx.ResetUpstreamLatency()
+	state := routedState(t, plugin)
+	ctx.SetValue(requestStateKey, state)
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}
+	for attempt, upstream := range []time.Duration{40 * time.Millisecond, 25 * time.Millisecond} {
+		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, attempt)
+		if _, shortCircuit, err := plugin.PreLLMHook(ctx, req); shortCircuit != nil || err != nil {
+			t.Fatal(shortCircuit, err)
+		}
+		schemas.AddUpstreamLatency(ctx, upstream)
+		var failure *schemas.BifrostError
+		if attempt == 0 {
+			failure = providerError(500, "server_error", "", "boom")
+		}
+		if _, _, err := plugin.PostLLMHook(ctx, nil, failure); err != nil {
+			t.Fatal(err)
+		}
+	}
+	attempts := writtenAttempts(t, plugin, ctx).GetAttempts()
+	if len(attempts) != 2 || attempts[0].GetUpstreamDuration().AsDuration() != 40*time.Millisecond || attempts[1].GetUpstreamDuration().AsDuration() != 25*time.Millisecond {
+		t.Fatalf("attempts = %v, want 40ms and 25ms upstream", attempts)
+	}
+}
+
+// An upstream error whose code or message is not valid UTF-8 is recorded with each invalid run
+// replaced, so the record still encodes.
+func TestRouteAttemptsOfAnErrorNotInUTF8(t *testing.T) {
+	plugin := testPlugin(t, map[string]string{"gw-2026-11": "gateway-secret"})
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	ctx.SetValue(requestStateKey, routedState(t, plugin))
+	runAttempt(t, plugin, ctx, 0, providerError(500, "", "bad\xffcode", "bad \xff\xfe byte"))
+	a := writtenAttempts(t, plugin, ctx).GetAttempts()[0]
+	if a.GetUpstreamErrorCode() != "bad�code" || a.GetUpstreamErrorMessage() != "bad � byte" {
+		t.Fatalf("code %q, message %q", a.GetUpstreamErrorCode(), a.GetUpstreamErrorMessage())
+	}
+}
+
+// routing.stop_scopes stops the switching on an error of a listed scope, and on no other.
+func TestRouteAttemptsStopScopes(t *testing.T) {
+	plugin := testPlugin(t, map[string]string{"gw-2026-11": "gateway-secret"})
+	errorsByScope := map[string]func() *schemas.BifrostError{
+		scopeKey:      func() *schemas.BifrostError { return providerError(429, "rate_limit_error", "", "slow down") },
+		scopeUpstream: func() *schemas.BifrostError { return providerError(502, "", "", "bad gateway") },
+		scopeRequest: func() *schemas.BifrostError {
+			return providerError(400, "invalid_request_error", "context_length_exceeded", "too long")
+		},
+	}
+	for _, stopScopes := range [][]string{nil, {scopeRequest}, {scopeKey, scopeUpstream}, {scopeKey, scopeUpstream, scopeRequest}} {
+		for scope, newErr := range errorsByScope {
+			t.Run(fmt.Sprintf("stop_scopes %v, a %s error", stopScopes, scope), func(t *testing.T) {
+				plan := testPlan()
+				plan.StopScopes = stopScopes
+				state := &requestState{plan: plan}
+				ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+				plugin.route(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}, state)
+				ctx.SetValue(requestStateKey, state)
+				err := newErr()
+				got := runAttempt(t, plugin, ctx, 0, err)
+				stops := slices.Contains(stopScopes, scope)
+				switch {
+				case got != err:
+					t.Fatalf("PostLLMHook handed back another error: %+v", got)
+				case stops && (got.AllowFallbacks == nil || *got.AllowFallbacks):
+					t.Fatalf("AllowFallbacks = %v, want false", got.AllowFallbacks)
+				case !stops && got.AllowFallbacks != nil:
+					t.Fatalf("AllowFallbacks = %v, want it unset", *got.AllowFallbacks)
+				}
+				if a := writtenAttempts(t, plugin, ctx).GetAttempts()[0]; a.GetErrorScope() != scope {
+					t.Fatalf("recorded scope %q, want %q", a.GetErrorScope(), scope)
+				}
+			})
+		}
+	}
+}
+
+// A streamed attempt ends with its first chunk; its later chunks change nothing. A stream that
+// fails before the header is written, after events Bifrost held back, is recorded as broken; an
+// attempt that never reached PostLLMHook is recorded as one no response came back to.
+func TestRouteAttemptsOfStreams(t *testing.T) {
+	plugin := testPlugin(t, map[string]string{"gw-2026-11": "gateway-secret"})
+	newSend := func(t *testing.T) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+		ctx.SetValue(requestStateKey, routedState(t, plugin))
+		return ctx
+	}
+	chunk := &schemas.BifrostResponse{}
+
+	t.Run("later chunks", func(t *testing.T) {
+		ctx := newSend(t)
+		runAttempt(t, plugin, ctx, 0, nil)
+		state := ctx.Value(requestStateKey).(*requestState)
+		first := state.attempts[0]
+		time.Sleep(time.Millisecond)
+		for range 3 {
+			if got, gotErr, err := plugin.PostLLMHook(ctx, chunk, nil); got != chunk || gotErr != nil || err != nil {
+				t.Fatalf("PostLLMHook on a later chunk = %v, %+v, %v", got, gotErr, err)
+			}
+		}
+		if state.attempts[0] != first || len(state.attempts) != 1 {
+			t.Fatalf("a later chunk changed the record: %+v, was %+v", state.attempts, first)
+		}
+	})
+
+	t.Run("an error after the events held back", func(t *testing.T) {
+		ctx := newSend(t)
+		runAttempt(t, plugin, ctx, 0, nil)
+		if _, _, err := plugin.PostLLMHook(ctx, nil, providerError(500, "server_error", "", "response.failed")); err != nil {
+			t.Fatal(err)
+		}
+		runAttempt(t, plugin, ctx, 1, nil)
+		attempts := writtenAttempts(t, plugin, ctx).GetAttempts()
+		if len(attempts) != 2 || attempts[0].GetStatusCode() != 200 || attempts[0].GetErrorScope() != scopeUpstream || attempts[0].GetErrorClass() != classStreamBroken ||
+			attempts[1].GetStatusCode() != 200 || attempts[1].GetErrorScope() != "" {
+			t.Fatalf("attempts = %v", attempts)
+		}
+	})
+
+	t.Run("an attempt core never queued", func(t *testing.T) {
+		ctx := newSend(t)
+		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 0)
+		if _, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}); shortCircuit != nil || err != nil {
+			t.Fatal(shortCircuit, err)
+		}
+		runAttempt(t, plugin, ctx, 1, nil)
+		attempts := writtenAttempts(t, plugin, ctx).GetAttempts()
+		if len(attempts) != 2 || attempts[0].GetIndex() != 0 || attempts[0].GetStatusCode() != 0 || attempts[0].GetErrorScope() != scopeUpstream ||
+			attempts[0].GetErrorClass() != classTransport || attempts[1].GetIndex() != 1 || attempts[1].GetStatusCode() != 200 {
+			t.Fatalf("attempts = %v", attempts)
+		}
+	})
+
+	// The chunks of a stream reach PostLLMHook on the provider's goroutine while the transport
+	// writes the header (run with -race).
+	t.Run("chunks while the header is written", func(t *testing.T) {
+		ctx := newSend(t)
+		runAttempt(t, plugin, ctx, 0, nil)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for range 1000 {
+				plugin.PostLLMHook(ctx, chunk, nil)
+			}
+			plugin.PostLLMHook(ctx, nil, providerUtils.NewBifrostOperationError("Error reading stream: unexpected EOF", nil))
+		}()
+		attempts := writtenAttempts(t, plugin, ctx).GetAttempts()
+		<-done
+		if len(attempts) != 1 || attempts[0].GetStatusCode() != 200 {
+			t.Fatalf("attempts = %v", attempts)
+		}
+	})
+}
+
+// An entry of the chain core passes over without an attempt, before a later attempt, is written
+// as skipped, provider_not_synced; the entries after the last attempt, which core had no reason
+// to try, are not written.
+func TestRouteAttemptsOfEntriesCorePassedOver(t *testing.T) {
+	plugin := testPlugin(t, map[string]string{"gw-2026-11": "gateway-secret"})
+	ctx := sentState(t, plugin, benchPlan())
+	state := ctx.Value(requestStateKey).(*requestState)
+	// sentState tried chain positions 0 to 2; core passes over position 3 and answers on 4.
+	state.attempts = state.attempts[:2]
+	runAttempt(t, plugin, ctx, 4, nil)
+	attempts := writtenAttempts(t, plugin, ctx).GetAttempts()
+	var got []string
+	for _, a := range attempts {
+		got = append(got, fmt.Sprintf("%d %d %s", a.GetIndex(), a.GetStatusCode(), a.GetSkipReason()))
+	}
+	if want := []string{"0 500 ", "1 429 ", "2 0 provider_not_synced", "3 0 provider_not_synced", "4 200 "}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("attempts = %v, want %v", got, want)
+	}
+}
+
+// A send PreRequestHook never routed (its integration refused the body) is recorded with its
+// ids and nothing tried, also when the encoder it gets from the pool last encoded a larger send.
+func TestRouteAttemptsOfASendNeverRouted(t *testing.T) {
+	plugin := testPlugin(t, map[string]string{"gw-2026-11": "gateway-secret"})
+	larger := sentState(t, plugin, benchPlan())
+	if record := writtenAttempts(t, plugin, larger); len(record.GetOrder()) != 150 || len(record.GetAttempts()) != 3 {
+		t.Fatalf("the larger send's record has %d entries and %d attempts", len(record.GetOrder()), len(record.GetAttempts()))
+	}
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	ctx.SetValue(requestStateKey, &requestState{plan: testPlan(), claims: &routingv1.RoutePlanClaims{SendId: "snd_unrouted"}})
+	record := writtenAttempts(t, plugin, ctx)
+	if record.GetRequestId() != testRequestID || record.GetSendId() != "snd_unrouted" || len(record.GetOrder()) != 0 || len(record.GetAttempts()) != 0 {
+		t.Fatalf("record = %v", record)
+	}
+}
+
 // benchChatBody is a streamed chat completion body of about 1 KiB.
 var benchChatBody = []byte(`{"model":"caller/model","stream":true,"temperature":1,"messages":[{"role":"system","content":"` +
 	strings.Repeat("You are a helpful assistant. ", 24) + `"},{"role":"user","content":"` + strings.Repeat("hello ", 60) + `"}]}`)
@@ -1063,15 +1487,45 @@ func BenchmarkStreamChunkHook(b *testing.B) {
 	})
 }
 
-// BenchmarkPostLLMHook measures one attempt's post-hook: a fallback of a routed send, and a
-// request that carries no plan.
+// BenchmarkPostLLMHook measures one attempt's post-hook on a fallback of a routed send: the end of
+// an attempt that answers, of one that fails with a 500, and a later chunk of a streamed attempt
+// (every chunk of a stream runs the post-hook); and a request that carries no plan. A send's
+// state is set back to the one PreRequestHook leaves before each attempt that ends.
 func BenchmarkPostLLMHook(b *testing.B) {
 	plugin := testPlugin(b, map[string]string{"gw-2026-11": "gateway-secret"})
 	resp := &schemas.BifrostResponse{}
-	b.Run("with plan", func(b *testing.B) {
+	status, errorType := http.StatusInternalServerError, "server_error"
+	failure := &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Type: &errorType, Message: "upstream failed"}}
+	for _, tc := range []struct {
+		name string
+		resp *schemas.BifrostResponse
+		err  *schemas.BifrostError
+	}{
+		{"with plan, an attempt that answers", resp, nil},
+		{"with plan, an attempt that fails", nil, failure},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			routed := routedState(b, plugin)
+			state := &requestState{}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(requestStateKey, state)
+			ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				*state = requestState{plan: routed.plan, order: routed.order, chain: routed.chain}
+				if got, gotErr, err := plugin.PostLLMHook(ctx, tc.resp, tc.err); got != tc.resp || gotErr != tc.err || err != nil {
+					b.Fatalf("PostLLMHook = %v, %+v, %v", got, gotErr, err)
+				}
+			}
+		})
+	}
+	b.Run("with plan, a later chunk of a stream", func(b *testing.B) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 		ctx.SetValue(requestStateKey, routedState(b, plugin))
 		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, 1)
+		if _, _, err := plugin.PostLLMHook(ctx, resp, nil); err != nil {
+			b.Fatal(err)
+		}
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			if got, gotErr, err := plugin.PostLLMHook(ctx, resp, nil); got != resp || gotErr != nil || err != nil {
@@ -1087,6 +1541,62 @@ func BenchmarkPostLLMHook(b *testing.B) {
 				b.Fatalf("PostLLMHook = %v, %+v, %v", got, gotErr, err)
 			}
 		}
+	})
+}
+
+// sentState is a send of plan whose first three entries were tried through PreLLMHook and
+// PostLLMHook: the primary failed with a 500, the first fallback with a 429, and the second
+// fallback answered.
+func sentState(b testing.TB, plugin *Plugin, plan *routingv1.RoutePlan) *schemas.BifrostContext {
+	b.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	state := &requestState{plan: plan}
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{}}
+	plugin.route(ctx, req, state)
+	ctx.SetValue(requestStateKey, state)
+	serverError, throttled := http.StatusInternalServerError, http.StatusTooManyRequests
+	serverErrorType, throttledType := "server_error", "rate_limit_error"
+	for attempt, err := range []*schemas.BifrostError{
+		{StatusCode: &serverError, Error: &schemas.ErrorField{Type: &serverErrorType, Message: "upstream failed"}},
+		{StatusCode: &throttled, Error: &schemas.ErrorField{Type: &throttledType, Message: "too many requests"}},
+		nil,
+	} {
+		ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, attempt)
+		if _, shortCircuit, hookErr := plugin.PreLLMHook(ctx, req); shortCircuit != nil || hookErr != nil {
+			b.Fatalf("PreLLMHook = %+v, %v", shortCircuit, hookErr)
+		}
+		var resp *schemas.BifrostResponse
+		if err == nil {
+			resp = &schemas.BifrostResponse{}
+		}
+		if _, _, hookErr := plugin.PostLLMHook(ctx, resp, err); hookErr != nil {
+			b.Fatal(hookErr)
+		}
+	}
+	return ctx
+}
+
+// BenchmarkResponseHeadersHook measures writing the response headers of a send whose third entry
+// answered, on testPlan (three keys) and on benchPlan (150 keys, so 150 entries in the drawn
+// order), and of a request that carries no plan.
+func BenchmarkResponseHeadersHook(b *testing.B) {
+	plugin := testPlugin(b, map[string]string{"gw-2026-11": "gateway-secret"})
+	run := func(b *testing.B, ctx *schemas.BifrostContext) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			// The transport hands the hook pooled metadata, as here.
+			resp := schemas.AcquireHTTPResponseMetadata()
+			resp.StatusCode = http.StatusOK
+			if err := plugin.HTTPTransportResponseHeadersHook(ctx, nil, resp); err != nil {
+				b.Fatal(err)
+			}
+			schemas.ReleaseHTTPResponseMetadata(resp)
+		}
+	}
+	b.Run("with plan of three keys", func(b *testing.B) { run(b, sentState(b, plugin, testPlan())) })
+	b.Run("with plan of 150 keys", func(b *testing.B) { run(b, sentState(b, plugin, benchPlan())) })
+	b.Run("without plan", func(b *testing.B) {
+		run(b, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
 	})
 }
 

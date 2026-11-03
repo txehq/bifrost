@@ -13,7 +13,8 @@ import (
 )
 
 // requestStateKey carries a send's *requestState on the request context. The state is
-// bounded by the plan, which fits in one request header, and is released with the request.
+// bounded by the plan, which fits in one request header, and by the attempts made, at most one
+// per entry of the plan; it is released with the request.
 const requestStateKey schemas.BifrostContextKey = "tokun-route-request"
 
 // requestState is what the plugin keeps for one send.
@@ -40,6 +41,14 @@ type requestState struct {
 	dropUsage bool
 	// stripped lists the strip_params the latest attempt removed from the body.
 	stripped []string
+
+	// mu guards attempts and written: a stream's chunks reach PostLLMHook on the provider's
+	// goroutine while the transport writes the response headers on its own.
+	mu sync.Mutex
+	// attempts records each attempt begun, in the order core makes them (RouteAttempts.attempts).
+	attempts     []attemptRecord
+	firstAttempt [1]attemptRecord // the first record, so a send whose primary answers allocates none
+	written      bool             // tk-route-attempts is written; nothing is recorded after it
 }
 
 // capture records what every attempt of the send is rewritten from: the caller's body, and

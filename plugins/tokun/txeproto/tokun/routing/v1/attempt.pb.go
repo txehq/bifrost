@@ -26,9 +26,11 @@ const (
 // Value of the tk-route-attempts response header: the standard base64 (RFC
 // 4648 section 4, padded) of the serialized message.
 //
-// The plugin writes it in HTTPTransportPostHook; on a streaming response
-// before the first chunk, when every switch is already over (Bifrost switches
-// only before the first valid chunk). The gateway reads and removes it, writes
+// The plugin writes it in HTTPTransportResponseHeadersHook, which runs just
+// before the response headers are sent; HTTPTransportPostHook cannot change
+// the headers of a streaming response. A streaming response carries it before
+// the first chunk, when every switch is already over (Bifrost switches only
+// before the first valid chunk). The gateway reads and removes it, writes
 // it into the request outcome event (ClickHouse expands it into
 // tk_upstream_attempts), settles at the retail price of the provider model
 // that served, books cost per upstream and key, and updates the run signals.
@@ -104,9 +106,13 @@ func (x *RouteAttempts) GetAttempts() []*RouteAttempt {
 }
 
 // One {provider, upstream, key} entry of the drawn order, with the shares the
-// selection curve computed for it. The product of the three shares is the
-// probability this send drew the entry first, which offline evaluation uses
-// as the propensity.
+// selection curve computed for it. Each share is the probability that the
+// entry comes first in its layer and its group; in a layer ranked by score
+// the first has 1 and the others 0. In the group drawn first (the same-format
+// group, when the plan has one) the product of the three shares is the
+// probability that this send drew the entry as the primary, in the other
+// group the probability that it comes first in that group. Offline evaluation
+// uses it for importance weighting.
 type DrawnCandidate struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	ProviderId string                 `protobuf:"bytes,1,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"`
@@ -120,8 +126,9 @@ type DrawnCandidate struct {
 	UpstreamShare float64 `protobuf:"fixed64,6,opt,name=upstream_share,json=upstreamShare,proto3" json:"upstream_share,omitempty"`
 	// Share of the key among its upstream's keys.
 	KeyShare float64 `protobuf:"fixed64,7,opt,name=key_share,json=keyShare,proto3" json:"key_share,omitempty"`
-	// Scored below its layer's threshold: not drawn, ranked by score at the end
-	// of the layer's fallbacks.
+	// The provider scored below the plan's threshold or the upstream below its
+	// provider's upstream_threshold: not drawn, ranked by score at the end of
+	// that layer's fallbacks.
 	BelowThreshold bool `protobuf:"varint,8,opt,name=below_threshold,json=belowThreshold,proto3" json:"below_threshold,omitempty"`
 	// The interface uses the request's format: in the group drawn ahead of the
 	// converted candidates.
@@ -232,14 +239,18 @@ type RouteAttempt struct {
 	UpstreamId int64  `protobuf:"varint,3,opt,name=upstream_id,json=upstreamId,proto3" json:"upstream_id,omitempty"`
 	Interface  string `protobuf:"bytes,4,opt,name=interface,proto3" json:"interface,omitempty"`
 	KeyId      string `protobuf:"bytes,5,opt,name=key_id,json=keyId,proto3" json:"key_id,omitempty"`
-	// HTTP status of the upstream response; 0 when no response arrived.
+	// HTTP status of the upstream response, 200 for a stream that broke after
+	// its first chunk; 0 when no response arrived (a connection error, a
+	// timeout, a failure inside Bifrost, the caller cancelling).
 	StatusCode int32 `protobuf:"varint,7,opt,name=status_code,json=statusCode,proto3" json:"status_code,omitempty"`
 	// key (401, 403, 429), upstream (402, quota exhausted, 5xx, connection
 	// error, timeout) or request (invalid, over the context length, moderation
-	// refusal); empty on success.
+	// refusal); empty on success and on an attempt the caller cancelled.
 	ErrorScope string `protobuf:"bytes,8,opt,name=error_scope,json=errorScope,proto3" json:"error_scope,omitempty"`
 	// healthobs failure class: transport, upstream_5xx, upstream_4xx,
-	// throttled, auth, stream_broken, capability; empty on success.
+	// throttled, auth, stream_broken, capability; empty on success, on an
+	// attempt the caller cancelled, and on a request-scope error, which
+	// healthobs counts as a rejected request with no failure class.
 	ErrorClass string `protobuf:"bytes,9,opt,name=error_class,json=errorClass,proto3" json:"error_class,omitempty"`
 	// The upstream's error code and message as Bifrost received them. The
 	// gateway matches them to a capability key (capscore) and to a rejected
@@ -247,7 +258,8 @@ type RouteAttempt struct {
 	UpstreamErrorCode    string                 `protobuf:"bytes,10,opt,name=upstream_error_code,json=upstreamErrorCode,proto3" json:"upstream_error_code,omitempty"`
 	UpstreamErrorMessage string                 `protobuf:"bytes,11,opt,name=upstream_error_message,json=upstreamErrorMessage,proto3" json:"upstream_error_message,omitempty"`
 	StartedAt            *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
-	// From the start of the attempt to its end as the plugin saw it.
+	// From the start of the attempt to its end as the plugin saw it; for the
+	// streamed attempt that answers, to its first chunk.
 	Duration *durationpb.Duration `protobuf:"bytes,13,opt,name=duration,proto3" json:"duration,omitempty"`
 	// Time spent waiting on the upstream within the attempt.
 	UpstreamDuration *durationpb.Duration `protobuf:"bytes,14,opt,name=upstream_duration,json=upstreamDuration,proto3" json:"upstream_duration,omitempty"`
