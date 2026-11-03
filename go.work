@@ -16,6 +16,7 @@ use (
 	./plugins/routing
 	./plugins/semanticcache
 	./plugins/telemetry
+	./plugins/tokun/txeproto
 	./transports
 )
 
