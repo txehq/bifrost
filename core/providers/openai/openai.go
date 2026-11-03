@@ -4852,7 +4852,7 @@ func HandleOpenAIVideoEditRequest(
 		req.Header.Set(k, v)
 	}
 
-	reqBody, err := ToOpenAIVideoEditRequest(request)
+	reqBody, err := ToOpenAIVideoEditRequest(request, providerName)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to convert video edit request to openai format", err)
 	}

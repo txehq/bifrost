@@ -67,7 +67,9 @@ func ToOpenAIVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 // ToOpenAIVideoEditRequest converts a Bifrost video edit request to OpenAI format. OpenAI takes the
 // source video either as an uploaded file or as the ID of a completed video; a URL has no
 // equivalent on their API, so it is rejected rather than silently dropped — it is the sole input.
-func ToOpenAIVideoEditRequest(bifrostReq *schemas.BifrostVideoEditRequest) (*OpenAIVideoEditRequest, error) {
+// A referenced ID carries the suffix of the provider serving the edit (providerName: "openai", or
+// a custom provider's own name), which is stripped before it reaches the upstream.
+func ToOpenAIVideoEditRequest(bifrostReq *schemas.BifrostVideoEditRequest, providerName schemas.ModelProvider) (*OpenAIVideoEditRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil || bifrostReq.Input.Prompt == "" {
 		return nil, fmt.Errorf("bifrost request, input, or prompt is nil/empty")
 	}
@@ -82,7 +84,7 @@ func ToOpenAIVideoEditRequest(bifrostReq *schemas.BifrostVideoEditRequest) (*Ope
 	case len(source.Video) > 0:
 		req.Video.Bytes = source.Video
 	case source.ID != "":
-		req.Video.ID = providerUtils.StripVideoIDProviderSuffix(source.ID, schemas.OpenAI)
+		req.Video.ID = providerUtils.StripVideoIDProviderSuffix(source.ID, providerName)
 	case source.URL != "":
 		return nil, fmt.Errorf("openai video edit accepts an uploaded video or a video id, not a url")
 	default:

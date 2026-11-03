@@ -18,7 +18,7 @@ func TestToOpenAIVideoEditRequest_SourceForms(t *testing.T) {
 			Prompt: "warm backlight",
 			Video:  schemas.VideoInput{Video: []byte("\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")},
 		},
-	})
+	}, schemas.OpenAI)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestToOpenAIVideoEditRequest_SourceForms(t *testing.T) {
 			Prompt: "warm backlight",
 			Video:  schemas.VideoInput{ID: "video_abc123:openai"},
 		},
-	})
+	}, schemas.OpenAI)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -43,6 +43,20 @@ func TestToOpenAIVideoEditRequest_SourceForms(t *testing.T) {
 	}
 	if referenced.Model != "" {
 		t.Fatalf("model must stay empty so OpenAI infers it from the source video, got %q", referenced.Model)
+	}
+
+	// A custom provider on the OpenAI base stamps its own name onto the ID.
+	custom, err := ToOpenAIVideoEditRequest(&schemas.BifrostVideoEditRequest{
+		Input: &schemas.VideoEditInput{
+			Prompt: "warm backlight",
+			Video:  schemas.VideoInput{ID: "video_abc123:tkp_11"},
+		},
+	}, "tkp_11")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if custom.Video.ID != "video_abc123" {
+		t.Fatalf("video id = %q, want the custom provider's suffix stripped", custom.Video.ID)
 	}
 }
 
@@ -55,7 +69,7 @@ func TestToOpenAIVideoEditRequest_RejectsURL(t *testing.T) {
 			Prompt: "warm backlight",
 			Video:  schemas.VideoInput{URL: "https://example.com/clip.mp4"},
 		},
-	})
+	}, schemas.OpenAI)
 	if err == nil {
 		t.Fatal("expected an error for a url source")
 	}
@@ -68,13 +82,13 @@ func TestToOpenAIVideoEditRequest_RequiresPromptAndSource(t *testing.T) {
 	if _, err := ToOpenAIVideoEditRequest(&schemas.BifrostVideoEditRequest{
 		Model: "sora-2-pro",
 		Input: &schemas.VideoEditInput{Video: schemas.VideoInput{ID: "video_abc123"}},
-	}); err == nil {
+	}, schemas.OpenAI); err == nil {
 		t.Fatal("expected an error when prompt is missing")
 	}
 	if _, err := ToOpenAIVideoEditRequest(&schemas.BifrostVideoEditRequest{
 		Model: "sora-2-pro",
 		Input: &schemas.VideoEditInput{Prompt: "warm backlight"},
-	}); err == nil {
+	}, schemas.OpenAI); err == nil {
 		t.Fatal("expected an error when the source video is missing")
 	}
 }
