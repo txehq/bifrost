@@ -1568,8 +1568,10 @@ func ToBedrockInvokeImagesResponse(ctx *schemas.BifrostContext, resp *schemas.Bi
 		return nil, fmt.Errorf("bifrost response is nil")
 	}
 
-	// If the provider stored the raw Bedrock response, return it verbatim (preserves seeds, finish_reasons, etc.)
-	if resp.ExtraFields.RawResponse != nil {
+	// A Bedrock provider's raw response is returned verbatim (preserves seeds, finish_reasons,
+	// etc.); another provider's raw response is that provider's shape, so its images are
+	// reconstructed below. Custom providers report their own name, so match on the base type.
+	if resp.ExtraFields.RawResponse != nil && schemas.ResolveBaseProvider(ctx, resp.ExtraFields.Provider) == schemas.Bedrock {
 		return resp.ExtraFields.RawResponse, nil
 	}
 

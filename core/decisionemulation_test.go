@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"reflect"
 	"strings"
@@ -395,6 +396,30 @@ func TestEmulateDecisionCarriesServedTier(t *testing.T) {
 	}
 	if decision.ServiceTier == nil || *decision.ServiceTier != priority || decision.Speed == nil || *decision.Speed != fast || decision.InferenceGeo == nil || *decision.InferenceGeo != us {
 		t.Fatalf("served tier not carried: tier=%v speed=%v geo=%v", decision.ServiceTier, decision.Speed, decision.InferenceGeo)
+	}
+}
+
+// TestEmulateDecisionKeepsTheResponsesRawResponse pins that the Responses call's raw body
+// stays with the decision, for a caller billing on the upstream's own usage, marked as the
+// Responses API's so no integration relays it as a decision.
+func TestEmulateDecisionKeepsTheResponsesRawResponse(t *testing.T) {
+	resp := emulationFunctionCallResponse(`{
+		"approve":  {"value": 0.9, "confidence": 0.8},
+		"category": {"choice": "billing", "confidence": 0.7, "probabilities": {"billing": 0.7, "bug": 0.1, "support": 0.1, "other": 0.1}},
+		"urgency":  {"value": 2, "confidence": 0.6, "probabilities": {"0": 0.1, "1": 0.1, "2": 0.8}}
+	}`)
+	raw := json.RawMessage(`{"object":"response","usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":4},"output_tokens":2}}`)
+	resp.ExtraFields.RawResponse = raw
+	var b Bifrost
+	decision, bifrostErr := b.emulateDecisionViaResponses(nil, &decisionEmulationProvider{response: resp}, schemas.Key{}, structuredDecisionRequest())
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr)
+	}
+	if got, _ := decision.ExtraFields.RawResponse.(json.RawMessage); string(got) != string(raw) {
+		t.Fatalf("raw response = %#v", decision.ExtraFields.RawResponse)
+	}
+	if decision.ExtraFields.ConvertedRequestType != schemas.ResponsesRequest {
+		t.Fatalf("converted request type = %q", decision.ExtraFields.ConvertedRequestType)
 	}
 }
 

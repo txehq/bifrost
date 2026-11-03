@@ -329,6 +329,7 @@ func applyBifrostResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 		}
 	}
 	ForwardProviderResponseHeaders(ctx, extra.ProviderResponseHeaders)
+	keepRawResponse(ctx, bifrostCtx, extra)
 	if extra.Provider != "" {
 		ctx.Response.Header.Set(HeaderBifrostProvider, string(extra.Provider))
 	}

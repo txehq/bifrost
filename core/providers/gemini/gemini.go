@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -2271,7 +2272,18 @@ func (provider *GeminiProvider) ImageGenerationStream(ctx *schemas.BifrostContex
 		defer stopCancellation()
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
-		send := func(chunk *schemas.BifrostImageGenerationStreamResponse) {
+		sendBackRaw := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+		// A chunk's raw response is every upstream event it stands for, in order: the events
+		// before the first image go with the first image, the events between two images with
+		// the earlier one, and the events after the last image, which carry the request's
+		// usage, with the last. One event is attached as itself, several as a JSON array.
+		var heldRaw, beforeFirst []string
+		send := func(chunk *schemas.BifrostImageGenerationStreamResponse, raw []string) {
+			if sendBackRaw && len(raw) == 1 {
+				chunk.ExtraFields.RawResponse = raw[0]
+			} else if sendBackRaw && len(raw) > 1 {
+				chunk.ExtraFields.RawResponse = json.RawMessage("[" + strings.Join(raw, ",") + "]")
+			}
 			providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
 				providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, chunk), responseChan, postHookSpanFinalizer)
 		}
@@ -2310,6 +2322,7 @@ func (provider *GeminiProvider) ImageGenerationStream(ctx *schemas.BifrostContex
 			if geminiResponse.UsageMetadata != nil {
 				usage = geminiResponse.UsageMetadata
 			}
+			attached := false
 			for _, candidate := range geminiResponse.Candidates {
 				if candidate == nil || candidate.Content == nil {
 					continue
@@ -2319,19 +2332,28 @@ func (provider *GeminiProvider) ImageGenerationStream(ctx *schemas.BifrostContex
 						continue
 					}
 					if held != nil {
-						send(held)
+						send(held, heldRaw)
 					}
 					held = &schemas.BifrostImageGenerationStreamResponse{
 						ID: geminiResponse.ResponseID, Type: schemas.ImageGenerationEventTypeCompleted, Index: images,
 						B64JSON: part.InlineData.Data, OutputFormat: convertMimeTypeToExtension(part.InlineData.MIMEType),
 						ExtraFields: schemas.BifrostResponseExtraFields{ChunkIndex: images, Latency: time.Since(lastChunkTime).Milliseconds()},
 					}
-					if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-						held.ExtraFields.RawResponse = string(data)
+					heldRaw = nil
+					if !attached {
+						heldRaw = append(beforeFirst, string(data))
+						beforeFirst, attached = nil, true
 					}
 					lastChunkTime = time.Now()
 					images++
 				}
+			}
+			switch {
+			case attached:
+			case held != nil:
+				heldRaw = append(heldRaw, string(data))
+			default:
+				beforeFirst = append(beforeFirst, string(data))
 			}
 		}
 		if held == nil {
@@ -2347,7 +2369,7 @@ func (provider *GeminiProvider) ImageGenerationStream(ctx *schemas.BifrostContex
 			providerUtils.ParseAndSetRawRequest(&held.ExtraFields, jsonBody)
 		}
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-		send(held)
+		send(held, heldRaw)
 	}()
 	return responseChan, nil
 }

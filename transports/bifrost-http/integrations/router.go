@@ -2998,6 +2998,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 
 	// Read here for the same reason: in headers mode every chunk drops extra_fields.
 	stripExtraFields := lib.ExtraFieldsInHeaders(ctx)
+	rawRequested := lib.RawResponseRequested(bifrostCtx)
 
 	// Get stream chunk interceptor for plugin hooks
 	interceptor := g.handlerStore.GetStreamChunkInterceptor()
@@ -3313,6 +3314,14 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				writeStart := time.Now()
 				var buf []byte
 				var sent bool
+				// A caller that asked for the raw response gets each event's under its
+				// extra_fields; a pre-formatted SSE string is left as it is.
+				attachRaw := func(event []byte) []byte {
+					if !rawRequested {
+						return event
+					}
+					return lib.AttachRawResponse(event, streamChunkRawResponse(chunk))
+				}
 				if sseString, ok := convertedResponse.(string); ok {
 					if strings.HasPrefix(sseString, "data: ") || strings.HasPrefix(sseString, "event: ") {
 						// Pre-formatted SSE string (e.g. Anthropic custom event types)
@@ -3328,7 +3337,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 							sent = reader.Send([]byte(sseString))
 						}
 					} else {
-						sent = reader.SendEvent(eventType, []byte(sseString))
+						sent = reader.SendEvent(eventType, attachRaw([]byte(sseString)))
 					}
 				} else {
 					responseJSON, err := sonic.Marshal(convertedResponse)
@@ -3339,7 +3348,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					if stripExtraFields {
 						responseJSON = lib.StripExtraFields(responseJSON)
 					}
-					sent = reader.SendEvent(eventType, responseJSON)
+					sent = reader.SendEvent(eventType, attachRaw(responseJSON))
 				}
 
 				if !sent {

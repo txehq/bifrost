@@ -442,6 +442,16 @@ func TestOpenAIDecisionsRouteResponses(t *testing.T) {
 	if out, err := route.DecisionResponseConverter(customCtx, served); err != nil || string(out.(json.RawMessage)) != string(raw) {
 		t.Errorf("custom OpenAI provider's raw response not relayed when asked for: %#v (%v)", out, err)
 	}
+	// An emulated decision keeps the Responses call's raw body for the caller's billing, and
+	// the client still gets the decision.
+	emulated := *served
+	emulated.ExtraFields.RawResponse = json.RawMessage(`{"object":"response","output":[{"type":"function_call","name":"emit_decision"}]}`)
+	emulated.ExtraFields.ConvertedRequestType = schemas.ResponsesRequest
+	if out, err := route.DecisionResponseConverter(customCtx, &emulated); err != nil {
+		t.Fatalf("emulated: %v", err)
+	} else if _, relayed := out.(json.RawMessage); relayed {
+		t.Errorf("an emulated decision relayed the Responses body: %s", out)
+	}
 
 	stateTokens, answerConfidence := 13, 0.97
 	laya := &schemas.BifrostDecisionResponse{

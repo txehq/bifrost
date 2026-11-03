@@ -58,6 +58,29 @@ func newBifrostError(err error, message string) *schemas.BifrostError {
 	}
 }
 
+// streamChunkRawResponse is the upstream's raw event behind a stream chunk, nil when it was
+// not captured.
+func streamChunkRawResponse(chunk *schemas.BifrostStreamChunk) interface{} {
+	if chunk == nil {
+		return nil
+	}
+	switch {
+	case chunk.BifrostTextCompletionResponse != nil:
+		return chunk.BifrostTextCompletionResponse.ExtraFields.RawResponse
+	case chunk.BifrostChatResponse != nil:
+		return chunk.BifrostChatResponse.ExtraFields.RawResponse
+	case chunk.BifrostResponsesStreamResponse != nil:
+		return chunk.BifrostResponsesStreamResponse.ExtraFields.RawResponse
+	case chunk.BifrostSpeechStreamResponse != nil:
+		return chunk.BifrostSpeechStreamResponse.ExtraFields.RawResponse
+	case chunk.BifrostTranscriptionStreamResponse != nil:
+		return chunk.BifrostTranscriptionStreamResponse.ExtraFields.RawResponse
+	case chunk.BifrostImageGenerationStreamResponse != nil:
+		return chunk.BifrostImageGenerationStreamResponse.ExtraFields.RawResponse
+	}
+	return nil
+}
+
 // safeGetRequestType safely obtains the request type from a BifrostStreamChunk chunk.
 // It checks multiple sources in order of preference:
 // 1. Response ExtraFields if any response is available
@@ -241,7 +264,9 @@ func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *schema
 		return
 	}
 
-	ctx.SetBody(lib.StripExtraFieldsIfInHeaders(ctx, responseBody))
+	// The raw response a caller asked for is attached after the headers-mode strip, which
+	// would otherwise remove it.
+	ctx.SetBody(lib.AttachKeptRawResponse(ctx, lib.StripExtraFieldsIfInHeaders(ctx, responseBody)))
 }
 
 // tryStreamLargeResponse checks if large response mode was activated by the provider,

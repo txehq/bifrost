@@ -1097,8 +1097,10 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				// As on the other OpenAI routes, the upstream body is relayed only
 				// when raw responses were asked for; otherwise the normalized
 				// response, as plugins left it, is rendered. Custom providers report
-				// their own name, so match on the base provider that served it.
-				if schemas.ResolveBaseProvider(ctx, resp.ExtraFields.Provider) == schemas.OpenAI && resp.ExtraFields.RawResponse != nil {
+				// their own name, so match on the base provider that served it. An
+				// emulated decision's raw body is the Responses call's, never relayed.
+				if schemas.ResolveBaseProvider(ctx, resp.ExtraFields.Provider) == schemas.OpenAI && resp.ExtraFields.RawResponse != nil &&
+					resp.ExtraFields.ConvertedRequestType == "" && !resp.ExtraFields.RawResponseIsNotWire {
 					return resp.ExtraFields.RawResponse, nil
 				}
 				return openai.ToOpenAIDecisionResponse(resp), nil

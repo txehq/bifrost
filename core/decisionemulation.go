@@ -124,6 +124,11 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 		}
 		decision.ExtraFields.ResolvedModelUsed = resp.Model
 		decision.ExtraFields.Latency = resp.ExtraFields.Latency
+		// The upstream's own answer is the Responses call's, kept when the caller asked
+		// for raw responses. It is the Responses API's shape, so an integration serializes
+		// the decision and never relays these bytes as one.
+		decision.ExtraFields.RawResponse = resp.ExtraFields.RawResponse
+		decision.ExtraFields.ConvertedRequestType = schemas.ResponsesRequest
 		if resp.Usage != nil {
 			decision.Usage = resp.Usage.ToBifrostLLMUsage()
 		}
