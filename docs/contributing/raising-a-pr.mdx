@@ -4,6 +4,19 @@ description: "Guidelines for submitting high-quality pull requests to Bifrost."
 icon: "code-pull-request"
 ---
 
+## New Tokun
+
+The Tokun rebuild of txe (`txehq/txe`) is developed on this fork's `new-tokun` branch, and a
+change there is merged without a pull request: rebased onto `origin/new-tokun`, it passes the
+local tests (the Go tests of the modules it touches, `tools/todocheck`, and txe's end-to-end
+environment running it through `up --bifrost-src`, or txe's `merge-check --bifrost-src` when it
+goes with a txe change), then goes in with `git merge --ff-only` and a push. What a later batch
+fills in is written as a placeholder: a Chinese `TODO(tokun-B<n>)` comment line, the stage line
+under it, and stand-in code, checked by `tools/todocheck` against the closed batches in `BATCHES`.
+The rules and an example are in the New Tokun section of the repository's
+[`AGENTS.md`](https://github.com/txehq/bifrost/blob/new-tokun/AGENTS.md#new-tokun); the batches
+and items are in txe's plan, `~/Projects/Obsidian/TXE/Project Tokun/Specs/Tokun 实施计划.md`.
+
 ## Before You Start
 
 1. **Create an issue first** (if one doesn't exist) - Discuss the change with the maintainers

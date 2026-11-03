@@ -159,6 +159,8 @@ func TestCommentForms(t *testing.T) {
 		{"tokun/BATCHES", "B1\n", nil},
 		{"AGENTS.md", "", nil},
 		{"a/x.json", "", nil},
+		{"web/index.html", "", nil},
+		{"a/build.gradle.kts", "", nil},
 	}
 	for _, c := range cases {
 		if got := commentForms(c.name, []byte(c.src)); !reflect.DeepEqual(got, c.want) {
@@ -276,6 +278,40 @@ func TestRunReportsEveryProblemWithItsPosition(t *testing.T) {
 		"tokun/internal/a/a.go:4: B2 is closed in tokun/BATCHES",
 		"tokun/internal/a/bad.go:4: the line under the placeholder TODO must be its stage line",
 		"todocheck: 3 problem(s)",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("stderr:\n%s\nwant %d lines", stderr, len(want))
+	}
+	for i := range want {
+		if !strings.HasPrefix(lines[i], want[i]) {
+			t.Errorf("line %d = %q, want prefix %q", i, lines[i], want[i])
+		}
+	}
+}
+
+func TestRunReportsMarkersInFilesOfUnknownSyntax(t *testing.T) {
+	dir := repo(t, map[string]string{
+		"tokun/BATCHES":      "",
+		"web/index.html":     "<html>\n<!-- TODO(tokun-B2): 补上 -->\n<!-- 阶段：B1 放入；B2-A1 完成时删除 -->\n</html>\n",
+		"a/build.gradle.kts": "// TODO(tokun-B3): 补上\n// 阶段：B1 放入；B3-1 完成时删除\n",
+		"a/x.lua":            "local x = 1\n-- todo(tokun-b2) misspelt\n",
+		"a/notes":            "plain text\nTODO(tokun-B4): 补上\n",
+		// Markdown documents are not read, and a stage prefix alone is not a marker.
+		"docs/x.mdx":        "```go\n// TODO(tokun-B2): 例子\n```\n",
+		"docs/README.MD":    "TODO(tokun-B2)\n",
+		"web/messages.json": "{\"stage\": \"阶段：一\"}\n",
+	})
+	code, stdout, stderr := runIn(dir, "tokun/BATCHES")
+	if code != 1 {
+		t.Fatalf("exit %d, want 1; stdout %q stderr:\n%s", code, stdout, stderr)
+	}
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	want := []string{
+		"a/build.gradle.kts:1: a placeholder marker in a .kts file, whose comment syntax todocheck does not know",
+		"a/notes:2: a placeholder marker in notes, a file with no extension and no shebang, whose comment syntax todocheck does not know",
+		"a/x.lua:2: a placeholder marker in a .lua file, whose comment syntax todocheck does not know",
+		"web/index.html:2: a placeholder marker in a .html file, whose comment syntax todocheck does not know",
+		"todocheck: 4 problem(s)",
 	}
 	if len(lines) != len(want) {
 		t.Fatalf("stderr:\n%s\nwant %d lines", stderr, len(want))

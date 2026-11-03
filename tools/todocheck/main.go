@@ -15,6 +15,10 @@
 //
 // A misspelt marker (another case, a missing dash or colon, a trailing comment)
 // is reported, never skipped, and so is a stage line with no TODO above it.
+// A Markdown document (.md, .mdx) is not read: a marker there is an example in
+// prose. Any other file whose comment syntax this program does not know is
+// reported on every line that carries the marker, in any spelling, so no
+// placeholder escapes both checks by being in a file type nobody listed.
 //
 // The same program lives in txe (cmd/tools/todocheck, the source) and in the
 // Bifrost fork (tools/todocheck, a copy); change both together.
@@ -97,9 +101,16 @@ var hashNames = map[string]bool{
 	".gitignore": true, ".bazelrc": true, "CODEOWNERS": true,
 }
 
+// markdownExts are the documents that are not read.
+var markdownExts = map[string]bool{".md": true, ".mdx": true}
+
+func isMarkdown(name string) bool {
+	return markdownExts[strings.ToLower(path.Ext(name))]
+}
+
 // commentForms is how the file at name writes comments: by its name, its
-// extension, or a shebang on a file without one. Nil means a document or data,
-// which is not read.
+// extension, or a shebang on a file without one. Nil means a syntax this
+// program does not know.
 func commentForms(name string, data []byte) []form {
 	base := path.Base(name)
 	if hashNames[base] {
@@ -300,6 +311,29 @@ func checkFile(name string, data []byte, forms []form, closed map[int]bool, batc
 	return problems
 }
 
+// unknownSyntax reports every line of a file whose comment syntax is not known
+// that carries the marker in any spelling: such a placeholder could be checked
+// neither for its stage line nor against the closed batches.
+func unknownSyntax(name string, data []byte) []problem {
+	if !markerRe.Match(data) {
+		return nil
+	}
+	kind := "a " + path.Ext(name) + " file,"
+	if path.Ext(name) == "" {
+		kind = path.Base(name) + ", a file with no extension and no shebang,"
+	}
+	var problems []problem
+	for i, line := range strings.Split(string(data), "\n") {
+		if markerRe.MatchString(line) {
+			problems = append(problems, problem{name, i + 1, fmt.Sprintf(
+				"a placeholder marker in %s whose comment syntax todocheck does not know, so the placeholder cannot be checked; "+
+					"put it in a file whose comments todocheck reads, or add the file type to formsByExt in todocheck "+
+					"(txe's cmd/tools/todocheck and the Bifrost fork's tools/todocheck) and to txe's .github/scripts/check-english.py", kind)})
+		}
+	}
+	return problems
+}
+
 // trackedFiles is every file git tracks under root, and every untracked file it
 // does not ignore, so a placeholder is checked before it is committed.
 func trackedFiles(root string) ([]string, error) {
@@ -391,8 +425,12 @@ func run(root, batchesFile string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "todocheck: %v\n", err)
 			return 2
 		}
+		if isMarkdown(name) {
+			continue
+		}
 		forms := commentForms(name, data)
 		if forms == nil {
+			problems = append(problems, unknownSyntax(name, data)...)
 			continue
 		}
 		problems = append(problems, checkFile(name, data, forms, closed, batchesFile, counts)...)
