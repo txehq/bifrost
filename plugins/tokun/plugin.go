@@ -95,7 +95,7 @@ func (p *Plugin) HTTPTransportPreAuthHook(ctx *schemas.BifrostContext, req *sche
 	for _, name := range callerRoutingHeaders {
 		req.DeleteHeader(name)
 	}
-	ctx.SetValue(requestStateKey, &requestState{plan: verified.plan, claims: verified.claims})
+	ctx.SetValue(requestStateKey, &requestState{plan: verified.plan, claims: verified.claims, route: req.Route})
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, verified.claims.GetSendId())
 	ctx.SetValue(schemas.BifrostContextKeySessionAffinity, false)
 	// Each attempt decides whether the caller's body goes out as it is (rewriteAttempt), so the
@@ -162,10 +162,11 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 	return nil
 }
 
-// PreLLMHook runs before each attempt. It fails a send whose plan was never applied to the
-// request or none of whose entries is on this Bifrost, and an attempt whose index is not one of
-// the entries sent; otherwise it records the attempt's start and rewrites the request for the
-// attempt's entry, failing an attempt whose request cannot be rewritten.
+// PreLLMHook runs before each attempt. It answers a count_tokens request none of whose entries
+// counts tokens with the local count; it fails a send whose plan was never applied to the
+// request or none of whose entries can be sent from this Bifrost, and an attempt whose index is
+// not one of the entries sent; otherwise it records the attempt's start and rewrites the request
+// for the attempt's entry, failing an attempt whose request cannot be rewritten.
 func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	state, ok := ctx.Value(requestStateKey).(*requestState)
 	if !ok {
@@ -173,6 +174,13 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 	}
 	if state.order == nil {
 		return req, &schemas.LLMPluginShortCircuit{Error: notAppliedError()}, nil
+	}
+	if state.estimate {
+		count, fault := estimateTokens(state)
+		if fault != nil {
+			return req, &schemas.LLMPluginShortCircuit{Error: fault}, nil
+		}
+		return req, &schemas.LLMPluginShortCircuit{Response: &schemas.BifrostResponse{CountTokensResponse: count}}, nil
 	}
 	if len(state.chain) == 0 {
 		return req, &schemas.LLMPluginShortCircuit{Error: unroutableError()}, nil
@@ -190,8 +198,13 @@ func (p *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostReq
 }
 
 // PostLLMHook runs after each attempt, and on each chunk of a streamed one, and records how the
-// attempt ended (recordAttempt). A send PreLLMHook failed before any attempt passes through as
-// it is.
+// attempt ended (recordAttempt). A send PreLLMHook answered or failed before any attempt passes
+// through as it is.
+//
+// A Responses stream sent as a chat completion stream reaches the post hooks as Responses
+// events, which the provider makes from the chat chunks it reads. A chat chunk is from a provider
+// that does not make them: the attempt fails, before its first chunk reaches the caller, and core
+// moves to the next entry.
 func (p *Plugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
 	state, ok := ctx.Value(requestStateKey).(*requestState)
 	if !ok || len(state.chain) == 0 {
@@ -201,7 +214,26 @@ func (p *Plugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostR
 	if fault != nil {
 		return nil, fault, nil
 	}
+	if resp != nil && resp.ChatResponse != nil && state.requestType == schemas.ResponsesStreamRequest {
+		resp, bifrostErr = nil, unconvertedStreamError(resp.ChatResponse.ExtraFields.Provider)
+	}
 	return resp, p.recordAttempt(ctx, state, attempt, resp, bifrostErr), nil
+}
+
+// unconvertedStreamError fails an attempt of a Responses stream sent as a chat completion
+// stream whose provider streamed chat chunks: Bifrost cannot answer the caller in its format
+// from this provider. Any other entry may answer, so the send falls back.
+func unconvertedStreamError(provider schemas.ModelProvider) *schemas.BifrostError {
+	status, errorType := http.StatusBadGateway, "tokun_attempt_stream_unconverted"
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &status,
+		Type:           &errorType,
+		Error: &schemas.ErrorField{
+			Type:    &errorType,
+			Message: fmt.Sprintf("provider %s streamed chat completion chunks for a Responses request sent as a chat completion, which Bifrost cannot answer as Responses events", provider),
+		},
+	}
 }
 
 // attemptIndex returns the position in state.chain of the attempt the hook runs for.
@@ -227,11 +259,13 @@ func attemptIndex(ctx *schemas.BifrostContext, state *requestState) (int, *schem
 	return attempt, nil
 }
 
-// unroutableError fails a send whose plan has no entry this Bifrost can send. Nothing is
-// tried, so there is nothing to fall back to.
+// unroutableError fails a send whose plan has no entry this Bifrost can send: none has the
+// request's operation in a type Bifrost can send the request as and is on this Bifrost (the
+// skip_reason of each is in tk-route-attempts). Nothing is tried, so there is nothing to fall
+// back to.
 func unroutableError() *schemas.BifrostError {
 	return sendError(http.StatusServiceUnavailable, "tokun_route_plan_unroutable",
-		"no provider entry or key of the route plan is on this Bifrost")
+		"no entry of the route plan can be sent from this Bifrost")
 }
 
 // notAppliedError fails a send that reached an attempt without PreRequestHook applying its plan:

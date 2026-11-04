@@ -1690,6 +1690,17 @@ func HandleOpenAIChatCompletionStreaming(
 					if response.Usage.Cost != nil {
 						usage.Cost = response.Usage.Cost
 					}
+					// The rest of the chat usage reaches the Responses usage too: server-side
+					// tool calls, duration-based audio and xAI's cost.
+					if response.Usage.ToolUsage != nil {
+						usage.ToolUsage = response.Usage.ToolUsage
+					}
+					if response.Usage.AudioSeconds != nil {
+						usage.AudioSeconds = response.Usage.AudioSeconds
+					}
+					if response.Usage.CostInUsdTicks != nil {
+						usage.CostInUsdTicks = response.Usage.CostInUsdTicks
+					}
 				}
 
 				// Per-event mapping (chat->responses) -> "convertor" (Convertor) stream phase.

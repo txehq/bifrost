@@ -1122,6 +1122,7 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 		InputTokens:    cu.PromptTokens,
 		OutputTokens:   cu.CompletionTokens,
 		TotalTokens:    cu.TotalTokens,
+		AudioSeconds:   cu.AudioSeconds,
 		Cost:           cu.Cost,
 		CostInUsdTicks: cu.CostInUsdTicks,
 	}
@@ -1136,16 +1137,24 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			CachedWriteTokenDetails: cu.PromptTokensDetails.CachedWriteTokenDetails,
 		}
 	}
-	if cu.CompletionTokensDetails != nil {
-		usage.OutputTokensDetails = &ResponsesResponseOutputTokens{
-			TextTokens:               cu.CompletionTokensDetails.TextTokens,
-			AcceptedPredictionTokens: cu.CompletionTokensDetails.AcceptedPredictionTokens,
-			AudioTokens:              cu.CompletionTokensDetails.AudioTokens,
-			ReasoningTokens:          cu.CompletionTokensDetails.ReasoningTokens,
-			RejectedPredictionTokens: cu.CompletionTokensDetails.RejectedPredictionTokens,
-			CitationTokens:           cu.CompletionTokensDetails.CitationTokens,
-			NumSearchQueries:         cu.CompletionTokensDetails.NumSearchQueries,
+	// A top-level reasoning_tokens (SGLang's spelling) that NormalizeReasoningTokens has not
+	// folded yet counts as the reasoning tokens of the details.
+	if cu.CompletionTokensDetails != nil || cu.ReasoningTokens != 0 {
+		details := &ResponsesResponseOutputTokens{}
+		if d := cu.CompletionTokensDetails; d != nil {
+			details.TextTokens = d.TextTokens
+			details.AcceptedPredictionTokens = d.AcceptedPredictionTokens
+			details.AudioTokens = d.AudioTokens
+			details.ImageTokens = d.ImageTokens
+			details.ReasoningTokens = d.ReasoningTokens
+			details.RejectedPredictionTokens = d.RejectedPredictionTokens
+			details.CitationTokens = d.CitationTokens
+			details.NumSearchQueries = d.NumSearchQueries
 		}
+		if details.ReasoningTokens == 0 {
+			details.ReasoningTokens = cu.ReasoningTokens
+		}
+		usage.OutputTokensDetails = details
 	}
 	usage.ToolUsage = cu.ToolUsage.DeepCopy()
 	usage.BillingTurns = cu.BillingTurns
@@ -1162,6 +1171,7 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 		PromptTokens:     ru.InputTokens,
 		CompletionTokens: ru.OutputTokens,
 		TotalTokens:      ru.TotalTokens,
+		AudioSeconds:     ru.AudioSeconds,
 		Cost:             ru.Cost,
 		CostInUsdTicks:   ru.CostInUsdTicks,
 	}

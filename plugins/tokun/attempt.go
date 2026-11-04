@@ -157,9 +157,17 @@ const (
 	scopeRequest  = "request"
 )
 
-// skipProviderNotSynced is the skip_reason of an entry whose provider entry is not on this
-// Bifrost (RouteAttempt.skip_reason).
-const skipProviderNotSynced = "provider_not_synced"
+// The skip_reasons of the entries the plugin does not send (RouteAttempt.skip_reason).
+const (
+	// skipProviderNotSynced: the entry's provider entry is not on this Bifrost.
+	skipProviderNotSynced = "provider_not_synced"
+	// skipOperationNotOffered: the entry's interface has no operation for the request (its
+	// request_type is empty).
+	skipOperationNotOffered = "operation_not_offered"
+	// skipRequestTypeUnconvertible: Bifrost cannot send the request as the entry's
+	// request_type, or an entry in the request's format names another type.
+	skipRequestTypeUnconvertible = "request_type_unconvertible"
+)
 
 // The healthobs failure classes of RouteAttempt.error_class.
 const (

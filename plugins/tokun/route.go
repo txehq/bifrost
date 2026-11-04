@@ -21,12 +21,22 @@ const requestStateKey schemas.BifrostContextKey = "tokun-route-request"
 type requestState struct {
 	plan   *routingv1.RoutePlan
 	claims *routingv1.RoutePlanClaims
+	// route is the route template the request matched (HTTPRequest.Route).
+	route string
+	// requestType is the request's own type, as the integration parsed it.
+	requestType schemas.RequestType
 	// order is the drawn order of every {provider, upstream, key} in the plan
 	// (RouteAttempts.order).
 	order []entry
 	// chain is Bifrost's attempt chain as indexes into order: chain[0] is the primary and
 	// chain[i] the entry of fallback i, so BifrostContextKeyFallbackIndex indexes chain.
 	chain []int
+	// routed is the request type each attempt of the chain is sent as, its entry's
+	// request_type, also on the context (BifrostContextKeyRoutedRequestTypes).
+	routed []schemas.RequestType
+	// estimate is set on a count_tokens request none of whose entries has a count_tokens
+	// operation: the plugin answers it with the local count (estimateTokens).
+	estimate bool
 	// skipped lists the entries of order that were not sent, with why.
 	skipped []skippedEntry
 	// body is the caller's request body as Bifrost received it, which the integration keeps on
@@ -195,32 +205,56 @@ func (p *Plugin) bifrostTarget(e entry) (schemas.Fallback, string) {
 
 // route sets req to dispatch inside the plan only: the primary and the fallbacks are the
 // drawn order's entries, each with its own key pinned, and whatever provider, model,
-// fallbacks or key the caller named is replaced. Entries Bifrost does not have are left
-// out, and at most max_attempts entries are sent.
+// fallbacks or key the caller named is replaced. Each entry is sent as its request_type
+// (sendAs), which the compat plugin converts the attempt to; an entry without the request's
+// operation, one Bifrost cannot convert the request for, and one Bifrost does not have are left
+// out, and at most max_attempts entries are sent. A count_tokens request none of whose entries
+// has a count_tokens operation is sent to no upstream: PreLLMHook answers it with the local
+// count.
 func (p *Plugin) route(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, state *requestState) {
+	state.requestType = req.RequestType
 	state.order = drawOrder(state.plan, p.uniform)
 	maxAttempts := int(state.plan.GetMaxAttempts())
 	targets := make([]schemas.Fallback, 0, len(state.order))
 	state.chain = make([]int, 0, len(state.order))
+	state.routed = make([]schemas.RequestType, 0, len(state.order))
+	offered := false
 	for i, e := range state.order {
 		if maxAttempts > 0 && len(targets) == maxAttempts {
 			break
 		}
-		target, skipReason := p.bifrostTarget(e)
+		requestType, skipReason := sendAs(req.RequestType, e.upstream)
+		var target schemas.Fallback
+		if skipReason != skipOperationNotOffered {
+			offered = true
+		}
+		if skipReason == "" {
+			target, skipReason = p.bifrostTarget(e)
+		}
 		if skipReason != "" {
 			state.skipped = append(state.skipped, skippedEntry{index: i, reason: skipReason})
 			continue
 		}
 		targets = append(targets, target)
 		state.chain = append(state.chain, i)
+		state.routed = append(state.routed, requestType)
 	}
 	if len(targets) == 0 {
-		// Nothing in the plan can be sent from this Bifrost. The request keeps the first
-		// entry's route, so no later routing step picks another, and PreLLMHook fails it
-		// before any upstream is called.
-		first := state.order[0].upstream
-		req.SetProvider(schemas.ModelProvider(first.GetBifrostProvider()))
-		req.SetModel(first.GetForwardModel())
+		// Nothing in the plan is sent from this Bifrost. The request keeps the route of an
+		// entry, so no later routing step picks another, and PreLLMHook answers it before any
+		// upstream is called: with the local count when it is a count_tokens request no entry
+		// counts, otherwise with a failure. The entry is one Bifrost has, when there is one,
+		// since core needs the request's provider entry before PreLLMHook runs.
+		state.estimate = req.RequestType == schemas.CountTokensRequest && !offered
+		carrier := state.order[0]
+		for _, e := range state.order {
+			if _, skipReason := p.bifrostTarget(e); skipReason == "" {
+				carrier = e
+				break
+			}
+		}
+		req.SetProvider(schemas.ModelProvider(carrier.upstream.GetBifrostProvider()))
+		req.SetModel(carrier.upstream.GetForwardModel())
 		req.SetFallbacks(nil)
 		return
 	}
@@ -230,4 +264,24 @@ func (p *Plugin) route(ctx *schemas.BifrostContext, req *schemas.BifrostRequest,
 	// Core commits this pin as the primary's key after the pre-request hooks, over any key
 	// the caller named; each fallback re-pins its own KeyID.
 	ctx.SetValue(schemas.BifrostContextKeyRoutingPinnedAPIKeyID, targets[0].KeyID)
+	ctx.SetValue(schemas.BifrostContextKeyRoutedRequestTypes, state.routed)
+}
+
+// sendAs returns the request type an attempt on the entry's upstream is sent as, its
+// request_type, and the skip_reason of an entry that cannot be sent the request:
+//   - operation_not_offered: request_type is empty, the interface has no operation for the
+//     request (a count_tokens request on an interface without count_tokens);
+//   - request_type_unconvertible: core cannot convert the request to request_type
+//     (schemas.RequestTypeChange), or the entry is in the request's format (same_format), so
+//     its body goes out as it is, and names another type than the request's.
+func sendAs(requestType schemas.RequestType, upstream *routingv1.RouteUpstream) (schemas.RequestType, string) {
+	target := schemas.RequestType(upstream.GetRequestType())
+	if target == "" {
+		return "", skipOperationNotOffered
+	}
+	change, ok := schemas.RequestTypeChange(requestType, target)
+	if !ok || (upstream.GetSameFormat() && change != "") {
+		return "", skipRequestTypeUnconvertible
+	}
+	return target, ""
 }

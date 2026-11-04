@@ -265,7 +265,11 @@ type RouteAttempt struct {
 	UpstreamDuration *durationpb.Duration `protobuf:"bytes,14,opt,name=upstream_duration,json=upstreamDuration,proto3" json:"upstream_duration,omitempty"`
 	// Set when the plugin skipped the entry without sending:
 	// provider_not_synced or key_not_synced (Bifrost does not have the entry or
-	// key yet).
+	// key yet); operation_not_offered (the upstream's request_type is empty: its
+	// interface has no operation for the request, such as count_tokens);
+	// request_type_unconvertible (Bifrost cannot send the request as the
+	// upstream's request_type, or an upstream in the request's format names
+	// another type).
 	SkipReason string `protobuf:"bytes,15,opt,name=skip_reason,json=skipReason,proto3" json:"skip_reason,omitempty"`
 	// The attempt was sent in the request's format as is; false when the
 	// target provider converted it.

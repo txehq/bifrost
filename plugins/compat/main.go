@@ -146,39 +146,47 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		modifiedReq = cloneBifrostReq(req)
 	}
 
-	// Text completion → chat conversion
-	if (convertTextToChatOverrideEnabled && convertTextToChatOverride) || p.config.ConvertTextToChat {
-		if (modifiedReq.RequestType == schemas.TextCompletionRequest || modifiedReq.RequestType == schemas.TextCompletionStreamRequest) && modifiedReq.TextCompletionRequest != nil {
-			p.markForConversion(ctx, modifiedReq.TextCompletionRequest.Provider, modifiedReq.TextCompletionRequest.Model, schemas.TextCompletionRequest, schemas.ChatCompletionRequest)
+	// A routing plugin whose catalog says which request type each attempt's target takes
+	// decides the conversion of every attempt, so none of the conversions below, which
+	// follow this Bifrost's own model catalog, applies. Must run before the param drop below,
+	// which reads the conversion decision.
+	if routed, ok := ctx.Value(schemas.BifrostContextKeyRoutedRequestTypes).([]schemas.RequestType); ok {
+		markRoutedConversion(ctx, modifiedReq.RequestType, routed)
+	} else {
+		// Text completion → chat conversion
+		if (convertTextToChatOverrideEnabled && convertTextToChatOverride) || p.config.ConvertTextToChat {
+			if (modifiedReq.RequestType == schemas.TextCompletionRequest || modifiedReq.RequestType == schemas.TextCompletionStreamRequest) && modifiedReq.TextCompletionRequest != nil {
+				p.markForConversion(ctx, modifiedReq.TextCompletionRequest.Provider, modifiedReq.TextCompletionRequest.Model, schemas.TextCompletionRequest, schemas.ChatCompletionRequest)
+			}
 		}
-	}
 
-	// Chat completion → responses conversion
-	if (convertChatToResponsesOverrideEnabled && convertChatToResponsesOverride) || p.config.ConvertChatToResponses {
-		if (modifiedReq.RequestType == schemas.ChatCompletionRequest || modifiedReq.RequestType == schemas.ChatCompletionStreamRequest) && modifiedReq.ChatRequest != nil {
-			p.markForConversion(ctx, modifiedReq.ChatRequest.Provider, modifiedReq.ChatRequest.Model, schemas.ChatCompletionRequest, schemas.ResponsesRequest)
+		// Chat completion → responses conversion
+		if (convertChatToResponsesOverrideEnabled && convertChatToResponsesOverride) || p.config.ConvertChatToResponses {
+			if (modifiedReq.RequestType == schemas.ChatCompletionRequest || modifiedReq.RequestType == schemas.ChatCompletionStreamRequest) && modifiedReq.ChatRequest != nil {
+				p.markForConversion(ctx, modifiedReq.ChatRequest.Provider, modifiedReq.ChatRequest.Model, schemas.ChatCompletionRequest, schemas.ResponsesRequest)
+			}
 		}
-	}
 
-	// Decision → responses emulation
-	if (decisionToResponsesOverrideEnabled && decisionToResponsesOverride) || p.config.ConvertDecisionToResponses {
-		if modifiedReq.RequestType == schemas.DecisionRequest && modifiedReq.DecisionRequest != nil {
-			p.markDecisionForEmulation(ctx, modifiedReq.DecisionRequest.Provider, modifiedReq.DecisionRequest.Model)
+		// Decision → responses emulation
+		if (decisionToResponsesOverrideEnabled && decisionToResponsesOverride) || p.config.ConvertDecisionToResponses {
+			if modifiedReq.RequestType == schemas.DecisionRequest && modifiedReq.DecisionRequest != nil {
+				p.markDecisionForEmulation(ctx, modifiedReq.DecisionRequest.Provider, modifiedReq.DecisionRequest.Model)
+			}
 		}
-	}
 
-	// Azure DeepSeek: coding harnesses need reasoning, which only chat completions
-	// supports on Azure, so their Responses requests are converted by core (see azure.go).
-	// This must run before the param drop below, which reads the conversion decision.
-	// With AzureDeepseek off the request stays on /v1/responses and the drop below strips reasoning.
-	if ((azureDeepseekOverrideEnabled && azureDeepseekOverride) || p.config.AzureDeepseek) && shouldConvertAzureDeepSeekResponsesToChat(ctx, modifiedReq) {
-		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ChatCompletionRequest)
-	}
+		// Azure DeepSeek: coding harnesses need reasoning, which only chat completions
+		// supports on Azure, so their Responses requests are converted by core (see azure.go).
+		// This must run before the param drop below, which reads the conversion decision.
+		// With AzureDeepseek off the request stays on /v1/responses and the drop below strips reasoning.
+		if ((azureDeepseekOverrideEnabled && azureDeepseekOverride) || p.config.AzureDeepseek) && shouldConvertAzureDeepSeekResponsesToChat(ctx, modifiedReq) {
+			ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ChatCompletionRequest)
+		}
 
-	// Chat requests on models that reject reasoning alongside tools go to Responses,
-	// which keeps reasoning. Must run before the param drop below, which would otherwise force reasoning off.
-	if (reasoningOnlyOverrideEnabled && reasoningOnlyOverride) || p.config.ForceReasoningOnlyModelsToResponses {
-		p.markReasoningWithToolsForResponses(ctx, modifiedReq)
+		// Chat requests on models that reject reasoning alongside tools go to Responses,
+		// which keeps reasoning. Must run before the param drop below, which would otherwise force reasoning off.
+		if (reasoningOnlyOverrideEnabled && reasoningOnlyOverride) || p.config.ForceReasoningOnlyModelsToResponses {
+			p.markReasoningWithToolsForResponses(ctx, modifiedReq)
+		}
 	}
 
 	// Compute unsupported parameters to drop based on model catalog allowlist

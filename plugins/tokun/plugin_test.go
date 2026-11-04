@@ -81,7 +81,7 @@ const (
 )
 
 // testPlan has two providers: the first with one upstream and two keys, the second with one
-// upstream and one key.
+// upstream and one key, both chat completions interfaces.
 func testPlan() *routingv1.RoutePlan {
 	return &routingv1.RoutePlan{
 		RequestId:         testRequestID,
@@ -91,11 +91,13 @@ func testPlan() *routingv1.RoutePlan {
 		Providers: []*routingv1.RouteProvider{
 			{ProviderId: "nimbus-cloud", Score: 0.82, Uncertainty: 0.02, Upstreams: []*routingv1.RouteUpstream{{
 				UpstreamId: 31, Interface: "48213:text.chat.openai-chat", BifrostProvider: "up-a", ForwardModel: "model-a",
-				Keys: []*plannerv1.KeyShare{{KeyId: "key-a1", Share: 0.33}, {KeyId: "key-a2", Share: 0.67}},
+				RequestType: string(schemas.ChatCompletionRequest),
+				Keys:        []*plannerv1.KeyShare{{KeyId: "key-a1", Share: 0.33}, {KeyId: "key-a2", Share: 0.67}},
 			}}},
 			{ProviderId: "anthropic", Score: 0.74, Uncertainty: 0.03, Upstreams: []*routingv1.RouteUpstream{{
 				UpstreamId: 12, Interface: "51007:text.chat.openai-chat", BifrostProvider: "up-b", ForwardModel: "model-b",
-				Keys: []*plannerv1.KeyShare{{KeyId: "key-b1", Share: 1}},
+				RequestType: string(schemas.ChatCompletionRequest),
+				Keys:        []*plannerv1.KeyShare{{KeyId: "key-b1", Share: 1}},
 			}}},
 		},
 	}
@@ -637,6 +639,7 @@ func benchPlan() *routingv1.RoutePlan {
 				Uncertainty:     0.03,
 				Capacity:        40 + 10*float64(u),
 				SameFormat:      u%2 == 0,
+				RequestType:     string(schemas.ChatCompletionRequest),
 			}
 			if u == 3 {
 				upstream.Capacity = 0
@@ -1416,6 +1419,7 @@ func BenchmarkPreLLMHook(b *testing.B) {
 			for _, provider := range plan.GetProviders() {
 				for _, upstream := range provider.GetUpstreams() {
 					upstream.SameFormat = sameFormat
+					upstream.RequestType = string(schemas.ChatCompletionStreamRequest)
 				}
 			}
 			state := &requestState{plan: plan}

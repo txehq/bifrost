@@ -30,6 +30,7 @@ import (
 	"github.com/capsohq/bifrost/framework/configstore"
 	configstoreTables "github.com/capsohq/bifrost/framework/configstore/tables"
 	"github.com/capsohq/bifrost/framework/logstore"
+	"github.com/capsohq/bifrost/plugins/compat"
 	"github.com/capsohq/bifrost/plugins/tokun"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/handlers"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
@@ -222,7 +223,8 @@ func (s planSigner) headers(t *testing.T, plan *routingv1.RoutePlan, sendID stri
 // tokunTestPlan lists up-a (keys key-a1, key-a2) and then up-b (key-b1), and draws them in that
 // order every time: provider-b scores below the threshold and key-a2 has share 0, so the
 // selection curve ranks both last in their layers. The Bifrost entries also hold key-a3 on up-a
-// and the provider up-x, which the plan does not list.
+// and the provider up-x, which the plan does not list. Both are chat completions interfaces, for
+// a chat completion that is not streamed.
 func tokunTestPlan(requestID string) *routingv1.RoutePlan {
 	return &routingv1.RoutePlan{
 		RequestId: requestID,
@@ -230,22 +232,36 @@ func tokunTestPlan(requestID string) *routingv1.RoutePlan {
 		Providers: []*routingv1.RouteProvider{
 			{ProviderId: "provider-a", Score: 0.8, Upstreams: []*routingv1.RouteUpstream{{
 				UpstreamId: 1, Interface: "1:text.chat.openai-chat", BifrostProvider: "up-a", ForwardModel: "model-a",
-				Keys: []*plannerv1.KeyShare{{KeyId: "key-a1", Share: 1}, {KeyId: "key-a2", Share: 0}},
+				RequestType: string(schemas.ChatCompletionRequest),
+				Keys:        []*plannerv1.KeyShare{{KeyId: "key-a1", Share: 1}, {KeyId: "key-a2", Share: 0}},
 			}}},
 			{ProviderId: "provider-b", Score: 0.7, Upstreams: []*routingv1.RouteUpstream{{
 				UpstreamId: 2, Interface: "2:text.chat.openai-chat", BifrostProvider: "up-b", ForwardModel: "model-b",
-				Keys: []*plannerv1.KeyShare{{KeyId: "key-b1", Share: 1}},
+				RequestType: string(schemas.ChatCompletionRequest),
+				Keys:        []*plannerv1.KeyShare{{KeyId: "key-b1", Share: 1}},
 			}}},
 		},
 	}
 }
 
+// withRequestType sets the request_type of every upstream of plan, as the gateway writes it for
+// the request the plan is sent with, and returns plan.
+func withRequestType(plan *routingv1.RoutePlan, requestType schemas.RequestType) *routingv1.RoutePlan {
+	for _, provider := range plan.GetProviders() {
+		for _, upstream := range provider.GetUpstreams() {
+			upstream.RequestType = string(requestType)
+		}
+	}
+	return plan
+}
+
 // tokunChainPlan is drawn in one order every time, which steps from a key to the next key of the
 // same upstream, then to the next upstream, then to the next provider: up-a's key-a1, then key-a2
 // (share 0), then up-c's key-c1 (up-c scores below provider-a's upstream threshold), then
-// provider-b's up-b with key-b1 (provider-b scores below the threshold).
+// provider-b's up-b with key-b1 (provider-b scores below the threshold). Its upstreams are chat
+// completions interfaces, for a chat completion that is not streamed.
 func tokunChainPlan(requestID string) *routingv1.RoutePlan {
-	return &routingv1.RoutePlan{
+	return withRequestType(&routingv1.RoutePlan{
 		RequestId: requestID,
 		Threshold: 0.75,
 		Providers: []*routingv1.RouteProvider{
@@ -260,7 +276,7 @@ func tokunChainPlan(requestID string) *routingv1.RoutePlan {
 					Keys: []*plannerv1.KeyShare{{KeyId: "key-b1", Share: 1}}},
 			}},
 		},
-	}
+	}, schemas.ChatCompletionRequest)
 }
 
 // routeAttempts decodes a tk-route-attempts value.
@@ -315,7 +331,7 @@ func tokunDrawPlan(requestID string) *routingv1.RoutePlan {
 		}
 		return &routingv1.RouteUpstream{
 			UpstreamId: id, Interface: fmt.Sprintf("%d:text.chat.openai-chat", id), BifrostProvider: name, ForwardModel: "model-" + name,
-			Score: score, Uncertainty: 0.05, SameFormat: sameFormat, Keys: shares,
+			Score: score, Uncertainty: 0.05, SameFormat: sameFormat, Keys: shares, RequestType: string(schemas.ChatCompletionRequest),
 		}
 	}
 	return &routingv1.RoutePlan{
@@ -789,7 +805,7 @@ func TestTokunPluginRoutesInsideTheSignedPlan(t *testing.T) {
 		defer upstreams.breakStreams()
 		upstreams.answer("secret-key-a1", upstreamAnswer{500, serverErrorBody})
 		streamBody := `{"model":"up-x/caller-model","messages":[{"role":"user","content":"hi"}],"stream":true}`
-		ctx := request(fasthttp.MethodPost, "/openai/v1/chat/completions", signedFor(t, newKey, tokunChainPlan("req_stream"), "snd_stream", streamBody), streamBody)
+		ctx := request(fasthttp.MethodPost, "/openai/v1/chat/completions", signedFor(t, newKey, withRequestType(tokunChainPlan("req_stream"), schemas.ChatCompletionStreamRequest), "snd_stream", streamBody), streamBody)
 		handled := make(chan struct{})
 		go func() {
 			defer close(handled)
@@ -1079,10 +1095,19 @@ func (u *formatUpstreams) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fill := func(template string) string { return strings.ReplaceAll(template, "MODEL", string(model)) }
+	answers, streams, usageChunk := formatAnswers, formatStreams, chatUsageChunk
+	if entryAnswers, ok := usageEntryAnswers[entry]; ok {
+		// An entry that reports every usage field, and serves only the APIs it lists.
+		answers, streams, usageChunk = entryAnswers, usageEntryStreams[entry], richChatUsageChunk
+		if _, ok := answers[path]; !ok {
+			http.Error(w, `{"error":{"message":"Unknown request URL: `+path+`","type":"invalid_request_error"}}`, http.StatusNotFound)
+			return
+		}
+	}
 	if gjson.GetBytes(body, "stream").Bool() {
-		events := formatStreams[path]
+		events := streams[path]
 		if path == "/v1/chat/completions" && gjson.GetBytes(body, "stream_options.include_usage").Bool() {
-			events = append(slices.Clone(events), chatUsageChunk)
+			events = append(slices.Clone(events), usageChunk)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		for _, event := range events {
@@ -1093,13 +1118,60 @@ func (u *formatUpstreams) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	answer, ok := formatAnswers[path]
+	answer, ok := answers[path]
 	if !ok {
 		http.Error(w, "no such API "+path, http.StatusNotFound)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = io.WriteString(w, fill(answer))
+}
+
+// richChatUsage is the usage of the up-chatonly entry's chat completions: every field a chat
+// completion reports, cache reads, cache writes with their 5-minute and 1-hour parts, reasoning
+// and two web searches among them.
+const richChatUsage = `{"prompt_tokens":1200,"completion_tokens":300,"total_tokens":1500,` +
+	`"prompt_tokens_details":{"text_tokens":1100,"audio_tokens":50,"image_tokens":50,"cached_tokens":400,"cache_write_tokens":250,` +
+	`"cached_write_token_details":{"cached_write_tokens_5m":150,"cached_write_tokens_1h":100}},` +
+	`"completion_tokens_details":{"text_tokens":170,"audio_tokens":5,"image_tokens":7,"reasoning_tokens":120,"accepted_prediction_tokens":3,"rejected_prediction_tokens":4},` +
+	`"tool_usage":{"web_search":{"num_requests":2}}}`
+
+// richChatUsageChunk is the trailing usage-only chunk of the up-chatonly entry's streams.
+const richChatUsageChunk = `data: {"id":"chatcmpl-2","object":"chat.completion.chunk","created":1,"model":MODEL,"choices":[],"usage":` + richChatUsage + `}`
+
+// usageEntryAnswers are the answers of the entries that report every usage field, by entry and
+// API path; such an entry answers 404 to any other path:
+//   - up-chatonly, an OpenAI-compatible upstream that has chat completions and no Responses API;
+//   - up-anthropic-cache, Anthropic's Messages API, whose usage writes the cache for 5 minutes and
+//     for 1 hour.
+var usageEntryAnswers = map[string]map[string]string{
+	"up-chatonly": {
+		"/v1/chat/completions": `{"id":"chatcmpl-2","object":"chat.completion","created":1,"model":MODEL,"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":` + richChatUsage + `}`,
+	},
+	"up-anthropic-cache": {
+		"/v1/messages": `{"id":"msg_2","type":"message","role":"assistant","model":MODEL,"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","stop_sequence":null,` +
+			`"usage":{"input_tokens":550,"output_tokens":300,"cache_read_input_tokens":400,"cache_creation_input_tokens":250,"cache_creation":{"ephemeral_5m_input_tokens":150,"ephemeral_1h_input_tokens":100}}}`,
+	},
+}
+
+// usageEntryStreams are the streamed answers of the entries of usageEntryAnswers.
+var usageEntryStreams = map[string]map[string][]string{
+	"up-chatonly": {
+		"/v1/chat/completions": {
+			`data: {"id":"chatcmpl-2","object":"chat.completion.chunk","created":1,"model":MODEL,"choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}`,
+			`data: {"id":"chatcmpl-2","object":"chat.completion.chunk","created":1,"model":MODEL,"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`,
+		},
+	},
+	"up-anthropic-cache": {
+		"/v1/messages": {
+			"event: message_start\n" + `data: {"type":"message_start","message":{"id":"msg_2","type":"message","role":"assistant","model":MODEL,"content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":550,"output_tokens":1,"cache_read_input_tokens":400,"cache_creation_input_tokens":250,"cache_creation":{"ephemeral_5m_input_tokens":150,"ephemeral_1h_input_tokens":100}}}}`,
+			"event: content_block_start\n" + `data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+			"event: content_block_delta\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`,
+			"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}`,
+			"event: message_delta\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":300}}`,
+			"event: message_stop\n" + `data: {"type":"message_stop"}`,
+		},
+	},
 }
 
 // formatAnswers are the non-streamed answers by API path; MODEL is the requested model.
@@ -1199,16 +1271,20 @@ type formatReply struct {
 	status   int
 	body     string
 	stripped string
+	attempts string // tk-route-attempts
 }
 
 // formatServer is one Bifrost with every inference route, whose provider entries are up-openai
 // (key oa-1) and up-openai-2 (key ob-1), OpenAI's API, up-anthropic (key an-1), Anthropic's,
 // up-cohere (key co-1), Cohere's, and up-bedrock (key bk-1), Bedrock's over TLS, all answered by
-// upstreams. send signs plan for the request; a nil plan sends the request without one.
+// upstreams. send writes the request_type of the plan's upstreams that have none
+// (plannedRequestTypes) and signs plan for the request; sendAsIs signs it as it is. A nil plan
+// sends the request without one.
 type formatServer struct {
 	upstreams *formatUpstreams
 	observer  *formatObserver
 	send      func(t *testing.T, uri, body string, plan *routingv1.RoutePlan, sendID string) formatReply
+	sendAsIs  func(t *testing.T, uri, body string, plan *routingv1.RoutePlan, sendID string) formatReply
 }
 
 // newFormatServer builds a formatServer, with the tokun plugin loaded when withPlugin is set.
@@ -1260,12 +1336,21 @@ func newFormatServer(t *testing.T, withPlugin bool) *formatServer {
 			"up-anthropic": providerEntry("up-anthropic", schemas.Anthropic, "an-1"),
 			"up-cohere":    providerEntry("up-cohere", schemas.Cohere, "co-1"),
 			"up-bedrock":   bedrockEntry,
+			// The entries of usageEntryAnswers.
+			"up-chatonly":        providerEntry("up-chatonly", schemas.OpenAI, "ch-1"),
+			"up-anthropic-cache": providerEntry("up-anthropic-cache", schemas.Anthropic, "ac-1"),
 		},
 	}
 	t.Setenv("TOKUN_TEST_FORMAT_SIGNING_KEYS", `{"gw-2026-11":"gateway-secret"}`)
 	signer := planSigner{keyID: "gw-2026-11", secret: "gateway-secret"}
 	observer := &formatObserver{}
-	llmPlugins := []schemas.LLMPlugin{observer}
+	// The compat plugin with the server's default settings, which the server always loads ahead
+	// of the tokun plugin.
+	compatPlugin, err := loadBuiltinPlugin(context.Background(), compat.PluginName, &compat.Config{ForceReasoningOnlyModelsToResponses: true}, config)
+	if err != nil {
+		t.Fatalf("load the compat plugin: %v", err)
+	}
+	llmPlugins := []schemas.LLMPlugin{compatPlugin.(schemas.LLMPlugin), observer}
 	if withPlugin {
 		plugin, err := loadBuiltinPlugin(context.Background(), tokun.PluginName, map[string]any{"signing_keys": "env.TOKUN_TEST_FORMAT_SIGNING_KEYS"}, config)
 		if err != nil {
@@ -1274,7 +1359,7 @@ func newFormatServer(t *testing.T, withPlugin bool) *formatServer {
 		if err := config.ReloadPlugin(plugin); err != nil {
 			t.Fatalf("register the tokun plugin: %v", err)
 		}
-		llmPlugins = []schemas.LLMPlugin{plugin.(schemas.LLMPlugin), observer}
+		llmPlugins = []schemas.LLMPlugin{compatPlugin.(schemas.LLMPlugin), plugin.(schemas.LLMPlugin), observer}
 	}
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
 		Account:         lib.NewBaseAccount(config),
@@ -1288,7 +1373,7 @@ func newFormatServer(t *testing.T, withPlugin bool) *formatServer {
 	t.Cleanup(client.Shutdown)
 	r := inferenceRouter(t, config, client)
 
-	send := func(t *testing.T, uri, body string, plan *routingv1.RoutePlan, sendID string) formatReply {
+	sendAsIs := func(t *testing.T, uri, body string, plan *routingv1.RoutePlan, sendID string) formatReply {
 		t.Helper()
 		var req fasthttp.Request
 		req.Header.SetMethod(fasthttp.MethodPost)
@@ -1308,9 +1393,57 @@ func newFormatServer(t *testing.T, withPlugin bool) *formatServer {
 			status:   ctx.Response.StatusCode(),
 			body:     string(ctx.Response.Body()),
 			stripped: string(ctx.Response.Header.Peek(tokun.HeaderStrippedParams)),
+			attempts: string(ctx.Response.Header.Peek(tokun.HeaderRouteAttempts)),
 		}
 	}
-	return &formatServer{upstreams: upstreams, observer: observer, send: send}
+	send := func(t *testing.T, uri, body string, plan *routingv1.RoutePlan, sendID string) formatReply {
+		t.Helper()
+		if plan != nil {
+			plannedRequestTypes(uri, body, plan)
+		}
+		return sendAsIs(t, uri, body, plan, sendID)
+	}
+	return &formatServer{upstreams: upstreams, observer: observer, send: send, sendAsIs: sendAsIs}
+}
+
+// plannedRequestTypes writes the request_type of each upstream of plan that has none, the way the
+// gateway writes it for a request of the route uri with body: an upstream in the request's format
+// takes the request's own type; any other takes its interface's type for the same operation,
+// count_tokens on a token count route, and otherwise Responses on the OpenAI, Anthropic and
+// Bedrock entries and chat completions on the Cohere entry, streamed when the request is.
+func plannedRequestTypes(uri, body string, plan *routingv1.RoutePlan) {
+	stream := gjson.Get(body, "stream").Bool()
+	own := schemas.ResponsesRequest
+	switch {
+	case strings.HasSuffix(uri, "/count_tokens"):
+		own = schemas.CountTokensRequest
+	case strings.HasSuffix(uri, "/chat/completions"), strings.HasSuffix(uri, "/v2/chat"):
+		own = schemas.ChatCompletionRequest
+	}
+	streamed := func(requestType schemas.RequestType) schemas.RequestType {
+		switch {
+		case !stream || requestType == schemas.CountTokensRequest:
+			return requestType
+		case requestType == schemas.ChatCompletionRequest:
+			return schemas.ChatCompletionStreamRequest
+		}
+		return schemas.ResponsesStreamRequest
+	}
+	for _, provider := range plan.GetProviders() {
+		for _, upstream := range provider.GetUpstreams() {
+			if upstream.GetRequestType() != "" {
+				continue
+			}
+			requestType := own
+			if !upstream.GetSameFormat() && own != schemas.CountTokensRequest {
+				requestType = schemas.ResponsesRequest
+				if upstream.GetBifrostProvider() == "up-cohere" {
+					requestType = schemas.ChatCompletionRequest
+				}
+			}
+			upstream.RequestType = string(streamed(requestType))
+		}
+	}
 }
 
 // formatPlan lists each upstream under a provider of its own, each provider scored far below the

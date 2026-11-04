@@ -153,6 +153,80 @@ body as Bifrost received it:
 A route that keeps no body (no body at all, a multipart upload, the large-payload path, the
 inference handler outside the SDK integrations) sends every attempt from the typed request.
 
+## Each attempt's request type
+
+The design is *Tokun Hot Path 重构*, section tokun 现有的格式转换和去处 (the
+`translateResponsesRequest` and `responsesEgress` rows). Every upstream of a plan carries
+`request_type`, the Bifrost RequestType its interface takes for the request's operation and
+interaction mode, which the gateway takes from the catalog (the interface's
+`bifrost_request_type_override`, or its endpoint type's `bifrost_request_types`). Bifrost has no list
+of its own:
+
+- `PreRequestHook` sends each entry as its `request_type` and puts the types of the attempts it
+  sends on the context, by attempt (`BifrostContextKeyRoutedRequestTypes`, indexed like
+  `BifrostContextKeyFallbackIndex`). It leaves out an entry whose `request_type` is empty, its
+  interface having no operation for the request (`operation_not_offered`), and one core cannot send
+  the request as (`request_type_unconvertible`, `schemas.RequestTypeChange`): a type of another
+  operation, a streamed request to a type that does not stream or the reverse, or another type on
+  an entry in the request's format, whose body goes out as it is.
+- The compat plugin, which runs before this one on every attempt, sets
+  `BifrostContextKeyChangeRequestType` from the attempt's type when it differs from the request's
+  own and clears it when it does not (`markRoutedConversion` in `plugins/compat/routed.go`), and
+  makes none of the conversions it otherwise derives from this Bifrost's model catalog. Core then
+  converts the attempt: a Responses request (`/openai/v1/responses`, and `/anthropic/v1/messages`,
+  which Bifrost handles as Responses) to an upstream that only has chat completions goes out as a
+  chat completion (`ToChatRequest`), and its answer comes back as a Responses response
+  (`ToBifrostResponsesResponse`), or, streamed, as Responses events made chunk by chunk
+  (`ToBifrostResponsesStreamResponse`); a chat completion to a Responses upstream goes the other way.
+  Each attempt has its own conversion, so a plan may mix both kinds in either order.
+- The usage: every field of the chat usage reaches the Responses usage (`ToResponsesResponseUsage`
+  in `core/schemas/mux.go`): input, output and total tokens, their text, audio and image parts, cache
+  reads, cache writes with their 5-minute and 1-hour parts, reasoning, predictions, citations, search
+  queries, server-side tool calls, duration-based audio and the cost. A stream reports it in
+  `response.completed`, from the usage chunks the OpenAI-compatible stream handler gathers.
+- A provider whose chat stream does not make Responses events (Anthropic, Bedrock, Gemini, Cohere,
+  whose own Responses translation needs no conversion) fails a streamed Responses attempt sent as a
+  chat completion on its first chunk, `tokun_attempt_stream_unconverted`, before the caller
+  receives anything, and core moves to the next entry.
+
+## count_tokens
+
+The design is the `CountTokens` row of the same section. A count_tokens request is sent to the
+plan's entries whose `request_type` is `count_tokens`, through Bifrost's `count_tokens` of each
+provider, and the upstream's count is the answer. The entries without the operation are left out
+(`operation_not_offered`). When no entry of the plan has it, `PreLLMHook` answers with the local
+count (`estimate.go`) and no upstream is called; when one has it but none can be sent from this
+Bifrost, the request fails (503 `tokun_route_plan_unroutable`).
+
+The local count reads the caller's body once, in the request's own format, without converting it,
+with the settings of `RoutePlan.token_estimate` (txe's runtime settings `estimate.*`; there are no
+coefficients in Bifrost):
+
+- **Text**, by its UTF-8 bytes at `input_bytes_per_token`, rounded up: the system prompt, the text
+  of every message, thinking and redacted thinking, the name and input of a tool call, the content of
+  a tool result, a text document, a search result, every tool definition as its whole JSON, and a
+  block of a type the count does not know as its whole JSON.
+- **An image** given as base64 (JPEG, PNG, GIF, WebP), by its size: scaled down, keeping its aspect
+  ratio, until its longer edge is at most `image_max_edge_pixels`, then one token for each square
+  patch of `image_patch_pixels`, and at most `image_max_tokens`. The initial values (28, 2576, 4784)
+  are Claude's high-resolution tier, and reproduce the examples of Anthropic's vision guide.
+- **A PDF** given as base64, by its pages (its page tree, read with pdfcpu), `document_page_tokens`
+  each: the page's text and the image of the page.
+- `input_overhead_tokens` once, for what the upstream adds: role markers, the tool-use system
+  prompt.
+
+Like Anthropic's own count, it refuses with 400 `invalid_request_error` an image or a document
+given by URL or file id, and one it cannot read. A plan without `token_estimate`, or with a setting
+that is not positive, fails with 500 `tokun_token_estimate_invalid`. Only the Messages format is
+counted locally; the token counts of the other formats (Responses `input_tokens`, Gemini
+`countTokens`, Bedrock `count-tokens`, Cohere `tokenize`) answer 501
+`tokun_token_estimate_not_implemented` until batch 3 (`TODO(tokun-B3)` in `estimate.go`).
+
+`TestEstimateTextAgainstARealTokenizer` gives the count's distance from a real tokenizer,
+OpenAI's o200k_base: at 3 bytes per token it is 0.83 to 1.65 times the tokenizer's count on the
+kinds of text a coding agent sends, and 1.28 times on all of them together. A token count is not
+billed: its answer, the upstream's or the local one, is `input_tokens` with no usage object.
+
 ## Each attempt, and its record
 
 The design is *Tokun Hot Path 重构*, section 执行和记录 and its 尝试记录合同. Core tries the
@@ -210,8 +284,9 @@ cover each error and the record's encoding.
 
 ## What the plugin keeps
 
-- **Request state**: the verified plan, the drawn order, the attempt chain and the record of
-  each attempt, on the request's context (`requestStateKey`). It is bounded by the plan, which
+- **Request state**: the verified plan, the drawn order, the attempt chain with the request type
+  of each attempt (also on the context for the compat plugin) and the record of each attempt, on
+  the request's context (`requestStateKey`). It is bounded by the plan, which
   fits in one request header: one record of 136 bytes for each attempt made, at most one for
   each entry of the plan, the first kept in the state itself. It is freed with the request.
   It refers to the caller's body, the transport's own buffer, without copying it; an attempt in

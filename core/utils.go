@@ -521,6 +521,7 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyKeepRawRequestBody)
 	ctx.ClearValue(schemas.BifrostContextKeyRequestBodyConverter)
 	ctx.ClearValue(schemas.BifrostContextKeyAttemptOutputTokens)
+	ctx.ClearValue(schemas.BifrostContextKeyRoutedRequestTypes)
 	ctx.ClearValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter)
 	ctx.ClearValue(schemas.BifrostContextKeyRawStreamTextCodec)
 	ctx.ClearValue(schemas.BifrostContextKeySendBackRawRequest)

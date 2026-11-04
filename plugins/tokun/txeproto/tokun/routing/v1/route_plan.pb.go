@@ -73,7 +73,13 @@ type RoutePlan struct {
 	// Runtime setting routing.stop_scopes: error scopes (key, upstream,
 	// request) that stop switching to the next attempt. Empty by default: any
 	// error moves on to the next attempt.
-	StopScopes    []string `protobuf:"bytes,8,rep,name=stop_scopes,json=stopScopes,proto3" json:"stop_scopes,omitempty"`
+	StopScopes []string `protobuf:"bytes,8,rep,name=stop_scopes,json=stopScopes,proto3" json:"stop_scopes,omitempty"`
+	// The local token count of a count_tokens request: set on every
+	// count_tokens plan, absent on other requests. When no upstream of the plan
+	// has a count_tokens operation (request_type is empty on every upstream),
+	// the plugin answers with the count it makes from these settings instead of
+	// sending the request.
+	TokenEstimate *TokenEstimate `protobuf:"bytes,9,opt,name=token_estimate,json=tokenEstimate,proto3" json:"token_estimate,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -164,6 +170,117 @@ func (x *RoutePlan) GetStopScopes() []string {
 	return nil
 }
 
+func (x *RoutePlan) GetTokenEstimate() *TokenEstimate {
+	if x != nil {
+		return x.TokenEstimate
+	}
+	return nil
+}
+
+// TokenEstimate is the runtime settings the plugin counts a request's input
+// tokens with locally. It reads the request body once in the request's own
+// format, without converting it: the bytes of the text the model reads
+// (system, message text, thinking, tool calls and results, tool definitions)
+// at input_bytes_per_token, each base64 image by its size, each base64 PDF by
+// its pages, and input_overhead_tokens once. Like the upstream's own count, it
+// refuses an image or a document given by URL or file id.
+type TokenEstimate struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Runtime setting estimate.input_bytes_per_token: UTF-8 bytes of text per
+	// token.
+	InputBytesPerToken float64 `protobuf:"fixed64,1,opt,name=input_bytes_per_token,json=inputBytesPerToken,proto3" json:"input_bytes_per_token,omitempty"`
+	// Runtime setting estimate.input_overhead_tokens: tokens added once per
+	// request, for what the upstream adds to it (role markers, the tool-use
+	// system prompt).
+	InputOverheadTokens int64 `protobuf:"varint,2,opt,name=input_overhead_tokens,json=inputOverheadTokens,proto3" json:"input_overhead_tokens,omitempty"`
+	// Runtime setting estimate.image_patch_pixels: an image is tiled into
+	// square patches of this edge, one token each.
+	ImagePatchPixels int64 `protobuf:"varint,3,opt,name=image_patch_pixels,json=imagePatchPixels,proto3" json:"image_patch_pixels,omitempty"`
+	// Runtime setting estimate.image_max_edge_pixels: an image is scaled down,
+	// keeping its aspect ratio, until its longer edge is at most this.
+	ImageMaxEdgePixels int64 `protobuf:"varint,4,opt,name=image_max_edge_pixels,json=imageMaxEdgePixels,proto3" json:"image_max_edge_pixels,omitempty"`
+	// Runtime setting estimate.image_max_tokens: and until it is at most this
+	// many patches.
+	ImageMaxTokens int64 `protobuf:"varint,5,opt,name=image_max_tokens,json=imageMaxTokens,proto3" json:"image_max_tokens,omitempty"`
+	// Runtime setting estimate.document_page_tokens: tokens per page of a PDF,
+	// its text and the image of the page together.
+	DocumentPageTokens int64 `protobuf:"varint,6,opt,name=document_page_tokens,json=documentPageTokens,proto3" json:"document_page_tokens,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *TokenEstimate) Reset() {
+	*x = TokenEstimate{}
+	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TokenEstimate) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TokenEstimate) ProtoMessage() {}
+
+func (x *TokenEstimate) ProtoReflect() protoreflect.Message {
+	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TokenEstimate.ProtoReflect.Descriptor instead.
+func (*TokenEstimate) Descriptor() ([]byte, []int) {
+	return file_tokun_routing_v1_route_plan_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *TokenEstimate) GetInputBytesPerToken() float64 {
+	if x != nil {
+		return x.InputBytesPerToken
+	}
+	return 0
+}
+
+func (x *TokenEstimate) GetInputOverheadTokens() int64 {
+	if x != nil {
+		return x.InputOverheadTokens
+	}
+	return 0
+}
+
+func (x *TokenEstimate) GetImagePatchPixels() int64 {
+	if x != nil {
+		return x.ImagePatchPixels
+	}
+	return 0
+}
+
+func (x *TokenEstimate) GetImageMaxEdgePixels() int64 {
+	if x != nil {
+		return x.ImageMaxEdgePixels
+	}
+	return 0
+}
+
+func (x *TokenEstimate) GetImageMaxTokens() int64 {
+	if x != nil {
+		return x.ImageMaxTokens
+	}
+	return 0
+}
+
+func (x *TokenEstimate) GetDocumentPageTokens() int64 {
+	if x != nil {
+		return x.DocumentPageTokens
+	}
+	return 0
+}
+
 type RouteProvider struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Public provider id.
@@ -178,7 +295,7 @@ type RouteProvider struct {
 
 func (x *RouteProvider) Reset() {
 	*x = RouteProvider{}
-	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[1]
+	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -190,7 +307,7 @@ func (x *RouteProvider) String() string {
 func (*RouteProvider) ProtoMessage() {}
 
 func (x *RouteProvider) ProtoReflect() protoreflect.Message {
-	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[1]
+	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -203,7 +320,7 @@ func (x *RouteProvider) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RouteProvider.ProtoReflect.Descriptor instead.
 func (*RouteProvider) Descriptor() ([]byte, []int) {
-	return file_tokun_routing_v1_route_plan_proto_rawDescGZIP(), []int{1}
+	return file_tokun_routing_v1_route_plan_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *RouteProvider) GetProviderId() string {
@@ -267,14 +384,28 @@ type RouteUpstream struct {
 	Task *TaskContract `protobuf:"bytes,11,opt,name=task,proto3" json:"task,omitempty"`
 	// The interface uses the request's format: sent as is, and drawn in the
 	// group ahead of converted candidates.
-	SameFormat    bool `protobuf:"varint,12,opt,name=same_format,json=sameFormat,proto3" json:"same_format,omitempty"`
+	SameFormat bool `protobuf:"varint,12,opt,name=same_format,json=sameFormat,proto3" json:"same_format,omitempty"`
+	// The Bifrost RequestType the interface takes for the request's operation
+	// and interaction mode: the interface's bifrost_request_type_override when
+	// set, otherwise the rule of its endpoint type's bifrost_request_types for
+	// the operation's role and the request's interaction mode, for example
+	// chat_completion_stream for a streamed request on a chat completions
+	// interface. Empty when the interface has no such operation, for example a
+	// count_tokens request on an interface whose endpoint type has no
+	// count_tokens operation. The plugin sends the request as this type: when it
+	// differs from the request's own type, Bifrost converts the request to it
+	// (a Responses request to chat_completion goes out as a chat completion and
+	// its answer comes back as a Responses response); an upstream whose
+	// request_type is empty, or one Bifrost cannot convert the request to, is
+	// not sent to.
+	RequestType   string `protobuf:"bytes,13,opt,name=request_type,json=requestType,proto3" json:"request_type,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RouteUpstream) Reset() {
 	*x = RouteUpstream{}
-	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[2]
+	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -286,7 +417,7 @@ func (x *RouteUpstream) String() string {
 func (*RouteUpstream) ProtoMessage() {}
 
 func (x *RouteUpstream) ProtoReflect() protoreflect.Message {
-	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[2]
+	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -299,7 +430,7 @@ func (x *RouteUpstream) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RouteUpstream.ProtoReflect.Descriptor instead.
 func (*RouteUpstream) Descriptor() ([]byte, []int) {
-	return file_tokun_routing_v1_route_plan_proto_rawDescGZIP(), []int{2}
+	return file_tokun_routing_v1_route_plan_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *RouteUpstream) GetUpstreamId() int64 {
@@ -386,6 +517,13 @@ func (x *RouteUpstream) GetSameFormat() bool {
 	return false
 }
 
+func (x *RouteUpstream) GetRequestType() string {
+	if x != nil {
+		return x.RequestType
+	}
+	return ""
+}
+
 type TaskContract struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Imported from the interface's pinned registry revision and confirmed by
@@ -417,7 +555,7 @@ type TaskContract struct {
 
 func (x *TaskContract) Reset() {
 	*x = TaskContract{}
-	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[3]
+	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -429,7 +567,7 @@ func (x *TaskContract) String() string {
 func (*TaskContract) ProtoMessage() {}
 
 func (x *TaskContract) ProtoReflect() protoreflect.Message {
-	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[3]
+	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -442,7 +580,7 @@ func (x *TaskContract) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskContract.ProtoReflect.Descriptor instead.
 func (*TaskContract) Descriptor() ([]byte, []int) {
-	return file_tokun_routing_v1_route_plan_proto_rawDescGZIP(), []int{3}
+	return file_tokun_routing_v1_route_plan_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *TaskContract) GetJobIdPath() string {
@@ -554,7 +692,7 @@ type RoutePlanSignature struct {
 
 func (x *RoutePlanSignature) Reset() {
 	*x = RoutePlanSignature{}
-	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[4]
+	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -566,7 +704,7 @@ func (x *RoutePlanSignature) String() string {
 func (*RoutePlanSignature) ProtoMessage() {}
 
 func (x *RoutePlanSignature) ProtoReflect() protoreflect.Message {
-	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[4]
+	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -579,7 +717,7 @@ func (x *RoutePlanSignature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoutePlanSignature.ProtoReflect.Descriptor instead.
 func (*RoutePlanSignature) Descriptor() ([]byte, []int) {
-	return file_tokun_routing_v1_route_plan_proto_rawDescGZIP(), []int{4}
+	return file_tokun_routing_v1_route_plan_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *RoutePlanSignature) GetClaims() []byte {
@@ -618,7 +756,7 @@ type RoutePlanClaims struct {
 
 func (x *RoutePlanClaims) Reset() {
 	*x = RoutePlanClaims{}
-	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[5]
+	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -630,7 +768,7 @@ func (x *RoutePlanClaims) String() string {
 func (*RoutePlanClaims) ProtoMessage() {}
 
 func (x *RoutePlanClaims) ProtoReflect() protoreflect.Message {
-	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[5]
+	mi := &file_tokun_routing_v1_route_plan_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -643,7 +781,7 @@ func (x *RoutePlanClaims) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoutePlanClaims.ProtoReflect.Descriptor instead.
 func (*RoutePlanClaims) Descriptor() ([]byte, []int) {
-	return file_tokun_routing_v1_route_plan_proto_rawDescGZIP(), []int{5}
+	return file_tokun_routing_v1_route_plan_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *RoutePlanClaims) GetKeyId() string {
@@ -692,7 +830,7 @@ var File_tokun_routing_v1_route_plan_proto protoreflect.FileDescriptor
 
 const file_tokun_routing_v1_route_plan_proto_rawDesc = "" +
 	"\n" +
-	"!tokun/routing/v1/route_plan.proto\x12\x10tokun.routing.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1etokun/planner/v1/planner.proto\"\xb7\x02\n" +
+	"!tokun/routing/v1/route_plan.proto\x12\x10tokun.routing.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1etokun/planner/v1/planner.proto\"\xff\x02\n" +
 	"\tRoutePlan\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12!\n" +
@@ -703,14 +841,22 @@ const file_tokun_routing_v1_route_plan_proto_rawDesc = "" +
 	"\fmax_attempts\x18\x06 \x01(\x05R\vmaxAttempts\x12\x17\n" +
 	"\atask_id\x18\a \x01(\tR\x06taskId\x12\x1f\n" +
 	"\vstop_scopes\x18\b \x03(\tR\n" +
-	"stopScopes\"\xd6\x01\n" +
+	"stopScopes\x12F\n" +
+	"\x0etoken_estimate\x18\t \x01(\v2\x1f.tokun.routing.v1.TokenEstimateR\rtokenEstimate\"\xb3\x02\n" +
+	"\rTokenEstimate\x121\n" +
+	"\x15input_bytes_per_token\x18\x01 \x01(\x01R\x12inputBytesPerToken\x122\n" +
+	"\x15input_overhead_tokens\x18\x02 \x01(\x03R\x13inputOverheadTokens\x12,\n" +
+	"\x12image_patch_pixels\x18\x03 \x01(\x03R\x10imagePatchPixels\x121\n" +
+	"\x15image_max_edge_pixels\x18\x04 \x01(\x03R\x12imageMaxEdgePixels\x12(\n" +
+	"\x10image_max_tokens\x18\x05 \x01(\x03R\x0eimageMaxTokens\x120\n" +
+	"\x14document_page_tokens\x18\x06 \x01(\x03R\x12documentPageTokens\"\xd6\x01\n" +
 	"\rRouteProvider\x12\x1f\n" +
 	"\vprovider_id\x18\x01 \x01(\tR\n" +
 	"providerId\x12\x14\n" +
 	"\x05score\x18\x02 \x01(\x01R\x05score\x12 \n" +
 	"\vuncertainty\x18\x03 \x01(\x01R\vuncertainty\x12-\n" +
 	"\x12upstream_threshold\x18\x04 \x01(\x01R\x11upstreamThreshold\x12=\n" +
-	"\tupstreams\x18\x05 \x03(\v2\x1f.tokun.routing.v1.RouteUpstreamR\tupstreams\"\xd2\x03\n" +
+	"\tupstreams\x18\x05 \x03(\v2\x1f.tokun.routing.v1.RouteUpstreamR\tupstreams\"\xf5\x03\n" +
 	"\rRouteUpstream\x12\x1f\n" +
 	"\vupstream_id\x18\x01 \x01(\x03R\n" +
 	"upstreamId\x12\x1c\n" +
@@ -726,7 +872,8 @@ const file_tokun_routing_v1_route_plan_proto_rawDesc = "" +
 	" \x01(\x03R\x15interfaceOutputTokens\x122\n" +
 	"\x04task\x18\v \x01(\v2\x1e.tokun.routing.v1.TaskContractR\x04task\x12\x1f\n" +
 	"\vsame_format\x18\f \x01(\bR\n" +
-	"sameFormat\"\xb1\x04\n" +
+	"sameFormat\x12!\n" +
+	"\frequest_type\x18\r \x01(\tR\vrequestType\"\xb1\x04\n" +
 	"\fTaskContract\x12\x1e\n" +
 	"\vjob_id_path\x18\x01 \x01(\tR\tjobIdPath\x12\x1f\n" +
 	"\vstatus_path\x18\x02 \x01(\tR\n" +
@@ -773,30 +920,32 @@ func file_tokun_routing_v1_route_plan_proto_rawDescGZIP() []byte {
 	return file_tokun_routing_v1_route_plan_proto_rawDescData
 }
 
-var file_tokun_routing_v1_route_plan_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_tokun_routing_v1_route_plan_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_tokun_routing_v1_route_plan_proto_goTypes = []any{
 	(*RoutePlan)(nil),             // 0: tokun.routing.v1.RoutePlan
-	(*RouteProvider)(nil),         // 1: tokun.routing.v1.RouteProvider
-	(*RouteUpstream)(nil),         // 2: tokun.routing.v1.RouteUpstream
-	(*TaskContract)(nil),          // 3: tokun.routing.v1.TaskContract
-	(*RoutePlanSignature)(nil),    // 4: tokun.routing.v1.RoutePlanSignature
-	(*RoutePlanClaims)(nil),       // 5: tokun.routing.v1.RoutePlanClaims
-	nil,                           // 6: tokun.routing.v1.TaskContract.ErrorScopesEntry
-	(*v1.KeyShare)(nil),           // 7: tokun.planner.v1.KeyShare
-	(*timestamppb.Timestamp)(nil), // 8: google.protobuf.Timestamp
+	(*TokenEstimate)(nil),         // 1: tokun.routing.v1.TokenEstimate
+	(*RouteProvider)(nil),         // 2: tokun.routing.v1.RouteProvider
+	(*RouteUpstream)(nil),         // 3: tokun.routing.v1.RouteUpstream
+	(*TaskContract)(nil),          // 4: tokun.routing.v1.TaskContract
+	(*RoutePlanSignature)(nil),    // 5: tokun.routing.v1.RoutePlanSignature
+	(*RoutePlanClaims)(nil),       // 6: tokun.routing.v1.RoutePlanClaims
+	nil,                           // 7: tokun.routing.v1.TaskContract.ErrorScopesEntry
+	(*v1.KeyShare)(nil),           // 8: tokun.planner.v1.KeyShare
+	(*timestamppb.Timestamp)(nil), // 9: google.protobuf.Timestamp
 }
 var file_tokun_routing_v1_route_plan_proto_depIdxs = []int32{
-	1, // 0: tokun.routing.v1.RoutePlan.providers:type_name -> tokun.routing.v1.RouteProvider
-	2, // 1: tokun.routing.v1.RouteProvider.upstreams:type_name -> tokun.routing.v1.RouteUpstream
-	7, // 2: tokun.routing.v1.RouteUpstream.keys:type_name -> tokun.planner.v1.KeyShare
-	3, // 3: tokun.routing.v1.RouteUpstream.task:type_name -> tokun.routing.v1.TaskContract
-	6, // 4: tokun.routing.v1.TaskContract.error_scopes:type_name -> tokun.routing.v1.TaskContract.ErrorScopesEntry
-	8, // 5: tokun.routing.v1.RoutePlanClaims.expires_at:type_name -> google.protobuf.Timestamp
-	6, // [6:6] is the sub-list for method output_type
-	6, // [6:6] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	2, // 0: tokun.routing.v1.RoutePlan.providers:type_name -> tokun.routing.v1.RouteProvider
+	1, // 1: tokun.routing.v1.RoutePlan.token_estimate:type_name -> tokun.routing.v1.TokenEstimate
+	3, // 2: tokun.routing.v1.RouteProvider.upstreams:type_name -> tokun.routing.v1.RouteUpstream
+	8, // 3: tokun.routing.v1.RouteUpstream.keys:type_name -> tokun.planner.v1.KeyShare
+	4, // 4: tokun.routing.v1.RouteUpstream.task:type_name -> tokun.routing.v1.TaskContract
+	7, // 5: tokun.routing.v1.TaskContract.error_scopes:type_name -> tokun.routing.v1.TaskContract.ErrorScopesEntry
+	9, // 6: tokun.routing.v1.RoutePlanClaims.expires_at:type_name -> google.protobuf.Timestamp
+	7, // [7:7] is the sub-list for method output_type
+	7, // [7:7] is the sub-list for method input_type
+	7, // [7:7] is the sub-list for extension type_name
+	7, // [7:7] is the sub-list for extension extendee
+	0, // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_tokun_routing_v1_route_plan_proto_init() }
@@ -810,7 +959,7 @@ func file_tokun_routing_v1_route_plan_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_tokun_routing_v1_route_plan_proto_rawDesc), len(file_tokun_routing_v1_route_plan_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
