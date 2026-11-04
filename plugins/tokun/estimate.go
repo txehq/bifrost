@@ -34,12 +34,29 @@ func init() {
 // /pydanticai).
 const messagesCountTokensRoute = "/v1/messages/count_tokens"
 
+// nativeCountRoutes are how the route templates of the token counts of the vendor native formats
+// end, under each prefix that registers one: Gemini's countTokens (the only count_tokens request of
+// its models route, under none, /genai and /cursor), Bedrock's count-tokens (under none, /bedrock
+// and /cursor) and Cohere's tokenize (under none, /cohere and /cursor). They are the count
+// operations of tokun's endpoint types of those formats (Tokun 多模态和端点接入计划, text.chat.gemini,
+// text.chat.bedrock, text.chat.cohere).
+var nativeCountRoutes = []struct{ suffix, format string }{
+	{"/v1beta/models/{model:*}", "Gemini"},
+	{"/model/{modelId}/count-tokens", "Bedrock"},
+	{"/v1/tokenize", "Cohere"},
+}
+
 // estimateTokens answers a count_tokens request with the local count of RoutePlan.token_estimate
 // (Hot Path · tokun 现有的格式转换和去处, CountTokens): the plan has no upstream with a
 // count_tokens operation. It reads the caller's body in the request's own format, without
 // converting it, so the count covers every part of the request the format has. A request the
 // upstream's own count would refuse (an image or a document given by URL or file id, one that
 // cannot be read) is refused with 400; a plan without its settings fails with 500.
+//
+// The Anthropic Messages count is counted here; the counts of the vendor native formats are
+// batch 3's (estimateNativeFormatTokens). A count of any other route is no count operation of a
+// tokun endpoint type, the Responses input_tokens among them, so no plan should route one: it
+// fails with 404 tokun_route_not_offered.
 func estimateTokens(state *requestState) (*schemas.BifrostCountTokensResponse, *schemas.BifrostError) {
 	settings := state.plan.GetTokenEstimate()
 	if fault := checkTokenEstimate(settings); fault != nil {
@@ -53,8 +70,11 @@ func estimateTokens(state *requestState) (*schemas.BifrostCountTokensResponse, *
 	var fault *schemas.BifrostError
 	if strings.HasSuffix(state.route, messagesCountTokensRoute) {
 		tokens, fault = estimateMessagesTokens(state.body, settings)
+	} else if format := nativeCountFormat(state.route); format != "" {
+		tokens, fault = estimateNativeFormatTokens(format, state.body, settings)
 	} else {
-		tokens, fault = estimateOtherFormatTokens(state.route, state.body, settings)
+		fault = sendError(http.StatusNotFound, "tokun_route_not_offered",
+			fmt.Sprintf("%s is not a token count of an endpoint type tokun offers", state.route))
 	}
 	if fault != nil {
 		return nil, fault
@@ -65,11 +85,22 @@ func estimateTokens(state *requestState) (*schemas.BifrostCountTokensResponse, *
 	}, nil
 }
 
-// TODO(tokun-B3): 按 Responses、Gemini、Bedrock 和 Cohere 格式的正文在本地估算 token 数
-// 阶段：B1 放入；B3-11、B3-12、B3-13 完成并登记 Responses 的 count_tokens 操作时删除这两行和占位
-func estimateOtherFormatTokens(route string, _ []byte, _ *routingv1.TokenEstimate) (int64, *schemas.BifrostError) {
+// nativeCountFormat returns the vendor native format whose token count route is route, or "" when
+// it is none of nativeCountRoutes.
+func nativeCountFormat(route string) string {
+	for _, r := range nativeCountRoutes {
+		if strings.HasSuffix(route, r.suffix) {
+			return r.format
+		}
+	}
+	return ""
+}
+
+// TODO(tokun-B3): 按 Gemini、Bedrock 和 Cohere 格式的正文在本地估算 token 数
+// 阶段：B1 放入；B3-11「Gemini 原生格式」、B3-12「Bedrock 原生格式」、B3-13「Cohere 原生格式」完成时删除这两行和占位
+func estimateNativeFormatTokens(format string, _ []byte, _ *routingv1.TokenEstimate) (int64, *schemas.BifrostError) {
 	return 0, sendError(http.StatusNotImplemented, "tokun_token_estimate_not_implemented",
-		fmt.Sprintf("the local token count of %s is not implemented", route))
+		fmt.Sprintf("the local token count of the %s format is not implemented", format))
 }
 
 // checkTokenEstimate fails a plan whose token_estimate is missing, or would divide by zero or

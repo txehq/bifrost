@@ -191,7 +191,9 @@ func TestEstimateRefusesWhatTheUpstreamCountRefuses(t *testing.T) {
 }
 
 // A plan without the estimate's settings, or with one that is not positive, fails with 500; the
-// count of a format other than Messages answers 501 until batch 3.
+// counts of the Gemini, Bedrock and Cohere formats answer 501 until batch 3, under every prefix
+// that registers them; a count of any other route, the Responses input_tokens among them, is no
+// count operation of a tokun endpoint type and fails with 404.
 func TestEstimateTokensChecksItsSettings(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
 	zero := testTokenEstimate()
@@ -205,7 +207,13 @@ func TestEstimateTokensChecksItsSettings(t *testing.T) {
 	}{
 		{"no settings", nil, "/anthropic/v1/messages/count_tokens", http.StatusInternalServerError, "tokun_token_estimate_invalid"},
 		{"a setting of 0", zero, "/anthropic/v1/messages/count_tokens", http.StatusInternalServerError, "tokun_token_estimate_invalid"},
-		{"the Responses count", testTokenEstimate(), "/openai/v1/responses/input_tokens", http.StatusNotImplemented, "tokun_token_estimate_not_implemented"},
+		{"the Gemini count", testTokenEstimate(), "/genai/v1beta/models/{model:*}", http.StatusNotImplemented, "tokun_token_estimate_not_implemented"},
+		{"the Gemini count under /cursor", testTokenEstimate(), "/cursor/v1beta/models/{model:*}", http.StatusNotImplemented, "tokun_token_estimate_not_implemented"},
+		{"the Bedrock count", testTokenEstimate(), "/bedrock/model/{modelId}/count-tokens", http.StatusNotImplemented, "tokun_token_estimate_not_implemented"},
+		{"the Bedrock count without a prefix", testTokenEstimate(), "/model/{modelId}/count-tokens", http.StatusNotImplemented, "tokun_token_estimate_not_implemented"},
+		{"the Cohere count", testTokenEstimate(), "/cohere/v1/tokenize", http.StatusNotImplemented, "tokun_token_estimate_not_implemented"},
+		{"the Responses count", testTokenEstimate(), "/openai/v1/responses/input_tokens", http.StatusNotFound, "tokun_route_not_offered"},
+		{"the Responses count without a prefix", testTokenEstimate(), "/v1/responses/input_tokens", http.StatusNotFound, "tokun_route_not_offered"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := &requestState{plan: &routingv1.RoutePlan{TokenEstimate: tc.settings}, route: tc.route, body: body}

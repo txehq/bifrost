@@ -172,7 +172,10 @@ of its own:
 - The compat plugin, which runs before this one on every attempt, sets
   `BifrostContextKeyChangeRequestType` from the attempt's type when it differs from the request's
   own and clears it when it does not (`markRoutedConversion` in `plugins/compat/routed.go`), and
-  makes none of the conversions it otherwise derives from this Bifrost's model catalog. Core then
+  makes none of the conversions it otherwise derives from this Bifrost's model catalog. An attempt
+  the types do not cover fails there and is not sent: an index with no type, or not an int, with
+  500 `tokun_attempt_index_invalid`; a type the request cannot be sent as with 501
+  `tokun_route_plan_not_applied`; neither falls back. Core then
   converts the attempt: a Responses request (`/openai/v1/responses`, and `/anthropic/v1/messages`,
   which Bifrost handles as Responses) to an upstream that only has chat completions goes out as a
   chat completion (`ToChatRequest`), and its answer comes back as a Responses response
@@ -218,9 +221,11 @@ coefficients in Bifrost):
 Like Anthropic's own count, it refuses with 400 `invalid_request_error` an image or a document
 given by URL or file id, and one it cannot read. A plan without `token_estimate`, or with a setting
 that is not positive, fails with 500 `tokun_token_estimate_invalid`. Only the Messages format is
-counted locally; the token counts of the other formats (Responses `input_tokens`, Gemini
-`countTokens`, Bedrock `count-tokens`, Cohere `tokenize`) answer 501
-`tokun_token_estimate_not_implemented` until batch 3 (`TODO(tokun-B3)` in `estimate.go`).
+counted locally; the token counts of the vendor native formats (Gemini `countTokens`, Bedrock
+`count-tokens`, Cohere `tokenize`) answer 501 `tokun_token_estimate_not_implemented` until
+B3-11, B3-12 and B3-13 (`TODO(tokun-B3)` in `estimate.go`). A count of any other route, such as
+the Responses `input_tokens`, is no count operation of a tokun endpoint type, so no plan routes
+one: it fails with 404 `tokun_route_not_offered`.
 
 `TestEstimateTextAgainstARealTokenizer` gives the count's distance from a real tokenizer,
 OpenAI's o200k_base: at 3 bytes per token it is 0.83 to 1.65 times the tokenizer's count on the

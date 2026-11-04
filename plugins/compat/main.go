@@ -149,9 +149,11 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// A routing plugin whose catalog says which request type each attempt's target takes
 	// decides the conversion of every attempt, so none of the conversions below, which
 	// follow this Bifrost's own model catalog, applies. Must run before the param drop below,
-	// which reads the conversion decision.
+	// which reads the conversion decision. An attempt the routing plugin did not route fails.
 	if routed, ok := ctx.Value(schemas.BifrostContextKeyRoutedRequestTypes).([]schemas.RequestType); ok {
-		markRoutedConversion(ctx, modifiedReq.RequestType, routed)
+		if fault := markRoutedConversion(ctx, modifiedReq.RequestType, routed); fault != nil {
+			return req, &schemas.LLMPluginShortCircuit{Error: fault}, nil
+		}
 	} else {
 		// Text completion → chat conversion
 		if (convertTextToChatOverrideEnabled && convertTextToChatOverride) || p.config.ConvertTextToChat {

@@ -293,6 +293,68 @@ func TestTokunPluginSendsResponsesToChatOnlyUpstreams(t *testing.T) {
 	})
 }
 
+// routedTypesPlugin is a routing plugin for the compat plugin's routed conversion: in
+// PreRequestHook it sends the request to up-openai and puts its routed request types on the
+// context, as the tokun plugin does, whatever types the test gives it.
+type routedTypesPlugin struct {
+	routed []schemas.RequestType
+}
+
+func (p *routedTypesPlugin) GetName() string { return "tokun-test-routed-types" }
+func (p *routedTypesPlugin) Cleanup() error  { return nil }
+func (p *routedTypesPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	req.SetProvider("up-openai")
+	req.SetModel("up-model")
+	req.SetFallbacks(nil)
+	ctx.SetValue(schemas.BifrostContextKeyRoutedRequestTypes, p.routed)
+	return nil
+}
+func (p *routedTypesPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *routedTypesPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// TestCompatFailsAnAttemptTheRoutingPluginDidNotRoute sends a Responses request through a whole
+// Bifrost whose routing plugin lists request types that do not cover the attempt: the attempt
+// fails in the compat plugin, 500 tokun_attempt_index_invalid when no type is listed for it and
+// 501 tokun_route_plan_not_applied when the type is one the request cannot be sent as, and the
+// upstream is not called, so the request is not sent as the caller's own type. With a type that
+// covers the attempt, the same request reaches the upstream.
+func TestCompatFailsAnAttemptTheRoutingPluginDidNotRoute(t *testing.T) {
+	routing := &routedTypesPlugin{}
+	server := newFormatServer(t, false, routing)
+	const uri = "/openai/v1/responses"
+	for _, tc := range []struct {
+		name   string
+		routed []schemas.RequestType
+		status int
+		code   string
+	}{
+		{"no type for the attempt", []schemas.RequestType{}, http.StatusInternalServerError, "tokun_attempt_index_invalid"},
+		{"a type of another operation", []schemas.RequestType{schemas.CountTokensRequest}, http.StatusNotImplemented, "tokun_route_plan_not_applied"},
+		{"a streamed type", []schemas.RequestType{schemas.ResponsesStreamRequest}, http.StatusNotImplemented, "tokun_route_plan_not_applied"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server.upstreams.reset()
+			routing.routed = tc.routed
+			got := server.sendAsIs(t, uri, responsesCallerBody, nil, "")
+			if got.status != tc.status || !strings.Contains(got.body, tc.code) {
+				t.Fatalf("status %d: %s, want %d %s", got.status, got.body, tc.status, tc.code)
+			}
+			checkPaths(t, server)
+		})
+	}
+	t.Run("a type that covers the attempt", func(t *testing.T) {
+		server.upstreams.reset()
+		routing.routed = []schemas.RequestType{schemas.ResponsesRequest}
+		got := server.sendAsIs(t, uri, responsesCallerBody, nil, "")
+		checkCallerFormat(t, uri, false, got)
+		checkPaths(t, server, "up-openai/v1/responses")
+	})
+}
+
 // checkResponsesCacheUsage checks a Responses usage object against up-anthropic-cache's Messages
 // usage: 550 input tokens neither read from nor written to the cache, 400 read, 250 written (150
 // for 5 minutes and 100 for 1 hour), and 300 output tokens.

@@ -52,16 +52,56 @@ func TestRoutedRequestTypesDecideEachAttempt(t *testing.T) {
 	if got := changeOf(t, p, stream, responses(schemas.ResponsesStreamRequest), 1); got != schemas.ChatCompletionRequest {
 		t.Fatalf("a streamed chat completions target: change %v, want chat_completion", got)
 	}
+}
 
-	// An index outside the routed types, or a target core cannot convert to, changes nothing;
-	// the routing plugin sends no such attempt.
-	other := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
-	other.SetValue(schemas.BifrostContextKeyRoutedRequestTypes, []schemas.RequestType{schemas.CountTokensRequest})
-	if got := changeOf(t, p, other, responses(schemas.ResponsesRequest), 0); got != nil {
-		t.Fatalf("an unconvertible target: change %v, want none", got)
+// An attempt the routing plugin did not route fails, and is not sent as the caller's own type:
+// an index outside the routed types or not an int with 500 tokun_attempt_index_invalid, a target
+// core cannot convert the request to with 501 tokun_route_plan_not_applied, neither falling back,
+// and no conversion is left on the context.
+func TestRoutedRequestTypesFailAnAttemptNotRouted(t *testing.T) {
+	p, err := Init(Config{}, bifrost.NewNoOpLogger(), nil)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
 	}
-	if got := changeOf(t, p, other, responses(schemas.ResponsesRequest), 3); got != nil {
-		t.Fatalf("an index outside the routed types: change %v, want none", got)
+	responses := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: "up-a", Model: "m"}}
+	for _, tc := range []struct {
+		name   string
+		routed []schemas.RequestType
+		index  any
+		status int
+		code   string
+	}{
+		{"an index past the routed types", []schemas.RequestType{schemas.ChatCompletionRequest}, 1, 500, "tokun_attempt_index_invalid"},
+		{"an index below 0", []schemas.RequestType{schemas.ChatCompletionRequest}, -1, 500, "tokun_attempt_index_invalid"},
+		{"no routed types at all", []schemas.RequestType{}, nil, 500, "tokun_attempt_index_invalid"},
+		{"an index that is not an int", []schemas.RequestType{schemas.ChatCompletionRequest}, "0", 500, "tokun_attempt_index_invalid"},
+		{"a target of another operation", []schemas.RequestType{schemas.CountTokensRequest}, 0, 501, "tokun_route_plan_not_applied"},
+		{"a streamed target for a request that does not stream", []schemas.RequestType{schemas.ChatCompletionStreamRequest}, 0, 501, "tokun_route_plan_not_applied"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyRoutedRequestTypes, tc.routed)
+			if tc.index != nil {
+				ctx.SetValue(schemas.BifrostContextKeyFallbackIndex, tc.index)
+			}
+			got, shortCircuit, err := p.PreLLMHook(ctx, responses)
+			if err != nil || shortCircuit == nil || shortCircuit.Response != nil || shortCircuit.Error == nil {
+				t.Fatalf("PreLLMHook = %+v, %v; want the attempt failed", shortCircuit, err)
+			}
+			fault := shortCircuit.Error
+			if fault.StatusCode == nil || *fault.StatusCode != tc.status || fault.Type == nil || *fault.Type != tc.code {
+				t.Fatalf("the attempt failed with %+v, want %d %s", fault, tc.status, tc.code)
+			}
+			if fault.AllowFallbacks == nil || *fault.AllowFallbacks {
+				t.Fatalf("AllowFallbacks = %v, want false", fault.AllowFallbacks)
+			}
+			if got != responses || got.RequestType != schemas.ResponsesRequest {
+				t.Fatalf("PreLLMHook returned the request %+v", got)
+			}
+			if change := ctx.Value(schemas.BifrostContextKeyChangeRequestType); change != nil {
+				t.Fatalf("the failed attempt carries the conversion %v", change)
+			}
+		})
 	}
 }
 

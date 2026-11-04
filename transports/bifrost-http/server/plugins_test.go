@@ -1287,8 +1287,9 @@ type formatServer struct {
 	sendAsIs  func(t *testing.T, uri, body string, plan *routingv1.RoutePlan, sendID string) formatReply
 }
 
-// newFormatServer builds a formatServer, with the tokun plugin loaded when withPlugin is set.
-func newFormatServer(t *testing.T, withPlugin bool) *formatServer {
+// newFormatServer builds a formatServer, with the tokun plugin loaded when withPlugin is set and
+// the LLM plugins extra after the others.
+func newFormatServer(t *testing.T, withPlugin bool, extra ...schemas.LLMPlugin) *formatServer {
 	t.Helper()
 	previousLogger := logger
 	logger = noopTestLogger{}
@@ -1361,6 +1362,7 @@ func newFormatServer(t *testing.T, withPlugin bool) *formatServer {
 		}
 		llmPlugins = []schemas.LLMPlugin{compatPlugin.(schemas.LLMPlugin), plugin.(schemas.LLMPlugin), observer}
 	}
+	llmPlugins = append(llmPlugins, extra...)
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
 		Account:         lib.NewBaseAccount(config),
 		LLMPlugins:      llmPlugins,
