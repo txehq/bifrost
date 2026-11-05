@@ -16,7 +16,7 @@ image:
   repository: ghcr.io/txehq/bifrost
   pullPolicy: IfNotPresent
   # Empty selects v<Chart appVersion>, the image this chart was released with.
-  # Set it to run another version (e.g., v2.3.4, v2.3.4-ubi9).
+  # Set it to run another version (e.g., v2.3.5, v2.3.5-ubi9).
   # Images are tagged with a v prefix.
   tag: ""
 
