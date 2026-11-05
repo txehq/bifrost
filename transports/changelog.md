@@ -5,5 +5,6 @@
 ## 🍴 Fork changes (txehq/bifrost)
 
 - chore: the gateway code since v2.3.4 is only this fix and its tests. v2.3.5 replaces v2.3.4 as `latest` and `latest-ubi9`
-- note: the Helm chart, CLI and Migration CLI are unchanged, and their workflows skip: 2.1.50 (`appVersion` 2.3.4), v1.0.1 and v0.1.1 remain their stable releases. The chart's default image stays `v2.3.4` until a chart release moves it
-- note: this release publishes images only. The image is a private package, so pulling it needs a token with `read:packages`; the `@maximhq` npm packages and the upstream download host do not serve this fork's builds
+- chore: the Helm chart is 2.1.51, the stable chart; `appVersion` is 2.3.5, so its default image is `v2.3.5`
+- note: the CLI and Migration CLI are unchanged: v1.0.1 and v0.1.1 remain their stable releases
+- note: this release publishes images and the Helm chart. The image and the OCI chart are private packages, so pulling them needs a token with `read:packages`; the `@maximhq` npm packages and the upstream download host do not serve this fork's builds
