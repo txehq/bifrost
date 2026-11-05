@@ -1,11 +1,9 @@
 ## 🐞 Fixed
 
-- The UBI9 image's Docker health check runs `curl`. It ran `curl-minimal`, a package name and not a command, so Docker, Compose and anything else reading the image's health status reported a working container as unhealthy. The defect is in every earlier UBI9 image, `v2.3.3-ubi9` and `v2.3.2-ubi9` included; those stay published unchanged. Kubernetes deployments that use the Helm chart's own probes were not affected
+- ElevenLabs speech streams keep their final chunk. The read loop in `core/providers/elevenlabs/elevenlabs.go` dropped any data returned together with EOF, so an upstream response with a `Content-Length` lost its last chunk and the stream still sent done. The loop now forwards that data before it ends the stream (TXE-5677, #92)
 
 ## 🍴 Fork changes (txehq/bifrost)
 
-- chore: v2.3.4 changes the UBI9 Dockerfile's health check, a release check, versions and documentation only, no gateway code. It replaces v2.3.3 as `latest` and `latest-ubi9`
-- chore: Workflow Lint checks that the command each production Dockerfile uses for its health check exists in that image's pinned base
-- chore: the Helm chart is 2.1.50, the stable chart; `appVersion` is 2.3.4
-- note: the CLI and Migration CLI are unchanged: v1.0.1 and v0.1.1 remain their stable releases
-- note: this release publishes images and the Helm chart. The image and the OCI chart are private packages, so pulling them needs a token with `read:packages`; the `@maximhq` npm packages and the upstream download host do not serve this fork's builds
+- chore: the gateway code since v2.3.4 is only this fix and its tests. v2.3.5 replaces v2.3.4 as `latest` and `latest-ubi9`
+- note: the Helm chart, CLI and Migration CLI are unchanged, and their workflows skip: 2.1.50 (`appVersion` 2.3.4), v1.0.1 and v0.1.1 remain their stable releases. The chart's default image stays `v2.3.4` until a chart release moves it
+- note: this release publishes images only. The image is a private package, so pulling it needs a token with `read:packages`; the `@maximhq` npm packages and the upstream download host do not serve this fork's builds
