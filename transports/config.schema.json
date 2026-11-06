@@ -700,6 +700,9 @@
         "minimax": {
           "$ref": "#/$defs/provider"
         },
+        "byteplus": {
+          "$ref": "#/$defs/provider"
+        },
         "cloudflare": {
           "$ref": "#/$defs/provider_with_cloudflare_config"
         },
@@ -4487,7 +4490,8 @@
                         "sgl",
                         "huggingface",
                         "databricks",
-                        "cloudflare"
+                        "cloudflare",
+                        "byteplus"
                       ]
                     },
                     "embedding_model": {
