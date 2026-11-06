@@ -28,7 +28,7 @@ var defaultProviderModels = map[schemas.ModelProvider][]string{
 		"glm-z1-thinking",
 		"glm-z1-rumination",
 	},
-	schemas.Minimax: {
+	schemas.MiniMax: {
 		"MiniMax-M2.5",
 		"MiniMax-M2",
 		"MiniMax-M2.1",

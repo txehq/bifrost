@@ -49,7 +49,7 @@ func TestProviderModelSnapshotHealthReportHealthy(t *testing.T) {
 
 func TestProviderModelSnapshotHealthReportError(t *testing.T) {
 	mc := NewTestCatalog(nil)
-	provider := schemas.Minimax
+	provider := schemas.MiniMax
 	successData := &schemas.BifrostListModelsResponse{
 		Data: []schemas.Model{
 			{ID: "minimax/MiniMax-M2.5"},
@@ -121,7 +121,7 @@ func TestGetPersistedProviderModelHealthState_IncludesSourceOnlyEntries(t *testi
 
 func TestGetPersistedProviderModelHealthState_IncludesDiscoveryState(t *testing.T) {
 	mc := NewTestCatalog(nil)
-	provider := schemas.Minimax
+	provider := schemas.MiniMax
 	modelData := &schemas.BifrostListModelsResponse{
 		Data: []schemas.Model{
 			{ID: "minimax/MiniMax-M2.5"},
