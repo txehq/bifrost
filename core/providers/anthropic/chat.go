@@ -1704,23 +1704,10 @@ type AnthropicStreamState struct {
 	// payload on replay.
 	reasoningDetailIdxByBlock map[int]int
 	nextReasoningDetailIdx    int
-	// contentLen is the byte length of all content deltas forwarded so far,
-	// i.e. the length of the accumulated chat content string. It locates text
-	// blocks in that string for url_citation annotation spans.
-	contentLen int
-	// lastTextBlock and lastTextStart record the most recently started text
-	// content_block and contentLen at that moment, in plain fields, so a
-	// stream without citations pays two assignments per text block and no map
-	// work. lastTextBlock is -1 when no text block is open.
-	lastTextBlock int
-	lastTextStart int
-	// cited buffers the citations of each open text block that carries any
-	// (from its content_block_start and citations_delta events) until
-	// content_block_stop, when the block's end offset is known. It stays nil on
-	// a stream without citations. It is a separate allocation on purpose:
-	// appending to a slice held directly in the state would make escape
-	// analysis move the whole state, and its maps, to the heap for every stream.
-	cited *anthropicCitedBlocks
+	contentLen                int                   // bytes of content deltas forwarded so far
+	lastTextBlock             int                   // index of the open text block, -1 when none
+	lastTextStart             int                   // contentLen when lastTextBlock started
+	cited                     *anthropicCitedBlocks // citations of open text blocks; nil until the first citation
 }
 
 // anthropicCitedBlocks holds the open text blocks that carry citations.
@@ -1752,6 +1739,14 @@ func NewAnthropicStreamState() *AnthropicStreamState {
 // the buffer on the stream's first citation. The block's start is the offset
 // recorded when it opened, or the current content length for a block whose
 // start was not seen.
+//
+// Citation spans are byte offsets into the accumulated chat content string,
+// which contentLen tracks. A text block's start lives in lastTextBlock and
+// lastTextStart, plain fields, so a stream without citations pays two
+// assignments per text block and a nil check at its stop, and never creates
+// the buffer. The buffer sits behind its own pointer on purpose: appending to
+// a slice held directly in the state makes escape analysis move the whole
+// state, and its maps, to the heap for every stream.
 func (state *AnthropicStreamState) addTextCitations(index int, citations ...AnthropicTextCitation) {
 	start := state.contentLen
 	if state.lastTextBlock == index {
