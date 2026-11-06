@@ -37,3 +37,31 @@ func TestBifrostVideoGenerationResponseBackfillSeconds(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkBifrostVideoGenerationResponseBackfillParams measures the backfill every video create
+// and edit response gets in the core request path, with and without a provider-reported duration.
+func BenchmarkBifrostVideoGenerationResponseBackfillParams(b *testing.B) {
+	req := &BifrostRequest{VideoGenerationRequest: &BifrostVideoGenerationRequest{
+		Provider: MiniMax,
+		Model:    "MiniMax-H3",
+		Params:   &VideoGenerationParameters{Seconds: Ptr("2")},
+	}}
+	for _, tc := range []struct {
+		name     string
+		reported *string
+	}{
+		{name: "provider_reported_none"},
+		{name: "provider_reported_seconds", reported: Ptr("5")},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				resp := BifrostVideoGenerationResponse{Seconds: tc.reported, Model: "MiniMax-H3"}
+				resp.BackfillParams(req)
+				if resp.Seconds == nil {
+					b.Fatal("no seconds")
+				}
+			}
+		})
+	}
+}
