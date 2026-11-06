@@ -64,6 +64,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 .github/workflows/scripts/check-runner-labels.py
 
+      # Evaluates each pull_request job's approval-environment expression: only a
+      # pull request whose head branch is in another repository may pick pr-testing.
+      - name: Check the pull request approval environment
+        if: ${{ !cancelled() }}
+        run: python3 .github/workflows/scripts/test-approval-environment.py
+
       - name: Check fork release guards
         if: ${{ !cancelled() }}
         run: ./.github/workflows/scripts/release-fork-binaries.test.sh
