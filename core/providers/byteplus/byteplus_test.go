@@ -1783,14 +1783,16 @@ func TestBytePlusRefusesModelInExtraParams(t *testing.T) {
 
 	// A raw "content" in a video create's extra params would replace the converter's content array
 	// and carry a draft task or media URL past the converter and governance's ownership check.
-	for _, content := range []interface{}{
-		[]interface{}{map[string]interface{}{"type": "draft_task", "draft_task": map[string]interface{}{"id": "cgt-other"}}},
-		"anything",
+	for _, extra := range []map[string]interface{}{
+		{"content": []interface{}{map[string]interface{}{"type": "draft_task", "draft_task": map[string]interface{}{"id": "cgt-other"}}}},
+		{"content": "anything"},
+		{"Content": "anything"},
+		{"CONTENT": "anything"},
 	} {
 		_, bifrostErr := provider.VideoGeneration(streamTestContext(t), key, &schemas.BifrostVideoGenerationRequest{
 			Provider: schemas.BytePlus, Model: "seedance-1-0-pro-fast-251015",
 			Input:  &schemas.VideoGenerationInput{Prompt: "a dog"},
-			Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]interface{}{"content": content}},
+			Params: &schemas.VideoGenerationParameters{ExtraParams: extra},
 		})
 		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest || !strings.Contains(bifrostErr.Error.Message, "content") {
 			t.Errorf("video create with extra param content: want a 400 naming content, got %+v", bifrostErr)
