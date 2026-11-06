@@ -1,0 +1,14 @@
+---
+title: "v2.1.52-sync.2"
+description: "Helm v2.1.52-sync.2 prerelease changelog - 2026-11-06"
+---
+
+<Update label="Bifrost Helm" description="v2.1.52-sync.2 (prerelease)">
+
+## Changelog
+
+Prerelease of the txehq fork for transport v2.4.0-sync.2; the stable chart stays 2.1.51 until a stable version supersedes it. Install this one with `helm install --devel` or `--version 2.1.52-sync.2`.
+
+- `appVersion` is now `2.4.0-sync.2`, so an empty `image.tag` selects `v2.4.0-sync.2`. That transport adds Codex sign-in with ChatGPT on `/chatgpt_passthrough` and finishes OpenAI passthrough Responses streams on their end event. No values, templates or schema change.
+
+</Update>

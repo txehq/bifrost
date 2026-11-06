@@ -4,9 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/txehq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.51 (prerelease 2.1.52-sync.1 carries the change below; install it with `--devel`)
+**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
 
 ## Changelog
+
+### 2.1.52-sync.2 (prerelease)
+
+The prerelease chart for transport v2.4.0-sync.2; no values, templates or schema change:
+
+- `appVersion` is now `2.4.0-sync.2`, so an empty `image.tag` selects `v2.4.0-sync.2`. That transport adds Codex sign-in with ChatGPT on `/chatgpt_passthrough` and finishes OpenAI passthrough Responses streams on their end event.
 
 ### 2.1.52-sync.1 (prerelease)
 
