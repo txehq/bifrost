@@ -580,8 +580,8 @@ func (provider *BytePlusProvider) ImageEditStream(ctx *schemas.BifrostContext, p
 // Fork: every way out of the read loop tells the deferred release what state the body is in, so it
 // never drains a body that will not end. A terminal event (completed, or an error that ends the
 // stream) and a [DONE] marker leave the body open, so the stream marks itself parked and the
-// connection is abandoned; a body read to EOF is marked exhausted, because reading a finished
-// chunked body again waits on the kept-alive connection for a chunk that never comes.
+// connection is abandoned, closed instead of returned to the pool; a body read to EOF is marked
+// exhausted, so the release does not read it again.
 func (provider *BytePlusProvider) doImageStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, jsonData []byte, bifrostReq *schemas.BifrostRequest, partialType, completedType schemas.ImageEventType) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
