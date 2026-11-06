@@ -541,3 +541,42 @@ func BenchmarkStripCompactionItemSummary(b *testing.B) {
 		stripCompactionItemSummary(data, items)
 	}
 }
+
+// BenchmarkOpenAIResponsesRequestMarshal measures serializing an outbound Responses request.
+// Upstream's BytePlus change (eab4cf7f2) adds a provider comparison after the marshal for every
+// provider, and for BytePlus with reasoning removes reasoning.summary from the encoded body. The
+// provider is a literal so the benchmark also builds on trees without the BytePlus constant,
+// where the byteplus case is an ordinary marshal.
+func BenchmarkOpenAIResponsesRequestMarshal(b *testing.B) {
+	for _, tc := range []struct {
+		name      string
+		provider  schemas.ModelProvider
+		reasoning bool
+	}{
+		{"openai", "openai", false},
+		{"openai_reasoning", "openai", true},
+		{"byteplus_reasoning", "byteplus", true},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			var input OpenAIResponsesRequestInput
+			if err := input.UnmarshalJSON([]byte(plainResponsesInput)); err != nil {
+				b.Fatal(err)
+			}
+			bifrostReq := &schemas.BifrostResponsesRequest{Provider: tc.provider, Model: "gpt-6-astra", Input: input.OpenAIResponsesRequestInputArray}
+			if tc.reasoning {
+				bifrostReq.Params = &schemas.ResponsesParameters{Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("low")}}
+			}
+			req := ToOpenAIResponsesRequest(nil, bifrostReq)
+			if req == nil {
+				b.Fatal("nil request")
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				out, err := req.MarshalJSON()
+				if err != nil || len(out) == 0 {
+					b.Fatalf("marshal: len=%d err=%v", len(out), err)
+				}
+			}
+		})
+	}
+}

@@ -655,3 +655,22 @@ func BenchmarkFetchMediaURL(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkVideoContentTypeOr is the per-download check of the type a video is served with (the
+// rule MiniMax's download already applied, now shared with BytePlus).
+func BenchmarkVideoContentTypeOr(b *testing.B) {
+	for _, tc := range []struct{ name, contentType string }{
+		{"video_mp4", "video/mp4"},
+		{"text_html", "text/html; charset=utf-8"},
+		{"empty", ""},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if got := VideoContentTypeOr(tc.contentType, "video/mp4"); got != "video/mp4" {
+					b.Fatalf("got %q", got)
+				}
+			}
+		})
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1515,5 +1516,111 @@ func TestBytePlusEmbeddingStopsFanOutAfterAFailure(t *testing.T) {
 	}
 	if got := calls.Load(); got > window {
 		t.Errorf("%d of %d inputs reached Ark after the first call failed, want at most the %d already in flight", got, inputs, window)
+	}
+}
+
+// benchBytePlus starts a local Ark stand-in and a provider pointed at it.
+func benchBytePlus(b *testing.B, handler http.HandlerFunc) *byteplus.BytePlusProvider {
+	b.Helper()
+	server := httptest.NewServer(handler)
+	b.Cleanup(server.Close)
+	provider, err := byteplus.NewBytePlusProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30, AllowPrivateNetwork: true},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		b.Fatalf("NewBytePlusProvider: %v", err)
+	}
+	return provider
+}
+
+// BenchmarkBytePlusChatCompletion is the provider's chat round trip against a local server: the
+// OpenAI converter with the BytePlus compatibility pass, the request and the response decode.
+// The provider is new, so there is no earlier implementation to compare against.
+func BenchmarkBytePlusChatCompletion(b *testing.B) {
+	provider := benchBytePlus(b, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		jsonResponse(http.StatusOK, chatSuccessBody)(w, r)
+	})
+	key := testKey()
+	req := userChatRequest(nil)
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := provider.ChatCompletion(ctx, key, req); bifrostErr != nil {
+			b.Fatalf("ChatCompletion: %+v", bifrostErr.Error)
+		}
+		ctx.Cancel()
+	}
+}
+
+// BenchmarkBytePlusImageGenerationStream is one streamed Seedream generation (two images, one
+// refused, the completed event) against a local server, from request to the closed channel. The
+// stream ends on the completed event, so each iteration also pays for a new connection: the fork
+// abandons the connection there instead of draining it.
+func BenchmarkBytePlusImageGenerationStream(b *testing.B) {
+	provider := benchBytePlus(b, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		sseResponse(seedreamStreamImage0, seedreamStreamFailed, seedreamStreamImage2, seedreamStreamDone)(w, r)
+	})
+	key := testKey()
+	req := imageStreamRequest()
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stream, bifrostErr := provider.ImageGenerationStream(ctx, passthroughPostHook, nil, key, req)
+		if bifrostErr != nil {
+			b.Fatalf("ImageGenerationStream: %+v", bifrostErr.Error)
+		}
+		chunks := 0
+		for range stream {
+			chunks++
+		}
+		if chunks != 3 {
+			b.Fatalf("got %d chunks, want 3", chunks)
+		}
+		ctx.Cancel()
+	}
+}
+
+// BenchmarkBytePlusEmbedding is an embedding request of one input and of eight, each input its
+// own Ark call, against a local server.
+func BenchmarkBytePlusEmbedding(b *testing.B) {
+	provider := benchBytePlus(b, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		jsonResponse(http.StatusOK, `{"id":"e1","model":"skylark-embedding-vision-251215","data":{"embedding":[0.1,0.2,0.3,0.4]},"usage":{"prompt_tokens":3,"total_tokens":3,"prompt_tokens_details":{"text_tokens":3,"image_tokens":0}}}`)(w, r)
+	})
+	key := testKey()
+	for _, inputs := range []int{1, 8} {
+		items := make([]schemas.EmbeddingInputItem, inputs)
+		for i := range items {
+			items[i] = schemas.EmbeddingInputItem{Content: []schemas.EmbeddingContentPart{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("text")}}}
+		}
+		req := &schemas.BifrostEmbeddingRequest{Provider: schemas.BytePlus, Model: "skylark-embedding-vision-251215", Input: items}
+		b.Run(strconv.Itoa(inputs)+"_inputs", func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				resp, bifrostErr := provider.Embedding(ctx, key, req)
+				if bifrostErr != nil || len(resp.Data) != inputs {
+					b.Fatalf("Embedding: %+v", bifrostErr)
+				}
+				ctx.Cancel()
+			}
+		})
+	}
+}
+
+// BenchmarkToBifrostVideoGenerationResponse is the conversion of a settled Seedance task,
+// including the fork's "WxH" size built from the task's tier and ratio.
+func BenchmarkToBifrostVideoGenerationResponse(b *testing.B) {
+	var task byteplus.BytePlusVideoTask
+	if err := json.Unmarshal([]byte(`{"id":"cgt-1","model":"seedance-1-0-pro-fast-251015","status":"succeeded","content":{"video_url":"https://cdn.example/v.mp4"},"created_at":100,"updated_at":200,"resolution":"720p","ratio":"16:9","duration":5}`), &task); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if resp, bifrostErr := byteplus.ToBifrostVideoGenerationResponse(&task); bifrostErr != nil || resp.Size != "1280x720" {
+			b.Fatalf("size=%q err=%v", resp.Size, bifrostErr)
+		}
 	}
 }
