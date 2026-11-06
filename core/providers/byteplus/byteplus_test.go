@@ -1769,8 +1769,16 @@ func TestBytePlusRefusesModelInExtraParams(t *testing.T) {
 			t.Errorf("%s: error should name the model field: %q", name, bifrostErr.Error.Message)
 		}
 	}
+	// The key is refused in any case: "Model" would sit beside "model" in the body, and a JSON
+	// decoder that folds case could read either.
+	for _, spelling := range []string{"Model", "MODEL", "mOdEl"} {
+		_, bifrostErr := provider.ChatCompletion(streamTestContext(t), key, userChatRequest(&schemas.ChatParameters{ExtraParams: map[string]interface{}{spelling: "blocked-model"}}))
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+			t.Errorf("extra param %q: want a 400, got %+v", spelling, bifrostErr)
+		}
+	}
 	for _, r := range captured() {
-		t.Errorf("%s %s reached Ark with model %q", r.method, r.path, gjson.GetBytes(r.body, "model").String())
+		t.Errorf("%s %s reached Ark with body %s", r.method, r.path, r.body)
 	}
 
 	// Other extra params still reach Ark, under the request's own model.

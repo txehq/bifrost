@@ -78,9 +78,13 @@ func (provider *BytePlusProvider) GetProviderKey() schemas.ModelProvider {
 // the request body after conversion and replace keys already there, so a "model" among them would
 // send Ark a different model than the one the request was authorized, routed and priced for. On
 // the HTTP gateway only the extra_params object of an integration route can carry that key.
+// The key is matched without regard to case: "Model" would be added beside "model" rather than
+// replace it, and a JSON decoder that folds case would then read either one.
 func rejectModelInExtraParams(extraParams map[string]interface{}) *schemas.BifrostError {
-	if _, named := extraParams["model"]; named {
-		return providerUtils.NewBifrostBadRequestError("extra params cannot set model; name the model in the request's model field")
+	for key := range extraParams {
+		if strings.EqualFold(key, "model") {
+			return providerUtils.NewBifrostBadRequestError("extra params cannot set model; name the model in the request's model field")
+		}
 	}
 	return nil
 }
