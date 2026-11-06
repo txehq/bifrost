@@ -18,6 +18,16 @@ permissions:
 jobs:
   check-egress-allowlist:
     name: Egress allowlist covers apt + provider-harness hosts
+    # Pull requests from outside contributors, whose head branch is in another
+    # repository, run in the pr-testing environment, so they cannot get a runner
+    # while it requires a reviewer to approve the run through Review deployments.
+    # Everyone else lands on ci-trusted-branch, an environment with no protection
+    # rules that only gives the job a name. Upstream also reads head.repo.fork and
+    # author_association; the fork reads neither. txehq/bifrost is itself a fork,
+    # so head.repo.fork is true for its own branches, and txehq membership is
+    # private, so the event reports its members as non-members. A branch in this
+    # repository needs write access, which is the trust this boundary checks.
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:
@@ -53,6 +63,12 @@ jobs:
       - name: Check every job names a runner the fork has
         if: ${{ !cancelled() }}
         run: python3 .github/workflows/scripts/check-runner-labels.py
+
+      # Evaluates each pull_request job's approval-environment expression: only a
+      # pull request whose head branch is in another repository may pick pr-testing.
+      - name: Check the pull request approval environment
+        if: ${{ !cancelled() }}
+        run: python3 .github/workflows/scripts/test-approval-environment.py
 
       - name: Check fork release guards
         if: ${{ !cancelled() }}
