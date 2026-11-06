@@ -406,33 +406,23 @@ func (provider *BytePlusProvider) VideoDownload(ctx *schemas.BifrostContext, key
 		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
 	}
 
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-	req.SetRequestURI(*task.Videos[0].URL)
-	req.Header.SetMethod(http.MethodGet)
-
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-	defer wait()
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil), latency)
-	}
-	body, err := providerUtils.CheckAndDecodeBody(resp)
+	// Fork: the URL comes from Ark's task response, so it is fetched through the SSRF-hardened media
+	// fetcher (public addresses only, checked at dial time and on every redirect, the provider's
+	// proxy honored, 256 MiB cap, 5 minute bound) rather than the provider client, whose dialer
+	// admits loopback. No credentials are sent; errors name the URL without its signed query.
+	videoURL := *task.Videos[0].URL
+	start := time.Now()
+	contentType, body, err := providerUtils.FetchMediaURL(ctx, videoURL)
+	latency := time.Since(start)
 	if err != nil {
-		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), latency)
-	}
-	contentType := string(resp.Header.ContentType())
-	if contentType == "" {
-		contentType = "video/mp4"
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("failed to download video", err), latency)
 	}
 	bifrostResp := &schemas.BifrostVideoDownloadResponse{
-		VideoID:     request.ID,
-		Content:     append([]byte(nil), body...),
-		ContentType: contentType,
+		VideoID: request.ID,
+		Content: body,
+		// Fork: /v1/videos/{id}/content serves these bytes on the gateway's own origin, so only a
+		// video/* type is passed on; anything else becomes the type the task's output format implies.
+		ContentType: providerUtils.VideoContentTypeOr(contentType, seedanceVideoContentType(videoURL)),
 	}
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
 	return bifrostResp, nil
@@ -586,6 +576,12 @@ func (provider *BytePlusProvider) ImageEditStream(ctx *schemas.BifrostContext, p
 // becomes one partial chunk; Ark's usage-only completed event becomes the completed chunk, which repeats
 // the last image the way other providers' completed chunks carry the final one. A failed image is skipped
 // unless Ark reports an internal error, which ends the stream, or no image succeeds at all.
+//
+// Fork: every way out of the read loop tells the deferred release what state the body is in, so it
+// never drains a body that will not end. A terminal event (completed, or an error that ends the
+// stream) and a [DONE] marker leave the body open, so the stream marks itself parked and the
+// connection is abandoned; a body read to EOF is marked exhausted, because reading a finished
+// chunked body again waits on the kept-alive connection for a chunk that never comes.
 func (provider *BytePlusProvider) doImageStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, jsonData []byte, bifrostReq *schemas.BifrostRequest, partialType, completedType schemas.ImageEventType) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -665,6 +661,8 @@ func (provider *BytePlusProvider) doImageStream(ctx *schemas.BifrostContext, pos
 
 		sendError := func(bifrostErr *schemas.BifrostError) {
 			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			// Fork: Ark may hold the body open after a terminal error; release must abandon it, not drain it.
+			ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
 			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, provider.logger, postHookSpanFinalizer)
 		}
 
@@ -685,6 +683,13 @@ func (provider *BytePlusProvider) doImageStream(ctx *schemas.BifrostContext, pos
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
+				}
+				if providerUtils.SSEStreamEndedOnMarker(sseReader) {
+					// Fork: the reader stopped at [DONE] with the body still open.
+					ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
+				} else {
+					// Fork: the body is fully consumed, so the deferred release must not read it again.
+					ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
 				}
 				break
 			}
@@ -760,6 +765,8 @@ func (provider *BytePlusProvider) doImageStream(ctx *schemas.BifrostContext, pos
 					final.ExtraFields.RawResponse = string(data)
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				// Fork: as with a terminal error, Ark may hold the body open after its final event.
+				ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
 					providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, final),
 					responseChan, postHookSpanFinalizer)

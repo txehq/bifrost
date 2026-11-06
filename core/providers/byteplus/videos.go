@@ -173,6 +173,50 @@ func bytePlusVideoSize(size string) (string, string, error) {
 	return resolution, ratio, nil
 }
 
+// seedanceShortEdge returns the short edge in pixels that a Seedance resolution tier is named
+// after ("720p" is 720), or 0 for a tier it does not recognise.
+func seedanceShortEdge(resolution string) int {
+	tier := strings.ToLower(strings.TrimSpace(resolution))
+	switch tier {
+	case "2k":
+		return 1440
+	case "4k":
+		return 2160
+	}
+	if digits, ok := strings.CutSuffix(tier, "p"); ok {
+		if short, err := strconv.Atoi(digits); err == nil && short > 0 {
+			return short
+		}
+	}
+	return 0
+}
+
+// seedanceVideoSize turns a task's resolution tier and ratio into the nominal "WxH" size that video
+// pricing reads: its bands match the short edge of that string, so the tier label Ark reports
+// ("720p") selects no band and, being non-empty, would also replace the size captured from the
+// request at settlement. The size is nominal (the tier's short edge scaled by the ratio), not the
+// exact pixel grid Seedance renders. It is "" when the tier or the ratio is unknown, as with
+// ratio "adaptive", so settlement keeps the size captured from the request.
+func seedanceVideoSize(resolution, ratio string) string {
+	short := seedanceShortEdge(resolution)
+	if short == 0 {
+		return ""
+	}
+	w, h, ok := strings.Cut(ratio, ":")
+	if !ok {
+		return ""
+	}
+	rw, errW := strconv.Atoi(strings.TrimSpace(w))
+	rh, errH := strconv.Atoi(strings.TrimSpace(h))
+	if errW != nil || errH != nil || rw <= 0 || rh <= 0 {
+		return ""
+	}
+	if rw >= rh {
+		return strconv.Itoa(int(math.Round(float64(short)*float64(rw)/float64(rh)))) + "x" + strconv.Itoa(short)
+	}
+	return strconv.Itoa(short) + "x" + strconv.Itoa(int(math.Round(float64(short)*float64(rh)/float64(rw))))
+}
+
 // bytePlusVideoStatus maps a Seedance task status onto the Bifrost video lifecycle.
 func bytePlusVideoStatus(status BytePlusVideoTaskStatus) schemas.VideoStatus {
 	switch status {
@@ -211,7 +255,7 @@ func ToBifrostVideoGenerationResponse(task *BytePlusVideoTask) (*schemas.Bifrost
 		Object:    "video",
 		Model:     task.Model,
 		CreatedAt: task.CreatedAt,
-		Size:      task.Resolution,
+		Size:      seedanceVideoSize(task.Resolution, task.Ratio),
 		Status:    bytePlusVideoStatus(task.Status),
 	}
 	if task.Duration > 0 {
@@ -252,7 +296,7 @@ func ToBifrostVideoObject(task *BytePlusVideoTask, providerName schemas.ModelPro
 		Model:     task.Model,
 		Status:    bytePlusVideoStatus(task.Status),
 		CreatedAt: task.CreatedAt,
-		Size:      task.Resolution,
+		Size:      seedanceVideoSize(task.Resolution, task.Ratio),
 	}
 	if task.Duration > 0 {
 		obj.Seconds = schemas.Ptr(strconv.Itoa(task.Duration))

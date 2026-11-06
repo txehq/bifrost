@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
@@ -165,10 +166,20 @@ func (provider *BytePlusProvider) Embedding(ctx *schemas.BifrostContext, key sch
 	}
 	results := make([]embeddingResult, len(bodies))
 	var wg sync.WaitGroup
+	// Fork: once a call fails the request fails, so no further calls are started; the calls
+	// already in flight (at most bytePlusEmbeddingConcurrency) finish. Without this, a rate limit
+	// on the first item still sent every remaining item to Ark, on every retry of the request.
+	// A cancelled request stops the same way: its next call fails at once with the cancellation.
+	// Items are started in order, so the first failed index always precedes any item not started.
+	var failed atomic.Bool
 	sem := make(chan struct{}, bytePlusEmbeddingConcurrency)
 	for i := range bodies {
-		wg.Add(1)
 		sem <- struct{}{}
+		if failed.Load() {
+			<-sem
+			break
+		}
+		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			defer func() { <-sem }()
@@ -176,9 +187,13 @@ func (provider *BytePlusProvider) Embedding(ctx *schemas.BifrostContext, key sch
 			results[i].latency = latency
 			if bifrostErr != nil {
 				results[i].err = bifrostErr
+				failed.Store(true)
 				return
 			}
 			results[i].rawRequest, results[i].rawResponse, results[i].err = providerUtils.HandleProviderResponseCtx(ctx, body, &results[i].resp, bodies[i], sendBackRawRequest, sendBackRawResponse)
+			if results[i].err != nil {
+				failed.Store(true)
+			}
 		}(i)
 	}
 	wg.Wait()

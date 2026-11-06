@@ -10,11 +10,13 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/providers/byteplus"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -636,21 +638,30 @@ func TestToBytePlusVideoGenerationRequest(t *testing.T) {
 
 func TestBytePlusVideoLifecycle(t *testing.T) {
 	const taskID = "cgt-20250331175019-68d9t"
-	var serverURL string
-	provider, captured, url := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+	// Fork: the download goes through the SSRF-checked media fetcher, which refuses the loopback
+	// mock, so the file is served for a public address by a forward proxy.
+	const videoURL = "http://203.0.113.10/files/v.mp4"
+	videoProxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Host != "203.0.113.10" || r.URL.Path != "/files/v.mp4" {
+			http.NotFound(w, r)
+			return
+		}
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			t.Errorf("the download sent credentials to the file host: %q", auth)
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("mp4data"))
+	})
+	provider, captured, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
 		"POST /api/v3/contents/generations/tasks": jsonResponse(http.StatusOK, `{"id":"`+taskID+`"}`),
 		"GET /api/v3/contents/generations/tasks/" + taskID: func(w http.ResponseWriter, r *http.Request) {
-			jsonResponse(http.StatusOK, `{"id":"`+taskID+`","model":"seedance-1-0-pro-fast-251015","status":"succeeded","content":{"video_url":"`+serverURL+`/files/v.mp4"},"usage":{"completion_tokens":108900,"total_tokens":108900},"created_at":100,"updated_at":200,"resolution":"720p","ratio":"16:9","duration":5}`)(w, r)
+			jsonResponse(http.StatusOK, `{"id":"`+taskID+`","model":"seedance-1-0-pro-fast-251015","status":"succeeded","content":{"video_url":"`+videoURL+`"},"usage":{"completion_tokens":108900,"total_tokens":108900},"created_at":100,"updated_at":200,"resolution":"720p","ratio":"16:9","duration":5}`)(w, r)
 		},
 		"GET /api/v3/contents/generations/tasks":              jsonResponse(http.StatusOK, `{"items":[{"id":"`+taskID+`","model":"seedance-1-0-pro-fast-251015","status":"running","created_at":100},{"id":"cgt-2","model":"seedance-1-0-pro-fast-251015","status":"failed","error":{"code":"InputTextSensitiveContentDetected","message":"blocked"},"created_at":90}],"total":5}`),
 		"DELETE /api/v3/contents/generations/tasks/" + taskID: func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) },
-		"GET /files/v.mp4": func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "video/mp4")
-			_, _ = w.Write([]byte("mp4data"))
-		},
 	})
-	serverURL = url
 	ctx := testContext(t)
+	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(videoProxy.URL)})
 
 	created, bifrostErr := provider.VideoGeneration(ctx, testKey(), &schemas.BifrostVideoGenerationRequest{
 		Provider: schemas.BytePlus,
@@ -677,6 +688,10 @@ func TestBytePlusVideoLifecycle(t *testing.T) {
 	}
 	if len(retrieved.Videos) != 1 || retrieved.Videos[0].URL == nil || !strings.HasSuffix(*retrieved.Videos[0].URL, "/files/v.mp4") {
 		t.Errorf("unexpected videos: %+v", retrieved.Videos)
+	}
+	// Fork: the settled size is "WxH" (720p at 16:9), not Ark's tier label.
+	if retrieved.Size != "1280x720" {
+		t.Errorf("size = %q, want 1280x720", retrieved.Size)
 	}
 
 	downloaded, bifrostErr := provider.VideoDownload(ctx, testKey(), &schemas.BifrostVideoDownloadRequest{Provider: schemas.BytePlus, ID: created.ID})
@@ -1032,5 +1047,473 @@ func BenchmarkToBytePlusVideoGenerationRequest(b *testing.B) {
 		if _, err := byteplus.ToBytePlusVideoGenerationRequest(req); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// BytePlus is not a base for custom providers (core refuses base_provider_type byteplus), so it has
+// no custom-provider name to carry in video IDs and no allowed_requests to enforce. Adding it to
+// SupportedBaseProviders needs both wired into the provider first, as the fork did for MiniMax.
+func TestBytePlusIsNotACustomProviderBase(t *testing.T) {
+	if bifrost.IsSupportedBaseProvider(schemas.BytePlus) {
+		t.Fatal("byteplus became a custom-provider base: the provider must report the custom name and enforce allowed_requests first")
+	}
+	provider, _, _ := newMockBytePlus(t, nil)
+	if got := provider.GetProviderKey(); got != schemas.BytePlus {
+		t.Errorf("provider key = %q, want byteplus", got)
+	}
+}
+
+// The settled size must be "WxH": video pricing bands read the short edge of that string, so Ark's
+// tier label ("720p") selects no band and, being non-empty, would replace the size captured from
+// the request. An unknown tier or ratio reports no size, so the captured one is kept.
+func TestBytePlusVideoSizeIsWidthByHeight(t *testing.T) {
+	cases := []struct{ resolution, ratio, want string }{
+		{"720p", "16:9", "1280x720"},
+		{"480p", "9:16", "480x853"},
+		{"1080p", "1:1", "1080x1080"},
+		{"1080p", "21:9", "2520x1080"},
+		{"480P", " 4:3 ", "640x480"},
+		{"720p", "3:4", "720x960"},
+		{"2k", "16:9", "2560x1440"},
+		{"720p", "adaptive", ""},
+		{"720p", "", ""},
+		{"", "16:9", ""},
+		{"hd", "16:9", ""},
+		{"720p", "0:9", ""},
+	}
+	for _, tc := range cases {
+		task := &byteplus.BytePlusVideoTask{ID: "cgt-1", Status: byteplus.BytePlusVideoTaskStatusSucceeded, Resolution: tc.resolution, Ratio: tc.ratio, Duration: 5}
+		resp, bifrostErr := byteplus.ToBifrostVideoGenerationResponse(task)
+		if bifrostErr != nil {
+			t.Fatalf("%s %s: %+v", tc.resolution, tc.ratio, bifrostErr.Error)
+		}
+		if resp.Size != tc.want {
+			t.Errorf("retrieve: resolution %q ratio %q: size = %q, want %q", tc.resolution, tc.ratio, resp.Size, tc.want)
+		}
+		if obj := byteplus.ToBifrostVideoObject(task, schemas.BytePlus); obj.Size != tc.want {
+			t.Errorf("list: resolution %q ratio %q: size = %q, want %q", tc.resolution, tc.ratio, obj.Size, tc.want)
+		}
+	}
+}
+
+// The download URL comes from Ark's task response, so a task pointing at a loopback or private
+// address must be refused without that address ever being dialed, and the error must not carry
+// the URL's signed query.
+func TestBytePlusVideoDownloadRefusesNonPublicURL(t *testing.T) {
+	var internalHits atomic.Int32
+	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		internalHits.Add(1)
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("internal secret"))
+	}))
+	t.Cleanup(internal.Close)
+	provider, _, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+		"GET /api/v3/contents/generations/tasks/cgt-ssrf": jsonResponse(http.StatusOK, `{"id":"cgt-ssrf","model":"seedance-1-0-pro-fast-251015","status":"succeeded","content":{"video_url":"`+internal.URL+`/v.mp4?X-Tos-Signature=abc123"},"resolution":"720p","ratio":"16:9","duration":5}`),
+	})
+
+	_, bifrostErr := provider.VideoDownload(testContext(t), testKey(), &schemas.BifrostVideoDownloadRequest{Provider: schemas.BytePlus, ID: "cgt-ssrf"})
+	if got := internalHits.Load(); got != 0 {
+		t.Fatalf("download dialed the loopback URL %d times", got)
+	}
+	if bifrostErr == nil {
+		t.Fatal("expected the loopback download URL to be refused")
+	}
+	msg := bifrostErr.Error.Message
+	if bifrostErr.Error.Error != nil {
+		msg += " " + bifrostErr.Error.Error.Error()
+	}
+	if strings.Contains(msg, "abc123") {
+		t.Errorf("error leaks the signed query: %s", msg)
+	}
+}
+
+// newProxiedBytePlus builds a provider whose every request, to Ark and to the file host a task
+// names, leaves through one forward proxy that serves handler. The context carries the same proxy,
+// as bifrost sets it on each attempt, so the media fetcher uses it too.
+func newProxiedBytePlus(t *testing.T, handler http.HandlerFunc) (*byteplus.BytePlusProvider, *schemas.BifrostContext) {
+	t.Helper()
+	proxy := proxytest.ForwardProxy(t, handler)
+	proxyConfig := &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxy.URL)}
+	provider, err := byteplus.NewBytePlusProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: "http://203.0.113.20", DefaultRequestTimeoutInSeconds: 30},
+		ProxyConfig:   proxyConfig,
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		t.Fatalf("NewBytePlusProvider: %v", err)
+	}
+	ctx := testContext(t)
+	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, proxyConfig)
+	return provider, ctx
+}
+
+// The downloaded bytes are served on the gateway's own origin with the type returned here, so an
+// upstream that serves HTML at the task's URL must not get it rendered as a document. A video/*
+// type is kept; anything else becomes the type the output format implies (mov is QuickTime).
+func TestBytePlusVideoDownloadPinsVideoContentType(t *testing.T) {
+	cases := []struct{ path, served, want string }{
+		{"/html.mp4", "text/html; charset=utf-8", "video/mp4"},
+		{"/svg.mp4", "image/svg+xml", "video/mp4"},
+		{"/none.mp4", "", "video/mp4"},
+		{"/odd.mp4", "video/mp4<script>", "video/mp4"},
+		{"/webm.mp4", "video/webm", "video/webm"},
+		{"/html.mov", "text/html", "video/quicktime"},
+		{"/qt.mov", "video/quicktime", "video/quicktime"},
+	}
+	for _, tc := range cases {
+		t.Run(strings.TrimPrefix(tc.path, "/"), func(t *testing.T) {
+			provider, ctx := newProxiedBytePlus(t, func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Host == "203.0.113.20" && r.URL.Path == "/api/v3/contents/generations/tasks/cgt-mime":
+					jsonResponse(http.StatusOK, `{"id":"cgt-mime","model":"seedance-1-0-pro-fast-251015","status":"succeeded","content":{"video_url":"http://203.0.113.10`+tc.path+`"},"resolution":"720p","ratio":"16:9","duration":5}`)(w, r)
+				case r.URL.Host == "203.0.113.10" && r.URL.Path == tc.path:
+					if tc.served == "" {
+						w.Header()["Content-Type"] = nil
+					} else {
+						w.Header().Set("Content-Type", tc.served)
+					}
+					_, _ = w.Write([]byte("<html><script>fetch('/api/governance/virtual-keys')</script></html>"))
+				default:
+					http.NotFound(w, r)
+				}
+			})
+			resp, bifrostErr := provider.VideoDownload(ctx, testKey(), &schemas.BifrostVideoDownloadRequest{Provider: schemas.BytePlus, ID: "cgt-mime"})
+			if bifrostErr != nil {
+				t.Fatalf("VideoDownload: %+v", bifrostErr.Error)
+			}
+			if resp.ContentType != tc.want {
+				t.Errorf("content type = %q, want %q", resp.ContentType, tc.want)
+			}
+			if len(resp.Content) == 0 {
+				t.Error("no content")
+			}
+		})
+	}
+}
+
+// streamCloseLimit bounds how long a test waits for a stream channel to close. A closing stream
+// takes milliseconds; the limit only exists so a stream that never closes fails the test instead
+// of hanging it, and is far above anything a loaded host needs.
+const streamCloseLimit = 30 * time.Second
+
+// newParkedBytePlus serves events on the image endpoint and then keeps the body open, sending SSE
+// heartbeats until the client goes away or holdOpen elapses, the way an upstream can park a
+// connection after its last event. With holdOpen zero the handler returns after the events, which
+// ends the body and leaves the connection kept alive. handlerDone closes when the handler returns.
+func newParkedBytePlus(t *testing.T, holdOpen time.Duration, events ...string) (*byteplus.BytePlusProvider, <-chan struct{}) {
+	t.Helper()
+	handlerDone := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v3/images/generations" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		defer close(handlerDone)
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		for _, e := range events {
+			_, _ = w.Write([]byte("data: " + e + "\n\n"))
+		}
+		flusher.Flush()
+		if holdOpen <= 0 {
+			return
+		}
+		deadline := time.After(holdOpen)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-deadline:
+				return
+			case <-ticker.C:
+				if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	// The request timeout is far above every wait in these tests, and a stream has no read
+	// timeout, so nothing but the stream's own handling ends it.
+	provider, err := byteplus.NewBytePlusProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 300, StreamIdleTimeoutInSeconds: 300, AllowPrivateNetwork: true},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		t.Fatalf("NewBytePlusProvider: %v", err)
+	}
+	return provider, handlerDone
+}
+
+// collectStreamWithin drains stream, failing the test if it does not close within limit.
+func collectStreamWithin(t *testing.T, stream chan *schemas.BifrostStreamChunk, limit time.Duration) []*schemas.BifrostStreamChunk {
+	t.Helper()
+	var chunks []*schemas.BifrostStreamChunk
+	timeout := time.NewTimer(limit)
+	defer timeout.Stop()
+	for {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				return chunks
+			}
+			if chunk != nil {
+				chunks = append(chunks, chunk)
+			}
+		case <-timeout.C:
+			t.Fatalf("stream did not close within %s (cleanup is draining a body the upstream holds open); got %d chunks", limit, len(chunks))
+			return chunks
+		}
+	}
+}
+
+// waitFinalizedOnce waits for the stream finalizer, which runs in the stream goroutine's deferred
+// cleanup just after the channel closes, and reports how many times it ran.
+func waitFinalizedOnce(t *testing.T, finalized *atomic.Int32) {
+	t.Helper()
+	deadline := time.Now().Add(streamCloseLimit)
+	for finalized.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := finalized.Load(); got != 1 {
+		t.Errorf("finalizer ran %d times, want 1", got)
+	}
+}
+
+func streamErrors(chunks []*schemas.BifrostStreamChunk) []*schemas.BifrostError {
+	var errs []*schemas.BifrostError
+	for _, c := range chunks {
+		if c.BifrostError != nil {
+			errs = append(errs, c.BifrostError)
+		}
+	}
+	return errs
+}
+
+func imageStreamRequest() *schemas.BifrostImageGenerationRequest {
+	return &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.BytePlus,
+		Model:    "seedream-4-5-251128",
+		Input:    &schemas.ImageGenerationInput{Prompt: "four seasons"},
+	}
+}
+
+// streamTestContext outlives every wait in the stream tests, so a context deadline never ends a
+// stream that a test expects its own handling to end.
+func streamTestContext(t *testing.T) *schemas.BifrostContext {
+	t.Helper()
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 5*time.Minute)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// A terminal Seedream event ends the stream even when Ark keeps the connection open: the channel
+// closes, the finalizer runs once, the terminal usage or error is delivered once, and the parked
+// connection is abandoned rather than drained.
+func TestBytePlusImageStreamTerminalEventWithParkedBody(t *testing.T) {
+	cases := []struct {
+		name          string
+		events        []string
+		wantErrStatus int
+		wantErrCode   string
+		wantChunks    int
+	}{
+		{name: "completed", events: []string{seedreamStreamImage0, seedreamStreamDone}, wantChunks: 2},
+		{
+			name:          "internal error ends the stream",
+			events:        []string{seedreamStreamImage0, `{"type":"image_generation.partial_failed","model":"seedream-4-5-251128","created":1,"image_index":1,"error":{"code":"InternalServiceError","message":"internal"}}`},
+			wantErrStatus: http.StatusInternalServerError, wantErrCode: "InternalServiceError", wantChunks: 2,
+		},
+		{
+			name:          "every image failed",
+			events:        []string{seedreamStreamFailed, `{"type":"image_generation.completed","model":"seedream-4-5-251128","created":1,"usage":{"generated_images":0,"output_tokens":0,"total_tokens":0}}`},
+			wantErrStatus: http.StatusBadRequest, wantErrCode: "OutputImageSensitiveContentDetected", wantChunks: 1,
+		},
+		{
+			name:          "request-level error event",
+			events:        []string{`{"error":{"code":"BadRequest","message":"missing required parameter"}}`},
+			wantErrStatus: http.StatusBadRequest, wantErrCode: "BadRequest", wantChunks: 1,
+		},
+		// Ark's [DONE] without a completed event ends the stream with what was delivered and no
+		// error, as upstream wrote it; the body is still open, so it must be abandoned too.
+		{name: "done marker without completed", events: []string{seedreamStreamImage0, "[DONE]"}, wantChunks: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			provider, handlerDone := newParkedBytePlus(t, 3*time.Minute, tc.events...)
+			var finalized atomic.Int32
+			stream, bifrostErr := provider.ImageGenerationStream(streamTestContext(t), passthroughPostHook, func(context.Context) { finalized.Add(1) }, testKey(), imageStreamRequest())
+			if bifrostErr != nil {
+				t.Fatalf("stream setup error: %+v", bifrostErr.Error)
+			}
+			chunks := collectStreamWithin(t, stream, streamCloseLimit)
+			if len(chunks) != tc.wantChunks {
+				t.Fatalf("got %d chunks, want %d: %+v", len(chunks), tc.wantChunks, chunks)
+			}
+			errs := streamErrors(chunks)
+			switch {
+			case tc.wantErrStatus != 0:
+				if len(errs) != 1 {
+					t.Fatalf("got %d error chunks, want exactly 1", len(errs))
+				}
+				if errs[0].StatusCode == nil || *errs[0].StatusCode != tc.wantErrStatus {
+					t.Errorf("error status = %v, want %d (%+v)", errs[0].StatusCode, tc.wantErrStatus, errs[0].Error)
+				}
+				if errs[0].Error.Code == nil || *errs[0].Error.Code != tc.wantErrCode {
+					t.Errorf("error code = %v, want %s", errs[0].Error.Code, tc.wantErrCode)
+				}
+			case len(errs) != 0:
+				t.Fatalf("unexpected error chunk (a 499 or truncation would show here): %+v", errs[0].Error)
+			}
+			if tc.name == "completed" {
+				final := chunks[len(chunks)-1].BifrostImageGenerationStreamResponse
+				if final == nil || final.Type != schemas.ImageGenerationEventTypeCompleted || final.Usage == nil || final.Usage.OutputTokens != 32768 {
+					t.Errorf("final chunk is not a completed event with its usage: %+v", chunks[len(chunks)-1])
+				}
+			}
+			waitFinalizedOnce(t, &finalized)
+			select {
+			case <-handlerDone:
+			case <-time.After(streamCloseLimit):
+				t.Errorf("upstream handler still running %s after the stream closed: the parked connection was not abandoned", streamCloseLimit)
+			}
+		})
+	}
+}
+
+// A body that ends before Ark's completed event is a truncated stream: one error after the image
+// already delivered, on a connection the server keeps alive.
+func TestBytePlusImageStreamTruncatedBody(t *testing.T) {
+	provider, handlerDone := newParkedBytePlus(t, 0, seedreamStreamImage0)
+	var finalized atomic.Int32
+	stream, bifrostErr := provider.ImageGenerationStream(streamTestContext(t), passthroughPostHook, func(context.Context) { finalized.Add(1) }, testKey(), imageStreamRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup error: %+v", bifrostErr.Error)
+	}
+	chunks := collectStreamWithin(t, stream, streamCloseLimit)
+	if len(chunks) != 2 || chunks[0].BifrostImageGenerationStreamResponse == nil {
+		t.Fatalf("want the delivered image and one error, got %+v", chunks)
+	}
+	if errs := streamErrors(chunks); len(errs) != 1 || chunks[1].BifrostError == nil {
+		t.Fatalf("want exactly one error chunk, last: %+v", chunks)
+	}
+	waitFinalizedOnce(t, &finalized)
+	<-handlerDone
+}
+
+// A client that goes away, or a request deadline that passes, while Ark is still generating ends
+// the stream with exactly one error of that kind through the post-hook, which is what logging and
+// billing see. Delivery of that last chunk is best effort once the context is done (the shared
+// send path selects against it), so the channel may carry it or not, but never twice. The
+// provider's own timeouts are minutes long here, so only the context can be what ended it.
+func TestBytePlusImageStreamContextEnds(t *testing.T) {
+	cases := []struct {
+		name       string
+		newContext func(t *testing.T) (*schemas.BifrostContext, func())
+		wantStatus int
+		wantType   string
+	}{
+		{
+			name: "cancelled",
+			newContext: func(t *testing.T) (*schemas.BifrostContext, func()) {
+				ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+				t.Cleanup(cancel)
+				return ctx, cancel
+			},
+			wantStatus: 499, wantType: schemas.RequestCancelled,
+		},
+		{
+			name: "deadline",
+			newContext: func(t *testing.T) (*schemas.BifrostContext, func()) {
+				ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 2*time.Second)
+				t.Cleanup(cancel)
+				return ctx, func() {}
+			},
+			wantStatus: http.StatusGatewayTimeout, wantType: schemas.RequestTimedOut,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			provider, handlerDone := newParkedBytePlus(t, 3*time.Minute, seedreamStreamImage0)
+			ctx, end := tc.newContext(t)
+			var finalized atomic.Int32
+			var mu sync.Mutex
+			var hookErrs []*schemas.BifrostError
+			postHook := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				if err != nil {
+					mu.Lock()
+					hookErrs = append(hookErrs, err)
+					mu.Unlock()
+				}
+				return resp, err
+			}
+			stream, bifrostErr := provider.ImageGenerationStream(ctx, postHook, func(context.Context) { finalized.Add(1) }, testKey(), imageStreamRequest())
+			if bifrostErr != nil {
+				t.Fatalf("stream setup error: %+v", bifrostErr.Error)
+			}
+			var first *schemas.BifrostStreamChunk
+			select {
+			case first = <-stream:
+			case <-time.After(streamCloseLimit):
+				t.Fatal("no first chunk")
+			}
+			if first == nil || first.BifrostImageGenerationStreamResponse == nil {
+				t.Fatalf("first chunk should be the delivered image, got %+v", first)
+			}
+			end()
+			chunks := collectStreamWithin(t, stream, streamCloseLimit)
+			if delivered := streamErrors(chunks); len(chunks) > 1 || len(delivered) != len(chunks) {
+				t.Fatalf("want at most one error chunk after the image, got %+v", chunks)
+			}
+			waitFinalizedOnce(t, &finalized)
+			mu.Lock()
+			defer mu.Unlock()
+			if len(hookErrs) != 1 {
+				t.Fatalf("post-hook saw %d errors, want exactly 1: %+v", len(hookErrs), hookErrs)
+			}
+			if got := hookErrs[0]; got.StatusCode == nil || *got.StatusCode != tc.wantStatus || got.Error.Type == nil || *got.Error.Type != tc.wantType {
+				t.Errorf("error = status %v type %v, want %d %s", got.StatusCode, got.Error.Type, tc.wantStatus, tc.wantType)
+			}
+			select {
+			case <-handlerDone:
+			case <-time.After(streamCloseLimit):
+				t.Errorf("upstream handler still running %s after the stream ended: the connection was not closed", streamCloseLimit)
+			}
+		})
+	}
+}
+
+// One failed call fails the whole embedding request, so no further calls are started: only the
+// calls already in flight (the concurrency window) reach Ark, not one per remaining input.
+func TestBytePlusEmbeddingStopsFanOutAfterAFailure(t *testing.T) {
+	const inputs = 40
+	const window = 8 // bytePlusEmbeddingConcurrency
+	var calls atomic.Int32
+	provider, _, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v3/embeddings/multimodal": func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			jsonResponse(http.StatusTooManyRequests, `{"error":{"code":"RateLimitExceeded.EndpointRPMExceeded","message":"rate limited","type":"TooManyRequests"}}`)(w, r)
+		},
+	})
+	items := make([]schemas.EmbeddingInputItem, inputs)
+	for i := range items {
+		items[i] = schemas.EmbeddingInputItem{Content: []schemas.EmbeddingContentPart{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("text")}}}
+	}
+	_, bifrostErr := provider.Embedding(testContext(t), testKey(), &schemas.BifrostEmbeddingRequest{
+		Provider: schemas.BytePlus,
+		Model:    "skylark-embedding-vision-251215",
+		Input:    items,
+	})
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("want the upstream 429, got %+v", bifrostErr)
+	}
+	if got := calls.Load(); got > window {
+		t.Errorf("%d of %d inputs reached Ark after the first call failed, want at most the %d already in flight", got, inputs, window)
 	}
 }
