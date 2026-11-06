@@ -271,7 +271,7 @@ curl -X POST http://localhost:8080/v1/videos \
 
 Image references, and the first and last frames, also accept the `asset://<ASSET_ID>` form for media in your Ark asset library.
 
-Other extra params are sent to Ark unchanged. That covers `draft`, `return_last_frame`, `service_tier`, `priority`, `execution_expires_after`, `omni_reference_task_type`, `camera_fixed`, `frames`, `watermark` and `safety_identifier`. A task created with `return_last_frame: true` lists the final frame as a second `videos[]` entry with `content_type: image/jpeg`, after the video, so `GET /v1/videos/{id}/content` still downloads the video. A `mov` output comes back with `content_type: video/quicktime`.
+Other extra params are sent to Ark unchanged. That covers `draft`, `return_last_frame`, `service_tier`, `priority`, `execution_expires_after`, `omni_reference_task_type`, `camera_fixed`, `frames`, `watermark` and `safety_identifier`. Two are refused with a `400`: `model`, which would replace the model the request was authorized and priced for (on every BytePlus operation), and `content`, which would replace the task's content items; name media and drafts through the parameters above instead. A task created with `return_last_frame: true` lists the final frame as a second `videos[]` entry with `content_type: image/jpeg`, after the video, so `GET /v1/videos/{id}/content` still downloads the video. A `mov` output comes back with `content_type: video/quicktime`.
 
 To work from a draft, create a task with `draft: true` at `480p`, then create a second task with `extra_params.draft_task_id` set to the draft's ID as Bifrost returned it. Drafts are valid for 7 days.
 

@@ -74,6 +74,12 @@ func ToBytePlusVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGeneration
 		return req, nil
 	}
 
+	// Fork: extra params are merged over this body and replace its keys, so a raw "content" would
+	// put references (a draft task, media URLs) on the wire that neither this converter nor
+	// governance's ownership check saw. The converter owns content.
+	if _, named := params.ExtraParams["content"]; named {
+		return nil, providerUtils.InvalidRequestErrorf("extra params cannot set content; use prompt, input_reference, video_uri, last_frame, reference_images, reference_videos, reference_audios or draft_task_id")
+	}
 	req.ExtraParams = make(map[string]interface{}, len(params.ExtraParams))
 	maps.Copy(req.ExtraParams, params.ExtraParams)
 	delete(req.ExtraParams, "draft_task_id")

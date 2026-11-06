@@ -1781,6 +1781,25 @@ func TestBytePlusRefusesModelInExtraParams(t *testing.T) {
 		t.Errorf("%s %s reached Ark with body %s", r.method, r.path, r.body)
 	}
 
+	// A raw "content" in a video create's extra params would replace the converter's content array
+	// and carry a draft task or media URL past the converter and governance's ownership check.
+	for _, content := range []interface{}{
+		[]interface{}{map[string]interface{}{"type": "draft_task", "draft_task": map[string]interface{}{"id": "cgt-other"}}},
+		"anything",
+	} {
+		_, bifrostErr := provider.VideoGeneration(streamTestContext(t), key, &schemas.BifrostVideoGenerationRequest{
+			Provider: schemas.BytePlus, Model: "seedance-1-0-pro-fast-251015",
+			Input:  &schemas.VideoGenerationInput{Prompt: "a dog"},
+			Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]interface{}{"content": content}},
+		})
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest || !strings.Contains(bifrostErr.Error.Message, "content") {
+			t.Errorf("video create with extra param content: want a 400 naming content, got %+v", bifrostErr)
+		}
+	}
+	for _, r := range captured() {
+		t.Errorf("%s %s reached Ark with body %s", r.method, r.path, r.body)
+	}
+
 	// Other extra params still reach Ark, under the request's own model.
 	if _, bifrostErr := provider.ChatCompletion(streamTestContext(t), key, userChatRequest(&schemas.ChatParameters{ExtraParams: map[string]interface{}{"service_tier": "flex"}})); bifrostErr != nil {
 		t.Fatalf("chat with an ordinary extra param: %+v", bifrostErr.Error)
