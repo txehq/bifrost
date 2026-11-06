@@ -944,6 +944,9 @@ func (provider *MiniMaxProvider) streamMiniMaxSSE(ctx *schemas.BifrostContext, p
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 					provider.logger.Warn("Error reading minimax stream: %v", readErr)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, provider.logger, postHookSpanFinalizer)
+				} else {
+					// Fork: the body is fully consumed, so the deferred release must not drain it again.
+					ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
 				}
 				break
 			}
@@ -962,6 +965,8 @@ func (provider *MiniMaxProvider) streamMiniMaxSSE(ctx *schemas.BifrostContext, p
 					continue
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				// Fork: MiniMax may keep the body open after a terminal event; release must abandon it, not drain it.
+				ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, rawRequest, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, provider.logger, postHookSpanFinalizer)
 				return
 			}
@@ -973,6 +978,8 @@ func (provider *MiniMaxProvider) streamMiniMaxSSE(ctx *schemas.BifrostContext, p
 			if done {
 				setMiniMaxFinalStreamFields(bifrostResp, time.Since(startTime), sendBackRawRequest, rawRequest)
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				// Fork: as above, the upstream may hold the body open after its final event.
+				ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, bifrostResp, responseChan, postHookSpanFinalizer)
 				return
 			}

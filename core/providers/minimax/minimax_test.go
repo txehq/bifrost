@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1299,5 +1300,210 @@ func TestMiniMaxConverterValidationIsBadRequest(t *testing.T) {
 	}
 	if reqs := captured(); len(reqs) != 0 {
 		t.Errorf("invalid requests reached MiniMax: %d", len(reqs))
+	}
+}
+
+// newParkedMiniMax serves events on path and then keeps the body open, sending SSE heartbeats until
+// the client goes away (or 15s pass), the way an upstream can park a connection after its final
+// event. handlerDone closes when the handler returns.
+func newParkedMiniMax(t *testing.T, path string, events ...string) (*minimax.MiniMaxProvider, <-chan struct{}) {
+	t.Helper()
+	handlerDone := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != path {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		defer close(handlerDone)
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		for _, e := range events {
+			_, _ = w.Write([]byte("data: " + e + "\n\n"))
+		}
+		flusher.Flush()
+		deadline := time.After(15 * time.Second)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-deadline:
+				return
+			case <-ticker.C:
+				if _, err := w.Write([]byte(": ping\n\n")); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	provider, err := minimax.NewMiniMaxProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		t.Fatalf("NewMiniMaxProvider: %v", err)
+	}
+	return provider, handlerDone
+}
+
+// collectStreamWithin drains stream, failing the test if it does not close within limit.
+func collectStreamWithin(t *testing.T, stream chan *schemas.BifrostStreamChunk, limit time.Duration) []*schemas.BifrostStreamChunk {
+	t.Helper()
+	var chunks []*schemas.BifrostStreamChunk
+	timeout := time.After(limit)
+	for {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				return chunks
+			}
+			chunks = append(chunks, chunk)
+		case <-timeout:
+			t.Fatalf("stream did not close within %s after its terminal event (cleanup is draining a parked body); got %d chunks", limit, len(chunks))
+			return chunks
+		}
+	}
+}
+
+// A terminal MiniMax event ends the stream even when the upstream keeps the connection open:
+// the channel closes promptly, the finalizer runs once, the terminal usage or error is delivered
+// once, and the parked connection is abandoned rather than drained.
+func TestMiniMaxStreamTerminalEventWithParkedBody(t *testing.T) {
+	type outcome struct {
+		wantErrStatus int
+		check         func(t *testing.T, last *schemas.BifrostStreamChunk)
+	}
+	speechUsage := func(t *testing.T, last *schemas.BifrostStreamChunk) {
+		done := last.BifrostSpeechStreamResponse
+		if done == nil || done.Type != schemas.SpeechStreamResponseTypeDone || done.Usage == nil || done.Usage.InputChars != 11 {
+			t.Errorf("final chunk is not speech done with usage: %+v", last)
+		}
+	}
+	transcriptionUsage := func(t *testing.T, last *schemas.BifrostStreamChunk) {
+		done := last.BifrostTranscriptionStreamResponse
+		if done == nil || done.Type != schemas.TranscriptionStreamResponseTypeDone || done.Usage == nil || done.Usage.Seconds == nil || *done.Usage.Seconds != 1.5 {
+			t.Errorf("final chunk is not transcription done with usage: %+v", last)
+		}
+	}
+	cases := []struct {
+		name   string
+		path   string
+		events []string
+		start  func(p *minimax.MiniMaxProvider, ctx *schemas.BifrostContext, fin func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError)
+		want   outcome
+	}{
+		{
+			name: "speech done",
+			path: "/v1/t2a_v2",
+			events: []string{
+				`{"data":{"audio":"aa","status":1},"base_resp":{"status_code":0,"status_msg":""}}`,
+				`{"data":{"audio":"","status":2},"extra_info":{"audio_length":900,"usage_characters":11},"base_resp":{"status_code":0,"status_msg":"success"}}`,
+			},
+			start: func(p *minimax.MiniMaxProvider, ctx *schemas.BifrostContext, fin func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				return p.SpeechStream(ctx, passthroughPostHook, fin, testKey(), speechRequest("English_Graceful_Lady", nil))
+			},
+			want: outcome{check: speechUsage},
+		},
+		{
+			name: "speech terminal base_resp error",
+			path: "/v1/t2a_v2",
+			events: []string{
+				`{"data":{"audio":"aa","status":1},"base_resp":{"status_code":0,"status_msg":""}}`,
+				`{"base_resp":{"status_code":1002,"status_msg":"rate limited"}}`,
+			},
+			start: func(p *minimax.MiniMaxProvider, ctx *schemas.BifrostContext, fin func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				return p.SpeechStream(ctx, passthroughPostHook, fin, testKey(), speechRequest("English_Graceful_Lady", nil))
+			},
+			want: outcome{wantErrStatus: http.StatusTooManyRequests},
+		},
+		{
+			name: "transcription finish",
+			path: "/v1/speech_to_text",
+			events: []string{
+				`{"index":0,"delta":"Hello","finish":false}`,
+				`{"index":1,"delta":" world.","finish":true,"duration":1.5}`,
+			},
+			start: func(p *minimax.MiniMaxProvider, ctx *schemas.BifrostContext, fin func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				return p.TranscriptionStream(ctx, passthroughPostHook, fin, testKey(), transcriptionRequest(nil))
+			},
+			want: outcome{check: transcriptionUsage},
+		},
+		{
+			name: "transcription terminal base_resp error",
+			path: "/v1/speech_to_text",
+			events: []string{
+				`{"index":0,"delta":"Hello","finish":false}`,
+				`{"base_resp":{"status_code":1004,"status_msg":"invalid api key"}}`,
+			},
+			start: func(p *minimax.MiniMaxProvider, ctx *schemas.BifrostContext, fin func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				return p.TranscriptionStream(ctx, passthroughPostHook, fin, testKey(), transcriptionRequest(nil))
+			},
+			want: outcome{wantErrStatus: http.StatusUnauthorized},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider, handlerDone := newParkedMiniMax(t, tc.path, tc.events...)
+			var finalized atomic.Int32
+			stream, bifrostErr := tc.start(provider, testContext(t), func(context.Context) { finalized.Add(1) })
+			if bifrostErr != nil {
+				t.Fatalf("stream setup error: %+v", bifrostErr.Error)
+			}
+			chunks := collectStreamWithin(t, stream, 3*time.Second)
+			if len(chunks) == 0 {
+				t.Fatal("no chunks")
+			}
+			var errs []*schemas.BifrostError
+			for _, c := range chunks {
+				if c.BifrostError != nil {
+					errs = append(errs, c.BifrostError)
+				}
+			}
+			if tc.want.wantErrStatus != 0 {
+				if len(errs) != 1 {
+					t.Fatalf("got %d error chunks, want exactly 1: %+v", len(errs), errs)
+				}
+				if errs[0].StatusCode == nil || *errs[0].StatusCode != tc.want.wantErrStatus {
+					t.Errorf("error status = %v, want %d (%+v)", errs[0].StatusCode, tc.want.wantErrStatus, errs[0].Error)
+				}
+			} else {
+				if len(errs) != 0 {
+					t.Fatalf("unexpected error chunks (a 499 or truncation would show here): %+v", errs[0].Error)
+				}
+				tc.want.check(t, chunks[len(chunks)-1])
+			}
+			if got := finalized.Load(); got != 1 {
+				t.Errorf("finalizer ran %d times, want 1", got)
+			}
+			select {
+			case <-handlerDone:
+			case <-time.After(3 * time.Second):
+				t.Error("upstream handler still running 3s after the stream closed: the parked connection was not abandoned")
+			}
+		})
+	}
+}
+
+// The fork's earlier exported names must keep compiling with their original signatures.
+var (
+	_ func(*schemas.ProviderConfig, schemas.Logger) (*minimax.MinimaxProvider, error) = minimax.NewMinimaxProvider
+	_ schemas.Provider                                                                = (*minimax.MinimaxProvider)(nil)
+	_ *minimax.MiniMaxProvider                                                        = (*minimax.MinimaxProvider)(nil)
+)
+
+func TestMiniMaxDeprecatedForkNames(t *testing.T) {
+	if schemas.Minimax != schemas.MiniMax {
+		t.Fatalf("schemas.Minimax = %q, want it to alias schemas.MiniMax (%q)", schemas.Minimax, schemas.MiniMax)
+	}
+	provider, err := minimax.NewMinimaxProvider(&schemas.ProviderConfig{}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		t.Fatalf("NewMinimaxProvider: %v", err)
+	}
+	if provider.GetProviderKey() != schemas.Minimax {
+		t.Errorf("provider key = %q, want %q", provider.GetProviderKey(), schemas.Minimax)
 	}
 }
