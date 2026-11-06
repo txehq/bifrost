@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -737,8 +738,54 @@ func TestWebSearchChat_Stream_UncitedTextBlockAllocatesNothing(t *testing.T) {
 	if resp, _, _ := stop.ToBifrostChatCompletionStream(nil, "", state); resp != nil {
 		t.Fatal("uncited text content_block_stop emitted a chunk")
 	}
-	if len(state.textBlockStart) != 0 || len(state.pendingCitations) != 0 {
-		t.Errorf("closed text block left state behind: %v / %v", state.textBlockStart, state.pendingCitations)
+	if state.cited != nil {
+		t.Errorf("citation buffer created on a stream without citations: %+v", state.cited)
+	}
+	if state.lastTextBlock != -1 {
+		t.Errorf("lastTextBlock = %d after the block closed, want -1", state.lastTextBlock)
+	}
+}
+
+// A cited block's buffer is released at its stop, so a later uncited block
+// emits nothing and a stream with many cited blocks holds one entry at a time.
+func TestWebSearchChat_Stream_CitedBlockBufferReleasedAtStop(t *testing.T) {
+	state := NewAnthropicStreamState()
+	feed := func(raw string) *schemas.BifrostChatResponse {
+		t.Helper()
+		var ev AnthropicStreamEvent
+		if err := sonic.Unmarshal([]byte(raw), &ev); err != nil {
+			t.Fatalf("unmarshal %s: %v", raw, err)
+		}
+		resp, bErr, _ := ev.ToBifrostChatCompletionStream(nil, "", state)
+		if bErr != nil {
+			t.Fatalf("event %s: %+v", raw, bErr)
+		}
+		return resp
+	}
+	for i := range 3 {
+		idx := strconv.Itoa(i)
+		feed(`{"type":"content_block_start","index":` + idx + `,"content_block":{"type":"text","text":""}}`)
+		feed(`{"type":"content_block_delta","index":` + idx + `,"delta":{"type":"citations_delta","citation":{"type":"web_search_result_location","url":"https://example.com/` + idx + `","title":"T","cited_text":"c"}}}`)
+		if state.cited == nil || len(state.cited.blocks) != 1 {
+			t.Fatalf("block %d: cited buffer %+v, want one block", i, state.cited)
+		}
+		feed(`{"type":"content_block_delta","index":` + idx + `,"delta":{"type":"text_delta","text":"cited."}}`)
+		resp := feed(`{"type":"content_block_stop","index":` + idx + `}`)
+		if resp == nil || len(resp.Choices[0].ChatStreamResponseChoice.Delta.Annotations) != 1 {
+			t.Fatalf("block %d: stop emitted %+v, want one annotation", i, resp)
+		}
+		ann := resp.Choices[0].ChatStreamResponseChoice.Delta.Annotations[0].URLCitation
+		if want := i * len("cited."); ann.StartIndex != want || ann.EndIndex != want+len("cited.") {
+			t.Errorf("block %d: span [%d,%d), want [%d,%d)", i, ann.StartIndex, ann.EndIndex, want, want+len("cited."))
+		}
+		if len(state.cited.blocks) != 0 {
+			t.Fatalf("block %d: cited buffer not released at stop: %+v", i, state.cited.blocks)
+		}
+	}
+	feed(`{"type":"content_block_start","index":3,"content_block":{"type":"text","text":""}}`)
+	feed(`{"type":"content_block_delta","index":3,"delta":{"type":"text_delta","text":"plain"}}`)
+	if resp := feed(`{"type":"content_block_stop","index":3}`); resp != nil {
+		t.Errorf("uncited block after cited ones emitted %+v", resp)
 	}
 }
 

@@ -1261,7 +1261,6 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 	// byte length of the text blocks seen so far, which is where the next
 	// block starts in the joined content string (see the join below).
 	var annotations []schemas.ChatAssistantMessageAnnotation
-	seenAnnotations := make(map[anthropicAnnotationKey]struct{})
 	textOffset := 0
 
 	// Process content and tool calls
@@ -1277,7 +1276,7 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 					start := textOffset
 					textOffset += len(*c.Text)
 					if c.Citations != nil {
-						annotations = appendAnthropicWebSearchAnnotations(annotations, c.Citations.TextCitations, start, textOffset, seenAnnotations)
+						annotations = appendAnthropicWebSearchAnnotations(annotations, c.Citations.TextCitations, start, textOffset)
 					}
 				}
 			case AnthropicContentBlockTypeToolUse:
@@ -1638,31 +1637,23 @@ func ToAnthropicChatResponse(bifrostResp *schemas.BifrostChatResponse) *Anthropi
 	return anthropicResp
 }
 
-// anthropicAnnotationKey identifies one url_citation annotation for
-// deduplication: the same source cited twice for the same span is one entry.
-type anthropicAnnotationKey struct {
-	url        string
-	start, end int
-}
-
 // appendAnthropicWebSearchAnnotations maps the web_search_result_location
 // citations of one text block to OpenAI url_citation annotations and appends
 // them to out. Anthropic cites a whole text block, so every annotation spans
 // the block: [start, end) are byte offsets of that block in the chat content
 // string, the same unit the Gemini provider passes through for its grounding
 // segments. Other citation types (document char/page/block locations, search
-// results) have no url_citation equivalent and are skipped. Identical
-// (url, span) pairs already in seen are dropped.
-func appendAnthropicWebSearchAnnotations(out []schemas.ChatAssistantMessageAnnotation, citations []AnthropicTextCitation, start, end int, seen map[anthropicAnnotationKey]struct{}) []schemas.ChatAssistantMessageAnnotation {
+// results) have no url_citation equivalent and are skipped. A (url, span)
+// pair already in out is dropped: the same source cited twice for the same
+// span is one entry. The scan compares spans first and needs no map.
+func appendAnthropicWebSearchAnnotations(out []schemas.ChatAssistantMessageAnnotation, citations []AnthropicTextCitation, start, end int) []schemas.ChatAssistantMessageAnnotation {
 	for _, citation := range citations {
 		if citation.Type != AnthropicCitationTypeWebSearchResultLocation || citation.URL == nil || *citation.URL == "" {
 			continue
 		}
-		key := anthropicAnnotationKey{url: *citation.URL, start: start, end: end}
-		if _, dup := seen[key]; dup {
+		if hasAnthropicURLCitation(out, *citation.URL, start, end) {
 			continue
 		}
-		seen[key] = struct{}{}
 		annotation := schemas.ChatAssistantMessageAnnotation{
 			Type: "url_citation",
 			URLCitation: schemas.ChatAssistantMessageAnnotationCitation{
@@ -1680,6 +1671,18 @@ func appendAnthropicWebSearchAnnotations(out []schemas.ChatAssistantMessageAnnot
 		out = append(out, annotation)
 	}
 	return out
+}
+
+// hasAnthropicURLCitation reports whether out already holds a url_citation for
+// url over [start, end).
+func hasAnthropicURLCitation(out []schemas.ChatAssistantMessageAnnotation, url string, start, end int) bool {
+	for i := range out {
+		c := &out[i].URLCitation
+		if c.StartIndex == start && c.EndIndex == end && c.URL != nil && *c.URL == url {
+			return true
+		}
+	}
+	return false
 }
 
 // AnthropicStreamState tracks per-stream tool call index state.
@@ -1705,13 +1708,34 @@ type AnthropicStreamState struct {
 	// i.e. the length of the accumulated chat content string. It locates text
 	// blocks in that string for url_citation annotation spans.
 	contentLen int
-	// textBlockStart maps an open text content_block index to contentLen at
-	// the moment the block started.
-	textBlockStart map[int]int
-	// pendingCitations buffers a text block's citations (from its
-	// content_block_start and citations_delta events) until content_block_stop,
-	// when the block's end offset is known.
-	pendingCitations map[int][]AnthropicTextCitation
+	// lastTextBlock and lastTextStart record the most recently started text
+	// content_block and contentLen at that moment, in plain fields, so a
+	// stream without citations pays two assignments per text block and no map
+	// work. lastTextBlock is -1 when no text block is open.
+	lastTextBlock int
+	lastTextStart int
+	// cited buffers the citations of each open text block that carries any
+	// (from its content_block_start and citations_delta events) until
+	// content_block_stop, when the block's end offset is known. It stays nil on
+	// a stream without citations. It is a separate allocation on purpose:
+	// appending to a slice held directly in the state would make escape
+	// analysis move the whole state, and its maps, to the heap for every stream.
+	cited *anthropicCitedBlocks
+}
+
+// anthropicCitedBlocks holds the open text blocks that carry citations.
+// Anthropic streams one block at a time, so blocks holds at most one entry in
+// practice.
+type anthropicCitedBlocks struct {
+	blocks []anthropicCitedBlock
+}
+
+// anthropicCitedBlock is one open text block's start offset in the content
+// string and the citations buffered for it.
+type anthropicCitedBlock struct {
+	index     int
+	start     int
+	citations []AnthropicTextCitation
 }
 
 // NewAnthropicStreamState returns an initialised stream state for one streaming response.
@@ -1720,9 +1744,50 @@ func NewAnthropicStreamState() *AnthropicStreamState {
 		contentBlockToToolCallIdx: make(map[int]int),
 		sawArgsDelta:              make(map[int]bool),
 		reasoningDetailIdxByBlock: make(map[int]int),
-		textBlockStart:            make(map[int]int),
-		pendingCitations:          make(map[int][]AnthropicTextCitation),
+		lastTextBlock:             -1,
 	}
+}
+
+// addTextCitations buffers citations for the text block at index, creating
+// the buffer on the stream's first citation. The block's start is the offset
+// recorded when it opened, or the current content length for a block whose
+// start was not seen.
+func (state *AnthropicStreamState) addTextCitations(index int, citations ...AnthropicTextCitation) {
+	start := state.contentLen
+	if state.lastTextBlock == index {
+		start = state.lastTextStart
+	}
+	if state.cited == nil {
+		state.cited = &anthropicCitedBlocks{}
+	}
+	state.cited.add(index, start, citations)
+}
+
+func (c *anthropicCitedBlocks) add(index, start int, citations []AnthropicTextCitation) {
+	for i := range c.blocks {
+		if c.blocks[i].index == index {
+			c.blocks[i].citations = append(c.blocks[i].citations, citations...)
+			return
+		}
+	}
+	c.blocks = append(c.blocks, anthropicCitedBlock{
+		index:     index,
+		start:     start,
+		citations: append([]AnthropicTextCitation(nil), citations...),
+	})
+}
+
+// take removes and returns the buffered citations of the text block at index,
+// if it has any.
+func (c *anthropicCitedBlocks) take(index int) (anthropicCitedBlock, bool) {
+	for i := range c.blocks {
+		if c.blocks[i].index == index {
+			block := c.blocks[i]
+			c.blocks = append(c.blocks[:i], c.blocks[i+1:]...)
+			return block, true
+		}
+	}
+	return anthropicCitedBlock{}, false
 }
 
 // reasoningDetailIndex returns the stable reasoning_details index for an
@@ -1747,12 +1812,6 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 	}
 	if state.sawArgsDelta == nil {
 		state.sawArgsDelta = make(map[int]bool)
-	}
-	if state.textBlockStart == nil {
-		state.textBlockStart = make(map[int]int)
-	}
-	if state.pendingCitations == nil {
-		state.pendingCitations = make(map[int][]AnthropicTextCitation)
 	}
 
 	switch chunk.Type {
@@ -1828,9 +1887,10 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 			case AnthropicContentBlockTypeText:
 				// Remember where this block starts in the content string so its
 				// citations can be given a span on content_block_stop.
-				state.textBlockStart[*chunk.Index] = state.contentLen
+				state.lastTextBlock = *chunk.Index
+				state.lastTextStart = state.contentLen
 				if chunk.ContentBlock.Citations != nil && len(chunk.ContentBlock.Citations.TextCitations) > 0 {
-					state.pendingCitations[*chunk.Index] = append(state.pendingCitations[*chunk.Index], chunk.ContentBlock.Citations.TextCitations...)
+					state.addTextCitations(*chunk.Index, chunk.ContentBlock.Citations.TextCitations...)
 				}
 				return nil, nil, false
 
@@ -1951,10 +2011,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 				// Buffer them; content_block_stop emits them once the block's
 				// span in the content string is known.
 				if chunk.Delta.Citation != nil {
-					if _, ok := state.textBlockStart[*chunk.Index]; !ok {
-						state.textBlockStart[*chunk.Index] = state.contentLen
-					}
-					state.pendingCitations[*chunk.Index] = append(state.pendingCitations[*chunk.Index], *chunk.Delta.Citation)
+					state.addTextCitations(*chunk.Index, *chunk.Delta.Citation)
 				}
 				return nil, nil, false
 
@@ -2025,29 +2082,30 @@ func (chunk *AnthropicStreamEvent) ToBifrostChatCompletionStream(ctx *schemas.Bi
 		if chunk.Index != nil {
 			// A text block closes: emit its url_citation annotations, if any,
 			// spanning the block's bytes in the content string.
-			if blockStart, isTextBlock := state.textBlockStart[*chunk.Index]; isTextBlock {
-				citations := state.pendingCitations[*chunk.Index]
-				delete(state.textBlockStart, *chunk.Index)
-				delete(state.pendingCitations, *chunk.Index)
-				annotations := appendAnthropicWebSearchAnnotations(nil, citations, blockStart, state.contentLen, make(map[anthropicAnnotationKey]struct{}))
-				if len(annotations) == 0 {
-					return nil, nil, false
-				}
-				return &schemas.BifrostChatResponse{
-					Object: "chat.completion.chunk",
-					Choices: []schemas.BifrostResponseChoice{
-						{
-							Index: 0,
-							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
-								Delta: &schemas.ChatStreamResponseChoiceDelta{
-									Annotations: annotations,
+			if state.lastTextBlock == *chunk.Index {
+				state.lastTextBlock = -1
+			}
+			if state.cited != nil {
+				if block, isCited := state.cited.take(*chunk.Index); isCited {
+					annotations := appendAnthropicWebSearchAnnotations(nil, block.citations, block.start, state.contentLen)
+					if len(annotations) == 0 {
+						return nil, nil, false
+					}
+					return &schemas.BifrostChatResponse{
+						Object: "chat.completion.chunk",
+						Choices: []schemas.BifrostResponseChoice{
+							{
+								Index: 0,
+								ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+									Delta: &schemas.ChatStreamResponseChoiceDelta{
+										Annotations: annotations,
+									},
 								},
 							},
 						},
-					},
-				}, nil, false
+					}, nil, false
+				}
 			}
-
 			toolCallIdx, isToolBlock := state.contentBlockToToolCallIdx[*chunk.Index]
 			needsFlush := isToolBlock && !state.sawArgsDelta[*chunk.Index]
 			delete(state.contentBlockToToolCallIdx, *chunk.Index)
