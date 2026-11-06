@@ -5933,6 +5933,51 @@ func TestListAllModelsIncludesEveryPageOfASlowLargeProvider(t *testing.T) {
 	}
 }
 
+// The per-page deadline must not leave a provider's walk unbounded: past
+// listAllModelsWalkTimeout the walk stops, keeping the pages it already has,
+// so one inbound GET /v1/models cannot hold a slow provider's upstream calls
+// for every page's full deadline.
+func TestListAllModelsStopsAtTheWalkDeadline(t *testing.T) {
+	const totalModels = 2*schemas.DefaultPageSize + 500
+	ids := make([]string, totalModels)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("model-%05d", i)
+	}
+	listing := openAIStyleModelsHandler(ids...)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(600 * time.Millisecond)
+		listing(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, srv.URL)
+	account.SetKeysForProvider(schemas.OpenAI, wildcardKey(schemas.OpenAI))
+	tuneProviderForTest(t, account, schemas.OpenAI)
+
+	oldPage, oldWalk := listAllModelsProviderTimeout, listAllModelsWalkTimeout
+	// Every page fits its own deadline, but the three pages together do not
+	// fit the walk's.
+	listAllModelsProviderTimeout = time.Second
+	listAllModelsWalkTimeout = 1500 * time.Millisecond
+	t.Cleanup(func() { listAllModelsProviderTimeout, listAllModelsWalkTimeout = oldPage, oldWalk })
+
+	client := newListModelsTestClient(t, account, nil)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	if bfErr != nil {
+		t.Fatalf("ListAllModels returned error: %s", bfErr.GetErrorString())
+	}
+	if got := len(resp.Data); got == 0 || got >= totalModels {
+		t.Fatalf("aggregate returned %d of %d models; want the pages fetched before the walk deadline only", got, totalModels)
+	}
+	if !containsModelID(resp, "openai/"+ids[0]) {
+		t.Fatalf("aggregate is missing the first page")
+	}
+}
+
 // BenchmarkListAllModels measures the unscoped aggregate against one local
 // OpenAI-style provider whose catalog fits one internal page or spans three.
 // The listing body is built once, so the server side adds a fixed write; the
