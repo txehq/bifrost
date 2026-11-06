@@ -333,6 +333,16 @@ func providerObjectReferences(req *schemas.BifrostRequest) []providerObjectRef {
 		refs = append(refs, toolObjectRefs(req, provider)...)
 		return refs
 	}
+	if r := req.VideoGenerationRequest; r != nil && r.Params != nil {
+		// A video can be generated from a draft task named in the request's extra params (BytePlus
+		// draft_task_id, in bare or provider-suffixed form). The draft is a video another key may
+		// have created, so it is checked like a video edit's source.
+		if id, ok := schemas.SafeExtractString(r.Params.ExtraParams["draft_task_id"]); ok && id != "" {
+			ref, _ := objectRef(configstoreTables.ProviderObjectKindVideo, r.Provider, id)
+			ref.indirect = true
+			return []providerObjectRef{ref}
+		}
+	}
 	if ref, ok := providerObjectReference(req); ok {
 		return []providerObjectRef{ref}
 	}
