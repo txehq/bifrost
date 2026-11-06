@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -145,9 +147,17 @@ func TestFetchAndEncodeURL_ErrorsAreRedacted(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected an error")
 			}
+			// Fork: FetchMediaURL takes the same guarded path.
+			_, _, mediaErr := FetchMediaURL(t.Context(), tt.url)
+			if mediaErr == nil {
+				t.Fatal("FetchMediaURL: expected an error")
+			}
 			for _, secret := range secrets {
 				if strings.Contains(err.Error(), secret) {
 					t.Errorf("error leaks %q: %s", secret, err.Error())
+				}
+				if strings.Contains(mediaErr.Error(), secret) {
+					t.Errorf("FetchMediaURL error leaks %q: %s", secret, mediaErr.Error())
 				}
 			}
 		})
@@ -487,6 +497,135 @@ func TestFetchAndEncodeURL_PreservesPathBytes(t *testing.T) {
 				mu.Lock()
 				defer mu.Unlock()
 				t.Fatalf("fetch failed: %v; upstream saw request URIs %v", err, seen)
+			}
+		})
+	}
+}
+
+// TestFetchMediaURL_RawBytesAndMediaLimit pins the fork's media fetch: raw bytes through the same
+// proxy-aware, SSRF-checked client, with a body cap above the 25 MiB inline-fetch limit, and a
+// private target still refused.
+func TestFetchMediaURL_RawBytesAndMediaLimit(t *testing.T) {
+	large := bytes.Repeat([]byte("v"), int(maxFetchBytes)+1024)
+	var privateHits atomic.Int32
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Host == "10.0.0.5" {
+			privateHits.Add(1)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Host != "203.0.113.10" {
+			http.Error(w, "unexpected target "+r.URL.Host, http.StatusBadGateway)
+			return
+		}
+		switch r.URL.Path {
+		case "/clip.mp4":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("MP4DATA"))
+		case "/large.mp4":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write(large)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	proxyCtx := func(t *testing.T) context.Context {
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+		t.Cleanup(cancel)
+		return context.WithValue(ctx, schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{
+			Type: schemas.HTTPProxy,
+			URL:  schemas.NewSecretVar(proxy.URL),
+		})
+	}
+
+	mediaType, body, err := FetchMediaURL(proxyCtx(t), "http://203.0.113.10/clip.mp4")
+	if err != nil {
+		t.Fatalf("FetchMediaURL: %v", err)
+	}
+	if mediaType != "video/mp4" || string(body) != "MP4DATA" {
+		t.Errorf("got %q %q, want video/mp4 MP4DATA", mediaType, body)
+	}
+
+	if _, _, err := FetchAndEncodeURL(proxyCtx(t), "http://203.0.113.10/large.mp4"); err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("inline fetch of %d bytes should exceed its limit, got %v", len(large), err)
+	}
+	if _, body, err := FetchMediaURL(proxyCtx(t), "http://203.0.113.10/large.mp4"); err != nil || len(body) != len(large) {
+		t.Fatalf("media fetch of %d bytes: len=%d err=%v", len(large), len(body), err)
+	}
+
+	if _, _, err := FetchMediaURL(proxyCtx(t), "http://10.0.0.5/secret.mp4"); err == nil || !strings.Contains(err.Error(), "non-public address") {
+		t.Fatalf("expected a non-public address error, got %v", err)
+	}
+	if privateHits.Load() != 0 {
+		t.Fatalf("private target reached the proxy %d times", privateHits.Load())
+	}
+}
+
+// benchFetchProxy serves body for http://203.0.113.10/<anything> through a loopback forward
+// proxy, so the fetch benchmarks run offline through the real SSRF-checked, proxied client.
+func benchFetchProxy(b *testing.B, body []byte) context.Context {
+	b.Helper()
+	proxy := proxytest.ForwardProxy(b, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write(body)
+	})
+	return context.WithValue(b.Context(), schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{
+		Type: schemas.HTTPProxy,
+		URL:  schemas.NewSecretVar(proxy.URL),
+	})
+}
+
+// BenchmarkFetchClientFor is the per-fetch cached client lookup, direct and proxied.
+func BenchmarkFetchClientFor(b *testing.B) {
+	b.Run("direct", func(b *testing.B) {
+		ctx := b.Context()
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := fetchClientFor(ctx); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("proxied", func(b *testing.B) {
+		ctx := context.WithValue(b.Context(), schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{
+			Type: schemas.HTTPProxy,
+			URL:  schemas.NewSecretVar("http://127.0.0.1:3128"),
+		})
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := fetchClientFor(ctx); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+// BenchmarkFetchAndEncodeURL is an inline image or document fetch through a proxy.
+func BenchmarkFetchAndEncodeURL(b *testing.B) {
+	for _, size := range []int{4 << 10, 1 << 20} {
+		b.Run(strconv.Itoa(size>>10)+"KiB", func(b *testing.B) {
+			ctx := benchFetchProxy(b, bytes.Repeat([]byte("i"), size))
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, _, err := FetchAndEncodeURL(ctx, "http://203.0.113.10/img.png"); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkFetchMediaURL is the fork's provider-hosted media download through a proxy (new: no
+// earlier implementation to compare against).
+func BenchmarkFetchMediaURL(b *testing.B) {
+	for _, size := range []int{4 << 10, 1 << 20, 16 << 20} {
+		b.Run(strconv.Itoa(size>>10)+"KiB", func(b *testing.B) {
+			ctx := benchFetchProxy(b, bytes.Repeat([]byte("v"), size))
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, body, err := FetchMediaURL(ctx, "http://203.0.113.10/clip.mp4"); err != nil || len(body) != size {
+					b.Fatalf("len=%d err=%v", len(body), err)
+				}
 			}
 		})
 	}

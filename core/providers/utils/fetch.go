@@ -78,7 +78,26 @@ func sanitizeFetchError(err error, redacted string) error {
 // and the tunnel is opened to the checked address rather than the hostname; see
 // newFetchClient. With no proxy configured the fetch connects directly, as before.
 func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType string, encoded string, err error) {
-	const maxBytes = maxFetchBytes
+	mediaType, body, err := fetchURL(ctx, resourceURL, defaultFetchLimits)
+	if err != nil {
+		return "", "", err
+	}
+	return mediaType, base64.StdEncoding.EncodeToString(body), nil
+}
+
+// FetchMediaURL downloads a provider-hosted media file, such as the signed URL of a finished
+// video, and returns its raw bytes and Content-Type. A provider response names that URL, so
+// it is not trusted: the fetch takes the same SSRF-hardened, proxy-aware path as
+// FetchAndEncodeURL (http/https only, every resolved address and redirect hop checked at dial
+// time). Media is larger than an inline document, so the body cap is 256 MiB and the whole
+// fetch is bounded by 5 minutes; the clients for this limit are cached separately.
+func FetchMediaURL(ctx context.Context, resourceURL string) (mediaType string, body []byte, err error) {
+	return fetchURL(ctx, resourceURL, mediaFetchLimits)
+}
+
+// fetchURL is the shared body of FetchAndEncodeURL and FetchMediaURL.
+func fetchURL(ctx context.Context, resourceURL string, limits fetchLimits) (mediaType string, body []byte, err error) {
+	maxBytes := limits.maxBytes
 
 	// Every error below names the resource by its redacted form only; see
 	// RedactURLForError for why the query and userinfo never make it into a message.
@@ -86,42 +105,54 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 
 	parsed, err := url.Parse(resourceURL)
 	if err != nil {
-		return "", "", fmt.Errorf("invalid resource URL %q: %w", redacted, sanitizeFetchError(err, redacted))
+		return "", nil, fmt.Errorf("invalid resource URL %q: %w", redacted, sanitizeFetchError(err, redacted))
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", "", fmt.Errorf("unsupported URL scheme %q (only http/https allowed)", parsed.Scheme)
+		return "", nil, fmt.Errorf("unsupported URL scheme %q (only http/https allowed)", parsed.Scheme)
 	}
 
-	client, err := fetchClientFor(ctx)
+	client, err := fetchClientForLimits(ctx, limits)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to fetch from %q: %w", redacted, err)
+		return "", nil, fmt.Errorf("failed to fetch from %q: %w", redacted, err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resourceURL, nil)
 	if err != nil {
-		return "", "", fmt.Errorf("invalid resource URL %q: %w", redacted, sanitizeFetchError(err, redacted))
+		return "", nil, fmt.Errorf("invalid resource URL %q: %w", redacted, sanitizeFetchError(err, redacted))
 	}
 	req.Header.Set("User-Agent", "bifrost-fetch/1")
 
 	resp, err := DoHTTPRequest(client, req)
 	if err != nil {
 		if errors.Is(err, fasthttp.ErrBodyTooLarge) {
-			return "", "", fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
+			return "", nil, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
 		}
-		return "", "", fmt.Errorf("failed to fetch from %q: %w", redacted, sanitizeFetchError(err, redacted))
+		return "", nil, fmt.Errorf("failed to fetch from %q: %w", redacted, sanitizeFetchError(err, redacted))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", "", fmt.Errorf("fetch %q returned non-2xx status %d", redacted, resp.StatusCode)
+		return "", nil, fmt.Errorf("fetch %q returned non-2xx status %d", redacted, resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
-	if err != nil {
-		return "", "", fmt.Errorf("failed to read body from %q: %w", redacted, sanitizeFetchError(err, redacted))
-	}
-	if int64(len(body)) > maxBytes {
-		return "", "", fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
+	if n := resp.ContentLength; n > maxBytes {
+		return "", nil, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
+	} else if n >= 0 {
+		// Fork: the body length is known (the fasthttp round tripper always sets it), so read
+		// into one exact-size buffer instead of letting io.ReadAll grow and copy it, which for
+		// a 256 MiB media file would hold several transient copies.
+		body = make([]byte, n)
+		if _, err = io.ReadFull(resp.Body, body); err != nil {
+			return "", nil, fmt.Errorf("failed to read body from %q: %w", redacted, sanitizeFetchError(err, redacted))
+		}
+	} else {
+		body, err = io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to read body from %q: %w", redacted, sanitizeFetchError(err, redacted))
+		}
+		if int64(len(body)) > maxBytes {
+			return "", nil, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
+		}
 	}
 
 	mediaType = resp.Header.Get("Content-Type")
@@ -129,11 +160,24 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 		mediaType = strings.TrimSpace(mediaType[:i])
 	}
 
-	return mediaType, base64.StdEncoding.EncodeToString(body), nil
+	return mediaType, body, nil
 }
 
 // maxFetchBytes caps a fetched resource at 25 MiB.
 const maxFetchBytes int64 = 25 * 1024 * 1024
+
+// fetchLimits bounds one class of fetch: the body cap and the timeout of the whole request.
+type fetchLimits struct {
+	maxBytes int64
+	timeout  time.Duration
+}
+
+var (
+	// defaultFetchLimits is FetchAndEncodeURL's inline image and document fetch.
+	defaultFetchLimits = fetchLimits{maxBytes: maxFetchBytes, timeout: 20 * time.Second}
+	// mediaFetchLimits is FetchMediaURL's provider-hosted media download (fork).
+	mediaFetchLimits = fetchLimits{maxBytes: 256 * 1024 * 1024, timeout: 5 * time.Minute}
+)
 
 // proxyEnvVars are the variables golang.org/x/net/http/httpproxy reads.
 var proxyEnvVars = []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "REQUEST_METHOD"}
@@ -146,12 +190,19 @@ var fetchClients sync.Map // fetchClientKey -> *http.Client
 // fetchClientFor returns the client for the proxy config carried on ctx, or the
 // direct client when there is none.
 func fetchClientFor(ctx context.Context) (*http.Client, error) {
+	return fetchClientForLimits(ctx, defaultFetchLimits)
+}
+
+// fetchClientForLimits is fetchClientFor for a given fetch class; the limits are part of the
+// cache key, so the set stays bounded by distinct proxy configs times the two fetch classes.
+func fetchClientForLimits(ctx context.Context, limits fetchLimits) (*http.Client, error) {
 	proxyConfig, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig)
 	key := fetchClientKeyFor(proxyConfig)
+	key.limits = limits
 	if cached, ok := fetchClients.Load(key); ok {
 		return cached.(*http.Client), nil
 	}
-	actual, _ := fetchClients.LoadOrStore(key, newFetchClient(proxyConfig))
+	actual, _ := fetchClients.LoadOrStore(key, newFetchClientWithLimits(proxyConfig, limits))
 	return actual.(*http.Client), nil
 }
 
@@ -200,15 +251,20 @@ func proxyBypassFunc(proxyConfig *schemas.ProxyConfig) func(scheme, host, port s
 var fetchResolveTarget = network.ResolvePublicTarget
 
 func newFetchClient(proxyConfig *schemas.ProxyConfig) *http.Client {
+	return newFetchClientWithLimits(proxyConfig, defaultFetchLimits)
+}
+
+// newFetchClientWithLimits is newFetchClient with the body cap and timeouts of limits.
+func newFetchClientWithLimits(proxyConfig *schemas.ProxyConfig, limits fetchLimits) *http.Client {
 	ssrfDial := network.SSRFSafeDialContext(10 * time.Second)
 	direct := func(addr string) (net.Conn, error) {
 		return ssrfDial(context.Background(), "tcp", addr)
 	}
 	client := &fasthttp.Client{
-		ReadTimeout:              20 * time.Second,
-		WriteTimeout:             20 * time.Second,
+		ReadTimeout:              limits.timeout,
+		WriteTimeout:             limits.timeout,
 		MaxIdleConnDuration:      30 * time.Second,
-		MaxResponseBodySize:      int(maxFetchBytes) + 1,
+		MaxResponseBodySize:      int(limits.maxBytes) + 1,
 		NoDefaultUserAgentHeader: true,
 		// The path is sent byte for byte: repeated or escaped slashes in an object key
 		// are covered by a pre-signed URL's signature and select the object.
@@ -265,7 +321,7 @@ func newFetchClient(proxyConfig *schemas.ProxyConfig) *http.Client {
 	client.Transport = NewContextTransport()
 
 	return &http.Client{
-		Timeout:   20 * time.Second,
+		Timeout:   limits.timeout,
 		Transport: &fasthttpRoundTripper{client: client, schemes: schemes},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
@@ -296,6 +352,8 @@ type fetchClientKey struct {
 	// env holds the proxy variables for type "environment": EnvProxyFunc reads them
 	// when the client is built, so the values it read are part of which client this is.
 	env string
+	// limits is the fetch class (fork: FetchMediaURL has its own body cap and timeout).
+	limits fetchLimits
 }
 
 func fetchClientKeyFor(proxyConfig *schemas.ProxyConfig) fetchClientKey {

@@ -650,7 +650,7 @@ func AssertRoute(t *testing.T, s *Set, want Route, target string, err error) {
 // proxy dialer tunnels every target with CONNECT, http:// ones included, so a test proxy
 // for a fasthttp-backed client must speak both. handler sees r.URL.Host set to the target
 // (the port is dropped when it is 80).
-func ForwardProxy(t *testing.T, handler http.HandlerFunc) *httptest.Server {
+func ForwardProxy(t testing.TB, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodConnect {

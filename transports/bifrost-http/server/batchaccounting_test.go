@@ -5,6 +5,9 @@ import (
 	"testing"
 
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/configstore"
+	"github.com/capsohq/bifrost/framework/jobaccounting"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 )
 
 // The sweeper skips the plugin pipeline, so nothing upstream resolves a key for it.
@@ -74,4 +77,26 @@ func TestInternalJobContextIsTheOnlySweeperContext(t *testing.T) {
 			t.Fatalf("%s: both kinds must poll pinned to their creating key", name)
 		}
 	}
+}
+
+// The video settler recognises a custom provider through this resolver, so a custom provider
+// built on a video provider has its jobs settled and billed.
+func TestBifrostVideoRetrieverResolvesCustomBaseProvider(t *testing.T) {
+	retriever := &bifrostVideoRetriever{config: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+		"my-minimax":    {CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "my-minimax", BaseProviderType: schemas.MiniMax}},
+		schemas.MiniMax: {},
+	}}}
+	if got := retriever.BaseProvider("my-minimax"); got != schemas.MiniMax {
+		t.Errorf("BaseProvider(my-minimax) = %q, want minimax", got)
+	}
+	if got := retriever.BaseProvider(schemas.MiniMax); got != "" {
+		t.Errorf("BaseProvider(minimax) = %q, want empty for a built-in provider", got)
+	}
+	if got := retriever.BaseProvider("unknown"); got != "" {
+		t.Errorf("BaseProvider(unknown) = %q, want empty", got)
+	}
+	if got := (&bifrostVideoRetriever{}).BaseProvider("my-minimax"); got != "" {
+		t.Errorf("a retriever without config resolved %q", got)
+	}
+	var _ jobaccounting.BaseProviderResolver = retriever
 }

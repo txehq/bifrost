@@ -74,7 +74,10 @@ const (
 	Replicate     ModelProvider = "replicate"
 	VLLM          ModelProvider = "vllm"
 	Runway        ModelProvider = "runway"
-	Minimax       ModelProvider = "minimax"
+	// Minimax is the fork's earlier spelling of MiniMax, kept so existing callers still compile.
+	//
+	// Deprecated: use MiniMax.
+	Minimax       ModelProvider = MiniMax
 	Moonshot      ModelProvider = "moonshot"
 	ModelArk      ModelProvider = "modelark"
 	Volcengine    ModelProvider = "volcengine"
@@ -86,6 +89,7 @@ const (
 	Databricks    ModelProvider = "databricks"
 	Cloudflare    ModelProvider = "cloudflare"
 	Typesafe      ModelProvider = "typesafe"
+	MiniMax       ModelProvider = "minimax"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -96,7 +100,7 @@ var SupportedBaseProviders = []ModelProvider{
 	DeepSeek,
 	Gemini,
 	GLM,
-	Minimax,
+	MiniMax,
 	ModelArk,
 	Moonshot,
 	OpenAI,
@@ -121,7 +125,6 @@ var StandardProviders = []ModelProvider{
 	GLM,
 	Groq,
 	Mistral,
-	Minimax,
 	Moonshot,
 	ModelArk,
 	Ollama,
@@ -150,6 +153,7 @@ var StandardProviders = []ModelProvider{
 	Databricks,
 	Cloudflare,
 	Typesafe,
+	MiniMax,
 }
 
 // RequestType represents the type of request being made to a provider.

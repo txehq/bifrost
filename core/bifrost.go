@@ -5094,8 +5094,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return vllm.NewVLLMProvider(config, bifrost.logger)
 	case schemas.Runway:
 		return runway.NewRunwayProvider(config, bifrost.logger)
-	case schemas.Minimax:
-		return minimax.NewMinimaxProvider(config, bifrost.logger)
+	case schemas.MiniMax:
+		return minimax.NewMiniMaxProvider(config, bifrost.logger)
 	case schemas.Moonshot:
 		return moonshot.NewMoonshotProvider(config, bifrost.logger)
 	case schemas.ModelArk:
