@@ -703,3 +703,67 @@ func TestWebSearchChat_Stream_OtherCitationTypesIgnored(t *testing.T) {
 		t.Errorf("expected no annotations or tool calls, got %+v / %+v", res.annotations, res.toolCalls)
 	}
 }
+
+// A stream without citations pays nothing for citation tracking: opening and
+// closing a text block allocates nothing once the stream is running, so the
+// span bookkeeping web search added stays off the per-event cost.
+func TestWebSearchChat_Stream_UncitedTextBlockAllocatesNothing(t *testing.T) {
+	var start, delta, stop AnthropicStreamEvent
+	for raw, ev := range map[string]*AnthropicStreamEvent{
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`:         &start,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"plain text"}}`: &delta,
+		`{"type":"content_block_stop","index":0}`:                                                    &stop,
+	} {
+		if err := sonic.Unmarshal([]byte(raw), ev); err != nil {
+			t.Fatalf("unmarshal %s: %v", raw, err)
+		}
+	}
+	state := NewAnthropicStreamState()
+	allocs := testing.AllocsPerRun(200, func() {
+		if resp, _, _ := start.ToBifrostChatCompletionStream(nil, "", state); resp != nil {
+			t.Fatal("text content_block_start emitted a chunk")
+		}
+		if resp, _, _ := stop.ToBifrostChatCompletionStream(nil, "", state); resp != nil {
+			t.Fatal("uncited text content_block_stop emitted a chunk")
+		}
+	})
+	if allocs != 0 {
+		t.Errorf("uncited text block boundaries allocate %v times per block, want 0", allocs)
+	}
+	start.ToBifrostChatCompletionStream(nil, "", state)
+	if resp, _, _ := delta.ToBifrostChatCompletionStream(nil, "", state); resp == nil {
+		t.Fatal("text delta emitted no chunk")
+	}
+	if resp, _, _ := stop.ToBifrostChatCompletionStream(nil, "", state); resp != nil {
+		t.Fatal("uncited text content_block_stop emitted a chunk")
+	}
+	if len(state.textBlockStart) != 0 || len(state.pendingCitations) != 0 {
+		t.Errorf("closed text block left state behind: %v / %v", state.textBlockStart, state.pendingCitations)
+	}
+}
+
+// A non-streamed response whose text blocks carry no web search citation adds
+// no allocation for the annotation scan: char_location citations cost the same
+// as no citations at all, and produce no assistant message.
+func TestWebSearchChat_NonStream_NonWebCitationsAllocateNothing(t *testing.T) {
+	const plain = `{"model":"claude-sonnet-4-6","id":"msg_plain","type":"message","role":"assistant","stop_reason":"end_turn",
+"content":[{"type":"text","text":"From the doc."},{"type":"text","text":" More."}],"usage":{"input_tokens":1,"output_tokens":2}}`
+	const docCited = `{"model":"claude-sonnet-4-6","id":"msg_plain","type":"message","role":"assistant","stop_reason":"end_turn",
+"content":[{"type":"text","text":"From the doc.","citations":[{"type":"char_location","cited_text":"x","document_index":0,"start_char_index":0,"end_char_index":1}]},{"type":"text","text":" More."}],"usage":{"input_tokens":1,"output_tokens":2}}`
+	var plainResp, citedResp AnthropicMessageResponse
+	if err := sonic.Unmarshal([]byte(plain), &plainResp); err != nil {
+		t.Fatal(err)
+	}
+	if err := sonic.Unmarshal([]byte(docCited), &citedResp); err != nil {
+		t.Fatal(err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	plainAllocs := testing.AllocsPerRun(100, func() { plainResp.ToBifrostChatResponse(ctx) })
+	citedAllocs := testing.AllocsPerRun(100, func() { citedResp.ToBifrostChatResponse(ctx) })
+	if citedAllocs != plainAllocs {
+		t.Errorf("non-web citations cost %v allocations, plain text %v; want equal", citedAllocs, plainAllocs)
+	}
+	if out := citedResp.ToBifrostChatResponse(ctx); out.Choices[0].Message.ChatAssistantMessage != nil {
+		t.Errorf("non-web citations produced an assistant message: %+v", out.Choices[0].Message.ChatAssistantMessage)
+	}
+}
