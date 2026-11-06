@@ -293104,6 +293104,110 @@
           }
         }
       ]
+    },
+    {
+      "name": "285. MiniMax text completions on the Anthropic-compatible text endpoint (fork minimax text completion)",
+      "description": "txehq/bifrost keeps MiniMax text completions, which upstream's MiniMax provider (d20cb6ace) reports as unsupported. /v1/completions for minimax/<model> is sent as an Anthropic messages request to /text/v1/messages on the base URL's origin and returned in the text completion shape, streamed (on the provider's streaming client) or not. MiniMax's public docs name /anthropic/v1/messages for the Anthropic-compatible API, so a red run here is the first evidence on which path serves this route.",
+      "item": [
+        {
+          "name": "/v1/completions - text and usage - minimax/MiniMax-M2.5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('text completion is served by minimax with text and usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.object, 'object: ' + pm.response.text()).to.eql('text_completion');",
+                  "  pm.expect(j.choices, 'choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.choices[0].text, 'empty text: ' + pm.response.text()).to.be.a('string').and.include('391');",
+                  "  pm.expect(j.extra_fields.provider).to.eql('minimax');",
+                  "  pm.expect(j.usage.total_tokens, 'usage missing: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-M2.5\",\n  \"prompt\": \"What is 17 * 23? Answer with just the number.\",\n  \"max_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/completions stream - text deltas then usage - minimax/MiniMax-M2.5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed text completion carries text deltas and ends with usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.text();",
+                  "  var text = '';",
+                  "  var sawUsage = false;",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data: ') !== 0) { return; }",
+                  "    var data = line.slice(6).trim();",
+                  "    if (data === '[DONE]') { return; }",
+                  "    var chunk = JSON.parse(data);",
+                  "    pm.expect(chunk.error, 'stream error: ' + data).to.be.undefined;",
+                  "    (chunk.choices || []).forEach(function (c) { if (typeof c.text === 'string') { text += c.text; } });",
+                  "    if (chunk.usage && chunk.usage.total_tokens > 0) { sawUsage = true; }",
+                  "  });",
+                  "  pm.expect(text, 'streamed text: ' + body).to.include('391');",
+                  "  pm.expect(sawUsage, 'no chunk carried usage: ' + body).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-M2.5\",\n  \"prompt\": \"What is 17 * 23? Answer with just the number.\",\n  \"max_tokens\": 256,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
