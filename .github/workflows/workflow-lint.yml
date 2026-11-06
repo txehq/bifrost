@@ -18,6 +18,15 @@ permissions:
 jobs:
   check-egress-allowlist:
     name: Egress allowlist covers apt + provider-harness hosts
+    # Pull requests from outside contributors (a head branch in another repository,
+    # or an author who is not a member or owner of txehq) run in the pr-testing
+    # environment, so they cannot get a runner while it requires a reviewer to
+    # approve the run through Review deployments. Everyone else lands on
+    # ci-trusted-branch, an environment with no protection rules that only gives
+    # the job a name. The fork compares the head repository with this one instead
+    # of reading head.repo.fork, as upstream does: txehq/bifrost is itself a fork,
+    # so head.repo.fork is true for its own branches too.
+    environment: ${{ github.event_name == 'pull_request' && (github.event.pull_request.head.repo.full_name != github.repository || !contains(fromJSON('["OWNER","MEMBER"]'), github.event.pull_request.author_association)) && 'pr-testing' || 'ci-trusted-branch' }}
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:
