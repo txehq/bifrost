@@ -18,6 +18,10 @@ BytePlus ModelArk (Ark) is ByteDance's model platform for international customer
 
 Text-to-speech and speech recognition are a separate BytePlus product with its own key and host, so the BytePlus provider doesn't cover them.
 
+<Note>
+This fork also has its own [ModelArk](/providers/supported-providers/modelark) and [Volcengine](/providers/supported-providers/volcengine) providers for the same Ark API. `byteplus` is a separate provider with its own keys and configuration: it is not an alias of `modelark`, and it cannot be the `base_provider_type` of a custom provider.
+</Note>
+
 ### Supported operations
 
 | Operation | Non-Streaming | Streaming | Endpoint |
@@ -145,7 +149,7 @@ Responses requests go to Ark's native `/api/v3/responses`, streamed or not. Ark-
 
 # 3. Embeddings
 
-BytePlus serves embeddings through the multimodal model `skylark-embedding-vision-251215` on `/api/v3/embeddings/multimodal`. That endpoint fuses every part of a request into one vector, so Bifrost sends each input item as its own call, up to 8 at a time, and returns the vectors in input order with usage added up. An item can mix text, image and video parts, and comes back as one vector.
+BytePlus serves embeddings through the multimodal model `skylark-embedding-vision-251215` on `/api/v3/embeddings/multimodal`. That endpoint fuses every part of a request into one vector, so Bifrost sends each input item as its own call, up to 8 at a time, and returns the vectors in input order with usage added up. An item can mix text, image and video parts, and comes back as one vector. If one call fails, the request fails with that error and no further calls are started; calls already in flight finish, and Ark may bill them.
 
 ```bash
 curl -X POST http://localhost:8080/v1/embeddings \
@@ -242,7 +246,7 @@ curl -X POST http://localhost:8080/v1/videos \
 | Create | `POST /v1/videos` | Returns a queued job ID |
 | Get status | `GET /v1/videos/{id}` | Poll until `status: completed`. Ark keeps task records for 7 days. |
 | List | `GET /v1/videos` | `limit` sets the page size. Ark pages by number, so an `after` cursor is rejected with a 400. |
-| Download content | `GET /v1/videos/{id}/content` | Fetches the MP4 from the task's signed URL, which expires after 24 hours |
+| Download content | `GET /v1/videos/{id}/content` | Fetches the video from the task's signed URL, which expires after 24 hours. The URL must resolve to a public address, the file can be up to 256 MiB, and it is served with a `video/*` content type. |
 | Cancel or delete | `DELETE /v1/videos/{id}` | Cancels a queued task or deletes a finished one's record |
 
 ## Parameter mapping
@@ -270,5 +274,7 @@ Image references, and the first and last frames, also accept the `asset://<ASSET
 Other extra params are sent to Ark unchanged. That covers `draft`, `return_last_frame`, `service_tier`, `priority`, `execution_expires_after`, `omni_reference_task_type`, `camera_fixed`, `frames`, `watermark` and `safety_identifier`. A task created with `return_last_frame: true` lists the final frame as a second `videos[]` entry with `content_type: image/jpeg`, after the video, so `GET /v1/videos/{id}/content` still downloads the video. A `mov` output comes back with `content_type: video/quicktime`.
 
 To work from a draft, create a task with `draft: true` at `480p`, then create a second task with `extra_params.draft_task_id` set to the draft's ID as Bifrost returned it. Drafts are valid for 7 days.
+
+A task reports its `size` as `WIDTHxHEIGHT`, built from the resolution tier and ratio Ark returns: `720p` at `16:9` is `1280x720`. It is the nominal size of the tier, not the exact pixel grid Seedance renders, and it is what selects a per-resolution video rate. When Ark reports no ratio or `adaptive`, no `size` is returned and pricing uses the `size` of the original request, if it had one.
 
 Failed, cancelled and expired tasks all come back as `status: failed`, with Ark's error code when it gives one. Model availability differs by region, so check the ModelArk console before pointing video traffic at a non-default region.

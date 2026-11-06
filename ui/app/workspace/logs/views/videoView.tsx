@@ -8,10 +8,10 @@ import {
 	BifrostVideoDownloadOutput,
 	BifrostVideoGenerationOutput,
 	BifrostVideoListOutput,
-	VideoOutput as VideoAsset,
 } from "@/lib/types/logs";
 
 import CollapsibleBox from "./collapsibleBox";
+import { getVideoSrc, splitVideoOutputs } from "./videoView.utils";
 import { CodeEditor } from "@/components/ui/codeEditor";
 
 interface VideoGenerationInput {
@@ -32,16 +32,6 @@ function getMethodTypeLabel(requestType?: string): string {
 	return RequestTypeLabels[requestType.toLowerCase() as keyof typeof RequestTypeLabels] || "Video";
 }
 
-function isImageOutput(video: VideoAsset): boolean {
-	return !!video.content_type?.startsWith("image/");
-}
-
-function getVideoSrc(video: VideoAsset): string | null {
-	if (video.url) return video.url;
-	if (video.base64) return `data:${video.content_type || "video/mp4"};base64,${video.base64}`;
-	return null;
-}
-
 export default function VideoView({ videoInput, videoOutput, videoListOutput, requestType }: VideoViewProps) {
 	const methodTypeLabel = getMethodTypeLabel(requestType);
 	const normalizedType = requestType?.toLowerCase() ?? "";
@@ -50,10 +40,8 @@ export default function VideoView({ videoInput, videoOutput, videoListOutput, re
 	const downloadOutput = isDownload && videoOutput ? (videoOutput as BifrostVideoDownloadOutput) : null;
 	const deleteOutput = isDelete && videoOutput ? (videoOutput as BifrostVideoDeleteOutput) : null;
 	const generationOutput = !isDownload && !isDelete && videoOutput ? (videoOutput as BifrostVideoGenerationOutput) : null;
-	const outputs = generationOutput?.videos?.filter((video) => video.url || video.base64) ?? [];
 	// Image outputs (a Seedance task's last frame) are not playable in a <video> element.
-	const videos = outputs.filter((video) => !isImageOutput(video));
-	const images = outputs.filter(isImageOutput);
+	const { videos, images } = splitVideoOutputs(generationOutput?.videos);
 
 	return (
 		<div className="space-y-4">
