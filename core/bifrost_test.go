@@ -5779,7 +5779,7 @@ func wildcardKey(provider schemas.ModelProvider) []schemas.Key {
 // tuneProviderForTest shrinks the provider's HTTP budget so an abandoned
 // in-flight call to a hanging test server releases its worker (and Shutdown)
 // quickly, and disables retries for deterministic single-attempt behavior.
-func tuneProviderForTest(t *testing.T, account *MockAccount, provider schemas.ModelProvider) {
+func tuneProviderForTest(t testing.TB, account *MockAccount, provider schemas.ModelProvider) {
 	t.Helper()
 	cfg, ok := account.configs[provider]
 	if !ok {
@@ -5789,7 +5789,7 @@ func tuneProviderForTest(t *testing.T, account *MockAccount, provider schemas.Mo
 	cfg.NetworkConfig.MaxRetries = 0
 }
 
-func newListModelsTestClient(t *testing.T, account *MockAccount, catalog schemas.ModelInfoProvider) *Bifrost {
+func newListModelsTestClient(t testing.TB, account *MockAccount, catalog schemas.ModelInfoProvider) *Bifrost {
 	t.Helper()
 	client, initErr := Init(context.Background(), schemas.BifrostConfig{
 		Account:      account,
@@ -5880,6 +5880,149 @@ func TestListAllModelsUnreachableProviderDoesNotBlockAggregate(t *testing.T) {
 	}
 	if !containsModelID(resp, "openai/gpt-4o") {
 		t.Fatalf("healthy provider's models missing from aggregate; got %v", modelIDs(resp))
+	}
+}
+
+// A provider whose catalog spans several internal pages must contribute every
+// page to the aggregate even when the pages together take longer than the
+// per-provider poll deadline (issue #8759: the deadline covered the whole page
+// walk, so a later page timed out and the aggregate silently kept only the
+// first 1,000 models while the provider-scoped listing returned all of them).
+func TestListAllModelsIncludesEveryPageOfASlowLargeProvider(t *testing.T) {
+	const totalModels = 2*schemas.DefaultPageSize + 500
+	ids := make([]string, totalModels)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("model-%05d", i)
+	}
+	listing := openAIStyleModelsHandler(ids...)
+	// Each page re-fetches the upstream catalog; every fetch alone fits the
+	// deadline below, but two of them back to back do not. The 400ms margin per
+	// fetch keeps the test green on a loaded runner under -race.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(600 * time.Millisecond)
+		listing(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, srv.URL)
+	account.SetKeysForProvider(schemas.OpenAI, wildcardKey(schemas.OpenAI))
+	tuneProviderForTest(t, account, schemas.OpenAI)
+
+	oldTimeout := listAllModelsProviderTimeout
+	listAllModelsProviderTimeout = time.Second
+	t.Cleanup(func() { listAllModelsProviderTimeout = oldTimeout })
+
+	client := newListModelsTestClient(t, account, nil)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	if bfErr != nil {
+		t.Fatalf("ListAllModels returned error: %s", bfErr.GetErrorString())
+	}
+	if resp.NextPageToken != "" {
+		t.Fatalf("unpaged aggregate returned next_page_token %q; want every row in one response", resp.NextPageToken)
+	}
+	if got := len(resp.Data); got != totalModels {
+		t.Fatalf("aggregate returned %d of the provider's %d models with no continuation token", got, totalModels)
+	}
+	if last := "openai/" + ids[totalModels-1]; !containsModelID(resp, last) {
+		t.Fatalf("aggregate is missing the provider's last page (no %s)", last)
+	}
+}
+
+// The per-page deadline must not leave a provider's walk unbounded: past
+// listAllModelsWalkTimeout the walk stops, keeping the pages it already has,
+// so one inbound GET /v1/models cannot hold a slow provider's upstream calls
+// for every page's full deadline.
+func TestListAllModelsStopsAtTheWalkDeadline(t *testing.T) {
+	const totalModels = 2*schemas.DefaultPageSize + 500
+	ids := make([]string, totalModels)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("model-%05d", i)
+	}
+	listing := openAIStyleModelsHandler(ids...)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(600 * time.Millisecond)
+		listing(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, srv.URL)
+	account.SetKeysForProvider(schemas.OpenAI, wildcardKey(schemas.OpenAI))
+	tuneProviderForTest(t, account, schemas.OpenAI)
+
+	oldPage, oldWalk := listAllModelsProviderTimeout, listAllModelsWalkTimeout
+	// Every page fits its own deadline, but the three pages together do not
+	// fit the walk's.
+	listAllModelsProviderTimeout = time.Second
+	listAllModelsWalkTimeout = 1500 * time.Millisecond
+	t.Cleanup(func() { listAllModelsProviderTimeout, listAllModelsWalkTimeout = oldPage, oldWalk })
+
+	client := newListModelsTestClient(t, account, nil)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	if bfErr != nil {
+		t.Fatalf("ListAllModels returned error: %s", bfErr.GetErrorString())
+	}
+	if got := len(resp.Data); got == 0 || got >= totalModels {
+		t.Fatalf("aggregate returned %d of %d models; want the pages fetched before the walk deadline only", got, totalModels)
+	}
+	if !containsModelID(resp, "openai/"+ids[0]) {
+		t.Fatalf("aggregate is missing the first page")
+	}
+}
+
+// BenchmarkListAllModels measures the unscoped aggregate against one local
+// OpenAI-style provider whose catalog fits one internal page or spans three.
+// The listing body is built once, so the server side adds a fixed write; the
+// per-page deadline context is the part ListAllModels itself changes.
+func BenchmarkListAllModels(b *testing.B) {
+	for _, tc := range []struct {
+		name   string
+		models int
+	}{
+		{name: "one-page", models: 50},
+		{name: "three-pages", models: 2*schemas.DefaultPageSize + 500},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ids := make([]string, tc.models)
+			for i := range ids {
+				ids[i] = fmt.Sprintf("model-%05d", i)
+			}
+			rec := httptest.NewRecorder()
+			openAIStyleModelsHandler(ids...)(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+			body := rec.Body.Bytes()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(body)
+			}))
+			b.Cleanup(srv.Close)
+
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, srv.URL)
+			account.SetKeysForProvider(schemas.OpenAI, wildcardKey(schemas.OpenAI))
+			tuneProviderForTest(b, account, schemas.OpenAI)
+			client := newListModelsTestClient(b, account, nil)
+
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+				ctx.Cancel()
+				if bfErr != nil {
+					b.Fatalf("ListAllModels returned error: %s", bfErr.GetErrorString())
+				}
+				if len(resp.Data) != tc.models {
+					b.Fatalf("aggregate returned %d of %d models", len(resp.Data), tc.models)
+				}
+			}
+		})
 	}
 }
 

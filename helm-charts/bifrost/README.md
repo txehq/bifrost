@@ -4,9 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/txehq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
+**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
 
 ## Changelog
+
+### 2.1.52-sync.3 (prerelease)
+
+The prerelease chart for transport v2.4.0-sync.3; no values, templates or schema change:
+
+- `appVersion` is now `2.4.0-sync.3`, so an empty `image.tag` selects `v2.4.0-sync.3`. That transport keeps Anthropic web search server-side on chat completions with `url_citation` annotations, bounds each `ListAllModels` page instead of the whole walk, and renders a one-text-block Bedrock tool result like its string form.
 
 ### 2.1.52-sync.2 (prerelease)
 

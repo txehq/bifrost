@@ -1126,7 +1126,7 @@ v200_column_exists() {
     column_exists_postgres "$table" "$column"
   else
     local db="$fixture_config_db"
-    case "$table" in logs|mcp_tool_logs|user_agent_mappings|agent_logs|warp_conversations|warp_messages) db="$fixture_logs_db" ;; esac
+    case "$table" in logs|mcp_tool_logs|user_agent_mappings|agent_logs|warp_conversations|warp_messages|matview_refresh_state) db="$fixture_logs_db" ;; esac
     column_exists_sqlite "$db" "$table" "$column"
   fi
 }

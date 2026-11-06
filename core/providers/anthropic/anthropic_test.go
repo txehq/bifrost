@@ -42,6 +42,7 @@ func TestAnthropic(t *testing.T) {
 		ReasoningModel:     "claude-opus-4-5",
 		PromptCachingModel: "claude-sonnet-4-6",
 		PassthroughModel:   "claude-sonnet-4-5",
+		WebSearchChatModel: "claude-sonnet-4-5",
 		Scenarios: llmtests.TestScenarios{
 			TextCompletion:               false, // Not supported
 			SimpleChat:                   true,

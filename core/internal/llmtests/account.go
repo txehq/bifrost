@@ -149,6 +149,7 @@ type ComprehensiveTestConfig struct {
 	ExpectRawRequestResponse bool                       // When true, validate rawRequest/rawResponse in ExtraFields
 	PassthroughModel         string                     // Model for passthrough API tests; defaults to ChatModel when empty
 	CompactionModel          string                     // Model for compaction tests; defaults to claude-sonnet-4-6
+	WebSearchChatModel       string                     // Claude model for the web search via chat completions scenario; the scenario skips when empty
 	ToolSearchModel          string                     // Model for tool search tests; defaults to claude-sonnet-4-6
 	ExternalCompactionModel  string                     // Model for external compaction tests; defaults to gpt-4o
 	InterleavedThinkingModel string                     // Model for interleaved thinking tests; defaults to claude-opus-4-5

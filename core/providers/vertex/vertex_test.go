@@ -53,6 +53,7 @@ func TestVertex(t *testing.T) {
 		Provider:                 schemas.Vertex,
 		ChatModel:                "gemini-2.5-pro",
 		PromptCachingModel:       "claude-sonnet-4-5",
+		WebSearchChatModel:       "claude-sonnet-4-5",
 		VisionModel:              "claude-sonnet-4-5",
 		TextModel:                "", // Vertex doesn't support text completion in newer models
 		EmbeddingModel:           "text-multilingual-embedding-002",
