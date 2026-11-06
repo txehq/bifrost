@@ -18,6 +18,7 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
+	"github.com/capsohq/bifrost/core/network/proxytest"
 	"github.com/capsohq/bifrost/core/providers/minimax"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -1716,5 +1717,48 @@ func TestMiniMaxCustomProviderReportsItsOwnKey(t *testing.T) {
 	}
 	if retrieved.ID != created.ID {
 		t.Errorf("retrieved id = %q, want the created id %q", retrieved.ID, created.ID)
+	}
+}
+
+// The downloaded bytes are served on the gateway's own origin with the type returned here, so an
+// upstream that serves HTML at the task's URL must not get it rendered as a document.
+func TestMiniMaxVideoDownloadPinsVideoContentType(t *testing.T) {
+	served := map[string]string{
+		"/html.mp4": "text/html; charset=utf-8",
+		"/svg.mp4":  "image/svg+xml",
+		"/none.mp4": "",
+		"/odd.mp4":  "video/mp4<script>",
+		"/webm.mp4": "video/webm",
+	}
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		if ct, ok := served[r.URL.Path]; ok {
+			if ct == "" {
+				w.Header()["Content-Type"] = nil
+			} else {
+				w.Header().Set("Content-Type", ct)
+			}
+			_, _ = w.Write([]byte("<html><script>fetch('/api/governance/virtual-keys')</script></html>"))
+			return
+		}
+		http.NotFound(w, r)
+	})
+	for path, want := range map[string]string{"/html.mp4": "video/mp4", "/svg.mp4": "video/mp4", "/none.mp4": "video/mp4", "/odd.mp4": "video/mp4", "/webm.mp4": "video/webm"} {
+		t.Run(strings.TrimPrefix(path, "/"), func(t *testing.T) {
+			provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+				"GET /v2/query/video_generation/424010985738629": jsonResponse(http.StatusOK, `{"task":{"id":"424010985738629","model":"MiniMax-H3","status":"succeeded","content":{"url":"http://203.0.113.10`+path+`"}}}`),
+			})
+			ctx := testContext(t)
+			ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxy.URL)})
+			resp, bifrostErr := provider.VideoDownload(ctx, testKey(), &schemas.BifrostVideoDownloadRequest{Provider: schemas.MiniMax, ID: "424010985738629"})
+			if bifrostErr != nil {
+				t.Fatalf("VideoDownload: %+v", bifrostErr.Error)
+			}
+			if resp.ContentType != want {
+				t.Errorf("content type = %q, want %q", resp.ContentType, want)
+			}
+			if len(resp.Content) == 0 {
+				t.Error("no content")
+			}
+		})
 	}
 }
