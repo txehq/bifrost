@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -557,5 +558,75 @@ func TestFetchMediaURL_RawBytesAndMediaLimit(t *testing.T) {
 	}
 	if privateHits.Load() != 0 {
 		t.Fatalf("private target reached the proxy %d times", privateHits.Load())
+	}
+}
+
+// benchFetchProxy serves body for http://203.0.113.10/<anything> through a loopback forward
+// proxy, so the fetch benchmarks run offline through the real SSRF-checked, proxied client.
+func benchFetchProxy(b *testing.B, body []byte) context.Context {
+	b.Helper()
+	proxy := proxytest.ForwardProxy(b, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write(body)
+	})
+	return context.WithValue(b.Context(), schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{
+		Type: schemas.HTTPProxy,
+		URL:  schemas.NewSecretVar(proxy.URL),
+	})
+}
+
+// BenchmarkFetchClientFor is the per-fetch cached client lookup, direct and proxied.
+func BenchmarkFetchClientFor(b *testing.B) {
+	b.Run("direct", func(b *testing.B) {
+		ctx := b.Context()
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := fetchClientFor(ctx); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("proxied", func(b *testing.B) {
+		ctx := context.WithValue(b.Context(), schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{
+			Type: schemas.HTTPProxy,
+			URL:  schemas.NewSecretVar("http://127.0.0.1:3128"),
+		})
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := fetchClientFor(ctx); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+// BenchmarkFetchAndEncodeURL is an inline image or document fetch through a proxy.
+func BenchmarkFetchAndEncodeURL(b *testing.B) {
+	for _, size := range []int{4 << 10, 1 << 20} {
+		b.Run(strconv.Itoa(size>>10)+"KiB", func(b *testing.B) {
+			ctx := benchFetchProxy(b, bytes.Repeat([]byte("i"), size))
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, _, err := FetchAndEncodeURL(ctx, "http://203.0.113.10/img.png"); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkFetchMediaURL is the fork's provider-hosted media download through a proxy (new: no
+// earlier implementation to compare against).
+func BenchmarkFetchMediaURL(b *testing.B) {
+	for _, size := range []int{4 << 10, 1 << 20, 16 << 20} {
+		b.Run(strconv.Itoa(size>>10)+"KiB", func(b *testing.B) {
+			ctx := benchFetchProxy(b, bytes.Repeat([]byte("v"), size))
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, body, err := FetchMediaURL(ctx, "http://203.0.113.10/clip.mp4"); err != nil || len(body) != size {
+					b.Fatalf("len=%d err=%v", len(body), err)
+				}
+			}
+		})
 	}
 }

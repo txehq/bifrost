@@ -135,12 +135,24 @@ func fetchURL(ctx context.Context, resourceURL string, limits fetchLimits) (medi
 		return "", nil, fmt.Errorf("fetch %q returned non-2xx status %d", redacted, resp.StatusCode)
 	}
 
-	body, err = io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
-	if err != nil {
-		return "", nil, fmt.Errorf("failed to read body from %q: %w", redacted, sanitizeFetchError(err, redacted))
-	}
-	if int64(len(body)) > maxBytes {
+	if n := resp.ContentLength; n > maxBytes {
 		return "", nil, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
+	} else if n >= 0 {
+		// Fork: the body length is known (the fasthttp round tripper always sets it), so read
+		// into one exact-size buffer instead of letting io.ReadAll grow and copy it, which for
+		// a 256 MiB media file would hold several transient copies.
+		body = make([]byte, n)
+		if _, err = io.ReadFull(resp.Body, body); err != nil {
+			return "", nil, fmt.Errorf("failed to read body from %q: %w", redacted, sanitizeFetchError(err, redacted))
+		}
+	} else {
+		body, err = io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to read body from %q: %w", redacted, sanitizeFetchError(err, redacted))
+		}
+		if int64(len(body)) > maxBytes {
+			return "", nil, fmt.Errorf("resource at %q exceeds %d-byte limit", redacted, maxBytes)
+		}
 	}
 
 	mediaType = resp.Header.Get("Content-Type")
