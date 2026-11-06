@@ -10,7 +10,7 @@ import (
 )
 
 // multipartTranscriptionCtx builds a /v1/audio/transcriptions request; fields are ordered pairs so a key can repeat.
-func multipartTranscriptionCtx(t *testing.T, fields [][2]string) *fasthttp.RequestCtx {
+func multipartTranscriptionCtx(t testing.TB, fields [][2]string) *fasthttp.RequestCtx {
 	t.Helper()
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -68,5 +68,35 @@ func TestPrepareTranscriptionRequest_NoTimestampGranularities(t *testing.T) {
 	}
 	if req.Params.TimestampGranularities != nil {
 		t.Fatalf("timestamp granularities = %v, want none", req.Params.TimestampGranularities)
+	}
+}
+
+// BenchmarkPrepareTranscriptionRequest measures native-route form parsing. The
+// timestamp_granularities[] read is one map lookup on the parsed form; the no_granularities
+// case is the common request.
+func BenchmarkPrepareTranscriptionRequest(b *testing.B) {
+	for _, tc := range []struct {
+		name   string
+		fields [][2]string
+	}{
+		{name: "no_granularities", fields: [][2]string{{"model", "openai/whisper-1"}, {"response_format", "json"}}},
+		{name: "granularities", fields: [][2]string{{"model", "openai/whisper-1"}, {"response_format", "verbose_json"}, {"timestamp_granularities[]", "word"}, {"timestamp_granularities[]", "segment"}}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			template := multipartTranscriptionCtx(b, tc.fields)
+			body := append([]byte(nil), template.Request.Body()...)
+			contentType := string(template.Request.Header.ContentType())
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.Header.SetMethod("POST")
+				ctx.Request.SetRequestURI("/v1/audio/transcriptions")
+				ctx.Request.Header.SetContentType(contentType)
+				ctx.Request.SetBody(body)
+				if _, _, err := prepareTranscriptionRequest(ctx, nil); err != nil {
+					b.Fatalf("prepareTranscriptionRequest: %v", err)
+				}
+			}
+		})
 	}
 }

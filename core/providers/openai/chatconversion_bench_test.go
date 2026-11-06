@@ -204,3 +204,32 @@ func BenchmarkOpenAIChatRequestRoundTrip(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkToOpenAIChatRequestMiniMax measures the MiniMax compatibility pass
+// (upstream d20cb6ace). The provider is written as a literal so the benchmark
+// also builds on trees that only had the fork's earlier Minimax constant.
+func BenchmarkToOpenAIChatRequestMiniMax(b *testing.B) {
+	for _, tc := range []struct {
+		name   string
+		effort *string
+	}{
+		{name: "no_reasoning"},
+		{name: "effort_none", effort: schemas.Ptr("none")},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			bifrostReq := benchOpenAIChatRequest(b).ToBifrostChatRequest(ctx)
+			bifrostReq.Provider = schemas.ModelProvider("minimax")
+			bifrostReq.Model = "MiniMax-M3"
+			if tc.effort != nil {
+				bifrostReq.Params.Reasoning = &schemas.ChatReasoning{Effort: tc.effort}
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if out := ToOpenAIChatRequest(ctx, bifrostReq); out == nil {
+					b.Fatal("nil OpenAI request")
+				}
+			}
+		})
+	}
+}

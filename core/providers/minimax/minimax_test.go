@@ -1174,3 +1174,54 @@ func TestMiniMaxTextCompletionStreamOutlivesRequestTimeout(t *testing.T) {
 		t.Error("stream ended before its final usage event")
 	}
 }
+
+// BenchmarkMiniMaxChatCompletion is the new provider's chat round trip against a local server:
+// reasoning_split injection, the OpenAI converter, base_resp check and response decode.
+func BenchmarkMiniMaxChatCompletion(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		jsonResponse(http.StatusOK, chatSuccessBody)(w)
+	}))
+	b.Cleanup(server.Close)
+	provider, err := minimax.NewMiniMaxProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		b.Fatalf("NewMiniMaxProvider: %v", err)
+	}
+	key := testKey()
+	req := userChatRequest(nil)
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := provider.ChatCompletion(ctx, key, req); bifrostErr != nil {
+			b.Fatalf("ChatCompletion: %+v", bifrostErr.Error)
+		}
+		ctx.Cancel()
+	}
+}
+
+// BenchmarkMiniMaxTextCompletion is the fork's text completion round trip against a local server.
+func BenchmarkMiniMaxTextCompletion(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		jsonResponse(http.StatusOK, anthropicTextSuccessBody)(w)
+	}))
+	b.Cleanup(server.Close)
+	provider, err := minimax.NewMiniMaxProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		b.Fatalf("NewMiniMaxProvider: %v", err)
+	}
+	key := testKey()
+	req := textCompletionRequest(nil)
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := provider.TextCompletion(ctx, key, req); bifrostErr != nil {
+			b.Fatalf("TextCompletion: %+v", bifrostErr.Error)
+		}
+		ctx.Cancel()
+	}
+}
