@@ -4,9 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/txehq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
+**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
 
 ## Changelog
+
+### 2.1.52-sync.5 (prerelease)
+
+The prerelease chart for transport v2.4.0-sync.5; no values, templates or schema change:
+
+- `appVersion` is now `2.4.0-sync.5`, so an empty `image.tag` selects `v2.4.0-sync.5`. That transport adds upstream's BytePlus ModelArk provider (`byteplus`): chat, Responses, multimodal embeddings, Seedream image generation and editing, and Seedance video generation. The fork's `modelark` and `volcengine` providers are unchanged.
 
 ### 2.1.52-sync.4 (prerelease)
 
