@@ -16,7 +16,7 @@ func (a *Accumulator) buildCompleteImageFromImageStreamChunks(chunks []*ImageStr
 
 	// Special case for final chunk, return the complete image response
 	for i := range len(chunks) {
-		if chunks[i].Delta != nil && (chunks[i].FinishReason != nil || chunks[i].Delta.Type == schemas.ImageGenerationEventTypeCompleted || chunks[i].Delta.Type == schemas.ImageEditEventTypeCompleted) {
+		if chunks[i].Delta != nil && (chunks[i].FinishReason != nil || isCompletedImageEvent(chunks[i].Delta.Type)) {
 			finalResponse := &schemas.BifrostImageGenerationResponse{
 				ID:      chunks[i].Delta.ID,
 				Created: chunks[i].Delta.CreatedAt,
@@ -29,6 +29,15 @@ func (a *Accumulator) buildCompleteImageFromImageStreamChunks(chunks []*ImageStr
 						RevisedPrompt: chunks[i].Delta.RevisedPrompt,
 					},
 				},
+			}
+			// Fork: a stream of several images (BytePlus Seedream, fal-ai) sends each finished
+			// image as its own event and ends on a completed event that repeats only the last
+			// one, so the images at the other indexes are added here.
+			if others := otherStreamImages(chunks, i); len(others) > 0 {
+				finalResponse.Data = append(others, finalResponse.Data...)
+				sort.SliceStable(finalResponse.Data, func(a, b int) bool {
+					return finalResponse.Data[a].Index < finalResponse.Data[b].Index
+				})
 			}
 			return finalResponse
 		}
@@ -111,6 +120,57 @@ func (a *Accumulator) buildCompleteImageFromImageStreamChunks(chunks []*ImageStr
 	}
 
 	return finalResponse
+}
+
+// isCompletedImageEvent reports whether an image stream event carries a finished image.
+func isCompletedImageEvent(eventType schemas.ImageEventType) bool {
+	return eventType == schemas.ImageGenerationEventTypeCompleted || eventType == schemas.ImageEditEventTypeCompleted
+}
+
+// otherStreamImages returns the finished images a stream delivered at image indexes other than
+// the final chunk's, one per index and in no particular order. A stream of one image has none,
+// which is the common case and allocates nothing. For each other index a completed event wins;
+// failing that, the last event that carries a whole image. A progressive preview of an image
+// still being generated (an event with a partial_image_index, as OpenAI sends) is not an image.
+func otherStreamImages(chunks []*ImageStreamChunk, final int) []schemas.ImageData {
+	var others []schemas.ImageData
+	var completed []bool // parallel to others: the entry came from a completed event
+	for j, chunk := range chunks {
+		if j == final || chunk.Delta == nil || chunk.ImageIndex == chunks[final].ImageIndex {
+			continue
+		}
+		if chunk.Delta.URL == "" && chunk.Delta.B64JSON == "" {
+			continue
+		}
+		isCompleted := isCompletedImageEvent(chunk.Delta.Type)
+		if !isCompleted && chunk.Delta.PartialImageIndex != nil {
+			continue
+		}
+		image := schemas.ImageData{
+			B64JSON:       chunk.Delta.B64JSON,
+			URL:           chunk.Delta.URL,
+			Index:         chunk.ImageIndex,
+			RevisedPrompt: chunk.Delta.RevisedPrompt,
+		}
+		at := -1
+		for k := range others {
+			if others[k].Index == chunk.ImageIndex {
+				at = k
+				break
+			}
+		}
+		switch {
+		case at < 0:
+			others = append(others, image)
+			completed = append(completed, isCompleted)
+		case isCompleted || !completed[at]:
+			// Later events replace earlier ones, except that a whole-image event never
+			// replaces the completed event of the same image.
+			others[at] = image
+			completed[at] = isCompleted
+		}
+	}
+	return others
 }
 
 // processAccumulatedImageStreamingChunks processes all accumulated image chunks in order
