@@ -650,10 +650,13 @@ func (bifrost *Bifrost) lastKnownListModelsResponse(ctx *schemas.BifrostContext,
 // ListAllModels lists all models from all configured providers.
 // It accumulates responses from all providers with a limit of 1000 per provider to get all results.
 // Each page of a provider poll is bounded by listAllModelsProviderTimeout so one unreachable
-// provider cannot block the aggregate, while a reachable provider still gets every page.
-// A provider whose poll fails contributes its last-known models from the model catalog (when one with per-provider listings is configured) instead; that
-// list is substituted in the worker, so the plugin post-hooks filter it like a live listing.
-// A poll still running at the deadline contributes nothing, since no post-hook has seen it.
+// provider cannot block the aggregate, while a reachable provider still gets every page; a
+// provider's whole walk is bounded only by schemas.MaxPaginationRequests pages.
+// A provider whose first page fails contributes its last-known models from the model catalog
+// (when one with per-provider listings is configured) instead; that list is substituted in
+// the worker, so the plugin post-hooks filter it like a live listing. A page still running
+// at its deadline contributes nothing, since no post-hook has seen it; the pages before it
+// stay in the aggregate.
 func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if req == nil {
 		req = &schemas.BifrostListModelsRequest{}

@@ -5779,7 +5779,7 @@ func wildcardKey(provider schemas.ModelProvider) []schemas.Key {
 // tuneProviderForTest shrinks the provider's HTTP budget so an abandoned
 // in-flight call to a hanging test server releases its worker (and Shutdown)
 // quickly, and disables retries for deterministic single-attempt behavior.
-func tuneProviderForTest(t *testing.T, account *MockAccount, provider schemas.ModelProvider) {
+func tuneProviderForTest(t testing.TB, account *MockAccount, provider schemas.ModelProvider) {
 	t.Helper()
 	cfg, ok := account.configs[provider]
 	if !ok {
@@ -5789,7 +5789,7 @@ func tuneProviderForTest(t *testing.T, account *MockAccount, provider schemas.Mo
 	cfg.NetworkConfig.MaxRetries = 0
 }
 
-func newListModelsTestClient(t *testing.T, account *MockAccount, catalog schemas.ModelInfoProvider) *Bifrost {
+func newListModelsTestClient(t testing.TB, account *MockAccount, catalog schemas.ModelInfoProvider) *Bifrost {
 	t.Helper()
 	client, initErr := Init(context.Background(), schemas.BifrostConfig{
 		Account:      account,
@@ -5896,9 +5896,10 @@ func TestListAllModelsIncludesEveryPageOfASlowLargeProvider(t *testing.T) {
 	}
 	listing := openAIStyleModelsHandler(ids...)
 	// Each page re-fetches the upstream catalog; every fetch alone fits the
-	// deadline below, but two of them back to back do not.
+	// deadline below, but two of them back to back do not. The 400ms margin per
+	// fetch keeps the test green on a loaded runner under -race.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(600 * time.Millisecond)
 		listing(w, r)
 	}))
 	t.Cleanup(srv.Close)
@@ -5909,7 +5910,7 @@ func TestListAllModelsIncludesEveryPageOfASlowLargeProvider(t *testing.T) {
 	tuneProviderForTest(t, account, schemas.OpenAI)
 
 	oldTimeout := listAllModelsProviderTimeout
-	listAllModelsProviderTimeout = 500 * time.Millisecond
+	listAllModelsProviderTimeout = time.Second
 	t.Cleanup(func() { listAllModelsProviderTimeout = oldTimeout })
 
 	client := newListModelsTestClient(t, account, nil)
@@ -5929,6 +5930,54 @@ func TestListAllModelsIncludesEveryPageOfASlowLargeProvider(t *testing.T) {
 	}
 	if last := "openai/" + ids[totalModels-1]; !containsModelID(resp, last) {
 		t.Fatalf("aggregate is missing the provider's last page (no %s)", last)
+	}
+}
+
+// BenchmarkListAllModels measures the unscoped aggregate against one local
+// OpenAI-style provider whose catalog fits one internal page or spans three.
+// The listing body is built once, so the server side adds a fixed write; the
+// per-page deadline context is the part ListAllModels itself changes.
+func BenchmarkListAllModels(b *testing.B) {
+	for _, tc := range []struct {
+		name   string
+		models int
+	}{
+		{name: "one-page", models: 50},
+		{name: "three-pages", models: 2*schemas.DefaultPageSize + 500},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ids := make([]string, tc.models)
+			for i := range ids {
+				ids[i] = fmt.Sprintf("model-%05d", i)
+			}
+			rec := httptest.NewRecorder()
+			openAIStyleModelsHandler(ids...)(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+			body := rec.Body.Bytes()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(body)
+			}))
+			b.Cleanup(srv.Close)
+
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, srv.URL)
+			account.SetKeysForProvider(schemas.OpenAI, wildcardKey(schemas.OpenAI))
+			tuneProviderForTest(b, account, schemas.OpenAI)
+			client := newListModelsTestClient(b, account, nil)
+
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+				ctx.Cancel()
+				if bfErr != nil {
+					b.Fatalf("ListAllModels returned error: %s", bfErr.GetErrorString())
+				}
+				if len(resp.Data) != tc.models {
+					b.Fatalf("aggregate returned %d of %d models", len(resp.Data), tc.models)
+				}
+			}
+		})
 	}
 }
 
