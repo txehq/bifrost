@@ -1388,6 +1388,30 @@ func TestBytePlusImageStreamTerminalEventWithParkedBody(t *testing.T) {
 	}
 }
 
+// A read error with the body still open (an SSE line over the reader's 10 MiB cap, with Ark still
+// sending) ends the stream with one error, and the connection is abandoned rather than drained.
+func TestBytePlusImageStreamReadErrorWithOpenBody(t *testing.T) {
+	provider, handlerDone := newParkedBytePlus(t, 3*time.Minute, seedreamStreamImage0, strings.Repeat("x", 11<<20))
+	var finalized atomic.Int32
+	stream, bifrostErr := provider.ImageGenerationStream(streamTestContext(t), passthroughPostHook, func(context.Context) { finalized.Add(1) }, testKey(), imageStreamRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup error: %+v", bifrostErr.Error)
+	}
+	chunks := collectStreamWithin(t, stream, streamCloseLimit)
+	if len(chunks) != 2 || chunks[0].BifrostImageGenerationStreamResponse == nil || chunks[1].BifrostError == nil {
+		t.Fatalf("want the delivered image and one error, got %+v", chunks)
+	}
+	if errs := streamErrors(chunks); len(errs) != 1 {
+		t.Fatalf("want exactly one error chunk, got %d", len(errs))
+	}
+	waitFinalizedOnce(t, &finalized)
+	select {
+	case <-handlerDone:
+	case <-time.After(streamCloseLimit):
+		t.Errorf("upstream handler still running %s after the stream closed: the open connection was not abandoned", streamCloseLimit)
+	}
+}
+
 // A body that ends before Ark's completed event is a truncated stream: one error after the image
 // already delivered, on a connection the server keeps alive.
 func TestBytePlusImageStreamTruncatedBody(t *testing.T) {

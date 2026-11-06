@@ -642,9 +642,9 @@ func (provider *BytePlusProvider) ImageEditStream(ctx *schemas.BifrostContext, p
 //
 // Fork: every way out of the read loop tells the deferred release what state the body is in, so it
 // never drains a body that will not end. A terminal event (completed, or an error that ends the
-// stream) and a [DONE] marker leave the body open, so the stream marks itself parked and the
-// connection is abandoned, closed instead of returned to the pool; a body read to EOF is marked
-// exhausted, so the release does not read it again.
+// stream), a [DONE] marker and a read error leave the body open, so the stream marks itself parked
+// and the connection is abandoned, closed instead of returned to the pool; a body read to EOF is
+// marked exhausted, so the release does not read it again.
 func (provider *BytePlusProvider) doImageStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, jsonData []byte, bifrostReq *schemas.BifrostRequest, partialType, completedType schemas.ImageEventType) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -744,6 +744,9 @@ func (provider *BytePlusProvider) doImageStream(ctx *schemas.BifrostContext, pos
 				}
 				if readErr != io.EOF {
 					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					// Fork: a read error (an SSE line over the scanner's cap, for one) can leave the body
+					// open with Ark still sending; release must abandon it, not drain it.
+					ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, provider.logger, postHookSpanFinalizer)
 					return
 				}
