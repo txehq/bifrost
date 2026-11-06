@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1553,33 +1554,71 @@ func BenchmarkBytePlusChatCompletion(b *testing.B) {
 	}
 }
 
+// imageStreamBench holds the one measurement BenchmarkBytePlusImageGenerationStream takes per process.
+var imageStreamBench struct {
+	once                             sync.Once
+	nsPerOp, bytesPerOp, allocsPerOp float64
+	err                              string
+}
+
 // BenchmarkBytePlusImageGenerationStream is one streamed Seedream generation (two images, one
-// refused, the completed event) against a local server, from request to the closed channel. The
-// stream ends on the completed event, so each iteration also pays for a new connection: the fork
-// abandons the connection there instead of draining it.
+// refused, the completed event) against a local server, from the request to the closed channel.
+//
+// It measures a fixed batch of streams once per process and reports the per-stream figures under
+// the standard units, whatever b.N and -count are. A stream ends on its completed event, where
+// the fork abandons the connection instead of draining it, so every stream opens a connection,
+// and a closed loopback connection keeps its ephemeral port in TIME_WAIT for tens of seconds: a
+// loop of b.N streams exhausts the host's ports within seconds ("can't assign requested
+// address"), for every process on it. The figures include that connection and, as in the other
+// round-trip benchmarks here, the in-process test server.
 func BenchmarkBytePlusImageGenerationStream(b *testing.B) {
-	provider := benchBytePlus(b, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		sseResponse(seedreamStreamImage0, seedreamStreamFailed, seedreamStreamImage2, seedreamStreamDone)(w, r)
+	const streams = 300
+	imageStreamBench.once.Do(func() {
+		provider := benchBytePlus(b, func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			sseResponse(seedreamStreamImage0, seedreamStreamFailed, seedreamStreamImage2, seedreamStreamDone)(w, r)
+		})
+		key := testKey()
+		req := imageStreamRequest()
+		runOne := func() string {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			stream, bifrostErr := provider.ImageGenerationStream(ctx, passthroughPostHook, nil, key, req)
+			if bifrostErr != nil {
+				return "ImageGenerationStream: " + bifrostErr.Error.Message
+			}
+			chunks := 0
+			for range stream {
+				chunks++
+			}
+			if chunks != 3 {
+				return "got " + strconv.Itoa(chunks) + " chunks, want 3"
+			}
+			return ""
+		}
+		if imageStreamBench.err = runOne(); imageStreamBench.err != "" { // warm up outside the measurement
+			return
+		}
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		start := time.Now()
+		for range streams {
+			if imageStreamBench.err = runOne(); imageStreamBench.err != "" {
+				return
+			}
+		}
+		elapsed := time.Since(start)
+		runtime.ReadMemStats(&after)
+		imageStreamBench.nsPerOp = float64(elapsed.Nanoseconds()) / streams
+		imageStreamBench.bytesPerOp = float64(after.TotalAlloc-before.TotalAlloc) / streams
+		imageStreamBench.allocsPerOp = float64(after.Mallocs-before.Mallocs) / streams
 	})
-	key := testKey()
-	req := imageStreamRequest()
-	b.ReportAllocs()
-	for b.Loop() {
-		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		stream, bifrostErr := provider.ImageGenerationStream(ctx, passthroughPostHook, nil, key, req)
-		if bifrostErr != nil {
-			b.Fatalf("ImageGenerationStream: %+v", bifrostErr.Error)
-		}
-		chunks := 0
-		for range stream {
-			chunks++
-		}
-		if chunks != 3 {
-			b.Fatalf("got %d chunks, want 3", chunks)
-		}
-		ctx.Cancel()
+	if imageStreamBench.err != "" {
+		b.Fatal(imageStreamBench.err)
 	}
+	b.ReportMetric(imageStreamBench.nsPerOp, "ns/op")
+	b.ReportMetric(imageStreamBench.bytesPerOp, "B/op")
+	b.ReportMetric(imageStreamBench.allocsPerOp, "allocs/op")
 }
 
 // BenchmarkBytePlusEmbedding is an embedding request of one input and of eight, each input its
