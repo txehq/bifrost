@@ -400,32 +400,22 @@ func (provider *MiniMaxProvider) VideoDownload(ctx *schemas.BifrostContext, key 
 		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
 	}
 
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-	req.SetRequestURI(*task.Videos[0].URL)
-	req.Header.SetMethod(http.MethodGet)
-
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-	defer wait()
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil), latency)
-	}
-	body, err := providerUtils.CheckAndDecodeBody(resp)
+	// Fork: the URL comes from MiniMax's task response, so it is fetched through the SSRF-hardened
+	// media fetcher (public addresses only, checked at dial time and on every redirect, provider
+	// proxy honored, 256 MiB cap) rather than the provider client, whose dialer admits loopback.
+	// No credentials are sent; errors name the URL without its signed query.
+	start := time.Now()
+	contentType, body, err := providerUtils.FetchMediaURL(ctx, *task.Videos[0].URL)
+	latency := time.Since(start)
 	if err != nil {
-		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), latency)
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("failed to download video", err), latency)
 	}
-	contentType := string(resp.Header.ContentType())
 	if contentType == "" {
 		contentType = "video/mp4"
 	}
 	bifrostResp := &schemas.BifrostVideoDownloadResponse{
 		VideoID:     request.ID,
-		Content:     append([]byte(nil), body...),
+		Content:     body,
 		ContentType: contentType,
 	}
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()

@@ -1629,3 +1629,33 @@ func TestMiniMaxCustomProviderAllowedRequestsGateEveryOperation(t *testing.T) {
 		t.Errorf("allowed chat completion made %d upstream calls, want 1", got)
 	}
 }
+
+// The download URL comes from MiniMax's task response, so a task pointing at a loopback or private
+// address must be refused without that address ever being dialed.
+func TestMiniMaxVideoDownloadRefusesNonPublicURL(t *testing.T) {
+	var internalHits atomic.Int32
+	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		internalHits.Add(1)
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("internal secret"))
+	}))
+	t.Cleanup(internal.Close)
+	provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"GET /v2/query/video_generation/424010985738629": jsonResponse(http.StatusOK, `{"task":{"id":"424010985738629","model":"MiniMax-H3","status":"succeeded","content":{"url":"`+internal.URL+`/v.mp4?sig=abc123"},"resolution":"768P","ratio":"16:9","duration":6}}`),
+	})
+
+	_, bifrostErr := provider.VideoDownload(testContext(t), testKey(), &schemas.BifrostVideoDownloadRequest{Provider: schemas.MiniMax, ID: "424010985738629"})
+	if bifrostErr == nil {
+		t.Fatal("expected the loopback download URL to be refused")
+	}
+	if got := internalHits.Load(); got != 0 {
+		t.Fatalf("download dialed the loopback URL %d times", got)
+	}
+	msg := bifrostErr.Error.Message
+	if bifrostErr.Error.Error != nil {
+		msg += " " + bifrostErr.Error.Error.Error()
+	}
+	if strings.Contains(msg, "abc123") {
+		t.Errorf("error leaks the signed query: %s", msg)
+	}
+}
