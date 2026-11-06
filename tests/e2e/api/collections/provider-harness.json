@@ -293208,6 +293208,183 @@
           }
         }
       ]
+    },
+    {
+      "name": "286. MiniMax video lifecycle: create, poll, download, delete (minimax video lifecycle)",
+      "description": "Pins the MiniMax H3 video lifecycle end to end: /v1/videos creates a /v2/video_generation task (queued, provider-suffixed id, seconds from the request), /v1/videos/{id} polls /v2/query/video_generation/{task_id} until it completes and reports a WxH size (MiniMax's resolution tier and ratio, so a 480P task selects the 480p rate at settlement), /v1/videos/{id}/content downloads the task's signed URL, and DELETE /v1/videos/{id} deletes the task. H3 bills per output second, so every row is [PREVIEW]: it runs only with INCLUDE_PREVIEW=1, the same opt-in the Go live test has as MINIMAX_RUN_VIDEO_TESTS=1.",
+      "item": [
+        {
+          "name": "[PREVIEW] /v1/videos - MiniMax-H3 text-to-video task is queued - minimax/MiniMax-H3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('minimaxVideoId');",
+                  "pm.collectionVariables.unset('minimaxVideoPolls');",
+                  "pm.test('create returns a queued task with a provider-suffixed id', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, 'no task id: ' + pm.response.text()).to.be.a('string').that.is.not.empty;",
+                  "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('queued');",
+                  "  pm.expect(j.seconds, 'seconds: ' + pm.response.text()).to.eql('6');",
+                  "  pm.collectionVariables.set('minimaxVideoId', j.id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-H3\",\n  \"prompt\": \"A paper boat drifts across a still pond at dawn\",\n  \"seconds\": \"6\",\n  \"size\": \"1366x768\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /v1/videos/{id} - poll the MiniMax task until it completes, with a WxH size - minimax/MiniMax-H3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.collectionVariables.get('minimaxVideoId');",
+                  "if (!id) { pm.test.skip('no MiniMax video id produced by the create row', function () {}); return; }",
+                  "pm.test('retrieve succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { pm.collectionVariables.unset('minimaxVideoPolls'); return; }",
+                  "var j = pm.response.json();",
+                  "var polls = Number(pm.collectionVariables.get('minimaxVideoPolls') || 0);",
+                  "if ((j.status === 'queued' || j.status === 'in_progress') && polls < 60) {",
+                  "  // H3 typically finishes in one to five minutes; poll every 10s for up to 10 minutes.",
+                  "  pm.collectionVariables.set('minimaxVideoPolls', polls + 1);",
+                  "  setTimeout(function () {}, 10000);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('minimaxVideoPolls');",
+                  "pm.test('task completed with a downloadable video', function () {",
+                  "  pm.expect(j.status, 'final status: ' + pm.response.text()).to.eql('completed');",
+                  "  pm.expect(j.id).to.eql(id);",
+                  "  pm.expect(j.videos, 'videos: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('size is WxH so the per-resolution video rate can apply', function () {",
+                  "  pm.expect(j.size, 'size: ' + pm.response.text()).to.match(/^[0-9]+x[0-9]+$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/{{minimaxVideoId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "{{minimaxVideoId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /v1/videos/{id}/content - downloads the MiniMax video bytes - minimax/MiniMax-H3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.collectionVariables.get('minimaxVideoId');",
+                  "if (!id) { pm.test.skip('no MiniMax video id produced by the create row', function () {}); return; }",
+                  "pm.test('download returns video bytes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type') || '', 'content type').to.match(/^video\\//);",
+                  "  pm.expect(pm.response.responseSize, 'empty body').to.be.above(1000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/{{minimaxVideoId}}/content",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "{{minimaxVideoId}}",
+                "content"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] DELETE /v1/videos/{id} - deletes the finished MiniMax task - minimax/MiniMax-H3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.collectionVariables.get('minimaxVideoId');",
+                  "if (!id) { pm.test.skip('no MiniMax video id produced by the create row', function () {}); return; }",
+                  "pm.test('delete reports the task deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id).to.eql(id);",
+                  "  pm.expect(j.deleted, 'deleted: ' + pm.response.text()).to.eql(true);",
+                  "});",
+                  "pm.collectionVariables.unset('minimaxVideoId');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/{{minimaxVideoId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "{{minimaxVideoId}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

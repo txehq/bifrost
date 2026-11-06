@@ -1,7 +1,6 @@
 package minimax
 
 import (
-	"fmt"
 	"maps"
 	"math"
 	"strconv"
@@ -36,10 +35,10 @@ func isMiniMaxH3MaxModel(model string) bool {
 // ToMiniMaxVideoGenerationRequest converts a Bifrost video generation request to MiniMax's /v2/video_generation body.
 func ToMiniMaxVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRequest) (*MiniMaxVideoGenerationRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil || strings.TrimSpace(bifrostReq.Input.Prompt) == "" {
-		return nil, fmt.Errorf("prompt is required")
+		return nil, providerUtils.InvalidRequestErrorf("prompt is required")
 	}
 	if bifrostReq.Input.VideoURI != nil && *bifrostReq.Input.VideoURI != "" {
-		return nil, fmt.Errorf("video_uri is not supported by minimax video generation")
+		return nil, providerUtils.InvalidRequestErrorf("video_uri is not supported by minimax video generation")
 	}
 
 	req := &MiniMaxVideoGenerationRequest{
@@ -51,7 +50,7 @@ func ToMiniMaxVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 	if bifrostReq.Input.InputReference != nil && *bifrostReq.Input.InputReference != "" {
 		url, err := schemas.SanitizeImageURL(*bifrostReq.Input.InputReference)
 		if err != nil {
-			return nil, fmt.Errorf("invalid input reference: %w", err)
+			return nil, providerUtils.InvalidRequestErrorf("invalid input reference: %v", err)
 		}
 		req.Content = append(req.Content, MiniMaxVideoContentItem{Type: "image_url", Role: "first_frame", ImageURL: &MiniMaxVideoMediaURL{URL: url}})
 		hasFrameImage = true
@@ -63,7 +62,7 @@ func ToMiniMaxVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 		if params.Seconds != nil && *params.Seconds != "" {
 			seconds, err := strconv.ParseFloat(*params.Seconds, 64)
 			if err != nil {
-				return nil, fmt.Errorf("invalid seconds value: %w", err)
+				return nil, providerUtils.InvalidRequestErrorf("invalid seconds value: %v", err)
 			}
 			req.Duration = int(math.Round(seconds))
 		}
@@ -80,7 +79,7 @@ func ToMiniMaxVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 			if v, ok := req.ExtraParams["last_frame"].(string); ok && v != "" {
 				url, err := schemas.SanitizeImageURL(v)
 				if err != nil {
-					return nil, fmt.Errorf("invalid last_frame: %w", err)
+					return nil, providerUtils.InvalidRequestErrorf("invalid last_frame: %v", err)
 				}
 				req.Content = append(req.Content, MiniMaxVideoContentItem{Type: "image_url", Role: "last_frame", ImageURL: &MiniMaxVideoMediaURL{URL: url}})
 				hasFrameImage = true
@@ -88,12 +87,12 @@ func ToMiniMaxVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 			}
 			if refs, err := schemas.ConvertViaJSON[[]string](req.ExtraParams["reference_images"]); err == nil && len(refs) > 0 {
 				if hasFrameImage {
-					return nil, fmt.Errorf("reference_images cannot be combined with first or last frame images")
+					return nil, providerUtils.InvalidRequestErrorf("reference_images cannot be combined with first or last frame images")
 				}
 				for _, ref := range refs {
 					url, err := schemas.SanitizeImageURL(ref)
 					if err != nil {
-						return nil, fmt.Errorf("invalid reference image: %w", err)
+						return nil, providerUtils.InvalidRequestErrorf("invalid reference image: %v", err)
 					}
 					req.Content = append(req.Content, MiniMaxVideoContentItem{Type: "image_url", Role: "reference_image", ImageURL: &MiniMaxVideoMediaURL{URL: url}})
 				}
@@ -165,6 +164,38 @@ func nearestMiniMaxVideoRatio(width, height int) string {
 	return best
 }
 
+// miniMaxVideoShortEdges maps MiniMax resolution tiers to their short edge in pixels.
+var miniMaxVideoShortEdges = map[string]int{
+	"480P":  480,
+	"720P":  720,
+	"768P":  768,
+	"1080P": 1080,
+	"2K":    1440,
+}
+
+// miniMaxVideoSize turns a task's resolution tier and ratio into the "WxH" size the video pricing
+// bands read (a short edge of 480 selects the 480p rate). It returns "" when either is unknown, so
+// settlement keeps the size captured from the request instead of an unparseable tier label.
+func miniMaxVideoSize(resolution, ratio string) string {
+	short, ok := miniMaxVideoShortEdges[strings.ToUpper(strings.TrimSpace(resolution))]
+	if !ok {
+		return ""
+	}
+	w, h, ok := strings.Cut(ratio, ":")
+	if !ok {
+		return ""
+	}
+	rw, errW := strconv.Atoi(strings.TrimSpace(w))
+	rh, errH := strconv.Atoi(strings.TrimSpace(h))
+	if errW != nil || errH != nil || rw <= 0 || rh <= 0 {
+		return ""
+	}
+	if rw >= rh {
+		return strconv.Itoa(int(math.Round(float64(short)*float64(rw)/float64(rh)))) + "x" + strconv.Itoa(short)
+	}
+	return strconv.Itoa(short) + "x" + strconv.Itoa(int(math.Round(float64(short)*float64(rh)/float64(rw))))
+}
+
 // ToBifrostVideoGenerationResponse converts a queried MiniMax video task to Bifrost format.
 func ToBifrostVideoGenerationResponse(task *MiniMaxVideoTask) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	if task == nil {
@@ -175,7 +206,7 @@ func ToBifrostVideoGenerationResponse(task *MiniMaxVideoTask) (*schemas.BifrostV
 		Object:    "video",
 		Model:     task.Model,
 		CreatedAt: task.CreatedAt,
-		Size:      task.Resolution,
+		Size:      miniMaxVideoSize(task.Resolution, task.Ratio),
 	}
 	if task.Duration > 0 {
 		resp.Seconds = schemas.Ptr(strconv.Itoa(task.Duration))

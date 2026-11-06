@@ -2,7 +2,6 @@ package minimax
 
 import (
 	"encoding/hex"
-	"fmt"
 	"maps"
 	"strings"
 
@@ -19,7 +18,7 @@ var miniMaxSpeechFormats = map[string]bool{
 // Voice tuning (vol, pitch, emotion) and audio tuning (sample_rate, bitrate, channel) are read from extra params.
 func ToMiniMaxSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest, stream bool) (*MiniMaxSpeechRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil || strings.TrimSpace(bifrostReq.Input.Input) == "" {
-		return nil, fmt.Errorf("speech input text is required")
+		return nil, providerUtils.InvalidRequestErrorf("speech input text is required")
 	}
 	req := &MiniMaxSpeechRequest{
 		Model: bifrostReq.Model,
@@ -35,16 +34,16 @@ func ToMiniMaxSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest, stream boo
 	params := bifrostReq.Params
 	if params == nil || params.VoiceConfig == nil || params.VoiceConfig.Voice == nil || *params.VoiceConfig.Voice == "" {
 		if params != nil && params.VoiceConfig != nil && len(params.VoiceConfig.MultiVoiceConfig) > 0 {
-			return nil, fmt.Errorf("minimax speech does not support multi-speaker voice config")
+			return nil, providerUtils.InvalidRequestErrorf("minimax speech does not support multi-speaker voice config")
 		}
-		return nil, fmt.Errorf("voice is required (a MiniMax voice_id such as English_Graceful_Lady)")
+		return nil, providerUtils.InvalidRequestErrorf("voice is required (a MiniMax voice_id such as English_Graceful_Lady)")
 	}
 	req.VoiceSetting.VoiceID = *params.VoiceConfig.Voice
 	req.VoiceSetting.Speed = params.Speed
 
 	if format := strings.ToLower(params.ResponseFormat); format != "" {
 		if !miniMaxSpeechFormats[format] {
-			return nil, fmt.Errorf("unsupported response_format %q for minimax speech", params.ResponseFormat)
+			return nil, providerUtils.InvalidRequestErrorf("unsupported response_format %q for minimax speech", params.ResponseFormat)
 		}
 		req.AudioSetting = &MiniMaxAudioSetting{Format: schemas.Ptr(format)}
 	}

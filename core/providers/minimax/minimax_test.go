@@ -504,6 +504,34 @@ func TestMiniMaxVideoLifecycle(t *testing.T) {
 	}
 }
 
+// The settled size must be "WxH": video pricing bands read the short edge of that string, so a tier
+// label such as "480P" would miss the 480p rate.
+func TestToBifrostVideoGenerationResponseSize(t *testing.T) {
+	for _, tc := range []struct {
+		resolution, ratio, want string
+	}{
+		{"480P", "9:16", "480x853"},
+		{"480P", "16:9", "853x480"},
+		{"768P", "16:9", "1365x768"},
+		{"768P", "1:1", "768x768"},
+		{"1080P", "21:9", "2520x1080"},
+		{"2K", "16:9", "2560x1440"},
+		{"768p", "4:3", "1024x768"},
+		{"768P", "adaptive", ""},
+		{"768P", "", ""},
+		{"", "16:9", ""},
+		{"4K", "16:9", ""},
+	} {
+		resp, bifrostErr := minimax.ToBifrostVideoGenerationResponse(&minimax.MiniMaxVideoTask{ID: "t1", Status: minimax.MiniMaxVideoTaskStatusSucceeded, Resolution: tc.resolution, Ratio: tc.ratio})
+		if bifrostErr != nil {
+			t.Fatalf("%s %s: %+v", tc.resolution, tc.ratio, bifrostErr.Error)
+		}
+		if resp.Size != tc.want {
+			t.Errorf("resolution %q ratio %q: size = %q, want %q", tc.resolution, tc.ratio, resp.Size, tc.want)
+		}
+	}
+}
+
 func TestToBifrostVideoGenerationResponseFailedTask(t *testing.T) {
 	resp, bifrostErr := minimax.ToBifrostVideoGenerationResponse(&minimax.MiniMaxVideoTask{
 		ID:     "t1",
@@ -1223,5 +1251,53 @@ func BenchmarkMiniMaxTextCompletion(b *testing.B) {
 			b.Fatalf("TextCompletion: %+v", bifrostErr.Error)
 		}
 		ctx.Cancel()
+	}
+}
+
+// Caller mistakes caught by the converters are 400s that never reach MiniMax, not 500s a client
+// would retry.
+func TestMiniMaxConverterValidationIsBadRequest(t *testing.T) {
+	provider, captured := newMockMiniMax(t, map[string]func(http.ResponseWriter){})
+	ctx := testContext(t)
+	key := testKey()
+
+	cases := map[string]func() *schemas.BifrostError{
+		"speech unsupported format": func() *schemas.BifrostError {
+			_, err := provider.Speech(ctx, key, speechRequest("English_Graceful_Lady", &schemas.SpeechParameters{ResponseFormat: "aac"}))
+			return err
+		},
+		"speech stream unsupported format": func() *schemas.BifrostError {
+			_, err := provider.SpeechStream(ctx, passthroughPostHook, nil, key, speechRequest("English_Graceful_Lady", &schemas.SpeechParameters{ResponseFormat: "aac"}))
+			return err
+		},
+		"image without prompt": func() *schemas.BifrostError {
+			_, err := provider.ImageGeneration(ctx, key, &schemas.BifrostImageGenerationRequest{Provider: schemas.MiniMax, Model: "image-01", Input: &schemas.ImageGenerationInput{}})
+			return err
+		},
+		"image malformed size": func() *schemas.BifrostError {
+			_, err := provider.ImageGeneration(ctx, key, &schemas.BifrostImageGenerationRequest{Provider: schemas.MiniMax, Model: "image-01", Input: &schemas.ImageGenerationInput{Prompt: "a cat"}, Params: &schemas.ImageGenerationParameters{Size: schemas.Ptr("big")}})
+			return err
+		},
+		"video without prompt": func() *schemas.BifrostError {
+			_, err := provider.VideoGeneration(ctx, key, &schemas.BifrostVideoGenerationRequest{Provider: schemas.MiniMax, Model: "MiniMax-H3", Input: &schemas.VideoGenerationInput{}})
+			return err
+		},
+		"video bad seconds": func() *schemas.BifrostError {
+			_, err := provider.VideoGeneration(ctx, key, &schemas.BifrostVideoGenerationRequest{Provider: schemas.MiniMax, Model: "MiniMax-H3", Input: &schemas.VideoGenerationInput{Prompt: "a dog"}, Params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("six")}})
+			return err
+		},
+	}
+	for name, call := range cases {
+		bifrostErr := call()
+		if bifrostErr == nil {
+			t.Errorf("%s: expected an error", name)
+			continue
+		}
+		if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status = %v, want 400 (%+v)", name, bifrostErr.StatusCode, bifrostErr.Error)
+		}
+	}
+	if reqs := captured(); len(reqs) != 0 {
+		t.Errorf("invalid requests reached MiniMax: %d", len(reqs))
 	}
 }

@@ -1,7 +1,6 @@
 package minimax
 
 import (
-	"fmt"
 	"maps"
 	"math"
 	"strconv"
@@ -30,7 +29,7 @@ var miniMaxImageAspectRatios = []struct {
 // ToMiniMaxImageGenerationRequest converts a Bifrost image generation request to MiniMax's /v1/image_generation body.
 func ToMiniMaxImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRequest) (*MiniMaxImageGenerationRequest, error) {
 	if bifrostReq == nil || bifrostReq.Input == nil || strings.TrimSpace(bifrostReq.Input.Prompt) == "" {
-		return nil, fmt.Errorf("prompt is required")
+		return nil, providerUtils.InvalidRequestErrorf("prompt is required")
 	}
 	req := &MiniMaxImageGenerationRequest{
 		Model:  bifrostReq.Model,
@@ -105,12 +104,12 @@ func ToBifrostImageGenerationResponse(resp *MiniMaxImageGenerationResponse, mode
 func parseImageSize(size string) (int, int, error) {
 	parts := strings.SplitN(strings.ToLower(size), "x", 2)
 	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("invalid size %q, expected WIDTHxHEIGHT", size)
+		return 0, 0, providerUtils.InvalidRequestErrorf("invalid size %q, expected WIDTHxHEIGHT", size)
 	}
 	width, errW := strconv.Atoi(strings.TrimSpace(parts[0]))
 	height, errH := strconv.Atoi(strings.TrimSpace(parts[1]))
 	if errW != nil || errH != nil || width <= 0 || height <= 0 {
-		return 0, 0, fmt.Errorf("invalid size %q, expected WIDTHxHEIGHT", size)
+		return 0, 0, providerUtils.InvalidRequestErrorf("invalid size %q, expected WIDTHxHEIGHT", size)
 	}
 	return width, height, nil
 }
