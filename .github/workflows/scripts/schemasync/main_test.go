@@ -170,3 +170,40 @@ type OpenAPIConfig struct {
 		}
 	}
 }
+
+// TestCheckEnumExcusesBytePlusAsCustomProviderBaseOnly pins the narrowedEnumPaths entry for
+// custom_provider_config.base_provider_type: byteplus is a ModelProvider const but not a
+// custom provider base (schemas.SupportedBaseProviders), so the enum leaves it out. Only that
+// const is excused, and only at that path: another missing provider is still drift there,
+// and byteplus missing from any other ModelProvider enum is still drift.
+func TestCheckEnumExcusesBytePlusAsCustomProviderBaseOnly(t *testing.T) {
+	const basePath = "/properties/governance/properties/providers/items/properties/custom_provider_config/properties/base_provider_type"
+	node := map[string]any{"type": "string", "enum": []any{"openai", "minimax"}}
+	drift := func(findings []Finding) []Finding {
+		var out []Finding
+		for _, f := range findings {
+			if f.Category == "enum-drift" && f.Severity == "ERROR" {
+				out = append(out, f)
+			}
+		}
+		return out
+	}
+
+	c := newTestChecker(map[string]any{})
+	c.checkEnum([]string{"openai", "minimax", "byteplus"}, node, basePath, "fixture.BaseProviderType", "schemas.ModelProvider")
+	if got := drift(c.findings); len(got) != 0 {
+		t.Errorf("byteplus must be excused at base_provider_type, got %+v", got)
+	}
+
+	c = newTestChecker(map[string]any{})
+	c.checkEnum([]string{"openai", "minimax", "byteplus", "newprovider"}, node, basePath, "fixture.BaseProviderType", "schemas.ModelProvider")
+	if got := drift(c.findings); len(got) != 1 || got[0].Detail != "schema missing Go consts [newprovider]" {
+		t.Errorf("a provider other than byteplus must still be drift at base_provider_type, got %+v", got)
+	}
+
+	c = newTestChecker(map[string]any{})
+	c.checkEnum([]string{"openai", "minimax", "byteplus"}, node, "/properties/elsewhere/properties/provider", "fixture.Provider", "schemas.ModelProvider")
+	if got := drift(c.findings); len(got) != 1 || got[0].Detail != "schema missing Go consts [byteplus]" {
+		t.Errorf("the excuse is scoped to base_provider_type; byteplus must be drift elsewhere, got %+v", got)
+	}
+}

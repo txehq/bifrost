@@ -229,6 +229,12 @@ var narrowedEnumPaths = map[string]struct {
 		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange"},
 		reason:   "UpstreamAuth reuses MCPAuthType; Agent Gateway accepts only none, headers, and oauth (agent.validateUpstreamAuth)",
 	},
+	// Upstream 132991f05 excuses byteplus, minimax and sagemaker here. This fork keeps minimax
+	// as a custom provider base (it is in the enum) and has no sagemaker provider yet.
+	"/properties/governance/properties/providers/items/properties/custom_provider_config/properties/base_provider_type": {
+		excluded: []string{"byteplus"},
+		reason:   "not in schemas.SupportedBaseProviders; IsSupportedBaseProvider rejects it as a custom provider base at load",
+	},
 }
 
 // opaqueLeafTypes are named Go types that have custom JSON marshalling and
