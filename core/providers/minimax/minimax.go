@@ -76,7 +76,9 @@ func NewMiniMaxProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 
 // GetProviderKey returns the provider identifier for MiniMax.
 func (provider *MiniMaxProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.MiniMax
+	// Fork: a custom provider built on minimax reports its own name, as OpenAI-based ones do, so
+	// video IDs carry the custom suffix and ownership rows are recorded in the same scope.
+	return providerUtils.GetProviderName(schemas.MiniMax, provider.customProviderConfig)
 }
 
 // ListModels performs a list models request to MiniMax's API.

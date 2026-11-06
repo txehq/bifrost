@@ -19,6 +19,7 @@ import (
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
 	"github.com/capsohq/bifrost/core/providers/minimax"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 )
@@ -1489,6 +1490,13 @@ func TestMiniMaxStreamTerminalEventWithParkedBody(t *testing.T) {
 				}
 				tc.want.check(t, chunks[len(chunks)-1])
 			}
+			// The finalizer runs in the stream goroutine's deferred cleanup, just after the
+			// channel closes, so wait for it rather than reading the count at close.
+			deadline := time.Now().Add(2 * time.Second)
+			for finalized.Load() == 0 && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+			time.Sleep(50 * time.Millisecond)
 			if got := finalized.Load(); got != 1 {
 				t.Errorf("finalizer ran %d times, want 1", got)
 			}
@@ -1657,5 +1665,56 @@ func TestMiniMaxVideoDownloadRefusesNonPublicURL(t *testing.T) {
 	}
 	if strings.Contains(msg, "abc123") {
 		t.Errorf("error leaks the signed query: %s", msg)
+	}
+}
+
+// A custom provider built on minimax reports its own name, so the video IDs it issues carry the
+// custom suffix and the ownership rows governance records use the same scope as later lookups.
+func TestMiniMaxCustomProviderReportsItsOwnKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v2/video_generation":
+			jsonResponse(http.StatusOK, `{"task_id":"424010985738629","base_resp":{"status_code":0}}`)(w)
+		case "GET /v2/query/video_generation/424010985738629":
+			jsonResponse(http.StatusOK, `{"task":{"id":"424010985738629","model":"MiniMax-H3","status":"processing"}}`)(w)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	newProvider := func(custom *schemas.CustomProviderConfig) *minimax.MiniMaxProvider {
+		p, err := minimax.NewMiniMaxProvider(&schemas.ProviderConfig{
+			NetworkConfig:        schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+			CustomProviderConfig: custom,
+		}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+		if err != nil {
+			t.Fatalf("NewMiniMaxProvider: %v", err)
+		}
+		return p
+	}
+
+	if got := newProvider(nil).GetProviderKey(); got != schemas.MiniMax {
+		t.Errorf("built-in provider key = %q, want minimax", got)
+	}
+
+	custom := newProvider(&schemas.CustomProviderConfig{CustomProviderKey: "my-minimax", BaseProviderType: schemas.MiniMax})
+	if got := custom.GetProviderKey(); got != "my-minimax" {
+		t.Fatalf("custom provider key = %q, want my-minimax", got)
+	}
+	ctx := testContext(t)
+	created, bifrostErr := custom.VideoGeneration(ctx, testKey(), &schemas.BifrostVideoGenerationRequest{Provider: "my-minimax", Model: "MiniMax-H3", Input: &schemas.VideoGenerationInput{Prompt: "a dog"}})
+	if bifrostErr != nil {
+		t.Fatalf("VideoGeneration: %+v", bifrostErr.Error)
+	}
+	if want := providerUtils.AddVideoIDProviderSuffix("424010985738629", "my-minimax"); created.ID != want {
+		t.Errorf("created id = %q, want %q (custom suffix)", created.ID, want)
+	}
+	retrieved, bifrostErr := custom.VideoRetrieve(ctx, testKey(), &schemas.BifrostVideoRetrieveRequest{Provider: "my-minimax", ID: created.ID})
+	if bifrostErr != nil {
+		t.Fatalf("VideoRetrieve: %+v", bifrostErr.Error)
+	}
+	if retrieved.ID != created.ID {
+		t.Errorf("retrieved id = %q, want the created id %q", retrieved.ID, created.ID)
 	}
 }
