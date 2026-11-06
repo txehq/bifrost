@@ -402,6 +402,21 @@ func TestEndsOpenAIPassthroughStream(t *testing.T) {
 	}
 }
 
+// TestEndsOpenAIPassthroughStreamAllocatesNothing pins the fork's zero-allocation rule for the
+// end-event check, which runs on every framed event of an OpenAI passthrough stream: reading
+// the type through gjson.GetBytes copied it, one allocation per Responses event.
+func TestEndsOpenAIPassthroughStreamAllocatesNothing(t *testing.T) {
+	for _, event := range [][]byte{
+		[]byte(`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"hello"}`),
+		[]byte(`{"type":"response.completed","response":{"id":"resp_1","status":"completed"}}`),
+		[]byte(`{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}`),
+	} {
+		if allocs := testing.AllocsPerRun(100, func() { openai.EndsOpenAIPassthroughStream(event) }); allocs != 0 {
+			t.Errorf("EndsOpenAIPassthroughStream(%s) allocates %.0f times per call, want 0", event, allocs)
+		}
+	}
+}
+
 func BenchmarkEndsOpenAIPassthroughStream(b *testing.B) {
 	events := map[string][]byte{
 		"delta":     []byte(`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"hello"}`),

@@ -1830,6 +1830,45 @@ func TestChatGPTPassthroughForwardsCodexModelList(t *testing.T) {
 	require.NotContains(t, req.SafeHeaders, "cookie")
 }
 
+// TestOpenAIPassthroughKeepsStoredKeyForChatGPTToken pins the fork boundary around the ChatGPT
+// sign-in route (upstream 43e55b2a6): on /openai_passthrough a ChatGPT-issued token is neither
+// forwarded nor allowed to skip key selection, and no route but the Codex model list skips the
+// model allowlist.
+func TestOpenAIPassthroughKeepsStoredKeyForChatGPTToken(t *testing.T) {
+	for _, tc := range []struct{ method, uri string }{
+		{fasthttp.MethodGet, "/openai_passthrough/v1/models"},
+		{fasthttp.MethodGet, "/openai_passthrough/backend-api/codex/models"},
+		{fasthttp.MethodPost, "/openai_passthrough/v1/responses"},
+	} {
+		t.Run(tc.method+" "+tc.uri, func(t *testing.T) {
+			plugin := &codexPassthroughReceipt{}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: bifrost.NewNoOpLogger()})
+			require.NoError(t, err)
+			defer client.Shutdown()
+			r := router.New()
+			NewOpenAIPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+			jwt := "Bearer eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.signature"
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(tc.method)
+			ctx.Request.SetRequestURI(tc.uri)
+			ctx.Request.Header.Set("Authorization", jwt)
+			ctx.Request.Header.Set("x-bf-vk", "sk-bf-synthetic")
+			if tc.method == fasthttp.MethodPost {
+				ctx.Request.Header.SetContentType("application/json")
+				ctx.Request.SetBodyString(`{"model":"gpt-5.5","input":"hi","stream":true}`)
+			}
+			r.Handler(&ctx)
+			require.NotNil(t, plugin.request, "the request must reach the plugin pipeline")
+			require.False(t, plugin.skipKeySelection, "a stored OpenAI key must stay selected outside the ChatGPT backend")
+			require.False(t, plugin.skipModelCheck, "only the Codex model list on /chatgpt_passthrough skips the model allowlist")
+			req := plugin.request.PassthroughRequest
+			require.Empty(t, req.UpstreamURL)
+			require.NotContains(t, req.SafeHeaders, "authorization", "the caller token must not reach api.openai.com")
+			require.NotContains(t, req.SafeHeaders, "x-bf-vk")
+		})
+	}
+}
+
 // BenchmarkChatGPTPassthroughStreamDecision measures the route predicate without touching provider execution.
 func BenchmarkChatGPTPassthroughStreamDecision(b *testing.B) {
 	cfg := NewChatGPTPassthroughRouter(nil, nil, nil, &testLogger{}).passthroughCfg
@@ -1991,6 +2030,35 @@ func TestPassthroughUpstreamNeverSeesMethodOverrides(t *testing.T) {
 				case "x-http-method-override", "x-http-method", "x-method-override":
 					t.Errorf("method override %q reached the upstream", name)
 				}
+			}
+		})
+	}
+}
+
+// BenchmarkApplyPassthroughCallerAuth measures the caller-auth decision every passthrough request
+// runs, on the routes it changed (upstream 43e55b2a6 moved the OpenAI test behind the ChatGPT
+// upstream check and made it read the token issuer).
+func BenchmarkApplyPassthroughCallerAuth(b *testing.B) {
+	chatGPTJWT := "Bearer eyJhbGciOiJub25lIn0.eyJpc3MiOiJodHRwczovL2F1dGgub3BlbmFpLmNvbSIsInN1YiI6InN5bnRoZXRpYyJ9.signature"
+	for _, tc := range []struct {
+		name        string
+		provider    schemas.ModelProvider
+		auth        string
+		upstreamURL string
+	}{
+		{"openai_api_key", schemas.OpenAI, "Bearer sk-plain-api-key", ""},
+		{"openai_passthrough_jwt", schemas.OpenAI, chatGPTJWT, ""},
+		{"chatgpt_passthrough_jwt", schemas.OpenAI, chatGPTJWT, "https://chatgpt.com"},
+		{"anthropic_oauth", schemas.Anthropic, "Bearer sk-ant-oat01-caller-token", ""},
+		{"no_auth", schemas.Gemini, "", ""},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			safeHeaders := map[string]string{}
+			b.ReportAllocs()
+			for b.Loop() {
+				applyPassthroughCallerAuth(bifrostCtx, safeHeaders, tc.provider, tc.auth, tc.upstreamURL)
 			}
 		})
 	}
