@@ -163,14 +163,15 @@ func getSecondsFromVideoRequest(req *BifrostRequest) *string {
 
 // BackfillParams populates response fields from the original request that are needed
 // for cost calculation but may not be returned by the provider.
-// - Seconds (duration from request params or default)
+// - Seconds (duration from request params or default), only when the provider reported none
 func (r *BifrostVideoGenerationResponse) BackfillParams(req *BifrostRequest) {
 	if r == nil || req == nil {
 		return
 	}
-	seconds := getSecondsFromVideoRequest(req)
-	if seconds != nil {
-		r.Seconds = seconds
+	// Fork: keep a duration the provider already reported. A provider can normalize the requested
+	// duration (MiniMax clamps H3-Max to 5-15s), and that is the clip that was ordered and billed.
+	if r.Seconds == nil {
+		r.Seconds = getSecondsFromVideoRequest(req)
 	}
 	if r.Model == "" {
 		switch {

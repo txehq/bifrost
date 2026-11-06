@@ -9917,3 +9917,55 @@ func BenchmarkIsKeySkippingAllowed(b *testing.B) {
 		})
 	}
 }
+
+// TestVideoGenerationKeepsProviderNormalizedSeconds runs a MiniMax video create through the core
+// request path: H3-Max clamps a 2s request to 5s, and BackfillParams must not overwrite the 5s the
+// provider ordered with the 2s the caller asked for.
+func TestVideoGenerationKeepsProviderNormalizedSeconds(t *testing.T) {
+	var sentDuration atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if r.Method != http.MethodPost || r.URL.Path != "/v2/video_generation" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var parsed struct {
+			Duration int64 `json:"duration"`
+		}
+		_ = json.Unmarshal(body, &parsed)
+		sentDuration.Store(parsed.Duration)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"task_id":"424010985738629","base_resp":{"status_code":0,"status_msg":"success"}}`)
+	}))
+	t.Cleanup(server.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.MiniMax, 1, 10, server.URL)
+	account.SetKeysForProvider(schemas.MiniMax, []schemas.Key{{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-test-minimax"), Weight: 1, Models: []string{"*"}}})
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	resp, bifrostErr := client.VideoGenerationRequest(ctx, &schemas.BifrostVideoGenerationRequest{
+		Provider: schemas.MiniMax,
+		Model:    "MiniMax-H3-Max",
+		Input:    &schemas.VideoGenerationInput{Prompt: "a dog"},
+		Params:   &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("2")},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("VideoGenerationRequest: %+v", bifrostErr.Error)
+	}
+	if got := sentDuration.Load(); got != 5 {
+		t.Fatalf("upstream duration = %d, want MiniMax's 5s minimum for H3-Max", got)
+	}
+	if resp.Seconds == nil || *resp.Seconds != "5" {
+		t.Errorf("response seconds = %v, want the 5s MiniMax ordered, not the requested 2s", resp.Seconds)
+	}
+	if resp.Status != schemas.VideoStatusQueued {
+		t.Errorf("status = %s, want queued", resp.Status)
+	}
+}
