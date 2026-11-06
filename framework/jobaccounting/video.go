@@ -86,8 +86,25 @@ type VideoPayload struct {
 func (s *VideoSettler) Kind() ProviderJobKind { return ProviderJobKindVideo }
 
 func (s *VideoSettler) SupportsProvider(provider schemas.ModelProvider) bool {
-	_, ok := videoProviders[provider]
-	return ok
+	if _, ok := videoProviders[provider]; ok {
+		return true
+	}
+	// Fork: a custom provider records its jobs under its own name. Settle it when its base
+	// provider is one Bifrost can settle video for; the job keeps the custom name for routing
+	// and accounting identity.
+	if resolver, ok := s.retriever.(BaseProviderResolver); ok {
+		if base := resolver.BaseProvider(provider); base != "" && base != provider {
+			_, ok := videoProviders[base]
+			return ok
+		}
+	}
+	return false
+}
+
+// BaseProviderResolver is implemented by a VideoRetriever that can name the base provider of a
+// configured custom provider ("" when the name is not a custom provider). Fork addition.
+type BaseProviderResolver interface {
+	BaseProvider(provider schemas.ModelProvider) schemas.ModelProvider
 }
 
 // Backoff is minutes where batch's is hours. A video job typically finishes in one

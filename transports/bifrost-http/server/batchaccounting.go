@@ -120,7 +120,7 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 	loggerPlugin.StartBatchAccountingSweeper(&bifrostBatchResultFetcher{client: s.Client}, time.Minute, s.Config.KVStore)
 	// Video jobs finish in minutes, not hours, so their sweeper runs on a much
 	// tighter tick than the batch one.
-	loggerPlugin.StartVideoAccountingSweeper(&bifrostVideoRetriever{client: s.Client}, 30*time.Second, s.Config.KVStore)
+	loggerPlugin.StartVideoAccountingSweeper(&bifrostVideoRetriever{client: s.Client, config: s.Config}, 30*time.Second, s.Config.KVStore)
 }
 
 // setSettlementTracer gives the logging plugin the tracer for emitSettlementSpan.
@@ -145,6 +145,20 @@ func (s *BifrostHTTPServer) setSettlementTracer() {
 
 type bifrostVideoRetriever struct {
 	client *bifrost.Bifrost
+	config *lib.Config // fork: resolves a custom provider's base type for the settler
+}
+
+// BaseProvider implements jobaccounting.BaseProviderResolver: the base provider type of a
+// configured custom provider, or "" when the name is not one.
+func (f *bifrostVideoRetriever) BaseProvider(provider schemas.ModelProvider) schemas.ModelProvider {
+	if f == nil || f.config == nil {
+		return ""
+	}
+	cfg, err := f.config.GetProviderConfigRaw(provider)
+	if err != nil || cfg == nil || cfg.CustomProviderConfig == nil {
+		return ""
+	}
+	return cfg.CustomProviderConfig.BaseProviderType
 }
 
 func (f *bifrostVideoRetriever) RetrieveVideo(ctx context.Context, job *cstables.TableProviderJob) (*schemas.BifrostVideoGenerationResponse, error) {

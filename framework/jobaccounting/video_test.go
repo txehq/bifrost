@@ -649,3 +649,59 @@ func TestVideoHydrateFromLog(t *testing.T) {
 	NewVideoSettler(nil).HydrateFromLog(&logstore.Log{}, bare)
 	assert.Empty(t, bare.Status)
 }
+
+// resolvingVideoRetriever is a fakeVideoRetriever that also names custom providers' bases.
+type resolvingVideoRetriever struct {
+	fakeVideoRetriever
+	bases map[schemas.ModelProvider]schemas.ModelProvider
+}
+
+func (r *resolvingVideoRetriever) BaseProvider(provider schemas.ModelProvider) schemas.ModelProvider {
+	return r.bases[provider]
+}
+
+// A custom provider records its video jobs under its own name, so the settler must recognise it
+// through its base provider, or its jobs are never settled and the video is never billed.
+func TestVideoSettlerSupportsCustomProviderOnAVideoBase(t *testing.T) {
+	retriever := &resolvingVideoRetriever{bases: map[schemas.ModelProvider]schemas.ModelProvider{
+		"my-minimax":   schemas.MiniMax,
+		"my-openai":    schemas.OpenAI,
+		"my-anthropic": schemas.Anthropic,
+	}}
+	settler := NewVideoSettler(retriever)
+	assert.True(t, settler.SupportsProvider("my-minimax"))
+	assert.True(t, settler.SupportsProvider("my-openai"))
+	assert.False(t, settler.SupportsProvider("my-anthropic"), "a base with no video settlement stays unsupported")
+	assert.False(t, settler.SupportsProvider("unknown"))
+	assert.True(t, settler.SupportsProvider(schemas.MiniMax))
+	assert.False(t, NewVideoSettler(nil).SupportsProvider("my-minimax"), "without a resolver only built-in names match")
+}
+
+func TestVideoSweeper_SettlesCustomProviderJob(t *testing.T) {
+	store := newFakeAccountingStore()
+	due := time.Now().UTC().Add(-time.Minute)
+	job := videoJob(t, "vid_custom", generationDims("sora-2-pro", "1920x1080", 8))
+	job.Provider = "my-minimax"
+	job.ID = cstables.ProviderJobID(cstables.ProviderJobKindVideo, job.Provider, job.JobID)
+	job.NextCheckAt = &due
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
+
+	retriever := &resolvingVideoRetriever{
+		fakeVideoRetriever: fakeVideoRetriever{resp: &schemas.BifrostVideoGenerationResponse{
+			ID:     "vid_custom",
+			Status: schemas.VideoStatusCompleted,
+			Videos: []schemas.VideoOutput{{Type: schemas.VideoOutputTypeURL}},
+		}},
+		bases: map[schemas.ModelProvider]schemas.ModelProvider{"my-minimax": schemas.MiniMax},
+	}
+	reporter := &fakeUsageReporter{}
+	sweeper := NewVideoSweeper(store, store, fakePricing{}, retriever, nil, reporter, SweeperConfig{Provider: "my-minimax", Limit: 10})
+	sweeper.SweepOnce(context.Background())
+
+	assert.Equal(t, 1, retriever.calls, "the custom provider's job must be polled")
+	settled := store.jobs[job.ID]
+	require.NotNil(t, settled)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, settled.AccountingStatus)
+	require.Len(t, reporter.reports, 1, "governance must receive the custom provider's video cost")
+	assert.NotNil(t, store.logs[AccountingLogID(ProviderJobKindVideo, "my-minimax", "vid_custom")], "the aggregate row keeps the custom provider name")
+}
