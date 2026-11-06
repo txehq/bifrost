@@ -1682,3 +1682,103 @@ func BenchmarkToBifrostVideoGenerationResponse(b *testing.B) {
 		}
 	}
 }
+
+// Extra params are merged over the converted request body, so one named "model" would send Ark a
+// different model than the one the request was authorized, routed and priced for. Every operation
+// that merges extra params refuses it with a 400 before calling Ark.
+func TestBytePlusRefusesModelInExtraParams(t *testing.T) {
+	provider, captured, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v3/chat/completions": jsonResponse(http.StatusOK, chatSuccessBody),
+	})
+	key := testKey()
+	override := map[string]interface{}{"model": "blocked-model"}
+	text := []schemas.EmbeddingContentPart{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("text")}}
+	image := &schemas.ImageGenerationInput{Prompt: "a cat"}
+	edit := &schemas.ImageEditInput{Prompt: "make it blue", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}}
+	responsesReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.BytePlus, Model: "seed-2-0-lite-260228",
+		Input:  []schemas.ResponsesMessage{llmtests.CreateBasicResponsesMessage("hi")},
+		Params: &schemas.ResponsesParameters{ExtraParams: override},
+	}
+	imageReq := &schemas.BifrostImageGenerationRequest{Provider: schemas.BytePlus, Model: "seedream-4-5-251128", Input: image, Params: &schemas.ImageGenerationParameters{ExtraParams: override}}
+	editReq := &schemas.BifrostImageEditRequest{Provider: schemas.BytePlus, Model: "seedream-4-5-251128", Input: edit, Params: &schemas.ImageEditParameters{ExtraParams: override}}
+	operations := map[string]func(ctx *schemas.BifrostContext) *schemas.BifrostError{
+		"chat": func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, e := provider.ChatCompletion(ctx, key, userChatRequest(&schemas.ChatParameters{ExtraParams: override}))
+			return e
+		},
+		"chat stream": func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, e := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, key, userChatRequest(&schemas.ChatParameters{ExtraParams: override}))
+			return e
+		},
+		"responses": func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, e := provider.Responses(ctx, key, responsesReq)
+			return e
+		},
+		"responses stream": func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, e := provider.ResponsesStream(ctx, passthroughPostHook, nil, key, responsesReq)
+			return e
+		},
+		"embedding": func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, e := provider.Embedding(ctx, key, &schemas.BifrostEmbeddingRequest{
+				Provider: schemas.BytePlus, Model: "skylark-embedding-vision-251215",
+				Input:  []schemas.EmbeddingInputItem{{Content: text}},
+				Params: &schemas.EmbeddingParameters{ExtraParams: override},
+			})
+			return e
+		},
+		"embedding item": func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, e := provider.Embedding(ctx, key, &schemas.BifrostEmbeddingRequest{
+				Provider: schemas.BytePlus, Model: "skylark-embedding-vision-251215",
+				Input: []schemas.EmbeddingInputItem{{Content: text}, {Content: text, Params: &schemas.EmbeddingParameters{ExtraParams: override}}},
+			})
+			return e
+		},
+		"image": func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, e := provider.ImageGeneration(ctx, key, imageReq)
+			return e
+		},
+		"image stream": func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, e := provider.ImageGenerationStream(ctx, passthroughPostHook, nil, key, imageReq)
+			return e
+		},
+		"image edit": func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, e := provider.ImageEdit(ctx, key, editReq)
+			return e
+		},
+		"image edit stream": func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, e := provider.ImageEditStream(ctx, passthroughPostHook, nil, key, editReq)
+			return e
+		},
+		"video": func(ctx *schemas.BifrostContext) *schemas.BifrostError {
+			_, e := provider.VideoGeneration(ctx, key, &schemas.BifrostVideoGenerationRequest{
+				Provider: schemas.BytePlus, Model: "seedance-1-0-pro-fast-251015",
+				Input:  &schemas.VideoGenerationInput{Prompt: "a dog"},
+				Params: &schemas.VideoGenerationParameters{ExtraParams: override},
+			})
+			return e
+		},
+	}
+	for name, call := range operations {
+		bifrostErr := call(streamTestContext(t))
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: want a 400 for extra params naming a model, got %+v", name, bifrostErr)
+			continue
+		}
+		if !strings.Contains(bifrostErr.Error.Message, "model") {
+			t.Errorf("%s: error should name the model field: %q", name, bifrostErr.Error.Message)
+		}
+	}
+	for _, r := range captured() {
+		t.Errorf("%s %s reached Ark with model %q", r.method, r.path, gjson.GetBytes(r.body, "model").String())
+	}
+
+	// Other extra params still reach Ark, under the request's own model.
+	if _, bifrostErr := provider.ChatCompletion(streamTestContext(t), key, userChatRequest(&schemas.ChatParameters{ExtraParams: map[string]interface{}{"service_tier": "flex"}})); bifrostErr != nil {
+		t.Fatalf("chat with an ordinary extra param: %+v", bifrostErr.Error)
+	}
+	reqs := captured()
+	if len(reqs) != 1 || gjson.GetBytes(reqs[0].body, "model").String() != "seed-2-0-lite-260228" || gjson.GetBytes(reqs[0].body, "service_tier").String() != "flex" {
+		t.Errorf("want one call with the request's model and the extra param, got %d: %s", len(reqs), reqs[len(reqs)-1].body)
+	}
+}

@@ -131,6 +131,19 @@ func (provider *BytePlusProvider) Embedding(ctx *schemas.BifrostContext, key sch
 	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
 		return nil, providerUtils.NewBifrostBadRequestError("large payload passthrough is not supported for byteplus embeddings")
 	}
+	// Fork: extra params must not name a model, on the request or on any item (see rejectModelInExtraParams).
+	if request.Params != nil {
+		if bifrostErr := rejectModelInExtraParams(request.Params.ExtraParams); bifrostErr != nil {
+			return nil, bifrostErr
+		}
+	}
+	for i := range request.Input {
+		if params := request.Input[i].Params; params != nil {
+			if bifrostErr := rejectModelInExtraParams(params.ExtraParams); bifrostErr != nil {
+				return nil, bifrostErr
+			}
+		}
+	}
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
