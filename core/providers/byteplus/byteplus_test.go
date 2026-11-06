@@ -1143,7 +1143,7 @@ func newProxiedBytePlus(t *testing.T, handler http.HandlerFunc) (*byteplus.ByteP
 	if err != nil {
 		t.Fatalf("NewBytePlusProvider: %v", err)
 	}
-	ctx := testContext(t)
+	ctx := streamTestContext(t)
 	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, proxyConfig)
 	return provider, ctx
 }
@@ -1304,8 +1304,8 @@ func imageStreamRequest() *schemas.BifrostImageGenerationRequest {
 	}
 }
 
-// streamTestContext outlives every wait in the stream tests, so a context deadline never ends a
-// stream that a test expects its own handling to end.
+// streamTestContext outlives every wait in the fork's tests, so a context deadline never ends a
+// stream or a download that a test expects the code under test to end.
 func streamTestContext(t *testing.T) *schemas.BifrostContext {
 	t.Helper()
 	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 5*time.Minute)
@@ -1408,6 +1408,24 @@ func TestBytePlusImageStreamTruncatedBody(t *testing.T) {
 	<-handlerDone
 }
 
+// deadlineOnDemand is a parent context whose deadline passes when the test closes done, so the
+// deadline case does not depend on how long a loaded host takes to deliver the first event.
+type deadlineOnDemand struct {
+	context.Context
+	done chan struct{}
+}
+
+func (d *deadlineOnDemand) Done() <-chan struct{} { return d.done }
+
+func (d *deadlineOnDemand) Err() error {
+	select {
+	case <-d.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
 // A client that goes away, or a request deadline that passes, while Ark is still generating ends
 // the stream with exactly one error of that kind through the post-hook, which is what logging and
 // billing see. Delivery of that last chunk is best effort once the context is done (the shared
@@ -1432,9 +1450,10 @@ func TestBytePlusImageStreamContextEnds(t *testing.T) {
 		{
 			name: "deadline",
 			newContext: func(t *testing.T) (*schemas.BifrostContext, func()) {
-				ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 2*time.Second)
+				parent := &deadlineOnDemand{Context: context.Background(), done: make(chan struct{})}
+				ctx, cancel := schemas.NewBifrostContextWithCancel(parent)
 				t.Cleanup(cancel)
-				return ctx, func() {}
+				return ctx, func() { close(parent.done) }
 			},
 			wantStatus: http.StatusGatewayTimeout, wantType: schemas.RequestTimedOut,
 		},
