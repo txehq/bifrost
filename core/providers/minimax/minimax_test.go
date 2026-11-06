@@ -913,17 +913,30 @@ func TestMiniMaxTranscriptionStream(t *testing.T) {
 		t.Fatalf("TranscriptionStream error: %+v", bifrostErr.Error)
 	}
 	chunks := collectStream(t, stream)
-	if len(chunks) != 3 {
-		t.Fatalf("expected 2 deltas and a done event, got %d chunks", len(chunks))
+	// Fork: the finish event's text arrives as a third delta, then a done event without a delta.
+	if len(chunks) != 4 {
+		t.Fatalf("expected 3 deltas and a done event, got %d chunks", len(chunks))
 	}
-	for _, c := range chunks {
+	var joined strings.Builder
+	for i, c := range chunks {
 		if c.BifrostError != nil {
 			t.Fatalf("unexpected stream error: %+v", c.BifrostError.Error)
 		}
+		ts := c.BifrostTranscriptionStreamResponse
+		if ts.ExtraFields.ChunkIndex != i {
+			t.Errorf("chunk %d has index %d", i, ts.ExtraFields.ChunkIndex)
+		}
+		if ts.Type == schemas.TranscriptionStreamResponseTypeDelta && ts.Delta != nil {
+			joined.WriteString(*ts.Delta)
+		}
 	}
-	done := chunks[2].BifrostTranscriptionStreamResponse
-	if done.Type != schemas.TranscriptionStreamResponseTypeDone || done.Text != "The quick brown fox jumps over the lazy dog." {
-		t.Errorf("unexpected done event: type=%s text=%q", done.Type, done.Text)
+	// The streaming accumulator builds the logged transcript from delta events alone.
+	if joined.String() != "The quick brown fox jumps over the lazy dog." {
+		t.Errorf("deltas join to %q, want the full transcript", joined.String())
+	}
+	done := chunks[3].BifrostTranscriptionStreamResponse
+	if done.Type != schemas.TranscriptionStreamResponseTypeDone || done.Text != "The quick brown fox jumps over the lazy dog." || done.Delta != nil {
+		t.Errorf("unexpected done event: type=%s text=%q delta=%v", done.Type, done.Text, done.Delta)
 	}
 	if done.Usage == nil || done.Usage.Seconds == nil || *done.Usage.Seconds != 3.312 {
 		t.Errorf("usage = %+v, want 3.312 seconds", done.Usage)

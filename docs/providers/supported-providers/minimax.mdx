@@ -289,5 +289,5 @@ With `verbose_json`, sentence-level timestamps come back as `segments`. Word-lev
 
 ## Streaming
 
-Send the form field `stream=true` to stream. Each MiniMax event becomes a `transcript.text.delta`, and the final event becomes `transcript.text.done` with the full text and the audio duration. MiniMax only streams the `json` format, so streaming with `verbose_json`, `srt` or `vtt` fails with a 400.
+Send the form field `stream=true` to stream. Each MiniMax event becomes a `transcript.text.delta`, and the final event becomes `transcript.text.done` with the full text and the audio duration. When the final MiniMax event carries text of its own, that text arrives first as one more `transcript.text.delta`, so the deltas always add up to the full transcript. MiniMax only streams the `json` format, so streaming with `verbose_json`, `srt` or `vtt` fails with a 400.
 

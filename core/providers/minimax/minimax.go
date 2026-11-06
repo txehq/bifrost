@@ -976,6 +976,17 @@ func (provider *MiniMaxProvider) streamMiniMaxSSE(ctx *schemas.BifrostContext, p
 			}
 			lastChunkTime = time.Now()
 			if done {
+				// Fork: a transcription finish event can carry the last piece of text. The streaming
+				// accumulator (framework/streaming/transcription.go) joins delta events only, so send
+				// that text as its own delta first and keep the done event free of it.
+				if ts := bifrostResp.TranscriptionStreamResponse; ts != nil && ts.Delta != nil && *ts.Delta != "" {
+					delta := &schemas.BifrostTranscriptionStreamResponse{Type: schemas.TranscriptionStreamResponseTypeDelta, Delta: ts.Delta, ExtraFields: ts.ExtraFields}
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, delta, nil), responseChan, postHookSpanFinalizer)
+					ts.Delta = nil
+					chunkIndex++
+					ts.ExtraFields.ChunkIndex = chunkIndex
+					ts.ExtraFields.RawResponse = nil
+				}
 				setMiniMaxFinalStreamFields(bifrostResp, time.Since(startTime), sendBackRawRequest, rawRequest)
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				// Fork: as above, the upstream may hold the body open after its final event.
