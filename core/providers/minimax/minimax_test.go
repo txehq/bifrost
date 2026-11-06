@@ -1520,3 +1520,112 @@ func TestMiniMaxDeprecatedForkNames(t *testing.T) {
 		t.Errorf("provider key = %q, want %q", provider.GetProviderKey(), schemas.Minimax)
 	}
 }
+
+// A custom provider built on minimax with allowed_requests must refuse every operation it does not
+// allow before any conversion or upstream call: video, speech and transcription are billed.
+func TestMiniMaxCustomProviderAllowedRequestsGateEveryOperation(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		_, _ = io.Copy(io.Discard, r.Body)
+		jsonResponse(http.StatusOK, chatSuccessBody)(w)
+	}))
+	t.Cleanup(server.Close)
+	provider, err := minimax.NewMiniMaxProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			CustomProviderKey: "my-minimax",
+			BaseProviderType:  schemas.MiniMax,
+			AllowedRequests:   &schemas.AllowedRequests{ChatCompletion: true},
+		},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		t.Fatalf("NewMiniMaxProvider: %v", err)
+	}
+	ctx := testContext(t)
+	key := testKey()
+	videoReq := &schemas.BifrostVideoGenerationRequest{Provider: schemas.MiniMax, Model: "MiniMax-H3", Input: &schemas.VideoGenerationInput{Prompt: "a dog"}}
+
+	blocked := map[schemas.RequestType]func() *schemas.BifrostError{
+		schemas.ListModelsRequest: func() *schemas.BifrostError {
+			_, e := provider.ListModels(ctx, []schemas.Key{key}, &schemas.BifrostListModelsRequest{Provider: schemas.MiniMax})
+			return e
+		},
+		schemas.TextCompletionRequest: func() *schemas.BifrostError {
+			_, e := provider.TextCompletion(ctx, key, textCompletionRequest(nil))
+			return e
+		},
+		schemas.TextCompletionStreamRequest: func() *schemas.BifrostError {
+			_, e := provider.TextCompletionStream(ctx, passthroughPostHook, nil, key, textCompletionRequest(nil))
+			return e
+		},
+		schemas.ChatCompletionStreamRequest: func() *schemas.BifrostError {
+			_, e := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, key, userChatRequest(nil))
+			return e
+		},
+		schemas.ResponsesRequest: func() *schemas.BifrostError {
+			_, e := provider.Responses(ctx, key, &schemas.BifrostResponsesRequest{Provider: schemas.MiniMax, Model: "MiniMax-M3"})
+			return e
+		},
+		schemas.ResponsesStreamRequest: func() *schemas.BifrostError {
+			_, e := provider.ResponsesStream(ctx, passthroughPostHook, nil, key, &schemas.BifrostResponsesRequest{Provider: schemas.MiniMax, Model: "MiniMax-M3"})
+			return e
+		},
+		schemas.ImageGenerationRequest: func() *schemas.BifrostError {
+			_, e := provider.ImageGeneration(ctx, key, &schemas.BifrostImageGenerationRequest{Provider: schemas.MiniMax, Model: "image-01", Input: &schemas.ImageGenerationInput{Prompt: "a cat"}})
+			return e
+		},
+		schemas.VideoGenerationRequest: func() *schemas.BifrostError {
+			_, e := provider.VideoGeneration(ctx, key, videoReq)
+			return e
+		},
+		schemas.VideoRetrieveRequest: func() *schemas.BifrostError {
+			_, e := provider.VideoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: schemas.MiniMax, ID: "t1"})
+			return e
+		},
+		schemas.VideoDownloadRequest: func() *schemas.BifrostError {
+			_, e := provider.VideoDownload(ctx, key, &schemas.BifrostVideoDownloadRequest{Provider: schemas.MiniMax, ID: "t1"})
+			return e
+		},
+		schemas.VideoDeleteRequest: func() *schemas.BifrostError {
+			_, e := provider.VideoDelete(ctx, key, &schemas.BifrostVideoDeleteRequest{Provider: schemas.MiniMax, ID: "t1"})
+			return e
+		},
+		schemas.SpeechRequest: func() *schemas.BifrostError {
+			_, e := provider.Speech(ctx, key, speechRequest("English_Graceful_Lady", nil))
+			return e
+		},
+		schemas.SpeechStreamRequest: func() *schemas.BifrostError {
+			_, e := provider.SpeechStream(ctx, passthroughPostHook, nil, key, speechRequest("English_Graceful_Lady", nil))
+			return e
+		},
+		schemas.TranscriptionRequest: func() *schemas.BifrostError {
+			_, e := provider.Transcription(ctx, key, transcriptionRequest(nil))
+			return e
+		},
+		schemas.TranscriptionStreamRequest: func() *schemas.BifrostError {
+			_, e := provider.TranscriptionStream(ctx, passthroughPostHook, nil, key, transcriptionRequest(nil))
+			return e
+		},
+	}
+	for op, call := range blocked {
+		e := call()
+		if e == nil || e.Error == nil || e.Error.Code == nil || *e.Error.Code != "unsupported_operation" {
+			t.Errorf("%s: want unsupported_operation, got %+v", op, e)
+			continue
+		}
+		if !strings.Contains(e.Error.Message, "my-minimax") {
+			t.Errorf("%s: error should name the custom provider: %q", op, e.Error.Message)
+		}
+	}
+	if got := upstreamCalls.Load(); got != 0 {
+		t.Fatalf("blocked operations reached the upstream %d times", got)
+	}
+
+	if _, e := provider.ChatCompletion(ctx, key, userChatRequest(nil)); e != nil {
+		t.Fatalf("allowed chat completion failed: %+v", e.Error)
+	}
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Errorf("allowed chat completion made %d upstream calls, want 1", got)
+	}
+}

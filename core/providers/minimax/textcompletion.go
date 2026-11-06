@@ -154,6 +154,9 @@ func (provider *MiniMaxProvider) extractTextFromChatResponse(chatResp *schemas.B
 
 // TextCompletion performs a text completion request through MiniMax's Anthropic-compatible text generation endpoint.
 func (provider *MiniMaxProvider) TextCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTextCompletionRequest) (*schemas.BifrostTextCompletionResponse, *schemas.BifrostError) {
+	if bifrostErr := provider.checkAllowed(schemas.TextCompletionRequest); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	jsonData, bifrostErr := provider.toMiniMaxTextGenerationBody(ctx, request, false)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -225,6 +228,9 @@ func (provider *MiniMaxProvider) TextCompletion(ctx *schemas.BifrostContext, key
 // TextCompletionStream performs a streaming text completion request through MiniMax's
 // Anthropic-compatible text generation endpoint, on the streaming client.
 func (provider *MiniMaxProvider) TextCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTextCompletionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if bifrostErr := provider.checkAllowed(schemas.TextCompletionStreamRequest); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	jsonData, bifrostErr := provider.toMiniMaxTextGenerationBody(ctx, request, true)
 	if bifrostErr != nil {
 		return nil, bifrostErr

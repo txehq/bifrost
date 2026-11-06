@@ -24,13 +24,14 @@ import (
 
 // MiniMaxProvider implements the Provider interface for MiniMax's API.
 type MiniMaxProvider struct {
-	logger              schemas.Logger        // Logger for provider operations
-	client              *fasthttp.Client      // HTTP client for unary API requests (ReadTimeout bounds overall response)
-	streamingClient     *fasthttp.Client      // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
-	baseOrigin          string                // Fork: API origin for the Anthropic-compatible text generation endpoint (textcompletion.go)
-	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
-	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
-	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
+	logger               schemas.Logger                // Logger for provider operations
+	client               *fasthttp.Client              // HTTP client for unary API requests (ReadTimeout bounds overall response)
+	streamingClient      *fasthttp.Client              // HTTP client for streaming API requests (no ReadTimeout; idle governed by NewIdleTimeoutReader)
+	baseOrigin           string                        // Fork: API origin for the Anthropic-compatible text generation endpoint (textcompletion.go)
+	customProviderConfig *schemas.CustomProviderConfig // Fork: allowed_requests of a custom provider built on minimax (see checkAllowed)
+	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
+	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
+	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 }
 
 // NewMiniMaxProvider creates a new MiniMax provider instance.
@@ -62,13 +63,14 @@ func NewMiniMaxProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
 
 	return &MiniMaxProvider{
-		logger:              logger,
-		client:              client,
-		streamingClient:     streamingClient,
-		baseOrigin:          miniMaxBaseOrigin(config.NetworkConfig.BaseURL),
-		networkConfig:       config.NetworkConfig,
-		sendBackRawRequest:  config.SendBackRawRequest,
-		sendBackRawResponse: config.SendBackRawResponse,
+		logger:               logger,
+		client:               client,
+		streamingClient:      streamingClient,
+		baseOrigin:           miniMaxBaseOrigin(config.NetworkConfig.BaseURL),
+		customProviderConfig: config.CustomProviderConfig,
+		networkConfig:        config.NetworkConfig,
+		sendBackRawRequest:   config.SendBackRawRequest,
+		sendBackRawResponse:  config.SendBackRawResponse,
 	}, nil
 }
 
@@ -79,6 +81,9 @@ func (provider *MiniMaxProvider) GetProviderKey() schemas.ModelProvider {
 
 // ListModels performs a list models request to MiniMax's API.
 func (provider *MiniMaxProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+	if bifrostErr := provider.checkAllowed(schemas.ListModelsRequest); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	return openai.HandleOpenAIListModelsRequest(
 		ctx,
 		provider.client,
@@ -93,7 +98,7 @@ func (provider *MiniMaxProvider) ListModels(ctx *schemas.BifrostContext, keys []
 }
 
 // ChatCompletion performs a chat completion request to MiniMax's OpenAI-compatible API.
-func (provider *MiniMaxProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+func (provider *MiniMaxProvider) chatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
@@ -113,7 +118,7 @@ func (provider *MiniMaxProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 }
 
 // ChatCompletionStream performs a streaming chat completion request to MiniMax's OpenAI-compatible API.
-func (provider *MiniMaxProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+func (provider *MiniMaxProvider) chatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
@@ -136,6 +141,36 @@ func (provider *MiniMaxProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		provider.logger,
 		postHookSpanFinalizer,
 	)
+}
+
+// checkAllowed applies a custom provider's allowed_requests (base_provider_type minimax) before any
+// conversion or network call. A built-in MiniMax provider has no custom config, so this is a nil check.
+func (provider *MiniMaxProvider) checkAllowed(operation schemas.RequestType) *schemas.BifrostError {
+	return providerUtils.CheckOperationAllowed(schemas.MiniMax, provider.customProviderConfig, operation)
+}
+
+// ChatCompletion performs a chat completion request to MiniMax's OpenAI-compatible API.
+func (provider *MiniMaxProvider) ChatCompletion(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	if bifrostErr := provider.checkAllowed(schemas.ChatCompletionRequest); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	return provider.chatCompletion(ctx, key, request)
+}
+
+// ChatCompletionStream performs a streaming chat completion request to MiniMax's OpenAI-compatible API.
+func (provider *MiniMaxProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if bifrostErr := provider.checkAllowed(schemas.ChatCompletionStreamRequest); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	return provider.chatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request)
+}
+
+// VideoRetrieve queries the status of a MiniMax video generation task.
+func (provider *MiniMaxProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	if bifrostErr := provider.checkAllowed(schemas.VideoRetrieveRequest); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	return provider.videoRetrieve(ctx, key, request)
 }
 
 // applyMiniMaxReasoningSplit asks MiniMax to return thinking in reasoning_content instead of inline <think> tags, unless the caller set reasoning_split.
@@ -217,6 +252,9 @@ func (provider *MiniMaxProvider) doMiniMaxRequest(ctx *schemas.BifrostContext, k
 
 // ImageGeneration performs an image generation request to MiniMax's /v1/image_generation API.
 func (provider *MiniMaxProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if bifrostErr := provider.checkAllowed(schemas.ImageGenerationRequest); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -257,6 +295,9 @@ func (provider *MiniMaxProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 
 // VideoGeneration creates a MiniMax H3 video generation task.
 func (provider *MiniMaxProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	if bifrostErr := provider.checkAllowed(schemas.VideoGenerationRequest); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	providerName := provider.GetProviderKey()
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -306,7 +347,7 @@ func (provider *MiniMaxProvider) VideoGeneration(ctx *schemas.BifrostContext, ke
 }
 
 // VideoRetrieve queries the status of a MiniMax video generation task.
-func (provider *MiniMaxProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+func (provider *MiniMaxProvider) videoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
 	taskID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
 	escapedTaskID, idErr := providerUtils.EscapeResourceID(taskID, "video_id")
@@ -345,7 +386,10 @@ func (provider *MiniMaxProvider) VideoRetrieve(ctx *schemas.BifrostContext, key 
 
 // VideoDownload fetches the generated video from the time-limited URL on a completed task.
 func (provider *MiniMaxProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
-	task, bifrostErr := provider.VideoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: request.Provider, ID: request.ID})
+	if bifrostErr := provider.checkAllowed(schemas.VideoDownloadRequest); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	task, bifrostErr := provider.videoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: request.Provider, ID: request.ID})
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -390,6 +434,9 @@ func (provider *MiniMaxProvider) VideoDownload(ctx *schemas.BifrostContext, key 
 
 // VideoDelete cancels a queued MiniMax video task or deletes a finished one.
 func (provider *MiniMaxProvider) VideoDelete(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
+	if bifrostErr := provider.checkAllowed(schemas.VideoDeleteRequest); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	if request.ID == "" {
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
 	}
@@ -425,7 +472,10 @@ func (provider *MiniMaxProvider) VideoDelete(ctx *schemas.BifrostContext, key sc
 
 // Responses performs a responses request to the MiniMax API by bridging it through chat completions.
 func (provider *MiniMaxProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
+	if bifrostErr := provider.checkAllowed(schemas.ResponsesRequest); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	chatResponse, err := provider.chatCompletion(ctx, key, request.ToChatRequest())
 	if err != nil {
 		return nil, err
 	}
@@ -437,8 +487,11 @@ func (provider *MiniMaxProvider) Responses(ctx *schemas.BifrostContext, key sche
 
 // ResponsesStream performs a streaming responses request to the MiniMax API.
 func (provider *MiniMaxProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if bifrostErr := provider.checkAllowed(schemas.ResponsesStreamRequest); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-	return provider.ChatCompletionStream(
+	return provider.chatCompletionStream(
 		ctx,
 		postHookRunner,
 		postHookSpanFinalizer,
@@ -628,6 +681,9 @@ func (provider *MiniMaxProvider) PassthroughStream(_ *schemas.BifrostContext, _ 
 
 // Speech performs a text-to-speech request to MiniMax's /v1/t2a_v2 API.
 func (provider *MiniMaxProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+	if bifrostErr := provider.checkAllowed(schemas.SpeechRequest); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -673,6 +729,9 @@ func (provider *MiniMaxProvider) Speech(ctx *schemas.BifrostContext, key schemas
 // SpeechStream performs a streaming text-to-speech request to MiniMax's /v1/t2a_v2 API.
 // Status-1 chunks carry incremental hex audio; the status-2 chunk carries usage and, with exclude_aggregated_audio, no audio.
 func (provider *MiniMaxProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if bifrostErr := provider.checkAllowed(schemas.SpeechStreamRequest); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -717,6 +776,9 @@ func (provider *MiniMaxProvider) SpeechStream(ctx *schemas.BifrostContext, postH
 
 // Transcription performs a speech-to-text request to MiniMax's /v1/speech_to_text API.
 func (provider *MiniMaxProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	if bifrostErr := provider.checkAllowed(schemas.TranscriptionRequest); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	minimaxReq, err := toMiniMaxTranscriptionRequest(request, false)
 	if err != nil {
 		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
@@ -754,6 +816,9 @@ func (provider *MiniMaxProvider) Transcription(ctx *schemas.BifrostContext, key 
 
 // TranscriptionStream performs a streaming speech-to-text request; MiniMax streams {index, delta, finish} events.
 func (provider *MiniMaxProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if bifrostErr := provider.checkAllowed(schemas.TranscriptionStreamRequest); bifrostErr != nil {
+		return nil, bifrostErr
+	}
 	minimaxReq, err := toMiniMaxTranscriptionRequest(request, true)
 	if err != nil {
 		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
