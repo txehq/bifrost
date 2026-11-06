@@ -292122,6 +292122,305 @@
           }
         }
       ]
+    },
+    {
+      "name": "283. Anthropic web search on chat completions stays server-side and cites its sources (anthropic web search chat)",
+      "description": "Pins upstream 1d3846bb1 (#7656) on every host that runs the Anthropic chat converter. With the web_search server tool on /v1/chat/completions, the search runs on Anthropic's side: the streamed server_tool_use input (input_json_delta) used to leave as an orphan tool_calls delta with no id or name, which OpenAI clients treat as a real tool call, and text-block web_search_result_location citations were dropped. Now no tool_calls delta or tool_calls finish appears, and citations become message.annotations[].url_citation (non-streamed) or delta.annotations on the cited block's stop (streamed), spanning byte offsets of the content string. Red before the change: the stream carried a tool_calls delta and neither form carried annotations. /anthropic/v1/messages is a passthrough and /v1/responses has its own web search mapping, so neither changes. Run with FEATURE=\"anthropic web search chat\".",
+      "item": [
+        {
+          "name": "anthropic/claude-sonnet-4-6 /v1/chat/completions web search keeps the search server-side and returns url_citation annotations (anthropic web search chat)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "function utf8Len(s) { return unescape(encodeURIComponent(s)).length; }",
+                  "pm.test('anthropic web search chat: answers 200', function () { pm.expect(pm.response.code, body.slice(0, 2000)).to.eql(200); });",
+                  "if (pm.response.code === 200) {",
+                  "  var j = pm.response.json();",
+                  "  var choice = (j.choices || [])[0] || {};",
+                  "  var m = choice.message || {};",
+                  "  var content = typeof m.content === 'string' ? m.content : '';",
+                  "  pm.test('anthropic web search chat: the server-side search is not a tool call', function () {",
+                  "    pm.expect(m.tool_calls || [], JSON.stringify(m).slice(0, 2000)).to.have.lengthOf(0);",
+                  "    pm.expect(choice.finish_reason, JSON.stringify(choice).slice(0, 2000)).to.not.eql('tool_calls');",
+                  "  });",
+                  "  var anns = (m.annotations || []).filter(function (a) { return a.type === 'url_citation'; });",
+                  "  pm.test('anthropic web search chat: web search citations become url_citation annotations' , function () { pm.expect(anns.length, JSON.stringify(m).slice(0, 2000)).to.be.above(0); });",
+                  "  pm.test('anthropic web search chat: every annotation spans bytes of the content string', function () {",
+                  "    var n = utf8Len(content);",
+                  "    anns.forEach(function (a) {",
+                  "      var c = a.url_citation || {};",
+                  "      pm.expect(c.url, JSON.stringify(a)).to.match(/^https?:\\/\\//);",
+                  "      pm.expect(c.start_index, JSON.stringify(a)).to.be.at.least(0);",
+                  "      pm.expect(c.end_index, JSON.stringify(a)).to.be.above(c.start_index);",
+                  "      pm.expect(c.end_index, JSON.stringify(a) + ' content bytes ' + n).to.be.at.most(n);",
+                  "    });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Search the web for the current top headline on bbc.com/news and answer in one sentence, citing the source.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\",\n      \"max_uses\": 1\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /v1/chat/completions streaming web search emits no tool_calls delta and streams url_citation annotations (anthropic web search chat)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "function utf8Len(s) { return unescape(encodeURIComponent(s)).length; }",
+                  "pm.test('anthropic web search chat: stream answers 200', function () { pm.expect(pm.response.code, body.slice(0, 2000)).to.eql(200); });",
+                  "if (pm.response.code === 200) {",
+                  "  var content = '', toolDeltas = [], anns = [], finish = null, done = false, errors = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (data === '[DONE]') { done = true; return; }",
+                  "    var ev; try { ev = JSON.parse(data); } catch (e) { errors.push(data.slice(0, 200)); return; }",
+                  "    if (ev.error) { errors.push(JSON.stringify(ev.error).slice(0, 500)); }",
+                  "    (ev.choices || []).forEach(function (ch) {",
+                  "      var d = ch.delta || {};",
+                  "      if (typeof d.content === 'string') { content += d.content; }",
+                  "      (d.tool_calls || []).forEach(function (tc) { toolDeltas.push(tc); });",
+                  "      (d.annotations || []).forEach(function (a) { if (a.type === 'url_citation') { anns.push(a); } });",
+                  "      if (ch.finish_reason) { finish = ch.finish_reason; }",
+                  "    });",
+                  "  });",
+                  "  pm.test('anthropic web search chat: stream is well formed and finishes' , function () {",
+                  "    pm.expect(errors, errors.join(' | ')).to.have.lengthOf(0);",
+                  "    pm.expect(done, body.slice(-1000)).to.eql(true);",
+                  "    pm.expect(content.length, body.slice(0, 2000)).to.be.above(0);",
+                  "  });",
+                  "  pm.test('anthropic web search chat: the server_tool_use input never streams as a tool_calls delta', function () {",
+                  "    pm.expect(toolDeltas, JSON.stringify(toolDeltas).slice(0, 2000)).to.have.lengthOf(0);",
+                  "    pm.expect(finish, 'finish_reason').to.not.eql('tool_calls');",
+                  "  });",
+                  "  pm.test('anthropic web search chat: citations arrive as url_citation delta annotations', function () { pm.expect(anns.length, body.slice(0, 3000)).to.be.above(0); });",
+                  "  pm.test('anthropic web search chat: every annotation spans bytes of the streamed content', function () {",
+                  "    var n = utf8Len(content);",
+                  "    anns.forEach(function (a) {",
+                  "      var c = a.url_citation || {};",
+                  "      pm.expect(c.url, JSON.stringify(a)).to.match(/^https?:\\/\\//);",
+                  "      pm.expect(c.start_index, JSON.stringify(a)).to.be.at.least(0);",
+                  "      pm.expect(c.end_index, JSON.stringify(a)).to.be.above(c.start_index);",
+                  "      pm.expect(c.end_index, JSON.stringify(a) + ' content bytes ' + n).to.be.at.most(n);",
+                  "    });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-6\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Search the web for the current top headline on bbc.com/news and answer in one sentence, citing the source.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\",\n      \"max_uses\": 1\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/claude-sonnet-4-6 /v1/chat/completions streaming web search emits no tool_calls delta and streams url_citation annotations (anthropic web search chat)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "function utf8Len(s) { return unescape(encodeURIComponent(s)).length; }",
+                  "pm.test('anthropic web search chat: stream answers 200', function () { pm.expect(pm.response.code, body.slice(0, 2000)).to.eql(200); });",
+                  "if (pm.response.code === 200) {",
+                  "  var content = '', toolDeltas = [], anns = [], finish = null, done = false, errors = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (data === '[DONE]') { done = true; return; }",
+                  "    var ev; try { ev = JSON.parse(data); } catch (e) { errors.push(data.slice(0, 200)); return; }",
+                  "    if (ev.error) { errors.push(JSON.stringify(ev.error).slice(0, 500)); }",
+                  "    (ev.choices || []).forEach(function (ch) {",
+                  "      var d = ch.delta || {};",
+                  "      if (typeof d.content === 'string') { content += d.content; }",
+                  "      (d.tool_calls || []).forEach(function (tc) { toolDeltas.push(tc); });",
+                  "      (d.annotations || []).forEach(function (a) { if (a.type === 'url_citation') { anns.push(a); } });",
+                  "      if (ch.finish_reason) { finish = ch.finish_reason; }",
+                  "    });",
+                  "  });",
+                  "  pm.test('anthropic web search chat: stream is well formed and finishes' , function () {",
+                  "    pm.expect(errors, errors.join(' | ')).to.have.lengthOf(0);",
+                  "    pm.expect(done, body.slice(-1000)).to.eql(true);",
+                  "    pm.expect(content.length, body.slice(0, 2000)).to.be.above(0);",
+                  "  });",
+                  "  pm.test('anthropic web search chat: the server_tool_use input never streams as a tool_calls delta', function () {",
+                  "    pm.expect(toolDeltas, JSON.stringify(toolDeltas).slice(0, 2000)).to.have.lengthOf(0);",
+                  "    pm.expect(finish, 'finish_reason').to.not.eql('tool_calls');",
+                  "  });",
+                  "  pm.test('anthropic web search chat: citations arrive as url_citation delta annotations', function () { pm.expect(anns.length, body.slice(0, 3000)).to.be.above(0); });",
+                  "  pm.test('anthropic web search chat: every annotation spans bytes of the streamed content', function () {",
+                  "    var n = utf8Len(content);",
+                  "    anns.forEach(function (a) {",
+                  "      var c = a.url_citation || {};",
+                  "      pm.expect(c.url, JSON.stringify(a)).to.match(/^https?:\\/\\//);",
+                  "      pm.expect(c.start_index, JSON.stringify(a)).to.be.at.least(0);",
+                  "      pm.expect(c.end_index, JSON.stringify(a)).to.be.above(c.start_index);",
+                  "      pm.expect(c.end_index, JSON.stringify(a) + ' content bytes ' + n).to.be.at.most(n);",
+                  "    });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/claude-sonnet-4-6\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Search the web for the current top headline on bbc.com/news and answer in one sentence, citing the source.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\",\n      \"max_uses\": 1\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-opus-4-7 /v1/chat/completions streaming web search emits no tool_calls delta and streams url_citation annotations (anthropic web search chat)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "function utf8Len(s) { return unescape(encodeURIComponent(s)).length; }",
+                  "pm.test('anthropic web search chat: stream answers 200', function () { pm.expect(pm.response.code, body.slice(0, 2000)).to.eql(200); });",
+                  "if (pm.response.code === 200) {",
+                  "  var content = '', toolDeltas = [], anns = [], finish = null, done = false, errors = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (data === '[DONE]') { done = true; return; }",
+                  "    var ev; try { ev = JSON.parse(data); } catch (e) { errors.push(data.slice(0, 200)); return; }",
+                  "    if (ev.error) { errors.push(JSON.stringify(ev.error).slice(0, 500)); }",
+                  "    (ev.choices || []).forEach(function (ch) {",
+                  "      var d = ch.delta || {};",
+                  "      if (typeof d.content === 'string') { content += d.content; }",
+                  "      (d.tool_calls || []).forEach(function (tc) { toolDeltas.push(tc); });",
+                  "      (d.annotations || []).forEach(function (a) { if (a.type === 'url_citation') { anns.push(a); } });",
+                  "      if (ch.finish_reason) { finish = ch.finish_reason; }",
+                  "    });",
+                  "  });",
+                  "  pm.test('anthropic web search chat: stream is well formed and finishes' , function () {",
+                  "    pm.expect(errors, errors.join(' | ')).to.have.lengthOf(0);",
+                  "    pm.expect(done, body.slice(-1000)).to.eql(true);",
+                  "    pm.expect(content.length, body.slice(0, 2000)).to.be.above(0);",
+                  "  });",
+                  "  pm.test('anthropic web search chat: the server_tool_use input never streams as a tool_calls delta', function () {",
+                  "    pm.expect(toolDeltas, JSON.stringify(toolDeltas).slice(0, 2000)).to.have.lengthOf(0);",
+                  "    pm.expect(finish, 'finish_reason').to.not.eql('tool_calls');",
+                  "  });",
+                  "  pm.test('anthropic web search chat: citations arrive as url_citation delta annotations', function () { pm.expect(anns.length, body.slice(0, 3000)).to.be.above(0); });",
+                  "  pm.test('anthropic web search chat: every annotation spans bytes of the streamed content', function () {",
+                  "    var n = utf8Len(content);",
+                  "    anns.forEach(function (a) {",
+                  "      var c = a.url_citation || {};",
+                  "      pm.expect(c.url, JSON.stringify(a)).to.match(/^https?:\\/\\//);",
+                  "      pm.expect(c.start_index, JSON.stringify(a)).to.be.at.least(0);",
+                  "      pm.expect(c.end_index, JSON.stringify(a)).to.be.above(c.start_index);",
+                  "      pm.expect(c.end_index, JSON.stringify(a) + ' content bytes ' + n).to.be.at.most(n);",
+                  "    });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-opus-4-7\",\n  \"max_tokens\": 1024,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Search the web for the current top headline on bbc.com/news and answer in one sentence, citing the source.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"web_search_20250305\",\n      \"name\": \"web_search\",\n      \"max_uses\": 1\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
