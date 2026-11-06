@@ -24,7 +24,10 @@ const webSearchChatPrompt = "Use the web_search tool to find who won the 2025 No
 //     inside the returned content.
 //
 // It runs where ServerToolsViaOpenAIEndpoint is enabled, on the providers that
-// support web_search there (Anthropic, Vertex, Azure).
+// support web_search there (Anthropic, Vertex, Azure), with the Claude model
+// named by WebSearchChatModel. ChatModel is not used: on Vertex and Azure it
+// is a Gemini or GPT model, which never reaches the Anthropic converter. The
+// request carries no fallbacks, so it cannot switch to another model family.
 func RunWebSearchViaChatCompletionsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context, testConfig ComprehensiveTestConfig) {
 	if !testConfig.Scenarios.ServerToolsViaOpenAIEndpoint {
 		t.Logf("WebSearchViaChatCompletions not supported for provider %s", testConfig.Provider)
@@ -36,12 +39,16 @@ func RunWebSearchViaChatCompletionsTest(t *testing.T, client *bifrost.Bifrost, c
 		t.Logf("web_search via chat completions not supported on %s", testConfig.Provider)
 		return
 	}
+	if testConfig.WebSearchChatModel == "" {
+		t.Logf("WebSearchViaChatCompletions skipped for %s: no WebSearchChatModel (Claude) configured", testConfig.Provider)
+		return
+	}
 
 	newRequest := func() *schemas.BifrostChatRequest {
 		maxUses := 3
 		return &schemas.BifrostChatRequest{
 			Provider: testConfig.Provider,
-			Model:    testConfig.ChatModel,
+			Model:    testConfig.WebSearchChatModel,
 			Input:    []schemas.ChatMessage{CreateBasicChatMessage(webSearchChatPrompt)},
 			Params: &schemas.ChatParameters{
 				MaxCompletionTokens: bifrost.Ptr(1024),
@@ -51,7 +58,6 @@ func RunWebSearchViaChatCompletionsTest(t *testing.T, client *bifrost.Bifrost, c
 					MaxUses: &maxUses,
 				}},
 			},
-			Fallbacks: testConfig.Fallbacks,
 		}
 	}
 

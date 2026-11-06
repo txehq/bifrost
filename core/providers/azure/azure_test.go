@@ -49,6 +49,7 @@ func TestAzure(t *testing.T) {
 		TextModel:               "", // Azure doesn't support text completion in newer models
 		EmbeddingModel:          "text-embedding-ada-002",
 		ReasoningModel:          "claude-opus-4-5",
+		WebSearchChatModel:      "claude-opus-4-5",
 		SpeechSynthesisModel:    "gpt-4o-mini-tts",
 		TranscriptionModel:      "gpt-4o-transcribe",
 		ImageGenerationModel:    "gpt-image-2",
