@@ -3931,24 +3931,45 @@ func TestShouldContinueWithFallbacksStopsOnNilError(t *testing.T) {
 // Claude Code OAuth key-selection skip applies only when the attempt resolved to Anthropic. A
 // governance routing rule can rewrite provider/model after the transport set the flag, and every
 // non-Anthropic provider authenticates with its own configured key — so it must still get one.
+// OpenAI passthrough is the exception: a ChatGPT token forwarded to the Codex backend is the
+// credential, and a stored API key in its place is refused upstream (api_key_not_supported).
 func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvider(t *testing.T) {
 	account := NewMockAccount()
 	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
 		{ID: "anthropic-key", Name: "anthropic-key", Value: schemas.SecretVar{Val: "sk-ant"}, Models: []string{"*"}, Weight: 1.0},
 	})
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "openai-key", Name: "openai-key", Value: schemas.SecretVar{Val: "sk-openai"}, Models: []string{"*"}, Weight: 1.0},
+	})
 	account.SetKeysForProvider(schemas.Fireworks, []schemas.Key{
 		{ID: "fireworks-key", Name: "fireworks-key", Value: schemas.SecretVar{Val: "fw-key"}, Models: []string{"*"}, Weight: 1.0, UseAnthropicEndpoints: schemas.Ptr(true)},
+	})
+	account.SetKeysForProvider(schemas.Gemini, []schemas.Key{
+		{ID: "gemini-key", Name: "gemini-key", Value: schemas.SecretVar{Val: "gm-key"}, Models: []string{"*"}, Weight: 1.0},
+	})
+	account.SetKeysForProvider(schemas.ModelArk, []schemas.Key{
+		{ID: "modelark-key", Name: "modelark-key", Value: schemas.SecretVar{Val: "ma-key"}, Models: []string{"*"}, Weight: 1.0},
 	})
 	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError)}
 
 	tests := []struct {
-		name      string
-		provider  schemas.ModelProvider
-		model     string
-		wantKeyID string // "" means the pool must be empty (key selection skipped)
+		name        string
+		requestType schemas.RequestType
+		provider    schemas.ModelProvider
+		model       string
+		wantKeyID   string // "" means the pool must be empty (key selection skipped)
 	}{
-		{"anthropic keeps the skip", schemas.Anthropic, "claude-opus-4-5", ""},
-		{"fireworks selects its own key", schemas.Fireworks, "accounts/fireworks/models/kimi-k2p7-code", "fireworks-key"},
+		{"anthropic keeps the skip", schemas.ResponsesRequest, schemas.Anthropic, "claude-opus-4-5", ""},
+		{"fireworks selects its own key", schemas.ResponsesRequest, schemas.Fireworks, "accounts/fireworks/models/kimi-k2p7-code", "fireworks-key"},
+		{"openai passthrough keeps the skip", schemas.PassthroughRequest, schemas.OpenAI, "", ""},
+		{"openai passthrough stream keeps the skip", schemas.PassthroughStreamRequest, schemas.OpenAI, "gpt-5.5", ""},
+		{"openai inference selects its own key", schemas.ResponsesRequest, schemas.OpenAI, "gpt-5.5", "openai-key"},
+		// Fork: the OpenAI passthrough exemption (upstream 43e55b2a6) reaches no other request type
+		// and no other provider, including the fork's ModelArk.
+		{"openai chat stream selects its own key", schemas.ChatCompletionStreamRequest, schemas.OpenAI, "gpt-5.5", "openai-key"},
+		{"openai responses stream selects its own key", schemas.ResponsesStreamRequest, schemas.OpenAI, "gpt-5.5", "openai-key"},
+		{"gemini passthrough selects its own key", schemas.PassthroughRequest, schemas.Gemini, "gemini-3.7-flash", "gemini-key"},
+		{"modelark passthrough stream selects its own key", schemas.PassthroughStreamRequest, schemas.ModelArk, "doubao-seed-1-6", "modelark-key"},
 	}
 
 	for _, tt := range tests {
@@ -3956,7 +3977,7 @@ func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvid
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			ctx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
 
-			keys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, schemas.ResponsesRequest, tt.provider, tt.model, tt.provider)
+			keys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, tt.requestType, tt.provider, tt.model, tt.provider)
 			if err != nil {
 				t.Fatalf("selectKeyFromProviderForModelWithPool: %v", err)
 			}
@@ -3974,7 +3995,7 @@ func TestSelectKeyFromProviderForModelWithPool_SkipKeySelectionGatedOnBaseProvid
 			}
 			// The regression: without a key, UseAnthropicEndpoints is unreadable and the request
 			// is built with the OpenAI schema, which Fireworks rejects for missing max_tokens.
-			if keys[0].UseAnthropicEndpoints == nil || !*keys[0].UseAnthropicEndpoints {
+			if tt.provider == schemas.Fireworks && (keys[0].UseAnthropicEndpoints == nil || !*keys[0].UseAnthropicEndpoints) {
 				t.Error("selected key lost UseAnthropicEndpoints")
 			}
 		})
@@ -9712,5 +9733,28 @@ func TestShouldTryFallbacks_StopsAfterInjectedToolRan(t *testing.T) {
 	ctx.SetValue(schemas.BifrostContextKeyInjectedToolsExecuted, true)
 	if bifrost.shouldTryFallbacks(ctx, req, primaryErr) {
 		t.Fatal("an attempt that ran an injected tool must not fall back")
+	}
+}
+
+// BenchmarkIsKeySkippingAllowed measures the SkipKeySelection gate every key selection runs
+// (upstream 43e55b2a6 added the request-type test for OpenAI passthrough).
+func BenchmarkIsKeySkippingAllowed(b *testing.B) {
+	cases := []struct {
+		name        string
+		provider    schemas.ModelProvider
+		requestType schemas.RequestType
+	}{
+		{"anthropic", schemas.Anthropic, schemas.ResponsesRequest},
+		{"openai_chat", schemas.OpenAI, schemas.ChatCompletionRequest},
+		{"openai_passthrough_stream", schemas.OpenAI, schemas.PassthroughStreamRequest},
+		{"gemini", schemas.Gemini, schemas.ChatCompletionRequest},
+	}
+	for _, c := range cases {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = isKeySkippingAllowed(c.provider, c.requestType)
+			}
+		})
 	}
 }

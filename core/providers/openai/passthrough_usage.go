@@ -5,10 +5,12 @@ import (
 	"mime/multipart"
 	"strconv"
 	"strings"
+	"unsafe"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // ClassifyPassthroughPath maps an OpenAI-shaped passthrough request to the Bifrost request type its
@@ -87,6 +89,22 @@ func ExtractOpenAIPassthroughUsage(method, path string, reqBody, body []byte) *s
 func HasOpenAIPassthroughUsage(event []byte) bool {
 	return providerUtils.GetJSONField(event, "usage").Exists() ||
 		providerUtils.GetJSONField(event, "response.usage").Exists()
+}
+
+// EndsOpenAIPassthroughStream reports whether a passthrough SSE event ends a Responses API stream.
+// Chat Completions chunks carry no top-level type, so they never match.
+// It runs on every framed event of an OpenAI passthrough stream, so the type is read in place:
+// gjson.GetBytes would copy it, one allocation per Responses event. Nothing aliases event once
+// the comparison returns.
+func EndsOpenAIPassthroughStream(event []byte) bool {
+	if len(event) == 0 {
+		return false
+	}
+	switch gjson.Get(unsafe.String(unsafe.SliceData(event), len(event)), "type").Str {
+	case "response.completed", "response.failed", "response.incomplete", "error":
+		return true
+	}
+	return false
 }
 
 // ---- video generation ----
