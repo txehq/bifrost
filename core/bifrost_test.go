@@ -5751,17 +5751,24 @@ func TestExecuteRequestWithRetries_SelectorFailureIsInternal(t *testing.T) {
 // openAIStyleModelsHandler serves a minimal OpenAI-format GET /v1/models
 // response listing the given model IDs.
 func openAIStyleModelsHandler(ids ...string) http.HandlerFunc {
+	// Build the listing once: concatenating it per request is quadratic and
+	// cost ~90ms per 2,500-model fetch, enough to push the timing tests below
+	// past their deadlines on a loaded CI runner.
+	var b strings.Builder
+	b.WriteString(`{"object":"list","data":[`)
+	for i, id := range ids {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(`{"id":"`)
+		b.WriteString(id)
+		b.WriteString(`","object":"model","created":1700000000,"owned_by":"test"}`)
+	}
+	b.WriteString(`]}`)
+	body := []byte(b.String())
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		body := `{"object":"list","data":[`
-		for i, id := range ids {
-			if i > 0 {
-				body += ","
-			}
-			body += `{"id":"` + id + `","object":"model","created":1700000000,"owned_by":"test"}`
-		}
-		body += `]}`
-		_, _ = w.Write([]byte(body))
+		_, _ = w.Write(body)
 	}
 }
 
@@ -5896,10 +5903,10 @@ func TestListAllModelsIncludesEveryPageOfASlowLargeProvider(t *testing.T) {
 	}
 	listing := openAIStyleModelsHandler(ids...)
 	// Each page re-fetches the upstream catalog; every fetch alone fits the
-	// deadline below, but two of them back to back do not. The 400ms margin per
-	// fetch keeps the test green on a loaded runner under -race.
+	// deadline below, but three of them back to back do not. The 1.5s margin per
+	// fetch keeps the test green on a loaded CI runner.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(600 * time.Millisecond)
+		time.Sleep(time.Second)
 		listing(w, r)
 	}))
 	t.Cleanup(srv.Close)
@@ -5908,9 +5915,13 @@ func TestListAllModelsIncludesEveryPageOfASlowLargeProvider(t *testing.T) {
 	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, srv.URL)
 	account.SetKeysForProvider(schemas.OpenAI, wildcardKey(schemas.OpenAI))
 	tuneProviderForTest(t, account, schemas.OpenAI)
+	// The provider's HTTP timeout (2s from tuneProviderForTest) must sit above
+	// the page deadline below, so the deadlines ListAllModels sets on each page's
+	// context are what bound a fetch here, not the HTTP client.
+	account.configs[schemas.OpenAI].NetworkConfig.DefaultRequestTimeoutInSeconds = 5
 
 	oldTimeout := listAllModelsProviderTimeout
-	listAllModelsProviderTimeout = time.Second
+	listAllModelsProviderTimeout = 2500 * time.Millisecond
 	t.Cleanup(func() { listAllModelsProviderTimeout = oldTimeout })
 
 	client := newListModelsTestClient(t, account, nil)
@@ -5945,7 +5956,7 @@ func TestListAllModelsStopsAtTheWalkDeadline(t *testing.T) {
 	}
 	listing := openAIStyleModelsHandler(ids...)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(600 * time.Millisecond)
+		time.Sleep(time.Second)
 		listing(w, r)
 	}))
 	t.Cleanup(srv.Close)
@@ -5954,12 +5965,17 @@ func TestListAllModelsStopsAtTheWalkDeadline(t *testing.T) {
 	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, srv.URL)
 	account.SetKeysForProvider(schemas.OpenAI, wildcardKey(schemas.OpenAI))
 	tuneProviderForTest(t, account, schemas.OpenAI)
+	// The provider's HTTP timeout (2s from tuneProviderForTest) must sit above
+	// the page deadline below, so the deadlines ListAllModels sets on each page's
+	// context are what bound a fetch here, not the HTTP client.
+	account.configs[schemas.OpenAI].NetworkConfig.DefaultRequestTimeoutInSeconds = 5
 
 	oldPage, oldWalk := listAllModelsProviderTimeout, listAllModelsWalkTimeout
 	// Every page fits its own deadline, but the three pages together do not
-	// fit the walk's.
-	listAllModelsProviderTimeout = time.Second
-	listAllModelsWalkTimeout = 1500 * time.Millisecond
+	// fit the walk's. The first page keeps a 1.2s margin before the walk
+	// deadline; whether one or two pages fit, the walk is cut short.
+	listAllModelsProviderTimeout = 2500 * time.Millisecond
+	listAllModelsWalkTimeout = 2200 * time.Millisecond
 	t.Cleanup(func() { listAllModelsProviderTimeout, listAllModelsWalkTimeout = oldPage, oldWalk })
 
 	client := newListModelsTestClient(t, account, nil)

@@ -20,6 +20,7 @@
 - fork: upstream's `core/internal/llmtests/web_search_chat.go` is `websearchchat.go` here, following the fork's no-underscore filename rule
 - fork: examples, MCP servers and live tests keep the fork's newer pins (`fast-uri` 3.1.9, `hono` 4.13.11, `certifi` 2026.10.23)
 - test: provider-harness folder 283 pins Anthropic web search on `/v1/chat/completions` for Anthropic (non-streamed and streamed) and Vertex (streamed): no `tool_calls` delta and `url_citation` annotations whose spans fit the content
+- test: the ListAllModels timing tests build their 2,500-model listing once instead of on every fetch, and keep a 1.2s or larger margin under each deadline. The first sync.3 release run (42206862160) failed on them on a loaded runner, before anything transport-side was published (TXE-5888)
 - test: benchmarks for a non-streamed and a streamed web search turn, the ListAllModels aggregate on one and three pages, and allocation tests showing that an uncited text block and non-web citations add no allocation
 - note: module versions. This fork publishes no core, framework or plugin module versions: their module paths stay `github.com/capsohq/bifrost/...`, their version files and the transport's requires are unchanged, and the workspace builds them from source. Upstream's core changelog entries are folded in above
 - preserved: everything v2.4.0-sync.2, v2.4.0-sync.1, v2.3.5 and earlier releases listed under Fork changes
