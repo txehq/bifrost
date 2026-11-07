@@ -95,6 +95,26 @@ func FetchMediaURL(ctx context.Context, resourceURL string) (mediaType string, b
 	return fetchURL(ctx, resourceURL, mediaFetchLimits)
 }
 
+// VideoContentTypeOr pins the Content-Type of a downloaded video to a video/* type. The bytes come
+// from a URL the upstream names, and /v1/videos/{id}/content serves them with this type on the
+// gateway's own origin, so a type such as text/html from a compromised upstream would make a
+// browser render it there. A browser never renders an explicit video/* type as a document, so a
+// well-formed video/<subtype> is kept and anything else (another type, none, a malformed one)
+// becomes fallback, which the caller sets to the video type its provider produces.
+func VideoContentTypeOr(contentType, fallback string) string {
+	ct := strings.ToLower(strings.TrimSpace(contentType))
+	subtype, ok := strings.CutPrefix(ct, "video/")
+	if !ok || subtype == "" {
+		return fallback
+	}
+	for _, r := range subtype {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '.' && r != '+' && r != '-' {
+			return fallback
+		}
+	}
+	return ct
+}
+
 // fetchURL is the shared body of FetchAndEncodeURL and FetchMediaURL.
 func fetchURL(ctx context.Context, resourceURL string, limits fetchLimits) (mediaType string, body []byte, err error) {
 	maxBytes := limits.maxBytes

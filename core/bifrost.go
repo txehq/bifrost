@@ -24,6 +24,7 @@ import (
 	"github.com/capsohq/bifrost/core/providers/azure"
 	"github.com/capsohq/bifrost/core/providers/bedrock"
 	"github.com/capsohq/bifrost/core/providers/bedrockmantle"
+	"github.com/capsohq/bifrost/core/providers/byteplus"
 	"github.com/capsohq/bifrost/core/providers/cerebras"
 	"github.com/capsohq/bifrost/core/providers/cloudflare"
 	"github.com/capsohq/bifrost/core/providers/cohere"
@@ -5070,6 +5071,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return deepseek.NewDeepSeekProvider(config, bifrost.logger)
 	case schemas.Wafer:
 		return wafer.NewWaferProvider(config, bifrost.logger)
+	case schemas.BytePlus:
+		return byteplus.NewBytePlusProvider(config, bifrost.logger)
 	case schemas.Cloudflare:
 		return cloudflare.NewCloudflareProvider(config, bifrost.logger)
 	case schemas.Gemini:

@@ -111596,7 +111596,8 @@
           "databricks",
           "cloudflare",
           "typesafe",
-          "minimax"
+          "minimax",
+          "byteplus"
         ]
       },
       "Fallback": {

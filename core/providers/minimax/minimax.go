@@ -421,23 +421,10 @@ func (provider *MiniMaxProvider) VideoDownload(ctx *schemas.BifrostContext, key 
 	return bifrostResp, nil
 }
 
-// miniMaxVideoContentType pins a downloaded video's Content-Type to a video/* type. The bytes come
-// from a URL the upstream names, and /v1/videos/{id}/content serves them with this type on the
-// gateway's own origin, so a type such as text/html from a compromised upstream would make the
-// browser render it there. A browser never renders an explicit video/* type as a document; any
-// other or malformed type becomes video/mp4, which is what MiniMax produces.
+// miniMaxVideoContentType pins a downloaded video's Content-Type to a video/* type, video/mp4
+// (what MiniMax produces) when the upstream's is anything else. See providerUtils.VideoContentTypeOr.
 func miniMaxVideoContentType(contentType string) string {
-	ct := strings.ToLower(strings.TrimSpace(contentType))
-	subtype, ok := strings.CutPrefix(ct, "video/")
-	if !ok || subtype == "" {
-		return "video/mp4"
-	}
-	for _, r := range subtype {
-		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '.' && r != '+' && r != '-' {
-			return "video/mp4"
-		}
-	}
-	return ct
+	return providerUtils.VideoContentTypeOr(contentType, "video/mp4")
 }
 
 // VideoDelete cancels a queued MiniMax video task or deletes a finished one.

@@ -2312,6 +2312,45 @@ func TestCalculateCost_VideoResolutionBandEndToEnd(t *testing.T) {
 	assert.InDelta(t, 5.60, s.CalculateCost(resp, nil), 1e-9)
 }
 
+// A Seedance task created with return_last_frame lists its final frame (image/jpeg) after the video.
+// The frame is not a second clip, so it must not multiply the per-second charge.
+func TestCalculateCost_VideoLastFrameImageIsNotAClip(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("seedance", "openai", "video_generation"): {
+			Model: "seedance", Provider: "openai", Mode: "video_generation",
+			OutputCostPerVideoPerSecond: bifrost.Ptr(0.30),
+		},
+	})
+
+	resp := &schemas.BifrostResponse{
+		VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{
+			Status:  schemas.VideoStatusCompleted,
+			Seconds: bifrost.Ptr("5"),
+			Size:    "1280x720",
+			Videos: []schemas.VideoOutput{
+				{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://example.test/v.mp4"), ContentType: "video/mp4"},
+				{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://example.test/last.jpeg"), ContentType: "image/jpeg"},
+			},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "seedance"),
+			},
+		},
+	}
+
+	assert.InDelta(t, 1.50, s.CalculateCost(resp, nil), 1e-9)
+}
+
+func TestVideoDimensionsFromResponse_IgnoresImageOutputs(t *testing.T) {
+	resp := &schemas.BifrostVideoGenerationResponse{
+		Videos: []schemas.VideoOutput{
+			{Type: schemas.VideoOutputTypeURL, ContentType: "video/mp4"},
+			{Type: schemas.VideoOutputTypeURL, ContentType: "image/jpeg"},
+		},
+	}
+	assert.Equal(t, 1, VideoDimensionsFromResponse(resp).OutputCount)
+}
+
 // =========================================================================
 // 8. tieredInputRate / tieredOutputRate
 // =========================================================================
@@ -8024,6 +8063,57 @@ func TestOffPeak_RoutingCallDiscountAtWindowEdges(t *testing.T) {
 			scopes := &LookupScopes{BilledAt: utc(t, tc.at)}
 			assert.InDelta(t, usage*tc.rate+flat, s.RoutingCallCost(call, scopes), 1e-12, "the call alone")
 			assert.InDelta(t, 2*(usage*tc.rate+flat), s.CalculateCost(response(), scopes), 1e-12, "the call beside its request")
+		})
+	}
+}
+
+// BenchmarkVideoCostInputs measures the two places a video's billable clip count is read, which
+// upstream's last-frame change (20dac1fc5) turned from len() into a scan of the outputs: the
+// settlement dimensions and the cost input of a video response.
+func BenchmarkVideoCostInputs(b *testing.B) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("sora-2", "openai", "video_generation"): {
+			Model: "sora-2", Provider: "openai", Mode: "video_generation",
+			OutputCostPerVideoPerSecond: bifrost.Ptr(0.30),
+		},
+	})
+	video := func(outputs ...schemas.VideoOutput) *schemas.BifrostVideoGenerationResponse {
+		return &schemas.BifrostVideoGenerationResponse{
+			Status:  schemas.VideoStatusCompleted,
+			Seconds: bifrost.Ptr("5"),
+			Size:    "1280x720",
+			Videos:  outputs,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.VideoGenerationRequest,
+				RoutingInfo: routingInfoFor(schemas.OpenAI, "sora-2"),
+			},
+		}
+	}
+	clip := schemas.VideoOutput{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://example.test/v.mp4"), ContentType: "video/mp4"}
+	frame := schemas.VideoOutput{Type: schemas.VideoOutputTypeURL, URL: bifrost.Ptr("https://example.test/last.jpeg"), ContentType: "image/jpeg"}
+	for _, tc := range []struct {
+		name string
+		resp *schemas.BifrostVideoGenerationResponse
+	}{
+		{"one_clip", video(clip)},
+		{"clip_and_last_frame", video(clip, frame)},
+	} {
+		b.Run("dimensions/"+tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if dims := VideoDimensionsFromResponse(tc.resp); dims.OutputCount == 0 {
+					b.Fatal("no clips counted")
+				}
+			}
+		})
+		result := &schemas.BifrostResponse{VideoGenerationResponse: tc.resp}
+		b.Run("calculate_cost/"+tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if s.CalculateCost(result, nil) <= 0 {
+					b.Fatal("unpriced")
+				}
+			}
 		})
 	}
 }

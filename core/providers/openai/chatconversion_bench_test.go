@@ -233,3 +233,33 @@ func BenchmarkToOpenAIChatRequestMiniMax(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkToOpenAIChatRequestReasoningEffort measures conversions that normalize a reasoning
+// effort through the default effort ladder, the shared path where upstream's BytePlus ladder
+// (dd067e920) adds a provider comparison. Providers are literals so the benchmark also builds on
+// trees without the BytePlus constant.
+func BenchmarkToOpenAIChatRequestReasoningEffort(b *testing.B) {
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{"openai", "openai", "gpt-5.5"},
+		{"groq", "groq", "llama-3.3-70b-versatile"},
+		{"nebius", "nebius", "deepseek-ai/DeepSeek-V3"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			bifrostReq := benchOpenAIChatRequest(b).ToBifrostChatRequest(ctx)
+			bifrostReq.Provider = tc.provider
+			bifrostReq.Model = tc.model
+			bifrostReq.Params.Reasoning = &schemas.ChatReasoning{Effort: schemas.Ptr("high")}
+			b.ReportAllocs()
+			for b.Loop() {
+				if out := ToOpenAIChatRequest(ctx, bifrostReq); out == nil {
+					b.Fatal("nil OpenAI request")
+				}
+			}
+		})
+	}
+}

@@ -561,6 +561,31 @@ func TestFetchMediaURL_RawBytesAndMediaLimit(t *testing.T) {
 	}
 }
 
+// TestVideoContentTypeOr pins the type a downloaded video is served with: a well-formed video/*
+// type is kept (lowercased), and every other type, a missing one and a malformed one become the
+// caller's fallback, so an upstream cannot make the gateway serve a document.
+func TestVideoContentTypeOr(t *testing.T) {
+	for _, tc := range []struct{ in, fallback, want string }{
+		{"video/mp4", "video/mp4", "video/mp4"},
+		{"video/webm", "video/mp4", "video/webm"},
+		{" Video/QuickTime ", "video/mp4", "video/quicktime"},
+		{"video/vnd.dlna.mpeg-tts", "video/mp4", "video/vnd.dlna.mpeg-tts"},
+		{"video/3gpp+x", "video/mp4", "video/3gpp+x"},
+		{"", "video/mp4", "video/mp4"},
+		{"video/", "video/mp4", "video/mp4"},
+		{"text/html", "video/mp4", "video/mp4"},
+		{"image/svg+xml", "video/quicktime", "video/quicktime"},
+		{"application/octet-stream", "video/mp4", "video/mp4"},
+		{"video/mp4<script>", "video/mp4", "video/mp4"},
+		{"video/mp4; codecs=avc1", "video/mp4", "video/mp4"},
+		{"video/mp4\r\nSet-Cookie: a=b", "video/quicktime", "video/quicktime"},
+	} {
+		if got := VideoContentTypeOr(tc.in, tc.fallback); got != tc.want {
+			t.Errorf("VideoContentTypeOr(%q, %q) = %q, want %q", tc.in, tc.fallback, got, tc.want)
+		}
+	}
+}
+
 // benchFetchProxy serves body for http://203.0.113.10/<anything> through a loopback forward
 // proxy, so the fetch benchmarks run offline through the real SSRF-checked, proxied client.
 func benchFetchProxy(b *testing.B, body []byte) context.Context {
@@ -625,6 +650,25 @@ func BenchmarkFetchMediaURL(b *testing.B) {
 			for b.Loop() {
 				if _, body, err := FetchMediaURL(ctx, "http://203.0.113.10/clip.mp4"); err != nil || len(body) != size {
 					b.Fatalf("len=%d err=%v", len(body), err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkVideoContentTypeOr is the per-download check of the type a video is served with (the
+// rule MiniMax's download already applied, now shared with BytePlus).
+func BenchmarkVideoContentTypeOr(b *testing.B) {
+	for _, tc := range []struct{ name, contentType string }{
+		{"video_mp4", "video/mp4"},
+		{"text_html", "text/html; charset=utf-8"},
+		{"empty", ""},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if got := VideoContentTypeOr(tc.contentType, "video/mp4"); got != "video/mp4" {
+					b.Fatalf("got %q", got)
 				}
 			}
 		})

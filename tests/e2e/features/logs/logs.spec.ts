@@ -1053,6 +1053,97 @@ test.describe("LLM Logs", () => {
     })
   })
 
+  test.describe('Video Outputs', () => {
+    // A settled Seedance task created with return_last_frame lists its final frame (image/jpeg) after
+    // the clip. The row is mocked so the test does not depend on a provider or a billable video job.
+    // The stats and the volume chart push the table below a 720px fold, under its sticky header.
+    test.use({ viewport: { width: 1280, height: 1400 } })
+    const now = Date.now()
+    const clipUrl = 'https://cdn.example.test/seedance/clip.mp4'
+    const frameUrl = 'https://cdn.example.test/seedance/last-frame.jpeg'
+    const log = {
+      id: 'video-last-frame-row',
+      object: 'video_generation',
+      timestamp: new Date(now - 5_000).toISOString(),
+      created_at: new Date(now - 5_000).toISOString(),
+      provider: 'byteplus',
+      model: 'dreamina-seedance-2-5-260628',
+      number_of_retries: 0,
+      fallback_index: 0,
+      status: 'success',
+      stream: false,
+      latency: 4200,
+      cost: 0,
+      input_history: [],
+      responses_input_history: [],
+      video_generation_input: { prompt: 'A paper boat drifts across a still pond at dawn' },
+      video_generation_output: {
+        id: 'cgt-20260101000000-abcde:byteplus',
+        object: 'video',
+        model: 'dreamina-seedance-2-5-260628',
+        status: 'completed',
+        seconds: '5',
+        size: '1280x720',
+        videos: [
+          { type: 'url', url: clipUrl, content_type: 'video/mp4' },
+          { type: 'url', url: frameUrl, content_type: 'image/jpeg' },
+        ],
+      },
+    }
+
+    test.beforeEach(async ({ page }) => {
+      await page.route(
+        (url) => url.pathname === '/api/logs',
+        async (route) => {
+          if (route.request().method() !== 'GET') return route.continue()
+          await route.fulfill({
+            json: {
+              logs: [log],
+              pagination: { limit: 50, offset: 0, sort_by: 'timestamp', order: 'desc' },
+              stats: {
+                total_requests: 1,
+                success_rate: 100,
+                user_facing_success_rate: 100,
+                user_facing_total_requests: 1,
+                average_latency: 4200,
+                total_tokens: 0,
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_cost: 0,
+              },
+              has_logs: true,
+            },
+          })
+        },
+      )
+      await page.route(
+        (url) => url.pathname === `/api/logs/${log.id}`,
+        (route) => route.fulfill({ json: log }),
+      )
+    })
+
+    // The clip plays in a <video>; the frame is shown as an image with its own link, never offered to
+    // a <video> element that cannot play it.
+    test('should show a video job\'s clip as a video and its last frame as an image', async ({ logsPage, page }) => {
+      await page.goto('/workspace/logs')
+      await expect(logsPage.tableRows).toHaveCount(1)
+      await logsPage.viewLogDetails(0)
+      const sheet = logsPage.logDetailSheet
+
+      const videos = sheet.locator('video')
+      await expect(videos).toHaveCount(1)
+      await expect(videos.first()).toHaveAttribute('src', clipUrl)
+      await expect(sheet.getByTestId('video-view-open-video-url-link')).toHaveCount(1)
+      await expect(sheet.getByTestId('video-view-open-video-url-link')).toHaveAttribute('href', clipUrl)
+
+      const frame = sheet.getByTestId('video-view-output-image')
+      await expect(frame).toHaveCount(1)
+      await expect(frame).toHaveAttribute('src', frameUrl)
+      await expect(sheet.getByTestId('video-view-open-image-url-link')).toHaveCount(1)
+      await expect(sheet.getByTestId('video-view-open-image-url-link')).toHaveAttribute('href', frameUrl)
+    })
+  })
+
   test.describe("URL State Persistence", () => {
     test("should persist filters in URL", async ({ logsPage }) => {
       const searchVisible = await logsPage.searchInput

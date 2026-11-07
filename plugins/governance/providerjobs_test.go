@@ -932,6 +932,20 @@ func TestPreLLMHookBindsObjectsReferencedInsideRequests(t *testing.T) {
 		allowed(t, presentCtx(mcpTestVKValue), edit("video_unknown"), "an unrecorded video may be edited")
 		allowed(t, emptyCtx(), edit("video_other"), "a request that presented no key is unrestricted")
 	})
+	// A video can be generated from a draft task named in the request's extra params (BytePlus
+	// draft_task_id), in bare or provider-suffixed form; the draft is a video another key created.
+	t.Run("video draft task", func(t *testing.T) {
+		fromDraft := func(extra map[string]interface{}) *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{Provider: schemas.OpenAI, Model: "sora-2", Input: &schemas.VideoGenerationInput{Prompt: "p"}, Params: &schemas.VideoGenerationParameters{ExtraParams: extra}}}
+		}
+		draft := func(id string) map[string]interface{} { return map[string]interface{}{"draft_task_id": id} }
+		refused(t, fromDraft(draft("video_other")), "video_other")
+		refused(t, fromDraft(draft("video_other:openai")), "video_other")
+		allowed(t, presentCtx(mcpTestVKValue), fromDraft(draft("video_unknown")), "an unrecorded draft may be used")
+		allowed(t, presentCtx(mcpTestVKValue), fromDraft(map[string]interface{}{"draft": true}), "a create with no draft task names nothing")
+		allowed(t, presentCtx(mcpTestVKValue), fromDraft(nil), "a create with no extra params names nothing")
+		allowed(t, emptyCtx(), fromDraft(draft("video_other")), "a request that presented no key is unrestricted")
+	})
 	t.Run("chat message file_id", func(t *testing.T) {
 		chat := func(block schemas.ChatContentBlock) *schemas.BifrostRequest {
 			return &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m", Input: []schemas.ChatMessage{{
@@ -1477,10 +1491,19 @@ func BenchmarkPreLLMHookProviderObjectChecks(b *testing.B) {
 			return &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: "/v1/responses",
 				Body: []byte(`{"model":"gpt-4o","input":[{"role":"user","content":[{"type":"input_text","text":"hi"},{"type":"input_file","file_id":"file-bench"}]}]}`)}}
 		},
+		// A video create names no object unless its extra params carry a draft task (BytePlus).
+		"video_create_no_draft": func() *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{Provider: schemas.OpenAI, Model: "sora-2",
+				Input: &schemas.VideoGenerationInput{Prompt: "p"}, Params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5")}}}
+		},
+		"video_create_draft": func() *schemas.BifrostRequest {
+			return &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{Provider: schemas.OpenAI, Model: "sora-2",
+				Input: &schemas.VideoGenerationInput{Prompt: "p"}, Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]interface{}{"draft_task_id": "video-bench"}}}}
+		},
 	}
 	// "on" is the default and runs every check; "off" is client.enforce_vk_object_ownership: false.
 	for _, mode := range []string{"off", "on"} {
-		for _, name := range []string{"chat_no_references", "file_retrieve", "passthrough_no_references", "passthrough_models_get", "passthrough_tuning_list", "passthrough_responses_body"} {
+		for _, name := range []string{"chat_no_references", "file_retrieve", "passthrough_no_references", "passthrough_models_get", "passthrough_tuning_list", "passthrough_responses_body", "video_create_no_draft", "video_create_draft"} {
 			build := cases[name]
 			b.Run(mode+"/"+name, func(b *testing.B) {
 				enforced = mode == "on"

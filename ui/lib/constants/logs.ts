@@ -36,6 +36,7 @@ export const KnownProvidersNames = [
 	"sarvam",
 	"wafer",
 	"minimax",
+	"byteplus",
 	"databricks",
 	"cloudflare",
 	"github-copilot",
@@ -77,6 +78,7 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"vllm",
 	"databricks",
 	"cloudflare",
+	"byteplus",
 ] as const;
 
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
@@ -192,6 +194,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	sarvam: "Sarvam AI",
 	wafer: "Wafer",
 	minimax: "MiniMax",
+	byteplus: "BytePlus",
 	databricks: "Databricks",
 	cloudflare: "Cloudflare",
 	"github-copilot": "GitHub Copilot",
