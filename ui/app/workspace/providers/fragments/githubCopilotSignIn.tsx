@@ -4,6 +4,7 @@ import { getErrorMessage, usePollGithubCopilotSignInMutation, useStartGithubCopi
 import type { GithubCopilotDeviceCode } from "@/lib/types/config";
 import { Check, Copy, ExternalLink, Github, Loader2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { pollFitsBeforeDeadline, signInLifetimeSeconds } from "./githubCopilotSignIn.utils";
 
 interface Props {
 	provider: string;
@@ -31,14 +32,22 @@ export function GithubCopilotSignIn({ provider, onToken }: Props) {
 	};
 	useEffect(() => stopPolling, []);
 
-	const poll = (deviceCode: string, intervalSeconds: number) => {
+	// poll asks the gateway once per interval until GitHub answers or the code's lifetime
+	// (expires_in, from the start reply) has passed: polling stops at the deadline even if
+	// GitHub keeps answering pending, so an abandoned form never polls forever.
+	const poll = (deviceCode: string, intervalSeconds: number, deadline: number) => {
 		const gen = generation.current;
+		if (!pollFitsBeforeDeadline(Date.now(), intervalSeconds, deadline)) {
+			setCode(null);
+			setError(expiredMessage);
+			return;
+		}
 		timer.current = setTimeout(async () => {
 			try {
 				const result = await pollSignIn({ provider, deviceCode }).unwrap();
 				if (gen !== generation.current) return;
 				if (result.status === "pending") {
-					poll(deviceCode, result.interval || intervalSeconds);
+					poll(deviceCode, result.interval || intervalSeconds, deadline);
 					return;
 				}
 				setCode(null);
@@ -46,7 +55,7 @@ export function GithubCopilotSignIn({ provider, onToken }: Props) {
 					onToken(result.token);
 					setLogin(result.login || "");
 				} else {
-					setError(result.status === "expired" ? "The code expired. Start again." : "The sign-in was denied on GitHub.");
+					setError(result.status === "expired" ? expiredMessage : "The sign-in was denied on GitHub.");
 				}
 			} catch (err) {
 				if (gen !== generation.current) return;
@@ -65,7 +74,7 @@ export function GithubCopilotSignIn({ provider, onToken }: Props) {
 			const deviceCode = await startSignIn({ provider }).unwrap();
 			if (gen !== generation.current) return;
 			setCode(deviceCode);
-			poll(deviceCode.device_code, deviceCode.interval || 5);
+			poll(deviceCode.device_code, deviceCode.interval || 5, Date.now() + signInLifetimeSeconds(deviceCode.expires_in) * 1000);
 		} catch (err) {
 			if (gen !== generation.current) return;
 			setError(getErrorMessage(err));
@@ -147,6 +156,8 @@ export function GithubCopilotSignIn({ provider, onToken }: Props) {
 		</div>
 	);
 }
+
+const expiredMessage = "The code expired. Start again.";
 
 // StepNumber is the numbered marker of one device-flow step.
 function StepNumber({ n }: { n: number }) {
