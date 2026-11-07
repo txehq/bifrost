@@ -12,10 +12,11 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
-	"github.com/fasthttp/router"
-	"github.com/capsohq/bifrost/core/network"
+	bifrost "github.com/capsohq/bifrost/core"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/fasthttp/router"
 	"github.com/valyala/fasthttp"
 )
 
@@ -43,15 +44,26 @@ type githubSignInEndpoints struct {
 // GithubCopilotSignInHandler serves "Sign in with GitHub" for GitHub Copilot keys. The browser
 // cannot run GitHub's device flow itself (GitHub sends no CORS headers), so the gateway calls
 // GitHub and hands the resulting token back to the key form, which saves it as the key's value.
+//
+// GitHub is reached the way the github-copilot provider reaches it for the token exchange:
+// lib.ManagementEgress gives the provider's proxy (its own, else the inherited global one, else
+// the global proxy when enabled for API traffic) and its network_config TLS settings (ca_cert_pem, insecure_skip_verify), and the client is built
+// by providerUtils.NewProviderHTTPClient, which every provider's auth exchange uses. A
+// deployment that must egress through a proxy or trust a TLS-inspecting CA therefore signs in
+// through the same path its inference later takes. The client is built per call and not
+// cached: sign-in is a rare operator action, and a cache keyed by proxy config would keep
+// every historical proxy config for the life of the process.
 type GithubCopilotSignInHandler struct {
-	client    *http.Client
+	config    *lib.Config
+	client    *http.Client // set only by tests; nil means resolve the provider's egress per call
 	endpoints githubSignInEndpoints
 }
 
-// NewGithubCopilotSignInHandler creates the sign-in handler.
-func NewGithubCopilotSignInHandler() *GithubCopilotSignInHandler {
+// NewGithubCopilotSignInHandler creates the sign-in handler. config may be nil, which means
+// the default network config and no proxy beyond the environment's.
+func NewGithubCopilotSignInHandler(config *lib.Config) *GithubCopilotSignInHandler {
 	return &GithubCopilotSignInHandler{
-		client: &http.Client{Timeout: githubSignInTimeout, Transport: network.DefaultTransport(network.ClientPurposeAPI)},
+		config: config,
 		endpoints: githubSignInEndpoints{
 			deviceCodeURL: githubDeviceCodeURL,
 			tokenURL:      githubAccessTokenURL,
@@ -105,7 +117,7 @@ func (h *GithubCopilotSignInHandler) start(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	var code githubDeviceCode
-	err := h.postForm(context.Background(), h.endpoints.deviceCodeURL, url.Values{"client_id": {githubCopilotClientID}, "scope": {"read:user"}}, &code)
+	err := h.postForm(context.Background(), h.httpClient(), h.endpoints.deviceCodeURL, url.Values{"client_id": {githubCopilotClientID}, "scope": {"read:user"}}, &code)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadGateway, fmt.Sprintf("GitHub rejected the sign-in: %v", err))
 		return
@@ -114,7 +126,7 @@ func (h *GithubCopilotSignInHandler) start(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadGateway, "GitHub did not return a device code")
 		return
 	}
-	SendJSON(ctx, code)
+	sendSignInJSON(ctx, code)
 }
 
 // poll checks once whether the operator finished on github.com, and returns the token if so.
@@ -134,7 +146,8 @@ func (h *GithubCopilotSignInHandler) poll(ctx *fasthttp.RequestCtx) {
 	var token struct {
 		AccessToken string `json:"access_token"`
 	}
-	err := h.postForm(context.Background(), h.endpoints.tokenURL, url.Values{
+	client := h.httpClient()
+	err := h.postForm(context.Background(), client, h.endpoints.tokenURL, url.Values{
 		"client_id":   {githubCopilotClientID},
 		"device_code": {req.DeviceCode},
 		"grant_type":  {githubDeviceCodeGrant},
@@ -143,16 +156,16 @@ func (h *GithubCopilotSignInHandler) poll(ctx *fasthttp.RequestCtx) {
 	if errors.As(err, &oauthErr) {
 		switch oauthErr.Code {
 		case "authorization_pending":
-			SendJSON(ctx, githubSignInPollResult{Status: "pending"})
+			sendSignInJSON(ctx, githubSignInPollResult{Status: "pending"})
 			return
 		case "slow_down":
-			SendJSON(ctx, githubSignInPollResult{Status: "pending", Interval: oauthErr.Interval})
+			sendSignInJSON(ctx, githubSignInPollResult{Status: "pending", Interval: oauthErr.Interval})
 			return
 		case "expired_token":
-			SendJSON(ctx, githubSignInPollResult{Status: "expired"})
+			sendSignInJSON(ctx, githubSignInPollResult{Status: "expired"})
 			return
 		case "access_denied":
-			SendJSON(ctx, githubSignInPollResult{Status: "denied"})
+			sendSignInJSON(ctx, githubSignInPollResult{Status: "denied"})
 			return
 		case "incorrect_device_code", "bad_verification_code":
 			SendError(ctx, fasthttp.StatusBadRequest, "GitHub does not recognize this sign-in attempt; start the sign-in again")
@@ -167,11 +180,38 @@ func (h *GithubCopilotSignInHandler) poll(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadGateway, "GitHub did not return an access token")
 		return
 	}
-	SendJSON(ctx, githubSignInPollResult{
+	sendSignInJSON(ctx, githubSignInPollResult{
 		Status: "complete",
 		Token:  token.AccessToken,
-		Login:  h.lookupLogin(context.Background(), token.AccessToken),
+		Login:  h.lookupLogin(context.Background(), client, token.AccessToken),
 	})
+}
+
+// httpClient returns the client for one sign-in call: the github-copilot provider's egress,
+// bounded by githubSignInTimeout whatever the provider's own request timeout is.
+func (h *GithubCopilotSignInHandler) httpClient() *http.Client {
+	if h.client != nil {
+		return h.client
+	}
+	proxyConfig, networkConfig := lib.ManagementEgress(h.config, schemas.GithubCopilot)
+	networkConfig.DefaultRequestTimeoutInSeconds = int(githubSignInTimeout / time.Second)
+	return providerUtils.NewProviderHTTPClient(proxyConfig, networkConfig, signInLogger())
+}
+
+// signInLogger is the package logger, or a discarding one before the server sets it (tests).
+func signInLogger() schemas.Logger {
+	if logger != nil {
+		return logger
+	}
+	return bifrost.NewDefaultLogger(schemas.LogLevelError)
+}
+
+// sendSignInJSON sends a sign-in reply. Both replies carry a credential (the device code that
+// redeems the sign-in, then the GitHub token), so no cache may keep them.
+func sendSignInJSON(ctx *fasthttp.RequestCtx, body any) {
+	ctx.Response.Header.Set("Cache-Control", "no-store")
+	ctx.Response.Header.Set("Pragma", "no-cache")
+	SendJSON(ctx, body)
 }
 
 // isGithubCopilotRoute refuses the sign-in routes for any other provider.
@@ -186,14 +226,14 @@ func isGithubCopilotRoute(ctx *fasthttp.RequestCtx) bool {
 // postForm sends a form to a GitHub OAuth endpoint and decodes the JSON reply. GitHub reports
 // OAuth failures as HTTP 200 with an error field, returned here as a githubOAuthError. Callers
 // pass a background context, not the fasthttp request: the client's timeout bounds the call.
-func (h *GithubCopilotSignInHandler) postForm(ctx context.Context, target string, form url.Values, out any) error {
+func (h *GithubCopilotSignInHandler) postForm(ctx context.Context, client *http.Client, target string, form url.Values, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	resp, err := h.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("could not reach GitHub: %w", err)
 	}
@@ -221,14 +261,14 @@ func (h *GithubCopilotSignInHandler) postForm(ctx context.Context, target string
 
 // lookupLogin returns the GitHub login a token belongs to, or "" when it cannot tell. It only
 // labels the sign-in in the UI, so a failure is not an error.
-func (h *GithubCopilotSignInHandler) lookupLogin(ctx context.Context, token string) string {
+func (h *GithubCopilotSignInHandler) lookupLogin(ctx context.Context, client *http.Client, token string) string {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.endpoints.userURL, nil)
 	if err != nil {
 		return ""
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := h.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return ""
 	}

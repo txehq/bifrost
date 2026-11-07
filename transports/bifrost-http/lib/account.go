@@ -120,6 +120,44 @@ func (baseAccount *BaseAccount) GetConfigForProvider(providerKey schemas.ModelPr
 	return providerConfig, nil
 }
 
+// ProviderEgress returns the proxy and network config a provider's own calls leave the
+// gateway with: GetConfigForProvider's resolution (the provider's proxy_config, else the
+// inherited global proxy, and its network_config TLS settings). A provider that is not
+// configured yet gets the default network config and the inherited global proxy, which is
+// what it would get once added. Management-plane calls made on a provider's behalf (the
+// GitHub Copilot sign-in) use this so they reach the provider's hosts the way the
+// provider itself does, not through a second, differently configured stack.
+func ProviderEgress(store *Config, provider schemas.ModelProvider) (*schemas.ProxyConfig, schemas.NetworkConfig) {
+	if store == nil {
+		return nil, schemas.DefaultNetworkConfig
+	}
+	if cfg, err := NewBaseAccount(store).GetConfigForProvider(provider); err == nil {
+		return cfg.ProxyConfig, cfg.NetworkConfig
+	}
+	var proxy *schemas.ProxyConfig
+	if inherited, ok := inheritGlobalProxy(nil, store.GetGlobalProxyConfig()); ok {
+		proxy = inherited.proxy
+	}
+	return proxy, schemas.DefaultNetworkConfig
+}
+
+// ManagementEgress is ProviderEgress for a management-plane call made on a provider's behalf,
+// which is API traffic to the gateway: when the provider's own resolution names no proxy, the
+// global proxy applies if it is enabled for API requests, as it does for every other API-side
+// call through network.DefaultTransport(network.ClientPurposeAPI).
+func ManagementEgress(store *Config, provider schemas.ModelProvider) (*schemas.ProxyConfig, schemas.NetworkConfig) {
+	proxy, networkConfig := ProviderEgress(store, provider)
+	if hasOwnProxy(proxy) || store == nil {
+		return proxy, networkConfig
+	}
+	if global := store.GetGlobalProxyConfig(); global != nil && global.EnableForAPI {
+		if translated, ok := translateGlobalProxy(global); ok {
+			return translated.proxy, networkConfig
+		}
+	}
+	return proxy, networkConfig
+}
+
 // hasOwnProxy reports whether a provider's proxy_config names a proxy of its own.
 // The UI saves type "none" when the proxy form is left untouched, so "none" and an
 // empty type mean "not configured", the same as nil.
@@ -141,7 +179,17 @@ type inheritedProxy struct {
 // setting means for traffic tunnelled through a TLS-inspecting proxy. The global
 // timeout does not: each provider keeps its own network_config timeouts.
 func inheritGlobalProxy(own *schemas.ProxyConfig, global *configstoreTables.GlobalProxyConfig) (inheritedProxy, bool) {
-	if hasOwnProxy(own) || global == nil || !global.Enabled || !global.EnableForInference || strings.TrimSpace(global.URL) == "" {
+	if hasOwnProxy(own) || global == nil || !global.EnableForInference {
+		return inheritedProxy{}, false
+	}
+	return translateGlobalProxy(global)
+}
+
+// translateGlobalProxy turns an enabled global proxy into the provider-level form, whatever
+// purpose the caller checked it for. ok is false when it is disabled, empty or has no
+// provider-level equivalent.
+func translateGlobalProxy(global *configstoreTables.GlobalProxyConfig) (inheritedProxy, bool) {
+	if global == nil || !global.Enabled || strings.TrimSpace(global.URL) == "" {
 		return inheritedProxy{}, false
 	}
 	var proxyType schemas.ProxyType
