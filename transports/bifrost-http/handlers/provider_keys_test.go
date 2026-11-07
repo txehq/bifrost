@@ -368,7 +368,6 @@ var (
 		"ollama_key_config":         `{}`,
 		"sgl_key_config":            `{}`,
 		"databricks_key_config":     `{}`,
-		"github_copilot_key_config": `{}`,
 		"cloudflare_key_config":     `{}`,
 		"bfl_key_config":            `{}`,
 		"oauth_key_config":          `{}`,
@@ -387,10 +386,19 @@ var (
 // and one it ignores keeps the stored value.
 func TestDecodeKeyUpdate_FieldNamesFoldAsTheDecoderDoes(t *testing.T) {
 	keyType := reflect.TypeFor[schemas.Key]()
+	keyFields := map[string]bool{}
 	for i := range keyType.NumField() {
 		name, _, _ := strings.Cut(keyType.Field(i).Tag.Get("json"), ",")
+		keyFields[name] = true
 		if _, patched := keyUpdateFieldSamples[name]; !patched && !slices.Contains(keyUpdateFixedFields, name) {
 			t.Fatalf("schemas.Key field %q is not classified: add it to the patch list or keyUpdateFixedFields", name)
+		}
+	}
+	// The reverse: a sample for a field schemas.Key no longer has would fail below as "did not
+	// apply", which reads as a decoder bug. Name it for what it is.
+	for name := range keyUpdateFieldSamples {
+		if !keyFields[name] {
+			t.Fatalf("keyUpdateFieldSamples has %q, which is not a schemas.Key field any more: remove the sample", name)
 		}
 	}
 
