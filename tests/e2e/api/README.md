@@ -30,6 +30,12 @@ The folder forwards this header to its setup, assertion, and cleanup requests.
 The normal API runner runs both auth modes; the release API integration job and
 its local wrapper supply the canary before starting the gateway.
 
+The script tests above and `runners/newman-exit-when-done.test.mjs` need no gateway:
+`.github/workflows/scripts/test-api-collections-offline.sh` runs both on every pull
+request (`.github/workflows/api-collections-offline.yml`) and first in the release's
+API integration job, so a provider added to `StandardProviders` without its row fails
+the PR, not the release run (TXE-6055).
+
 Each case creates a uniquely named disabled key, checks create/get/list/update/delete
 responses, and verifies cleanup. Existing keys and providers are preserved; providers
 created by a case are deleted afterward. Missing fields, missing references, unset or

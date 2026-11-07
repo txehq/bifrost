@@ -60,11 +60,11 @@ if ! command -v newman >/dev/null 2>&1; then
   exit 1
 fi
 
-# Pin collection assertion behavior and provider/secret-field coverage before
-# spending time building the gateway or starting backing services.
-node "$REPO_ROOT/tests/e2e/api/collections/collection-scripts.test.mjs"
-# The request-guard runner's newman exit hook (TXE-5180): never an early or false success.
-node "$REPO_ROOT/tests/e2e/api/runners/newman-exit-when-done.test.mjs"
+# The offline suites (collection assertion scripts, provider/secret-field coverage, the
+# newman exit hook) before spending time building the gateway or starting backing
+# services. The same script runs them on every pull request (api-collections-offline.yml,
+# TXE-6055), so a suite belongs in it, not here.
+bash "$SCRIPT_DIR/test-api-collections-offline.sh"
 
 source "$SCRIPT_DIR/setup-go-workspace.sh"
 

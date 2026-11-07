@@ -70,6 +70,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 .github/workflows/scripts/test-approval-environment.py
 
+      # The offline API-collection suites run on every pull request, from the one script
+      # the release's API integration job also runs (TXE-6055).
+      - name: Check the offline API collection suites run before merge
+        if: ${{ !cancelled() }}
+        run: python3 .github/workflows/scripts/test-api-collections-offline-callers.py
+
       - name: Check fork release guards
         if: ${{ !cancelled() }}
         run: ./.github/workflows/scripts/release-fork-binaries.test.sh

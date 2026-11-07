@@ -29,6 +29,7 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 
 # (workflow file, job id) for every job that must carry the approval expression.
 GATED_JOBS = {
+    ("api-collections-offline.yml", "api-collections-offline"),
     ("codspeed.yml", "benchmarks"),
     ("dependency-review.yml", "dependency-review"),
     ("workflow-lint.yml", "check-egress-allowlist"),
