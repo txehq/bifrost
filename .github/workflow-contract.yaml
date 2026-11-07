@@ -1,0 +1,11 @@
+# Declarations for the txehq org workflow lint's runner-class rule (TXE-6050, TXE-6064):
+# txehq/action-runner-ops .github/actions/org-workflow-lint/README.md, "Declarations".
+#
+# This repository is public, so it cannot call the private lint; the org scan (every 6 hours, on
+# main) is its gate. The scan reads no repository variables, so each variable a runs-on reads is
+# declared here with the values it can take. [] means it is set nowhere (repository or org), so
+# every job falls back to its GitHub-hosted runner. Set one of these variables, and add its value
+# here in the same change: the scan then checks the class it names.
+vars:
+  BIFROST_RUNNER_AMD64: []   # unset: ubuntu-24.04
+  BIFROST_RUNNER_ARM64: []   # unset: ubuntu-24.04-arm
