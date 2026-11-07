@@ -1,0 +1,79 @@
+name: API collections offline
+
+# The offline API-collection suites on every pull request (TXE-6055).
+#
+# The release pipeline's test-api-integrations job runs these suites first, and no PR
+# workflow ran them (pr-tests.yml is manual behind the pr-testing approval; e2e-tests.yml
+# fires on one upstream branch), so a provider added to StandardProviders without its
+# "Provider Secret Redaction" row was caught after the merge by the release run, which
+# then published nothing (TXE-6051, run 42335012114). This job runs the same suites on
+# the PR: Node and the lockfile-pinned newman, no gateway build, no backing services, no
+# provider credentials, no live calls. The suites themselves dial only loopback.
+#
+# scripts/test-api-collections-offline.sh is the one list of suites, shared with the
+# release script; scripts/test-api-collections-offline-callers.py (workflow-lint) keeps
+# both callers on it and this trigger unfiltered. No paths filter on purpose: the
+# redaction invariant spans core/schemas and tests/e2e/api, and a path-filtered required
+# check never reports on a PR outside its paths, which blocks that PR's merge.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-collections-offline-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  api-collections-offline:
+    name: API collection offline suites
+    # Pull requests from outside contributors, whose head branch is in another
+    # repository, run in the pr-testing environment, so they cannot get a runner
+    # while it requires a reviewer to approve the run through Review deployments.
+    # Everyone else lands on ci-trusted-branch, an environment with no protection
+    # rules that only gives the job a name. The job runs the PR's own test code and
+    # installs the PR's own lockfile, which is why the boundary applies here; the
+    # same expression as workflow-lint, dependency-review and codspeed, evaluated by
+    # scripts/test-approval-environment.py.
+    environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
+    runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
+    timeout-minutes: 10
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
+        with:
+          egress-policy: block
+          # setup-node resolves and downloads Node (api.github.com, github.com,
+          # release-assets.githubusercontent.com, nodejs.org); npm ci fetches the pinned
+          # tools (registry.npmjs.org). Nothing else leaves the runner.
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            nodejs.org:443
+            registry.npmjs.org:443
+            release-assets.githubusercontent.com:443
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # The Node the release's test-api-integrations job runs these suites with.
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "25"
+
+      # The release job's install: npm ci against .github/workflows/tools/package-lock.json,
+      # whose integrity hashes cover newman and every transitive dependency. The bin dir
+      # goes on PATH because the suites probe for newman with `command -v`.
+      - name: Install Newman (hash-pinned via lockfile)
+        run: |
+          npm ci --no-audit --no-fund
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
+        working-directory: .github/workflows/tools
+
+      - name: Run the offline API collection suites
+        run: bash .github/workflows/scripts/test-api-collections-offline.sh
