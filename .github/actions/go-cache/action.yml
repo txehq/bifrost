@@ -1,0 +1,170 @@
+# The ONE Go build cache in this repository (TXE-6254). A job that wants its compiled packages
+# from an earlier run gets them from here, never from actions/setup-go's own cache (off on every
+# step, TXE-6242) and never from a bare actions/cache step.
+#
+# ⚠️ WHY A PURPOSE. setup-go's cache keys one entry per Go version and go.sum hash, shared by every
+# job, and the first job to save decides what all of them restore (TXE-6214: a 6 KB stub). Here
+# each job names what it builds. The key is
+# `go-build-<purpose>-<os>-<arch>-<go version>-<hash of go.work and every go.sum>`, so jobs that
+# compile different things (race vs plain, framework vs plugins) never share an entry, and ONE job
+# per purpose saves it. Other jobs that build exactly the same thing may restore it.
+#
+# ⚠️ GOCACHE ONLY. The module cache is 3.2 GB on disk and costs 27 s to download; the build cache
+# saves 2-2.5 min per job (evidence txe-6242/hosted-measure-42449405059.log). The repository's
+# Actions cache is capped at 10 GB, so each save declares `max-mb`, its largest compressed entry,
+# and test-release-gates.py fails when the declared total passes the budget there.
+#
+# ⚠️ TESTS STILL RUN. A restored GOCACHE also holds `go test` results, and a test whose files did
+# not change would print "(cached)" instead of running. This action appends -count=1 to GOFLAGS
+# for the rest of the job, which keeps compiled packages and drops cached results.
+#
+# ⚠️ SAVED ON MAIN ONLY. An entry saved by any other ref is readable by that ref alone.
+#
+# Usage, in this order within one job, after actions/setup-go:
+#
+#   - uses: ./.github/actions/go-cache
+#     with: {purpose: framework-race}
+#   ... the steps that build and test ...
+#   - uses: ./.github/actions/go-cache          # in the ONE job that saves this purpose
+#     with: {purpose: framework-race, mode: save, max-mb: "900"}
+#
+# A save is skipped when the restore hit the exact key. Otherwise it saves only an entry between
+# `min-mb` (on disk) and `max-mb` (compressed): below the floor the step FAILS, because a job that
+# fills that little does not build what its purpose names; above the ceiling it is not saved and
+# an error annotation names the purpose, because it would push other entries out of the cache.
+name: Purpose-keyed Go build cache
+description: Restore and save GOCACHE under a key naming what the job builds.
+inputs:
+  purpose:
+    description: What the job builds (framework-race, plugins, ...). One saving job per purpose.
+    required: true
+  mode:
+    description: "restore (before the build) or save (after it)."
+    required: false
+    default: restore
+  min-mb:
+    description: The smallest GOCACHE, in MB on disk, a save may write. A smaller one fails the step.
+    required: false
+    default: "100"
+  max-mb:
+    description: The largest entry, in compressed MB, a save may write. Required for mode save.
+    required: false
+    default: ""
+outputs:
+  cache-hit:
+    description: "'true' when the exact key was restored."
+    value: ${{ steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Check the inputs
+      shell: bash
+      env:
+        PURPOSE: ${{ inputs.purpose }}
+        MODE: ${{ inputs.mode }}
+        MIN_MB: ${{ inputs.min-mb }}
+        MAX_MB: ${{ inputs.max-mb }}
+      run: |
+        set -euo pipefail
+        [[ "$PURPOSE" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "::error::go-cache: purpose '$PURPOSE' must match [a-z0-9-]+"; exit 1; }
+        [[ "$MODE" == restore || "$MODE" == save ]] || { echo "::error::go-cache: mode must be restore or save, not '$MODE'"; exit 1; }
+        [[ "$MIN_MB" =~ ^[0-9]+$ ]] || { echo "::error::go-cache: min-mb must be a whole number of MB"; exit 1; }
+        if [[ "$MODE" == save ]]; then
+          [[ "$MAX_MB" =~ ^[0-9]+$ ]] || { echo "::error::go-cache: a save needs max-mb, a whole number of compressed MB"; exit 1; }
+          if [[ "${GO_CACHE_PURPOSE:-}" != "$PURPOSE" ]]; then
+            echo "::error::go-cache: save for purpose '$PURPOSE' without a restore of it earlier in this job (restored: '${GO_CACHE_PURPOSE:-none}')"
+            exit 1
+          fi
+        else
+          command -v go >/dev/null || { echo "::error::go-cache: no go on PATH; put this after actions/setup-go"; exit 1; }
+        fi
+
+    - name: Resolve the Go cache key
+      if: inputs.mode == 'restore'
+      shell: bash
+      env:
+        PURPOSE: ${{ inputs.purpose }}
+        SUM_HASH: ${{ hashFiles('go.work', '**/go.sum') }}
+      run: |
+        set -euo pipefail
+        [[ -n "$SUM_HASH" ]] || { echo "::error::go-cache: no go.work or go.sum to key on"; exit 1; }
+        version=$(go env GOVERSION)
+        prefix="go-build-${PURPOSE}-${RUNNER_OS}-${RUNNER_ARCH}-${version}-"
+        {
+          echo "GO_CACHE_PURPOSE=$PURPOSE"
+          echo "GO_CACHE_KEY=${prefix}${SUM_HASH}"
+          echo "GO_CACHE_PREFIX=$prefix"
+          echo "GO_CACHE_GOCACHE=$(go env GOCACHE)"
+          echo "GOFLAGS=${GOFLAGS:+$GOFLAGS }-count=1"
+        } >> "$GITHUB_ENV"
+
+    - name: Restore the Go cache
+      id: restore
+      if: inputs.mode == 'restore'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.GO_CACHE_GOCACHE }}
+        key: ${{ env.GO_CACHE_KEY }}
+        # An older go.sum's entry for the same purpose: most compiled packages still match.
+        restore-keys: ${{ env.GO_CACHE_PREFIX }}
+
+    - name: Record the restore
+      if: inputs.mode == 'restore'
+      shell: bash
+      env:
+        HIT: ${{ steps.restore.outputs.cache-hit }}
+        MATCHED: ${{ steps.restore.outputs.cache-matched-key }}
+      run: |
+        set -euo pipefail
+        echo "GO_CACHE_HIT=${HIT:-false}" >> "$GITHUB_ENV"
+        mb=0
+        [[ -d "$GO_CACHE_GOCACHE" ]] && mb=$(du -sm "$GO_CACHE_GOCACHE" | cut -f1)
+        if [[ "$HIT" == true ]]; then
+          echo "go-cache: exact hit $GO_CACHE_KEY (${mb} MB on disk)"
+        elif [[ -n "$MATCHED" ]]; then
+          echo "go-cache: partial hit $MATCHED (wanted $GO_CACHE_KEY; ${mb} MB on disk)"
+        else
+          echo "go-cache: miss $GO_CACHE_KEY"
+        fi
+
+    - name: Check the Go cache is worth saving
+      id: size
+      if: inputs.mode == 'save'
+      shell: bash
+      env:
+        MIN_MB: ${{ inputs.min-mb }}
+        MAX_MB: ${{ inputs.max-mb }}
+        REF: ${{ github.ref }}
+      run: |
+        set -euo pipefail
+        if [[ "$REF" != refs/heads/main ]]; then
+          echo "::notice::go-cache: $GO_CACHE_KEY is saved on main only, not from $REF (an entry saved here would be readable by this ref alone)"
+          echo "save=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if [[ "${GO_CACHE_HIT:-false}" == true ]]; then
+          echo "go-cache: $GO_CACHE_KEY was restored exactly; nothing to save"
+          echo "save=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        mb=$(du -sm "$GO_CACHE_GOCACHE" | cut -f1)
+        if (( mb < MIN_MB )); then
+          echo "::error::go-cache: refusing to save ${mb} MB under $GO_CACHE_KEY; the floor is ${MIN_MB} MB. A job that fills this little does not build what its purpose names: restore without saving, or give the save to the job that builds (TXE-6254)."
+          exit 1
+        fi
+        # actions/cache writes a zstd tar; this measures the same within a few percent.
+        zmb=$(( $(tar -C "$GO_CACHE_GOCACHE" -cf - . | zstd -T0 -q -c | wc -c) / 1048576 ))
+        echo "go-cache: $GO_CACHE_KEY holds ${mb} MB on disk, ${zmb} MB compressed (floor ${MIN_MB} MB, ceiling ${MAX_MB} MB)"
+        if (( zmb > MAX_MB )); then
+          echo "::error::go-cache: not saving $GO_CACHE_KEY: ${zmb} MB compressed is over its max-mb of ${MAX_MB}. Raise max-mb within the budget in test-release-gates.py, or narrow what the job builds (TXE-6254)."
+          echo "save=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "save=true" >> "$GITHUB_OUTPUT"
+
+    - name: Save the Go cache
+      if: inputs.mode == 'save' && steps.size.outputs.save == 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.GO_CACHE_GOCACHE }}
+        key: ${{ env.GO_CACHE_KEY }}

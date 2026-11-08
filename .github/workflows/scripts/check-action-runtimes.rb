@@ -81,22 +81,44 @@ def workflow_occurrences(workflow_path)
 
   jobs.each do |job_name, job|
     steps = job.is_a?(Hash) ? job.fetch('steps', []) : []
-    steps.each do |step|
-      next unless step.is_a?(Hash) && step['uses'].is_a?(String)
-
-      parsed = parse_uses(step['uses'])
-      occurrences << Occurrence.new(
-        workflow: workflow_path.sub("#{REPO_ROOT}/", ''),
-        job: job_name,
-        step_name: step['name'],
-        uses: step['uses'],
-        scope: step['env'].is_a?(Hash) && step['env'].key?(FORCE_VAR) ? 'step' : 'none',
-        **parsed
-      )
-    end
+    occurrences.concat(step_occurrences(workflow_path, job_name, steps))
   end
 
   [doc, occurrences]
+end
+
+
+# A local action (`uses: ./.github/actions/x`) has no ref of its own: the actions its
+# composite steps use are checked in its place, attributed to its action.yml (TXE-6254).
+def step_occurrences(source_path, job_name, steps, seen = Set.new)
+  occurrences = []
+  steps.each do |step|
+    next unless step.is_a?(Hash) && step['uses'].is_a?(String)
+
+    if step['uses'].start_with?('./')
+      dir = File.expand_path(step['uses'], REPO_ROOT)
+      action_file = %w[action.yml action.yaml].map { |f| File.join(dir, f) }.find { |f| File.file?(f) }
+      raise CheckFailure, "#{source_path.sub("#{REPO_ROOT}/", '')}: no action.yml for local action #{step['uses']}" unless action_file
+      next if seen.include?(action_file)
+
+      runs = load_yaml(action_file).fetch('runs', {})
+      next unless runs['using'] == 'composite'
+
+      occurrences.concat(step_occurrences(action_file, job_name, runs.fetch('steps', []), seen | [action_file]))
+      next
+    end
+
+    parsed = parse_uses(step['uses'])
+    occurrences << Occurrence.new(
+      workflow: source_path.sub("#{REPO_ROOT}/", ''),
+      job: job_name,
+      step_name: step['name'],
+      uses: step['uses'],
+      scope: step['env'].is_a?(Hash) && step['env'].key?(FORCE_VAR) ? 'step' : 'none',
+      **parsed
+    )
+  end
+  occurrences
 end
 
 

@@ -379,5 +379,88 @@ class SetupGoCacheIsOff(unittest.TestCase):
         self.assertGreater(checked, 0)
 
 
+GO_CACHE_ACTION = "./.github/actions/go-cache"
+# The repository's Actions cache holds 10 GB (actions/cache/storage-limit) and evicts the least
+# recently used entry past it. The Go purposes may declare 6 GB between them: a go.sum change
+# writes a new entry per purpose before the old ones age out, and small setup-* caches share
+# the rest.
+GO_CACHE_BUDGET_MB = 6144
+
+
+def workflow_steps():
+    """(workflow file, workflow doc, job name, index, step) for every step of every workflow."""
+    for path in sorted(WORKFLOWS.glob("*.y*ml")):
+        doc = yaml.safe_load(path.read_text()) or {}
+        for job_name, job in (doc.get("jobs") or {}).items():
+            for i, step in enumerate(job.get("steps") or []):
+                yield path.name, doc, job_name, i, step
+
+
+class ActionsCacheHasOneBudget(unittest.TestCase):
+    """Every write to the Actions cache goes through the purpose-keyed go-cache action, whose
+    saves declare their compressed size, and the declared sizes fit the budget (TXE-6254).
+
+    On 2026-11-08 the cache held 12.2 GB against its 10 GB cap: 172 BuildKit layer blobs from
+    the two UBI9 image builds (`cache-to: type=gha,mode=max`), ~1 GB per release per arch for
+    the `go build` layer, which every release changes. Their only hits were apk and WORKDIR
+    steps while the export cost 96-122 s a job (evidence txe-6254). An unbounded writer like
+    that evicts every other entry, so none may come back: a new cache is a go-cache purpose
+    with a max-mb that fits GO_CACHE_BUDGET_MB, or this test fails."""
+
+    def go_cache_steps(self):
+        for wf, doc, job_name, i, step in workflow_steps():
+            if step.get("uses") == GO_CACHE_ACTION:
+                w = step.get("with") or {}
+                yield wf, doc, job_name, i, w.get("purpose"), w.get("mode", "restore"), w
+
+    def test_no_buildkit_layer_cache_in_the_actions_cache(self):
+        for wf, _, job_name, _, step in workflow_steps():
+            w = step.get("with") or {}
+            for key in ("cache-from", "cache-to"):
+                with self.subTest(workflow=wf, job=job_name, step=step.get("name"), key=key):
+                    self.assertNotIn("type=gha", str(w.get(key, "")),
+                                     "BuildKit layer cache in the Actions cache is unbounded (TXE-6254)")
+
+    def test_no_bare_actions_cache(self):
+        for wf, _, job_name, _, step in workflow_steps():
+            with self.subTest(workflow=wf, job=job_name, step=step.get("name")):
+                self.assertFalse(str(step.get("uses", "")).startswith("actions/cache"),
+                                 f"cache through {GO_CACHE_ACTION} with a purpose and max-mb (TXE-6254)")
+
+    def test_each_purpose_has_one_saver_on_main_within_budget(self):
+        savers, restored, total = {}, set(), 0
+        for wf, doc, job_name, i, purpose, mode, w in self.go_cache_steps():
+            with self.subTest(workflow=wf, job=job_name, purpose=purpose, mode=mode):
+                self.assertRegex(str(purpose), r"^[a-z0-9][a-z0-9-]*$")
+                self.assertIn(mode, ("restore", "save"))
+                if mode == "restore":
+                    restored.add(purpose)
+                    continue
+                self.assertNotIn(purpose, savers, f"also saved by {savers.get(purpose)}")
+                savers[purpose] = f"{wf} {job_name}"
+                self.assertRegex(str(w.get("max-mb", "")), r"^[0-9]+$", "a save declares max-mb")
+                total += int(w["max-mb"])
+                on = doc.get("on", doc.get(True)) or {}
+                self.assertIn("main", (on.get("push") or {}).get("branches", []),
+                              "a save runs only on main, so its workflow must run on a push to main")
+                steps = doc["jobs"][job_name]["steps"]
+                self.assertTrue(any(s.get("uses") == GO_CACHE_ACTION
+                                    and (s.get("with") or {}).get("purpose") == purpose
+                                    and (s.get("with") or {}).get("mode", "restore") == "restore"
+                                    for s in steps[:i]), "save without a restore of it earlier in the job")
+        self.assertTrue(savers)
+        self.assertEqual(restored - set(savers), set(), "restored purposes nothing saves")
+        self.assertLessEqual(total, GO_CACHE_BUDGET_MB, "declared go-cache max-mb total is over the budget")
+
+    def test_restore_follows_setup_go(self):
+        for wf, doc, job_name, i, purpose, mode, _ in self.go_cache_steps():
+            if mode != "restore":
+                continue
+            steps = doc["jobs"][job_name]["steps"]
+            with self.subTest(workflow=wf, job=job_name, purpose=purpose):
+                self.assertTrue(any(str(s.get("uses", "")).startswith("actions/setup-go@") for s in steps[:i]),
+                                "go-cache reads `go env`; restore it after actions/setup-go")
+
+
 if __name__ == "__main__":
     unittest.main()
