@@ -10,7 +10,8 @@ detect-changes outputs they read, against scripted job results; no runner is inv
 It also pins the protected-main contract: release jobs build and tag the tested commit,
 never write main, and an image is published only after the bifrost-http release it
 ships has verified and completed. And every job that runs a script calling go sets up
-the Go the workspace requires before it does.
+the Go the workspace requires before it does, and every actions/setup-go step in any
+workflow turns its shared built-in cache off.
 
 Usage: python3 test-release-gates.py
 """
@@ -350,6 +351,31 @@ class GoStepsHaveTheWorkspaceGo(unittest.TestCase):
                 with self.subTest(job=job_name, step=step.get("name")):
                     self.assertTrue(setups, "runs go with no actions/setup-go step before it")
                     self.assertEqual(str(setups[-1].get("with", {}).get("go-version")), WORKSPACE_GO)
+        self.assertGreater(checked, 0)
+
+
+class SetupGoCacheIsOff(unittest.TestCase):
+    """actions/setup-go's built-in cache (on unless `cache: false`) keys one entry per Go
+    version and go.sum hash, shared by every setup-go job of the repository and never
+    overwritten on an exact hit, so the first job to save decides what every job restores
+    (TXE-6214: a 6 KB stub). Here it has never restored anything (no go.sum at the root:
+    "Dependencies file is not found"), so `cache: false` costs nothing and keeps an
+    upstream sync from turning it on. A job that wants a Go build cache uses actions/cache
+    with a key naming its purpose. The org scan's setup-go-cache-off rule checks the same
+    after the merge; this fails the pull request (TXE-6242)."""
+
+    def test_every_setup_go_step_sets_cache_false(self):
+        checked = 0
+        for path in sorted(WORKFLOWS.glob("*.y*ml")):
+            jobs = (yaml.safe_load(path.read_text()) or {}).get("jobs") or {}
+            for job_name, job in jobs.items():
+                for step in job.get("steps") or []:
+                    if not str(step.get("uses", "")).startswith("actions/setup-go@"):
+                        continue
+                    checked += 1
+                    with self.subTest(workflow=path.name, job=job_name, step=step.get("name")):
+                        self.assertIs((step.get("with") or {}).get("cache"), False,
+                                      "set `cache: false` on actions/setup-go (TXE-6242)")
         self.assertGreater(checked, 0)
 
 

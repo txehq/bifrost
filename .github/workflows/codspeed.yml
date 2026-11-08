@@ -119,10 +119,7 @@ jobs:
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
           go-version: "1.27.3"
-          cache-dependency-path: |
-            core/go.sum
-            framework/go.sum
-            plugins/*/go.sum
+          cache: false
 
       # The modules are versioned independently and carry no replace directives,
       # so without a workspace the framework and plugin benchmarks would measure
