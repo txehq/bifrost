@@ -248,6 +248,11 @@ jobs:
           go-version: "1.27.3"
           cache: false
 
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: bifrost-http-build
+
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
@@ -264,6 +269,13 @@ jobs:
           mkdir -p tmp
           (cd transports/bifrost-http && go build -o ../../tmp/bifrost-http .)
           ls -lh tmp/bifrost-http
+
+      - name: Save the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: bifrost-http-build
+          mode: save
+          max-mb: "600"
 
       - name: Upload bifrost-http binary
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -734,6 +746,11 @@ jobs:
           go-version: "1.27.3"
           cache: false
 
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: core-unit
+
       - name: Set up Node.js
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
@@ -773,6 +790,13 @@ jobs:
             exit 1
           fi
           go test -timeout 20m "${packages[@]}"
+
+      - name: Save the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: core-unit
+          mode: save
+          max-mb: "800"
 
   # Break-glass for a test-core failure that survived its retries.
   #
@@ -1333,6 +1357,11 @@ jobs:
           go-version: "1.27.3"
           cache: false
 
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: framework-race
+
       - name: Set up Docker Compose
         run: |
           docker --version
@@ -1395,6 +1424,13 @@ jobs:
           RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: ./.github/workflows/scripts/test-framework.sh
+
+      - name: Save the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: framework-race
+          mode: save
+          max-mb: "1000"
 
   test-plugins:
     needs: [check-skip, detect-changes]
@@ -1465,6 +1501,11 @@ jobs:
           go-version: "1.27.3"
           cache: false
 
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: plugins
+
       - name: Set up Docker Compose
         run: |
           docker --version
@@ -1528,6 +1569,13 @@ jobs:
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: ./.github/workflows/scripts/test-all-plugins.sh
 
+      - name: Save the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: plugins
+          mode: save
+          max-mb: "1000"
+
   test-bifrost-http:
     needs: [check-skip, detect-changes]
     if: needs.check-skip.outputs.should-skip != 'true' && needs.check-skip.outputs.skip-tests != 'true' && needs.detect-changes.outputs.bifrost-http-needs-release == 'true'
@@ -1582,11 +1630,23 @@ jobs:
           go-version: "1.27.3"
           cache: false
 
+      - name: Restore the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: bifrost-http-race
+
       - name: Run bifrost-http unit tests
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
           BIFROST_ENCRYPTION_KEY: ${{ secrets.BIFROST_ENCRYPTION_KEY }}
         run: ./.github/workflows/scripts/test-bifrost-http.sh
+
+      - name: Save the Go build cache
+        uses: ./.github/actions/go-cache
+        with:
+          purpose: bifrost-http-race
+          mode: save
+          max-mb: "1200"
 
   # GPT Live e2e suite (tests/live): the prebuilt gateway on the live profile, which points the
   # OpenAI provider at the suite's fake upstream, so no provider keys are needed. The long
@@ -3704,6 +3764,8 @@ jobs:
           VERSION: ${{ needs.detect-changes.outputs.transport-version }}
         run: ./.github/workflows/scripts/ghcr-tag-gate.sh "${ACCOUNT}/${IMAGE_NAME}" "v${VERSION}-ubi9-amd64"
 
+      # No BuildKit layer cache in the Actions cache: it never hit the go build layer and
+      # pushed the repository past its cap (TXE-6254; ActionsCacheHasOneBudget in test-release-gates.py).
       - name: Build and push UBI9 AMD64 Docker image
         if: steps.recheck.outputs.publish == 'true'
         uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
@@ -3715,8 +3777,6 @@ jobs:
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           platforms: linux/amd64
-          cache-from: type=gha,scope=docker-ubi9-amd64
-          cache-to: type=gha,mode=max,scope=docker-ubi9-amd64,ignore-error=true
 
       # Mirror the just-pushed Docker Hub image to GitHub Container Registry (ghcr.io)
       # by copying it with buildx imagetools (no rebuild). Best-effort: a ghcr.io
@@ -3846,6 +3906,8 @@ jobs:
           VERSION: ${{ needs.detect-changes.outputs.transport-version }}
         run: ./.github/workflows/scripts/ghcr-tag-gate.sh "${ACCOUNT}/${IMAGE_NAME}" "v${VERSION}-ubi9-arm64"
 
+      # No BuildKit layer cache in the Actions cache: it never hit the go build layer and
+      # pushed the repository past its cap (TXE-6254; ActionsCacheHasOneBudget in test-release-gates.py).
       - name: Build and push UBI9 ARM64 Docker image
         if: steps.recheck.outputs.publish == 'true'
         uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
@@ -3857,8 +3919,6 @@ jobs:
             VERSION=${{ needs.detect-changes.outputs.transport-version }}
           tags: ${{ steps.tags.outputs.tags }}
           platforms: linux/arm64
-          cache-from: type=gha,scope=docker-ubi9-arm64
-          cache-to: type=gha,mode=max,scope=docker-ubi9-arm64,ignore-error=true
 
       # Mirror the just-pushed Docker Hub image to GitHub Container Registry (ghcr.io)
       # by copying it with buildx imagetools (no rebuild). Best-effort: a ghcr.io

@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - '.github/workflows/**'
+      - '.github/actions/**'
       - '.github/action-runtime-exceptions.json'
   push:
     branches:
       - main
     paths:
       - '.github/workflows/**'
+      - '.github/actions/**'
       - '.github/action-runtime-exceptions.json'
   workflow_dispatch:
 
