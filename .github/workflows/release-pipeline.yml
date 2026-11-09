@@ -3427,6 +3427,17 @@ jobs:
           VERSION: ${{ needs.detect-changes.outputs.transport-version }}
         run: ./.github/workflows/scripts/ghcr-tag-gate.sh "${ACCOUNT}/${IMAGE_NAME}" "v${VERSION}-amd64"
 
+      - name: Route the image build's npm ci to the runner's npm cache
+        id: npm-routes
+        if: steps.recheck.outputs.publish == 'true'
+        run: |
+          args="$(./.github/workflows/scripts/npm-registry-build-args.sh)"
+          {
+            echo 'build-args<<TXE_NPM_ROUTES_EOF'
+            [ -z "$args" ] || printf '%s\n' "$args"
+            echo 'TXE_NPM_ROUTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push AMD64 Docker image
         if: steps.recheck.outputs.publish == 'true'
         uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
@@ -3434,6 +3445,7 @@ jobs:
           context: .
           build-args: |
             VERSION=${{ needs.detect-changes.outputs.transport-version }}
+            ${{ steps.npm-routes.outputs.build-args }}
           file: ./transports/Dockerfile
           push: true
           tags: ${{ steps.tags.outputs.tags }}
@@ -3565,6 +3577,17 @@ jobs:
           VERSION: ${{ needs.detect-changes.outputs.transport-version }}
         run: ./.github/workflows/scripts/ghcr-tag-gate.sh "${ACCOUNT}/${IMAGE_NAME}" "v${VERSION}-arm64"
 
+      - name: Route the image build's npm ci to the runner's npm cache
+        id: npm-routes
+        if: steps.recheck.outputs.publish == 'true'
+        run: |
+          args="$(./.github/workflows/scripts/npm-registry-build-args.sh)"
+          {
+            echo 'build-args<<TXE_NPM_ROUTES_EOF'
+            [ -z "$args" ] || printf '%s\n' "$args"
+            echo 'TXE_NPM_ROUTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push ARM64 Docker image
         if: steps.recheck.outputs.publish == 'true'
         uses: step-security/docker-build-push-action@846549baaf047e867d038826129a64d81df0f704 # v7.1.0
@@ -3574,6 +3597,7 @@ jobs:
           push: true
           build-args: |
             VERSION=${{ needs.detect-changes.outputs.transport-version }}
+            ${{ steps.npm-routes.outputs.build-args }}
           tags: ${{ steps.tags.outputs.tags }}
           platforms: linux/arm64
 
@@ -3764,6 +3788,17 @@ jobs:
           VERSION: ${{ needs.detect-changes.outputs.transport-version }}
         run: ./.github/workflows/scripts/ghcr-tag-gate.sh "${ACCOUNT}/${IMAGE_NAME}" "v${VERSION}-ubi9-amd64"
 
+      - name: Route the image build's npm ci to the runner's npm cache
+        id: npm-routes
+        if: steps.recheck.outputs.publish == 'true'
+        run: |
+          args="$(./.github/workflows/scripts/npm-registry-build-args.sh)"
+          {
+            echo 'build-args<<TXE_NPM_ROUTES_EOF'
+            [ -z "$args" ] || printf '%s\n' "$args"
+            echo 'TXE_NPM_ROUTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       # No BuildKit layer cache in the Actions cache: it never hit the go build layer and
       # pushed the repository past its cap (TXE-6254; ActionsCacheHasOneBudget in test-release-gates.py).
       - name: Build and push UBI9 AMD64 Docker image
@@ -3773,6 +3808,7 @@ jobs:
           context: .
           build-args: |
             VERSION=${{ needs.detect-changes.outputs.transport-version }}
+            ${{ steps.npm-routes.outputs.build-args }}
           file: ./transports/Dockerfile.redhat
           push: true
           tags: ${{ steps.tags.outputs.tags }}
@@ -3906,6 +3942,17 @@ jobs:
           VERSION: ${{ needs.detect-changes.outputs.transport-version }}
         run: ./.github/workflows/scripts/ghcr-tag-gate.sh "${ACCOUNT}/${IMAGE_NAME}" "v${VERSION}-ubi9-arm64"
 
+      - name: Route the image build's npm ci to the runner's npm cache
+        id: npm-routes
+        if: steps.recheck.outputs.publish == 'true'
+        run: |
+          args="$(./.github/workflows/scripts/npm-registry-build-args.sh)"
+          {
+            echo 'build-args<<TXE_NPM_ROUTES_EOF'
+            [ -z "$args" ] || printf '%s\n' "$args"
+            echo 'TXE_NPM_ROUTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       # No BuildKit layer cache in the Actions cache: it never hit the go build layer and
       # pushed the repository past its cap (TXE-6254; ActionsCacheHasOneBudget in test-release-gates.py).
       - name: Build and push UBI9 ARM64 Docker image
@@ -3917,6 +3964,7 @@ jobs:
           push: true
           build-args: |
             VERSION=${{ needs.detect-changes.outputs.transport-version }}
+            ${{ steps.npm-routes.outputs.build-args }}
           tags: ${{ steps.tags.outputs.tags }}
           platforms: linux/arm64
 

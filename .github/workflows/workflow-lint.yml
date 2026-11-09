@@ -84,6 +84,12 @@ jobs:
       - name: Check version-format guard
         run: ./.github/workflows/scripts/version-format.test.sh
 
+      # BuildKit runs a Dockerfile's npm ci without the job's environment, so every
+      # image build passes the runner's npm cache and every Dockerfile declares it (TXE-6357).
+      - name: Check image builds pass the runner's npm registry
+        if: ${{ !cancelled() }}
+        run: ./.github/workflows/scripts/npm-registry-build-args.test.sh
+
       # Replays release-pipeline.yml conditions: a transport-only release must run and
       # pass the core, CLI, framework and plugin suites it embeds before publishing.
       - name: Check release gates require the embedded suites

@@ -56,10 +56,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Build the image using local module sources (pre-release CI builds)
+# Build the image using local module sources (pre-release CI builds). The UI stage's
+# npm ci gets the runner's npm cache when it answers (TXE-6357).
 echo "Building Docker image (local modules)..."
+NPM_BUILD_ARGS=()
+while IFS= read -r arg; do NPM_BUILD_ARGS+=("$arg"); done < <("$SCRIPT_DIR/npm-registry-build-args.sh" --flags)
 docker build \
   --platform "${PLATFORM}" \
+  ${NPM_BUILD_ARGS[@]+"${NPM_BUILD_ARGS[@]}"} \
   -f transports/Dockerfile.local \
   -t "${IMAGE_TAG}" \
   .
