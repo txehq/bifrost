@@ -7,6 +7,11 @@ RUN apk upgrade --no-cache
 
 # Copy UI package files and install dependencies
 COPY ui/package*.json ./
+# BuildKit runs RUN without the job's environment: the release passes the runner's
+# npm cache here (.github/workflows/scripts/npm-registry-build-args.sh, TXE-6357).
+# npm reads npm_config_registry, pnpm 11 only pnpm_config_registry.
+ARG npm_config_registry=https://registry.npmjs.org/
+ARG pnpm_config_registry=https://registry.npmjs.org/
 RUN npm ci
 
 # Copy UI source code
