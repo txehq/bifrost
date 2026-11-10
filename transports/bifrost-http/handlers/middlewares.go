@@ -1160,9 +1160,16 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) b
 	for key, value := range req.Headers {
 		ctx.Request.Header.Set(key, value)
 	}
-	// Apply query params
+	// Apply query params. req.Query holds one value per name, the last one of a repeated
+	// parameter, so a name the plugins left as it was is skipped: writing it back replaced the
+	// first of its repeated values with the last (status=a&status=b reached the handler as
+	// status=b&status=b), which broke any vendor filter sent more than once (fork, TXE-6587).
+	args := ctx.Request.URI().QueryArgs()
 	for key, value := range req.Query {
-		ctx.Request.URI().QueryArgs().Set(key, value)
+		if values := args.PeekMulti(key); len(values) > 0 && string(values[len(values)-1]) == value {
+			continue
+		}
+		args.Set(key, value)
 	}
 	// Apply body if set
 	if req.Body != nil {

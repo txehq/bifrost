@@ -5470,3 +5470,35 @@ func TestDecodeRequestBodyWithLimit_BoundaryEveryEncoding(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyHTTPRequestToCtxKeepsRepeatedQueryParameters pins the transport-plugin round trip of
+// the query string (TXE-6587, contract C7 / BF15). A plugin sees one value per parameter name,
+// the last of a repeated one, and every value used to be written back: the first of a repeated
+// parameter was replaced by the last, so GET /v1/videos?status=completed&status=failed reached
+// the vendor as status=failed&status=failed. A parameter the plugins did not change is now left
+// as the caller sent it, while one a plugin set or changed is still applied.
+func TestApplyHTTPRequestToCtxKeepsRepeatedQueryParameters(t *testing.T) {
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+	ctx.Request.SetRequestURI("/v1/videos?provider=azure&status=completed&status=failed&limit=2")
+
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	fasthttpToHTTPRequest(&ctx, req)
+	if !applyHTTPRequestToCtx(&ctx, req) {
+		t.Fatal("an unmodified request must apply")
+	}
+	if got := ctx.Request.URI().QueryArgs().String(); got != "provider=azure&status=completed&status=failed&limit=2" {
+		t.Fatalf("an untouched query changed in the round trip: %s", got)
+	}
+
+	// A plugin's own changes still reach the handler.
+	req.Query["limit"] = "5"
+	req.Query["added"] = "by-plugin"
+	if !applyHTTPRequestToCtx(&ctx, req) {
+		t.Fatal("a request with a changed query must apply")
+	}
+	if got := ctx.Request.URI().QueryArgs().String(); got != "provider=azure&status=completed&status=failed&limit=5&added=by-plugin" {
+		t.Fatalf("query after a plugin's change = %s", got)
+	}
+}
