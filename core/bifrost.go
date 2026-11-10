@@ -34,6 +34,7 @@ import (
 	"github.com/capsohq/bifrost/core/providers/cohere"
 	"github.com/capsohq/bifrost/core/providers/dashscope"
 	"github.com/capsohq/bifrost/core/providers/databricks"
+	"github.com/capsohq/bifrost/core/providers/deepgram"
 	"github.com/capsohq/bifrost/core/providers/deepseek"
 	"github.com/capsohq/bifrost/core/providers/elevenlabs"
 	"github.com/capsohq/bifrost/core/providers/fireworks"
@@ -5243,6 +5244,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return cerebras.NewCerebrasProvider(config, bifrost.logger)
 	case schemas.DeepSeek:
 		return deepseek.NewDeepSeekProvider(config, bifrost.logger)
+	case schemas.Deepgram:
+		return deepgram.NewDeepgramProvider(config, bifrost.logger)
 	case schemas.Wafer:
 		return wafer.NewWaferProvider(config, bifrost.logger)
 	case schemas.BytePlus:
