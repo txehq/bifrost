@@ -119,39 +119,9 @@ var textParamsKnownFields = map[string]bool{
 	"user":              true,
 }
 
-// Known fields for CompletionRequest
-var chatParamsKnownFields = map[string]bool{
-	"model":                  true,
-	"messages":               true,
-	"fallbacks":              true,
-	"stream":                 true,
-	"frequency_penalty":      true,
-	"logit_bias":             true,
-	"logprobs":               true,
-	"max_completion_tokens":  true,
-	"metadata":               true,
-	"modalities":             true,
-	"parallel_tool_calls":    true,
-	"presence_penalty":       true,
-	"prompt_cache_key":       true,
-	"prompt_cache_retention": true,
-	"reasoning":              true,
-	"reasoning_effort":       true,
-	"reasoning_max_tokens":   true,
-	"response_format":        true,
-	"safety_identifier":      true,
-	"service_tier":           true,
-	"stream_options":         true,
-	"store":                  true,
-	"temperature":            true,
-	"tool_choice":            true,
-	"tools":                  true,
-	"truncation":             true,
-	"user":                   true,
-	"verbosity":              true,
-
-	"include_server_side_tool_invocations": true,
-}
+// chatParamsKnownFields is the core's table, so an inline batch line and a sync request
+// agree on which fields of a chat body are extra params.
+var chatParamsKnownFields = schemas.ChatRequestKnownFields
 
 var responsesParamsKnownFields = map[string]bool{
 	"model":                  true,
@@ -274,31 +244,8 @@ var speechParamsKnownFields = map[string]bool{
 // providers only that way, and providers that have not converted the typed field yet still read
 // them there or forward them through x-bf-passthrough-extra-params (TXE-6518).
 
-// imageGenerationParamsKnownFields contains known fields for image generation requests
-// Based on ImageGenerationInput and ImageGenerationParameters structs
-var imageGenerationParamsKnownFields = map[string]bool{
-	"model":               true,
-	"prompt":              true,
-	"fallbacks":           true,
-	"stream":              true,
-	"n":                   true,
-	"background":          true,
-	"moderation":          true,
-	"partial_images":      true,
-	"size":                true,
-	"quality":             true,
-	"output_compression":  true,
-	"output_format":       true,
-	"style":               true,
-	"response_format":     true,
-	"seed":                true,
-	"negative_prompt":     true,
-	"num_inference_steps": true,
-	"user":                true,
-	"aspect_ratio":        true,
-	"input_images":        true,
-	"type":                true,
-}
+// imageGenerationParamsKnownFields is the core's table, shared with inline batch lines.
+var imageGenerationParamsKnownFields = schemas.ImageGenerationRequestKnownFields
 
 // imageEditParamsKnownFields contains known fields for image edit requests
 // Based on ImageEditInput and ImageEditParameters structs

@@ -2886,10 +2886,21 @@ type GeminiBatchRequestsWrapper struct {
 	Requests []GeminiBatchRequestItem `json:"requests"`
 }
 
-// GeminiBatchRequestItem represents a single request in a batch with metadata.
+// GeminiBatchRequestItem represents a single request in a batch with metadata. Request is
+// the GenerateContentRequest as encoded JSON: for an OpenAI-shape line it is the body the
+// sync route sends for the same request, byte for byte.
 type GeminiBatchRequestItem struct {
-	Request  GeminiBatchGenerateContentRequest `json:"request"`
-	Metadata *GeminiBatchMetadata              `json:"metadata,omitempty"`
+	Request  json.RawMessage             `json:"request"`
+	Metadata *GeminiBatchRequestMetadata `json:"metadata,omitempty"`
+}
+
+// GeminiBatchRequestMetadata is the free-form metadata sent with one inline request and
+// echoed on its response. Key carries the line's custom_id. Endpoint carries the line's url
+// (for example /v1/images/generations), so results can be converted back to the OpenAI
+// shape of that operation without the gateway storing anything about the batch.
+type GeminiBatchRequestMetadata struct {
+	Key      string `json:"key,omitempty"`
+	Endpoint string `json:"bifrost_endpoint,omitempty"`
 }
 
 // GeminiBatchGenerateContentRequest represents a GenerateContentRequest for batch.
@@ -2973,7 +2984,9 @@ type GeminiBatchMetadataOutputConfig struct {
 
 // GeminiBatchMetadata contains metadata for tracking batch requests.
 type GeminiBatchMetadata struct {
-	Key         string                           `json:"key"`
+	Key string `json:"key"`
+	// Endpoint is the line's url, echoed from GeminiBatchRequestMetadata on an inline response.
+	Endpoint    string                           `json:"bifrost_endpoint,omitempty"`
 	Type        string                           `json:"@type"`
 	Model       string                           `json:"model"`
 	DisplayName string                           `json:"displayName"`
