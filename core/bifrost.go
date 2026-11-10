@@ -8207,6 +8207,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			continue
 		}
 
+		// Nor may an extra param supply a price-affecting unified field the request did
+		// not send: the vendor would bill for a value no unified field shows (contract
+		// C4, TXE-7059). One rule for every provider, refused here for the same reason.
+		if fieldErr := schemas.CheckExtraParamPriceFields(&req.BifrostRequest); fieldErr != nil {
+			fieldErr.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), model, model)
+			bifrost.sendWorkerError(req, *fieldErr)
+			continue
+		}
+
 		// A URL-only transcription is refused here, before a key is chosen, when this provider
 		// takes only a file: 400 caller_unsupported_parameter and no upstream call (contract C4).
 		if tr := req.BifrostRequest.TranscriptionRequest; tr != nil && tr.IsURLOnly() && !schemas.AcceptsTranscriptionURLInput(provider) {

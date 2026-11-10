@@ -2,6 +2,8 @@ package schemas
 
 import (
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -131,6 +133,188 @@ func BenchmarkCheckDeclaredUnifiedFields(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
 				_ = CheckDeclaredUnifiedFields(tc.provider, req)
+			}
+		})
+	}
+}
+
+// extraOnlyRequest builds a request of requestType whose only parameters are extra params.
+func extraOnlyRequest(t testing.TB, requestType RequestType, extra map[string]interface{}) *BifrostRequest {
+	t.Helper()
+	req := &BifrostRequest{RequestType: requestType}
+	switch requestType {
+	case EmbeddingRequest:
+		req.EmbeddingRequest = &BifrostEmbeddingRequest{Params: &EmbeddingParameters{ExtraParams: extra}}
+	case ImageGenerationRequest, ImageGenerationStreamRequest:
+		req.ImageGenerationRequest = &BifrostImageGenerationRequest{Input: &ImageGenerationInput{Prompt: "a cat"}, Params: &ImageGenerationParameters{ExtraParams: extra}}
+	case ImageEditRequest, ImageEditStreamRequest:
+		req.ImageEditRequest = &BifrostImageEditRequest{Input: &ImageEditInput{Prompt: "a cat"}, Params: &ImageEditParameters{ExtraParams: extra}}
+	case VideoGenerationRequest:
+		req.VideoGenerationRequest = &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "a cat"}, Params: &VideoGenerationParameters{ExtraParams: extra}}
+	case SpeechRequest, SpeechStreamRequest:
+		req.SpeechRequest = &BifrostSpeechRequest{Input: &SpeechInput{Input: "hi"}, Params: &SpeechParameters{ExtraParams: extra}}
+	case TranscriptionRequest, TranscriptionStreamRequest:
+		req.TranscriptionRequest = &BifrostTranscriptionRequest{Input: &TranscriptionInput{File: []byte("a")}, Params: &TranscriptionParameters{ExtraParams: extra}}
+	default:
+		t.Fatalf("no builder for %s; add one when the C4 table gains an operation", requestType)
+	}
+	return req
+}
+
+// TXE-7059, contract C4 agreement three on the extra-param channel. For every operation
+// in the table and every price-affecting field of it: the field named among the extra
+// params of a request that did not send it is a 400 caller_unsupported_parameter naming
+// the extra param as the caller spelled it. The loop runs over the table itself, so an
+// operation or a field added there is tested without a new case.
+func TestCheckExtraParamPriceFieldsRefusesEveryC4FieldOfEveryOperation(t *testing.T) {
+	if len(priceAffectingUnifiedFields) == 0 {
+		t.Fatal("the C4 table is empty")
+	}
+	for requestType, fields := range priceAffectingUnifiedFields {
+		for _, field := range fields {
+			for _, spelling := range []string{field, strings.ToUpper(field), strings.ToUpper(field[:1]) + field[1:]} {
+				t.Run(string(requestType)+"/"+spelling, func(t *testing.T) {
+					req := extraOnlyRequest(t, requestType, map[string]interface{}{spelling: "planted", "watermark": false})
+					bifrostErr := CheckExtraParamPriceFields(req)
+					if bifrostErr == nil {
+						t.Fatalf("extra param %q was not refused", spelling)
+					}
+					if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 ||
+						bifrostErr.ExtraFields.ErrorType != ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != spelling {
+						t.Fatalf("want 400 %s with error.param %q, got %+v", ErrorTypeCallerUnsupportedParameter, spelling, bifrostErr)
+					}
+					if !strings.Contains(bifrostErr.Error.Message, field) {
+						t.Errorf("message %q does not name the unified field %q", bifrostErr.Error.Message, field)
+					}
+				})
+			}
+		}
+		// The fields C4 exempts are not refused on any operation.
+		for _, unpriced := range UnpricedUnifiedFields {
+			if bifrostErr := CheckExtraParamPriceFields(extraOnlyRequest(t, requestType, map[string]interface{}{unpriced: "x"})); bifrostErr != nil && !slices.Contains(fields, unpriced) {
+				t.Errorf("%s: unpriced field %q among the extra params was refused: %+v", requestType, unpriced, bifrostErr)
+			}
+		}
+	}
+	for _, unpriced := range UnpricedUnifiedFields {
+		for requestType, fields := range priceAffectingUnifiedFields {
+			if slices.Contains(fields, unpriced) {
+				t.Errorf("%s lists %q, which contract C4 exempts", requestType, unpriced)
+			}
+		}
+	}
+}
+
+func TestCheckExtraParamPriceFieldsLeavesEverythingElseAlone(t *testing.T) {
+	inputReference := "https://example.invalid/first.png"
+	cases := []struct {
+		name string
+		req  *BifrostRequest
+	}{
+		{"no extra params", imageReq(&ImageGenerationParameters{Size: Ptr("1024x1024")})},
+		{"no params at all", imageReq(nil)},
+		{"a vendor switch with no general meaning", imageReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"watermark": false, "camera_fixed": true}})},
+		{"the request sent the field; the handlers keep it among the extra params too", imageReq(&ImageGenerationParameters{
+			Resolution: "2K", ExtraParams: map[string]interface{}{"resolution": "2K"},
+		})},
+		{"the request sent size; a converter reads the mirror", imageReq(&ImageGenerationParameters{
+			Size: Ptr("1024x1024"), ExtraParams: map[string]interface{}{"size": "1024x1024"},
+		})},
+		{"a value the tolerant unified field cannot hold travels as an extra param by design", &BifrostRequest{
+			RequestType: VideoGenerationRequest,
+			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"},
+				Params: &VideoGenerationParameters{ExtraParams: map[string]interface{}{"resolution": 1024}}},
+		}},
+		{"a vendor's own name for the field", &BifrostRequest{
+			RequestType: VideoGenerationRequest,
+			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"},
+				Params: &VideoGenerationParameters{ExtraParams: map[string]interface{}{"ratio": "16:9", "aspectRatio": "16:9", "lastFrame": "x", "referenceImages": []interface{}{"x"}}}},
+		}},
+		{"input_reference sent on the input", &BifrostRequest{
+			RequestType: VideoGenerationRequest,
+			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p", InputReference: &inputReference},
+				Params: &VideoGenerationParameters{ExtraParams: map[string]interface{}{"input_reference": inputReference}}},
+		}},
+		{"a nil value", imageReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"size": nil}})},
+		{"an operation outside the C4 table", &BifrostRequest{
+			RequestType: ChatCompletionRequest,
+			ChatRequest: &BifrostChatRequest{Params: &ChatParameters{ExtraParams: map[string]interface{}{"size": "x", "n": 4, "voice": "x"}}},
+		}},
+		{"a field of another operation's table", extraOnlyRequest(t, EmbeddingRequest, map[string]interface{}{"size": "x", "voice": "x", "seconds": "8"})},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if bifrostErr := CheckExtraParamPriceFields(tc.req); bifrostErr != nil {
+				t.Fatalf("refused: %+v", bifrostErr)
+			}
+		})
+	}
+	if bifrostErr := CheckExtraParamPriceFields(nil); bifrostErr != nil {
+		t.Fatalf("nil request refused: %+v", bifrostErr)
+	}
+}
+
+func TestCheckExtraParamPriceFieldsSpecificRefusals(t *testing.T) {
+	text := "hi"
+	cases := []struct {
+		name      string
+		req       *BifrostRequest
+		wantParam string
+	}{
+		{"the first in sorted order is named", imageReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"size": "x", "n": 4, "quality": "hd"}}), "n"},
+		{"another field is sent, this one is not", imageReq(&ImageGenerationParameters{Size: Ptr("1024x1024"), ExtraParams: map[string]interface{}{"size": "1024x1024", "n": 4}}), "n"},
+		{"a string the tolerant field would have held", &BifrostRequest{
+			RequestType: VideoGenerationRequest,
+			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"},
+				Params: &VideoGenerationParameters{ExtraParams: map[string]interface{}{"resolution": "1080p"}}},
+		}, "resolution"},
+		{"a task control field", &BifrostRequest{
+			RequestType: VideoGenerationRequest,
+			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"},
+				Params: &VideoGenerationParameters{ExtraParams: map[string]interface{}{"callback_url": "https://example.invalid/hook"}}},
+		}, "callback_url"},
+		{"input_reference not sent on the input", &BifrostRequest{
+			RequestType: VideoGenerationRequest,
+			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"},
+				Params: &VideoGenerationParameters{ExtraParams: map[string]interface{}{"input_reference": "https://example.invalid/a.png"}}},
+		}, "input_reference"},
+		{"an embedding item's own extra params", &BifrostRequest{
+			RequestType: EmbeddingRequest,
+			EmbeddingRequest: &BifrostEmbeddingRequest{Input: []EmbeddingInputItem{
+				{Content: EmbeddingContent{{Type: EmbeddingContentPartTypeText, Text: &text}}},
+				{Content: EmbeddingContent{{Type: EmbeddingContentPartTypeText, Text: &text}}, Params: &EmbeddingParameters{ExtraParams: map[string]interface{}{"dimensions": 256}}},
+			}},
+		}, "dimensions"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			bifrostErr := CheckExtraParamPriceFields(tc.req)
+			if bifrostErr == nil || bifrostErr.Error.Param != tc.wantParam || bifrostErr.ExtraFields.ErrorType != ErrorTypeCallerUnsupportedParameter {
+				t.Fatalf("want a refusal naming %q, got %+v", tc.wantParam, bifrostErr)
+			}
+		})
+	}
+}
+
+// The request worker runs CheckExtraParamPriceFields on every request. Without extra
+// params it must cost a map lookup; with extra params that name no C4 field, a scan of
+// them and no allocation.
+func BenchmarkCheckExtraParamPriceFields(b *testing.B) {
+	cases := []struct {
+		name string
+		req  *BifrostRequest
+	}{
+		{"chat_not_in_table", &BifrostRequest{RequestType: ChatCompletionRequest, ChatRequest: &BifrostChatRequest{Params: &ChatParameters{ExtraParams: map[string]interface{}{"top_k": 4}}}}},
+		{"image_no_extra_params", imageReq(&ImageGenerationParameters{N: Ptr(2), Size: Ptr("1024x1024")})},
+		{"image_vendor_extra_params", imageReq(&ImageGenerationParameters{Size: Ptr("1024x1024"), ExtraParams: map[string]interface{}{"watermark": false, "camera_fixed": true}})},
+		{"image_mirrored_field", imageReq(&ImageGenerationParameters{Resolution: "2K", ExtraParams: map[string]interface{}{"resolution": "2K"}})},
+		{"image_refused", imageReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"size": "4096x4096"}})},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = CheckExtraParamPriceFields(tc.req)
 			}
 		})
 	}

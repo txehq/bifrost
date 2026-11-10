@@ -81,18 +81,23 @@ func validateTencentImageParams(params *schemas.ImageGenerationParameters) *sche
 	return nil
 }
 
-// tencentConvertedBodyKeys are the body fields the converter writes. With
-// x-bf-passthrough-extra-params an extra param of the same name would overwrite the converted
-// value after governance and pricing have read the request: an extra model would run a model the
-// caller was not checked for, and an extra size would change the price tier unseen.
-var tencentConvertedBodyKeys = []string{"model", "prompt", "messages", "images", "size", "seed"}
+// tencentInputBodyKeys are the body fields that carry the request's input. Which of them the
+// converter writes depends on the model's API shape (prompt for one, messages for the other), so
+// an extra param naming the one it did not write would sit in the body as a second input.
+//
+// The other fields this guard used to list are now refused for every provider by shared rules:
+// model, and any field the converter wrote, by the extra-params merge
+// (providerUtils.MergeExtraParamsIntoJSON); size, a price-affecting field the request did not
+// send, by schemas.CheckExtraParamPriceFields. seed is unpriced (contract C4) and no longer
+// refused when the converter left it out.
+var tencentInputBodyKeys = []string{"prompt", "messages", "images"}
 
-// rejectTencentBodyKeysInExtraParams refuses an extra param that names a converted body field,
+// rejectTencentBodyKeysInExtraParams refuses an extra param that names an input body field,
 // in any letter case: a differently cased key would sit beside the converter's, and a decoder
 // that folds case could read either.
 func rejectTencentBodyKeysInExtraParams(extraParams map[string]interface{}) *schemas.BifrostError {
 	for name := range extraParams {
-		for _, key := range tencentConvertedBodyKeys {
+		for _, key := range tencentInputBodyKeys {
 			if strings.EqualFold(name, key) {
 				bifrostErr := providerUtils.NewBifrostBadRequestError(fmt.Sprintf(
 					"tencent: extra params cannot set %q; use the request's own %s field", name, key))

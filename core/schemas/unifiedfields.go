@@ -80,6 +80,164 @@ func CheckDeclaredUnifiedFields(provider any, req *BifrostRequest) *BifrostError
 	return CheckUnifiedFields(req, supported)
 }
 
+// priceAffectingUnifiedFields is contract C4's table of unified fields per operation,
+// less the three it exempts (UnpricedUnifiedFields) and less the request's own input
+// ("input", "file"), which every converter writes and the extra-params merge already
+// protects. Each of these fields changes what the vendor bills, or, for the task
+// control fields of a video create, whether the caller can recover the task.
+//
+// It is one table for every provider. A request type absent from it (chat, responses,
+// rerank, ...) has no C4 fields.
+var priceAffectingUnifiedFields = func() map[RequestType][]string {
+	image := []string{"n", "size", "quality", "aspect_ratio", "response_format", "output_format", "background", "input_images", "mask", "resolution"}
+	speech := []string{"voice", "response_format", "speed", "instructions", "language_code", "stream_format"}
+	transcription := []string{"language", "response_format", "timestamp_granularities"}
+	video := append([]string{"seconds", "size", "audio", "input_reference", "output_format", "aspect_ratio", "resolution", "last_frame", "reference_images"}, TaskControlFields...)
+	return map[RequestType][]string{
+		EmbeddingRequest:             {"dimensions", "encoding_format", "task_type"},
+		ImageGenerationRequest:       image,
+		ImageGenerationStreamRequest: image,
+		ImageEditRequest:             image,
+		ImageEditStreamRequest:       image,
+		VideoGenerationRequest:       video,
+		SpeechRequest:                speech,
+		SpeechStreamRequest:          speech,
+		TranscriptionRequest:         transcription,
+		TranscriptionStreamRequest:   transcription,
+	}
+}()
+
+// PriceAffectingUnifiedFields returns the unified fields contract C4 counts as
+// price-affecting (or, for a video create, recovery-affecting) for requestType, and nil
+// for an operation the table does not cover. The slice is shared; do not modify it.
+func PriceAffectingUnifiedFields(requestType RequestType) []string {
+	return priceAffectingUnifiedFields[requestType]
+}
+
+// CheckExtraParamPriceFields refuses a request that names a price-affecting unified
+// field among its extra params without sending the field itself (contract C4, agreement
+// three; TXE-7059). Such a field is merged into the vendor's body, or read there by the
+// converter, with no unified field showing it: the vendor bills for a size, a count or
+// a duration the gateway never saw. The refusal is 400 caller_unsupported_parameter
+// naming the extra param in error.param, on every provider: there is nothing for a
+// provider to declare. Core runs it in the request worker before a key is chosen, so a
+// refused request makes no upstream call.
+//
+// Three things are not refused:
+//
+//   - A field the request did send. The HTTP handlers also keep some unified fields in
+//     the extra params under the same name (UnifiedImageFields,
+//     UnifiedVideoGenerationFields), and converters read them there.
+//   - A value the unified field cannot hold. Those fields decode tolerantly (TolerantString):
+//     Runware 3D's numeric resolution leaves the typed field empty and travels as an extra
+//     param by design. Only a value the field would have taken is the field under another
+//     route.
+//   - A vendor's own name for the field (BytePlus ratio, Gemini aspectRatio). The name is
+//     compared ignoring letter case only, so "Size" is size but "aspectRatio" is not
+//     aspect_ratio.
+func CheckExtraParamPriceFields(req *BifrostRequest) *BifrostError {
+	if req == nil {
+		return nil
+	}
+	table := priceAffectingUnifiedFields[req.RequestType]
+	if len(table) == 0 {
+		return nil
+	}
+	params := req.paramsValue()
+	if bifrostErr := checkExtraParamPriceFields(req, table, params); bifrostErr != nil {
+		return bifrostErr
+	}
+	// An embedding item may carry its own params.
+	if req.EmbeddingRequest != nil {
+		for i := range req.EmbeddingRequest.Input {
+			item := req.EmbeddingRequest.Input[i].Params
+			if item == nil || len(item.ExtraParams) == 0 {
+				continue
+			}
+			if bifrostErr := checkExtraParamPriceFields(req, table, reflect.ValueOf(item).Elem()); bifrostErr != nil {
+				return bifrostErr
+			}
+		}
+	}
+	return nil
+}
+
+func checkExtraParamPriceFields(req *BifrostRequest, table []string, params reflect.Value) *BifrostError {
+	if !params.IsValid() {
+		return nil
+	}
+	extraField := params.FieldByName("ExtraParams")
+	if !extraField.IsValid() || extraField.Kind() != reflect.Map || extraField.Len() == 0 {
+		return nil
+	}
+	extraParams, ok := extraField.Interface().(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	// The common request names no C4 field among its extra params: nothing is sorted
+	// or allocated for it.
+	var refused, refusedField string
+	for key, value := range extraParams {
+		field := ""
+		for _, candidate := range table {
+			if strings.EqualFold(key, candidate) {
+				field = candidate
+				break
+			}
+		}
+		if field == "" || value == nil {
+			continue
+		}
+		if unifiedFieldIsSet(req, params, field) || !unifiedFieldWouldHold(params, field, value) {
+			continue
+		}
+		if refused == "" || key < refused {
+			refused, refusedField = key, field
+		}
+	}
+	if refused == "" {
+		return nil
+	}
+	return NewUnsupportedParameterError(refused, fmt.Sprintf(
+		"extra params cannot set %q: %s affects the price of this request, so it is sent as the request's own %s field, never as an extra param",
+		refused, refusedField, refusedField))
+}
+
+// unifiedFieldIsSet reports whether the request sent the unified field named field: a
+// Params field that is set, or the one C4 field that lives on the request's input.
+func unifiedFieldIsSet(req *BifrostRequest, params reflect.Value, field string) bool {
+	if field == "input_reference" && req.VideoGenerationRequest != nil {
+		input := req.VideoGenerationRequest.Input
+		return input != nil && input.InputReference != nil && *input.InputReference != ""
+	}
+	for _, f := range unifiedParamFields(params.Type()) {
+		if f.name != field {
+			continue
+		}
+		fv, ok := fieldByIndex(params, f.index)
+		return ok && !fieldIsUnset(fv)
+	}
+	return false
+}
+
+// unifiedFieldWouldHold reports whether the unified field named field would have taken
+// value had the request sent it there. A TolerantString takes only a string; every other
+// field is taken to hold what it is given.
+func unifiedFieldWouldHold(params reflect.Value, field string, value interface{}) bool {
+	for _, f := range unifiedParamFields(params.Type()) {
+		if f.name != field {
+			continue
+		}
+		fv, ok := fieldByIndex(params, f.index)
+		if ok && fv.Type() == reflect.TypeOf(TolerantString("")) {
+			_, isString := value.(string)
+			return isString
+		}
+		return true
+	}
+	return true
+}
+
 // UnifiedFieldsPresent returns, sorted, the JSON names of the fields set on the request's
 // Params: non-nil pointers, non-empty slices and maps, and non-zero values. Fields that
 // are not serialized (json:"-", such as ExtraParams) are not unified fields and are

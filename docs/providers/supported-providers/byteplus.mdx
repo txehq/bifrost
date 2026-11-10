@@ -261,13 +261,16 @@ curl -X POST http://localhost:8080/v1/videos \
 | `size` | `resolution` + `ratio` | The short side picks `480p`, `720p` or `1080p`, and the shape picks the closest ratio |
 | `seed` | `seed` | |
 | `audio` | `generate_audio` | Models with audio output only |
-| `extra_params.resolution`, `extra_params.ratio` | `resolution`, `ratio` | Override the values derived from `size`. `ratio` also accepts `adaptive`. |
-| `extra_params.last_frame` | `content[]` image item with role `last_frame` | |
-| `extra_params.reference_images` | `content[]` image items with role `reference_image` | Can't be combined with first or last frame images |
+| `resolution` | `resolution` | Unified field. Overrides the tier derived from `size`. |
+| `extra_params.ratio` | `ratio` | Overrides the ratio derived from `size`. Also accepts `adaptive`. |
+| `last_frame` | `content[]` image item with role `last_frame` | |
+| `reference_images` | `content[]` image items with role `reference_image` | Can't be combined with first or last frame images |
 | `extra_params.reference_videos` | `content[]` video items with role `reference_video` | Added after `video_uri`. Seedance 2.5 takes up to 10, Seedance 2.0 up to 3. |
 | `extra_params.reference_audios` | `content[]` audio items with role `reference_audio` | `wav` or `mp3`. Seedance 2.5 and 2.0 only. |
 | `extra_params.draft_task_id` | `content[]` draft task item | Turns a draft into the final video. `prompt` is optional when it is set. |
-| `extra_params.callback_url` | `callback_url` | |
+| `callback_url` | not sent | A task control field. Refused with `400` `caller_unsupported_parameter`, as a request field or as an extra parameter, because this provider does not declare it. |
+
+`resolution`, `last_frame` and `reference_images` are unified request fields: send them as the request's own fields. Naming one only among the extra parameters is refused with `400` `caller_unsupported_parameter`, because a field that affects the price must be visible on the request. Go SDK callers set the field on `Params` and keep the same value in `ExtraParams`, where this provider's converter reads it; the HTTP routes do that for you.
 
 Image references, and the first and last frames, also accept the `asset://<ASSET_ID>` form for media in your Ark asset library.
 
