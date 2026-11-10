@@ -1,0 +1,49 @@
+{
+  "name": "344. A Vertex batch line's custom_id that cannot be a request label is encoded, or refused when too long (vertex batch custom_id)",
+  "description": "Contract C8 (TXE-6971): a Vertex Gemini batch line has no native custom_id, so the gateway carries it in request labels, whose values hold at most 63 lowercase letters, digits, underscores and dashes. A custom_id that is a label value travels as it is in bifrost_custom_id; any other (an uppercase letter, a dot, more than 63 characters) is base32-encoded across bifrost_custom_id_b32_<n> labels and decoded on results, so it comes back unchanged and never reaches Vertex as a label its rules forbid. A custom_id that has to be encoded and is longer than 256 bytes is refused with a 400 caller_unsupported_parameter naming requests[i].custom_id before anything is uploaded. The case here is answered by the gateway alone, with no vendor call. The round trip itself is pinned by the Go test TestVertexBatchCustomIDRoundTripsThroughLabels: a live pin would need a batch run to completion.",
+  "item": [
+    {
+      "name": "[EXPECT-400] vertex vertex batch custom_id: a custom_id too long to carry is refused naming the line, before anything is uploaded",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a 300-character custom_id that is not a label value is a 400 caller_unsupported_parameter naming requests[1].custom_id', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.error || {}).param, pm.response.text()).to.eql('requests[1].custom_id');",
+              "  pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(pm.response.text()).to.include('300 bytes');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"output_folder\": {\n    \"url\": \"gs://{{vertexGcsBucket}}/harness-vertex-batch-custom-id/output/\"\n  },\n  \"requests\": [\n    {\n      \"custom_id\": \"Order.42:Retry\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    },\n    {\n      \"custom_id\": \"Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.Order.\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    }
+  ]
+}

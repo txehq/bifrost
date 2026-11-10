@@ -82,6 +82,12 @@ BatchRequestItem:
   properties:
     custom_id:
       type: string
+      description: |
+        The caller's id for the line; its result carries the same value. On a Vertex Gemini
+        batch it travels in request labels: a value of at most 63 lowercase letters, digits,
+        underscores and dashes is sent as it is, any other is encoded and decoded by the
+        gateway, and one that has to be encoded may hold at most 256 bytes (longer is a 400
+        naming `requests[i].custom_id`).
     method:
       type: string
     url:

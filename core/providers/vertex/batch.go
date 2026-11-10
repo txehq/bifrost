@@ -2,6 +2,7 @@ package vertex
 
 import (
 	"bytes"
+	"encoding/base32"
 	"errors"
 	"fmt"
 	"net/url"
@@ -22,6 +23,73 @@ import (
 // through a batch prediction job (Vertex JSONL has no native custom_id field; the
 // request — labels included — is echoed back in each output line).
 const vertexBatchCustomIDLabel = "bifrost_custom_id"
+
+// vertexBatchEncodedCustomIDLabelPrefix names the labels that carry a custom_id that cannot
+// be a label value as it is: bifrost_custom_id_b32_0, _1, ... each hold up to 63 characters
+// of its unpadded lowercase base32 encoding, whose alphabet (a-z, 2-7) is label-safe.
+const vertexBatchEncodedCustomIDLabelPrefix = "bifrost_custom_id_b32_"
+
+// vertexLabelValueMaxLength is the longest label value Google Cloud accepts.
+const vertexLabelValueMaxLength = 63
+
+// vertexBatchCustomIDMaxBytes bounds a custom_id that has to be encoded: 256 bytes are 410
+// base32 characters, seven labels, well inside the 64 labels a request may carry.
+const vertexBatchCustomIDMaxBytes = 256
+
+var vertexBatchCustomIDEncoding = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(base32.NoPadding)
+
+// isVertexBatchCustomIDLabel reports whether key is one of the labels the gateway writes a
+// line's custom_id in.
+func isVertexBatchCustomIDLabel(key string) bool {
+	return key == vertexBatchCustomIDLabel || strings.HasPrefix(key, vertexBatchEncodedCustomIDLabelPrefix)
+}
+
+// vertexBatchCustomIDLabels returns the request labels that carry customID through a batch
+// prediction job. A custom_id that is a valid label value travels as it is in
+// bifrost_custom_id. Any other (an uppercase letter, a dot, more than 63 characters) is
+// base32-encoded across the bifrost_custom_id_b32_<n> labels, so every custom_id a caller
+// wrote comes back unchanged and no label Vertex's documented rules forbid is ever sent.
+// A custom_id that has to be encoded and is longer than vertexBatchCustomIDMaxBytes is a
+// line error naming custom_id.
+func vertexBatchCustomIDLabels(customID string) (map[string]string, error) {
+	if customID == "" {
+		return nil, nil
+	}
+	if validateVertexLabel(vertexBatchCustomIDLabel, customID) == nil {
+		return map[string]string{vertexBatchCustomIDLabel: customID}, nil
+	}
+	if len(customID) > vertexBatchCustomIDMaxBytes {
+		return nil, &schemas.BatchLineError{CustomID: customID, Param: "custom_id", Unsupported: true, Message: fmt.Sprintf("custom_id is %d bytes: a Vertex batch line carries at most %d bytes when the custom_id is not a label value (at most 63 lowercase letters, digits, underscores or dashes)", len(customID), vertexBatchCustomIDMaxBytes)}
+	}
+	encoded := vertexBatchCustomIDEncoding.EncodeToString([]byte(customID))
+	labels := make(map[string]string, len(encoded)/vertexLabelValueMaxLength+1)
+	for chunk := 0; len(encoded) > 0; chunk++ {
+		size := min(len(encoded), vertexLabelValueMaxLength)
+		labels[vertexBatchEncodedCustomIDLabelPrefix+strconv.Itoa(chunk)] = encoded[:size]
+		encoded = encoded[size:]
+	}
+	return labels, nil
+}
+
+// vertexBatchCustomIDFromLabels is the inverse of vertexBatchCustomIDLabels, read from the
+// labels Vertex echoes on an output line. The encoded form wins when both are present;
+// chunks that do not decode fall back to the plain label.
+func vertexBatchCustomIDFromLabels(labels map[string]string) string {
+	if _, encoded := labels[vertexBatchEncodedCustomIDLabelPrefix+"0"]; encoded {
+		var joined strings.Builder
+		for chunk := 0; ; chunk++ {
+			part, ok := labels[vertexBatchEncodedCustomIDLabelPrefix+strconv.Itoa(chunk)]
+			if !ok {
+				break
+			}
+			joined.WriteString(part)
+		}
+		if decoded, err := vertexBatchCustomIDEncoding.DecodeString(joined.String()); err == nil {
+			return string(decoded)
+		}
+	}
+	return labels[vertexBatchCustomIDLabel]
+}
 
 // vertexBatchEndpointLabel is the request label that carries a line's url through a batch
 // prediction job, so its result can be converted back to the OpenAI shape of that operation
@@ -473,7 +541,20 @@ func vertexConvertRequestsToJSONL(ctx *schemas.BifrostContext, key schemas.Key, 
 				}
 			}
 			if item.CustomID != "" {
-				labels[vertexBatchCustomIDLabel] = item.CustomID
+				customIDLabels, err := vertexBatchCustomIDLabels(item.CustomID)
+				if err != nil {
+					return nil, withBatchLineIndex(err, i)
+				}
+				// The line has one identity: a native line's own copy of these labels would
+				// otherwise be read back as part of it.
+				for k := range labels {
+					if isVertexBatchCustomIDLabel(k) {
+						delete(labels, k)
+					}
+				}
+				for k, v := range customIDLabels {
+					labels[k] = v
+				}
 			}
 			if endpointLabel != "" {
 				labels[vertexBatchEndpointLabel] = endpointLabel
@@ -515,7 +596,7 @@ func vertexBatchOutputLineToResultItem(rawLine []byte, isAnthropic bool, include
 	// Anthropic/Claude jobs echo a native top-level custom_id; Gemini jobs carry it in labels.
 	customID := line.CustomID
 	if customID == "" {
-		customID = line.Request.Labels[vertexBatchCustomIDLabel]
+		customID = vertexBatchCustomIDFromLabels(line.Request.Labels)
 	}
 	endpoint := vertexBatchEndpointFromLabel(line.Request.Labels[vertexBatchEndpointLabel])
 

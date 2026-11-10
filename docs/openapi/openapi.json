@@ -123831,7 +123831,8 @@
               ],
               "properties": {
                 "custom_id": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "The caller's id for the line; its result carries the same value. On a Vertex Gemini\nbatch it travels in request labels: a value of at most 63 lowercase letters, digits,\nunderscores and dashes is sent as it is, any other is encoded and decoded by the\ngateway, and one that has to be encoded may hold at most 256 bytes (longer is a 400\nnaming `requests[i].custom_id`).\n"
                 },
                 "method": {
                   "type": "string"

@@ -921,3 +921,135 @@ func BenchmarkVertexLabelErrorBifrostError(b *testing.B) {
 		})
 	}
 }
+
+// A Vertex Gemini line's custom_id travels in request labels, whose values hold at most 63
+// lowercase letters, digits, underscores and dashes. Every custom_id a caller wrote comes
+// back unchanged, and none reaches Vertex as a label its rules forbid: one that is a label
+// value travels as it is, any other is base32-encoded across labels (contract C8).
+func TestVertexBatchCustomIDRoundTripsThroughLabels(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	chatLine := func(customID string) schemas.BatchRequestItem {
+		return schemas.BatchRequestItem{CustomID: customID, URL: "/v1/chat/completions", Body: map[string]interface{}{"model": "gemini-2.5-flash", "messages": []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}}}
+	}
+	// requestLabels converts one line and returns the labels of the request Vertex receives.
+	requestLabels := func(t *testing.T, item schemas.BatchRequestItem) map[string]string {
+		t.Helper()
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{item}, "gemini-2.5-flash", schemas.BatchEndpointChatCompletions)
+		require.NoError(t, err)
+		lines := parseVertexJSONLLines(t, data)
+		require.Len(t, lines, 1)
+		labels := map[string]string{}
+		for key, value := range lines[0]["request"].(map[string]interface{})["labels"].(map[string]interface{}) {
+			labels[key] = value.(string)
+		}
+		return labels
+	}
+	// resultCustomID is the custom_id of the result line Vertex writes for a request with
+	// these labels: the request, labels included, is echoed on the output line.
+	resultCustomID := func(t *testing.T, labels map[string]string) string {
+		t.Helper()
+		line, err := sonic.Marshal(map[string]interface{}{
+			"status":   "",
+			"request":  map[string]interface{}{"labels": labels},
+			"response": map[string]interface{}{"candidates": []interface{}{map[string]interface{}{"content": map[string]interface{}{"role": "model", "parts": []interface{}{map[string]interface{}{"text": "ok"}}}, "finishReason": "STOP"}}},
+		})
+		require.NoError(t, err)
+		item, _, err := vertexBatchOutputLineToResultItem(line, false, false)
+		require.NoError(t, err)
+		return item.CustomID
+	}
+
+	for name, tc := range map[string]struct {
+		customID string
+		plain    bool // travels as it is in bifrost_custom_id
+	}{
+		"a label value":            {"line-1_a", true},
+		"63 label characters":      {strings.Repeat("a", 63), true},
+		"an uppercase letter":      {"Line-1", false},
+		"a dot and a colon":        {"order.42:retry", false},
+		"a uuid in upper case":     {"3F2504E0-4F89-11D3-9A0C-0305E82C3301", false},
+		"64 label characters":      {strings.Repeat("a", 64), false},
+		"spaces and a slash":       {"customer a/b 7", false},
+		"non-ASCII":                {"订单-七", false},
+		"256 bytes, not a label":   {strings.Repeat("A", 256), false},
+		"looks like base32 chunks": {"bifrost_custom_id_b32_0", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			labels := requestLabels(t, chatLine(tc.customID))
+			for key, value := range labels {
+				assert.NoError(t, validateVertexLabel(key, value), "label %s=%q must meet Vertex's label rules", key, value)
+			}
+			if tc.plain {
+				assert.Equal(t, tc.customID, labels[vertexBatchCustomIDLabel])
+			} else {
+				assert.NotContains(t, labels, vertexBatchCustomIDLabel, "an encoded custom_id has no plain label")
+				assert.Contains(t, labels, vertexBatchEncodedCustomIDLabelPrefix+"0")
+			}
+			assert.Equal(t, "chat_completions", labels[vertexBatchEndpointLabel])
+			assert.Equal(t, tc.customID, resultCustomID(t, labels))
+		})
+	}
+
+	t.Run("a custom_id too long to encode is a 400 naming the line, before anything is uploaded", func(t *testing.T) {
+		tooLong := strings.Repeat("A", vertexBatchCustomIDMaxBytes+1)
+		_, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{chatLine("ok"), chatLine(tooLong)}, "gemini-2.5-flash", schemas.BatchEndpointChatCompletions)
+		var lineErr *schemas.BatchLineError
+		require.ErrorAs(t, err, &lineErr)
+		bifrostErr := gemini.NewBatchLineBadRequestError(lineErr.Index, lineErr)
+		require.NotNil(t, bifrostErr.StatusCode)
+		assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+		assert.Equal(t, "requests[1].custom_id", bifrostErr.Error.Param)
+		assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+		assert.Contains(t, bifrostErr.Error.Message, "257 bytes")
+	})
+
+	t.Run("a native line's own custom_id labels do not survive beside the line's custom_id", func(t *testing.T) {
+		native := func(customID string, labels map[string]interface{}) schemas.BatchRequestItem {
+			return schemas.BatchRequestItem{CustomID: customID, Body: map[string]interface{}{
+				"contents": []interface{}{map[string]interface{}{"role": "user", "parts": []interface{}{map[string]interface{}{"text": "hi"}}}},
+				"labels":   labels,
+			}}
+		}
+		// A plain custom_id beside stale encoded chunks: the chunks would win on results.
+		stale := vertexBatchCustomIDEncoding.EncodeToString([]byte("Someone Else"))
+		labels := requestLabels(t, native("line-1", map[string]interface{}{"team": "tokun", vertexBatchEncodedCustomIDLabelPrefix + "0": stale}))
+		assert.Equal(t, map[string]string{"team": "tokun", vertexBatchCustomIDLabel: "line-1"}, labels)
+		assert.Equal(t, "line-1", resultCustomID(t, labels))
+
+		// An encoded custom_id beside a stale plain label and a stale later chunk.
+		labels = requestLabels(t, native("Line 1", map[string]interface{}{vertexBatchCustomIDLabel: "other", vertexBatchEncodedCustomIDLabelPrefix + "1": "aaaa"}))
+		assert.NotContains(t, labels, vertexBatchCustomIDLabel)
+		assert.NotContains(t, labels, vertexBatchEncodedCustomIDLabelPrefix+"1")
+		assert.Equal(t, "Line 1", resultCustomID(t, labels))
+	})
+
+	t.Run("results written before the encoding still read the plain label", func(t *testing.T) {
+		assert.Equal(t, "line-1", vertexBatchCustomIDFromLabels(map[string]string{vertexBatchCustomIDLabel: "line-1"}))
+		assert.Equal(t, "", vertexBatchCustomIDFromLabels(nil))
+		assert.Equal(t, "plain", vertexBatchCustomIDFromLabels(map[string]string{vertexBatchCustomIDLabel: "plain", vertexBatchEncodedCustomIDLabelPrefix + "0": "not base32 !"}), "chunks that do not decode fall back to the plain label")
+	})
+}
+
+// BenchmarkVertexBatchCustomIDLabels measures the per-line cost of carrying a custom_id:
+// the plain label (the only path before the encoding existed) and the encoded form, with
+// the read back on results.
+func BenchmarkVertexBatchCustomIDLabels(b *testing.B) {
+	for name, customID := range map[string]string{
+		"plain_label":       "line-0000001",
+		"encoded_uuid":      "3F2504E0-4F89-11D3-9A0C-0305E82C3301",
+		"encoded_256_bytes": strings.Repeat("A", 256),
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				labels, err := vertexBatchCustomIDLabels(customID)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if got := vertexBatchCustomIDFromLabels(labels); got != customID {
+					b.Fatalf("round trip: %q", got)
+				}
+			}
+		})
+	}
+}
