@@ -57,6 +57,14 @@ batches:
       description: Cursor for pagination
       schema:
         type: string
+    - name: filter
+      in: query
+      description: |
+        The vendor's own list filter, sent unchanged. On `vertex` it is the
+        batchPredictionJobs filter, e.g. `labels.tokun_batch_id=batch_1` finds a batch by
+        the metadata it was created with. Providers with no list filter ignore it.
+      schema:
+        type: string
     responses:
       '200':
         description: Successful response
@@ -152,7 +160,18 @@ batches-results:
     operationId: getBatchResults
     summary: Get batch results
     description: |
-      Retrieves results from a completed batch job.
+      Retrieves the result lines of a batch job, one per input line the vendor wrote. On
+      `openai` and `azure` the lines of the error file (failed and expired lines) follow
+      those of the output file.
+
+      With `limit` the response is one page, read from a streamed download so a result
+      file is never held whole; `has_more` and `next_cursor` say whether and where to
+      continue. Without `limit` every line is returned in one response.
+
+      Send `x-bf-api-key` (key name) or `x-bf-api-key-id` to use only the key the batch was
+      created with: retrieve, cancel and results then make their upstream calls with that
+      key alone and report it in `x-bifrost-routing-info-key`. Without it the provider's
+      batch-enabled keys are tried in turn.
     tags:
     - Batch
     parameters:
@@ -168,6 +187,17 @@ batches-results:
       description: The provider of the batch
       schema:
         $ref: '../../schemas/inference/common.yaml#/ModelProvider'
+    - name: limit
+      in: query
+      description: Page size in result lines. Omit to return every line in one response.
+      schema:
+        type: integer
+        minimum: 1
+    - name: after
+      in: query
+      description: The `next_cursor` of the previous page.
+      schema:
+        type: string
     responses:
       '200':
         description: Successful response

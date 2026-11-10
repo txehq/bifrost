@@ -297929,6 +297929,656 @@
           }
         }
       ]
+    },
+    {
+      "name": "301. Batch contract: named key, inline lines through the sync converter, result paging, metadata (batch-contract)",
+      "description": "Wire-level pins for the batch contract between Tokun and the gateway (TXE-6427; contract clauses C3, C4, C7, C8). Rows: (1) batch retrieve, cancel and results call upstream with the key the caller names in x-bf-api-key or x-bf-api-key-id and with no other key, and report it in x-bifrost-routing-info-key. The row stands up a run-scoped provider on the OpenAI base with a dead key and a live key, both enabled for batches, and asks for a batch id that does not exist: the dead key answers 401 for free and the live key 404, so the status says which key was called; before the change the gateway walked every key of the provider and reported none. A name that is no key of the provider is a 400 with no upstream call. (2) a results limit that is not a positive integer is refused instead of read as \"everything\". (3) a Gemini batch with no model is refused; it used to run on a default model. (4) a Gemini line whose url is not a generateContent operation, and (5) a line naming a model other than the batch's, are refused naming the line; nothing is sent upstream. (6) [PREVIEW] a Gemini inline line in OpenAI shape reaches the vendor through the sync converter: the echoed request body carries maxOutputTokens, temperature and the JSON response format, which the old conversion dropped, and the line's custom_id and url in its metadata; the batch is cancelled at once. (7) an OpenAI file upload's expires_after form fields reach the vendor, which returns expires_at; the file is deleted. (8) [PREVIEW] an OpenAI inline batch create sends metadata and output_expires_after; the batch is cancelled at once. (9) Vertex batch metadata that cannot be a job label is refused naming the entry, before anything is uploaded. (10) the Vertex batch list sends the caller's label filter upstream: a filter no job matches returns no jobs. The Azure deployment-name rewrite and the merged, paged result lines need a settled batch on a live account and are pinned by Go tests against a stand-in vendor instead. Run with FEATURE=\"batch-contract\".",
+      "item": [
+        {
+          "name": "[EXPECT-401] openai batch-contract: batch retrieve, cancel and results call upstream with the named key only and report it",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-batchkey-';",
+                  "var BAD = 'sk-harness-batchkey-invalid';",
+                  "function call(method, path, body, headers, cb) {",
+                  "  var h = { 'Content-Type': 'application/json' }; for (var k in (headers || {})) { h[k] = headers[k]; }",
+                  "  var req = { url: BASE + path, method: method, header: h };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var names = (state.providers || []).slice();",
+                  "  (function next() { if (!names.length) { return; } var p = names.shift(); call('DELETE', '/api/providers/' + encodeURIComponent(p), null, null, function (res) { expectOk('cleanup: run-scoped provider deleted', res); next(); }); })();",
+                  "}",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function seq(steps, done) { var i = 0; (function next(ok) { if (ok === false || i >= steps.length) { return done(ok !== false); } steps[i++](next); })(); }",
+                  "var run = 'run-' + Date.now();",
+                  "var state = { run: run, providers: [], keys: {} };",
+                  "var name = PREFIX + 'a-' + run;",
+                  "// A live key carries the real credential, a dead one a value the provider refuses for free.",
+                  "// Both are enabled for batches, so only the key the caller names decides which is used.",
+                  "function key(label, dead, cb) {",
+                  "  var body = { name: name + '-' + label, value: dead ? BAD : 'env.OPENAI_API_KEY', models: ['*'], weight: 1, use_for_batch_api: true };",
+                  "  call('POST', '/api/providers/' + encodeURIComponent(name) + '/keys', body, null, function (res, k) {",
+                  "    if (!expectOk('setup: created key ' + label, res)) { return cb(false); }",
+                  "    state.keys[label] = { id: k.id, name: k.name }; cb();",
+                  "  });",
+                  "}",
+                  "call('GET', '/api/providers', null, null, function (r0, j0) {",
+                  "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "  (function sweep() {",
+                  "    if (stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, null, function () { sweep(); }); }",
+                  "    seq([",
+                  "      function (next) {",
+                  "        call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, null, function (res) {",
+                  "          if (!expectOk('setup: created the run-scoped provider', res)) { return next(false); }",
+                  "          state.providers.push(name); state.provider = name; next();",
+                  "        });",
+                  "      },",
+                  "      function (next) { key('dead', true, next); },",
+                  "      function (next) { key('live', false, next); }",
+                  "    ], function () {",
+                  "      pm.collectionVariables.set('bcNamedKeyState', JSON.stringify(state));",
+                  "      pm.collectionVariables.set('bcNamedKeyProvider', state.provider || 'missing');",
+                  "      pm.collectionVariables.set('bcNamedKeyDead', (state.keys.dead || {}).name || 'missing');",
+                  "    });",
+                  "  })();",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-batchkey-';",
+                  "var BAD = 'sk-harness-batchkey-invalid';",
+                  "function call(method, path, body, headers, cb) {",
+                  "  var h = { 'Content-Type': 'application/json' }; for (var k in (headers || {})) { h[k] = headers[k]; }",
+                  "  var req = { url: BASE + path, method: method, header: h };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "function cleanup(state) {",
+                  "  var names = (state.providers || []).slice();",
+                  "  (function next() { if (!names.length) { return; } var p = names.shift(); call('DELETE', '/api/providers/' + encodeURIComponent(p), null, null, function (res) { expectOk('cleanup: run-scoped provider deleted', res); next(); }); })();",
+                  "}",
+                  "var state = JSON.parse(pm.collectionVariables.get('bcNamedKeyState') || '{}');",
+                  "var dead = (state.keys || {}).dead || {}; var live = (state.keys || {}).live || {};",
+                  "var BATCH = 'batch_harness_batch_contract_missing';",
+                  "var P = encodeURIComponent(state.provider || 'missing');",
+                  "var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+                  "// The named key is dead: one upstream call with it is the provider's own 401. Walking the",
+                  "// provider's keys instead would also call the live key, whose answer for this id is a 404.",
+                  "pm.test('the dead key the caller named answered: the provider\\'s own 401, not the live key\\'s 404', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(401);",
+                  "});",
+                  "pm.test('the response reports the named key in x-bifrost-routing-info-key and in routing_info', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'failed: ' + pm.response.text()).to.eql(dead.name);",
+                  "  pm.expect(((json.extra_fields || {}).routing_info || {}).key, 'failed: ' + pm.response.text()).to.eql(dead.name);",
+                  "});",
+                  "// Each follow-up names a key and expects that key alone to have been called.",
+                  "var rows = [",
+                  "  { label: 'retrieve, live key by name', method: 'GET', path: '/v1/batches/' + BATCH + '?provider=' + P, headers: { 'x-bf-api-key': live.name }, status: 404, key: live.name },",
+                  "  { label: 'retrieve, live key by id', method: 'GET', path: '/v1/batches/' + BATCH + '?provider=' + P, headers: { 'x-bf-api-key-id': live.id }, status: 404, key: live.name },",
+                  "  { label: 'retrieve, key id wins over key name', method: 'GET', path: '/v1/batches/' + BATCH + '?provider=' + P, headers: { 'x-bf-api-key-id': dead.id, 'x-bf-api-key': live.name }, status: 401, key: dead.name },",
+                  "  { label: 'cancel, dead key by name', method: 'POST', path: '/v1/batches/' + BATCH + '/cancel?provider=' + P, headers: { 'x-bf-api-key': dead.name }, status: 401, key: dead.name },",
+                  "  { label: 'cancel, live key by name', method: 'POST', path: '/v1/batches/' + BATCH + '/cancel?provider=' + P, headers: { 'x-bf-api-key': live.name }, status: 404, key: live.name },",
+                  "  { label: 'results, dead key by name', method: 'GET', path: '/v1/batches/' + BATCH + '/results?provider=' + P + '&limit=10', headers: { 'x-bf-api-key': dead.name }, status: 401, key: dead.name },",
+                  "  { label: 'results, live key by name', method: 'GET', path: '/v1/batches/' + BATCH + '/results?provider=' + P + '&limit=10', headers: { 'x-bf-api-key': live.name }, status: 404, key: live.name }",
+                  "];",
+                  "(function next() {",
+                  "  if (!rows.length) {",
+                  "    // A name that is no key of the provider is refused before any upstream call.",
+                  "    return call('GET', '/v1/batches/' + BATCH + '?provider=' + P, null, { 'x-bf-api-key': 'harness-batchkey-no-such-key' }, function (res) {",
+                  "      pm.test('a named key that is not a batch-enabled key of the provider is a 400 naming it', function () {",
+                  "        pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(400);",
+                  "        pm.expect(res.text()).to.include('harness-batchkey-no-such-key');",
+                  "      });",
+                  "      cleanup(state);",
+                  "    });",
+                  "  }",
+                  "  var row = rows.shift();",
+                  "  call(row.method, row.path, row.method === 'POST' ? {} : null, row.headers, function (res) {",
+                  "    pm.test(row.label + ': only the named key was called (status ' + row.status + ')', function () {",
+                  "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(row.status);",
+                  "    });",
+                  "    pm.test(row.label + ': the response reports the named key', function () {",
+                  "      pm.expect(res && res.headers.get('x-bifrost-routing-info-key'), res ? res.text() : 'no response').to.eql(row.key);",
+                  "    });",
+                  "    next();",
+                  "  });",
+                  "})();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "{{bcNamedKeyDead}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/batch_harness_batch_contract_missing?provider={{bcNamedKeyProvider}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "batch_harness_batch_contract_missing"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "{{bcNamedKeyProvider}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai batch-contract: a results limit that is not a positive integer is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('limit=0 is refused with a 400 naming limit, not read as the whole result set', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('limit must be a positive integer');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/batch_harness_batch_contract_missing/results?provider=openai&limit=0",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "batch_harness_batch_contract_missing",
+                "results"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "limit",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] gemini batch-contract: a batch with no model is refused, never run on a default model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a Gemini batch that names no model is a 400 naming model', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('model is required');",
+                  "  var j = pm.response.json();",
+                  "  pm.expect((j.error || {}).param, pm.response.text()).to.eql('model');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"endpoint\": \"/v1/chat/completions\",\n  \"requests\": [\n    {\n      \"custom_id\": \"bc-nomodel-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply OK.\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches?provider=gemini",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "gemini"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] gemini batch-contract: a line whose url is not a generateContent operation is refused naming the line",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an embeddings line in a generateContent batch is a 400 naming requests[1].url', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect((j.error || {}).param, pm.response.text()).to.eql('requests[1].url');",
+                  "  pm.expect(pm.response.text()).to.include('/v1/embeddings');",
+                  "  pm.expect(pm.response.text()).to.include('bc-url-2');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"requests\": [\n    {\n      \"custom_id\": \"bc-url-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    },\n    {\n      \"custom_id\": \"bc-url-2\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"input\": \"hello\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] gemini batch-contract: a line naming a model other than the batch's is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a line asking for another model is a 400 naming requests[0].body.model', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect((j.error || {}).param, pm.response.text()).to.eql('requests[0].body.model');",
+                  "  pm.expect(pm.response.text()).to.include('gemini-2.5-pro');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"requests\": [\n    {\n      \"custom_id\": \"bc-model-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-pro\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] gemini batch-contract: an inline chat-completions line keeps max_tokens, temperature and response_format through the sync converter",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('the batch is created and its id is the vendor\\'s', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.id, pm.response.text()).to.be.a('string').and.match(/^batches\\//);",
+                  "});",
+                  "var raw = (j.extra_fields || {}).raw_request || {};",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = {}; } }",
+                  "var lines = ((((raw.batch || {}).inputConfig || {}).requests || {}).requests) || [];",
+                  "var line = lines[0] || {};",
+                  "var cfg = (line.request || {}).generationConfig || {};",
+                  "pm.test('the line sent to Gemini carries the parameters the old conversion dropped', function () {",
+                  "  pm.expect(lines.length, 'raw_request: ' + JSON.stringify(raw)).to.eql(1);",
+                  "  pm.expect(cfg.maxOutputTokens, JSON.stringify(line)).to.eql(8);",
+                  "  pm.expect(cfg.temperature, JSON.stringify(line)).to.eql(0);",
+                  "  pm.expect(cfg.responseMimeType, JSON.stringify(line)).to.eql('application/json');",
+                  "  pm.expect((line.request || {}).contents, JSON.stringify(line)).to.be.an('array').and.not.empty;",
+                  "  pm.expect((line.request || {}).messages, 'OpenAI messages must not reach Gemini').to.eql(undefined);",
+                  "});",
+                  "pm.test('the line metadata carries the custom_id and the url results are converted back to', function () {",
+                  "  pm.expect((line.metadata || {}).key, JSON.stringify(line)).to.eql('bc-inline-1');",
+                  "  pm.expect((line.metadata || {}).bifrost_endpoint, JSON.stringify(line)).to.eql('/v1/chat/completions');",
+                  "});",
+                  "// Cancel at once: the row pins the request, not the answer.",
+                  "if (j.id) {",
+                  "  pm.sendRequest({ url: BASE + '/v1/batches/' + encodeURIComponent(j.id) + '/cancel?provider=gemini', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: '{}' } }, function (err, res) {",
+                  "    pm.test('cleanup: the batch is cancelled', function () { pm.expect(res && res.code, err ? String(err) : res.text()).to.be.below(500); });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"requests\": [\n    {\n      \"custom_id\": \"bc-inline-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with a JSON object {\\\"ok\\\": true}.\"\n          }\n        ],\n        \"max_tokens\": 8,\n        \"temperature\": 0,\n        \"response_format\": {\n          \"type\": \"json_object\"\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai batch-contract: a file upload's expires_after reaches the vendor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('the file is uploaded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('the vendor set an expiry one hour after creation: expires_after reached it', function () {",
+                  "  pm.expect(j.expires_at, 'expires_at is absent, so expires_after never reached the vendor: ' + pm.response.text()).to.be.a('number');",
+                  "  pm.expect(j.expires_at - j.created_at, pm.response.text()).to.be.within(3500, 3700);",
+                  "});",
+                  "if (j.id) {",
+                  "  pm.sendRequest({ url: BASE + '/v1/files/' + encodeURIComponent(j.id) + '?provider=openai', method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('cleanup: the file is deleted', function () { pm.expect(res && res.code, err ? String(err) : res.text()).to.eql(200); });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.jsonl",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "batch",
+                  "type": "text"
+                },
+                {
+                  "key": "expires_after[anchor]",
+                  "value": "created_at",
+                  "type": "text"
+                },
+                {
+                  "key": "expires_after[seconds]",
+                  "value": "3600",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/files?provider=openai",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] openai/gpt-4o-mini batch-contract: an inline batch create sends metadata and output_expires_after",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('the batch is created and its id is the vendor\\'s', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.id, pm.response.text()).to.be.a('string').and.match(/^batch_/);",
+                  "});",
+                  "var raw = (j.extra_fields || {}).raw_request || {};",
+                  "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = {}; } }",
+                  "pm.test('the batch create sent to OpenAI carries output_expires_after and metadata', function () {",
+                  "  pm.expect((raw.output_expires_after || {}).seconds, 'raw_request: ' + JSON.stringify(raw)).to.eql(86400);",
+                  "  pm.expect((raw.output_expires_after || {}).anchor, JSON.stringify(raw)).to.eql('created_at');",
+                  "  pm.expect((raw.metadata || {}).tokun_batch_id, JSON.stringify(raw)).to.eql('harness-batch-contract');",
+                  "  pm.expect(raw.input_file_id, 'inline requests are uploaded as a file first: ' + JSON.stringify(raw)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('the vendor stored the metadata', function () {",
+                  "  pm.expect((j.metadata || {}).tokun_batch_id, pm.response.text()).to.eql('harness-batch-contract');",
+                  "});",
+                  "// Cancel at once: the row pins the request, not the answer.",
+                  "if (j.id) {",
+                  "  pm.sendRequest({ url: BASE + '/v1/batches/' + encodeURIComponent(j.id) + '/cancel?provider=openai', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: '{}' } }, function (err, res) {",
+                  "    pm.test('cleanup: the batch is cancelled', function () { pm.expect(res && res.code, err ? String(err) : res.text()).to.be.below(500); });",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"metadata\": {\n    \"tokun_batch_id\": \"harness-batch-contract\"\n  },\n  \"output_expires_after\": {\n    \"anchor\": \"created_at\",\n    \"seconds\": 86400\n  },\n  \"requests\": [\n    {\n      \"custom_id\": \"bc-openai-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gpt-4o-mini\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] vertex batch-contract: batch metadata that cannot be a job label is refused naming the entry",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('metadata Vertex cannot hold as a label is a 400 naming the entry, before anything is uploaded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect((j.error || {}).param, pm.response.text()).to.eql('metadata.tokun_batch_id');",
+                  "  pm.expect(pm.response.text()).to.include('cannot be a Vertex label');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"output_folder\": {\n    \"url\": \"gs://{{vertexGcsBucket}}/harness-batch-contract/output/\"\n  },\n  \"metadata\": {\n    \"tokun_batch_id\": \"Not A Label\"\n  },\n  \"requests\": [\n    {\n      \"custom_id\": \"bc-vertex-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex batch-contract: the batch list sends the caller's label filter upstream",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('the list answers', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('a label filter no job matches returns no jobs: the filter reached Vertex', function () {",
+                  "  pm.expect(j.data, pm.response.text()).to.be.an('array');",
+                  "  pm.expect(j.data.length, 'an unfiltered list came back: ' + pm.response.text().slice(0, 600)).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches?provider=vertex&limit=5&filter=labels.tokun_batch_id%3Dharness-batch-contract-no-such-batch",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "vertex"
+                },
+                {
+                  "key": "limit",
+                  "value": "5"
+                },
+                {
+                  "key": "filter",
+                  "value": "labels.tokun_batch_id%3Dharness-batch-contract-no-such-batch"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
