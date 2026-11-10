@@ -1753,7 +1753,7 @@ const handleRequest = (req, res) => {
 	// endpoint. Every call is counted under "sora1 <METHOD> <job|content> <api-key>" and its query and body kept
 	// in /__wire. A create answers the quickstart's queued job, or the documented ResponsibleAIPolicyViolation
 	// error when the prompt contains "blocked"; a query answers the job succeeded with one generation; the
-	// generation's video is FIXTURE_MP4. The jobs API has no cancel endpoint.
+	// generation's video is FIXTURE_MP4; a delete answers 204 with no body, as documented. The jobs API has no cancel endpoint.
 	const soraJob = path.match(/^\/openai\/v1\/video\/generations\/jobs(?:\/([^/]+))?$/);
 	const soraJobContent = path.match(/^\/openai\/v1\/video\/generations\/([^/]+)\/content\/video$/);
 	if (soraJob || soraJobContent) {
@@ -1780,6 +1780,10 @@ const handleRequest = (req, res) => {
 					return send(400, {}, JSON.stringify({ error: { code: "content_policy_violation", message: "Your request was rejected as a result of our safety system.", param: "prompt", inner_error: { code: "ResponsibleAIPolicyViolation" } } }));
 				}
 				return send(200, {}, JSON.stringify(job("queued", [])));
+			}
+			if (soraJob && soraJob[1] === "task_fixture_sora1" && req.method === "DELETE") {
+				res.writeHead(204);
+				return res.end();
 			}
 			if (soraJob && soraJob[1] === "task_fixture_sora1" && req.method === "GET") {
 				return send(200, {}, JSON.stringify(job("succeeded", [{ object: "video.generation", id: "gen_fixture_sora1", job_id: "task_fixture_sora1", created_at: 1748469990, width: 480, height: 480, n_seconds: 5, prompt: "a paper boat on a pond" }])));

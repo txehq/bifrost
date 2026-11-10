@@ -1780,3 +1780,27 @@ func TestAzureSoraJobsLeaveSora2OnVideos(t *testing.T) {
 		t.Fatalf("calls = %+v, want sora-2 on /openai/v1/videos", got)
 	}
 }
+
+// TestAzureSoraJobsDeleteSendsDeleteToTheJob pins the delete: one DELETE of the job with the
+// key, whose documented 204 with no body becomes the unified deletion object.
+func TestAzureSoraJobsDeleteSendsDeleteToTheJob(t *testing.T) {
+	server, calls := azureSoraJobsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	// The HTTP handler passes the id without ":azure"; a Go caller may pass the task id whole.
+	for i, id := range []string{"sora1.task_01jwcet0eje35tc5jy54yjax5q", "sora1.task_01jwcet0eje35tc5jy54yjax5q:azure"} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := newAzureDecisionProvider(t).VideoDelete(ctx, newAzureDecisionKey(server.URL),
+			&schemas.BifrostVideoDeleteRequest{Provider: schemas.Azure, ID: id})
+		if bifrostErr != nil {
+			t.Fatalf("VideoDelete(%s): %+v", id, bifrostErr.Error)
+		}
+		got := calls()
+		if len(got) != i+1 || got[i].method != http.MethodDelete || got[i].path != "/openai/v1/video/generations/jobs/task_01jwcet0eje35tc5jy54yjax5q" || got[i].query != "api-version=preview" || got[i].apiKey != "test-key" {
+			t.Fatalf("calls = %+v, want one DELETE of the job with the key per delete", got)
+		}
+		if resp.ID != "sora1.task_01jwcet0eje35tc5jy54yjax5q:azure" || !resp.Deleted || resp.Object != "video.deleted" {
+			t.Errorf("VideoDelete(%s) = %+v, want the task id deleted", id, resp)
+		}
+	}
+}

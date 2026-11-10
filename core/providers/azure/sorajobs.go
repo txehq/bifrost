@@ -109,14 +109,24 @@ type azureSoraJobGeneration struct {
 // isAzureSoraJobsModel reports whether a create for model goes to the jobs API: the canonical
 // model (the alias's model name when the key maps one) is first-generation sora.
 func isAzureSoraJobsModel(ctx *schemas.BifrostContext, model string) bool {
-	_, bare := schemas.ParseModelString(model, schemas.Azure)
-	canonical := schemas.ResolveCanonicalModel(ctx, bare)
-	_, canonical = schemas.ParseModelString(canonical, schemas.Azure)
-	return strings.EqualFold(canonical, azureSoraJobsModel)
+	return strings.EqualFold(bareAzureModel(schemas.ResolveCanonicalModel(ctx, model)), azureSoraJobsModel)
+}
+
+// bareAzureModel drops an "azure/" provider prefix.
+func bareAzureModel(model string) string {
+	if len(model) > len(schemas.Azure)+1 && model[len(schemas.Azure)] == '/' && strings.EqualFold(model[:len(schemas.Azure)], string(schemas.Azure)) {
+		return model[len(schemas.Azure)+1:]
+	}
+	return model
 }
 
 // azureSoraJobID returns the job id a task id names, and whether the task is a jobs-API job.
 func azureSoraJobID(taskID string, provider schemas.ModelProvider) (string, bool) {
+	// The marker is never escaped ("." is unreserved), so an id without it is not a job and
+	// costs one prefix comparison.
+	if !strings.HasPrefix(taskID, azureSoraJobIDPrefix) {
+		return "", false
+	}
 	stripped := providerUtils.StripVideoIDProviderSuffix(taskID, provider)
 	jobID, ok := strings.CutPrefix(stripped, azureSoraJobIDPrefix)
 	return jobID, ok && jobID != ""
@@ -499,8 +509,9 @@ func (provider *AzureProvider) soraJobsDelete(ctx *schemas.BifrostContext, key s
 		return nil, bifrostErr
 	}
 	fasthttp.ReleaseResponse(resp)
+	// The handler passes the id without its provider suffix; the response carries the task id.
 	return &schemas.BifrostVideoDeleteResponse{
-		ID:          request.ID,
+		ID:          providerUtils.AddVideoIDProviderSuffix(azureSoraJobIDPrefix+jobID, provider.GetProviderKey()),
 		Deleted:     true,
 		Object:      "video.deleted",
 		ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency},
