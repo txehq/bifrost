@@ -631,6 +631,14 @@ func BatchRequestType(endpoint schemas.BatchEndpoint) schemas.RequestType {
 		return schemas.ResponsesRequest
 	case schemas.BatchEndpointChatCompletions, schemas.BatchEndpointMessages:
 		return schemas.ChatCompletionRequest
+	case schemas.BatchEndpointImageGeneration:
+		// Image lines are named as what they are, so they are never priced at text-token
+		// rates. The catalog has no batch rates for image output yet, so pricing reports
+		// them unpriced and the job is parked as missing batch pricing with its usage
+		// kept, per-modality detail included, for a later repricing pass.
+		return schemas.ImageGenerationRequest
+	case schemas.BatchEndpointImageEdit:
+		return schemas.ImageEditRequest
 	default:
 		return schemas.BatchResultsRequest
 	}
@@ -791,6 +799,16 @@ func usageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
 		PromptTokensDetails struct {
 			CachedTokens int `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
+		// An image line reports its tokens per modality (the unified image usage). They
+		// are kept on the usage so a repricing pass can apply image rates to them.
+		InputTokensDetails *struct {
+			TextTokens  int `json:"text_tokens"`
+			ImageTokens int `json:"image_tokens"`
+		} `json:"input_tokens_details"`
+		OutputTokensDetails *struct {
+			TextTokens  int `json:"text_tokens"`
+			ImageTokens int `json:"image_tokens"`
+		} `json:"output_tokens_details"`
 		Cost *schemas.BifrostCost `json:"cost,omitempty"`
 	}
 	if err := sonic.Unmarshal(bytes, &usage); err != nil {
@@ -848,6 +866,19 @@ func usageFromValue(value interface{}) (*schemas.BifrostLLMUsage, error) {
 				CachedWriteTokens5m: cacheWrite5m,
 				CachedWriteTokens1h: cacheWrite1h,
 			}
+		}
+	}
+	if d := usage.InputTokensDetails; d != nil && (d.TextTokens > 0 || d.ImageTokens > 0) {
+		if out.PromptTokensDetails == nil {
+			out.PromptTokensDetails = &schemas.ChatPromptTokensDetails{}
+		}
+		out.PromptTokensDetails.TextTokens = d.TextTokens
+		out.PromptTokensDetails.ImageTokens = d.ImageTokens
+	}
+	if d := usage.OutputTokensDetails; d != nil && (d.TextTokens > 0 || d.ImageTokens > 0) {
+		out.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{TextTokens: d.TextTokens}
+		if d.ImageTokens > 0 {
+			out.CompletionTokensDetails.ImageTokens = schemas.Ptr(d.ImageTokens)
 		}
 	}
 	return out, nil

@@ -84,7 +84,8 @@ func PageBatchResultItems(total int, after *string, limit int) (start, end int, 
 	}
 	start = int(min(cursor.Offset, int64(total)))
 	end = total
-	if limit > 0 && start+limit < total {
+	// Compared against what remains, so a limit near the integer maximum cannot overflow.
+	if limit > 0 && limit < total-start {
 		end = start + limit
 		nextCursor = schemas.Ptr(BatchResultsCursor{Offset: int64(end)}.Encode())
 	}

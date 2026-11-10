@@ -61,6 +61,11 @@ func TestPageBatchResultItems(t *testing.T) {
 	if _, end, next, _ := PageBatchResultItems(6, nil, 6); end != 6 || next != nil {
 		t.Fatalf("exact fit: end=%d next=%v, want 6 and no cursor", end, next)
 	}
+	// A limit near the integer maximum returns what remains; it does not overflow.
+	mid := BatchResultsCursor{Offset: 3}.Encode()
+	if start, end, next, err := PageBatchResultItems(7, &mid, int(^uint(0)>>1)); err != nil || start != 3 || end != 7 || next != nil {
+		t.Fatalf("huge limit: [%d,%d) next=%v err=%v, want [3,7) and no cursor", start, end, next, err)
+	}
 	// A cursor past the end is an empty page, not a panic.
 	past := BatchResultsCursor{Offset: 99}.Encode()
 	if start, end, next, err := PageBatchResultItems(7, &past, 3); err != nil || start != 7 || end != 7 || next != nil {

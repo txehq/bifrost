@@ -2389,3 +2389,90 @@ func TestBatchSweeper_TransientRetrieveFailureStillRetries(t *testing.T) {
 		"a 5xx must stay retryable, not park the batch")
 	assert.Positive(t, settled.PollAttempts, "the attempt must be recorded for backoff")
 }
+
+// An image batch line is never priced as text. The line's endpoint maps to the image
+// request type, for which there are no batch rates, so the batch is parked as missing batch
+// pricing with its usage kept, per-modality token detail included, instead of being charged
+// at text-token rates.
+func TestSummarizeResultsDoesNotPriceImageLinesAsText(t *testing.T) {
+	if got := BatchRequestType(schemas.BatchEndpointImageGeneration); got != schemas.ImageGenerationRequest {
+		t.Fatalf("BatchRequestType(image generation) = %s, want %s", got, schemas.ImageGenerationRequest)
+	}
+	if got := BatchRequestType(schemas.BatchEndpointImageEdit); got != schemas.ImageEditRequest {
+		t.Fatalf("BatchRequestType(image edit) = %s, want %s", got, schemas.ImageEditRequest)
+	}
+	if got := BatchRequestType(schemas.BatchEndpointChatCompletions); got != schemas.ChatCompletionRequest {
+		t.Fatalf("BatchRequestType(chat) = %s, want %s", got, schemas.ChatCompletionRequest)
+	}
+
+	imageLine := schemas.BatchResultItem{
+		CustomID: "img-1",
+		Status:   schemas.BatchResultStatusSucceeded,
+		Response: &schemas.BatchResultResponse{
+			StatusCode: 200,
+			Body: map[string]interface{}{
+				"model": "gemini-2.5-flash-image",
+				"data":  []interface{}{map[string]interface{}{"b64_json": "aW1hZ2U="}},
+				"usage": map[string]interface{}{
+					"input_tokens":          8,
+					"output_tokens":         1290,
+					"total_tokens":          1298,
+					"input_tokens_details":  map[string]interface{}{"text_tokens": 8},
+					"output_tokens_details": map[string]interface{}{"image_tokens": 1290},
+				},
+			},
+		},
+	}
+
+	// A pricing manager with text rates for every model: if the image line reached it as a
+	// text request it would be priced.
+	settlement, err := summarizeResults(textOnlyBatchPricing{}, batchInput{
+		Provider:     schemas.Gemini,
+		BatchID:      "batches/img",
+		BatchPayload: BatchPayload{Endpoint: schemas.BatchEndpointImageGeneration, Results: []schemas.BatchResultItem{imageLine}},
+	})
+	if err != nil {
+		t.Fatalf("summarizeResults: %v", err)
+	}
+	if settlement.PricedCount != 0 || settlement.Cost != 0 || settlement.Complete {
+		t.Fatalf("an image line was priced: %+v", settlement)
+	}
+	if settlement.UnpriceableReason != UnpriceableReasonMissingBatchPricing {
+		t.Fatalf("UnpriceableReason = %q, want %q", settlement.UnpriceableReason, UnpriceableReasonMissingBatchPricing)
+	}
+	usage := settlement.ModelBreakdowns["gemini-2.5-flash-image"].Usage
+	if usage.PromptTokens != 8 || usage.CompletionTokens != 1290 {
+		t.Fatalf("usage = %+v, want 8 input and 1290 output tokens kept", usage)
+	}
+	if usage.PromptTokensDetails == nil || usage.PromptTokensDetails.TextTokens != 8 {
+		t.Fatalf("input token detail lost: %+v", usage.PromptTokensDetails)
+	}
+	if usage.CompletionTokensDetails == nil || usage.CompletionTokensDetails.ImageTokens == nil || *usage.CompletionTokensDetails.ImageTokens != 1290 {
+		t.Fatalf("output image tokens lost: %+v", usage.CompletionTokensDetails)
+	}
+
+	// The same pricing manager prices a chat batch, so the test above is not vacuous.
+	chatLine := schemas.BatchResultItem{CustomID: "c-1", Response: &schemas.BatchResultResponse{StatusCode: 200, Body: map[string]interface{}{
+		"model": "gemini-2.5-flash",
+		"usage": map[string]interface{}{"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+	}}}
+	chat, err := summarizeResults(textOnlyBatchPricing{}, batchInput{
+		Provider:     schemas.Gemini,
+		BatchPayload: BatchPayload{Endpoint: schemas.BatchEndpointChatCompletions, Results: []schemas.BatchResultItem{chatLine}},
+	})
+	if err != nil || chat.PricedCount != 1 || chat.Cost <= 0 {
+		t.Fatalf("chat batch: %+v, err %v, want one priced line", chat, err)
+	}
+}
+
+// textOnlyBatchPricing prices text request types at a flat per-token rate and nothing else,
+// as the catalog does for batches.
+type textOnlyBatchPricing struct{ fakePricing }
+
+func (textOnlyBatchPricing) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails {
+	switch requestType {
+	case schemas.BatchResultsRequest, schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest, schemas.EmbeddingRequest:
+		return modelcatalog.BatchCostDetails{Cost: float64(usage.TotalTokens) * 0.000001, Priced: true}
+	}
+	return modelcatalog.BatchCostDetails{}
+}
