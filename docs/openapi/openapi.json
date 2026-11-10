@@ -112854,7 +112854,8 @@
           "minimax",
           "byteplus",
           "tencent",
-          "dashscope"
+          "dashscope",
+          "bfl"
         ]
       },
       "Fallback": {

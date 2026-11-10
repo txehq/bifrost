@@ -41,6 +41,7 @@ ModelProvider:
     - byteplus
     - tencent
     - dashscope
+    - bfl
 
 Fallback:
   type: object

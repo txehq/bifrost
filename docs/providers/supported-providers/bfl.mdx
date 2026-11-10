@@ -1,0 +1,92 @@
+---
+title: "Black Forest Labs"
+description: "Black Forest Labs' own API for FLUX: provider registration, x-key auth, global or regional base and error mapping"
+icon: "b"
+---
+
+## Overview
+
+The `bfl` provider is Black Forest Labs' own API for FLUX images and FLUX 3 video. BFL serves images only as tasks: a submit returns an id and a `polling_url`, and the result is polled.
+
+<Note>
+This release registers the provider only. Every operation returns `UnsupportedOperationError` (HTTP 400, `error.code` `unsupported_operation`) without calling BFL. Image tasks and FLUX 3 video are added in later releases.
+</Note>
+
+### Supported Operations
+
+| Operation | Status |
+|-----------|--------|
+| Image generation and edit (FLUX, as tasks) | ❌ (planned) |
+| Video (FLUX 3 Video) | ❌ (planned) |
+| Chat, Embeddings, Speech, Files, Batch, List Models, everything else | ❌ |
+
+## Setup & Configuration
+
+`network_config.base_url` defaults to BFL's global endpoint, `https://api.bfl.ai`. Set it to a regional endpoint such as `https://api.eu.bfl.ai` or `https://api.us.bfl.ai` to keep requests in one region.
+
+<Tabs>
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "bfl",
+    "keys": [
+      {
+        "name": "bfl-key-1",
+        "value": "env.BFL_API_KEY",
+        "models": ["flux-2-pro", "flux-kontext-pro"],
+        "weight": 1.0
+      }
+    ],
+    "network_config": {
+      "base_url": "https://api.eu.bfl.ai"
+    }
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "bfl": {
+      "keys": [
+        {
+          "name": "bfl-key-1",
+          "value": "env.BFL_API_KEY",
+          "models": ["flux-2-pro", "flux-kontext-pro"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "base_url": "https://api.eu.bfl.ai"
+      }
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+## Authentication
+
+The API key is sent in the `x-key` header. No `Authorization` header is sent, and an `extra_headers` entry named `x-key` does not replace the key.
+
+## Errors
+
+BFL's errors are FastAPI bodies. `detail` is either a string or a list of validation errors. Bifrost keeps the status code (a 429 stays 429), puts the text in `error.message`, and for a validation list writes each entry as `field: msg`. The first entry's field goes in `error.param` and its `type` in `error.code`. `extra_fields.error_type` follows the status:
+
+| Status | Meaning at BFL | `error_type` |
+|--------|----------------|--------------|
+| 401, 403 | Missing or invalid key | `provider_auth_failed` |
+| 402 | Insufficient credits | `provider_billing` |
+| 422 | Invalid parameters | `caller_invalid_request` |
+| 429 | Rate limit, or too many active tasks | `provider_rate_limited` |
+| 500 | BFL failure | `provider_server_error` |
+| 503 | BFL unavailable | `provider_overloaded` |
+
+BFL reports moderation as a task status (`Request Moderated`, `Content Moderated`), not as an HTTP error. The image task operation maps it.

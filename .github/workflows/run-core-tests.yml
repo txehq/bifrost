@@ -65,9 +65,10 @@ jobs:
       CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
-      # Registration-only provider: every operation answers unsupported with no upstream call,
+      # Registration-only providers: every operation answers unsupported with no upstream call,
       # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
       DASHSCOPE_API_KEY: registration-only-no-upstream-call
+      BFL_API_KEY: registration-only-no-upstream-call
       TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
       DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
       VERCEL_AI_GATEWAY_API_KEY: ${{ secrets.VERCEL_AI_GATEWAY_API_KEY }}
@@ -111,6 +112,8 @@ jobs:
           # absent, so the host must already be here the day a key is added (TXE-6981).
           # dashscope-intl.aliyuncs.com is dialled by no request yet: every dashscope
           # operation is unsupported and its key is a non-secret sentinel (TXE-6590).
+          # api.bfl.ai is dialled by no request yet: every bfl operation is
+          # unsupported and its key is a non-secret sentinel (TXE-6591).
           allowed-endpoints: >
             127.0.0.1:8080
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
@@ -138,6 +141,7 @@ jobs:
             api.dev.runwayml.com:443
             api.typesafe.ai:443
             ark.ap-southeast.bytepluses.com:443
+            api.bfl.ai:443
             tokenhub.tencentmaas.com:443
             dashscope-intl.aliyuncs.com:443
             api.tokenfactory.nebius.com:443

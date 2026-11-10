@@ -77,6 +77,7 @@ export const NEWLY_ADDED_PROVIDERS = ['glm', 'minimax', 'moonshot', 'volcengine'
  */
 export const REGISTRATION_ONLY_PROVIDERS = [
   { name: 'dashscope', label: 'Alibaba DashScope' },
+  { name: 'bfl', label: 'Black Forest Labs' },
 ] as const
 
 /**
