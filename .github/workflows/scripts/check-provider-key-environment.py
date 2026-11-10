@@ -111,12 +111,33 @@ def expressions(text):
         start = text.find("${{", i + 2)
 
 
+def string_spans(expression):
+    """Returns the (start, end) of each single-quoted string literal in expression."""
+    spans, i = [], 0
+    while i < len(expression):
+        if expression[i] == "'":
+            start, i = i, i + 1
+            while i < len(expression):
+                if expression.startswith("''", i):
+                    i += 2
+                elif expression[i] == "'":
+                    break
+                else:
+                    i += 1
+            spans.append((start, i + 1))
+        i += 1
+    return spans
+
+
 def secret_reads(node, path):
     """Yields (path, name) for each provider credential read under node, and
     (path, None) for each dynamic read of the secrets context, which can reach any."""
     for where, text in strings(node, path):
         for expression in expressions(text):
+            literals = string_spans(expression)
             for use in SECRETS_USE.finditer(expression):
+                if any(start <= use.start() < end for start, end in literals):
+                    continue  # the word inside a string, not the secrets context
                 name = use.group("dotted") or use.group("quoted")
                 if name is None:
                     yield where, None
