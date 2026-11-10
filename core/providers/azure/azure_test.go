@@ -1804,3 +1804,33 @@ func TestAzureSoraJobsDeleteSendsDeleteToTheJob(t *testing.T) {
 		}
 	}
 }
+
+// TestAzureSoraJobsQueryCarriesBytesWhenTheCallerAsks pins the GenAI SDK operation poll: with
+// BifrostContextKeyVideoOutputRequested set, a completed job's query also carries the
+// generation's video as base64, fetched with the same key, next to its content entry.
+func TestAzureSoraJobsQueryCarriesBytesWhenTheCallerAsks(t *testing.T) {
+	server, calls := azureSoraJobsServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/openai/v1/video/generations/gen_01jwcf0a/content/video" {
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = io.WriteString(w, "mp4-bytes")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, azureSoraJobWithStatus("succeeded"))
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyVideoOutputRequested, true)
+	resp, bifrostErr := newAzureDecisionProvider(t).VideoRetrieve(ctx, newAzureDecisionKey(server.URL),
+		&schemas.BifrostVideoRetrieveRequest{Provider: schemas.Azure, ID: "sora1.task_01jwcet0eje35tc5jy54yjax5q"})
+	if bifrostErr != nil {
+		t.Fatalf("VideoRetrieve: %+v", bifrostErr.Error)
+	}
+	if len(resp.Videos) != 2 || resp.Videos[0].Type != schemas.VideoOutputTypeContent || resp.Videos[1].Type != schemas.VideoOutputTypeBase64 ||
+		resp.Videos[1].Base64Data == nil || *resp.Videos[1].Base64Data != "bXA0LWJ5dGVz" || resp.Videos[1].ContentType != "video/mp4" {
+		t.Fatalf("videos = %+v, want the content entry and the video as base64", resp.Videos)
+	}
+	got := calls()
+	if len(got) != 2 || got[1].path != "/openai/v1/video/generations/gen_01jwcf0a/content/video" || got[1].apiKey != "test-key" {
+		t.Fatalf("calls = %+v, want the job query then the generation's content with the key", got)
+	}
+}

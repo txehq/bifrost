@@ -1,6 +1,7 @@
 package azure
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -476,26 +477,67 @@ func (provider *AzureProvider) soraJobsDownload(ctx *schemas.BifrostContext, key
 		return nil, newAzureSoraJobsInvalidRequest("video_id",
 			fmt.Sprintf("the video is not ready: the job is %s (%s)", task.Status, task.ProviderStatus))
 	}
-	generationID, bifrostErr := providerUtils.EscapeResourceID(task.Videos[0].ID, "generation_id")
+	body, contentType, latency, bifrostErr := provider.soraJobsContent(ctx, key, task.Videos[0].ID, content, contentType)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
-
-	body, resp, latency, bifrostErr := provider.soraJobsCall(ctx, key, http.MethodGet,
-		fmt.Sprintf("/video/generations/%s/content/%s", generationID, content), nil)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	if ct := string(resp.Header.ContentType()); ct != "" {
-		contentType = ct
-	}
-	fasthttp.ReleaseResponse(resp)
 	return &schemas.BifrostVideoDownloadResponse{
 		VideoID:     request.ID,
 		Content:     body,
 		ContentType: contentType,
 		ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency},
 	}, nil
+}
+
+// soraJobsContent fetches one generation's video or thumbnail. contentType is the media type
+// to report when Azure sends none.
+func (provider *AzureProvider) soraJobsContent(ctx *schemas.BifrostContext, key schemas.Key, generationID, content, contentType string) ([]byte, string, int64, *schemas.BifrostError) {
+	escaped, bifrostErr := providerUtils.EscapeResourceID(generationID, "generation_id")
+	if bifrostErr != nil {
+		return nil, "", 0, bifrostErr
+	}
+	body, resp, latency, bifrostErr := provider.soraJobsCall(ctx, key, http.MethodGet,
+		fmt.Sprintf("/video/generations/%s/content/%s", escaped, content), nil)
+	if bifrostErr != nil {
+		return nil, "", 0, bifrostErr
+	}
+	if ct := string(resp.Header.ContentType()); ct != "" {
+		contentType = ct
+	}
+	fasthttp.ReleaseResponse(resp)
+	return body, contentType, latency, nil
+}
+
+// soraJobsRetrieveForCaller is the query of the unified retrieve route. A caller that needs the
+// bytes in the task object (the GenAI SDK operation poll sets BifrostContextKeyVideoOutputRequested)
+// gets each completed generation's video as a base64 entry next to its content entry, as the
+// OpenAI-shaped retrieve does for Sora 2.
+func (provider *AzureProvider) soraJobsRetrieveForCaller(ctx *schemas.BifrostContext, key schemas.Key, jobID string) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	task, bifrostErr := provider.soraJobsRetrieve(ctx, key, jobID)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if wanted, _ := ctx.Value(schemas.BifrostContextKeyVideoOutputRequested).(bool); !wanted || task.Status != schemas.VideoStatusCompleted {
+		return task, nil
+	}
+	videos := task.Videos
+	for _, video := range videos {
+		if video.Type != schemas.VideoOutputTypeContent || video.ID == "" {
+			continue
+		}
+		body, contentType, _, bifrostErr := provider.soraJobsContent(ctx, key, video.ID, "video", azureSoraJobsContentType)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		encoded := base64.StdEncoding.EncodeToString(body)
+		task.Videos = append(task.Videos, schemas.VideoOutput{
+			ID:          video.ID,
+			Type:        schemas.VideoOutputTypeBase64,
+			Base64Data:  &encoded,
+			ContentType: contentType,
+		})
+	}
+	return task, nil
 }
 
 // soraJobsDelete deletes a video generation job (documented: DELETE answers 204).

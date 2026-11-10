@@ -1346,7 +1346,7 @@ func (provider *AzureProvider) VideoRetrieve(ctx *schemas.BifrostContext, key sc
 		return nil, providerUtils.NewBifrostOperationError("video_id is required", nil)
 	}
 	if jobID, ok := azureSoraJobID(request.ID, providerName); ok {
-		return provider.soraJobsRetrieve(ctx, key, jobID)
+		return provider.soraJobsRetrieveForCaller(ctx, key, jobID)
 	}
 	videoID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
 	escapedVideoID, idErr := providerUtils.EscapeResourceID(videoID, "video_id")

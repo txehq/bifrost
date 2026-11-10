@@ -1397,5 +1397,44 @@ test("the harness declares the fixture variables' defaults once, and the check s
   assert.deepStrictEqual(where, ["(collection) [test]", "folder [test]", "folder / url [request url]", "folder / url object [request url]", "folder / body [request body]", "folder / header [request header]"]);
 });
 
+// ── Collection test script: the generic content-shape check (TXE-6533) ───────
+// A GenAI video operation (POST :predictLongRunning, GET .../operations/{id}) is its own shape:
+// pending, its name is the payload; done, it carries its videos as a uri or as videoBytes.
+function contentShapeCheck(body) {
+  const src = providerHarness.event
+    .filter((e) => e.listen === "test")
+    .map((e) => e.script.exec.join("\n"))
+    .find((text) => text.includes("pm.test('Response has content (text or tool_use)'"));
+  assert.ok(src, "content-shape check not found in collection script");
+  const start = src.indexOf("pm.test('Response has content (text or tool_use)', function () {");
+  assert.ok(start !== -1, "content-shape check not found in collection script");
+  const bodyStart = src.indexOf("{", src.indexOf("function ()", start)) + 1;
+  const end = src.indexOf("\n  });", bodyStart);
+  const fnBody = src.slice(bodyStart, end);
+  let failure = null;
+  const expect = (value, message) => ({
+    to: { be: { get true() { if (value !== true) failure = message; return true; } } },
+  });
+  expect.fail = (message) => { failure = message; };
+  const pm = { response: { json: () => JSON.parse(body), text: () => body, code: 200 }, request: { method: "GET" }, expect };
+  // eslint-disable-next-line no-new-func
+  // The check reads the row's URL and name from variables the collection script set above it.
+  new Function("pm", "var __u = '', __rn = '';\n" + fnBody)(pm);
+  return failure;
+}
+
+test("provider-harness: a done GenAI video operation with videoBytes passes the content-shape check", () => {
+  const done = JSON.stringify({
+    name: "models/sora/operations/sora1.task_fixture_sora1:azure",
+    done: true,
+    response: { generateVideoResponse: { generatedSamples: [{ video: { videoBytes: "GkZJ", mimeType: "video/mp4" } }] } },
+  });
+  assert.strictEqual(contentShapeCheck(done), null);
+  const pending = JSON.stringify({ name: "models/veo-3/operations/op1", done: false });
+  assert.strictEqual(contentShapeCheck(pending), null);
+  const empty = JSON.stringify({ name: "models/sora/operations/op2", done: true, response: { generateVideoResponse: {} } });
+  assert.match(contentShapeCheck(empty) || "", /shape=genai-video-operation/);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
