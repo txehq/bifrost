@@ -152,9 +152,7 @@ type ElevenlabsSpeechToTextChunkResponse struct {
 	ChannelIndex        *int                                  `json:"channel_index,omitempty"`
 	AdditionalFormats   []*ElevenlabsAdditionalFormatResponse `json:"additional_formats,omitempty"`
 	TranscriptionID     *string                               `json:"transcription_id,omitempty"`
-	// AudioDurationSecs is the audio length ElevenLabs reports and bills on. Nil when the
-	// response does not carry it.
-	AudioDurationSecs *float64 `json:"audio_duration_secs,omitempty"`
+	AudioDurationSecs   *float64                              `json:"audio_duration_secs,omitempty"` // billed duration; nil when not reported
 }
 
 type ElevenlabsSpeechToTextWord struct {
@@ -182,12 +180,9 @@ type ElevenlabsAdditionalFormatResponse struct {
 }
 
 type ElevenlabsMultichannelSpeechToTextResponse struct {
-	Transcripts     []ElevenlabsSpeechToTextChunkResponse `json:"transcripts"`
-	TranscriptionID *string                               `json:"transcription_id,omitempty"`
-	// AudioDurationSecs is the top-level duration of a multichannel answer. ElevenLabs
-	// reports it as the sum over the channels (measured in TXE-4862: a two-channel 0.1 s
-	// file answered 0.2), so it already is the billed duration.
-	AudioDurationSecs *float64 `json:"audio_duration_secs,omitempty"`
+	Transcripts       []ElevenlabsSpeechToTextChunkResponse `json:"transcripts"`
+	TranscriptionID   *string                               `json:"transcription_id,omitempty"`
+	AudioDurationSecs *float64                              `json:"audio_duration_secs,omitempty"` // sum over channels; see parseTranscriptionResponse
 }
 
 type ElevenlabsSpeechToTextWebhookResponse struct {

@@ -2234,10 +2234,9 @@ type elevenlabsStreamResult struct {
 	deltas int
 	done   bool
 	errors []string
-	// doneUsage is the usage of the speech.audio.done chunk; deltaVendorCosts counts the
-	// delta chunks that carried a vendor cost (none should).
-	doneUsage        *schemas.SpeechUsage
-	deltaVendorCosts int
+
+	doneUsage        *schemas.SpeechUsage // usage of the speech.audio.done chunk
+	deltaVendorCosts int                  // delta chunks that carried a vendor cost
 }
 
 func newElevenlabsStreamClient(t *testing.T) (*Bifrost, *elevenlabsStreamUpstream) {

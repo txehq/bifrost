@@ -285,9 +285,11 @@ func rawJSONOrNil(body []byte) []byte {
 }
 
 // parseTranscriptionResponse returns the transcript chunks and the top-level
-// audio_duration_secs of the answer: the chunk's own on a plain answer, the multichannel
-// answer's on a multichannel one (already the sum over channels). Per-channel values are not
-// summed. No chunks and no error means the answer has no transcript in it.
+// audio_duration_secs of the answer, the audio length ElevenLabs reports and bills on: the
+// chunk's own on a plain answer, the multichannel answer's on a multichannel one. ElevenLabs
+// reports the multichannel value as the sum over the channels (measured in TXE-4862: a
+// two-channel 0.1 s file answered 0.2), so it already is the billed duration and per-channel
+// values are not summed. It is nil when the answer does not carry the field. No chunks and no error means the answer has no transcript in it.
 func parseTranscriptionResponse(body []byte) ([]ElevenlabsSpeechToTextChunkResponse, *float64, error) {
 	var multichannel ElevenlabsMultichannelSpeechToTextResponse
 	if err := sonic.Unmarshal(body, &multichannel); err == nil && len(multichannel.Transcripts) > 0 {
