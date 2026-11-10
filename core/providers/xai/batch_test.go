@@ -102,6 +102,7 @@ func TestBatchCreateInlineChatLines(t *testing.T) {
 
 	resp, bErr := provider.BatchCreate(batchTestCtx(), batchKey("xai-a", "sk-xai-a"), &schemas.BifrostBatchCreateRequest{
 		Provider:         schemas.XAI,
+		Model:            schemas.Ptr("xai/grok-4.3"),
 		Endpoint:         schemas.BatchEndpointChatCompletions,
 		CompletionWindow: "24h",
 		Metadata:         map[string]string{"tokun_batch_id": "batch_01JX"},
@@ -189,7 +190,7 @@ func TestBatchLineExtraParamsFollowPassthrough(t *testing.T) {
 		if passthrough {
 			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 		}
-		lines, bErr := ToXAIBatchRequests(ctx, schemas.BatchEndpointChatCompletions, []schemas.BatchRequestItem{item})
+		lines, bErr := ToXAIBatchRequests(ctx, schemas.BatchEndpointChatCompletions, "grok-4.3", nil, []schemas.BatchRequestItem{item})
 		if bErr != nil {
 			t.Fatalf("ToXAIBatchRequests: %+v", bErr.Error)
 		}
@@ -200,6 +201,40 @@ func TestBatchLineExtraParamsFollowPassthrough(t *testing.T) {
 	}
 	if got := chatBody(false); got["search_parameters"] != nil {
 		t.Fatalf("passthrough off: body = %v, want search_parameters dropped as on the sync route", got)
+	}
+}
+
+// A batch runs one model (review finding on PR 151): governance picks the batch's provider
+// key from the grants for the request's model, so every line runs as that model. A line
+// without a model, or with the batch's model under a provider prefix or a key alias, runs as
+// the batch's model; a line naming another model is refused before any call.
+func TestBatchLinesRunAsTheBatchModel(t *testing.T) {
+	chat := func(model any) map[string]any {
+		body := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+		if model != nil {
+			body["model"] = model
+		}
+		return body
+	}
+	aliases := schemas.KeyAliases{"cheap": {ModelID: "grok-4.3"}}
+	items := []schemas.BatchRequestItem{
+		{CustomID: "no-model", Body: chat(nil)},
+		{CustomID: "prefixed", Body: chat("xai/grok-4.3")},
+		{CustomID: "alias", Body: chat("cheap")},
+	}
+	lines, bErr := ToXAIBatchRequests(batchTestCtx(), schemas.BatchEndpointChatCompletions, "grok-4.3", aliases.Resolve, items)
+	if bErr != nil {
+		t.Fatalf("ToXAIBatchRequests: %+v", bErr.Error)
+	}
+	for _, line := range lines {
+		if got := decodeJSON(t, string(line.BatchRequest[xaiBatchChatKey]))["model"]; got != "grok-4.3" {
+			t.Fatalf("%s runs as %v, want grok-4.3", line.BatchRequestID, got)
+		}
+	}
+	_, bErr = ToXAIBatchRequests(batchTestCtx(), schemas.BatchEndpointChatCompletions, "grok-4.3", aliases.Resolve,
+		[]schemas.BatchRequestItem{{CustomID: "other", Body: chat("grok-4.6")}})
+	if bErr == nil || bErr.Error.Param != "requests[0].body.model" {
+		t.Fatalf("a line naming another model = %+v, want a 400 on requests[0].body.model", bErr)
 	}
 }
 
@@ -240,17 +275,20 @@ func TestBatchCreateRefusesBeforeDispatch(t *testing.T) {
 			"model": "grok-4.3", "messages": []any{map[string]any{"role": "user", "content": "hi"}},
 		}}
 	}
+	m := schemas.Ptr("grok-4.3")
 	cases := []struct {
 		name      string
 		req       *schemas.BifrostBatchCreateRequest
 		errorType schemas.ErrorType
 		param     string
 	}{
-		{"embeddings line", &schemas.BifrostBatchCreateRequest{Requests: []schemas.BatchRequestItem{line("a", "/v1/embeddings")}}, schemas.ErrorTypeCallerUnsupportedParameter, "url"},
-		{"display name with metadata", &schemas.BifrostBatchCreateRequest{DisplayName: schemas.Ptr("x"), Metadata: map[string]string{"k": "v"}, Requests: []schemas.BatchRequestItem{line("a", "/v1/chat/completions")}}, schemas.ErrorTypeCallerUnsupportedParameter, "display_name"},
-		{"output_expires_after", &schemas.BifrostBatchCreateRequest{OutputExpiresAfter: &schemas.BatchExpiresAfter{Anchor: "created_at", Seconds: 3600}, Requests: []schemas.BatchRequestItem{line("a", "/v1/chat/completions")}}, schemas.ErrorTypeCallerUnsupportedParameter, "output_expires_after"},
-		{"duplicate custom_id", &schemas.BifrostBatchCreateRequest{Requests: []schemas.BatchRequestItem{line("a", "/v1/chat/completions"), line("a", "/v1/chat/completions")}}, schemas.ErrorTypeCallerInvalidRequest, ""},
-		{"missing custom_id", &schemas.BifrostBatchCreateRequest{Requests: []schemas.BatchRequestItem{line("", "/v1/chat/completions")}}, schemas.ErrorTypeCallerInvalidRequest, ""},
+		{"embeddings line", &schemas.BifrostBatchCreateRequest{Model: m, Requests: []schemas.BatchRequestItem{line("a", "/v1/embeddings")}}, schemas.ErrorTypeCallerUnsupportedParameter, "url"},
+		{"display name with metadata", &schemas.BifrostBatchCreateRequest{Model: m, DisplayName: schemas.Ptr("x"), Metadata: map[string]string{"k": "v"}, Requests: []schemas.BatchRequestItem{line("a", "/v1/chat/completions")}}, schemas.ErrorTypeCallerUnsupportedParameter, "display_name"},
+		{"output_expires_after", &schemas.BifrostBatchCreateRequest{Model: m, OutputExpiresAfter: &schemas.BatchExpiresAfter{Anchor: "created_at", Seconds: 3600}, Requests: []schemas.BatchRequestItem{line("a", "/v1/chat/completions")}}, schemas.ErrorTypeCallerUnsupportedParameter, "output_expires_after"},
+		{"duplicate custom_id", &schemas.BifrostBatchCreateRequest{Model: m, Requests: []schemas.BatchRequestItem{line("a", "/v1/chat/completions"), line("a", "/v1/chat/completions")}}, schemas.ErrorTypeCallerInvalidRequest, ""},
+		{"missing custom_id", &schemas.BifrostBatchCreateRequest{Model: m, Requests: []schemas.BatchRequestItem{line("", "/v1/chat/completions")}}, schemas.ErrorTypeCallerInvalidRequest, ""},
+		{"no batch model", &schemas.BifrostBatchCreateRequest{Requests: []schemas.BatchRequestItem{line("a", "/v1/chat/completions")}}, schemas.ErrorTypeCallerInvalidRequest, "model"},
+		{"line names another model", &schemas.BifrostBatchCreateRequest{Model: schemas.Ptr("grok-4.6"), Requests: []schemas.BatchRequestItem{line("a", "/v1/chat/completions")}}, schemas.ErrorTypeCallerInvalidRequest, "requests[0].body.model"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -285,6 +323,7 @@ func TestBatchCreateAddRequestsRefused(t *testing.T) {
 	}
 	provider := newBatchTestProvider(stub.serve(t).URL)
 	_, bErr := provider.BatchCreate(batchTestCtx(), batchKey("k", "sk"), &schemas.BifrostBatchCreateRequest{
+		Model: schemas.Ptr("grok-2"),
 		Requests: []schemas.BatchRequestItem{{CustomID: "a", URL: "/v1/chat/completions", Body: map[string]any{
 			"model": "grok-2", "messages": []any{map[string]any{"role": "user", "content": "hi"}},
 		}}},
@@ -612,7 +651,7 @@ func BenchmarkXAIBatchLineConversion(b *testing.B) {
 	}}}
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, bErr := ToXAIBatchRequests(ctx, schemas.BatchEndpointChatCompletions, items); bErr != nil {
+		if _, bErr := ToXAIBatchRequests(ctx, schemas.BatchEndpointChatCompletions, "grok-4.3", nil, items); bErr != nil {
 			b.Fatal(bErr.Error.Message)
 		}
 	}

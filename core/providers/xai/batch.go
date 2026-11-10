@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/capsohq/bifrost/core/providers/gemini"
 	"github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -298,7 +299,12 @@ func decodeXAIBatchMetadata(name string) map[string]string {
 // with provider xai), so a line reaches xAI with the parameters it would have on the sync
 // route. batch_request_id is the line's custom_id. Only /v1/chat/completions lines are
 // converted; any other url is refused as an unsupported parameter.
-func ToXAIBatchRequests(ctx *schemas.BifrostContext, endpoint schemas.BatchEndpoint, items []schemas.BatchRequestItem) ([]XAIBatchRequest, *schemas.BifrostError) {
+//
+// A batch runs one model, batchModel, as Gemini and Vertex batches do: a line naming another
+// model (after the key's aliases, resolve) is refused, and every line runs as batchModel.
+// Governance picks the batch's provider key from the grants for batchModel, so a line that
+// ran another model would run it on a key that may not be granted for it.
+func ToXAIBatchRequests(ctx *schemas.BifrostContext, endpoint schemas.BatchEndpoint, batchModel string, resolve func(string) string, items []schemas.BatchRequestItem) ([]XAIBatchRequest, *schemas.BifrostError) {
 	out := make([]XAIBatchRequest, 0, len(items))
 	seen := make(map[string]struct{}, len(items))
 	for i, item := range items {
@@ -323,7 +329,12 @@ func ToXAIBatchRequests(ctx *schemas.BifrostContext, endpoint schemas.BatchEndpo
 		if len(item.RequestBody()) == 0 {
 			return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("requests[%d].body is required", i))
 		}
-		body, err := toXAIBatchChatBody(ctx, item)
+		if err := gemini.CheckBatchLineModel(item, schemas.XAI, batchModel, resolve); err != nil {
+			bifrostErr := providerUtils.NewBifrostBadRequestError(fmt.Sprintf("requests[%d].body.model: %v", i, err))
+			bifrostErr.Error.Param = fmt.Sprintf("requests[%d].body.model", i)
+			return nil, bifrostErr
+		}
+		body, err := toXAIBatchChatBody(ctx, item, batchModel)
 		if err != nil {
 			return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("requests[%d].body: %v", i, err))
 		}
@@ -339,14 +350,8 @@ func ToXAIBatchRequests(ctx *schemas.BifrostContext, endpoint schemas.BatchEndpo
 // line decoder (schemas.BatchRequestItem.ToBifrostChatRequest: messages, chat parameters,
 // every unmodelled field as an extra param), the OpenAI converter with provider xai, and
 // the sync encoder, which merges the extra params only when passthrough is enabled, as
-// the sync route does. xAI runs a model per request, so the line's own model is used,
-// with an xai/ prefix stripped.
-func toXAIBatchChatBody(ctx *schemas.BifrostContext, item schemas.BatchRequestItem) (json.RawMessage, error) {
-	lineModel, _ := item.RequestBody()["model"].(string)
-	_, model := schemas.ParseModelString(strings.TrimSpace(lineModel), schemas.XAI)
-	if model == "" {
-		return nil, fmt.Errorf("model is required")
-	}
+// the sync route does. The line runs as the batch's model (see ToXAIBatchRequests).
+func toXAIBatchChatBody(ctx *schemas.BifrostContext, item schemas.BatchRequestItem, model string) (json.RawMessage, error) {
 	bifrostReq, err := item.ToBifrostChatRequest(schemas.XAI, model)
 	if err != nil {
 		return nil, err
@@ -605,7 +610,16 @@ func (provider *XAIProvider) BatchCreate(ctx *schemas.BifrostContext, key schema
 	// Convert every line before the first call, so a bad line costs no upstream call.
 	var addBody []byte
 	if len(request.Requests) > 0 {
-		lines, convErr := ToXAIBatchRequests(ctx, request.Endpoint, request.Requests)
+		batchModel := ""
+		if request.Model != nil {
+			_, batchModel = schemas.ParseModelString(strings.TrimSpace(*request.Model), schemas.XAI)
+		}
+		if batchModel == "" {
+			bifrostErr := providerUtils.NewBifrostBadRequestError("model is required for an inline xai batch: the batch runs one model, named in the request's model field")
+			bifrostErr.Error.Param = "model"
+			return nil, bifrostErr
+		}
+		lines, convErr := ToXAIBatchRequests(ctx, request.Endpoint, batchModel, key.Aliases.Resolve, request.Requests)
 		if convErr != nil {
 			return nil, convErr
 		}
