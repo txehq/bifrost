@@ -117,6 +117,7 @@ curl -X POST http://localhost:8080/v1/audio/transcriptions \
 |---------------|-----------------------|
 | `model` | `X-AAI-Model` header |
 | `file` | `audio` part, with the `Content-Type` of the audio format |
+| `file_format` (Go SDK `Params.Format`) | the `audio` part's `Content-Type`, when the audio has no signature (for example `pcm`) |
 | `language` | `config.language_codes` (one code) |
 | `prompt` | `config.prompt` |
 | `timestamp_granularities[]=word` | `config.timestamps: true` |
@@ -125,7 +126,7 @@ curl -X POST http://localhost:8080/v1/audio/transcriptions \
 
 The `config` part is left out when the request sets none of these.
 
-**Audio format.** The Sync API requires the `audio` part's `Content-Type` to match the audio. Bifrost reads it from the file's signature (WAV, FLAC, Ogg, WebM, MP4/M4A, MP3, AAC), then from the filename extension, which is the only way to tell raw PCM (`.pcm`, `.raw`). Audio it cannot identify is sent as `application/octet-stream`, and AssemblyAI answers for it. Raw PCM also needs `sample_rate` and `channels` in the config.
+**Audio format.** The Sync API requires the `audio` part's `Content-Type` to match the audio. Bifrost reads it from the file's signature (WAV, FLAC, Ogg, WebM, MP4/M4A, MP3, AAC), then from `file_format`, then from the filename extension. Raw PCM has no signature, so it needs `file_format: pcm` or a `.pcm`/`.raw` filename. Audio it cannot identify is sent as `application/octet-stream`, and AssemblyAI answers for it. Raw PCM also needs `sample_rate` and `channels` in the config.
 
 **Fields that cannot be delivered.** A request field the Sync API has no equivalent for is refused with `400` and `error_type: caller_unsupported_parameter`, naming the field in `error.param`. It is never dropped. This covers `response_format` values `srt`, `vtt` and `diarized_json`, the `segment` timestamp granularity, `temperature`, and an audio `url` sent in place of the file (the Sync API takes no URL, and Bifrost does not download one).
 

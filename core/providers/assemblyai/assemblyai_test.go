@@ -537,7 +537,7 @@ func TestAssemblyAIDeclaresUnifiedTranscriptionFields(t *testing.T) {
 	provider, _ := newMockAssemblyAI(t, respondWith(http.StatusOK, "application/json", syncTranscriptBody))
 
 	accepted := transcriptionRequest(&schemas.TranscriptionParameters{
-		Language: schemas.Ptr("en"), Prompt: schemas.Ptr("p"), ResponseFormat: schemas.Ptr("json"), TimestampGranularities: []string{"word"},
+		Language: schemas.Ptr("en"), Prompt: schemas.Ptr("p"), ResponseFormat: schemas.Ptr("json"), TimestampGranularities: []string{"word"}, Format: schemas.Ptr("wav"),
 	})
 	if bifrostErr := schemas.CheckDeclaredUnifiedFields(provider, &schemas.BifrostRequest{RequestType: schemas.TranscriptionRequest, TranscriptionRequest: accepted}); bifrostErr != nil {
 		t.Errorf("supported fields refused: %+v", bifrostErr.Error)
@@ -608,21 +608,27 @@ func TestAssemblyAITranscriptionFromGeminiShapedRequest(t *testing.T) {
 // The audio part's Content-Type must match the format: the Sync API rejects a mismatch.
 func TestAssemblyAITranscriptionAudioContentType(t *testing.T) {
 	tests := []struct {
-		name     string
-		audio    []byte
-		filename string
-		want     string
+		name       string
+		audio      []byte
+		filename   string
+		fileFormat string
+		want       string
 	}{
-		{"wav by signature", wavAudio, "upload.bin", "audio/wav"},
-		{"flac by signature", []byte("fLaC\x00\x00\x00\x22rest"), "", "audio/flac"},
-		{"ogg by signature", []byte("OggS\x00\x02rest-of-page"), "", "audio/ogg"},
-		{"webm by signature", []byte{0x1A, 0x45, 0xDF, 0xA3, 0x9F, 0x42, 0x86, 0x81}, "", "audio/webm"},
-		{"m4a by signature", []byte("\x00\x00\x00\x20ftypM4A \x00\x00\x00\x00"), "", "audio/mp4"},
-		{"mp3 by ID3 tag", []byte("ID3\x04\x00\x00\x00\x00\x00\x00"), "", "audio/mpeg"},
-		{"mp3 by frame header", []byte{0xFF, 0xFB, 0x90, 0x00, 0x00, 0x00}, "", "audio/mpeg"},
-		{"aac by ADTS header", []byte{0xFF, 0xF1, 0x50, 0x80, 0x00, 0x00}, "", "audio/aac"},
-		{"raw pcm by extension", []byte{0xFF, 0xFB, 0x01, 0x02, 0x03, 0x04}, "capture.PCM", "audio/pcm"},
-		{"unknown bytes are not guessed", []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06}, "blob", "application/octet-stream"},
+		{"raw pcm by file_format", []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06}, "", "pcm", "audio/pcm"},
+		{"file_format as a MIME type", []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06}, "", "audio/mp3", "audio/mpeg"},
+		{"file_format wins over the extension", []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06}, "clip.mp3", "flac", "audio/flac"},
+		{"the signature wins over file_format", wavAudio, "", "mp3", "audio/wav"},
+		{"an unknown file_format falls through", []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06}, "clip.ogg", "aiff", "audio/ogg"},
+		{"wav by signature", wavAudio, "upload.bin", "", "audio/wav"},
+		{"flac by signature", []byte("fLaC\x00\x00\x00\x22rest"), "", "", "audio/flac"},
+		{"ogg by signature", []byte("OggS\x00\x02rest-of-page"), "", "", "audio/ogg"},
+		{"webm by signature", []byte{0x1A, 0x45, 0xDF, 0xA3, 0x9F, 0x42, 0x86, 0x81}, "", "", "audio/webm"},
+		{"m4a by signature", []byte("\x00\x00\x00\x20ftypM4A \x00\x00\x00\x00"), "", "", "audio/mp4"},
+		{"mp3 by ID3 tag", []byte("ID3\x04\x00\x00\x00\x00\x00\x00"), "", "", "audio/mpeg"},
+		{"mp3 by frame header", []byte{0xFF, 0xFB, 0x90, 0x00, 0x00, 0x00}, "", "", "audio/mpeg"},
+		{"aac by ADTS header", []byte{0xFF, 0xF1, 0x50, 0x80, 0x00, 0x00}, "", "", "audio/aac"},
+		{"raw pcm by extension", []byte{0xFF, 0xFB, 0x01, 0x02, 0x03, 0x04}, "capture.PCM", "", "audio/pcm"},
+		{"unknown bytes are not guessed", []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06}, "blob", "", "application/octet-stream"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -630,6 +636,9 @@ func TestAssemblyAITranscriptionAudioContentType(t *testing.T) {
 
 			request := transcriptionRequest(nil)
 			request.Input = &schemas.TranscriptionInput{File: tt.audio, Filename: tt.filename}
+			if tt.fileFormat != "" {
+				request.Params = &schemas.TranscriptionParameters{Format: schemas.Ptr(tt.fileFormat)}
+			}
 			if _, bifrostErr := provider.Transcription(testContext(t), testKey(), request); bifrostErr != nil {
 				t.Fatalf("Transcription error: %+v", bifrostErr.Error)
 			}

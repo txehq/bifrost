@@ -17,7 +17,7 @@ import (
 // assemblyAITranscriptionUnifiedFields are the unified transcription fields the Sync API
 // takes (contract C4). A request carrying any other unified field is answered
 // 400 caller_unsupported_parameter before a key is chosen.
-var assemblyAITranscriptionUnifiedFields = []string{"language", "prompt", "response_format", "timestamp_granularities"}
+var assemblyAITranscriptionUnifiedFields = []string{"file_format", "language", "prompt", "response_format", "timestamp_granularities"}
 
 // assemblyAIConfigExtraParam is the extra field that carries a whole vendor config object,
 // for a caller that wants its members sent exactly as written.
@@ -26,8 +26,9 @@ const assemblyAIConfigExtraParam = "config"
 // ToAssemblyAITranscriptionRequest resolves a Bifrost transcription request into the Sync
 // API's model header, audio part and config part.
 //
-// Unified fields: language becomes language_codes, prompt becomes prompt, and a "word"
-// timestamp granularity becomes timestamps. The Sync API returns JSON only and has no
+// Unified fields: language becomes language_codes, prompt becomes prompt, a "word"
+// timestamp granularity becomes timestamps, and file_format names the audio part's
+// Content-Type when the audio has no signature. The Sync API returns JSON only and has no
 // segment timings, so any other response_format or granularity is refused rather than
 // dropped (contract C4).
 //
@@ -39,12 +40,16 @@ func ToAssemblyAITranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRe
 		return nil, providerUtils.NewBifrostBadRequestError("transcription file is required")
 	}
 	req := &AssemblyAITranscriptionRequest{
-		Model:            bifrostReq.Model,
-		Audio:            bifrostReq.Input.File,
-		Filename:         bifrostReq.Input.Filename,
-		AudioContentType: assemblyAIAudioContentType(bifrostReq.Input.File, bifrostReq.Input.Filename),
+		Model:    bifrostReq.Model,
+		Audio:    bifrostReq.Input.File,
+		Filename: bifrostReq.Input.Filename,
 	}
 	params := bifrostReq.Params
+	fileFormat := ""
+	if params != nil && params.Format != nil {
+		fileFormat = *params.Format
+	}
+	req.AudioContentType = assemblyAIAudioContentType(bifrostReq.Input.File, bifrostReq.Input.Filename, fileFormat)
 	if params == nil {
 		return req, nil
 	}
@@ -213,6 +218,7 @@ var assemblyAIAudioExtensions = map[string]string{
 	".raw":  "audio/pcm",
 	".aac":  "audio/aac",
 	".mp3":  "audio/mpeg",
+	".mpeg": "audio/mpeg",
 	".m4a":  "audio/mp4",
 	".mp4":  "audio/mp4",
 	".ogg":  "audio/ogg",
@@ -223,11 +229,13 @@ var assemblyAIAudioExtensions = map[string]string{
 }
 
 // assemblyAIAudioContentType is the Content-Type of the audio part, which the Sync API
-// requires to match the format. A container signature decides first, then the filename's
-// extension (the only way to tell headerless PCM), then an MPEG or ADTS frame header. Audio
-// that none of them identifies is sent as application/octet-stream, so the vendor answers
-// for a format it does not take instead of Bifrost guessing one.
-func assemblyAIAudioContentType(audio []byte, filename string) string {
+// requires to match the format. A container signature decides first, then the request's
+// file_format (a format name such as "wav" or "pcm", or a MIME type), then the filename's
+// extension, then an MPEG or ADTS frame header. Headerless PCM can only be told by
+// file_format or the extension. Audio that none of them identifies is sent as
+// application/octet-stream, so the vendor answers for a format it does not take instead of
+// Bifrost guessing one.
+func assemblyAIAudioContentType(audio []byte, filename, fileFormat string) string {
 	switch {
 	case len(audio) >= 12 && bytes.Equal(audio[:4], []byte("RIFF")) && bytes.Equal(audio[8:12], []byte("WAVE")):
 		return "audio/wav"
@@ -243,6 +251,17 @@ func assemblyAIAudioContentType(audio []byte, filename string) string {
 		return "audio/mpeg"
 	case bytes.HasPrefix(audio, []byte("ADIF")):
 		return "audio/aac"
+	}
+	if format := strings.ToLower(strings.TrimSpace(fileFormat)); format != "" {
+		// "audio/wav" and "wav" name the same format; "audio/mp3" is the common spelling of audio/mpeg.
+		if contentType, ok := assemblyAIAudioExtensions["."+strings.TrimPrefix(strings.TrimPrefix(format, "audio/"), ".")]; ok {
+			return contentType
+		}
+		for _, contentType := range assemblyAIAudioExtensions {
+			if contentType == format {
+				return contentType
+			}
+		}
 	}
 	if contentType, ok := assemblyAIAudioExtensions[strings.ToLower(filepath.Ext(filename))]; ok {
 		return contentType
