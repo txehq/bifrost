@@ -1,0 +1,264 @@
+{
+  "name": "412. Cohere token rate limits charge processed tokens (cohere processed token limit) [SERIAL]",
+  "description": "TXE-7014. Cohere usage settles on billed_units (TXE-6596), so total_tokens is the billed count and usage.processed_tokens carries what Cohere processed. Governance token rate limits charge the larger of the processed total and total_tokens, so a virtual key's token limit counts what the vendor processed. Cost and settlement stay billed. The case creates a token-limited virtual key, sends one Cohere chat through it, and reads the live counter back (from_memory=true).",
+  "item": [
+    {
+      "name": "Setup - create a virtual key with a token rate limit - cohere - TXE-7014",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset('gov7014VkId');",
+              "pm.collectionVariables.unset('gov7014VkValue');",
+              "pm.request.body.raw = JSON.stringify({",
+              "  name: 'e2e-cohere-processed-token-limit-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),",
+              "  provider_configs: [{ provider: 'cohere', weight: 1.0, allowed_models: ['*'], key_ids: ['*'] }],",
+              "  // Far above one request, so the limit counts tokens without refusing anything.",
+              "  rate_limit: { token_max_limit: 1000000, token_reset_duration: '1h' }",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('create VK returns 2xx', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "var body = null;",
+              "try { body = pm.response.json(); } catch (e) { body = null; }",
+              "var vk = body && (body.virtual_key || body);",
+              "pm.test('created VK exposes an id, a value and its rate limit', function () {",
+              "  pm.expect(vk && vk.id, 'id in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "  pm.expect(vk && vk.value, 'value in: ' + pm.response.text()).to.be.a('string').and.not.be.empty;",
+              "  pm.expect(vk && vk.rate_limit && vk.rate_limit.token_max_limit, 'rate_limit in: ' + pm.response.text()).to.eql(1000000);",
+              "});",
+              "if (vk && vk.id && vk.value) {",
+              "  pm.collectionVariables.set('gov7014VkId', vk.id);",
+              "  pm.collectionVariables.set('gov7014VkValue', vk.value);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{}"
+        }
+      }
+    },
+    {
+      "name": "/v1/chat/completions through the virtual key - usage reports billed counts and processed_tokens - cohere/command-a-03-2025 - TXE-7014",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['gov7014VkId', 'gov7014VkValue'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "pm.collectionVariables.unset('gov7014Expected');",
+              "pm.collectionVariables.unset('gov7014Retry');"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status 200', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var u = (pm.response.code === 200 && pm.response.json().usage) || {};",
+              "var p = u.processed_tokens || {};",
+              "var processed = (p.prompt_tokens || 0) + (p.completion_tokens || 0);",
+              "pm.test('usage is billed with processed_tokens above it', function () {",
+              "  pm.expect(u.total_tokens, 'usage: ' + JSON.stringify(u)).to.be.above(0);",
+              "  pm.expect(u.processed_tokens, 'processed_tokens missing: ' + JSON.stringify(u)).to.be.an('object');",
+              "  // Cohere bills fewer input tokens than it processes, so the processed total is the larger.",
+              "  pm.expect(processed, 'usage: ' + JSON.stringify(u)).to.be.above(u.total_tokens);",
+              "});",
+              "if (u.total_tokens > 0) { pm.collectionVariables.set('gov7014Expected', Math.max(u.total_tokens, processed)); }"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-vk",
+            "value": "{{gov7014VkValue}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/chat/completions",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "chat",
+            "completions"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"cohere/command-a-03-2025\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a terse assistant. Answer in one short sentence.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Name the largest planet in the solar system.\"\n    }\n  ]\n}"
+        }
+      }
+    },
+    {
+      "name": "virtual key token counter charged the processed tokens, not the billed total - cohere - TXE-7014",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var missing = ['gov7014VkId', 'gov7014VkValue'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+              "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+              "var retry = Number(pm.collectionVariables.get('gov7014Retry') || 0);",
+              "if (retry > 0) {",
+              "  // Governance charges usage from an async post-hook worker. Newman drains pending timers before it sends.",
+              "  var until = Date.now() + 1000;",
+              "  (function waitBeforeRetry() { if (Date.now() < until) { setTimeout(waitBeforeRetry, 100); } })();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('VK read responds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "var expected = Number(pm.collectionVariables.get('gov7014Expected') || 0);",
+              "var vk = (pm.response.code === 200 && pm.response.json().virtual_key) || {};",
+              "var used = Number((vk.rate_limit && vk.rate_limit.token_current_usage) || 0);",
+              "var retry = Number(pm.collectionVariables.get('gov7014Retry') || 0);",
+              "if (used < expected && retry < 10) {",
+              "  pm.collectionVariables.set('gov7014Retry', retry + 1);",
+              "  postman.setNextRequest(pm.info.requestName);",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('gov7014Retry');",
+              "pm.test('the chat response gave an expected charge', function () {",
+              "  pm.expect(expected, 'gov7014Expected unset: the chat case failed').to.be.above(0);",
+              "});",
+              "pm.test('token_current_usage equals the processed total (TXE-7014)', function () {",
+              "  pm.expect(used, 'rate_limit: ' + JSON.stringify(vk.rate_limit)).to.eql(expected);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{gov7014VkId}}?from_memory=true",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{gov7014VkId}}"
+          ],
+          "query": [
+            {
+              "key": "from_memory",
+              "value": "true"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Cleanup - delete the token-limited virtual key - cohere - TXE-7014",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (!pm.collectionVariables.get('gov7014VkId') && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('delete VK returns 2xx', function () {",
+              "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299);",
+              "});",
+              "pm.collectionVariables.unset('gov7014VkId');",
+              "pm.collectionVariables.unset('gov7014VkValue');",
+              "pm.collectionVariables.unset('gov7014Expected');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/api/governance/virtual-keys/{{gov7014VkId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "governance",
+            "virtual-keys",
+            "{{gov7014VkId}}"
+          ]
+        }
+      }
+    }
+  ]
+}

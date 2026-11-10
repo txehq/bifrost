@@ -322,7 +322,7 @@ func modelUsageFromBreakdowns(breakdowns map[string]schemas.BatchModelBreakdown)
 		if breakdown.Cost != nil {
 			cost = *breakdown.Cost
 		}
-		usage = append(usage, ModelUsage{Model: model, Cost: cost, TokensUsed: int64(breakdown.Usage.TotalTokens)})
+		usage = append(usage, ModelUsage{Model: model, Cost: cost, TokensUsed: int64(breakdown.Usage.RateLimitTokens())})
 	}
 	if len(usage) == 0 {
 		return nil

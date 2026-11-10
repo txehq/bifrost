@@ -740,3 +740,57 @@ func TestAccounting_SessionContinuationSkipsRequestLimits(t *testing.T) {
 	assert.Equal(t, int64(1), updated.RequestCurrentUsage, "the continuation is not counted as a request")
 	assert.Equal(t, int64(1000), updated.TokenCurrentUsage, "the continuation's tokens are still charged")
 }
+
+// Cohere's documented usage block: billed 5/418 (total 423), processed 71/418 (489).
+// Token rate limits charge the processed 489; the response keeps total_tokens billed.
+func TestResponseTokensUsed_ChargesProcessedTokensWhenReported(t *testing.T) {
+	processed := &schemas.ProcessedTokenUsage{PromptTokens: 71, CompletionTokens: 418}
+	billedChat := &schemas.BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 418, TotalTokens: 423, ProcessedTokens: processed}
+	billedResponses := &schemas.ResponsesResponseUsage{InputTokens: 5, OutputTokens: 418, TotalTokens: 423, ProcessedTokens: processed}
+
+	cases := []struct {
+		name   string
+		result *schemas.BifrostResponse
+		want   int
+	}{
+		{"chat billed and processed", &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Usage: billedChat}}, 489},
+		{"chat without processed", &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{PromptTokens: 71, CompletionTokens: 418, TotalTokens: 489}}}, 489},
+		{"text completion billed and processed", &schemas.BifrostResponse{TextCompletionResponse: &schemas.BifrostTextCompletionResponse{Usage: billedChat}}, 489},
+		{"responses billed and processed", &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Usage: billedResponses}}, 489},
+		{"responses stream billed and processed", &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Response: &schemas.BifrostResponsesResponse{Usage: billedResponses}}}, 489},
+		{"responses without processed", &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 20, TotalTokens: 30}}}, 30},
+		{"embedding without processed", &schemas.BifrostResponse{EmbeddingResponse: &schemas.BifrostEmbeddingResponse{Usage: &schemas.BifrostLLMUsage{PromptTokens: 7, TotalTokens: 7}}}, 7},
+		// A billed count above the processed one is still charged in full.
+		{"billed above processed", &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{TotalTokens: 600, ProcessedTokens: processed}}}, 600},
+		{"no usage", &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, responseTokensUsed(tc.result))
+		})
+	}
+	assert.Equal(t, 489, billedChat.RateLimitTokens(), "partial usage on error is charged through the same rule")
+	assert.Equal(t, 423, billedChat.TotalTokens, "settlement stays on the billed total")
+}
+
+var responseTokensUsedSink int
+
+func BenchmarkResponseTokensUsed(b *testing.B) {
+	plain := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{PromptTokens: 71, CompletionTokens: 418, TotalTokens: 489}}}
+	processed := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{
+		PromptTokens: 5, CompletionTokens: 418, TotalTokens: 423,
+		ProcessedTokens: &schemas.ProcessedTokenUsage{PromptTokens: 71, CompletionTokens: 418},
+	}}}
+	b.Run("total_only", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			responseTokensUsedSink = responseTokensUsed(plain)
+		}
+	})
+	b.Run("processed", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			responseTokensUsedSink = responseTokensUsed(processed)
+		}
+	})
+}
