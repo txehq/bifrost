@@ -120,7 +120,7 @@ Optional provider settings include `network_config` for timeouts, retries, proxy
 | `user` | string | ❌ | **Truncated to 64 chars** |
 | `metadata` | [object](https://github.com/capsohq/bifrost/blob/main/core/schemas/chatcompletions.go#L27) | ❌ | Custom metadata |
 | `store` | bool | ❌ | **Filtered for non-OpenAI routing** |
-| `service_tier` | string | ❌ | **Filtered for non-OpenAI routing** |
+| `service_tier` | string | ❌ | Sent as given; refused with 400 `caller_unsupported_parameter` when the model's capability record does not list the tier (`default` is never refused) |
 | `prompt_cache_key` | string | ❌ | **Filtered for non-OpenAI routing** |
 | `prediction` | [object](https://github.com/capsohq/bifrost/blob/main/core/schemas/chatcompletions.go#L28) | ❌ | Predicted output for acceleration |
 | `audio` | [object](https://github.com/capsohq/bifrost/blob/main/core/schemas/chatcompletions.go#L29) | ❌ | Audio output config |
@@ -134,8 +134,8 @@ Optional provider settings include `network_config` for timeouts, retries, proxy
 - **Responses:** Passed through in standard OpenAI format. Finish reasons: `stop`, `length`, `tool_calls`, `content_filter`. Usage includes token counts and optionally cached/reasoning token details.
 - **Streaming:** Server-Sent Events format with `delta.content`, `delta.tool_calls`, `finish_reason`, and `usage` (final chunk only, automatically included by Bifrost). `stream_options: { include_usage: true }` is set by default for all streaming calls.
 - **Cache Control:** `cache_control` fields are stripped from messages, their content blocks, and tools before sending. The exception is the **gpt-5.6 family**, where a marked block is translated into OpenAI's own `prompt_cache_breakpoint`. Bifrost does not set `prompt_cache_options`: the default implicit mode honours explicit breakpoints and also looks back over up to 20 earlier message endings, which is what lets an agent loop with a marker that moves every turn (such as Claude Code) read the previous turn back from cache. Explicit-only mode checks only the breakpoints in the current request, so send `prompt_cache_options.mode: "explicit"` yourself only if your breakpoints stay at fixed positions. In implicit mode Bifrost keeps at most three translated breakpoints, since the implicit breakpoint takes one of the four cache-write slots. Earlier models have no such field, so stripping remains correct for them. Bifrost can also add the marker for clients that send none - see [Prompt caching](/features/prompt-caching).
-- **Token Enforcement:** `max_completion_tokens` is enforced to have a minimum of 16. Values below 16 are automatically set to 16.
-- **Special handling:** `user` field is truncated to 64 characters; `prompt_cache_key`, `store`, `service_tier` are filtered when routing to non-OpenAI providers
+- **Output cap:** `max_completion_tokens` is sent as given. A value below the vendor's minimum (16 on some OpenAI models) comes back as the vendor's error; Bifrost does not raise it.
+- **Special handling:** `user` field is truncated to 64 characters; `prompt_cache_key` and `store` are filtered when routing to non-OpenAI providers; `service_tier` is still omitted on the Gemini OpenAI-compatible route
 
 ---
 
@@ -184,7 +184,8 @@ OpenAI models handle reasoning differently depending on the model family:
 This conversion ensures compatibility across different model architectures for the structured Responses API. See [Bifrost reasoning docs](/providers/reasoning) for detailed reasoning handling.
 
 **Token & Parameter Enforcement:**
-- `max_output_tokens` is enforced to have a minimum of 16. Values below 16 are automatically set to 16.
+- `max_output_tokens` is sent as given. A value below the vendor's minimum comes back as the vendor's error; Bifrost does not raise it.
+- `service_tier` is sent as given, or the request is refused with 400 `caller_unsupported_parameter` (`error.param: service_tier`) before any upstream call when the model's capability record lists its tiers and the tier is not among them. `default` is never refused.
 - `reasoning.max_tokens` field is automatically removed from JSON output (OpenAI Responses API doesn't accept it).
 
 **Other conversions:**

@@ -395,6 +395,20 @@ the vendor; the eighth sends a nested field that is not a price field and reads 
 Bedrock, ElevenLabs, Vertex and Google Cloud Text-to-Speech have no row: core's
 `TestNestedPriceFieldsAreDeclaredAndRefused` covers every provider.
 
+Folder 432 (OpenAI-shape Responses service tier and output cap, TXE-6994) runs on the same fixture and
+gateway:
+
+```bash
+newman run tmp/provider-harness.json \
+  --folder "432. OpenAI-shape Responses refuses a service_tier the model does not list and sends max_output_tokens as sent (responses price fields)" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1
+```
+
+`cp-tiered` on the openai-based custom provider `cp_plain` has a capability record listing `default` and
+`priority`, so `flex` is refused before any upstream call, streamed and non-streamed, and a row reads back
+the `service_tier` and `max_output_tokens: 5` the vendor received on `/pp/cp/v1/responses`.
+
 The fixture answers by model name: `upstream-500` returns HTTP 500, `upstream-503` returns HTTP 503,
 `upstream-429` returns 429 with `Retry-After: 7`, `upstream-429-ms` returns 429 with
 `retry-after-ms: 2500`, `upstream-ok` returns a chat completion, and `upstream-slow` returns the
