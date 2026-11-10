@@ -12,6 +12,9 @@ on:
       - "**/go.mod"
       - "**/version"
       - "transports/Dockerfile*"
+      # The chart-coverage check below reads these two (TXE-7038).
+      - "transports/config.schema.json"
+      - "helm-charts/bifrost/**"
 
 permissions:
   contents: read
@@ -93,6 +96,17 @@ jobs:
       - name: Check the offline API collection suites run before merge
         if: ${{ !cancelled() }}
         run: python3 .github/workflows/scripts/test-api-collections-offline-callers.py
+
+      # The chart renders config.json's client section key by key, so a client setting
+      # without a chart value cannot be set through Helm and a later upgrade resets it
+      # (TXE-7038). Python and the checked-in files only: no helm, no network.
+      - name: Check every client setting has a Helm chart value
+        if: ${{ !cancelled() }}
+        run: python3 .github/workflows/scripts/check-helm-client-config-keys.py
+
+      - name: Check the chart-coverage rule on edited chart files
+        if: ${{ !cancelled() }}
+        run: ./.github/workflows/scripts/check-helm-client-config-keys.test.sh
 
       - name: Check fork release guards
         if: ${{ !cancelled() }}

@@ -455,6 +455,12 @@ false
 {{- if hasKey .Values.bifrost.client "hideDeletedVirtualKeysInFilters" }}
 {{- $_ := set $client "hide_deleted_virtual_keys_in_filters" .Values.bifrost.client.hideDeletedVirtualKeysInFilters }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "disableProviderJobAccounting" }}
+{{- $_ := set $client "disable_provider_job_accounting" .Values.bifrost.client.disableProviderJobAccounting }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "disablePassthroughSseHeartbeat" }}
+{{- $_ := set $client "disable_passthrough_sse_heartbeat" .Values.bifrost.client.disablePassthroughSseHeartbeat }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "deleteExpiredVirtualKeys" }}
 {{- $_ := set $client "delete_expired_virtual_keys" .Values.bifrost.client.deleteExpiredVirtualKeys }}
 {{- end }}

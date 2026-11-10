@@ -186,6 +186,8 @@ bifrost:
     mcpCodeModeBindingLevel: "server"
     mcpToolSyncInterval: 60
     hideDeletedVirtualKeysInFilters: true
+    disableProviderJobAccounting: true
+    disablePassthroughSseHeartbeat: true
 VALS
 
 render_config "$TMPDIR/values-client.yaml"
@@ -218,6 +220,23 @@ assert_field_value 'client.mcp_tool_execution_timeout' '.client.mcp_tool_executi
 assert_field_value 'client.mcp_code_mode_binding_level' '.client.mcp_code_mode_binding_level' '"server"'
 assert_field_value 'client.mcp_tool_sync_interval' '.client.mcp_tool_sync_interval' '60'
 assert_field_value 'client.hide_deleted_virtual_keys_in_filters' '.client.hide_deleted_virtual_keys_in_filters' 'true'
+# The two fork deployment switches (TXE-6519, TXE-7038): each renders when set.
+assert_field_value 'client.disable_provider_job_accounting' '.client.disable_provider_job_accounting' 'true'
+assert_field_value 'client.disable_passthrough_sse_heartbeat' '.client.disable_passthrough_sse_heartbeat' 'true'
+
+# An explicit false renders too, so a values file can state the default (hasKey, not truthiness).
+cat > "$TMPDIR/values-client-switches-off.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  client:
+    disableProviderJobAccounting: false
+    disablePassthroughSseHeartbeat: false
+VALS
+
+render_config "$TMPDIR/values-client-switches-off.yaml"
+assert_field_value 'client.disable_provider_job_accounting (false)' '.client.disable_provider_job_accounting' 'false'
+assert_field_value 'client.disable_passthrough_sse_heartbeat (false)' '.client.disable_passthrough_sse_heartbeat' 'false'
 
 ###############################################################################
 # 1b. Server Config
