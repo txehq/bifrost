@@ -865,33 +865,46 @@ Requests use **JSON body (`application/json`)**.
 |-----------|------|----------|-------|
 | `model` | string | ✅ | Veo model (e.g., `veo-3.1-generate-preview`) |
 | `prompt` | string | ✅ | Text description of the video |
-| `input_reference` | string | ❌ | Input image for image-to-video |
-| `seconds` | string | ❌ | Duration → `durationSeconds` |
-| `size` | string | ❌ | Resolution → aspect ratio (`1280x720` → `16:9`, `720x1280` → `9:16`) |
+| `input_reference` | string | ❌ | First frame for image-to-video, as a data URL (sent as `bytesBase64Encoded`). Vertex also takes a `gs://` URI (sent as `gcsUri`). An `http(s)` URL is refused |
+| `seconds` | string | ❌ | Duration → `durationSeconds`. Must be a whole number |
+| `size` | string | ❌ | An aspect ratio and a resolution tier at once: `1280x720`, `720x1280` (720p), `1920x1080`, `1080x1920` (→ `resolution: "1080p"`), `3840x2160`, `2160x3840` (→ `resolution: "4k"`). Any other size is refused |
+| `aspect_ratio` | string | ❌ | → `aspectRatio` (e.g., `"16:9"`, `"9:16"`) |
+| `resolution` | string | ❌ | → `resolution` (e.g., `"720p"`, `"1080p"`) |
+| `last_frame` | string | ❌ | Last frame for interpolation, in the same forms as `input_reference` → `instances[0].lastFrame` |
+| `reference_images` | string[] | ❌ | Reference images, in the same forms as `input_reference` → `instances[0].referenceImages`, each with `referenceType: "asset"` |
 | `negative_prompt` | string | ❌ | What to avoid in the video |
 | `seed` | int | ❌ | Seed for reproducibility |
 | `audio` | bool | ❌ | Enable audio generation → `generateAudio` |
 | `video_uri` | string | ❌ | GCS video URI for video extension |
+| `output_storage_uri` | string | ❌ | Vertex only: the Cloud Storage location Veo writes the video to → `parameters.storageUri` |
+
+A field that cannot be sent as given returns `400` with `extra_fields.error_type` `caller_unsupported_parameter` and the field in `error.param`; nothing is dropped or replaced by a default. `size` together with an `aspect_ratio` or `resolution` it contradicts is refused the same way. On Vertex, `output_format`, `callback_url`, `client_reference_id` and `expires_after_seconds` are refused: Veo has no parameter for them.
 
 **Extra Params** (any unrecognized JSON field is forwarded as `extra_params`)
 
+The keys below are sent inside `parameters` or `instances[0]`. Any other extra param is merged into the top level of the request body when `x-bf-passthrough-extra-params: true` is set.
+
 | Key | Notes |
 |-----|-------|
-| `aspectRatio` | Veo's own name for the aspect ratio. Send the unified `aspect_ratio` request field instead (e.g., `"16:9"`, `"9:16"`); it takes precedence over `size`. `aspectRatio` is accepted only together with `aspect_ratio` and the same value, and is otherwise refused with `400` `caller_unsupported_parameter` |
-| `resolution` | Native Gemini resolution string |
+| `aspectRatio` | Veo's own name for `aspect_ratio`. Send the unified `aspect_ratio` request field instead. `aspectRatio` is accepted only together with `aspect_ratio` and the same value, and is otherwise refused with `400` `caller_unsupported_parameter` |
 | `sampleCount` | Number of samples to generate |
 | `personGeneration` | Person generation policy |
 | `numberOfVideos` | Number of videos to generate |
-| `storageURI` | GCS bucket for output storage |
+| `storageUri` | The vendor's name for `output_storage_uri` (`storageURI` is accepted too) |
 | `compressionQuality` | Output compression quality |
 | `enhancePrompt` | Auto-enhance the prompt |
 | `resizeMode` | How to handle size mismatches |
-| `reference_images` | Style/asset reference image objects |
-| `lastFrame` | Last frame image object for interpolation |
+| `fps`, `pubsubTopic`, `task` | Vertex `VideoGenerationModelParams` fields, sent as given |
+| `referenceImages` | The vendor's reference image objects (`[{image, referenceType}]`), for a `referenceType` other than `asset` |
+| `lastFrame` | The vendor's last frame image object |
 
-**Response**: [`BifrostVideoGenerationResponse`](https://github.com/capsohq/bifrost/blob/main/core/schemas/videos.go) - `id`, `status`, `videos[]`
+**Response**: [`BifrostVideoGenerationResponse`](https://github.com/capsohq/bifrost/blob/main/core/schemas/videos.go) - `id`, `status`, `provider_status`, `videos[]`
 
-If Gemini filters content for safety, `status` is `failed` and `content_filter` describes the reason.
+`provider_status` is the operation's raw state: `done=false`, `done=true`, or `done=true,error.code=<n>` for a failed operation. Veo does not report a duration, so `seconds` and `usage.output_seconds` are absent; they are never filled from the request.
+
+Videos removed by the safety filter take no slot in `videos[]`; `content_filter` carries the vendor's count and reasons. When every video was filtered, `status` is `failed`.
+
+A video Veo wrote to Cloud Storage is a `videos[]` entry of `type: "content"` with no `url` and the `gs://` URI as its `id`; fetch it through `GET /v1/videos/{id}/content`.
 
 **Job Statuses**: `in_progress` → `completed` / `failed`
 

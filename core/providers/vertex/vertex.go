@@ -366,6 +366,30 @@ func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Vertex
 }
 
+// vertexVideoGenerationFields are the unified video create fields Veo on Vertex takes, each
+// converted by gemini.ToVertexVideoGenerationRequest. output_storage_uri is the one task control
+// field the vendor has (parameters.storageUri); it has no callback, external task id or deadline
+// parameter.
+var vertexVideoGenerationFields = []string{
+	"aspect_ratio",
+	"audio",
+	"last_frame",
+	schemas.TaskControlFieldOutputStorageURI,
+	"reference_images",
+	"resolution",
+	"seconds",
+	"size",
+}
+
+// SupportedUnifiedFields declares the unified fields video generation delivers, so core refuses
+// any other with caller_unsupported_parameter before a key is chosen (contract C4 BF4, C7 BF12).
+func (provider *VertexProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
+	if requestType == schemas.VideoGenerationRequest {
+		return vertexVideoGenerationFields, true
+	}
+	return nil, false
+}
+
 // listModelsByKey performs a list models request for a single key.
 // Returns the response and latency, or an error if the request fails.
 //
@@ -2604,7 +2628,7 @@ func (provider *VertexProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 		ctx,
 		bifrostReq,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return gemini.ToGeminiVideoGenerationRequest(bifrostReq)
+			return gemini.ToVertexVideoGenerationRequest(bifrostReq)
 		},
 	)
 	if bifrostErr != nil {

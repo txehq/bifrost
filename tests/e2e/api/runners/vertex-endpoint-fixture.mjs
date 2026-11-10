@@ -5,7 +5,7 @@ import { argValue, createInterceptProxy, writeFixtureGatewayConfig } from "./lib
 //
 // Vertex hardcodes https://<host>/... with no base-URL override, so the fixture works as the
 // gateway's HTTP proxy instead (see lib/tls-intercept-proxy.mjs): it terminates TLS for the
-// requested host, records the decrypted request, and replies with a canned Gemini, Claude or Imagen body, or a finished Veo operation.
+// requested host, records the decrypted request, and replies with a canned Gemini, Claude or Imagen body, or a Veo operation.
 //
 //   node vertex-endpoint-fixture.mjs --app-dir <dir> [--port 8792]
 //
@@ -45,6 +45,37 @@ const imagenBody = JSON.stringify({
 
 const fixtureVideo = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.from("fixture-video")]).toString("base64");
 
+// Veo operations (TXE-6537). :predictLongRunning creates one named after the model path it was sent to;
+// :fetchPredictOperation answers by the id after /operations/, in the Vertex shape
+// (GoogleCloudAiplatformV1GenerateVideoResponse): any other id is a finished operation with one inline video.
+const veoFilteredReason = "Veo could not generate videos because the input may violate the usage guidelines. Support codes: 15236754";
+const veoOperations = {
+	"veo-running": { metadata: { "@type": "type.googleapis.com/google.cloud.aiplatform.v1.GenericOperationMetadata" } },
+	"veo-failed": { done: true, error: { code: 3, message: "Unsupported output video duration 7 seconds, supported durations are [8,4,6]." } },
+	// Three videos asked for: one filtered, one written to the caller's bucket, one returned inline.
+	"veo-partly-filtered": {
+		done: true,
+		response: {
+			"@type": "type.googleapis.com/cloud.ai.large_models.vision.GenerateVideoResponse",
+			raiMediaFilteredCount: 1,
+			raiMediaFilteredReasons: [veoFilteredReason],
+			videos: [
+				{ gcsUri: "gs://fixture-bucket/task_417/sample_0.mp4", mimeType: "video/mp4" },
+				{ bytesBase64Encoded: fixtureVideo, mimeType: "video/webm" },
+			],
+		},
+	},
+	"veo-all-filtered": {
+		done: true,
+		response: { "@type": "type.googleapis.com/cloud.ai.large_models.vision.GenerateVideoResponse", raiMediaFilteredCount: 2, raiMediaFilteredReasons: [veoFilteredReason] },
+	},
+};
+function veoOperation(name) {
+	const known = veoOperations[String(name || "").split("/operations/")[1]];
+	// The video is inline so download needs no second fetch; the WebM magic marks it binary to the harness shape check.
+	return { name, ...(known || { done: true, response: { videos: [{ bytesBase64Encoded: fixtureVideo, mimeType: "video/webm" }] } }) };
+}
+
 // A fresh gateway downloads a pricing datasheet and a model-parameters datasheet on first start, and the model
 // catalog drives behaviour these cases assert (a model flagged vertex_multi_region_only is promoted to the multi-region
 // pool). Serving both from the control port keeps the run offline and the result independent of a remote file.
@@ -59,8 +90,9 @@ const proxy = createInterceptProxy({
 		if (/:generateContent/.test(req.url)) return { status: 200, body: geminiBody };
 		if (/:rawPredict/.test(req.url)) return { status: 200, body: claudeBody };
 		if (/:predict(\?|$)/.test(req.url)) return { status: 200, body: imagenBody };
-		// The video is inline so download needs no second fetch; the WebM magic marks it binary to the harness shape check.
-		if (/:fetchPredictOperation/.test(req.url)) return { status: 200, body: JSON.stringify({ name: (body.match(/"operationName":"([^"]+)"/) || [])[1], done: true, response: { videos: [{ bytesBase64Encoded: fixtureVideo, mimeType: "video/webm" }] } }) };
+		if (/:fetchPredictOperation/.test(req.url)) return { status: 200, body: JSON.stringify(veoOperation((body.match(/"operationName":"([^"]+)"/) || [])[1])) };
+		const created = /^\/v1\/(projects\/.+):predictLongRunning/.exec(req.url);
+		if (created) return { status: 200, body: JSON.stringify({ name: created[1] + "/operations/veo-fixture-created" }) };
 		return { status: 404, body: JSON.stringify({ error: { code: 404, message: "fixture does not serve " + req.url, status: "NOT_FOUND" } }) };
 	},
 	// OAuth token endpoint for the service account below, so no call goes to Google.

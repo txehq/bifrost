@@ -1563,7 +1563,7 @@ Model listing is paginated automatically. If more than 100 models exist, `next_p
 
 ## Video Generation
 
-Vertex AI routes video generation through Gemini's Veo models using the `predictLongRunning` endpoint. All parameters are identical to [Gemini Video Generation](/providers/supported-providers/gemini#video-generation).
+Vertex AI routes video generation through Gemini's Veo models using the `predictLongRunning` endpoint. Parameters are those of [Gemini Video Generation](/providers/supported-providers/gemini#video-generation), plus what only Vertex takes: `gs://` URIs for `input_reference`, `last_frame` and `reference_images`, `output_storage_uri` (→ `parameters.storageUri`), and `fps`, `pubsubTopic` and `task`. Vertex has no cancel API for a Veo operation: `POST /v1/videos/{id}/cancel` returns `400` `provider_cancel_unsupported`.
 
 <Note>
   Only Veo models are supported (e.g., `veo-2.0-generate-001`). Passing a

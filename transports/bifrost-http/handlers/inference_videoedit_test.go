@@ -751,5 +751,97 @@ func BenchmarkVideoListFilters(b *testing.B) {
 				_ = videoListFilters(&args)
 			}
 		})
+// vertexVideoAccount configures Vertex with an API key behind an HTTP proxy, so a test sees
+// which Google host a request dials without reaching it.
+type vertexVideoAccount struct{ proxyURL string }
+
+func (vertexVideoAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Vertex}, nil
+}
+
+func (vertexVideoAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{
+		ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("api-key"), Models: schemas.WhiteList{"*"}, Weight: 1,
+		VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar("p"), Region: *schemas.NewSecretVar("us-east5")},
+	}}, nil
+}
+
+func (a vertexVideoAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{
+		NetworkConfig:            schemas.DefaultNetworkConfig,
+		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		ProxyConfig:              &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(a.proxyURL)},
+	}, nil
+}
+
+// TXE-6537 (contract C7): a Vertex task id is an operation name, so its URL-encoded form is full
+// of %2F. It must reach GET /v1/videos/{id}, /content and /cancel as one path segment and arrive
+// at the provider decoded: the query dials the operation's own region, which only the whole name
+// tells. Cancel on Vertex is 400 provider_cancel_unsupported with no upstream call.
+func TestVertexVideoTaskIDIsOnePathSegment(t *testing.T) {
+	var mu sync.Mutex
+	var dialed []string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		dialed = append(dialed, r.Host)
+		mu.Unlock()
+		http.Error(w, "recorded", http.StatusBadGateway)
+	}))
+	t.Cleanup(proxy.Close)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: vertexVideoAccount{proxyURL: proxy.URL}, Logger: bifrost.NewDefaultLogger(schemas.LogLevelError)})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+
+	h := &CompletionHandler{client: client, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+	r := router.New()
+	r.GET("/v1/videos", func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(fasthttp.StatusTeapot) })
+	r.GET("/v1/videos/{video_id}", h.videoRetrieve)
+	r.GET("/v1/videos/{video_id}/content", h.videoDownload)
+	r.POST("/v1/videos/{video_id}/cancel", h.videoCancel)
+	call := func(method, path string) *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(method)
+		ctx.Request.SetRequestURI(path)
+		r.Handler(ctx)
+		return ctx
+	}
+	dials := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), dialed...)
+	}
+
+	const operation = "projects%2Fp%2Flocations%2Fus-central1%2Fpublishers%2Fgoogle%2Fmodels%2Fveo-3.1-generate-001%2Foperations%2Fa1b07c8e-3f52-4d0c-9a7e-5b1c2d3e4f60"
+	const regionHost = "us-central1-aiplatform.googleapis.com:443"
+	// The id as Bifrost gives it, and as a client that also encodes the colon sends it.
+	for _, id := range []string{operation + ":vertex", operation + "%3Avertex"} {
+		before := len(dials())
+		ctx := call("GET", "/v1/videos/"+id)
+		body := ctx.Response.Body()
+		assert.NotEqual(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), "the id did not match the route: %s", body)
+		assert.NotContains(t, string(body), "video_id", "the id was refused before the provider: %s", body)
+		assert.Equal(t, []string{regionHost}, dials()[before:], "the query must dial the operation's region once: %s", body)
+
+		before = len(dials())
+		ctx = call("GET", "/v1/videos/"+id+"/content")
+		assert.NotEqual(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+		assert.Equal(t, []string{regionHost}, dials()[before:], "body: %s", ctx.Response.Body())
+
+		before = len(dials())
+		ctx = call("POST", "/v1/videos/"+id+"/cancel")
+		body = ctx.Response.Body()
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body: %s", body)
+		var got struct {
+			Error       struct{ Code string }
+			ExtraFields struct {
+				ErrorType string `json:"error_type"`
+				Provider  string `json:"provider"`
+			} `json:"extra_fields"`
+		}
+		require.NoError(t, sonic.Unmarshal(body, &got), "body: %s", body)
+		assert.Equal(t, "provider_cancel_unsupported", got.ExtraFields.ErrorType, "body: %s", body)
+		assert.Equal(t, "provider_cancel_unsupported", got.Error.Code, "body: %s", body)
+		assert.Equal(t, "vertex", got.ExtraFields.Provider, "body: %s", body)
+		assert.Empty(t, dials()[before:], "cancel must make no upstream call")
 	}
 }
