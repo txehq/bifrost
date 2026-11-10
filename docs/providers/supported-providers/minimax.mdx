@@ -29,17 +29,29 @@ MiniMax is an OpenAI-compatible provider with its own Bifrost implementation. Ch
 | Anthropic Messages (`/anthropic/v1/messages`) | ✅ | ✅ | `/anthropic/v1/messages` (forwarded unchanged) |
 | List Models | ✅ | - | `/v1/models` |
 | Image Generation | ✅ | ❌ | `/v1/image_generation` |
-| Video Generation | ✅ | - | `/v2/video_generation` |
-| Video Retrieve | ✅ | - | `/v2/query/video_generation/{task_id}` |
+| Video Generation | ✅ | - | `/v2/video_generation` (MiniMax-H3); `/v1/video_generation` (MiniMax-Hailuo) |
+| Video Retrieve | ✅ | - | `/v2/query/video_generation/{task_id}`; v1: `/v1/query/video_generation` then `/v1/files/retrieve` |
 | Video Download | ✅ | - | signed URL from the task |
-| Video Delete | ✅ | - | `DELETE /v2/video_generation/{task_id}` |
+| Video Cancel | ✅ | - | v2 only: queries first, `DELETE /v2/video_generation/{task_id}` only while queued |
+| Video List | ✅ | - | `GET /v2/query/video_generation` (page 1) |
+| Video Delete | ✅ | - | `DELETE /v2/video_generation/{task_id}` (v2 only) |
 | Text Completions | ✅ | ✅ | `/text/v1/messages` (Anthropic-compatible, this fork) |
 | Embeddings | ❌ | ❌ | - |
 | Speech (TTS) | ✅ | ✅ | `/v1/t2a_v2` |
 | Transcriptions (STT) | ✅ | ✅ | `/v1/speech_to_text` |
 | Image Edit | ❌ | ❌ | - |
-| Video List | ❌ | - | - |
 | Files, Batch | ❌ | ❌ | - |
+
+## Video generation
+
+MiniMax has two video APIs, and Bifrost picks one by model (fork, TXE-6428):
+
+- **v2** (`MiniMax-H3`, `-Highspeed`, `-Lite`, `-Max`): `seconds` (4 to 15, 5 to 15 on H3-Max) becomes `duration`, `resolution` (`480P`, `768P`, `2K`) and `aspect_ratio` (`ratio`) are sent as given, and `last_frame` and `reference_images` become content items. A `size` must be exactly one tier at one ratio, as the task reports it (`1365x768` is 768P at 16:9); otherwise send `resolution` and `aspect_ratio`. With no `aspect_ratio` Bifrost sends no ratio, and MiniMax applies `adaptive`. The query returns `usage.output_seconds`, `input_seconds`, `input_images` and `output_tokens`, the raw status in `provider_status`, and `cancelled` as its own status. MiniMax states no lifetime for the v2 video URL, so `expires_at` is not set.
+- **v1** (`MiniMax-Hailuo-2.3`, `-2.3-Fast`, `-02`): `seconds` (6 or 10), `resolution`, `input_reference` (`first_frame_image`) and `last_frame` (`last_frame_image`) are sent to `/v1/video_generation`; `size`, `aspect_ratio` and `reference_images` are refused. The task id Bifrost returns starts with `v1-`. A query reads `/v1/query/video_generation` and, once the task succeeded, `/v1/files/retrieve` for the download URL, which lives one hour: `expires_at` is the file's creation time plus one hour. MiniMax reports no usage for v1 tasks. v1 has no cancel or delete API.
+
+`callback_url` is forwarded unchanged on both. `seed`, `audio`, `client_reference_id`, `expires_after_seconds` and `output_storage_uri` cannot reach MiniMax and are refused with 400 `caller_unsupported_parameter`; an out-of-range value is refused, never clamped. Extra fields are merged into the body, so MiniMax options such as `extra.prompt_expansion_mode` (H3-Max) and `prompt_optimizer` (v1) arrive unchanged.
+
+`POST /v1/videos/{id}/cancel` queries the v2 task first and sends `DELETE` only while it is `queued`, because MiniMax's `DELETE` deletes a finished task. Any other state returns 400 `provider_cancel_unsupported` without a `DELETE`.
 
 ## Text completions
 
