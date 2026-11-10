@@ -292505,7 +292505,7 @@
     },
     {
       "name": "323. Cohere chat usage reports billed units (cohere chat billed units)",
-      "description": "TXE-6596. Cohere's /v2/chat usage has billed_units (what Cohere bills) and tokens (what it processed). When billed_units carries input and output tokens they fill prompt_tokens and completion_tokens, and the processed counts go to usage.processed_tokens; without billed token counts the processed counts stay in prompt_tokens and completion_tokens. The streamed end frame maps the same way (Go tests in core/providers/cohere).",
+      "description": "TXE-6596. Cohere's /v2/chat usage has billed_units (what Cohere bills) and tokens (what it processed). When billed_units carries input and output tokens they fill prompt_tokens and completion_tokens, and the processed counts go to usage.processed_tokens; without billed token counts the processed counts stay in prompt_tokens and completion_tokens. The streamed final usage frame maps the same way and has its own case.",
       "item": [
         {
           "name": "/v1/chat/completions - prompt_tokens and completion_tokens are Cohere's billed units, processed counts in processed_tokens - cohere/command-a-03-2025 - TXE-6596",
@@ -292543,6 +292543,64 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"cohere/command-a-03-2025\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a terse assistant. Answer in one short sentence.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Name the largest planet in the solar system.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions stream - the final usage frame carries Cohere's billed units and processed_tokens - cohere/command-a-03-2025 - TXE-6596",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200 and SSE', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '').to.include('text/event-stream');",
+                  "});",
+                  "var u = null;",
+                  "(pm.response.text() || '').split('\\n').forEach(function (l) {",
+                  "  l = l.trim();",
+                  "  if (l.indexOf('data:') !== 0) { return; }",
+                  "  var s = l.slice(5).trim();",
+                  "  if (!s || s === '[DONE]') { return; }",
+                  "  try { var o = JSON.parse(s); if (o.usage) { u = o.usage; } } catch (e) {}",
+                  "});",
+                  "pm.test('final streamed usage carries billed counts and processed_tokens (TXE-6596)', function () {",
+                  "  pm.expect(u, 'no usage frame: ' + pm.response.text().slice(-800)).to.be.an('object');",
+                  "  pm.expect(u.prompt_tokens, 'usage: ' + JSON.stringify(u)).to.be.above(0);",
+                  "  pm.expect(u.completion_tokens, 'usage: ' + JSON.stringify(u)).to.be.above(0);",
+                  "  pm.expect(u.total_tokens).to.eql(u.prompt_tokens + u.completion_tokens);",
+                  "  pm.expect(u.processed_tokens, 'processed_tokens missing: ' + JSON.stringify(u)).to.be.an('object');",
+                  "  pm.expect(u.processed_tokens.prompt_tokens, 'usage: ' + JSON.stringify(u)).to.be.at.least(u.prompt_tokens);",
+                  "  pm.expect(u.processed_tokens.completion_tokens, 'usage: ' + JSON.stringify(u)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/command-a-03-2025\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a terse assistant. Answer in one short sentence.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Name the largest planet in the solar system.\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
