@@ -18,7 +18,8 @@ environment's secrets. This check enforces the workflow half of that. It fails w
     (a literal, not an expression, so no event can route the job to an unprotected
     environment); this includes the original finding, a key in the job-level env of a
     job that checks out a caller-chosen ref;
-  * the workflow-level `env:` reads a provider credential, which hands it to every job;
+  * the workflow-level `env:` reads a provider credential, or reads secrets dynamically
+    (`secrets[...]`, `toJSON(secrets)`), which hands it to every job;
   * a reusable-workflow call passes a provider credential or `secrets: inherit`: a
     calling job cannot name an environment, so the called workflow's job must name
     live-providers and read the secret itself;
@@ -116,11 +117,19 @@ def problems(path):
         doc = yaml.safe_load(fh) or {}
     name = os.path.basename(path)
 
-    top = list(credentials(doc.get("env") or {}, "env"))
+    top_env = doc.get("env") or {}
+    top = list(credentials(top_env, "env"))
     if top:
         yield (f"{name}: the workflow-level env reads {describe(n for _, n in top)}, which every "
                f"job inherits; read provider credentials only in jobs that name "
                f"`environment: {ENVIRONMENT}`")
+    for _, text in strings(top_env, "env"):
+        if DYNAMIC_SECRETS.search(text):
+            yield (f"{name}: the workflow-level env reads secrets dynamically "
+                   f"({text.strip()[:60]!r}), which every job inherits and which can reach any "
+                   f"provider credential; read provider credentials only in jobs that name "
+                   f"`environment: {ENVIRONMENT}`")
+            break
 
     for job_id, job in (doc.get("jobs") or {}).items():
         if not isinstance(job, dict):

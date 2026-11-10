@@ -1,0 +1,10 @@
+# expect: the workflow-level env reads secrets dynamically ('${{ toJSON(secrets) }}')
+on: push
+env:
+  ALL_SECRETS: ${{ toJSON(secrets) }}
+jobs:
+  test-core:
+    runs-on: ubuntu-24.04
+    environment: live-providers
+    steps:
+      - run: make test-core
