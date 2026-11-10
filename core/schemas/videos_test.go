@@ -375,3 +375,60 @@ func TestVideoCancelRequestType(t *testing.T) {
 		t.Fatal("cancel is allowed on a custom provider that does not allow delete")
 	}
 }
+
+// The request worker runs CheckTaskControlFields and CheckVideoCancelSupported on every request.
+// A request that is not a task create with a control field, and is not a cancel, must cost only
+// the nil and request-type checks and allocate nothing; a control field a provider takes also
+// allocates nothing. Only a refusal allocates, for the error it returns.
+func BenchmarkCheckTaskControlFields(b *testing.B) {
+	video := func(control TaskControlParameters) *BifrostRequest {
+		return &BifrostRequest{
+			RequestType: VideoGenerationRequest,
+			VideoGenerationRequest: &BifrostVideoGenerationRequest{
+				Provider: OpenAI, Model: "m", Input: &VideoGenerationInput{Prompt: "a boat"},
+				Params: &VideoGenerationParameters{TaskControlParameters: control},
+			},
+		}
+	}
+	control := TaskControlParameters{CallbackURL: Ptr("https://example.com/cb"), ClientReferenceID: Ptr("ref-1")}
+	taking := declaringProvider{declares: true, fields: map[RequestType][]string{VideoGenerationRequest: {TaskControlFieldCallbackURL, TaskControlFieldClientReferenceID}}}
+	cases := []struct {
+		name     string
+		provider any
+		req      *BifrostRequest
+	}{
+		{"chat_request", struct{}{}, &BifrostRequest{RequestType: ChatCompletionRequest, ChatRequest: &BifrostChatRequest{Provider: OpenAI, Model: "m"}}},
+		{"video_no_control_fields", struct{}{}, video(TaskControlParameters{})},
+		{"video_fields_taken", taking, video(control)},
+		{"video_fields_refused", struct{}{}, video(control)},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = CheckTaskControlFields(tc.provider, tc.req)
+			}
+		})
+	}
+}
+
+func BenchmarkCheckVideoCancelSupported(b *testing.B) {
+	cancel := &BifrostRequest{RequestType: VideoCancelRequest, VideoCancelRequest: &BifrostVideoCancelRequest{Provider: OpenAI, ID: "video_1"}}
+	cases := []struct {
+		name     string
+		provider any
+		req      *BifrostRequest
+	}{
+		{"chat_request", struct{}{}, &BifrostRequest{RequestType: ChatCompletionRequest, ChatRequest: &BifrostChatRequest{Provider: OpenAI, Model: "m"}}},
+		{"cancel_supported", videoCancellerStub{}, cancel},
+		{"cancel_refused", struct{}{}, cancel},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = CheckVideoCancelSupported(tc.provider, tc.req)
+			}
+		})
+	}
+}

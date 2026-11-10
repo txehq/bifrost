@@ -185,23 +185,28 @@ var TaskControlFields = []string{
 
 // Present returns, sorted, the JSON names of the task control fields that are set.
 func (p *TaskControlParameters) Present() []string {
+	return p.appendPresent(nil)
+}
+
+// appendPresent appends the JSON names of the control fields that are set to dst. The request
+// worker passes a stack buffer, so the check allocates nothing.
+func (p *TaskControlParameters) appendPresent(dst []string) []string {
 	if p == nil {
-		return nil
+		return dst
 	}
-	var fields []string
 	if p.CallbackURL != nil {
-		fields = append(fields, TaskControlFieldCallbackURL)
+		dst = append(dst, TaskControlFieldCallbackURL)
 	}
 	if p.ClientReferenceID != nil {
-		fields = append(fields, TaskControlFieldClientReferenceID)
+		dst = append(dst, TaskControlFieldClientReferenceID)
 	}
 	if p.ExpiresAfterSeconds != nil {
-		fields = append(fields, TaskControlFieldExpiresAfterSeconds)
+		dst = append(dst, TaskControlFieldExpiresAfterSeconds)
 	}
 	if p.OutputStorageURI != nil {
-		fields = append(fields, TaskControlFieldOutputStorageURI)
+		dst = append(dst, TaskControlFieldOutputStorageURI)
 	}
-	return fields
+	return dst
 }
 
 // TaskControl returns the task control fields of the task create request br carries, or nil when
@@ -224,7 +229,8 @@ func (br *BifrostRequest) TaskControl() *TaskControlParameters {
 // nothing, gets 400 caller_unsupported_parameter naming the first unsupported field. Core runs it
 // before a key is chosen, so a refused request makes no upstream call.
 func CheckTaskControlFields(provider any, req *BifrostRequest) *BifrostError {
-	present := req.TaskControl().Present()
+	var buf [4]string
+	present := req.TaskControl().appendPresent(buf[:0])
 	if len(present) == 0 {
 		return nil
 	}
