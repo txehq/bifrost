@@ -967,3 +967,112 @@ func TestProcessedTokensSurviveChatResponsesConversion(t *testing.T) {
 		t.Fatal("absent processed_tokens must stay absent")
 	}
 }
+
+// sharedUsageFields are the fields BifrostLLMUsage and ResponsesResponseUsage both have, under the
+// same name and type, so a conversion between them can copy them unchanged.
+func sharedUsageFields() []string {
+	llm, resp := reflect.TypeOf(BifrostLLMUsage{}), reflect.TypeOf(ResponsesResponseUsage{})
+	var names []string
+	for i := 0; i < llm.NumField(); i++ {
+		f := llm.Field(i)
+		if g, ok := resp.FieldByName(f.Name); ok && g.Type == f.Type {
+			names = append(names, f.Name)
+		}
+	}
+	return names
+}
+
+// TestUsageConversionsCarrySharedFields: ToResponsesResponseUsage and ToBifrostLLMUsage copy every field
+// the two usage types share (fork, TXE-6967). vendor_cost reaches a Responses caller served by the chat
+// fallback, and a chat caller served by a Responses upstream, only through these conversions; a shared
+// field added later and not copied fails here by name.
+func TestUsageConversionsCarrySharedFields(t *testing.T) {
+	names := sharedUsageFields()
+	if len(names) == 0 {
+		t.Fatal("no shared fields found")
+	}
+
+	var llm BifrostLLMUsage
+	fillNonZero(t, reflect.ValueOf(&llm).Elem(), 0)
+	resp := llm.ToResponsesResponseUsage()
+	var r ResponsesResponseUsage
+	fillNonZero(t, reflect.ValueOf(&r).Elem(), 0)
+	r.Iterations = nil
+	back := r.ToBifrostLLMUsage()
+
+	for _, name := range names {
+		if got, want := reflect.ValueOf(resp).Elem().FieldByName(name).Interface(), reflect.ValueOf(&llm).Elem().FieldByName(name).Interface(); !reflect.DeepEqual(got, want) {
+			t.Errorf("ToResponsesResponseUsage drops %s: got %#v, want %#v", name, got, want)
+		}
+		if got, want := reflect.ValueOf(back).Elem().FieldByName(name).Interface(), reflect.ValueOf(&r).Elem().FieldByName(name).Interface(); !reflect.DeepEqual(got, want) {
+			t.Errorf("ToBifrostLLMUsage drops %s: got %#v, want %#v", name, got, want)
+		}
+	}
+}
+
+// TestNormalizeProviderCostSetsVendorCost (TXE-6967): cost_in_usd_ticks becomes vendor_cost in usd_ticks on
+// chat and Responses usage. A reported zero is kept as amount 0, a cost the vendor sent itself does not stop
+// it, no ticks leaves it nil (contract C5 agreement two), and a vendor_cost already set is not overwritten.
+func TestNormalizeProviderCostSetsVendorCost(t *testing.T) {
+	ticks := func(n int64) *int64 { return &n }
+	cases := []struct {
+		name  string
+		ticks *int64
+		cost  *BifrostCost
+		want  *VendorCost
+	}{
+		{"ticks", ticks(5584000), nil, &VendorCost{Amount: 5584000, Unit: VendorCostUnitUSDTicks}},
+		{"zero ticks", ticks(0), nil, &VendorCost{Amount: 0, Unit: VendorCostUnitUSDTicks}},
+		{"ticks with a vendor-sent cost", ticks(7), &BifrostCost{TotalCost: 1}, &VendorCost{Amount: 7, Unit: VendorCostUnitUSDTicks}},
+		{"no ticks", nil, nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chat := &BifrostLLMUsage{CostInUsdTicks: tc.ticks, Cost: tc.cost}
+			chat.NormalizeProviderCost()
+			resp := &ResponsesResponseUsage{CostInUsdTicks: tc.ticks, Cost: tc.cost}
+			resp.NormalizeProviderCost()
+			for name, got := range map[string]*VendorCost{"chat": chat.VendorCost, "responses": resp.VendorCost} {
+				if !reflect.DeepEqual(got, tc.want) {
+					t.Errorf("%s vendor_cost = %+v, want %+v", name, got, tc.want)
+				}
+			}
+			if tc.cost != nil && (chat.Cost != tc.cost || resp.Cost != tc.cost) {
+				t.Errorf("a vendor-sent cost was replaced")
+			}
+		})
+	}
+
+	set := &VendorCost{Amount: 1, Unit: VendorCostUnitUSD}
+	u := &BifrostLLMUsage{CostInUsdTicks: ticks(9), VendorCost: set}
+	u.NormalizeProviderCost()
+	if u.VendorCost != set {
+		t.Errorf("an existing vendor_cost was overwritten: %+v", u.VendorCost)
+	}
+	(*BifrostLLMUsage)(nil).NormalizeProviderCost()
+	(*ResponsesResponseUsage)(nil).NormalizeProviderCost()
+}
+
+// TestVendorCostSerialisesOnUsage: vendor_cost is on the wire for chat and Responses usage when set, absent
+// when not, and DeepCopy owns its copy.
+func TestVendorCostSerialisesOnUsage(t *testing.T) {
+	vc := &VendorCost{Amount: 5584000, Unit: VendorCostUnitUSDTicks}
+	for name, v := range map[string]any{"chat": &BifrostLLMUsage{VendorCost: vc}, "responses": &ResponsesResponseUsage{VendorCost: vc}} {
+		b, _ := json.Marshal(v)
+		if !strings.Contains(string(b), `"vendor_cost":{"amount":5584000,"unit":"usd_ticks"}`) {
+			t.Errorf("%s: %s", name, b)
+		}
+	}
+	for name, v := range map[string]any{"chat": &BifrostLLMUsage{}, "responses": &ResponsesResponseUsage{}} {
+		b, _ := json.Marshal(v)
+		if strings.Contains(string(b), "vendor_cost") {
+			t.Errorf("%s carries vendor_cost unset: %s", name, b)
+		}
+	}
+	orig := &BifrostLLMUsage{VendorCost: &VendorCost{Amount: 1, Unit: VendorCostUnitUSDTicks}}
+	c := orig.DeepCopy()
+	c.VendorCost.Amount = 9
+	if orig.VendorCost.Amount != 1 {
+		t.Errorf("DeepCopy shares vendor_cost")
+	}
+}

@@ -317698,6 +317698,365 @@
           ]
         }
       ]
+    },
+    {
+      "name": "401. xAI usage carries vendor_cost from cost_in_usd_ticks, non-streamed and on the final stream frame (xai vendor cost)",
+      "description": "Contract C5/C10 (TXE-6967), local fixture regression with no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json; enable providerErrorFixture=1 (README: xAI vendor cost). The config's xai provider points at the fixture's /pp/xai, where upstream-usage-extended reports cost_in_usd_ticks: 123000000 on chat and Responses. Usage must carry vendor_cost {amount: 123000000, unit: usd_ticks} next to the unchanged cost_in_usd_ticks: non-streamed, on the final usage frame of a chat stream, and on response.completed of a Responses stream, on the native and OpenAI-compatible routes.",
+      "item": [
+        {
+          "name": "401.1 xai /v1/chat/completions xai/upstream-usage-extended usage carries vendor_cost from cost_in_usd_ticks (xai vendor cost)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "var usage = pm.response.json().usage;",
+                  "pm.test('vendor_cost is xAI\\'s reported charge in usd_ticks', function () {",
+                  "  pm.expect(usage && usage.vendor_cost, 'usage: ' + JSON.stringify(usage)).to.eql({ amount: 123000000, unit: 'usd_ticks' });",
+                  "});",
+                  "pm.test('cost_in_usd_ticks keeps its meaning (contract C2)', function () {",
+                  "  pm.expect(usage && usage.cost_in_usd_ticks, 'usage: ' + JSON.stringify(usage)).to.equal(123000000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/upstream-usage-extended\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "401.2 xai /v1/chat/completions xai/upstream-usage-extended usage carries vendor_cost from cost_in_usd_ticks on the final frame (xai vendor cost)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "var frames = raw.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "var last = frames.filter(function (f) { return f.usage; }).pop();",
+                  "pm.test('a frame carries the usage', function () { pm.expect(last, raw).to.be.an('object'); });",
+                  "var usage = last && last.usage;",
+                  "pm.test('vendor_cost is xAI\\'s reported charge in usd_ticks', function () {",
+                  "  pm.expect(usage && usage.vendor_cost, 'usage: ' + JSON.stringify(usage)).to.eql({ amount: 123000000, unit: 'usd_ticks' });",
+                  "});",
+                  "pm.test('cost_in_usd_ticks keeps its meaning (contract C2)', function () {",
+                  "  pm.expect(usage && usage.cost_in_usd_ticks, 'usage: ' + JSON.stringify(usage)).to.equal(123000000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/upstream-usage-extended\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "401.3 xai /openai/v1/chat/completions xai/upstream-usage-extended usage carries vendor_cost from cost_in_usd_ticks on the final frame (xai vendor cost)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "var frames = raw.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "var last = frames.filter(function (f) { return f.usage; }).pop();",
+                  "pm.test('a frame carries the usage', function () { pm.expect(last, raw).to.be.an('object'); });",
+                  "var usage = last && last.usage;",
+                  "pm.test('vendor_cost is xAI\\'s reported charge in usd_ticks', function () {",
+                  "  pm.expect(usage && usage.vendor_cost, 'usage: ' + JSON.stringify(usage)).to.eql({ amount: 123000000, unit: 'usd_ticks' });",
+                  "});",
+                  "pm.test('cost_in_usd_ticks keeps its meaning (contract C2)', function () {",
+                  "  pm.expect(usage && usage.cost_in_usd_ticks, 'usage: ' + JSON.stringify(usage)).to.equal(123000000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/upstream-usage-extended\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "401.4 xai /v1/responses xai/upstream-usage-extended usage carries vendor_cost from cost_in_usd_ticks (xai vendor cost)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "var usage = pm.response.json().usage;",
+                  "pm.test('vendor_cost is xAI\\'s reported charge in usd_ticks', function () {",
+                  "  pm.expect(usage && usage.vendor_cost, 'usage: ' + JSON.stringify(usage)).to.eql({ amount: 123000000, unit: 'usd_ticks' });",
+                  "});",
+                  "pm.test('cost_in_usd_ticks keeps its meaning (contract C2)', function () {",
+                  "  pm.expect(usage && usage.cost_in_usd_ticks, 'usage: ' + JSON.stringify(usage)).to.equal(123000000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/upstream-usage-extended\",\n  \"input\": \"hi\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "401.5 xai /v1/responses xai/upstream-usage-extended usage carries vendor_cost from cost_in_usd_ticks on response.completed (xai vendor cost)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "var events = raw.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "var done = events.filter(function (e) { return e.type === 'response.completed'; }).pop();",
+                  "pm.test('response.completed arrived', function () { pm.expect(done, raw).to.be.an('object'); });",
+                  "var usage = done && done.response && done.response.usage;",
+                  "pm.test('vendor_cost is xAI\\'s reported charge in usd_ticks', function () {",
+                  "  pm.expect(usage && usage.vendor_cost, 'usage: ' + JSON.stringify(usage)).to.eql({ amount: 123000000, unit: 'usd_ticks' });",
+                  "});",
+                  "pm.test('cost_in_usd_ticks keeps its meaning (contract C2)', function () {",
+                  "  pm.expect(usage && usage.cost_in_usd_ticks, 'usage: ' + JSON.stringify(usage)).to.equal(123000000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/upstream-usage-extended\",\n  \"input\": \"hi\",\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "401.6 xai /openai/v1/responses xai/upstream-usage-extended usage carries vendor_cost from cost_in_usd_ticks on response.completed (xai vendor cost)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "var events = raw.split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "var done = events.filter(function (e) { return e.type === 'response.completed'; }).pop();",
+                  "pm.test('response.completed arrived', function () { pm.expect(done, raw).to.be.an('object'); });",
+                  "var usage = done && done.response && done.response.usage;",
+                  "pm.test('vendor_cost is xAI\\'s reported charge in usd_ticks', function () {",
+                  "  pm.expect(usage && usage.vendor_cost, 'usage: ' + JSON.stringify(usage)).to.eql({ amount: 123000000, unit: 'usd_ticks' });",
+                  "});",
+                  "pm.test('cost_in_usd_ticks keeps its meaning (contract C2)', function () {",
+                  "  pm.expect(usage && usage.cost_in_usd_ticks, 'usage: ' + JSON.stringify(usage)).to.equal(123000000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/upstream-usage-extended\",\n  \"input\": \"hi\",\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

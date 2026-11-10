@@ -1124,6 +1124,8 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 		TotalTokens:    cu.TotalTokens,
 		Cost:           cu.Cost,
 		CostInUsdTicks: cu.CostInUsdTicks,
+		VendorCost:     cu.VendorCost,
+		AudioSeconds:   copyFloat64Ptr(cu.AudioSeconds),
 	}
 
 	if cu.PromptTokensDetails != nil {
@@ -1166,6 +1168,8 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 		TotalTokens:      ru.TotalTokens,
 		Cost:             ru.Cost,
 		CostInUsdTicks:   ru.CostInUsdTicks,
+		VendorCost:       ru.VendorCost,
+		AudioSeconds:     copyFloat64Ptr(ru.AudioSeconds),
 	}
 
 	if ru.InputTokensDetails != nil {

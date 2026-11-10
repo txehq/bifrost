@@ -767,6 +767,20 @@ const wireAnswer = (path, body, bytes) => {
 	if (path === "/pp/google-cloud-tts/v1/text:synthesize") return cloudTTSAnswer(body);
 	if (path === "/pp/cp/v1/responses") return cpResponsesAnswerFor(body);
 	if (path === "/pp/cloudflare/accounts/acct-1/ai/v1/chat/completions") return cpCloudflareChat(body);
+	// TXE-6967: xAI reports its charge as cost_in_usd_ticks; upstream-usage-extended answers with it on chat and
+	// Responses, streamed and not, for the rows that read it back as vendor_cost.
+	if (path === "/pp/xai/v1/chat/completions" && body.model === "upstream-usage-extended") {
+		const completion = JSON.parse(behaviours["upstream-usage-extended"]().body);
+		return body.stream === true ? { status: 200, stream: streamChunks(completion, true) } : { status: 200, body: JSON.stringify(completion) };
+	}
+	if (path === "/pp/xai/v1/responses" && body.model === "upstream-usage-extended") {
+		const response = {
+			id: "resp_upstream_usage_extended", object: "response", created_at: 1, status: "completed", model: body.model,
+			output: [{ id: "msg_upstream_usage_extended", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hello", annotations: [] }] }],
+			usage: { input_tokens: 120, output_tokens: 48, total_tokens: 168, output_tokens_details: { reasoning_tokens: 12 }, cost_in_usd_ticks: extendedUsage.cost_in_usd_ticks },
+		};
+		return body.stream === true ? { status: 200, stream: sse([{ type: "response.completed", sequence_number: 0, response }]) } : { status: 200, body: JSON.stringify(response) };
+	}
 	// DeepSeek's Anthropic-compatible endpoint is {base}/anthropic/v1/messages (TXE-6548), under the same /pp/oc base its chat uses.
 	if (path === "/pp/xai/v1/messages" || path === "/pp/anthropic/v1/messages" || path === "/pp/oc/anthropic/v1/messages") {
 		if (body.model === "pp-fail") return { status: 400, body: JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "fixture refused" } }) };

@@ -201,6 +201,20 @@ Start the fixture and the isolated gateway as for content-length truncation abov
 make run-provider-harness-test PROVIDER=perplexity FEATURE="perplexity search usage" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
 ```
 
+## xAI vendor cost
+
+Folder 401 pins contract C5/C10 for TXE-6967. The config's `xai` provider points at the fixture's
+`/pp/xai`, where `upstream-usage-extended` reports `cost_in_usd_ticks: 123000000` on chat and Responses.
+Usage must carry `vendor_cost: {amount: 123000000, unit: "usd_ticks"}` next to the unchanged
+`cost_in_usd_ticks`: non-streamed, on the final usage frame of a chat stream, and on `response.completed` of
+a Responses stream, each on `/v1/...` and `/openai/v1/...`. Against a gateway without TXE-6967 only the
+`vendor_cost` assertion fails, on all six rows. Start the fixture and the isolated gateway as for content-length
+truncation above, then:
+
+```bash
+make run-provider-harness-test PROVIDER=xai FEATURE="xai vendor cost" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
+
 ## Provider 5xx failover and 429 retry-hint propagation
 
 These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live

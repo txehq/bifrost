@@ -1356,6 +1356,7 @@ type ResponsesResponseUsage struct {
 	NumSourcesUsed             *int                                 `json:"num_sources_used,omitempty"`
 	NumServerSideToolsUsed     *int                                 `json:"num_server_side_tools_used,omitempty"`
 	CostInUsdTicks             *int64                               `json:"cost_in_usd_ticks,omitempty"`
+	VendorCost                 *VendorCost                          `json:"vendor_cost,omitempty"` // money the vendor reported (fork, TXE-6967)
 	ServerSideToolUsageDetails *ResponsesServerSideToolUsageDetails `json:"server_side_tool_usage_details,omitempty"`
 	ContextDetails             *ResponsesContextDetails             `json:"context_details,omitempty"`
 
@@ -1364,7 +1365,13 @@ type ResponsesResponseUsage struct {
 
 // NormalizeProviderCost mirrors BifrostLLMUsage.NormalizeProviderCost for the responses path.
 func (u *ResponsesResponseUsage) NormalizeProviderCost() {
-	if u == nil || u.Cost != nil {
+	if u == nil {
+		return
+	}
+	if u.VendorCost == nil {
+		u.VendorCost = vendorCostFromUSDTicks(u.CostInUsdTicks)
+	}
+	if u.Cost != nil {
 		return
 	}
 	u.Cost = costFromUSDTicks(u.CostInUsdTicks)

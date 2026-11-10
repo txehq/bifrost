@@ -30,3 +30,13 @@ type VendorCost struct {
 	Amount float64        `json:"amount"`
 	Unit   VendorCostUnit `json:"unit"`
 }
+
+// vendorCostFromUSDTicks is xAI's reported charge, cost_in_usd_ticks, as a VendorCost in the vendor's own
+// unit (fork, TXE-6967, contract C5/C10): nil when the vendor reported no ticks, and a reported zero stays
+// amount 0, unlike costFromUSDTicks, which feeds pricing and skips non-positive counts.
+func vendorCostFromUSDTicks(ticks *int64) *VendorCost {
+	if ticks == nil {
+		return nil
+	}
+	return &VendorCost{Amount: float64(*ticks), Unit: VendorCostUnitUSDTicks}
+}

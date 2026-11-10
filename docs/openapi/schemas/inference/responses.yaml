@@ -804,6 +804,11 @@ ResponsesResponseUsage:
       $ref: "./usage.yaml#/BifrostCost"
     processed_tokens:
       $ref: "./usage.yaml#/BifrostLLMUsage/properties/processed_tokens"
+    vendor_cost:
+      $ref: "./usage.yaml#/VendorCost"
+      description: >
+        Money the provider reported for this request, in its own unit. Set only when the provider
+        reported it: xAI's cost_in_usd_ticks, as unit usd_ticks. On a stream it is on response.completed.
 
 ResponsesResponseInputTokens:
   type: object

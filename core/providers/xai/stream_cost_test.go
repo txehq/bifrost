@@ -3,11 +3,14 @@ package xai
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -235,4 +238,120 @@ func TestResponsesStreamPreservesProviderReportedCost(t *testing.T) {
 	if got, want := completed.Response.Usage.OutputTokensDetails.ReasoningTokens, 51; got != want {
 		t.Fatalf("reasoning tokens = %d, want %d", got, want)
 	}
+}
+
+// xaiUsageWithTicks is one xAI usage report carrying cost_in_usd_ticks, in chat and in Responses shape.
+const (
+	xaiChatUsageWithTicks      = `{"prompt_tokens":220,"completion_tokens":56,"total_tokens":276,"completion_tokens_details":{"reasoning_tokens":51},"cost_in_usd_ticks":5584000}`
+	xaiResponsesUsageWithTicks = `{"input_tokens":220,"output_tokens":56,"total_tokens":276,"output_tokens_details":{"reasoning_tokens":51},"cost_in_usd_ticks":5584000}`
+)
+
+// xaiStreamOrJSONServer answers a request whose body sets "stream": true with stream, and any other
+// request with body.
+func xaiStreamOrJSONServer(t *testing.T, body, stream string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(raw), `"stream":true`) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(w, stream)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, body)
+	}))
+}
+
+func newXAITestProvider(baseURL string) *XAIProvider {
+	client := &fasthttp.Client{ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second}
+	return &XAIProvider{client: client, streamingClient: client, networkConfig: schemas.NetworkConfig{BaseURL: baseURL}, logger: streamCostTestLogger{}}
+}
+
+func assertXAIVendorCost(t *testing.T, where string, got *schemas.VendorCost) {
+	t.Helper()
+	if got == nil || got.Amount != 5584000 || got.Unit != schemas.VendorCostUnitUSDTicks {
+		t.Fatalf("%s: vendor_cost = %+v, want {5584000 usd_ticks}", where, got)
+	}
+}
+
+// Contract C5/C10 (TXE-6967): xAI's cost_in_usd_ticks is the money it reported, so usage carries it as
+// vendor_cost {amount: ticks, unit: usd_ticks}, and a stream's final frame carries the same usage as the
+// non-streamed response of the same report, on chat and on Responses.
+func TestXAIVendorCostFromTicksStreamedAndNot(t *testing.T) {
+	ctx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	key := schemas.Key{Value: schemas.SecretVar{Val: "test-key"}}
+
+	t.Run("chat", func(t *testing.T) {
+		server := xaiStreamOrJSONServer(t,
+			`{"id":"chatcmpl-xai","object":"chat.completion","created":1,"model":"grok-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":`+xaiChatUsageWithTicks+`}`,
+			"data: {\"id\":\"chatcmpl-xai\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"grok-4.5\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"+
+				"data: {\"id\":\"chatcmpl-xai\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"grok-4.5\",\"choices\":[],\"usage\":"+xaiChatUsageWithTicks+"}\n\n"+
+				"data: [DONE]\n\n")
+		defer server.Close()
+		provider := newXAITestProvider(server.URL)
+		request := &schemas.BifrostChatRequest{Provider: schemas.XAI, Model: "grok-4.5", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}}
+
+		resp, bifrostErr := provider.ChatCompletion(ctx(), key, request)
+		if bifrostErr != nil {
+			t.Fatalf("chat completion failed: %v", bifrostErr.Error)
+		}
+		assertXAIVendorCost(t, "non-streamed", resp.Usage.VendorCost)
+
+		stream, bifrostErr := provider.ChatCompletionStream(ctx(), passthroughStreamCostPostHook, nil, key, request)
+		if bifrostErr != nil {
+			t.Fatalf("stream setup failed: %v", bifrostErr.Error)
+		}
+		var final *schemas.BifrostLLMUsage
+		for chunk := range stream {
+			if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Usage != nil {
+				final = chunk.BifrostChatResponse.Usage
+			}
+		}
+		if final == nil {
+			t.Fatal("stream emitted no usage")
+		}
+		assertXAIVendorCost(t, "final frame", final.VendorCost)
+		got, _ := sonic.Marshal(final)
+		want, _ := sonic.Marshal(resp.Usage)
+		if string(got) != string(want) {
+			t.Fatalf("final frame usage differs from non-streamed usage\n got: %s\nwant: %s", got, want)
+		}
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		completed := `{"id":"resp-xai","object":"response","created_at":1,"model":"grok-4.5","status":"completed","output":[],"usage":` + xaiResponsesUsageWithTicks + `}`
+		server := xaiStreamOrJSONServer(t, completed,
+			"data: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":"+completed+"}\n\n")
+		defer server.Close()
+		provider := newXAITestProvider(server.URL)
+		request := &schemas.BifrostResponsesRequest{Provider: schemas.XAI, Model: "grok-4.5", Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}}}
+
+		resp, bifrostErr := provider.Responses(ctx(), key, request)
+		if bifrostErr != nil {
+			t.Fatalf("responses failed: %v", bifrostErr.Error)
+		}
+		assertXAIVendorCost(t, "non-streamed", resp.Usage.VendorCost)
+
+		stream, bifrostErr := provider.ResponsesStream(ctx(), passthroughStreamCostPostHook, nil, key, request)
+		if bifrostErr != nil {
+			t.Fatalf("stream setup failed: %v", bifrostErr.Error)
+		}
+		var final *schemas.ResponsesResponseUsage
+		for chunk := range stream {
+			if r := chunk.BifrostResponsesStreamResponse; r != nil && r.Response != nil && r.Response.Usage != nil {
+				final = r.Response.Usage
+			}
+		}
+		if final == nil {
+			t.Fatal("response.completed carried no usage")
+		}
+		assertXAIVendorCost(t, "response.completed", final.VendorCost)
+		got, _ := sonic.Marshal(final)
+		want, _ := sonic.Marshal(resp.Usage)
+		if string(got) != string(want) {
+			t.Fatalf("response.completed usage differs from non-streamed usage\n got: %s\nwant: %s", got, want)
+		}
+	})
 }
