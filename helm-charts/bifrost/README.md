@@ -4,9 +4,16 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/txehq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.8, 2.1.52-sync.7, 2.1.52-sync.6, 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
+**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.9, 2.1.52-sync.8, 2.1.52-sync.7, 2.1.52-sync.6, 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
 
 ## Changelog
+
+### 2.1.52-sync.9 (prerelease)
+
+The prerelease chart for transport v2.4.0-sync.9. It adds three values and changes no default:
+
+- `bifrost.client.disableProviderJobAccounting`, `bifrost.client.disablePassthroughSseHeartbeat` and `bifrost.client.disableEncryptedReasoningRetry` render `client.disable_provider_job_accounting`, `client.disable_passthrough_sse_heartbeat` and `client.disable_encrypted_reasoning_retry` into `config.json` when set, `true` or `false` (TXE-7038). Unset, the key is left out and the gateway default (`false`) applies, so a chart that sets none of them renders as before. Until now a Helm deployment could set the switches only through `PUT /api/config`, and a later upgrade that changed the `client` section put them back to `false`.
+- `appVersion` is now `2.4.0-sync.9`, so an empty `image.tag` selects `v2.4.0-sync.9`. That transport refuses price-affecting extra params (TXE-7018, TXE-7031, TXE-7059), keeps price-affecting fields as sent in the compat plugin (TXE-7026) and OpenAI-compatible chat (TXE-6527), answers the first GET to a provider after its pooled connections went stale instead of returning 502, a defect v2.3.4 also has (TXE-7071), adds the image task routes with BFL image tasks (TXE-6431) and the `dashscope` and `bfl` providers (TXE-6590, TXE-6591), and has breaking changes listed in the transport changelog.
 
 ### 2.1.52-sync.8 (prerelease)
 

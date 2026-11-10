@@ -1,0 +1,15 @@
+---
+title: "v2.1.52-sync.9"
+description: "Helm v2.1.52-sync.9 prerelease changelog - 2026-11-11"
+---
+
+<Update label="Bifrost Helm" description="v2.1.52-sync.9 (prerelease)">
+
+## Changelog
+
+Prerelease of the txehq fork for transport v2.4.0-sync.9; the stable chart stays 2.1.51 until a stable version supersedes it. Install this one with `helm install --devel` or `--version 2.1.52-sync.9`.
+
+- Three new values set the fork's client switches (TXE-7038): `bifrost.client.disableProviderJobAccounting`, `bifrost.client.disablePassthroughSseHeartbeat` and `bifrost.client.disableEncryptedReasoningRetry`. When set, `true` or `false`, each renders its key (`client.disable_provider_job_accounting`, `client.disable_passthrough_sse_heartbeat`, `client.disable_encrypted_reasoning_retry`) into `config.json`. Unset, the key is left out and the gateway default (`false`) applies, so a chart that sets none of them renders as before. Until now a Helm deployment could set the switches only through `PUT /api/config`, and a later upgrade that changed the `client` section put them back to `false`.
+- `appVersion` is now `2.4.0-sync.9`, so an empty `image.tag` selects `v2.4.0-sync.9`. That transport refuses price-affecting extra params (TXE-7018, TXE-7031, TXE-7059), keeps price-affecting fields as sent in the compat plugin (TXE-7026) and OpenAI-compatible chat (TXE-6527), answers the first GET to a provider after its pooled connections went stale instead of returning 502, a defect v2.3.4 also has (TXE-7071), adds the image task routes with BFL image tasks (TXE-6431) and the `dashscope` and `bfl` providers (TXE-6590, TXE-6591), and fixes the vendor issues listed in the transport changelog. Read its breaking changes before upgrading: Go SDK callers on MiniMax and BytePlus must set the unified field as well as any extra param, price-affecting extra params are refused, the compat plugin no longer lowers max tokens, and `callback_url` on BytePlus and MiniMax requires the vendor's declaration.
+
+</Update>
