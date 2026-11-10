@@ -1348,6 +1348,9 @@ type ResponsesResponseUsage struct {
 	Iterations          []ResponsesResponseUsage       `json:"iterations,omitempty"`          // iterations field is sent by anthropic
 	ToolUsage           *ToolUsage                     `json:"tool_usage,omitempty"`          // Server-side tool call counts; moved to the response's top-level tool_usage on the wire
 	SearchContextSize   *string                        `json:"search_context_size,omitempty"` // Search context tier the vendor billed; mirrors BifrostLLMUsage.SearchContextSize
+	// ProcessedTokens mirrors BifrostLLMUsage.ProcessedTokens: the vendor's processed counts when
+	// input_tokens/output_tokens hold its billed counts (Cohere). Same object as on chat usage.
+	ProcessedTokens *ProcessedTokenUsage `json:"processed_tokens,omitempty"`
 
 	// xAI-specific usage fields
 	NumSourcesUsed             *int                                 `json:"num_sources_used,omitempty"`
