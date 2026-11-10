@@ -747,6 +747,46 @@ func TestGeminiBatchCreateRefusesWhatItCannotRun(t *testing.T) {
 		{"imagen image line", schemas.Ptr("imagen-4.0-generate-001"), `{"custom_id":"img-1","url":"/v1/images/generations","body":{"model":"imagen-4.0-generate-001","prompt":"a cat"}}`, "requests[0].url", "Imagen"},
 		{"line without a body", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"line-1","url":"/v1/chat/completions"}`, "requests[0].body", "body is required"},
 	}
+	t.Run("lines of two urls", func(t *testing.T) {
+		// A batch runs one url: settlement prices a batch as one operation, so a chat line
+		// beside an image line would be priced as the other.
+		vendor := newGeminiBatchVendor(t)
+		provider, keys := vendor.provider(false)
+		_, bifrostErr := provider.BatchCreate(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), keys[0], &schemas.BifrostBatchCreateRequest{
+			Provider: schemas.Gemini,
+			Model:    schemas.Ptr("gemini-2.5-flash-image"),
+			Requests: []schemas.BatchRequestItem{
+				batchLineFromJSON(t, `{"custom_id":"c-1","url":"/v1/chat/completions","body":{"messages":[{"role":"user","content":"hi"}]}}`),
+				batchLineFromJSON(t, `{"custom_id":"i-1","url":"/v1/images/generations","body":{"prompt":"a cat"}}`),
+			},
+		})
+		require.NotNil(t, bifrostErr)
+		require.NotNil(t, bifrostErr.StatusCode)
+		assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+		assert.Equal(t, "requests[1].url", bifrostErr.Error.Param)
+		assert.Contains(t, bifrostErr.Error.Message, "a batch runs one url")
+		assert.Empty(t, vendor.calls)
+	})
+	t.Run("a line may name the batch's model in another spelling", func(t *testing.T) {
+		for _, tc := range []struct{ line, batch string }{
+			{"gemini-2.5-flash", "publishers/google/models/gemini-2.5-flash"},
+			{"models/gemini-2.5-flash", "gemini-2.5-flash"},
+			{"gemini/gemini-2.5-flash", "gemini-2.5-flash"},
+			{"publishers/google/models/gemini-2.5-flash", "gemini-2.5-flash"},
+		} {
+			item := schemas.BatchRequestItem{CustomID: "l", Body: map[string]interface{}{"model": tc.line}}
+			assert.NoError(t, CheckBatchLineModel(item, schemas.Gemini, tc.batch, nil), "%s vs %s", tc.line, tc.batch)
+		}
+		aliased := schemas.BatchRequestItem{CustomID: "l", Body: map[string]interface{}{"model": "fast"}}
+		resolve := func(model string) string {
+			if model == "fast" {
+				return "gemini-2.5-flash"
+			}
+			return model
+		}
+		assert.NoError(t, CheckBatchLineModel(aliased, schemas.Gemini, "publishers/google/models/gemini-2.5-flash", resolve))
+		assert.Error(t, CheckBatchLineModel(aliased, schemas.Gemini, "gemini-2.5-pro", resolve))
+	})
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			vendor := newGeminiBatchVendor(t)
@@ -787,6 +827,12 @@ func TestGeminiBatchResultsReturnOpenAIShapeLines(t *testing.T) {
 	resp, bifrostErr := provider.BatchResults(ctx, keys, &schemas.BifrostBatchResultsRequest{Provider: schemas.Gemini, BatchID: "batches/abc123"})
 	require.Nil(t, bifrostErr, "a JOB_STATE_SUCCEEDED batch is finished")
 	require.Len(t, resp.Results, 3)
+	// This batch mixes chat and image lines, which a create through this gateway refuses. Its
+	// results are reported as image generation, which has no batch text rates, so settlement
+	// leaves it unpriced rather than price image lines as text.
+	assert.Equal(t, schemas.BatchEndpointImageGeneration, resp.Endpoint)
+	assert.Equal(t, schemas.BatchEndpointChatCompletions, AccumulateBatchResultsEndpoint(AccumulateBatchResultsEndpoint("", ""), schemas.BatchEndpointChatCompletions))
+	assert.Equal(t, schemas.BatchEndpointImageGeneration, AccumulateBatchResultsEndpoint("", schemas.BatchEndpointImageGeneration))
 	assert.False(t, resp.HasMore)
 	assert.Equal(t, []string{"GET /v1beta/batches/abc123"}, vendor.calls, "results are one upstream call")
 

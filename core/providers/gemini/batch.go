@@ -677,12 +677,62 @@ func CheckBatchLineModel(item schemas.BatchRequestItem, provider schemas.ModelPr
 	if !ok || lineModel == "" {
 		return nil
 	}
-	_, bare := schemas.ParseModelString(lineModel, provider)
-	bare = strings.TrimPrefix(bare, "models/")
-	if bare == batchModel || lineModel == batchModel || (resolve != nil && resolve(bare) == batchModel) {
+	// Both names are reduced to the bare model id before they are compared: a line may say
+	// gemini-2.5-flash where the batch says publishers/google/models/gemini-2.5-flash.
+	bareName := func(model string) string {
+		_, bare := schemas.ParseModelString(model, provider)
+		if i := strings.LastIndex(bare, "models/"); i >= 0 {
+			bare = bare[i+len("models/"):]
+		}
+		return bare
+	}
+	line, batch := bareName(lineModel), bareName(batchModel)
+	if line == batch || lineModel == batchModel {
 		return nil
 	}
+	if resolve != nil {
+		if resolved := resolve(line); resolved == batchModel || bareName(resolved) == batch {
+			return nil
+		}
+	}
 	return &schemas.BatchLineError{CustomID: item.CustomID, Param: "body.model", Message: fmt.Sprintf("model %s differs from the batch's model %s: a batch runs one model", lineModel, batchModel)}
+}
+
+// batchLineOperation is the operation a line's result is priced and converted as: a line
+// with no endpoint of its own (a body already in Gemini shape) is a chat line.
+func batchLineOperation(endpoint schemas.BatchEndpoint) schemas.BatchEndpoint {
+	if endpoint == "" {
+		return schemas.BatchEndpointChatCompletions
+	}
+	return endpoint
+}
+
+// CheckBatchLineOperation refuses a line whose operation differs from the batch's other
+// lines: a batch runs one url, and settlement prices a batch as one operation. batchOperation
+// holds the operation of the lines seen so far; it is set from the first line.
+func CheckBatchLineOperation(batchOperation *schemas.BatchEndpoint, item schemas.BatchRequestItem, lineEndpoint schemas.BatchEndpoint) error {
+	operation := batchLineOperation(lineEndpoint)
+	if *batchOperation == "" {
+		*batchOperation = operation
+		return nil
+	}
+	if *batchOperation == operation {
+		return nil
+	}
+	return &schemas.BatchLineError{CustomID: item.CustomID, Param: "url", Message: fmt.Sprintf("url %s differs from the batch's other lines (%s): a batch runs one url", operation, *batchOperation)}
+}
+
+// AccumulateBatchResultsEndpoint folds one result line's endpoint into the endpoint reported
+// for the batch's results, which is what settlement prices the batch as. Lines created
+// through this gateway share one operation. Results that still mix operations (a batch
+// created elsewhere) are reported as image generation, for which there are no batch text
+// rates, so such a batch is left unpriced rather than priced at the wrong rates.
+func AccumulateBatchResultsEndpoint(current, lineEndpoint schemas.BatchEndpoint) schemas.BatchEndpoint {
+	operation := batchLineOperation(lineEndpoint)
+	if current == "" || current == operation {
+		return operation
+	}
+	return schemas.BatchEndpointImageGeneration
 }
 
 // normalizeBatchBody converts camelCase usage keys (promptTokens, completionTokens,

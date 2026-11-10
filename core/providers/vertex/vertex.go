@@ -3606,9 +3606,7 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 			parseErrors = append(parseErrors, schemas.BatchError{Code: "parse_error", Message: err.Error()})
 			return
 		}
-		if endpoint == "" {
-			endpoint = lineEndpoint
-		}
+		endpoint = gemini.AccumulateBatchResultsEndpoint(endpoint, lineEndpoint)
 		results = append(results, item)
 	})
 	if pageErr != nil {

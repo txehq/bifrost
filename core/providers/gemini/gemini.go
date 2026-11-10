@@ -2691,12 +2691,16 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 			// Inline requests: each line is converted with the sync operation's converter,
 			// so it reaches Gemini with the parameters a sync request with the same body does.
 			geminiRequests := make([]GeminiBatchRequestItem, len(request.Requests))
+			var batchOperation schemas.BatchEndpoint
 			for i, bifrostItem := range request.Requests {
 				if err := CheckBatchLineModel(bifrostItem, schemas.Gemini, model, key.Aliases.Resolve); err != nil {
 					return nil, NewBatchLineBadRequestError(i, err)
 				}
 				lineBody, lineEndpoint, err := ToGeminiBatchLineRequest(ctx, bifrostItem, schemas.Gemini, model, request.Endpoint)
 				if err != nil {
+					return nil, NewBatchLineBadRequestError(i, err)
+				}
+				if err := CheckBatchLineOperation(&batchOperation, bifrostItem, lineEndpoint); err != nil {
 					return nil, NewBatchLineBadRequestError(i, err)
 				}
 
@@ -3559,10 +3563,17 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		}
 		batchResultsResp.HasMore = nextCursor != nil
 		batchResultsResp.NextCursor = nextCursor
-		// The lines of one batch share one url: report it as the batch's endpoint.
-		if metadata := inlinedResponses[0].Metadata; metadata != nil && metadata.Endpoint != "" {
-			batchResultsResp.Endpoint = schemas.BatchEndpoint(metadata.Endpoint)
+		// The batch's endpoint is the operation of its lines, read from every line of the
+		// batch (not only this page), so a page of chat lines cannot hide an image line.
+		endpoint := schemas.BatchEndpoint("")
+		for _, inlined := range inlinedResponses {
+			lineEndpoint := schemas.BatchEndpoint("")
+			if inlined.Metadata != nil {
+				lineEndpoint = schemas.BatchEndpoint(inlined.Metadata.Endpoint)
+			}
+			endpoint = AccumulateBatchResultsEndpoint(endpoint, lineEndpoint)
 		}
+		batchResultsResp.Endpoint = endpoint
 	}
 
 	if includeRaw {

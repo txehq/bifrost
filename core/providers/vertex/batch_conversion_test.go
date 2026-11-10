@@ -610,6 +610,7 @@ func TestVertexBatchLinesAreTheSyncRequest(t *testing.T) {
 			"embeddings url": {`{"custom_id":"e-1","url":"/v1/embeddings","body":{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}}`, "url", "/v1/embeddings"},
 			"another model":  {`{"custom_id":"l-1","url":"/v1/chat/completions","body":{"model":"gemini-2.5-pro","messages":[{"role":"user","content":"hi"}]}}`, "body.model", "gemini-2.5-pro"},
 			"no body":        {`{"custom_id":"l-1","url":"/v1/chat/completions"}`, "body", "body is required"},
+			"another url":    {`{"custom_id":"i-1","url":"/v1/images/generations","body":{"model":"gemini-2.5-flash","prompt":"a cat"}}`, "url", "a batch runs one url"},
 		} {
 			ok := parse(`{"custom_id":"ok","url":"/v1/chat/completions","body":{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}}`)
 			_, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{ok, parse(tc.line)}, "gemini-2.5-flash", schemas.BatchEndpointChatCompletions)
@@ -832,4 +833,14 @@ func TestVertexBatchOutputLineToResultItem(t *testing.T) {
 			require.Error(t, err, bad)
 		}
 	})
+}
+
+// A line that names the batch's model by its bare id is accepted when the batch names it by
+// its publisher path, which ToVertexBatchCreateRequest supports.
+func TestVertexBatchLineModelMatchesPublisherPath(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var item schemas.BatchRequestItem
+	require.NoError(t, sonic.UnmarshalString(`{"custom_id":"l-1","url":"/v1/chat/completions","body":{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}}`, &item))
+	_, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{item}, "publishers/google/models/gemini-2.5-flash", schemas.BatchEndpointChatCompletions)
+	require.NoError(t, err)
 }

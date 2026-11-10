@@ -360,6 +360,7 @@ func vertexConvertRequestsToJSONL(ctx *schemas.BifrostContext, key schemas.Key, 
 	isAnthropic := schemas.IsAnthropicModelFamily(ctx, model)
 
 	var buf bytes.Buffer
+	var batchOperation schemas.BatchEndpoint
 	for i, item := range requests {
 		body := item.Body
 		if body == nil {
@@ -415,6 +416,9 @@ func vertexConvertRequestsToJSONL(ctx *schemas.BifrostContext, key schemas.Key, 
 			}
 			body = converted
 			lineEndpoint = endpoint
+		}
+		if err := gemini.CheckBatchLineOperation(&batchOperation, item, lineEndpoint); err != nil {
+			return nil, withBatchLineIndex(err, i)
 		}
 
 		endpointLabel := vertexBatchEndpointLabelValues[lineEndpoint]
