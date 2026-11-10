@@ -8,8 +8,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
@@ -403,4 +406,196 @@ func assertSameJSON(t *testing.T, what, got, want string) {
 	if !reflect.DeepEqual(gotValue, wantValue) {
 		t.Errorf("%s:\n got: %s\nwant: %s", what, got, want)
 	}
+}
+
+// Bodies for the benchmarks: one short answer in each wire shape. The chat shapes are
+// what Kimi answered before TXE-6547, when Responses were converted to chat, so the
+// same benchmarks run on the earlier provider give the "before" figures.
+const (
+	benchResponsesRequest = `{"model":"moonshot/kimi-k3.1-pro","input":"Name one primary color."}`
+	benchResponsesBody    = `{"id":"resp_kimi","object":"response","created_at":1,"status":"completed","model":"kimi-k3.1-pro","output":[{"type":"message","id":"msg_kimi","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Red.","annotations":[]}]}],"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":0},"output_tokens":2,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":14}}`
+	benchChatBody         = `{"id":"chatcmpl-kimi","object":"chat.completion","created":1,"model":"kimi-k3.1-pro","choices":[{"index":0,"message":{"role":"assistant","content":"Red."},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":2,"total_tokens":14}}`
+	benchMessagesBody     = `{"id":"msg_kimi","type":"message","role":"assistant","model":"kimi-k3.1-pro","content":[{"type":"text","text":"Red."}],"stop_reason":"end_turn","usage":{"input_tokens":12,"output_tokens":2}}`
+	benchResponsesStream  = "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_kimi\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"kimi-k3.1-pro\",\"output\":[]}}\n\n" +
+		"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"output_index\":0,\"content_index\":0,\"item_id\":\"msg_kimi\",\"delta\":\"Red.\"}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":" + benchResponsesBody + "}\n\n"
+	benchChatStream = "data: {\"id\":\"chatcmpl-kimi\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"kimi-k3.1-pro\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Red.\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-kimi\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"kimi-k3.1-pro\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: {\"id\":\"chatcmpl-kimi\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"kimi-k3.1-pro\",\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":2,\"total_tokens\":14}}\n\n" +
+		"data: [DONE]\n\n"
+	benchMessagesStream = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_kimi\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"kimi-k3.1-pro\",\"content\":[],\"usage\":{\"input_tokens\":12,\"output_tokens\":1}}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Red.\"}}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+)
+
+// benchMoonshot returns a provider whose base URL is a local server that answers each
+// Kimi path in its own wire shape, buffered or streamed as the request asks.
+func benchMoonshot(b *testing.B) *moonshot.MoonshotProvider {
+	b.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		buffered, streamed := benchChatBody, benchChatStream
+		switch r.URL.Path {
+		case "/v1/responses":
+			buffered, streamed = benchResponsesBody, benchResponsesStream
+		case "/anthropic/v1/messages":
+			buffered, streamed = benchMessagesBody, benchMessagesStream
+		}
+		if gjson.GetBytes(body, "stream").Bool() {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, streamed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, buffered)
+	}))
+	b.Cleanup(server.Close)
+	provider, err := moonshot.NewMoonshotProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{
+		BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30, AllowPrivateNetwork: true,
+	}}, bifrost.NewNoOpLogger())
+	if err != nil {
+		b.Fatalf("NewMoonshotProvider: %v", err)
+	}
+	return provider
+}
+
+func benchMoonshotResponsesRequest(b *testing.B) *schemas.BifrostResponsesRequest {
+	b.Helper()
+	var parsed openai.OpenAIResponsesRequest
+	if err := schemas.Unmarshal([]byte(benchResponsesRequest), &parsed); err != nil {
+		b.Fatalf("parse Responses request: %v", err)
+	}
+	return parsed.ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+}
+
+// BenchmarkMoonshotResponses is one buffered Responses round trip against a local
+// server: the request encode, the HTTP call and the response decode. Since TXE-6547
+// it is one Responses call; before, it was a conversion to chat and back.
+func BenchmarkMoonshotResponses(b *testing.B) {
+	provider := benchMoonshot(b)
+	key := moonshotTestKey()
+	request := benchMoonshotResponsesRequest(b)
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := provider.Responses(ctx, key, request); bifrostErr != nil {
+			b.Fatalf("Responses: %+v", bifrostErr.Error)
+		}
+		ctx.Cancel()
+	}
+}
+
+// BenchmarkMoonshotMessagesPassthrough is one buffered native Messages round trip:
+// the body is forwarded as it is and Kimi's body is returned as it is.
+func BenchmarkMoonshotMessagesPassthrough(b *testing.B) {
+	provider := benchMoonshot(b)
+	key := moonshotTestKey()
+	request := &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: "/v1/messages", Body: []byte(moonshotMessagesBody(false))}
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := provider.Passthrough(ctx, key, request); bifrostErr != nil {
+			b.Fatalf("Passthrough: %+v", bifrostErr.Error)
+		}
+		ctx.Cancel()
+	}
+}
+
+// moonshotStreamBench is one measurement of a stream benchmark, taken once per process.
+type moonshotStreamBench struct {
+	once                             sync.Once
+	nsPerOp, bytesPerOp, allocsPerOp float64
+	err                              string
+}
+
+// report measures a fixed batch of streams once per process and reports the per-stream
+// figures under the standard units, whatever b.N and -count are. A finished stream
+// leaves its connection closed, and a closed loopback connection keeps its ephemeral
+// port in TIME_WAIT for tens of seconds: a loop of b.N streams runs the host out of
+// ports within seconds, for every process on it. runOne returns "" when a stream
+// arrived whole. The figures include the connection and the in-process test server.
+func (m *moonshotStreamBench) report(b *testing.B, runOne func() string) {
+	const streams = 200
+	m.once.Do(func() {
+		if m.err = runOne(); m.err != "" { // warm up outside the measurement
+			return
+		}
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		start := time.Now()
+		for range streams {
+			if m.err = runOne(); m.err != "" {
+				return
+			}
+		}
+		elapsed := time.Since(start)
+		runtime.ReadMemStats(&after)
+		m.nsPerOp = float64(elapsed.Nanoseconds()) / streams
+		m.bytesPerOp = float64(after.TotalAlloc-before.TotalAlloc) / streams
+		m.allocsPerOp = float64(after.Mallocs-before.Mallocs) / streams
+	})
+	if m.err != "" {
+		b.Fatal(m.err)
+	}
+	b.ReportMetric(m.nsPerOp, "ns/op")
+	b.ReportMetric(m.bytesPerOp, "B/op")
+	b.ReportMetric(m.allocsPerOp, "allocs/op")
+}
+
+var (
+	responsesStreamBench moonshotStreamBench
+	messagesStreamBench  moonshotStreamBench
+)
+
+// BenchmarkMoonshotResponsesStream is one streamed Responses request, from the request
+// to the closed channel.
+func BenchmarkMoonshotResponsesStream(b *testing.B) {
+	provider := benchMoonshot(b)
+	key := moonshotTestKey()
+	request := benchMoonshotResponsesRequest(b)
+	responsesStreamBench.report(b, func() string {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		defer ctx.Cancel()
+		stream, bifrostErr := provider.ResponsesStream(ctx, moonshotPassthroughPostHook, nil, key, request)
+		if bifrostErr != nil {
+			return "ResponsesStream: " + bifrostErr.Error.Message
+		}
+		completed := false
+		for chunk := range stream {
+			if chunk.BifrostResponsesStreamResponse != nil && chunk.BifrostResponsesStreamResponse.Type == schemas.ResponsesStreamResponseTypeCompleted {
+				completed = true
+			}
+		}
+		if !completed {
+			return "stream ended without response.completed"
+		}
+		return ""
+	})
+}
+
+// BenchmarkMoonshotMessagesPassthroughStream is one streamed native Messages request,
+// from the request to the closed channel.
+func BenchmarkMoonshotMessagesPassthroughStream(b *testing.B) {
+	provider := benchMoonshot(b)
+	key := moonshotTestKey()
+	request := &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: "/v1/messages", Body: []byte(moonshotMessagesBody(true))}
+	messagesStreamBench.report(b, func() string {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		defer ctx.Cancel()
+		stream, bifrostErr := provider.PassthroughStream(ctx, moonshotPassthroughPostHook, nil, key, request)
+		if bifrostErr != nil {
+			return "PassthroughStream: " + bifrostErr.Error.Message
+		}
+		relayed := 0
+		for chunk := range stream {
+			if chunk.BifrostPassthroughResponse != nil {
+				relayed += len(chunk.BifrostPassthroughResponse.Body)
+			}
+		}
+		if relayed != len(benchMessagesStream) {
+			return fmt.Sprintf("relayed %d bytes, want %d", relayed, len(benchMessagesStream))
+		}
+		return ""
+	})
 }
