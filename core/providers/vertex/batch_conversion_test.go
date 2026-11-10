@@ -68,7 +68,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 		assert.Equal(t, "req-1", labels[vertexBatchCustomIDLabel])
 	})
 
-	t.Run("OmitsLabelsWhenNoCustomID", func(t *testing.T) {
+	t.Run("OmitsCustomIDLabelWhenNoCustomID", func(t *testing.T) {
 		requests := []schemas.BatchRequestItem{
 			{
 				Body: map[string]interface{}{
@@ -85,7 +85,9 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 		lines := parseVertexJSONLLines(t, data)
 		require.Len(t, lines, 1)
 		request := lines[0]["request"].(map[string]interface{})
-		assert.NotContains(t, request, "labels")
+		// A converted line still carries its url, so its result converts back; a line with
+		// no custom_id carries no custom_id label.
+		assert.Equal(t, map[string]interface{}{vertexBatchEndpointLabel: "chat_completions"}, request["labels"])
 	})
 
 	t.Run("PassesThroughNativeBodyVerbatim", func(t *testing.T) {
