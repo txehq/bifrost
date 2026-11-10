@@ -1486,7 +1486,7 @@ func BenchmarkGeminiEmbeddingBatchLineConversion(b *testing.B) {
 			}
 		}
 	})
-	b.Run("generateContent job decode and embedding sniff", func(b *testing.B) {
+	b.Run("generateContent job decode, embedding sniff and grouping check", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			var decoded GeminiBatchJobResponse
@@ -1496,6 +1496,9 @@ func BenchmarkGeminiEmbeddingBatchLineConversion(b *testing.B) {
 			_, lines := geminiBatchOutput(&decoded)
 			if err := sniffGeminiEmbeddingResponses(chatJob, lines); err != nil || len(lines) != 3 || lines[0].EmbedResponse != nil {
 				b.Fatalf("sniff: %v", err)
+			}
+			if hasGeminiMultiInputLines(lines) {
+				b.Fatal("a generateContent job has no multi-input line to group")
 			}
 		}
 	})

@@ -232,6 +232,18 @@ type geminiInlinedLine struct {
 	start, end int
 }
 
+// hasGeminiMultiInputLines reports whether any inline response says it is one of several
+// requests a line was sent as. It allocates nothing, so a batch with no such line is paged
+// without grouping.
+func hasGeminiMultiInputLines(inlined []GeminiInlinedResponse) bool {
+	for i := range inlined {
+		if inlined[i].Metadata != nil && inlined[i].Metadata.InputCount != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // groupGeminiInlinedResponses splits a batch's inline responses into the lines they answer.
 // A response is a line of its own unless its metadata says it is the first of several
 // requests one embedding line was sent as; the responses that follow it with the same key
