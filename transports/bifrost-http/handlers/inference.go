@@ -408,6 +408,8 @@ var batchCreateParamsKnownFields = map[string]bool{
 	"endpoint":          true,
 	"completion_window": true,
 	"metadata":          true,
+
+	"output_expires_after": true,
 }
 
 var containerCreateParamsKnownFields = map[string]bool{
@@ -770,6 +772,29 @@ type BatchCreateRequest struct {
 	Endpoint         string                     `json:"endpoint,omitempty"`          // e.g., "/v1/chat/completions"
 	CompletionWindow string                     `json:"completion_window,omitempty"` // e.g., "24h"
 	Metadata         map[string]string          `json:"metadata,omitempty"`
+	// OutputExpiresAfter is when the vendor expires the batch's output and error files
+	// (OpenAI and Azure).
+	OutputExpiresAfter *schemas.BatchExpiresAfter `json:"output_expires_after,omitempty"`
+}
+
+// toBifrostBatchCreateRequest maps the unified route's body onto the Bifrost batch create
+// request. Every field of BatchCreateRequest is carried: one left out here is silently
+// dropped before any provider sees it.
+func (req *BatchCreateRequest) toBifrostBatchCreateRequest(provider schemas.ModelProvider, model *string, extraParams map[string]any) *schemas.BifrostBatchCreateRequest {
+	return &schemas.BifrostBatchCreateRequest{
+		Provider:           provider,
+		Model:              model,
+		InputFileID:        req.InputFileID,
+		InputBlob:          req.InputBlob,
+		OutputFolder:       req.OutputFolder,
+		DisplayName:        req.DisplayName,
+		Requests:           req.Requests,
+		Endpoint:           schemas.BatchEndpoint(req.Endpoint),
+		CompletionWindow:   req.CompletionWindow,
+		Metadata:           req.Metadata,
+		OutputExpiresAfter: req.OutputExpiresAfter,
+		ExtraParams:        extraParams,
+	}
 }
 
 // BatchListRequest is a bifrost batch list request
@@ -3966,19 +3991,7 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Build Bifrost batch create request
-	bifrostBatchReq := &schemas.BifrostBatchCreateRequest{
-		Provider:         schemas.ModelProvider(provider),
-		Model:            model,
-		InputFileID:      req.InputFileID,
-		InputBlob:        req.InputBlob,
-		OutputFolder:     req.OutputFolder,
-		DisplayName:      req.DisplayName,
-		Requests:         req.Requests,
-		Endpoint:         schemas.BatchEndpoint(req.Endpoint),
-		CompletionWindow: req.CompletionWindow,
-		Metadata:         req.Metadata,
-		ExtraParams:      extraParams,
-	}
+	bifrostBatchReq := req.toBifrostBatchCreateRequest(provider, model, extraParams)
 
 	// Convert context
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
@@ -4032,12 +4045,20 @@ func (h *CompletionHandler) batchList(ctx *fasthttp.RequestCtx) {
 		before = &s
 	}
 
+	// filter is the vendor's own list filter, sent unchanged (Vertex: labels.key=value).
+	var filter *string
+	if filterStr := ctx.QueryArgs().Peek("filter"); len(filterStr) > 0 {
+		s := string(filterStr)
+		filter = &s
+	}
+
 	// Build Bifrost batch list request
 	bifrostBatchReq := &schemas.BifrostBatchListRequest{
 		Provider: schemas.ModelProvider(provider),
 		Limit:    limit,
 		After:    after,
 		BeforeID: before,
+		Filter:   filter,
 	}
 
 	// Convert context
@@ -4187,10 +4208,18 @@ func (h *CompletionHandler) batchResults(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	limit, after, pagingErr := parseBatchResultsPaging(ctx.QueryArgs())
+	if pagingErr != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, pagingErr.Error())
+		return
+	}
+
 	// Build Bifrost batch results request
 	bifrostBatchReq := &schemas.BifrostBatchResultsRequest{
 		Provider: schemas.ModelProvider(provider),
 		BatchID:  batchID,
+		Limit:    limit,
+		After:    after,
 	}
 
 	// Convert context
@@ -4215,6 +4244,50 @@ func (h *CompletionHandler) batchResults(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, resp)
+}
+
+// parseBatchResultsPaging reads the paging query of GET /v1/batches/{batch_id}/results.
+// limit is the page size in result lines; without it the whole result set is returned,
+// as before paging existed. after is the next_cursor of the previous page.
+func parseBatchResultsPaging(args *fasthttp.Args) (int, *string, error) {
+	limit := 0
+	if limitStr := args.Peek("limit"); len(limitStr) > 0 {
+		n, err := strconv.Atoi(string(limitStr))
+		if err != nil || n <= 0 {
+			return 0, nil, fmt.Errorf("limit must be a positive integer")
+		}
+		limit = n
+	}
+	var after *string
+	if afterStr := args.Peek("after"); len(afterStr) > 0 {
+		s := string(afterStr)
+		after = &s
+	}
+	return limit, after, nil
+}
+
+// parseFileExpiresAfter reads OpenAI's expires_after[anchor] and expires_after[seconds]
+// multipart fields of a file upload. Both absent is no expiry; one without the other, or a
+// seconds value that is not a positive integer, is an error rather than a dropped field.
+func parseFileExpiresAfter(values map[string][]string) (*schemas.FileExpiresAfter, error) {
+	first := func(name string) string {
+		if vals := values[name]; len(vals) > 0 {
+			return strings.TrimSpace(vals[0])
+		}
+		return ""
+	}
+	anchor, secondsStr := first("expires_after[anchor]"), first("expires_after[seconds]")
+	if anchor == "" && secondsStr == "" {
+		return nil, nil
+	}
+	if anchor == "" || secondsStr == "" {
+		return nil, fmt.Errorf("expires_after needs both expires_after[anchor] and expires_after[seconds]")
+	}
+	seconds, err := strconv.Atoi(secondsStr)
+	if err != nil || seconds <= 0 {
+		return nil, fmt.Errorf("expires_after[seconds] must be a positive integer")
+	}
+	return &schemas.FileExpiresAfter{Anchor: anchor, Seconds: seconds}, nil
 }
 
 // encodeStorageFileID makes a storage-URI file id (gs://...) opaque and path-safe so
@@ -4328,7 +4401,12 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 
 	// Collect unknown form fields as extra params (multipart — cannot use extractExtraParams which expects JSON).
 	// gcs_bucket/gcs_prefix are consumed into StorageConfig above; other providers (e.g. Bedrock s3_bucket) still flow through here.
-	fileUploadKnownFields := map[string]bool{"file": true, "purpose": true, "provider": true, "filename": true, "content_type": true, "gcs_bucket": true, "gcs_prefix": true}
+	fileUploadKnownFields := map[string]bool{"file": true, "purpose": true, "provider": true, "filename": true, "content_type": true, "gcs_bucket": true, "gcs_prefix": true, "expires_after[anchor]": true, "expires_after[seconds]": true}
+	expiresAfter, expiresErr := parseFileExpiresAfter(form.Value)
+	if expiresErr != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, expiresErr.Error())
+		return
+	}
 	extraParams := map[string]interface{}{}
 	for k, vals := range form.Value {
 		if !fileUploadKnownFields[k] && len(vals) > 0 && vals[0] != "" {
@@ -4344,6 +4422,7 @@ func (h *CompletionHandler) fileUpload(ctx *fasthttp.RequestCtx) {
 		Purpose:       schemas.FilePurpose(purpose),
 		ContentType:   contentType,
 		StorageConfig: storageConfig,
+		ExpiresAfter:  expiresAfter,
 		ExtraParams:   extraParams,
 	}
 

@@ -233,6 +233,10 @@ type BifrostBatchListRequest struct {
 	PageSize   int     `json:"page_size,omitempty"`   // For Gemini pagination
 	NextCursor *string `json:"next_cursor,omitempty"` // For Gemini pagination
 
+	// Filter is the vendor's own list filter, sent unchanged where the vendor has one
+	// (Vertex: `labels.key=value`). Providers without a list filter ignore it.
+	Filter *string `json:"filter,omitempty"`
+
 	// Extra parameters for provider-specific features
 	ExtraParams map[string]any `json:"-"`
 }
@@ -373,6 +377,12 @@ type BifrostBatchResultsRequest struct {
 	Provider ModelProvider `json:"provider"`
 	Model    *string       `json:"model"`
 	BatchID  string        `json:"batch_id"` // ID of the batch to get results for
+
+	// Limit is the page size in result lines. Zero returns the whole result set in one
+	// response, as before paging existed; a caller that must not hold a whole result file
+	// in memory sets it. After is the NextCursor of the previous page.
+	Limit int     `json:"limit,omitempty"`
+	After *string `json:"after,omitempty"`
 
 	RawRequestBody []byte `json:"-"` // Raw request body (not serialized)
 
