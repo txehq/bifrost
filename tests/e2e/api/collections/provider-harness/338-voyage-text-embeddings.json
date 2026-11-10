@@ -1,6 +1,6 @@
 {
   "name": "338. Voyage text embeddings",
-  "description": "TXE-6436: unified text embeddings, usage and unsupported parameters. Fixture rows use providerErrorFixture=1 with provider-error-fixture.config.json and provider-error-fixture.mjs; voyageFixtureUrl overrides the fixture URL when remapped to a free local port. The fixture counts the entire multi-input batch on both 200 and 500. Live rows cover all three price tiers. No rerank, multimodal or native Voyage route.",
+  "description": "TXE-6436: unified text embeddings, usage and unsupported parameters. Fixture rows use providerErrorFixture=1 with provider-error-fixture.config.json and provider-error-fixture.mjs; voyageFixtureUrl overrides the fixture URL when remapped to a free local port. The fixture counts the entire multi-input batch on both 200 and 500. Live rows cover all three price tiers. The neutral embeddings route preserves explicit extra_params as a nested vendor field; the OpenAI-compatible route promotes it and rejects model overrides. No rerank, multimodal or native Voyage route.",
   "item": [
     {
       "name": "Voyage embeddings /v1/embeddings voyage-4",
@@ -357,14 +357,23 @@
       }
     },
     {
-      "name": "[EXPECT-400] Voyage embeddings structural extra_params rejected /v1/embeddings voyage-4-lite",
+      "name": "Voyage embeddings native nested extra_params preserve authorized model fixture /v1/embeddings voyage-4-lite",
       "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+            ]
+          }
+        },
         {
           "listen": "test",
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test('extras cannot override the authorized Voyage model', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(400); pm.expect(b.error.param).to.equal('extra_params.model'); });"
+              "pm.test('native route does not promote a nested model override', function () { var b = pm.response.json(); pm.expect(pm.response.code, pm.response.text()).to.equal(200); var raw = b.extra_fields.raw_request; if (typeof raw === 'string') { raw = JSON.parse(raw); } pm.expect(raw.model).to.equal('voyage-4-lite'); pm.expect(raw.extra_params.model).to.equal('voyage-4-large'); });"
             ]
           }
         }
@@ -383,6 +392,10 @@
           {
             "key": "x-bf-api-key",
             "value": "Voyage API Key"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
           }
         ],
         "url": "{{baseUrl}}/v1/embeddings",
