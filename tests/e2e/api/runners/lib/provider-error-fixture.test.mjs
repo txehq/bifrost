@@ -569,3 +569,33 @@ test("Cloud Text-to-Speech answers text:synthesize by the voice name", async (t)
   assert.equal(silent.status, 200);
   assert.deepEqual(await silent.json(), {});
 });
+
+// The Seedance task routes (TXE-6426, provider-harness folder 413): a query answers the task whose state its id
+// names, a create is kept in /__wire, and every query and DELETE is counted per task id.
+test("seedance task routes answer by task id and count queries and deletes", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  const tasks = `${base}/pp/byteplus/api/v3/contents/generations/tasks`;
+  const hits = async () => (await (await fetch(`${base}/__hits`)).json()).data[0].hits;
+
+  const created = await post({ model: "dreamina-seedance-2-0-fast-260128", content: [{ type: "text", text: "a boat" }] }, "/pp/byteplus/api/v3/contents/generations/tasks");
+  assert.deepEqual(await created.json(), { id: "cgt-fixture-video-task" });
+
+  const done = await (await fetch(`${tasks}/cgt-fixture-succeeded`)).json();
+  assert.equal(done.status, "succeeded");
+  assert.deepEqual(done.usage, { completion_tokens: 108900, total_tokens: 108900 });
+  assert.equal(done.content.video_url, "https://fixture.invalid/seedance/video.mp4");
+  assert.equal((await (await fetch(`${tasks}/cgt-fixture-expired`)).json()).status, "expired");
+  assert.equal((await (await fetch(`${tasks}/cgt-fixture-failed`)).json()).error.code, "OutputVideoSensitiveContentDetected");
+
+  const deleted = await fetch(`${tasks}/cgt-fixture-queued`, { method: "DELETE" });
+  assert.equal(deleted.status, 200);
+  assert.deepEqual(await hits(), {
+    "seedance.retrieve cgt-fixture-succeeded": 1,
+    "seedance.retrieve cgt-fixture-expired": 1,
+    "seedance.retrieve cgt-fixture-failed": 1,
+    "seedance.delete cgt-fixture-queued": 1,
+  });
+  const wire = (await (await fetch(`${base}/__wire`)).json()).data[0].calls;
+  assert.deepEqual(wire.map((c) => c.path), ["/pp/byteplus/api/v3/contents/generations/tasks"]);
+});

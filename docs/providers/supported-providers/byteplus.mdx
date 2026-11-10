@@ -247,7 +247,8 @@ curl -X POST http://localhost:8080/v1/videos \
 | Get status | `GET /v1/videos/{id}` | Poll until `status: completed`. Ark keeps task records for 7 days. |
 | List | `GET /v1/videos` | `limit` sets the page size. Ark pages by number, so an `after` cursor is rejected with a 400. |
 | Download content | `GET /v1/videos/{id}/content` | Fetches the video from the task's signed URL, which expires after 24 hours. The URL must resolve to a public address, the file can be up to 256 MiB, and it is served with a `video/*` content type. |
-| Cancel or delete | `DELETE /v1/videos/{id}` | Cancels a queued task or deletes a finished one's record |
+| Cancel | `POST /v1/videos/{id}/cancel` | Cancels a task that is still queued and returns it with `status: cancelled`. Bifrost queries the task once and sends Ark's `DELETE` only while Ark reports it `queued`. In any other state, or when Ark refuses the cancel because the task has started, the answer is `400` with `error_type: provider_cancel_unsupported` and nothing is deleted. |
+| Delete | `DELETE /v1/videos/{id}` | Ark's own `DELETE`: cancels a queued task or deletes a finished one's record. Use the cancel route to cancel safely. |
 
 ## Parameter mapping
 
@@ -257,18 +258,19 @@ curl -X POST http://localhost:8080/v1/videos \
 | `input_reference` | `content[]` image item with role `first_frame` | Image to video |
 | `video_uri` | `content[]` video item with role `reference_video` | Models that accept reference video only |
 | `output_format` | `output_format` | `mp4` (default) or `mov`. Seedance 2.5 only. |
-| `seconds` | `duration` | Rounded to whole seconds |
-| `size` | `resolution` + `ratio` | The short side picks `480p`, `720p` or `1080p`, and the shape picks the closest ratio |
-| `seed` | `seed` | |
-| `audio` | `generate_audio` | Models with audio output only |
-| `resolution` | `resolution` | Unified field. Overrides the tier derived from `size`. |
-| `aspect_ratio` | `ratio` | Unified field. Overrides the ratio derived from `size`. Also accepts `adaptive`. Ark's own name, `ratio`, is accepted as an extra parameter only together with `aspect_ratio` and the same value. |
+| `seconds` | `duration` | Whole seconds from `2` to `15`, or `-1` to let the model choose the length. A fractional value or one outside that range is refused with a `400`; it is never rounded. Ark refuses a value its model does not take. |
+| `size` | `resolution` + `ratio` | Must name a tier and ratio exactly: the short side is `480`, `720` or `1080` and the long side is that tier at `21:9`, `16:9`, `4:3`, `1:1`, `3:4` or `9:16`, so `1280x720` is `720p` at `16:9`. Any other size is refused with a `400`; no nearest tier or ratio is picked. |
+| `resolution`, `aspect_ratio` | `resolution`, `ratio` | The direct way to choose them. `aspect_ratio` also accepts `adaptive`. Sent together with a `size` that disagrees, the request is refused with a `400`. |
 | `last_frame` | `content[]` image item with role `last_frame` | |
 | `reference_images` | `content[]` image items with role `reference_image` | Can't be combined with first or last frame images |
+| `callback_url` | `callback_url` | Sent to Ark unchanged. Ark's callbacks are unsigned. |
+| `expires_after_seconds` | `execution_expires_after` | The task's total deadline, `3600` to `259200` seconds. A value outside that range is refused with a `400`. |
+| `seed` | `seed` | |
+| `audio` | `generate_audio` | Models with audio output only |
+| `extra_params.ratio` | `ratio` | Ark's own name for `aspect_ratio`. Accepted as an extra parameter only together with `aspect_ratio` and the same value. |
 | `extra_params.reference_videos` | `content[]` video items with role `reference_video` | Added after `video_uri`. Seedance 2.5 takes up to 10, Seedance 2.0 up to 3. |
 | `extra_params.reference_audios` | `content[]` audio items with role `reference_audio` | `wav` or `mp3`. Seedance 2.5 and 2.0 only. |
 | `extra_params.draft_task_id` | `content[]` draft task item | Turns a draft into the final video. `prompt` is optional when it is set. |
-| `callback_url` | not sent | A task control field. Refused with `400` `caller_unsupported_parameter`, as a request field or as an extra parameter, because this provider does not declare it. |
 
 `aspect_ratio`, `resolution`, `last_frame` and `reference_images` are unified request fields: send them as the request's own fields. Naming one only among the extra parameters is refused with `400` `caller_unsupported_parameter`, because a field that affects the price must be visible on the request. Go SDK callers set the field on `Params` and keep the same value in `ExtraParams`, where this provider's converter reads it; the HTTP routes do that for you.
 
@@ -280,4 +282,16 @@ To work from a draft, create a task with `draft: true` at `480p`, then create a 
 
 A task reports its `size` as `WIDTHxHEIGHT`, built from the resolution tier and ratio Ark returns: `720p` at `16:9` is `1280x720`. It is the nominal size of the tier, not the exact pixel grid Seedance renders, and it is what selects a per-resolution video rate. When Ark reports no ratio or `adaptive`, no `size` is returned and pricing uses the `size` of the original request, if it had one.
 
-Failed, cancelled and expired tasks all come back as `status: failed`, with Ark's error code when it gives one. Model availability differs by region, so check the ModelArk console before pointing video traffic at a non-default region.
+## Task object
+
+| Field | Source |
+|-------|--------|
+| `status`, `provider_status` | Ark's task state, one to one: `queued` → `queued`, `running` → `in_progress`, `succeeded` → `completed`, `failed` → `failed`, `cancelled` → `cancelled`, `expired` → `expired`. `provider_status` is Ark's own word. A state Bifrost does not know reads `in_progress`. |
+| `usage.output_tokens` | Ark's `usage.completion_tokens`, the quantity Ark bills a Seedance task by |
+| `videos[]` | `type: "url"` entries with Ark's signed links |
+| `completed_at`, `expires_at` | Ark's `updated_at` on a succeeded task, and that time plus 24 hours, the lifetime of Ark's links |
+| `error`, `content_filter` | A failed task carries Ark's error code and message. When the code is a moderation refusal such as `OutputVideoSensitiveContentDetected`, `content_filter` reports one filtered item with that code as the reason. |
+
+A create that Ark refuses for its input (`InputTextSensitiveContentDetected`, `InputImageSensitiveContentDetected`) comes back with Ark's status and code and `error_type: caller_content_filtered`.
+
+`client_reference_id`, `output_storage_uri` and the upscale fields have no Ark field, so a request that sets one is refused with `400` `caller_unsupported_parameter` before Ark is called. Model availability differs by region, so check the ModelArk console before pointing video traffic at a non-default region.
