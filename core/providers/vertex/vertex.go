@@ -2837,37 +2837,35 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	if len(videoResp.Videos) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
 	}
-	var content []byte
-	var latency time.Duration
-	var providerResponseHeaders map[string]string
-	contentType := "video/mp4"
-	// Check if it's a data URL (base64-encoded video)
-	if videoResp.Videos[0].Type == schemas.VideoOutputTypeBase64 && videoResp.Videos[0].Base64Data != nil {
-		// Decode base64 content
+	video := videoResp.Videos[0]
+	downloadFailed := func(resp *fasthttp.Response) *schemas.BifrostError {
+		return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil)
+	}
+	switch {
+	case video.Type == schemas.VideoOutputTypeBase64 && video.Base64Data != nil:
+		// The bytes arrived inline in the operation.
 		startTime := time.Now()
-		decoded, err := base64.StdEncoding.DecodeString(*videoResp.Videos[0].Base64Data)
+		decoded, err := base64.StdEncoding.DecodeString(*video.Base64Data)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError("failed to decode base64 video data", err)
 		}
-		content = decoded
-		contentType = videoResp.Videos[0].ContentType
-		latency = time.Since(startTime)
-	} else if videoResp.Videos[0].Type == schemas.VideoOutputTypeURL && videoResp.Videos[0].URL != nil {
+		return providerUtils.NewVideoContentResponse(request, request.ID, decoded, video.ContentType, time.Since(startTime)), nil
+	case video.URL != nil && strings.HasPrefix(*video.URL, "gs://"):
+		// Fork: Veo wrote the file to the caller's bucket (parameters.storageUri) and named it
+		// by a gs:// URI, which is not an HTTP address. It is read through the Cloud Storage
+		// JSON API with the key's own Google credentials (contract C9 / BF20).
+		return provider.downloadGCSVideo(ctx, key, request, *video.URL, video.ContentType)
+	case video.Type == schemas.VideoOutputTypeURL && video.URL != nil:
 		// Regular URL - fetch from HTTP endpoint
 		req := fasthttp.AcquireRequest()
-		resp := fasthttp.AcquireResponse()
 		defer fasthttp.ReleaseRequest(req)
-		defer fasthttp.ReleaseResponse(resp)
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(*videoResp.Videos[0].URL)
+		req.SetRequestURI(*video.URL)
 		req.Header.SetMethod(http.MethodGet)
 		// Add authentication for Vertex video downloads
-		authQuery := ""
 		if key.Value.GetValue() != "" {
-			authQuery = fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
-		}
-		if authQuery != "" {
-			uri := *videoResp.Videos[0].URL
+			authQuery := fmt.Sprintf("key=%s", url.QueryEscape(key.Value.GetValue()))
+			uri := *video.URL
 			if strings.Contains(uri, "?") {
 				uri += "&" + authQuery
 			} else {
@@ -2885,40 +2883,63 @@ func (provider *VertexProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 			}
 			req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 		}
-		var bifrostErr *schemas.BifrostError
-		var wait func()
-		latency, bifrostErr, wait = providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-		defer wait()
-		if bifrostErr != nil {
-			return nil, bifrostErr
-		}
-		ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
-		if resp.StatusCode() != fasthttp.StatusOK {
-			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
-				fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
-				nil), latency)
-		}
-		body, err := providerUtils.CheckAndDecodeBody(resp)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
-		}
-		contentType = string(resp.Header.ContentType())
-		content = append([]byte(nil), body...)
-		providerResponseHeaders = providerUtils.ExtractProviderResponseHeaders(resp)
-	} else {
+		return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
+			Request:                  req,
+			Client:                   provider.client,
+			StreamingClient:          provider.streamingClient,
+			Stream:                   request.Stream,
+			VideoID:                  request.ID,
+			StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
+			ParseError:               downloadFailed,
+			ContentType:              func(upstream string) string { return upstream },
+		})
+	default:
 		return nil, providerUtils.NewBifrostOperationError("invalid video output type", nil)
 	}
+}
 
-	bifrostResp := &schemas.BifrostVideoDownloadResponse{
-		VideoID:     request.ID,
-		Content:     content,
-		ContentType: contentType,
+// downloadGCSVideo reads a gs://bucket/object video through the Cloud Storage JSON API
+// (objects.get with alt=media), authenticated as the key's Google identity, which needs
+// storage.objects.get on the bucket. A Vertex API key alone cannot read Cloud Storage.
+func (provider *VertexProvider) downloadGCSVideo(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest, gcsURI string, contentType string) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+	bucket, objectKey, err := parseGCSURI(gcsURI)
+	if err != nil || bucket == "" || objectKey == "" {
+		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("invalid video location %q: expected gs://bucket/object", gcsURI), err)
+	}
+	authHeader, err := provider.gcsGetAuthHeader(key)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("reading a gs:// video needs Google credentials on the key (a service account, workload identity or application default credentials)", err)
 	}
 
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	bifrostResp.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	return provider.fetchGCSVideo(ctx, gcsStorageBase, authHeader, request, bucket, objectKey, contentType)
+}
 
-	return bifrostResp, nil
+// fetchGCSVideo is the objects.get call of downloadGCSVideo; storageBase is the JSON API root.
+func (provider *VertexProvider) fetchGCSVideo(ctx *schemas.BifrostContext, storageBase, authHeader string, request *schemas.BifrostVideoDownloadRequest, bucket, objectKey, contentType string) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+	req.SetRequestURI(fmt.Sprintf("%s/b/%s/o/%s?alt=media", storageBase, url.PathEscape(bucket), gcsEncodeObjectName(objectKey)))
+	req.Header.SetMethod(http.MethodGet)
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.Header.Set("Authorization", authHeader)
+
+	if strings.TrimSpace(contentType) == "" {
+		contentType = "video/mp4"
+	}
+	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
+		Request:                  req,
+		Client:                   provider.client,
+		StreamingClient:          provider.streamingClient,
+		Stream:                   request.Stream,
+		VideoID:                  request.ID,
+		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
+		ParseError: func(resp *fasthttp.Response) *schemas.BifrostError {
+			return parseGCSAPIError(resp.Body(), resp.StatusCode(), "video download")
+		},
+		// The object's stored type is whatever the writer set; a video/* type is kept and
+		// anything else becomes the type the operation reported.
+		ContentType: func(upstream string) string { return providerUtils.VideoContentTypeOr(upstream, contentType) },
+	})
 }
 
 // VideoDelete is not supported by the Vertex provider.

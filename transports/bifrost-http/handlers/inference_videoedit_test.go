@@ -3,11 +3,16 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	bifrost "github.com/capsohq/bifrost/core"
@@ -546,4 +551,178 @@ func TestSyncImageRouteLeavesCallbackURLAnExtraParam(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, bifrostReq.TaskControl)
 	assert.Equal(t, "https://example.com/cb", bifrostReq.Params.ExtraParams["callback_url"])
+}
+
+// videoUpstream is a vendor stand-in that records each call as "METHOD uri authorization".
+type videoUpstream struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (u *videoUpstream) record(r *http.Request) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.calls = append(u.calls, r.Method+" "+r.URL.RequestURI()+" "+r.Header.Get("Authorization"))
+}
+
+func (u *videoUpstream) seen() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.calls...)
+}
+
+// newVideoRouteHandler returns the inference handler over a real client whose OpenAI provider
+// has two keys and points at upstream, so a route runs end to end and key selection has a choice.
+func newVideoRouteHandler(t *testing.T, upstream string) *CompletionHandler {
+	t.Helper()
+	network := schemas.DefaultNetworkConfig
+	network.BaseURL = upstream
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{},
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {
+				NetworkConfig: &network,
+				Keys: []schemas.Key{
+					{ID: "id-a", Name: "key-a", Value: *schemas.NewSecretVar("sk-a"), Weight: 1, Models: []string{"*"}},
+					{ID: "id-b", Name: "key-b", Value: *schemas.NewSecretVar("sk-b"), Weight: 1, Models: []string{"*"}},
+				},
+			},
+		},
+	}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: lib.NewBaseAccount(config),
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	config.SetBifrostClient(client)
+	return NewInferenceHandler(nil, client, config)
+}
+
+// TestVideoContentStreamsWithTheNamedKey is contract C9 / BF20 on GET /v1/videos/{id}/content:
+// the file is forwarded as it arrives, on one upstream call made with the key named by
+// x-bf-api-key. The vendor sends half the file and then waits until the caller has read it, so a
+// handler that read the whole body before answering would never return.
+func TestVideoContentStreamsWithTheNamedKey(t *testing.T) {
+	upstream := &videoUpstream{}
+	firstHalfRead := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstream.record(r)
+		if r.URL.Path != "/v1/videos/video_a/content" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"Video not found","type":"invalid_request_error"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("FIRST-HALF|"))
+		w.(http.Flusher).Flush()
+		select {
+		case <-firstHalfRead:
+		case <-time.After(10 * time.Second):
+			return
+		}
+		_, _ = w.Write([]byte("SECOND-HALF"))
+	}))
+	defer srv.Close()
+	h := newVideoRouteHandler(t, srv.URL)
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+	ctx.Request.SetRequestURI("/v1/videos/video_a:openai/content")
+	ctx.Request.Header.Set("x-bf-api-key", "key-b")
+	ctx.SetUserValue("video_id", "video_a:openai")
+	h.videoDownload(&ctx)
+
+	// Response.Body() would read the stream to its end, so nothing here may call it.
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	require.True(t, ctx.Response.IsBodyStream(), "the file must be a body stream, not bytes held by the handler")
+	require.Equal(t, "video/mp4", string(ctx.Response.Header.ContentType()))
+	// The handler has returned and the vendor is still sending: the request context must still
+	// be live, or the rest of the file could not be read.
+	stream := ctx.Response.BodyStream()
+	first := make([]byte, len("FIRST-HALF|"))
+	_, err := io.ReadFull(stream, first)
+	require.NoError(t, err)
+	require.Equal(t, "FIRST-HALF|", string(first))
+	close(firstHalfRead)
+	rest, err := io.ReadAll(stream)
+	require.NoError(t, err)
+	require.Equal(t, "SECOND-HALF", string(rest))
+	require.NoError(t, ctx.Response.CloseBodyStream())
+	require.Equal(t, []string{"GET /v1/videos/video_a/content Bearer sk-b"}, upstream.seen())
+
+	// The vendor's refusal is returned as an error, not as a stream.
+	var missing fasthttp.RequestCtx
+	missing.Request.Header.SetMethod(fasthttp.MethodGet)
+	missing.Request.SetRequestURI("/v1/videos/video_gone:openai/content")
+	missing.Request.Header.Set("x-bf-api-key", "key-a")
+	missing.SetUserValue("video_id", "video_gone:openai")
+	h.videoDownload(&missing)
+	require.Equal(t, fasthttp.StatusNotFound, missing.Response.StatusCode(), "body: %s", missing.Response.Body())
+	require.False(t, missing.Response.IsBodyStream())
+	require.Contains(t, string(missing.Response.Body()), "Video not found")
+	require.Equal(t, "GET /v1/videos/video_gone/content Bearer sk-a", upstream.seen()[1])
+	require.Len(t, upstream.seen(), 2)
+}
+
+// TestVideoListForwardsVendorFiltersWithTheNamedKey is contract C7 / BF15 on GET /v1/videos: the
+// query parameters Bifrost does not read itself reach the vendor unchanged, repeated values
+// included; provider stays with Bifrost; the call is made once, with the named key; and the
+// after cursor a caller takes from last_id reaches the vendor without the provider suffix.
+func TestVideoListForwardsVendorFiltersWithTheNamedKey(t *testing.T) {
+	upstream := &videoUpstream{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstream.record(r)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("after") == "video_b" {
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"video_c","object":"video","model":"sora-2","status":"failed","created_at":1762700200}],"first_id":"video_c","last_id":"video_c","has_more":false}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"video_a","object":"video","model":"sora-2","status":"completed","created_at":1762700000},{"id":"video_b","object":"video","model":"sora-2","status":"in_progress","created_at":1762700100}],"first_id":"video_a","last_id":"video_b","has_more":true}`))
+	}))
+	defer srv.Close()
+	h := newVideoRouteHandler(t, srv.URL)
+
+	list := func(uri string) (ids []string, hasMore bool, lastID string) {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+		ctx.Request.SetRequestURI(uri)
+		ctx.Request.Header.Set("x-bf-api-key", "key-b")
+		h.videoList(&ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+		var page struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+			HasMore bool   `json:"has_more"`
+			LastID  string `json:"last_id"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &page))
+		for _, video := range page.Data {
+			ids = append(ids, video.ID)
+		}
+		return ids, page.HasMore, page.LastID
+	}
+
+	const filters = "provider=openai&limit=2&status=completed&status=failed&created_after=1762700000"
+	ids, hasMore, lastID := list("/v1/videos?" + filters)
+	require.True(t, hasMore)
+	require.Equal(t, "video_b:openai", lastID)
+	next, hasMore, _ := list("/v1/videos?" + filters + "&after=" + lastID)
+	require.False(t, hasMore)
+	require.Equal(t, []string{"video_a:openai", "video_b:openai", "video_c:openai"}, append(ids, next...))
+
+	require.Equal(t, []string{
+		"GET /v1/videos?created_after=1762700000&limit=2&status=completed&status=failed Bearer sk-b",
+		"GET /v1/videos?after=video_b&created_after=1762700000&limit=2&status=completed&status=failed Bearer sk-b",
+	}, upstream.seen())
+
+	var args fasthttp.Args
+	args.Parse("provider=azure&after=x&limit=1&order=asc")
+	require.Nil(t, videoListFilters(&args), "the parameters Bifrost reads are not vendor filters")
+	args.Parse("provider=dashscope&start_time=1&start_time=2&Status=SUCCEEDED")
+	if got, want := videoListFilters(&args), map[string][]string{"start_time": {"1", "2"}, "Status": {"SUCCEEDED"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("filters = %v, want %v", got, want)
+	}
 }

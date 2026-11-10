@@ -1020,6 +1020,12 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			g.handleStreamingRequest(ctx, config, bifrostReq, bifrostCtx, cancel)
 		} else {
 			g.handleNonStreamingRequest(ctx, config, req, bifrostReq, bifrostCtx)
+			// Fork: a file streamed to the caller is read from the vendor after this handler
+			// returns, so its body ends the request context when it is closed.
+			if streamed := lib.StreamedBodyOf(ctx); streamed != nil {
+				streamed.OnClose(cancel)
+				streamingOwnsCancel = true
+			}
 		}
 	}
 }
@@ -1569,6 +1575,9 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 		response, err = config.VideoGenerationResponseConverter(bifrostCtx, videoRetrieveResponse)
 		bifrostExtraFields = videoRetrieveResponse.ExtraFields
 	case bifrostReq.VideoDownloadRequest != nil:
+		// Fork: the file is asked for as a stream and forwarded as it arrives (contract C9 /
+		// BF20); createHandler leaves ending the request context to the streamed body.
+		bifrostReq.VideoDownloadRequest.Stream = true
 		videoDownloadResponse, bifrostErr := g.client.VideoDownloadRequest(bifrostCtx, bifrostReq.VideoDownloadRequest)
 		if bifrostErr != nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, bifrostErr)
@@ -1589,6 +1598,12 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		if config.VideoDownloadResponseConverter == nil {
 			g.sendError(ctx, bifrostCtx, config.ErrorConverter, newBifrostError(nil, "missing VideoDownloadResponseConverter for integration"))
+			return
+		}
+
+		if videoDownloadResponse.Body != nil {
+			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, videoDownloadResponse.ExtraFields)
+			lib.ServeStreamedBody(ctx, videoDownloadResponse.Body, videoDownloadResponse.ContentType, videoDownloadResponse.ContentLength)
 			return
 		}
 

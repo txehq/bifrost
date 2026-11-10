@@ -131,3 +131,18 @@ func CancelVideoWhileQueued(
 	task.Status = schemas.VideoStatusCancelled
 	return task, nil
 }
+
+// AddVideoListFilters copies a video list request's vendor filters into the query sent to the
+// vendor: every name and every value as the caller gave them, repeated values kept in order
+// (fork, contract C7 / BF15). A name the provider already set from a typed field (after, limit,
+// order) keeps that value, so a filter cannot contradict the field Bifrost documents.
+func AddVideoListFilters(values url.Values, filters map[string][]string) {
+	for name, filterValues := range filters {
+		if name == "" || values.Has(name) {
+			continue
+		}
+		for _, value := range filterValues {
+			values.Add(name, value)
+		}
+	}
+}

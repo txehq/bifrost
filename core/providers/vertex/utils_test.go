@@ -2020,3 +2020,86 @@ func BenchmarkClassifyURLSource(b *testing.B) {
 		})
 	}
 }
+
+// TestVertexGCSVideoDownload is contract C9 / BF20 for Vertex Veo: a video written to the
+// caller's bucket is named by a gs:// URI, which is read through the Cloud Storage JSON API
+// (objects.get, alt=media) with the key's Google credentials, object slashes escaped, and
+// streamed when the request asks for it. The baseline did an HTTP GET on the gs:// URI itself.
+func TestVertexGCSVideoDownload(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	storage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.Method+" "+r.RequestURI+" "+r.Header.Get("Authorization"))
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/storage/v1/b/tokun-artifacts/o/tasks/t-1/sample_0.mp4":
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("VEO-MP4"))
+		case "/storage/v1/b/tokun-artifacts/o/tasks/t-1/untyped":
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("VEO-MP4"))
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"code":403,"message":"sa@proj.iam.gserviceaccount.com does not have storage.objects.get access to the Google Cloud Storage object."}}`))
+		}
+	}))
+	defer storage.Close()
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	base := storage.URL + "/storage/v1"
+	newCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	videoID := providerUtils.AddVideoIDProviderSuffix("projects/proj/locations/us-central1/publishers/google/models/veo-3.0-generate-001/operations/op-1", schemas.Vertex)
+
+	bucket, object, err := parseGCSURI("gs://tokun-artifacts/tasks/t-1/sample_0.mp4")
+	if err != nil || bucket != "tokun-artifacts" || object != "tasks/t-1/sample_0.mp4" {
+		t.Fatalf("parseGCSURI = %q %q %v", bucket, object, err)
+	}
+
+	streamed, bifrostErr := provider.fetchGCSVideo(newCtx(), base, "Bearer ya29.token", &schemas.BifrostVideoDownloadRequest{Provider: schemas.Vertex, ID: videoID, Stream: true}, bucket, object, "video/mp4")
+	if bifrostErr != nil {
+		t.Fatalf("streamed GCS download: %v", bifrostErr.Error)
+	}
+	if streamed.Body == nil || streamed.Content != nil || streamed.ContentType != "video/mp4" || streamed.ContentLength != int64(len("VEO-MP4")) || streamed.VideoID != videoID {
+		t.Fatalf("streamed response = %+v", streamed)
+	}
+	body, readErr := io.ReadAll(streamed.Body)
+	if readErr != nil || streamed.Body.Close() != nil || string(body) != "VEO-MP4" {
+		t.Fatalf("streamed body = %q, %v", body, readErr)
+	}
+
+	// A caller that did not ask for a stream (the Go SDK) still gets the bytes, and an object
+	// stored with a non-video type is served as the type the operation reported.
+	buffered, bifrostErr := provider.fetchGCSVideo(newCtx(), base, "Bearer ya29.token", &schemas.BifrostVideoDownloadRequest{Provider: schemas.Vertex, ID: videoID}, bucket, "tasks/t-1/untyped", "video/mp4")
+	if bifrostErr != nil || string(buffered.Content) != "VEO-MP4" || buffered.Body != nil || buffered.ContentType != "video/mp4" {
+		t.Fatalf("buffered response = %+v, %v", buffered, bifrostErr)
+	}
+
+	// Cloud Storage's refusal reaches the caller with its status and message.
+	_, bifrostErr = provider.fetchGCSVideo(newCtx(), base, "Bearer ya29.token", &schemas.BifrostVideoDownloadRequest{Provider: schemas.Vertex, ID: videoID, Stream: true}, bucket, "tasks/t-1/denied.mp4", "video/mp4")
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusForbidden || !strings.Contains(bifrostErr.Error.Message, "storage.objects.get") {
+		t.Fatalf("want Cloud Storage's 403, got %+v", bifrostErr)
+	}
+
+	want := []string{
+		"GET /storage/v1/b/tokun-artifacts/o/tasks%2Ft-1%2Fsample_0.mp4?alt=media Bearer ya29.token",
+		"GET /storage/v1/b/tokun-artifacts/o/tasks%2Ft-1%2Funtyped?alt=media Bearer ya29.token",
+		"GET /storage/v1/b/tokun-artifacts/o/tasks%2Ft-1%2Fdenied.mp4?alt=media Bearer ya29.token",
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("Cloud Storage calls = %q, want %q", calls, want)
+	}
+
+	// A gs:// location without an object is refused before any call.
+	if _, bifrostErr := provider.downloadGCSVideo(newCtx(), schemas.Key{}, &schemas.BifrostVideoDownloadRequest{ID: videoID}, "gs://tokun-artifacts", "video/mp4"); bifrostErr == nil || !strings.Contains(bifrostErr.Error.Message, "expected gs://bucket/object") {
+		t.Fatalf("want an invalid-location error, got %+v", bifrostErr)
+	}
+}

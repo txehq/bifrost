@@ -1287,3 +1287,60 @@ func TestOpenAIRouteXAIImageEditIngressToEgress(t *testing.T) {
 	require.Equal(t, "4:3", body["aspect_ratio"])
 	require.EqualValues(t, 1, body["n"])
 }
+
+// TestOpenAIVideoContentRouteStreams is contract C9 / BF20 on the OpenAI-SDK routes: the three
+// /videos/{id}/content paths forward the file as a body stream, read from the vendor after the
+// handler has returned, on one upstream call. They used to hold the whole file before answering.
+func TestOpenAIVideoContentRouteStreams(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.Method+" "+r.URL.RequestURI())
+		mu.Unlock()
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("FIRST-HALF|"))
+		w.(http.Flusher).Flush()
+		_, _ = w.Write([]byte("SECOND-HALF"))
+	}))
+	defer upstream.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: speechTestAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	for _, uri := range []string{
+		"/openai/v1/videos/video_a:openai/content",
+		"/openai/videos/video_a:openai/content?variant=thumbnail",
+		"/openai/openai/videos/video_a:openai/content",
+	} {
+		t.Run(uri, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+			ctx.Request.SetRequestURI(uri)
+
+			r.Handler(&ctx)
+
+			// Response.Body() would read the stream to its end, so nothing here may call it.
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+			require.True(t, ctx.Response.IsBodyStream(), "the file must be a body stream, not bytes held by the router")
+			require.Equal(t, "video/mp4", string(ctx.Response.Header.ContentType()))
+			body, err := io.ReadAll(ctx.Response.BodyStream())
+			require.NoError(t, err, "the request context must outlive the handler for the stream to be read")
+			require.Equal(t, "FIRST-HALF|SECOND-HALF", string(body))
+			require.NoError(t, ctx.Response.CloseBodyStream())
+		})
+	}
+	require.Equal(t, []string{
+		"GET /v1/videos/video_a/content?variant=video",
+		"GET /v1/videos/video_a/content?variant=thumbnail",
+		"GET /v1/videos/video_a/content?variant=video",
+	}, calls)
+}

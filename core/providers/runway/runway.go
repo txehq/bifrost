@@ -18,6 +18,7 @@ import (
 type RunwayProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
 	client              *fasthttp.Client      // HTTP client for API requests
+	streamingClient     *fasthttp.Client      // HTTP client for streamed video downloads (fork)
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
@@ -54,6 +55,7 @@ func NewRunwayProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 	return &RunwayProvider{
 		logger:              logger,
 		client:              client,
+		streamingClient:     providerUtils.BuildStreamingClient(client),
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
@@ -561,47 +563,22 @@ func (provider *RunwayProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	if videoUrl == "" {
 		return nil, providerUtils.NewBifrostOperationError("invalid video output type", nil)
 	}
-	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
-
-	// Download video from Runway's URL
 	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
 	req.SetRequestURI(videoUrl)
 	req.Header.SetMethod("GET")
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-	defer wait()
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
-			fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
-			nil), latency)
-	}
-	// Get content and content type
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		rawErrBody := append([]byte(nil), resp.Body()...)
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), nil, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
-	}
-	contentType := string(resp.Header.ContentType())
-	if contentType == "" {
-		contentType = "video/mp4" // Default for Runway
-	}
-	// Copy the binary content
-	content := append([]byte(nil), body...)
-	bifrostResp := &schemas.BifrostVideoDownloadResponse{
-		VideoID:     request.ID,
-		Content:     content,
-		ContentType: contentType,
-	}
-
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-
-	return bifrostResp, nil
+	// Fork: the file is streamed to a caller that asked for it (contract C9 / BF20).
+	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
+		Request:                  req,
+		Client:                   provider.client,
+		StreamingClient:          provider.streamingClient,
+		Stream:                   request.Stream,
+		VideoID:                  request.ID,
+		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
+		ParseError: func(resp *fasthttp.Response) *schemas.BifrostError {
+			return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil)
+		},
+	})
 }
 
 // VideoDelete cancels or deletes a task in Runway.

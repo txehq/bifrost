@@ -446,13 +446,8 @@ func (provider *MiniMaxProvider) VideoDownload(ctx *schemas.BifrostContext, key 
 	if err != nil {
 		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("failed to download video", err), latency)
 	}
-	bifrostResp := &schemas.BifrostVideoDownloadResponse{
-		VideoID:     request.ID,
-		Content:     body,
-		ContentType: miniMaxVideoContentType(contentType),
-	}
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	return bifrostResp, nil
+	// The media fetcher buffers the file, so a streamed request is served from memory here.
+	return providerUtils.NewVideoContentResponse(request, request.ID, body, miniMaxVideoContentType(contentType), latency), nil
 }
 
 // miniMaxVideoContentType pins a downloaded video's Content-Type to a video/* type, video/mp4

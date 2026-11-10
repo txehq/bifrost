@@ -1378,9 +1378,7 @@ func (provider *AzureProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 
 	// Create request
 	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
 
 	// Set headers
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -1400,41 +1398,16 @@ func (provider *AzureProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 		req.Header.Set(k, v)
 	}
 
-	// Make request
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-	defer wait()
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	// Handle error response
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
-	}
-
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
-	}
-
-	// Get content type from response
-	contentType := string(resp.Header.ContentType())
-	if contentType == "" {
-		// Default to video/mp4 if not specified
-		contentType = "video/mp4"
-	}
-
-	// Create response
-	response := &schemas.BifrostVideoDownloadResponse{
-		VideoID:     request.ID,
-		Content:     append([]byte(nil), body...),
-		ContentType: contentType,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency: latency.Milliseconds(),
-		},
-	}
-
-	return response, nil
+	// Fork: the file is streamed to a caller that asked for it (contract C9 / BF20).
+	return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
+		Request:                  req,
+		Client:                   provider.client,
+		StreamingClient:          provider.streamingClient,
+		Stream:                   request.Stream,
+		VideoID:                  request.ID,
+		StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
+		ParseError:               openai.ParseOpenAIError,
+	})
 }
 
 // VideoDelete deletes a video from Azure's OpenAI-compatible API.

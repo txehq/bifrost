@@ -2653,63 +2653,43 @@ func (provider *GeminiProvider) VideoDownload(ctx *schemas.BifrostContext, key s
 	if len(videoResp.Videos) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
 	}
-	var content []byte
-	contentType := "video/mp4"
-	var latency time.Duration
-	// Check if it's a data URL (base64-encoded video)
-	if videoResp.Videos[0].Type == schemas.VideoOutputTypeBase64 && videoResp.Videos[0].Base64Data != nil {
-		// Decode base64 content
+	video := videoResp.Videos[0]
+	switch {
+	case video.Type == schemas.VideoOutputTypeBase64 && video.Base64Data != nil:
+		// The bytes arrived inline in the operation.
 		startTime := time.Now()
-		decoded, err := base64.StdEncoding.DecodeString(*videoResp.Videos[0].Base64Data)
+		decoded, err := base64.StdEncoding.DecodeString(*video.Base64Data)
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError("failed to decode base64 video data", err)
 		}
-		content = decoded
-		latency = time.Since(startTime)
-		contentType = videoResp.Videos[0].ContentType
-	} else if videoResp.Videos[0].Type == schemas.VideoOutputTypeURL && videoResp.Videos[0].URL != nil {
+		return providerUtils.NewVideoContentResponse(request, request.ID, decoded, video.ContentType, time.Since(startTime)), nil
+	case video.Type == schemas.VideoOutputTypeURL && video.URL != nil:
 		// Regular URL - fetch from HTTP endpoint
 		req := fasthttp.AcquireRequest()
-		resp := fasthttp.AcquireResponse()
 		defer fasthttp.ReleaseRequest(req)
-		defer fasthttp.ReleaseResponse(resp)
 		// Preserve custom headers and add API key for Gemini file download endpoint.
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(*videoResp.Videos[0].URL)
+		req.SetRequestURI(*video.URL)
 		req.Header.SetMethod(http.MethodGet)
 		setGeminiAuthHeader(req, key.Value.GetValue())
-		var bifrostErr *schemas.BifrostError
-		var wait func()
-		latency, bifrostErr, wait = providerUtils.MakeRequestWithContextFollowRedirects(ctx, provider.client, req, resp, 5)
-		defer wait()
-		if bifrostErr != nil {
-			return nil, bifrostErr
-		}
-		if resp.StatusCode() != fasthttp.StatusOK {
-			provider.logger.Error("failed to download video: status %d", resp.StatusCode())
-			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
-				fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()),
-				nil,
-			), latency)
-		}
-		body, err := providerUtils.CheckAndDecodeBody(resp)
-		if err != nil {
-			return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
-		}
-		contentType = string(resp.Header.ContentType())
-		content = append([]byte(nil), body...)
-	} else {
+		// Fork: the file is streamed to a caller that asked for it (contract C9 / BF20).
+		return providerUtils.FetchVideoContent(ctx, providerUtils.VideoContentFetch{
+			Request:                  req,
+			Client:                   provider.client,
+			StreamingClient:          provider.streamingClient,
+			Stream:                   request.Stream,
+			VideoID:                  request.ID,
+			MaxRedirects:             5,
+			StreamIdleTimeoutSeconds: provider.networkConfig.StreamIdleTimeoutInSeconds,
+			ParseError: func(resp *fasthttp.Response) *schemas.BifrostError {
+				provider.logger.Error("failed to download video: status %d", resp.StatusCode())
+				return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil)
+			},
+			ContentType: func(upstream string) string { return upstream },
+		})
+	default:
 		return nil, providerUtils.NewBifrostOperationError("invalid video output type", nil)
 	}
-	bifrostResp := &schemas.BifrostVideoDownloadResponse{
-		VideoID:     request.ID,
-		Content:     content,
-		ContentType: contentType,
-	}
-
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-
-	return bifrostResp, nil
 }
 
 // VideoDelete is not supported by the Gemini provider.

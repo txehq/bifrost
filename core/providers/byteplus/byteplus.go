@@ -429,15 +429,12 @@ func (provider *BytePlusProvider) VideoDownload(ctx *schemas.BifrostContext, key
 	if err != nil {
 		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("failed to download video", err), latency)
 	}
-	bifrostResp := &schemas.BifrostVideoDownloadResponse{
-		VideoID: request.ID,
-		Content: body,
-		// Fork: /v1/videos/{id}/content serves these bytes on the gateway's own origin, so only a
-		// video/* type is passed on; anything else becomes the type the task's output format implies.
-		ContentType: providerUtils.VideoContentTypeOr(contentType, seedanceVideoContentType(videoURL)),
-	}
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	return bifrostResp, nil
+	// Fork: /v1/videos/{id}/content serves these bytes on the gateway's own origin, so only a
+	// video/* type is passed on; anything else becomes the type the task's output format implies.
+	// The media fetcher buffers the file (its SSRF checks sit on a buffering client), so a
+	// streamed request is served from memory here, within the fetcher's 256 MiB cap.
+	contentType = providerUtils.VideoContentTypeOr(contentType, seedanceVideoContentType(videoURL))
+	return providerUtils.NewVideoContentResponse(request, request.ID, body, contentType, latency), nil
 }
 
 // VideoDelete cancels a queued Seedance task or deletes the record of a finished one.
@@ -462,17 +459,29 @@ func (provider *BytePlusProvider) VideoDelete(ctx *schemas.BifrostContext, key s
 	return bifrostResp, nil
 }
 
-// VideoList lists Seedance tasks. Ark pages by number rather than by cursor, so only the first
-// page of size limit is reachable; an after cursor is rejected instead of being silently ignored,
-// which would make a paging client loop on the same page.
+// VideoList lists Seedance tasks. Ark pages by number rather than by cursor: the caller names the
+// page in Ark's own page_num filter (page 1 when absent) and the response's next is the page number
+// to ask for after it. An after cursor is rejected instead of being silently ignored, which would
+// make a paging client loop on the same page. Ark's other filters (filter.status, filter.model,
+// filter.task_ids) travel unchanged like every vendor filter (fork, contract C7 / BF15).
 func (provider *BytePlusProvider) VideoList(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
 	if request.After != nil && *request.After != "" {
-		return nil, providerUtils.NewBifrostBadRequestError("byteplus video list pages by number and does not support an after cursor")
+		return nil, providerUtils.NewBifrostBadRequestError("byteplus video list pages by number and does not support an after cursor; send page_num")
 	}
 	values := url.Values{}
-	values.Set("page_num", "1")
 	if request.Limit != nil && *request.Limit > 0 {
 		values.Set("page_size", strconv.Itoa(*request.Limit))
+	}
+	providerUtils.AddVideoListFilters(values, request.Filters)
+	pageNum := 1
+	if raw := values.Get("page_num"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 {
+			return nil, providerUtils.NewBifrostBadRequestError("page_num must be a positive integer")
+		}
+		pageNum = parsed
+	} else {
+		values.Set("page_num", "1")
 	}
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -499,8 +508,18 @@ func (provider *BytePlusProvider) VideoList(ctx *schemas.BifrostContext, key sch
 		bifrostResp.FirstID = schemas.Ptr(bifrostResp.Data[0].ID)
 		bifrostResp.LastID = schemas.Ptr(bifrostResp.Data[n-1].ID)
 	}
-	// Only page 1 is reachable (an after cursor is rejected above), so there is never a next page to offer.
-	bifrostResp.HasMore = schemas.Ptr(false)
+	// Ark reports the total across all pages. The tasks before this page are counted by the page
+	// size the caller asked for, or by this page's length when none was named, and an empty page
+	// is always the last one.
+	pageSize := len(listResp.Items)
+	if requested, err := strconv.Atoi(values.Get("page_size")); err == nil && requested > 0 {
+		pageSize = requested
+	}
+	hasMore := len(listResp.Items) > 0 && (pageNum-1)*pageSize+len(listResp.Items) < listResp.Total
+	bifrostResp.HasMore = schemas.Ptr(hasMore)
+	if hasMore {
+		bifrostResp.Next = schemas.Ptr(strconv.Itoa(pageNum + 1))
+	}
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
 	if sendBackRawResponse {
 		bifrostResp.ExtraFields.RawResponse = rawResponse
