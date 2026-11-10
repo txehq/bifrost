@@ -39,3 +39,18 @@ func TestParseCohereErrorCarriesUpstreamID(t *testing.T) {
 	assert.Equal(t, "1ad6894a-9ed1-48db-9316-0efa1b87a7e2", *bifrostErr.EventID)
 	assert.Equal(t, "1ad6894a-9ed1-48db-9316-0efa1b87a7e2", ToCohereError(bifrostErr).ID)
 }
+
+// BenchmarkParseCohereError measures the error path parseCohereError serves for chat,
+// Responses and embeddings. It runs only on a non-2xx response, never on a success.
+func BenchmarkParseCohereError(b *testing.B) {
+	var resp fasthttp.Response
+	resp.SetStatusCode(fasthttp.StatusTooManyRequests)
+	resp.SetBodyString(`{"id":"8a5e9f3c-1b2d-4e6f-9a0b-c1d2e3f4a5b6","message":"You are using a Trial key, which is limited to 10 API calls / minute."}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if parseCohereError(&resp) == nil {
+			b.Fatal("nil error")
+		}
+	}
+}

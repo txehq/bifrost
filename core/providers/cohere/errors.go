@@ -24,7 +24,45 @@ func parseCohereError(resp *fasthttp.Response) *schemas.BifrostError {
 		typeCopy := errorResp.Type
 		bifrostErr.Error.Type = &typeCopy
 	}
+	if errorType, ok := cohereStatusErrorType(resp.StatusCode()); ok {
+		bifrostErr.ExtraFields.ErrorType = errorType
+	}
 	return bifrostErr
+}
+
+// cohereStatusErrorType says whose fault a Cohere error status is
+// (docs.cohere.com/reference/errors), for chat and embeddings alike. Cohere's v2 error body
+// is a flat {"id", "message"} with no type or code, so the status is all there is to go on.
+// The status itself is returned unchanged (contract C6). Cohere's own statuses that the
+// generic status rules misread are the reason this is declared here: 498 is an invalid
+// API key, not a malformed request. A status Cohere does not document is left undeclared
+// for schemas.ClassifyErrorType.
+//
+// Cohere documents no error that marks a content block, so nothing here declares
+// ErrorTypeCallerContentFiltered.
+func cohereStatusErrorType(status int) (schemas.ErrorType, bool) {
+	switch status {
+	case 400, 422:
+		return schemas.ErrorTypeCallerInvalidRequest, true
+	case 401, 403, 498:
+		return schemas.ErrorTypeProviderAuthFailed, true
+	case 402:
+		return schemas.ErrorTypeProviderBilling, true
+	case 404:
+		// Cohere's chat and embed routes address nothing but the model.
+		return schemas.ErrorTypeCallerModelUnknown, true
+	case 429:
+		return schemas.ErrorTypeProviderRateLimited, true
+	case 499:
+		return schemas.ErrorTypeCallerCancelled, true
+	case 500, 501:
+		return schemas.ErrorTypeProviderServerError, true
+	case 503:
+		return schemas.ErrorTypeProviderOverloaded, true
+	case 504:
+		return schemas.ErrorTypeProviderTimeout, true
+	}
+	return "", false
 }
 
 // CohereErrorResponse is the body Cohere returns on a failed request. Verified against the live
