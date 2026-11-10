@@ -135,6 +135,15 @@ With the defaults of `retry_backoff_initial = 500ms` and `retry_backoff_max = 50
 | Plugin-enforced block | No | - | - |
 | Cancelled request | No | - | - |
 
+### Reused connections: a request is not sent twice
+
+Below the retries above there is one more place a request could be repeated. Bifrost keeps connections to a provider open and reuses them. A provider closes idle connections on its own schedule, so a request can be sent on a connection that has just died.
+
+- **Chat requests** (text completion, chat completion, Responses, and the native Messages passthrough) that fail on a reused connection before the first byte of the response are sent again on a new connection. This is independent of `max_retries`.
+- **Every other request** (images, video, speech, transcription, embeddings, batches, files, rerank, any other passthrough) is written to the provider **at most once**. A connection that died after the provider read the request looks the same as one that died before, and a second copy of such a request is a second charge. Before writing, Bifrost checks that the reused connection is still open and replaces it if the provider has closed it, so an expired keep-alive does not fail the request. If the connection fails after the request was written, the error is returned (`502`, `provider_connection_failed`) and the request is not sent again. `GET` and `HEAD` requests keep the resend: they change nothing at the provider.
+
+With `max_retries: 0` and a named key, a non-chat request therefore reaches the provider exactly once or not at all.
+
 ### Configuring retries
 
 Retries are configured per-provider in `network_config`. The defaults are `max_retries: 0` (no retries), `retry_backoff_initial: 500` ms, and `retry_backoff_max: 5000` ms.
