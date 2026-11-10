@@ -204,6 +204,59 @@ func TestBatchLineExtraParamsFollowPassthrough(t *testing.T) {
 	}
 }
 
+// A line the sync route would refuse is refused with the sync route's error, its param
+// the line's path to the field: a service_tier outside the model's catalog list
+// (openai.ChatServiceTierError, TXE-6527) and an extra param only the gateway may set
+// (the shared merge, TXE-7031). Before, the line's tier went to xAI as sent and the
+// merge's refusal lost its error_type and param.
+func TestBatchLineRefusalsMatchTheSyncRoute(t *testing.T) {
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if model == "grok-4.3" {
+			return &schemas.ModelCapabilities{ServiceTiers: []string{"default"}}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	line := func(extra map[string]any) schemas.BatchRequestItem {
+		body := map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hi"}}}
+		for k, v := range extra {
+			body[k] = v
+		}
+		return schemas.BatchRequestItem{CustomID: "line-1", URL: "/v1/chat/completions", Body: body}
+	}
+	cases := []struct {
+		name      string
+		item      schemas.BatchRequestItem
+		errorType schemas.ErrorType
+		param     string
+	}{
+		{"service_tier outside the catalog", line(map[string]any{"service_tier": "flex"}), schemas.ErrorTypeCallerUnsupportedParameter, "requests[1].body.service_tier"},
+		{"extra param naming the deployment", line(map[string]any{"deployment": "other"}), schemas.ErrorTypeCallerInvalidRequest, "requests[1].body.deployment"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := batchTestCtx()
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			items := []schemas.BatchRequestItem{line(nil), tc.item}
+			items[0].CustomID = "line-0"
+			_, bErr := ToXAIBatchRequests(ctx, schemas.BatchEndpointChatCompletions, "grok-4.3", nil, items)
+			if bErr == nil {
+				t.Fatal("want the line refused")
+			}
+			if bErr.StatusCode == nil || *bErr.StatusCode != 400 || bErr.ExtraFields.ErrorType != tc.errorType {
+				t.Fatalf("status=%v error_type=%q, want 400 %q", bErr.StatusCode, bErr.ExtraFields.ErrorType, tc.errorType)
+			}
+			if bErr.Error == nil || bErr.Error.Param != tc.param || !strings.HasPrefix(bErr.Error.Message, "requests[1].body: ") {
+				t.Fatalf("error = %+v, want param %s and a message naming the line", bErr.Error, tc.param)
+			}
+		})
+	}
+	if _, bErr := ToXAIBatchRequests(batchTestCtx(), schemas.BatchEndpointChatCompletions, "grok-4.3", nil,
+		[]schemas.BatchRequestItem{line(map[string]any{"service_tier": "default"})}); bErr != nil {
+		t.Fatalf("a tier in the catalog list must pass: %+v", bErr.Error)
+	}
+}
+
 // A batch runs one model (review finding on PR 151): governance picks the batch's provider
 // key from the grants for the request's model, so every line runs as that model. A line
 // without a model, or with the batch's model under a provider prefix or a key alias, runs as

@@ -251,7 +251,7 @@ curl -X POST http://localhost:8080/v1/batches \
 
 **Cancel** (`POST /v1/batches/{id}/cancel?provider=xai`) calls xAI's `:cancel`. A refusal keeps xAI's status and body and carries `extra_fields.error_type: provider_cancel_unsupported`.
 
-**Governance.** A file batch runs the models named in the uploaded rows, not the request's `model`, as on OpenAI and Azure. Under a virtual key that restricts xAI models, a file batch is refused unless the key allows every xAI model; inline batches are checked line by line against the allowlist. Extra fields on an inline line (anything the chat request does not model) are forwarded only when passthrough extra params is enabled, as on the sync chat route.
+**Governance.** A file batch runs the models named in the uploaded rows, not the request's `model`, as on OpenAI and Azure. Under a virtual key that restricts xAI models, a file batch is refused unless the key allows every xAI model; inline batches are checked line by line against the allowlist. Extra fields on an inline line (anything the chat request does not model) are forwarded only when passthrough extra params is enabled, as on the sync chat route. A line the sync chat route would refuse is refused the same way, before any call to xAI, with `error.param` naming the line's field (for example `requests[1].body.service_tier` for a service tier outside the model's catalog list).
 
 ---
 

@@ -336,7 +336,7 @@ func ToXAIBatchRequests(ctx *schemas.BifrostContext, endpoint schemas.BatchEndpo
 		}
 		body, err := toXAIBatchChatBody(ctx, item, batchModel)
 		if err != nil {
-			return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("requests[%d].body: %v", i, err))
+			return nil, batchLineBodyError(i, err)
 		}
 		out = append(out, XAIBatchRequest{
 			BatchRequestID: item.CustomID,
@@ -346,15 +346,39 @@ func ToXAIBatchRequests(ctx *schemas.BifrostContext, endpoint schemas.BatchEndpo
 	return out, nil
 }
 
+// batchLineBodyError is the 400 for line i whose body the conversion refused. A refusal
+// the converter built as a BifrostError (an unsupported service_tier, an extra param the
+// merge refuses) keeps its error_type, and its param becomes the line's path to the field,
+// requests[i].body.<param>, so the caller sees what the sync route would have said.
+func batchLineBodyError(i int, err error) *schemas.BifrostError {
+	path := fmt.Sprintf("requests[%d].body", i)
+	carried, ok := providerUtils.AsBifrostBadRequestError(err)
+	if !ok || carried == nil || carried.Error == nil {
+		return providerUtils.NewBifrostBadRequestError(fmt.Sprintf("%s: %v", path, err))
+	}
+	out := *carried
+	field := *carried.Error
+	field.Message = path + ": " + field.Message
+	if param, _ := field.Param.(string); param != "" {
+		field.Param = path + "." + param
+	}
+	out.Error = &field
+	return &out
+}
+
 // toXAIBatchChatBody runs one chat line through the sync route's conversion: the shared
 // line decoder (schemas.BatchRequestItem.ToBifrostChatRequest: messages, chat parameters,
-// every unmodelled field as an extra param), the OpenAI converter with provider xai, and
-// the sync encoder, which merges the extra params only when passthrough is enabled, as
-// the sync route does. The line runs as the batch's model (see ToXAIBatchRequests).
+// every unmodelled field as an extra param), the sync handler's service_tier refusal
+// (openai.ChatServiceTierError), the OpenAI converter with provider xai, and the sync
+// encoder, which merges the extra params only when passthrough is enabled, as the sync
+// route does. The line runs as the batch's model (see ToXAIBatchRequests).
 func toXAIBatchChatBody(ctx *schemas.BifrostContext, item schemas.BatchRequestItem, model string) (json.RawMessage, error) {
 	bifrostReq, err := item.ToBifrostChatRequest(schemas.XAI, model)
 	if err != nil {
 		return nil, err
+	}
+	if tierErr := openai.ChatServiceTierError(ctx, bifrostReq); tierErr != nil {
+		return nil, providerUtils.ConverterBifrostError(tierErr)
 	}
 	xaiReq := openai.ToOpenAIChatRequest(ctx, bifrostReq)
 	if xaiReq == nil {
