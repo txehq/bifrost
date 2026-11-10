@@ -4,9 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/txehq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.7, 2.1.52-sync.6, 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
+**Latest Version:** 2.1.51 (prereleases 2.1.52-sync.8, 2.1.52-sync.7, 2.1.52-sync.6, 2.1.52-sync.5, 2.1.52-sync.4, 2.1.52-sync.3, 2.1.52-sync.2 and 2.1.52-sync.1 carry the changes below; install them with `--devel`)
 
 ## Changelog
+
+### 2.1.52-sync.8 (prerelease)
+
+The prerelease chart for transport v2.4.0-sync.8; no values, templates or schema change:
+
+- `appVersion` is now `2.4.0-sync.8`, so an empty `image.tag` selects `v2.4.0-sync.8`. That transport carries the Bifrost–Tokun contract base (TXE-6523): `extra_fields.error_type` on every error with `policy_*` refusals and the `caller_unsupported_parameter` refusal (TXE-6517), the async task object's statuses, control fields and `POST /v1/videos/{id}/cancel` (TXE-6521), ElevenLabs speech, transcription and sound effects (TXE-6524) and Gemini API image generation and edit (TXE-6526), on top of the unified media fields (TXE-6518), the two deployment switches (TXE-6519) and the streamed final-frame usage (TXE-6522) of the earlier prereleases. It also carries the contract batch routes (TXE-6427), the speech usage header (TXE-6530), a `tencent` image provider (TXE-6666) and the vendor fixes listed in the transport changelog.
 
 ### 2.1.52-sync.7 (prerelease)
 
