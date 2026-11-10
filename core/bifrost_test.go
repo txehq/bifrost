@@ -10278,3 +10278,51 @@ func TestBatchFollowUpsHonourNamedKey(t *testing.T) {
 		}
 	})
 }
+
+// BenchmarkGetKeysForBatchAndFileOps measures the key pool a batch or file follow-up
+// operation (retrieve, cancel, results) is given: every eligible key when the caller names
+// none, and the one key the caller named by name or by id. The named-key lookup runs after
+// the existing filter over the provider's keys, so the unnamed case pays two context reads
+// and no allocation beyond what it paid before.
+func BenchmarkGetKeysForBatchAndFileOps(b *testing.B) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 10)
+	keys := make([]schemas.Key, 0, 8)
+	for i := range 8 {
+		keys = append(keys, schemas.Key{
+			ID:             fmt.Sprintf("key-%d", i),
+			Name:           fmt.Sprintf("tk-key-%d", i),
+			Value:          *schemas.NewSecretVar(fmt.Sprintf("sk-%d", i)),
+			Models:         schemas.WhiteList{"*"},
+			Weight:         1,
+			UseForBatchAPI: schemas.Ptr(true),
+		})
+	}
+	account.SetKeysForProvider(schemas.OpenAI, keys)
+	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError), keySelector: keyselectors.WeightedRandom}
+
+	for _, bc := range []struct {
+		name       string
+		contextKey schemas.BifrostContextKey
+		value      string
+		wantKeys   int
+	}{
+		{"no named key", "", "", 8},
+		{"named by name", schemas.BifrostContextKeyAPIKeyName, "tk-key-7", 1},
+		{"named by id", schemas.BifrostContextKeyAPIKeyID, "key-7", 1},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if bc.contextKey != "" {
+				ctx.SetValue(bc.contextKey, bc.value)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				pool, err := bifrost.getKeysForBatchAndFileOps(ctx, schemas.OpenAI, schemas.OpenAI, nil, true)
+				if err != nil || len(pool) != bc.wantKeys {
+					b.Fatalf("pool = %d keys, err %v, want %d", len(pool), err, bc.wantKeys)
+				}
+			}
+		})
+	}
+}
