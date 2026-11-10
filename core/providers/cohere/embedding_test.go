@@ -546,3 +546,41 @@ func TestCohereEmbeddingUsageIsBilledUnits(t *testing.T) {
 		assert.Nil(t, resp.Usage)
 	})
 }
+
+// Request path cost of the input_type resolution (TXE-6546): one text input with a
+// task_type, the common unified-route shape.
+func BenchmarkToCohereEmbeddingRequest(b *testing.B) {
+	req := &schemas.BifrostEmbeddingRequest{
+		Provider: schemas.Cohere,
+		Model:    "embed-v4.0",
+		Input: []schemas.EmbeddingInputItem{
+			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("alpha kestrel harbor")}}},
+		},
+		Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_query")},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := ToCohereEmbeddingRequest(req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// Response path cost of reading usage from meta.billed_units (TXE-6546).
+func BenchmarkCohereEmbeddingResponseToBifrost(b *testing.B) {
+	in, images, imageTokens := 12, 1, 1000
+	resp := &CohereEmbeddingResponse{
+		ID:         "bench",
+		Embeddings: &CohereEmbeddingData{Float: [][]float64{{0.1, 0.2, 0.3}}},
+		Meta: &CohereEmbeddingMeta{
+			BilledUnits: &CohereBilledUnits{InputTokens: &in, Images: &images, ImageTokens: &imageTokens},
+			Tokens:      &CohereTokenUsage{InputTokens: &in},
+		},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if out := resp.ToBifrostEmbeddingResponse(); out == nil {
+			b.Fatal("nil response")
+		}
+	}
+}

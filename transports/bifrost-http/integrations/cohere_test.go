@@ -2,10 +2,12 @@ package integrations
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/providers/cohere"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -303,4 +305,65 @@ func TestCohereChatResponseConverterConvertsCrossProviderRawResponse(t *testing.
 	require.True(t, ok, "cross-provider responses must be converted, not passed through")
 	require.NotNil(t, cohereResp.Message)
 	assert.Equal(t, text, *cohereResp.Message.Content.GetBlocks()[0].Text)
+}
+
+func cohereEmbedRoute(t *testing.T) *RouteConfig {
+	t.Helper()
+	routes := CreateCohereRouteConfigs("/cohere")
+	for i := range routes {
+		if routes[i].Path == "/cohere/v2/embed" {
+			return &routes[i]
+		}
+	}
+	t.Fatal("no /cohere/v2/embed route")
+	return nil
+}
+
+// /cohere/v2/embed, ingress to Cohere egress (TXE-6546, contract C4). The caller's own
+// input_type reaches Cohere unchanged; a request without one is refused with 400
+// caller_unsupported_parameter before any upstream call, where Bifrost used to send
+// search_document on the caller's behalf.
+func TestCohereEmbedRouteInputTypeReachesCohereAndIsNeverDefaulted(t *testing.T) {
+	route := cohereEmbedRoute(t)
+	toEgress := func(native *cohere.CohereEmbeddingRequest) (*cohere.CohereEmbeddingRequest, error) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bifrostReq, err := route.RequestConverter(ctx, native)
+		require.NoError(t, err)
+		require.NotNil(t, bifrostReq.EmbeddingRequest)
+		return cohere.ToCohereEmbeddingRequest(bifrostReq.EmbeddingRequest)
+	}
+
+	egress, err := toEgress(&cohere.CohereEmbeddingRequest{Model: "embed-v4.0", InputType: "search_query", Texts: []string{"hi"}})
+	require.NoError(t, err)
+	assert.Equal(t, "search_query", egress.InputType)
+	body, marshalErr := sonic.Marshal(egress)
+	require.NoError(t, marshalErr)
+	assert.Equal(t, 1, strings.Count(string(body), `"input_type"`), "input_type is sent once, not also as an extra field: %s", body)
+
+	_, err = toEgress(&cohere.CohereEmbeddingRequest{Model: "embed-v4.0", Texts: []string{"hi"}})
+	bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+	require.True(t, ok, "want a caller error, got %v", err)
+	require.Equal(t, 400, *bifrostErr.StatusCode)
+	assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+	assert.Equal(t, "task_type", bifrostErr.Error.Param)
+}
+
+// /cohere/v2/embed served by another provider (a fallback): the native response is built
+// from unified usage, and the billed image count comes back as meta.billed_units.images.
+func TestCohereEmbedRouteResponseReturnsBilledImages(t *testing.T) {
+	route := cohereEmbedRoute(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp := &schemas.BifrostEmbeddingResponse{
+		Data:  []schemas.EmbeddingData{{Index: 0, Object: "embedding", Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1}}}},
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, TotalTokens: 10, InputImages: schemas.Ptr(2)},
+	}
+	resp.ExtraFields.Provider = schemas.Bedrock
+	out, err := route.EmbeddingResponseConverter(ctx, resp)
+	require.NoError(t, err)
+	native, ok := out.(*cohere.CohereEmbeddingResponse)
+	require.True(t, ok, "got %T", out)
+	require.NotNil(t, native.Meta)
+	require.NotNil(t, native.Meta.BilledUnits)
+	require.NotNil(t, native.Meta.BilledUnits.Images)
+	assert.Equal(t, 2, *native.Meta.BilledUnits.Images)
 }
