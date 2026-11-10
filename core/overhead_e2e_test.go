@@ -286,8 +286,19 @@ func TestOverheadStampedOnRootSpan(t *testing.T) {
 	t.Logf("stamped %s = %.2fms", schemas.AttrBifrostUpstreamDurationMs, ms)
 }
 
-// Two requests sharing one process-global context (the nil-ctx SDK path) must not
-// inherit each other's totals.
+// Requests sharing one process-global context (the nil-ctx SDK path) must not inherit each
+// other's totals.
+//
+// The check compares each request's upstream total with that request's own wall time,
+// measured around the call. The upstream wait happens inside the call, so a counter that was
+// reset can never exceed it, however slow the machine is. A counter that leaked still holds
+// the earlier requests' waits (at least one providerDelay each), which the request's own wall
+// time does not contain, so it exceeds it.
+//
+// It used to compare against a fixed 2x providerDelay. That is a wall-clock bound: one slow
+// request on a busy machine (298 ms for a 120 ms handler, with one upstream call and nothing
+// counted twice) read as a leak, and the test failed about once in sixty runs on the shared
+// build host (TXE-7066).
 func TestOverheadResetBetweenRequests(t *testing.T) {
 	const providerDelay = 120 * time.Millisecond
 	client, _, _ := newBifrostWithMockProvider(t, providerDelay)
@@ -295,26 +306,27 @@ func TestOverheadResetBetweenRequests(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
 	for i := range 3 {
+		started := time.Now()
 		if _, bifrostErr := client.ChatCompletionRequest(ctx, chatRequest()); bifrostErr != nil {
 			t.Fatalf("request %d failed: %v", i, bifrostErr.Error.Message)
 		}
+		wall := time.Since(started)
 		upstream, ok := schemas.GetUpstreamLatency(ctx)
 		if !ok {
 			t.Fatalf("request %d: no accumulator", i)
 		}
-		// Each request re-zeroes the counter, so this stays near one delay
-		// regardless of how many requests came before.
-		if upstream > 2*providerDelay {
-			t.Fatalf("request %d: upstream = %v, want ~%v — counter leaked across requests",
-				i, upstream, providerDelay)
+		if upstream > wall {
+			t.Fatalf("request %d: upstream = %v but the whole request took %v: the counter leaked across requests",
+				i, upstream, wall)
+		}
+		// The provider sleeps providerDelay before it answers, so a counter that recorded
+		// this request holds at least that much.
+		if upstream < providerDelay {
+			t.Fatalf("request %d: upstream = %v, want at least the provider's %v", i, upstream, providerDelay)
 		}
 	}
 }
 
-// Streaming is where the old measurement was worst: fasthttp returns as soon as
-// headers arrive, so the only provider time ever recorded was TTFB and the whole
-// token-generation window looked like Bifrost overhead. This asserts the
-// generation window is now counted as upstream.
 func TestOverheadEndToEndStreaming(t *testing.T) {
 	const (
 		ttfb       = 100 * time.Millisecond
