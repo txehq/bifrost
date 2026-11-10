@@ -1,6 +1,7 @@
 package bfl
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"net/http"
@@ -273,6 +274,23 @@ func editTaskInput(request *schemas.BifrostImageEditRequest) imageTaskInput {
 	return in
 }
 
+// redactedSecret replaces a configured credential in a captured body.
+const redactedSecret = "[REDACTED]"
+
+// redactSecret returns body with every JSON string equal to secret replaced by redactedSecret.
+// The secret is matched in its JSON-encoded form, so escaping cannot hide it. body itself is not
+// modified; it is returned as is when secret is empty or absent.
+func redactSecret(body []byte, secret string) []byte {
+	if secret == "" || len(body) == 0 {
+		return body
+	}
+	quoted, err := sonic.Marshal(secret)
+	if err != nil || !bytes.Contains(body, quoted) {
+		return body
+	}
+	return bytes.ReplaceAll(body, quoted, []byte(`"`+redactedSecret+`"`))
+}
+
 // keyWebhookSecret is the key's BFL webhook secret, or "" when the key configures none.
 func keyWebhookSecret(key schemas.Key) string {
 	if key.BFLKeyConfig == nil || key.BFLKeyConfig.WebhookSecret == nil {
@@ -314,18 +332,24 @@ func (provider *BFLProvider) submitImageTask(ctx *schemas.BifrostContext, key sc
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
+	// BFL receives the key's webhook secret; every copy Bifrost keeps of the body (raw_request on
+	// the response or on an error, and the logs built from it) has it redacted (TXE-7062).
+	captured := jsonData
+	if sendBackRawRequest {
+		captured = redactSecret(jsonData, keyWebhookSecret(key))
+	}
 	submittedAt := time.Now().Unix()
-	body, latency, bifrostErr := provider.doRequest(ctx, key, http.MethodPost, provider.requestURL(ctx, "/v1/"+model), jsonData, sendBackRawRequest, sendBackRawResponse)
+	body, latency, bifrostErr := provider.doRequestCaptured(ctx, key, http.MethodPost, provider.requestURL(ctx, "/v1/"+model), jsonData, captured, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	var submit BFLAsyncResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &submit, jsonData, sendBackRawRequest, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &submit, captured, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
 	if submit.ID == "" {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("BFL returned no task id", nil), jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("BFL returned no task id", nil), captured, body, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	task := &schemas.BifrostImageTaskResponse{

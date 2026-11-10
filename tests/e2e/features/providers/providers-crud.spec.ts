@@ -485,6 +485,57 @@ test.describe("Providers", () => {
     });
   });
 
+  // TXE-7062: a BFL key's webhook secret saves through the form, comes back redacted, and an
+  // edit that leaves the masked value untouched keeps the stored secret.
+  test("should save a BFL key's webhook secret and keep it across an unchanged edit", async ({
+    providersPage,
+    page,
+  }) => {
+    if (!(await providersPage.providerExists("bfl"))) {
+      await providersPage.addKnownProviderFromDropdown("bfl");
+      createdProviders.push("bfl");
+    }
+    await expect(providersPage.getProviderItem("bfl")).toBeVisible({ timeout: 15000 });
+    await providersPage.selectProvider("bfl");
+
+    const keyName = `BFL-Webhook-Key-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const secret = `whsec-e2e-${Math.random().toString(36).slice(2, 10)}`;
+    createdKeys.push({ provider: "bfl", keyName });
+
+    await providersPage.dismissToasts();
+    await providersPage.addKeyBtn.click();
+    await expect(providersPage.keyForm).toBeVisible();
+    await page.getByLabel("Name").fill(keyName);
+    await page.getByLabel("API Key").fill("e2e-bfl-api-key");
+    const secretInput = page.getByTestId("key-input-bfl-webhook-secret");
+    await expect(secretInput).toBeVisible();
+    await secretInput.fill(secret);
+    await providersPage.keySaveBtn.click();
+    await providersPage.waitForSuccessToast();
+    await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+
+    type KeysBody = { keys: { name: string; bfl_key_config?: { webhook_secret?: { value?: string } } }[] };
+    const storedSecret = async (): Promise<string | undefined> => {
+      const response = await page.request.get("/api/providers/bfl/keys");
+      expect(response.ok()).toBe(true);
+      const text = await response.text();
+      expect(text, "the webhook secret must never come back in plaintext").not.toContain(secret);
+      const saved = (JSON.parse(text) as KeysBody).keys.find((k) => k.name === keyName);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      return saved?.bfl_key_config?.webhook_secret?.value;
+    };
+    const redacted = await storedSecret();
+    expect(redacted, "the key must carry a webhook secret").toBeTruthy();
+
+    // Reopen and save without touching the masked secret: the stored one must survive.
+    await providersPage.dismissToasts();
+    await providersPage.openKeyEditor(keyName);
+    await providersPage.keySaveBtn.click();
+    await providersPage.waitForSuccessToast();
+    await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+    expect(await storedSecret(), "an unchanged edit must keep the stored secret").toBe(redacted);
+  });
+
   for (const { name, label } of REGISTRATION_ONLY_PROVIDERS) {
     test(`should add the ${label} provider from the dropdown and save an API key`, async ({
       providersPage,

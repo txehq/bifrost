@@ -1,6 +1,7 @@
 package bfl
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -1005,6 +1006,90 @@ func TestBFLKeyWebhookSecret(t *testing.T) {
 			}
 			if got, ok := sent["webhook_secret"]; tc.want == nil && ok || tc.want != nil && got != tc.want {
 				t.Fatalf("webhook_secret = %v (present %v), want %v; body %s", got, ok, tc.want, rec.bodies[0])
+			}
+		})
+	}
+}
+
+// TXE-7062 review: BFL receives the key's webhook secret, but no copy Bifrost keeps does: the
+// raw_request of a create and of an error carry it redacted. The caller never sent that secret,
+// so echoing it back would expose a credential from the key configuration.
+func TestBFLKeyWebhookSecretIsRedactedFromCapturedBodies(t *testing.T) {
+	key := schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("key-secret-7062")}}
+	req := func() *schemas.BifrostImageGenerationRequest {
+		return &schemas.BifrostImageGenerationRequest{Model: "flux-pro-1.1", Input: &schemas.ImageGenerationInput{Prompt: "a fox"},
+			TaskControl: &schemas.TaskControlParameters{CallbackURL: schemas.Ptr("https://hooks.example.test/v/1")}}
+	}
+	for _, status := range []int{0, http.StatusTooManyRequests} {
+		rec := &bflRecorder{submit: `{"id":"t1"}`, statusOn: status}
+		server := httptest.NewServer(http.HandlerFunc(rec.serve))
+		provider, err := NewBFLProvider(&schemas.ProviderConfig{
+			NetworkConfig:      schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true},
+			SendBackRawRequest: true,
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		task, bifrostErr := provider.ImageGenerationTask(imageTaskCtx(t), key, req())
+		server.Close()
+		if !bytes.Contains(rec.bodies[0], []byte(`"webhook_secret":"key-secret-7062"`)) {
+			t.Fatalf("status %d: BFL did not receive the key's secret: %s", status, rec.bodies[0])
+		}
+		var captured any
+		if status == 0 {
+			if bifrostErr != nil {
+				t.Fatalf("submit: %+v", bifrostErr.Error)
+			}
+			captured = task.ExtraFields.RawRequest
+		} else {
+			if bifrostErr == nil {
+				t.Fatal("want the 429")
+			}
+			captured = bifrostErr.ExtraFields.RawRequest
+		}
+		data, _ := json.Marshal(captured)
+		if captured == nil || len(data) < 10 {
+			t.Fatalf("status %d: no raw_request captured", status)
+		}
+		if bytes.Contains(data, []byte("key-secret-7062")) {
+			t.Fatalf("status %d: raw_request carries the key's secret: %s", status, data)
+		}
+		if !bytes.Contains(data, []byte(redactedSecret)) {
+			t.Fatalf("status %d: raw_request lost the redaction marker: %s", status, data)
+		}
+	}
+	if got := string(redactSecret([]byte(`{"a":"x\"y"}`), `x"y`)); got != `{"a":"[REDACTED]"}` {
+		t.Errorf("an escaped secret was not redacted: %s", got)
+	}
+}
+
+// BenchmarkBFLImageTaskKeySecret measures the credential path of TXE-7062 on a create with
+// callback_url: resolving the key's webhook secret, converting and encoding the body, and
+// redacting the captured copy. "unconfigured" is the path every key without bfl_key_config takes.
+func BenchmarkBFLImageTaskKeySecret(b *testing.B) {
+	in := imageTaskInput{model: "flux-kontext-pro", prompt: "a fox", aspectRatio: schemas.Ptr("16:9"), seed: schemas.Ptr(7),
+		images: []string{"https://example.com/a.png"}, callbackURL: schemas.Ptr("https://hooks.tokun.sh/v/t1")}
+	for _, tc := range []struct {
+		name string
+		key  schemas.Key
+	}{
+		{"unconfigured", schemas.Key{Value: *schemas.NewSecretVar("k")}},
+		{"configured", schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("whsec-0123456789")}}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				run := in
+				run.keyWebhookSecret = keyWebhookSecret(tc.key)
+				body, err := toBFLImageBody(run)
+				if err != nil {
+					b.Fatal(err)
+				}
+				data, err := providerUtils.MarshalConvertedRequestBody(body, true)
+				if err != nil {
+					b.Fatal(err)
+				}
+				_ = redactSecret(data, run.keyWebhookSecret)
 			}
 		})
 	}
