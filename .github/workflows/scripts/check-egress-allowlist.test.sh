@@ -11,6 +11,10 @@ set -euo pipefail
 # pull request until this exception existed. These cases pin both halves: the
 # documentation link passes, and a host in anything newman sends or runs still fails.
 #
+# The hosts in these cases are made-up names under .dev, not under .test: the check
+# never requires a host under a reserved TLD (TXE-7029, cases at the end), so a .test
+# name would pass every "still fails" case for the wrong reason.
+#
 # Each case builds a throwaway repository root holding the script, one workflow with a
 # harness job under egress-policy: block, a provider config and a collection, and runs
 # the script there. No network, no dependencies beyond the PyYAML the check needs.
@@ -45,7 +49,7 @@ jobs:
         with:
           egress-policy: block
           allowed-endpoints: >
-            api.allowed.test:443
+            api.allowed.dev:443
       - run: ./.github/workflows/scripts/test-core.sh
 YAML
 
@@ -73,7 +77,7 @@ YAML
 collection() {
   cat <<JSON
 {
-  "info": { "name": "fixture", "description": "Top-level notes: https://docs.collection.test/intro" },
+  "info": { "name": "fixture", "description": "Top-level notes: https://docs.collection.dev/intro" },
   "item": [
     {
       "name": "folder",
@@ -84,10 +88,10 @@ collection() {
           "event": [ { "listen": "test", "script": { "exec": [ $2 "pm.test('ok', function () {});" ] } } ],
           "request": {
             "method": "POST",
-            "description": "See https://docs.request.test/reference",
-            "header": [ { "key": "X-Doc", "value": "1", "description": "https://docs.header.test/x-doc" } ],
+            "description": "See https://docs.request.dev/reference",
+            "header": [ { "key": "X-Doc", "value": "1", "description": "https://docs.header.dev/x-doc" } ],
             "body": { "mode": "raw", "raw": "{\"model\": \"m\"}" },
-            "url": { "raw": "https://api.allowed.test/v1/chat", "host": ["api.allowed.test"], "path": ["v1", "chat"] }
+            "url": { "raw": "https://api.allowed.dev/v1/chat", "host": ["api.allowed.dev"], "path": ["v1", "chat"] }
           }
         }
       ]
@@ -101,43 +105,68 @@ JSON
 run_case "docs-link-in-folder-description" pass "" \
   "$(collection '"description": "Kimi serves Responses (https://platform.kimi.ai/docs/api/responses.md).",' '')"
 run_case "docs-link-in-script-comment" pass "" \
-  "$(collection '' '"// see https://learn.vendor.test/files-api", "   // and https://learn.vendor.test/indented",')"
+  "$(collection '' '"// see https://learn.vendor.dev/files-api", "   // and https://learn.vendor.dev/indented",')"
 
 # Anything newman sends or runs still counts.
-run_case "host-in-request-url" fail "api.unlisted.test" \
-  "$(collection '' '' | sed 's#https://api.allowed.test/v1/chat#https://api.unlisted.test/v1/chat#')"
-run_case "host-in-request-body" fail "files.unlisted.test" \
-  "$(collection '' '' | sed 's#{\\"model\\": \\"m\\"}#{\\"image_url\\": \\"https://files.unlisted.test/a.png\\"}#')"
-run_case "host-in-script-code" fail "callback.unlisted.test" \
-  "$(collection '' '"pm.sendRequest({ url: \"https://callback.unlisted.test/hook\" }, function () {});",')"
+run_case "host-in-request-url" fail "api.unlisted.dev" \
+  "$(collection '' '' | sed 's#https://api.allowed.dev/v1/chat#https://api.unlisted.dev/v1/chat#')"
+run_case "host-in-request-body" fail "files.unlisted.dev" \
+  "$(collection '' '' | sed 's#{\\"model\\": \\"m\\"}#{\\"image_url\\": \\"https://files.unlisted.dev/a.png\\"}#')"
+run_case "host-in-script-code" fail "callback.unlisted.dev" \
+  "$(collection '' '"pm.sendRequest({ url: \"https://callback.unlisted.dev/hook\" }, function () {});",')"
 # One exec entry can hold a whole multi-line script. Only its comment lines are
 # documentation; a script that begins with a comment keeps the statements after it.
-run_case "host-in-code-after-a-comment-in-a-multiline-entry" fail "multiline.unlisted.test" \
-  "$(collection '' '"// initialize\npm.sendRequest(\"https://multiline.unlisted.test/hook\", function () {});",')"
+run_case "host-in-code-after-a-comment-in-a-multiline-entry" fail "multiline.unlisted.dev" \
+  "$(collection '' '"// initialize\npm.sendRequest(\"https://multiline.unlisted.dev/hook\", function () {});",')"
 run_case "docs-link-in-a-comment-line-of-a-multiline-entry" pass "" \
-  "$(collection '' '"var a = 1;\n  // see https://learn.vendor.test/multiline\nvar b = 2;",')"
-run_case "host-in-trailing-comment-of-a-code-line" fail "trailing.unlisted.test" \
-  "$(collection '' '"var x = 1; // https://trailing.unlisted.test/still-counted",')"
-run_case "host-in-a-key-that-only-resembles-description" fail "tool.unlisted.test" \
-  "$(collection '"description_url": "https://tool.unlisted.test/spec",' '')"
+  "$(collection '' '"var a = 1;\n  // see https://learn.vendor.dev/multiline\nvar b = 2;",')"
+run_case "host-in-trailing-comment-of-a-code-line" fail "trailing.unlisted.dev" \
+  "$(collection '' '"var x = 1; // https://trailing.unlisted.dev/still-counted",')"
+run_case "host-in-a-key-that-only-resembles-description" fail "tool.unlisted.dev" \
+  "$(collection '"description_url": "https://tool.unlisted.dev/spec",' '')"
 
 # A provider in the harness profile without a base_url dials the default its Go
 # constructor sets, which is in neither the collection nor the config. The check reads
 # it from provider-default-hosts.json (TXE-6981).
-DEFAULT_HOSTS='{"acme": "api.acme.test", "allowed": "api.allowed.test", "nodefault": ""}'
-run_case "profile-provider-default-host-not-allowlisted" fail "omits api.acme.test" "$(collection '' '')" \
+DEFAULT_HOSTS='{"acme": "api.acme.dev", "allowed": "api.allowed.dev", "nodefault": ""}'
+run_case "profile-provider-default-host-not-allowlisted" fail "omits api.acme.dev" "$(collection '' '')" \
   '{"providers": {"acme": {"keys": []}}}' "$DEFAULT_HOSTS"
 run_case "profile-provider-default-host-allowlisted" pass "" "$(collection '' '')" \
   '{"providers": {"allowed": {"keys": []}}}' "$DEFAULT_HOSTS"
 run_case "profile-provider-without-a-default-host" pass "" "$(collection '' '')" \
   '{"providers": {"nodefault": {"keys": []}}}' "$DEFAULT_HOSTS"
-run_case "custom-provider-dials-its-base-providers-host" fail "omits api.acme.test" "$(collection '' '')" \
+run_case "custom-provider-dials-its-base-providers-host" fail "omits api.acme.dev" "$(collection '' '')" \
   '{"providers": {"acme_custom": {"custom_provider_config": {"base_provider_type": "acme"}}}}' "$DEFAULT_HOSTS"
 run_case "profile-provider-with-its-own-base-url" pass "" "$(collection '' '')" \
-  '{"providers": {"acme": {"network_config": {"base_url": "https://api.allowed.test/v1"}}}}' "$DEFAULT_HOSTS"
+  '{"providers": {"acme": {"network_config": {"base_url": "https://api.allowed.dev/v1"}}}}' "$DEFAULT_HOSTS"
 # A provider the list does not know means the list is stale; that is an error, not a skip.
 run_case "profile-provider-missing-from-the-list" fail "'newcomer' (base provider 'newcomer') has no entry" "$(collection '' '')" \
   '{"providers": {"newcomer": {"keys": []}}}' "$DEFAULT_HOSTS"
+
+# A host under a reserved TLD (RFC 2606, RFC 6761) never resolves, so the runner cannot
+# dial it and no allowlist needs it: a must-never-be-fetched canary in a request body, a
+# stored callback URL, a provider default. Listed nowhere, each passes (TXE-7029:
+# images.example.invalid and hooks.example.test turned the check red on main).
+run_case "reserved-invalid-host-in-request-body" pass "" \
+  "$(collection '' '' | sed 's#{\\"model\\": \\"m\\"}#{\\"image_url\\": \\"https://images.example.invalid/a.png\\"}#')"
+run_case "reserved-test-host-in-script-code" pass "" \
+  "$(collection '' '"pm.sendRequest({ url: \"https://hooks.example.test/hook\" }, function () {});",')"
+run_case "reserved-example-host-in-request-url" pass "" \
+  "$(collection '' '' | sed 's#https://api.allowed.dev/v1/chat#https://callback.client.example/v1/chat#')"
+run_case "reserved-localhost-name-in-request-body" pass "" \
+  "$(collection '' '' | sed 's#{\\"model\\": \\"m\\"}#{\\"url\\": \\"http://fixture.localhost/a\\"}#')"
+run_case "reserved-tld-in-upper-case" pass "" \
+  "$(collection '' '' | sed 's#{\\"model\\": \\"m\\"}#{\\"image_url\\": \\"https://IMAGES.EXAMPLE.INVALID/a.png\\"}#')"
+run_case "reserved-provider-default-host" pass "" "$(collection '' '')" \
+  '{"providers": {"fixture": {"keys": []}}}' '{"fixture": "api.fixture.invalid"}'
+# Only the last label counts. A reserved word elsewhere in the name, or a name that
+# merely ends in the same letters, is an ordinary host; example.com resolves.
+run_case "reserved-word-not-as-the-tld" fail "invalid.unlisted.dev" \
+  "$(collection '' '' | sed 's#{\\"model\\": \\"m\\"}#{\\"image_url\\": \\"https://invalid.unlisted.dev/a.png\\"}#')"
+run_case "tld-that-only-ends-like-a-reserved-one" fail "files.unlisted.contest" \
+  "$(collection '' '' | sed 's#{\\"model\\": \\"m\\"}#{\\"image_url\\": \\"https://files.unlisted.contest/a.png\\"}#')"
+run_case "example-dot-com-subdomain-is-not-reserved" fail "files.example.com" \
+  "$(collection '' '' | sed 's#{\\"model\\": \\"m\\"}#{\\"image_url\\": \\"https://files.example.com/a.png\\"}#')"
 
 if [[ $failures -gt 0 ]]; then
   echo ""
