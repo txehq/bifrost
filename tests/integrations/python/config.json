@@ -532,6 +532,24 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "dashscope": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "DashScope API Key",
+          "value": "env.DASHSCOPE_API_KEY",
+          "weight": 1,
+          "models": ["wan2.6-t2v", "qwen-image-plus", "qwen3-tts-flash", "qwen3-asr-flash", "qwen-plus"]
+        }
+      ],
+      "network_config": {
+        "base_url": "https://dashscope-intl.aliyuncs.com",
+        "workspace_base_url": "https://dashscope-intl.aliyuncs.com",
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "openrouter": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
@@ -1630,6 +1648,12 @@
           },
           {
             "provider": "tencent",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "dashscope",
             "allowed_models": ["*"],
             "key_ids": ["*"],
             "weight": 1.0

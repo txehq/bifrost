@@ -3276,6 +3276,93 @@ func TestProviderBaseURLShape(t *testing.T) {
 	}
 }
 
+// TestProviderBaseURLs_CheckEveryDialTarget pins that DashScope's workspace_base_url gets the
+// same shape, destination and auth-bypass checks as base_url, so a second base cannot reach
+// what base_url may not.
+func TestProviderBaseURLs_CheckEveryDialTarget(t *testing.T) {
+	if err := validateProviderBaseURLs(schemas.NetworkConfig{WorkspaceBaseURL: "https://u:p@1.1.1.1/"}); err == nil || !strings.Contains(err.Error(), "workspace_base_url") {
+		t.Errorf("shape check got %v, want a workspace_base_url rejection", err)
+	}
+	if err := validateProviderBaseURLDestinations(schemas.NetworkConfig{WorkspaceBaseURL: "http://169.254.169.254/"}); err == nil || !strings.Contains(err.Error(), "workspace_base_url") {
+		t.Errorf("destination check got %v, want a workspace_base_url rejection", err)
+	}
+	if err := validateProviderBaseURLDestinations(schemas.NetworkConfig{BaseURL: "https://1.1.1.1", WorkspaceBaseURL: "https://1.0.0.1"}); err != nil {
+		t.Errorf("public bases rejected: %v", err)
+	}
+	stored := &schemas.NetworkConfig{BaseURL: "https://1.1.1.1", WorkspaceBaseURL: "https://1.0.0.1"}
+	for _, tc := range []struct {
+		name string
+		next schemas.NetworkConfig
+		want bool
+	}{
+		{"unchanged", *stored, false},
+		{"workspace base changed", schemas.NetworkConfig{BaseURL: stored.BaseURL, WorkspaceBaseURL: "https://8.8.8.8"}, true},
+		{"workspace base cleared", schemas.NetworkConfig{BaseURL: stored.BaseURL}, false},
+	} {
+		if got := providerDialTargetChanged(stored, tc.next); got != tc.want {
+			t.Errorf("%s: providerDialTargetChanged = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if !providerDialTargetChanged(nil, schemas.NetworkConfig{WorkspaceBaseURL: "https://1.0.0.1"}) {
+		t.Error("a new provider with a workspace base did not count as a dial target change")
+	}
+}
+
+// TestAddProvider_DashScopeStoresBothBases pins that a dashscope provider written through
+// /api/providers keeps its Singapore base and its workspace base, and that the workspace
+// base cannot be set under the auth bypass or aimed at a private address.
+func TestAddProvider_DashScopeStoresBothBases(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	cases := []struct {
+		name       string
+		network    schemas.NetworkConfig
+		bypassed   bool
+		wantStatus int
+	}{
+		{name: "both bases", network: schemas.NetworkConfig{BaseURL: "https://1.1.1.1", WorkspaceBaseURL: "https://1.0.0.1"}, wantStatus: fasthttp.StatusOK},
+		{name: "workspace base under auth bypass", network: schemas.NetworkConfig{WorkspaceBaseURL: "https://1.0.0.1"}, bypassed: true, wantStatus: fasthttp.StatusForbidden},
+		{name: "private workspace base", network: schemas.NetworkConfig{WorkspaceBaseURL: "http://169.254.169.254/"}, wantStatus: fasthttp.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+				modelsManager: &mockModelsManager{},
+			}
+			network := tc.network
+			body, err := sonic.Marshal(providerCreatePayload{Provider: schemas.DashScope, NetworkConfig: &network})
+			if err != nil {
+				t.Fatalf("failed to marshal request body: %v", err)
+			}
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI("/api/providers")
+			ctx.Request.SetBody(body)
+			if tc.bypassed {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
+
+			h.addProvider(ctx)
+
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			stored, exists := h.inMemoryStore.Providers[schemas.DashScope]
+			if exists != (tc.wantStatus == fasthttp.StatusOK) {
+				t.Fatalf("provider persisted=%v, want %v", exists, tc.wantStatus == fasthttp.StatusOK)
+			}
+			if !exists {
+				return
+			}
+			if stored.NetworkConfig == nil || stored.NetworkConfig.BaseURL != tc.network.BaseURL || stored.NetworkConfig.WorkspaceBaseURL != tc.network.WorkspaceBaseURL {
+				t.Fatalf("stored network config %+v, want base %q and workspace base %q", stored.NetworkConfig, tc.network.BaseURL, tc.network.WorkspaceBaseURL)
+			}
+		})
+	}
+}
+
 // TestProviderWrites_TellTheReloadWhetherTheyAdded pins that the reload after an update, keyless or
 // not, is told the provider is not new, and the add endpoint's reload is told it is.
 func TestProviderWrites_TellTheReloadWhetherTheyAdded(t *testing.T) {

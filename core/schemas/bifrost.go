@@ -92,6 +92,7 @@ const (
 	MiniMax       ModelProvider = "minimax"
 	BytePlus      ModelProvider = "byteplus"
 	Tencent       ModelProvider = "tencent" // Tencent Cloud TokenHub: Hy image generation (fork)
+	DashScope     ModelProvider = "dashscope"
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -159,6 +160,7 @@ var StandardProviders = []ModelProvider{
 	MiniMax,
 	BytePlus,
 	Tencent,
+	DashScope,
 }
 
 // RequestType represents the type of request being made to a provider.

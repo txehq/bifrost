@@ -304951,6 +304951,226 @@
           ]
         }
       ]
+    },
+    {
+      "name": "316. DashScope provider registered, every operation unsupported (dashscope provider)",
+      "description": "The dashscope provider is Alibaba Model Studio's native DashScope API (Wan video, Qwen-Image, Qwen3-TTS, Qwen3-ASR); chat stays on qwen. This folder pins the registration only: the profile configures dashscope with a Singapore base_url and a workspace_base_url, the provider loads with both, and every operation answers 400 unsupported_operation until its own ticket adds it. A 400 unsupported_operation cannot come from DashScope, so these rows also prove no upstream call answered: an upstream call with the harness key would come back 401 or 2xx instead. Any non-empty DASHSCOPE_API_KEY works here, because nothing is sent upstream; without one the key is filtered out and the rows fail with no key for the model.",
+      "item": [
+        {
+          "name": "GET /api/providers/dashscope - provider loads with the Singapore base and the workspace base",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('dashscope is configured with both bases', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.eql(200);",
+                  "  var nc = pm.response.json().network_config || {};",
+                  "  pm.expect(nc.base_url, text).to.eql('https://dashscope-intl.aliyuncs.com');",
+                  "  pm.expect(nc.workspace_base_url, text).to.eql('https://dashscope-intl.aliyuncs.com');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/dashscope",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "dashscope"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/videos - Wan video generation answers unsupported with no upstream call - dashscope/wan2.6-t2v",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('video_generation is refused as unsupported by dashscope', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'want 400 unsupported_operation, got: ' + text).to.eql(400);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.error && body.error.code, text).to.eql('unsupported_operation');",
+                  "  pm.expect(body.error.message, text).to.include('video_generation');",
+                  "  pm.expect(body.error.message, text).to.include('dashscope');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"dashscope/wan2.6-t2v\",\n  \"prompt\": \"A paper boat drifting down a rain gutter\",\n  \"seconds\": \"5\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/images/generations - Qwen-Image generation answers unsupported with no upstream call - dashscope/qwen-image-plus",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('image_generation is refused as unsupported by dashscope', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'want 400 unsupported_operation, got: ' + text).to.eql(400);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.error && body.error.code, text).to.eql('unsupported_operation');",
+                  "  pm.expect(body.error.message, text).to.include('image_generation');",
+                  "  pm.expect(body.error.message, text).to.include('dashscope');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"dashscope/qwen-image-plus\",\n  \"prompt\": \"A lighthouse at dusk\",\n  \"n\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/audio/speech - Qwen3-TTS speech answers unsupported with no upstream call - dashscope/qwen3-tts-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('speech is refused as unsupported by dashscope', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'want 400 unsupported_operation, got: ' + text).to.eql(400);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.error && body.error.code, text).to.eql('unsupported_operation');",
+                  "  pm.expect(body.error.message, text).to.include('speech');",
+                  "  pm.expect(body.error.message, text).to.include('dashscope');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"dashscope/qwen3-tts-flash\",\n  \"input\": \"Hello from Singapore.\",\n  \"voice\": \"Cherry\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/chat/completions - chat (served by qwen, not dashscope) answers unsupported with no upstream call - dashscope/qwen-plus",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat_completion is refused as unsupported by dashscope', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'want 400 unsupported_operation, got: ' + text).to.eql(400);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.error && body.error.code, text).to.eql('unsupported_operation');",
+                  "  pm.expect(body.error.message, text).to.include('chat_completion');",
+                  "  pm.expect(body.error.message, text).to.include('dashscope');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"dashscope/qwen-plus\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

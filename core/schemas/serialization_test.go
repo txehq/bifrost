@@ -1150,6 +1150,25 @@ func TestNetworkConfig_StreamIdleTimeoutRoundTrip(t *testing.T) {
 	assert.Contains(t, string(data), `"stream_idle_timeout_in_seconds":120`)
 }
 
+// TestNetworkConfig_WorkspaceBaseURLRoundTrip pins that DashScope's workspace base survives
+// the custom marshal/unmarshal pair, which lists every field by hand.
+func TestNetworkConfig_WorkspaceBaseURLRoundTrip(t *testing.T) {
+	nc := NetworkConfig{
+		BaseURL:          "https://dashscope-intl.aliyuncs.com",
+		WorkspaceBaseURL: "https://ws-1.ap-southeast-1.maas.aliyuncs.com",
+	}
+
+	data, err := json.Marshal(nc)
+	require.NoError(t, err)
+
+	var decoded NetworkConfig
+	require.NoError(t, json.Unmarshal(data, &decoded))
+
+	assert.Equal(t, nc.WorkspaceBaseURL, decoded.WorkspaceBaseURL, "workspace_base_url should round-trip")
+	assert.Equal(t, nc.BaseURL, decoded.BaseURL)
+	assert.Contains(t, string(data), `"workspace_base_url":"https://ws-1.ap-southeast-1.maas.aliyuncs.com"`)
+}
+
 func TestNetworkConfig_HTTP2PingInterval(t *testing.T) {
 	nc := NetworkConfig{EnforceHTTP2: true, HTTP2PingIntervalInSeconds: 45}
 	data, err := json.Marshal(nc)

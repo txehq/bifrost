@@ -40,6 +40,7 @@ ModelProvider:
     - minimax
     - byteplus
     - tencent
+    - dashscope
 
 Fallback:
   type: object

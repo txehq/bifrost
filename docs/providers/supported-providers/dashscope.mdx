@@ -1,0 +1,106 @@
+---
+title: "Alibaba DashScope"
+description: "Alibaba Cloud Model Studio's native DashScope API: provider registration, Singapore and workspace base addresses, auth and error mapping"
+icon: "d"
+---
+
+## Overview
+
+The `dashscope` provider is Alibaba Cloud Model Studio's native DashScope API, which serves Wan video, Qwen-Image and Z-Image images, Qwen3-TTS speech and Qwen3-ASR transcription. Qwen chat stays on the [`qwen`](/providers/supported-providers/qwen) provider, which speaks DashScope's OpenAI-compatible mode.
+
+<Note>
+This release registers the provider only. Every operation returns `UnsupportedOperationError` (HTTP 400, `error.code` `unsupported_operation`) without calling DashScope. Video, image, speech and transcription are added operation by operation in later releases.
+</Note>
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Base |
+|-----------|---------------|-----------|------|
+| Video (Wan) | ❌ (planned) | - | `workspace_base_url` |
+| Image generation and edit (Qwen-Image, Z-Image) | ❌ (planned) | ❌ | `base_url` |
+| Speech (Qwen3-TTS) | ❌ (planned) | ❌ (planned) | `base_url` |
+| Transcription (Qwen3-ASR) | ❌ (planned) | ❌ | `base_url` |
+| Chat, Responses, Text Completions | ❌ (use `qwen`) | ❌ | - |
+| Embeddings, Files, Batch, List Models, everything else | ❌ | ❌ | - |
+
+## Setup & Configuration
+
+The provider has two bases:
+
+- `network_config.base_url` is the regional DashScope site. It defaults to the Singapore (international) site, `https://dashscope-intl.aliyuncs.com`.
+- `network_config.workspace_base_url` is your Model Studio workspace address, `https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com`. Video operations use it. When it is unset they use `base_url`.
+
+Both are checked the same way when written through the management API: no credentials, query or fragment in the URL, an authenticated admin session when dashboard auth is bypassed, and no private-network destination unless `allow_private_network` is set.
+
+<Tabs>
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "dashscope",
+    "keys": [
+      {
+        "name": "dashscope-key-1",
+        "value": "env.DASHSCOPE_API_KEY",
+        "models": ["wan2.6-t2v", "qwen-image-plus", "qwen3-tts-flash"],
+        "weight": 1.0
+      }
+    ],
+    "network_config": {
+      "base_url": "https://dashscope-intl.aliyuncs.com",
+      "workspace_base_url": "https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com"
+    }
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "dashscope": {
+      "keys": [
+        {
+          "name": "dashscope-key-1",
+          "value": "env.DASHSCOPE_API_KEY",
+          "models": ["wan2.6-t2v", "qwen-image-plus", "qwen3-tts-flash"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "base_url": "https://dashscope-intl.aliyuncs.com",
+        "workspace_base_url": "https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com"
+      }
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+## Authentication
+
+The API key is sent as `Authorization: Bearer <key>`. An `extra_headers` entry named `Authorization` does not replace it.
+
+## Errors
+
+DashScope returns `{"request_id": "...", "code": "...", "message": "..."}` with an error status. Bifrost keeps the status code, puts `code` in `error.code` verbatim and `message` in `error.message`, and sets `extra_fields.error_type`:
+
+| DashScope code | Status | `error_type` |
+|----------------|--------|--------------|
+| `InvalidParameter` | 400 | `caller_invalid_request` |
+| `Arrearage` | 400 | `provider_billing` |
+| `AllocationQuota.FreeTierOnly` | 403 | `provider_billing` |
+| `InvalidApiKey` | 401 | `provider_auth_failed` |
+| `AccessDenied`, `AccessDenied.*`, `Model.AccessDenied` | 403 | `provider_auth_failed` |
+| `ModelNotFound` | 404 | `caller_model_unknown` |
+| `Throttling`, `Throttling.*` | 429 | `provider_rate_limited` |
+| `InternalError`, `InternalError.*` | 500 | `provider_server_error` |
+| `ServiceUnavailable` | 503 | `provider_overloaded` |
+| `DataInspectionFailed` (content moderation) | 400 | `caller_invalid_request` for now |
+
+Any other code is classified from its status.

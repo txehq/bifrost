@@ -12,6 +12,9 @@ NetworkConfig:
     base_url:
       type: string
       description: Base URL for the provider (optional)
+    workspace_base_url:
+      type: string
+      description: "DashScope only: the workspace address (https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com) that video operations use instead of base_url. Other providers ignore it. Validated like base_url."
     extra_headers:
       type: object
       additionalProperties:
