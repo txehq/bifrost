@@ -30,8 +30,12 @@ func SetSpeechUsageHeader(ctx *fasthttp.RequestCtx, usage *schemas.SpeechUsage) 
 }
 
 // WriteSpeechAudioResponse writes a non-streaming speech response whose body is the raw audio:
-// Content-Type and the attachment filename follow the format of the audio actually returned
-// (the provider's resp.ContentType, else SpeechContentType). Every OpenAI-shaped speech route
+// Content-Type and the attachment filename follow the format of the audio actually returned.
+// resp.ContentType wins when set: providers record the vendor's own Content-Type for a raw-audio
+// response, or the format they converted to (Gemini's headerless PCM, which no byte signature
+// identifies). The field is serialized so a stored copy (the semantic cache) still knows that
+// format on a hit. Otherwise SpeechContentType derives the type from the bytes and the requested
+// format (TXE-6530, contract C5). Every OpenAI-shaped speech route
 // writes its audio through here so they cannot drift apart. It does not write HeaderBifrostUsage:
 // callers set that once with SetSpeechUsageHeader before their large-response shortcut, so the
 // shortcut carries it too and the usage is serialized only once per response.

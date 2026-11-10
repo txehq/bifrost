@@ -26,13 +26,7 @@ type BifrostSpeechResponse struct {
 	AudioBase64         *string                    `json:"audio_base64,omitempty"`         // Base64-encoded audio (when timestamps are requested)
 	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
 
-	// ContentType is the media type of Audio as the provider knows it: the vendor's own
-	// Content-Type for a raw-audio response, or the format a provider converted to (Gemini's
-	// raw PCM). Empty when unknown; the HTTP transport then derives the type from the bytes and
-	// the requested format. On a raw-audio response it is the HTTP Content-Type; it is
-	// serialized so a stored copy (the semantic cache) still knows the format of headerless
-	// audio such as raw PCM (TXE-6530, contract C5).
-	ContentType string `json:"content_type,omitempty"`
+	ContentType string `json:"content_type,omitempty"` // media type of Audio as the provider reported or converted it; empty when unknown
 }
 
 // BackfillParams fills Usage.InputChars with the code-point count of the input only when the
