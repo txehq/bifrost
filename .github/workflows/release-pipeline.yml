@@ -362,6 +362,7 @@ jobs:
             api.cerebras.ai:443
             api.cloudflare.com:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepinfra.com:443
             api.deepseek.com:443
             api.deepgram.com:443
@@ -616,6 +617,7 @@ jobs:
             api.cerebras.ai:443
             api.cloudflare.com:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -1130,6 +1132,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -1384,6 +1387,7 @@ jobs:
             _grpc_config.localhost:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -1532,6 +1536,7 @@ jobs:
             _https._tcp.packages.microsoft.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -1682,6 +1687,7 @@ jobs:
           allowed-endpoints: >
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -1852,6 +1858,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -2043,6 +2050,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -2244,6 +2252,7 @@ jobs:
             172.38.0.11:5432
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -2343,6 +2352,7 @@ jobs:
             127.0.0.1:8080
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -2449,6 +2459,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
@@ -2617,6 +2628,7 @@ jobs:
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cohere.ai:443
+            api.voyageai.com:443
             api.deepseek.com:443
             api.deepgram.com:443
             api.elevenlabs.io:443
