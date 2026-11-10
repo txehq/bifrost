@@ -470,3 +470,48 @@ func BenchmarkMergeStreamFrame(b *testing.B) {
 		})
 	}
 }
+
+// TestToolUsageCountersCoverEveryField fails when a new ToolUsage counter is added
+// without listing it in counters(), which Add, Max and DeepCopy iterate.
+func TestToolUsageCountersCoverEveryField(t *testing.T) {
+	var tu ToolUsage
+	typ := reflect.TypeOf(tu)
+	counters := tu.counters()
+	if len(counters) != typ.NumField() {
+		t.Fatalf("counters() lists %d of %d ToolUsage fields", len(counters), typ.NumField())
+	}
+	for i := 0; i < typ.NumField(); i++ {
+		field := reflect.ValueOf(&tu).Elem().Field(i).Addr().Interface()
+		if field != any(counters[i]) {
+			t.Fatalf("counters()[%d] is not field %s", i, typ.Field(i).Name)
+		}
+	}
+}
+
+func TestToolUsageAddMaxDeepCopyCarryEveryCounter(t *testing.T) {
+	a := &ToolUsage{WebSearch: &ToolRequestUsage{NumRequests: 1}, WebFetch: &ToolRequestUsage{NumRequests: 2}, CodeExecution: &ToolRequestUsage{NumRequests: 5}}
+	b := &ToolUsage{WebFetch: &ToolRequestUsage{NumRequests: 3}, CodeExecution: &ToolRequestUsage{NumRequests: 1}}
+
+	sum := a.Add(b)
+	if sum.WebSearch.NumRequests != 1 || sum.WebFetch.NumRequests != 5 || sum.CodeExecution.NumRequests != 6 {
+		t.Fatalf("Add = %+v/%+v/%+v, want 1/5/6", *sum.WebSearch, *sum.WebFetch, *sum.CodeExecution)
+	}
+	max := a.Max(b)
+	if max.WebSearch.NumRequests != 1 || max.WebFetch.NumRequests != 3 || max.CodeExecution.NumRequests != 5 {
+		t.Fatalf("Max = %+v/%+v/%+v, want 1/3/5", *max.WebSearch, *max.WebFetch, *max.CodeExecution)
+	}
+	if b.Max(nil).WebSearch != nil {
+		t.Fatal("a tool absent on both sides must stay absent")
+	}
+	cp := a.DeepCopy()
+	if cp.WebFetch == a.WebFetch || cp.CodeExecution == a.CodeExecution || cp.WebFetch.NumRequests != 2 || cp.CodeExecution.NumRequests != 5 {
+		t.Fatalf("DeepCopy must own every counter, got %+v", cp)
+	}
+	out, err := Marshal(&ToolUsage{WebFetch: &ToolRequestUsage{NumRequests: 2}, CodeExecution: &ToolRequestUsage{NumRequests: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"web_fetch":{"num_requests":2},"code_execution":{"num_requests":1}}`; string(out) != want {
+		t.Fatalf("json = %s, want %s", out, want)
+	}
+}

@@ -2259,31 +2259,72 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 	return merged
 }
 
+// ToolUsage counts provider-hosted (server-side) tool calls billed per call.
+// Every counter is filled only when the vendor reports a non-zero count (contract C5).
+// A new counter must also be listed in counters(); TestToolUsageCountersCoverEveryField
+// fails when it is not, so Add, Max and DeepCopy never drop it.
 type ToolUsage struct {
-	WebSearch *WebSearchToolUsage `json:"web_search,omitempty"`
+	WebSearch     *WebSearchToolUsage `json:"web_search,omitempty"`
+	WebFetch      *ToolRequestUsage   `json:"web_fetch,omitempty"`      // Anthropic server_tool_use.web_fetch_requests
+	CodeExecution *ToolRequestUsage   `json:"code_execution,omitempty"` // Anthropic server_tool_use.code_execution_requests
+}
+
+// ToolRequestUsage counts billable calls of one server-side tool.
+type ToolRequestUsage struct {
+	NumRequests int `json:"num_requests"`
 }
 
 // WebSearchToolUsage counts billable web search calls.
-type WebSearchToolUsage struct {
-	NumRequests int `json:"num_requests"`
+type WebSearchToolUsage = ToolRequestUsage
+
+// counters lists every per-tool counter of t, in field order.
+func (t *ToolUsage) counters() []**ToolRequestUsage {
+	return []**ToolRequestUsage{&t.WebSearch, &t.WebFetch, &t.CodeExecution}
+}
+
+// combineToolUsage applies op per tool; a tool absent on both sides stays nil, and nil when both are nil.
+func combineToolUsage(t, o *ToolUsage, op func(a, b int) int) *ToolUsage {
+	if t == nil && o == nil {
+		return nil
+	}
+	if t == nil {
+		t = &ToolUsage{}
+	}
+	if o == nil {
+		o = &ToolUsage{}
+	}
+	out := &ToolUsage{}
+	tc, oc, dst := t.counters(), o.counters(), out.counters()
+	for i := range dst {
+		a, b := *tc[i], *oc[i]
+		switch {
+		case a == nil && b == nil:
+			continue
+		case a == nil:
+			*dst[i] = &ToolRequestUsage{NumRequests: op(0, b.NumRequests)}
+		case b == nil:
+			*dst[i] = &ToolRequestUsage{NumRequests: op(a.NumRequests, 0)}
+		default:
+			*dst[i] = &ToolRequestUsage{NumRequests: op(a.NumRequests, b.NumRequests)}
+		}
+	}
+	return out
 }
 
 // Add returns the per-tool sum of t and o; nil when both are nil.
 func (t *ToolUsage) Add(o *ToolUsage) *ToolUsage {
-	if t == nil && o == nil {
-		return nil
-	}
-	sum := &ToolUsage{}
-	if t != nil && t.WebSearch != nil {
-		sum.WebSearch = &WebSearchToolUsage{NumRequests: t.WebSearch.NumRequests}
-	}
-	if o != nil && o.WebSearch != nil {
-		if sum.WebSearch == nil {
-			sum.WebSearch = &WebSearchToolUsage{}
+	return combineToolUsage(t, o, func(a, b int) int { return a + b })
+}
+
+// Max returns the per-tool maximum of t and o; nil when both are nil. Streams use it
+// because Anthropic repeats per-request totals across message_start and message_delta.
+func (t *ToolUsage) Max(o *ToolUsage) *ToolUsage {
+	return combineToolUsage(t, o, func(a, b int) int {
+		if a > b {
+			return a
 		}
-		sum.WebSearch.NumRequests += o.WebSearch.NumRequests
-	}
-	return sum
+		return b
+	})
 }
 
 // DeepCopy returns an owned copy of t.
@@ -2291,12 +2332,7 @@ func (t *ToolUsage) DeepCopy() *ToolUsage {
 	if t == nil {
 		return nil
 	}
-	c := *t
-	if t.WebSearch != nil {
-		ws := *t.WebSearch
-		c.WebSearch = &ws
-	}
-	return &c
+	return t.Add(nil)
 }
 
 func cachedWriteTokens5m(details *ChatPromptTokensDetails) int {

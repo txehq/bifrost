@@ -16,7 +16,9 @@ type cacheCreationUsage struct {
 }
 
 type serverToolUseUsage struct {
-	WebSearchRequests int `json:"web_search_requests"`
+	WebSearchRequests     int `json:"web_search_requests"`
+	WebFetchRequests      int `json:"web_fetch_requests"`
+	CodeExecutionRequests int `json:"code_execution_requests"`
 }
 
 type outputTokensDetails struct {
@@ -102,10 +104,24 @@ func buildUsage(au *messagesUsage) *schemas.BifrostPassthroughUsage {
 		}
 		usage.PromptTokensDetails = details
 	}
-	if au.ServerToolUse != nil && au.ServerToolUse.WebSearchRequests > 0 {
-		n := au.ServerToolUse.WebSearchRequests
-		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{NumSearchQueries: &n}
-		usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: n}}
+	if au.ServerToolUse != nil {
+		count := func(n int) *schemas.ToolRequestUsage {
+			if n <= 0 {
+				return nil
+			}
+			return &schemas.ToolRequestUsage{NumRequests: n}
+		}
+		tu := &schemas.ToolUsage{
+			WebSearch:     count(au.ServerToolUse.WebSearchRequests),
+			WebFetch:      count(au.ServerToolUse.WebFetchRequests),
+			CodeExecution: count(au.ServerToolUse.CodeExecutionRequests),
+		}
+		if tu.WebSearch != nil || tu.WebFetch != nil || tu.CodeExecution != nil {
+			usage.ToolUsage = tu
+		}
+		if n := au.ServerToolUse.WebSearchRequests; n > 0 {
+			usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{NumSearchQueries: &n}
+		}
 	}
 	if au.OutputTokensDetails != nil && au.OutputTokensDetails.ThinkingTokens > 0 {
 		if usage.CompletionTokensDetails == nil {
@@ -167,6 +183,8 @@ func (a *StreamUsage) ObserveEvent(event []byte) *schemas.BifrostPassthroughUsag
 			c.ServerToolUse = &serverToolUseUsage{}
 		}
 		c.ServerToolUse.WebSearchRequests = max(c.ServerToolUse.WebSearchRequests, u.ServerToolUse.WebSearchRequests)
+		c.ServerToolUse.WebFetchRequests = max(c.ServerToolUse.WebFetchRequests, u.ServerToolUse.WebFetchRequests)
+		c.ServerToolUse.CodeExecutionRequests = max(c.ServerToolUse.CodeExecutionRequests, u.ServerToolUse.CodeExecutionRequests)
 	}
 	if u.OutputTokensDetails != nil {
 		if c.OutputTokensDetails == nil {

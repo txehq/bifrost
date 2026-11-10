@@ -2222,7 +2222,54 @@ func (u *AnthropicUsage) ServerSideFallbackModel() *string {
 
 // AnthropicServerToolUseUsage represents server tool use statistics in usage
 type AnthropicServerToolUseUsage struct {
-	WebSearchRequests int `json:"web_search_requests"` // Number of web search requests made
+	WebSearchRequests     int `json:"web_search_requests"`               // Number of web search requests made
+	WebFetchRequests      int `json:"web_fetch_requests,omitempty"`      // Number of web fetch requests made
+	CodeExecutionRequests int `json:"code_execution_requests,omitempty"` // Number of code execution requests made
+}
+
+// ToToolUsage maps the vendor's server tool counts to the unified per-tool counts.
+// A tool the vendor reported zero for stays absent (contract C5); nil when none is set.
+func (s *AnthropicServerToolUseUsage) ToToolUsage() *schemas.ToolUsage {
+	if s == nil {
+		return nil
+	}
+	count := func(n int) *schemas.ToolRequestUsage {
+		if n <= 0 {
+			return nil
+		}
+		return &schemas.ToolRequestUsage{NumRequests: n}
+	}
+	tu := &schemas.ToolUsage{
+		WebSearch:     count(s.WebSearchRequests),
+		WebFetch:      count(s.WebFetchRequests),
+		CodeExecution: count(s.CodeExecutionRequests),
+	}
+	if tu.WebSearch == nil && tu.WebFetch == nil && tu.CodeExecution == nil {
+		return nil
+	}
+	return tu
+}
+
+// anthropicServerToolUseFromToolUsage is the inverse of ToToolUsage; nil when no count is set.
+func anthropicServerToolUseFromToolUsage(tu *schemas.ToolUsage) *AnthropicServerToolUseUsage {
+	if tu == nil {
+		return nil
+	}
+	n := func(c *schemas.ToolRequestUsage) int {
+		if c == nil {
+			return 0
+		}
+		return c.NumRequests
+	}
+	s := &AnthropicServerToolUseUsage{
+		WebSearchRequests:     n(tu.WebSearch),
+		WebFetchRequests:      n(tu.WebFetch),
+		CodeExecutionRequests: n(tu.CodeExecution),
+	}
+	if s.WebSearchRequests <= 0 && s.WebFetchRequests <= 0 && s.CodeExecutionRequests <= 0 {
+		return nil
+	}
+	return s
 }
 
 type AnthropicUsageCacheCreation struct {

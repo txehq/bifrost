@@ -5894,3 +5894,101 @@ func TestAddMissingBetaHeaders_SingleMCPClientDate(t *testing.T) {
 		})
 	}
 }
+
+// anthropicServerToolSampleBody is a Messages response shaped like Anthropic's
+// documented usage block with server tool counts (web fetch and code execution
+// tool docs), TXE-6534.
+const anthropicServerToolSampleBody = `{
+  "id": "msg_01Aq9w938a90dw8q",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-1",
+  "content": [{"type": "text", "text": "done"}],
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 2589,
+    "output_tokens": 105,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "server_tool_use": {"web_search_requests": 0, "web_fetch_requests": 2, "code_execution_requests": 1}
+  }
+}`
+
+func assertServerToolCounts(t *testing.T, label string, tu *schemas.ToolUsage, webSearch, webFetch, codeExec int) {
+	t.Helper()
+	if tu == nil {
+		t.Fatalf("%s: tool_usage missing", label)
+	}
+	check := func(name string, c *schemas.ToolRequestUsage, want int) {
+		t.Helper()
+		if want == 0 {
+			if c != nil {
+				t.Fatalf("%s: %s = %+v, want absent (vendor reported 0)", label, name, *c)
+			}
+			return
+		}
+		if c == nil || c.NumRequests != want {
+			t.Fatalf("%s: %s = %+v, want num_requests %d", label, name, c, want)
+		}
+	}
+	check("web_search", tu.WebSearch, webSearch)
+	check("web_fetch", tu.WebFetch, webFetch)
+	check("code_execution", tu.CodeExecution, codeExec)
+}
+
+func TestAnthropicServerToolCounts_ChatAndResponses(t *testing.T) {
+	var response AnthropicMessageResponse
+	if err := schemas.Unmarshal([]byte(anthropicServerToolSampleBody), &response); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	chat := response.ToBifrostChatResponse(ctx)
+	if chat == nil || chat.Usage == nil {
+		t.Fatal("chat usage missing")
+	}
+	assertServerToolCounts(t, "chat", chat.Usage.ToolUsage, 0, 2, 1)
+	if chat.Usage.CompletionTokensDetails != nil && chat.Usage.CompletionTokensDetails.NumSearchQueries != nil {
+		t.Fatalf("chat num_search_queries = %d, want absent with no web search", *chat.Usage.CompletionTokensDetails.NumSearchQueries)
+	}
+	out, err := schemas.Marshal(chat.Usage.ToolUsage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"web_fetch":{"num_requests":2},"code_execution":{"num_requests":1}}`; string(out) != want {
+		t.Fatalf("chat tool_usage json = %s, want %s", out, want)
+	}
+
+	responses := response.ToBifrostResponsesResponse(ctx)
+	if responses == nil || responses.Usage == nil {
+		t.Fatal("responses usage missing")
+	}
+	assertServerToolCounts(t, "responses", responses.Usage.ToolUsage, 0, 2, 1)
+}
+
+func TestAnthropicServerToolCounts_WebSearchKeepsLegacyFields(t *testing.T) {
+	usage := &AnthropicUsage{InputTokens: 1, OutputTokens: 1, ServerToolUse: &AnthropicServerToolUseUsage{WebSearchRequests: 3, WebFetchRequests: 1, CodeExecutionRequests: 4}}
+	ru := ConvertAnthropicUsageToBifrostUsage(usage)
+	assertServerToolCounts(t, "responses", ru.ToolUsage, 3, 1, 4)
+	if ru.OutputTokensDetails == nil || ru.OutputTokensDetails.NumSearchQueries == nil || *ru.OutputTokensDetails.NumSearchQueries != 3 {
+		t.Fatalf("responses num_search_queries = %+v, want 3", ru.OutputTokensDetails)
+	}
+	back := ConvertBifrostUsageToAnthropicUsage(ru)
+	if back.ServerToolUse == nil || *back.ServerToolUse != *usage.ServerToolUse {
+		t.Fatalf("round trip server_tool_use = %+v, want %+v", back.ServerToolUse, *usage.ServerToolUse)
+	}
+	if ConvertBifrostUsageToAnthropicUsage(&schemas.ResponsesResponseUsage{}).ServerToolUse != nil {
+		t.Fatal("no tool counts must leave server_tool_use absent")
+	}
+}
+
+func TestAccumulateResponsesUsage_MaxMergesServerToolCounts(t *testing.T) {
+	usage := &schemas.ResponsesResponseUsage{}
+	billed := &schemas.BifrostLLMUsage{}
+	// message_start then message_delta: Anthropic repeats per-request totals.
+	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{ServerToolUse: &AnthropicServerToolUseUsage{WebFetchRequests: 1}})
+	accumulateAnthropicResponsesUsage(usage, billed, &AnthropicUsage{ServerToolUse: &AnthropicServerToolUseUsage{WebFetchRequests: 2, CodeExecutionRequests: 1}})
+	assertServerToolCounts(t, "stream response", usage.ToolUsage, 0, 2, 1)
+	assertServerToolCounts(t, "stream billed", billed.ToolUsage, 0, 2, 1)
+}

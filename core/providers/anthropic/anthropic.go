@@ -741,9 +741,16 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 		}
 	}
 	usageToProcess = billableAnthropicUsage(usageToProcess)
-	// Web search request count → billed as search queries (server tool use). The
-	// terminal chunk overwrites Response.Usage with this accumulator, so the count
+	// Server tool request counts → billed per call; web search also as search queries.
+	// The terminal chunk overwrites Response.Usage with this accumulator, so the counts
 	// must live here (not only on the per-event message_delta usage).
+	// Web fetch and code execution counts ride along in tool_usage, max-merged per tool.
+	if tu := usageToProcess.ServerToolUse.ToToolUsage(); tu != nil {
+		usage.ToolUsage = usage.ToolUsage.Max(tu)
+		if billedUsage != nil {
+			billedUsage.ToolUsage = billedUsage.ToolUsage.Max(tu)
+		}
+	}
 	if usageToProcess.ServerToolUse != nil && usageToProcess.ServerToolUse.WebSearchRequests > 0 {
 		n := usageToProcess.ServerToolUse.WebSearchRequests
 		if usage.OutputTokensDetails == nil {
@@ -752,24 +759,12 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 		if usage.OutputTokensDetails.NumSearchQueries == nil || n > *usage.OutputTokensDetails.NumSearchQueries {
 			usage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(n)
 		}
-		if usage.ToolUsage == nil {
-			usage.ToolUsage = &schemas.ToolUsage{}
-		}
-		if usage.ToolUsage.WebSearch == nil || n > usage.ToolUsage.WebSearch.NumRequests {
-			usage.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: n}
-		}
 		if billedUsage != nil {
 			if billedUsage.CompletionTokensDetails == nil {
 				billedUsage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
 			}
 			if billedUsage.CompletionTokensDetails.NumSearchQueries == nil || n > *billedUsage.CompletionTokensDetails.NumSearchQueries {
 				billedUsage.CompletionTokensDetails.NumSearchQueries = schemas.Ptr(n)
-			}
-			if billedUsage.ToolUsage == nil {
-				billedUsage.ToolUsage = &schemas.ToolUsage{}
-			}
-			if billedUsage.ToolUsage.WebSearch == nil || n > billedUsage.ToolUsage.WebSearch.NumRequests {
-				billedUsage.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: n}
 			}
 		}
 	}
@@ -1139,19 +1134,17 @@ func HandleAnthropicChatCompletionStreaming(
 					usage.ServerSideFallbackModel = served
 				}
 				usageToProcess = billableAnthropicUsage(usageToProcess)
-				// Web search request count → billed as search queries (server tool use).
+				// Server tool request counts (web search, web fetch, code execution), max-merged
+				// per tool; web search is also billed as search queries.
+				if tu := usageToProcess.ServerToolUse.ToToolUsage(); tu != nil {
+					usage.ToolUsage = usage.ToolUsage.Max(tu)
+				}
 				if usageToProcess.ServerToolUse != nil && usageToProcess.ServerToolUse.WebSearchRequests > 0 {
 					if usage.CompletionTokensDetails == nil {
 						usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
 					}
 					if n := usageToProcess.ServerToolUse.WebSearchRequests; usage.CompletionTokensDetails.NumSearchQueries == nil || n > *usage.CompletionTokensDetails.NumSearchQueries {
 						usage.CompletionTokensDetails.NumSearchQueries = &n
-					}
-					if usage.ToolUsage == nil {
-						usage.ToolUsage = &schemas.ToolUsage{}
-					}
-					if n := usageToProcess.ServerToolUse.WebSearchRequests; usage.ToolUsage.WebSearch == nil || n > usage.ToolUsage.WebSearch.NumRequests {
-						usage.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: n}
 					}
 				}
 				// Extended-thinking tokens. Max-merged like the other counters because usage

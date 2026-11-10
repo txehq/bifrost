@@ -1462,13 +1462,15 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			PromptTokensDetails: promptTokensDetails,
 			CompletionTokens:    billable.OutputTokens,
 		}
-		// Forward web search request count so server-tool use is billed.
-		if billable.ServerToolUse != nil && billable.ServerToolUse.WebSearchRequests > 0 {
-			n := billable.ServerToolUse.WebSearchRequests
-			bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
-				NumSearchQueries: &n,
+		// Forward server tool request counts (web search, web fetch, code execution) so
+		// server-tool use is billed; web search also keeps its legacy num_search_queries.
+		if billable.ServerToolUse != nil {
+			bifrostResponse.Usage.ToolUsage = billable.ServerToolUse.ToToolUsage()
+			if n := billable.ServerToolUse.WebSearchRequests; n > 0 {
+				bifrostResponse.Usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
+					NumSearchQueries: &n,
+				}
 			}
-			bifrostResponse.Usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: n}}
 		}
 		// Extended-thinking token count. Already a subset of OutputTokens (see
 		// AnthropicOutputTokensDetails), which matches the Bifrost invariant that

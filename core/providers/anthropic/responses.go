@@ -4969,13 +4969,15 @@ func ConvertAnthropicUsageToBifrostUsage(anthropicUsage *AnthropicUsage) *schema
 		bifrostUsage.TotalTokens = bifrostUsage.TotalTokens + billable.CacheCreationInputTokens
 	}
 
-	// Propagate server tool use (web search) counts
-	if billable.ServerToolUse != nil && billable.ServerToolUse.WebSearchRequests > 0 {
-		if bifrostUsage.OutputTokensDetails == nil {
-			bifrostUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+	// Propagate server tool use counts (web search, web fetch, code execution)
+	if billable.ServerToolUse != nil {
+		bifrostUsage.ToolUsage = billable.ServerToolUse.ToToolUsage()
+		if billable.ServerToolUse.WebSearchRequests > 0 {
+			if bifrostUsage.OutputTokensDetails == nil {
+				bifrostUsage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
+			}
+			bifrostUsage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(billable.ServerToolUse.WebSearchRequests)
 		}
-		bifrostUsage.OutputTokensDetails.NumSearchQueries = schemas.Ptr(billable.ServerToolUse.WebSearchRequests)
-		bifrostUsage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: billable.ServerToolUse.WebSearchRequests}}
 	}
 
 	// Extended-thinking token count. Already a subset of OutputTokens upstream, so it
@@ -5035,10 +5037,8 @@ func ConvertBifrostUsageToAnthropicUsage(bifrostUsage *schemas.ResponsesResponse
 		}
 	}
 
-	// Handle server tool use statistics (e.g., web search)
-	if bifrostUsage.ToolUsage != nil && bifrostUsage.ToolUsage.WebSearch != nil && bifrostUsage.ToolUsage.WebSearch.NumRequests > 0 {
-		anthropicUsage.ServerToolUse = &AnthropicServerToolUseUsage{WebSearchRequests: bifrostUsage.ToolUsage.WebSearch.NumRequests}
-	}
+	// Handle server tool use statistics (web search, web fetch, code execution)
+	anthropicUsage.ServerToolUse = anthropicServerToolUseFromToolUsage(bifrostUsage.ToolUsage)
 
 	// Reasoning tokens map back to Anthropic's thinking-token breakdown. Unlike the
 	// cache counters above, OutputTokens is not adjusted: thinking tokens are already
