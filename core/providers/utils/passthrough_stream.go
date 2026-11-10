@@ -112,6 +112,11 @@ func streamPassthrough(
 
 		var pending bytes.Buffer
 		var usage *schemas.BifrostPassthroughUsage
+		// billed is the in-place accumulated usage handle that HandleStreamCancellation and
+		// HandleStreamTimeout copy into the error's BilledUsage, so a stream interrupted after
+		// the vendor reported usage still bills it, as the typed streams do. It is registered
+		// on the first observed token usage only, so a stream without usage allocates nothing.
+		var billed *schemas.BifrostLLMUsage
 
 		success := params.StatusCode >= 200 && params.StatusCode < 300
 
@@ -123,6 +128,13 @@ func streamPassthrough(
 			if success && params.Observe != nil && (params.HasUsage == nil || params.HasUsage(payload)) {
 				if u := params.Observe(payload); u != nil {
 					usage = u
+					if u.LLMUsage != nil {
+						if billed == nil {
+							billed = &schemas.BifrostLLMUsage{}
+							ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, billed)
+						}
+						*billed = *u.LLMUsage
+					}
 				}
 			}
 			if params.EndsStream != nil && params.EndsStream(payload) {
