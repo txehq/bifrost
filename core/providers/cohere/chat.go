@@ -372,6 +372,46 @@ func (req *CohereChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 	return bifrostReq
 }
 
+// ToBifrostChatUsage converts Cohere chat usage to the unified usage, streamed and not.
+// Cohere bills billed_units, so when billed_units carries input and output tokens they
+// fill prompt_tokens/completion_tokens and the processed usage.tokens move to
+// processed_tokens (contract C5, TXE-6596). Without billed tokens the processed counts
+// stay in prompt_tokens/completion_tokens as before. cached_tokens is reported as is.
+func (u *CohereUsage) ToBifrostChatUsage() *schemas.BifrostLLMUsage {
+	usage := &schemas.BifrostLLMUsage{}
+	if u == nil {
+		return usage
+	}
+	billed := u.BilledUnits != nil && u.BilledUnits.InputTokens != nil && u.BilledUnits.OutputTokens != nil
+	switch {
+	case billed:
+		usage.PromptTokens = *u.BilledUnits.InputTokens
+		usage.CompletionTokens = *u.BilledUnits.OutputTokens
+		if u.Tokens != nil && (u.Tokens.InputTokens != nil || u.Tokens.OutputTokens != nil) {
+			processed := &schemas.ProcessedTokenUsage{}
+			if u.Tokens.InputTokens != nil {
+				processed.PromptTokens = *u.Tokens.InputTokens
+			}
+			if u.Tokens.OutputTokens != nil {
+				processed.CompletionTokens = *u.Tokens.OutputTokens
+			}
+			usage.ProcessedTokens = processed
+		}
+	case u.Tokens != nil:
+		if u.Tokens.InputTokens != nil {
+			usage.PromptTokens = *u.Tokens.InputTokens
+		}
+		if u.Tokens.OutputTokens != nil {
+			usage.CompletionTokens = *u.Tokens.OutputTokens
+		}
+	}
+	if u.CachedTokens != nil {
+		usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{CachedReadTokens: *u.CachedTokens}
+	}
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	return usage
+}
+
 // ToBifrostChatResponse converts a Cohere v2 response to Bifrost format
 func (response *CohereChatResponse) ToBifrostChatResponse(model string) *schemas.BifrostChatResponse {
 	if response == nil {
@@ -406,24 +446,7 @@ func (response *CohereChatResponse) ToBifrostChatResponse(model string) *schemas
 
 	// Convert usage information
 	if response.Usage != nil {
-		usage := &schemas.BifrostLLMUsage{}
-
-		if response.Usage.Tokens != nil {
-			if response.Usage.Tokens.InputTokens != nil {
-				usage.PromptTokens = *response.Usage.Tokens.InputTokens
-			}
-			if response.Usage.Tokens.OutputTokens != nil {
-				usage.CompletionTokens = *response.Usage.Tokens.OutputTokens
-			}
-			if response.Usage.CachedTokens != nil {
-				usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
-					CachedReadTokens: *response.Usage.CachedTokens,
-				}
-			}
-			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-		}
-
-		bifrostResponse.Usage = usage
+		bifrostResponse.Usage = response.Usage.ToBifrostChatUsage()
 	}
 
 	return bifrostResponse
@@ -461,12 +484,23 @@ func ToCohereChatResponse(bifrostResp *schemas.BifrostChatResponse) *CohereChatR
 	if bifrostResp.Usage != nil {
 		inputTokens := bifrostResp.Usage.PromptTokens
 		outputTokens := bifrostResp.Usage.CompletionTokens
-		// billed_units is omitted: Bifrost keeps only processed token counts, which Cohere bills differently
-		cohereResp.Usage = &CohereUsage{
-			Tokens: &CohereTokenUsage{
-				InputTokens:  &inputTokens,
-				OutputTokens: &outputTokens,
-			},
+		if processed := bifrostResp.Usage.ProcessedTokens; processed != nil {
+			// The inverse of ToBifrostChatUsage: prompt/completion hold Cohere's billed
+			// units and processed_tokens its processed counts.
+			processedIn, processedOut := processed.PromptTokens, processed.CompletionTokens
+			cohereResp.Usage = &CohereUsage{
+				BilledUnits: &CohereBilledUnits{InputTokens: &inputTokens, OutputTokens: &outputTokens},
+				Tokens:      &CohereTokenUsage{InputTokens: &processedIn, OutputTokens: &processedOut},
+			}
+		} else {
+			// billed_units is omitted: without processed_tokens Bifrost holds one set of
+			// counts, and it cannot tell whether Cohere would bill them as is.
+			cohereResp.Usage = &CohereUsage{
+				Tokens: &CohereTokenUsage{
+					InputTokens:  &inputTokens,
+					OutputTokens: &outputTokens,
+				},
+			}
 		}
 		if bifrostResp.Usage.PromptTokensDetails != nil {
 			cachedTokens := bifrostResp.Usage.PromptTokensDetails.CachedReadTokens
@@ -702,15 +736,7 @@ func (chunk *CohereStreamEvent) ToBifrostChatCompletionStream() (*schemas.Bifros
 
 			// Set usage information
 			if chunk.Delta.Usage != nil {
-				if chunk.Delta.Usage.Tokens != nil {
-					if chunk.Delta.Usage.Tokens.InputTokens != nil {
-						usage.PromptTokens = *chunk.Delta.Usage.Tokens.InputTokens
-					}
-					if chunk.Delta.Usage.Tokens.OutputTokens != nil {
-						usage.CompletionTokens = *chunk.Delta.Usage.Tokens.OutputTokens
-					}
-					usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-				}
+				usage = chunk.Delta.Usage.ToBifrostChatUsage()
 			}
 
 			streamResponse := &schemas.BifrostChatResponse{

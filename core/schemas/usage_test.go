@@ -668,3 +668,39 @@ func BenchmarkLLMSpanDataCacheWriteTierAttributes(b *testing.B) {
 		})
 	}
 }
+
+func TestProcessedTokensMergeAndDeepCopy(t *testing.T) {
+	a := &BifrostLLMUsage{PromptTokens: 5, ProcessedTokens: &ProcessedTokenUsage{PromptTokens: 71, CompletionTokens: 10}}
+	b := &BifrostLLMUsage{PromptTokens: 1, ProcessedTokens: &ProcessedTokenUsage{PromptTokens: 2, CompletionTokens: 3}}
+	m := MergeBifrostLLMUsage(a, b)
+	if m.ProcessedTokens == nil || *m.ProcessedTokens != (ProcessedTokenUsage{PromptTokens: 73, CompletionTokens: 13}) {
+		t.Fatalf("merged processed_tokens = %+v", m.ProcessedTokens)
+	}
+	if MergeBifrostLLMUsage(&BifrostLLMUsage{PromptTokens: 1}, &BifrostLLMUsage{PromptTokens: 2}).ProcessedTokens != nil {
+		t.Fatal("processed_tokens must stay absent when neither side reports it")
+	}
+	cp := a.DeepCopy()
+	if cp.ProcessedTokens == a.ProcessedTokens || *cp.ProcessedTokens != *a.ProcessedTokens {
+		t.Fatal("DeepCopy must own processed_tokens")
+	}
+}
+
+// Cost of carrying processed_tokens through usage merge and copy (TXE-6596) for the
+// common case where it is absent.
+var llmUsageSink *BifrostLLMUsage
+
+func BenchmarkMergeBifrostLLMUsage_Tokens(b *testing.B) {
+	x, y := &BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 7, TotalTokens: 12}, &BifrostLLMUsage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		llmUsageSink = MergeBifrostLLMUsage(x, y)
+	}
+}
+
+func BenchmarkBifrostLLMUsageDeepCopy_Tokens(b *testing.B) {
+	x := &BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 7, TotalTokens: 12}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		llmUsageSink = x.DeepCopy()
+	}
+}
