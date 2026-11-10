@@ -203,3 +203,60 @@ func TestToVertexGeminiEmbeddingRequestForwardsEmbedContentConfig(t *testing.T) 
 		require.Contains(t, extra, "documentOcr", "caller's ExtraParams must not be mutated")
 	})
 }
+
+// Contract C4: Bifrost adds no value the caller did not send. autoTruncate reaches Vertex
+// only when the caller set it; otherwise Vertex applies its own default.
+func TestToVertexEmbeddingRequestSendsNoAutoTruncateUnlessGiven(t *testing.T) {
+	text := "hello"
+	input := []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}}
+
+	for name, params := range map[string]*schemas.EmbeddingParameters{
+		"empty params":    {},
+		"task_type only":  {TaskType: schemas.Ptr("RETRIEVAL_QUERY")},
+		"unrelated extra": {ExtraParams: map[string]interface{}{"other": 1}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := ToVertexEmbeddingRequest(&schemas.BifrostEmbeddingRequest{Model: "text-embedding-005", Input: input, Params: params})
+			require.NoError(t, err)
+			body, err := providerUtils.MarshalSorted(out)
+			require.NoError(t, err)
+			require.NotContains(t, string(body), "autoTruncate", "Bifrost wrote a value the caller did not send: %s", body)
+		})
+	}
+
+	out, err := ToVertexEmbeddingRequest(&schemas.BifrostEmbeddingRequest{Model: "text-embedding-005", Input: input,
+		Params: &schemas.EmbeddingParameters{Dimensions: schemas.Ptr(256)}})
+	require.NoError(t, err)
+	require.Nil(t, out.Parameters.AutoTruncate)
+	require.Equal(t, 256, *out.Parameters.OutputDimensionality)
+
+	out, err = ToVertexEmbeddingRequest(&schemas.BifrostEmbeddingRequest{Model: "text-embedding-005", Input: input,
+		Params: &schemas.EmbeddingParameters{AutoTruncate: schemas.Ptr(false)}})
+	require.NoError(t, err)
+	require.False(t, *out.Parameters.AutoTruncate, "a caller's false is sent as false")
+}
+
+// Contract C5: Vertex text embeddings bill per character and report the count in the
+// response metadata; it reaches usage.billed_characters, under either JSON spelling.
+func TestVertexEmbeddingResponseReportsBillableCharacters(t *testing.T) {
+	for name, body := range map[string]string{
+		"REST camelCase": `{"predictions":[{"embeddings":{"values":[0.1],"statistics":{"token_count":3,"truncated":false}}}],"metadata":{"billableCharacterCount":11}}`,
+		"proto snake":    `{"predictions":[{"embeddings":{"values":[0.1]}}],"metadata":{"billable_character_count":11}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var resp VertexEmbeddingResponse
+			require.NoError(t, schemas.Unmarshal([]byte(body), &resp))
+			out := resp.ToBifrostEmbeddingResponse()
+			require.NotNil(t, out.Usage)
+			require.NotNil(t, out.Usage.BilledCharacters)
+			require.Equal(t, 11, *out.Usage.BilledCharacters)
+		})
+	}
+
+	var none VertexEmbeddingResponse
+	require.NoError(t, schemas.Unmarshal([]byte(`{"predictions":[{"embeddings":{"values":[0.1]}}]}`), &none))
+	out := none.ToBifrostEmbeddingResponse()
+	if out.Usage != nil {
+		require.Nil(t, out.Usage.BilledCharacters, "never filled by Bifrost")
+	}
+}

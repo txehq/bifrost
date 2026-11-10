@@ -115240,6 +115240,10 @@
               }
             }
           },
+          "billed_characters": {
+            "type": "integer",
+            "description": "Number of characters the provider billed (Vertex AI text embeddings report it as metadata.billableCharacterCount). Present only when the provider reports it.\n"
+          },
           "tool_usage": {
             "type": "object",
             "description": "Counts of provider-hosted (server-side) tool calls billed per call.\n",

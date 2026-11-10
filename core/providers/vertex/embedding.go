@@ -82,13 +82,13 @@ func ToVertexEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*Ver
 	vertexReq := &VertexEmbeddingRequest{Instances: instances}
 	if bifrostReq.Params != nil {
 		vertexReq.ExtraParams = extraParams
-		truncate := true
-		if autoTruncate != nil {
-			truncate = *autoTruncate
-		}
-		vertexReq.Parameters = &VertexEmbeddingParameters{
-			AutoTruncate:         &truncate,
-			OutputDimensionality: bifrostReq.Params.Dimensions,
+		// autoTruncate only when the caller sent one: Bifrost adds no value the caller did
+		// not send (contract C4), and Vertex applies its own default when it is absent.
+		if autoTruncate != nil || bifrostReq.Params.Dimensions != nil {
+			vertexReq.Parameters = &VertexEmbeddingParameters{
+				AutoTruncate:         autoTruncate,
+				OutputDimensionality: bifrostReq.Params.Dimensions,
+			}
 		}
 	}
 
@@ -305,6 +305,17 @@ func (response *VertexEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.B
 				Index:     idx,
 			})
 			idx++
+		}
+	}
+
+	// Text embedding models bill per character and report the count once per response
+	// (contract C5); it is carried as billed_characters, never folded into token counts.
+	if response.Metadata != nil {
+		if count := response.Metadata.billableCharacters(); count != nil {
+			if usage == nil {
+				usage = &schemas.BifrostLLMUsage{}
+			}
+			usage.BilledCharacters = count
 		}
 	}
 

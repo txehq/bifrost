@@ -35,6 +35,11 @@ BifrostLLMUsage:
           type: integer
         completion_tokens:
           type: integer
+    billed_characters:
+      type: integer
+      description: >
+        Number of characters the provider billed (Vertex AI text embeddings report it as
+        metadata.billableCharacterCount). Present only when the provider reports it.
     tool_usage:
       $ref: "#/ToolUsage"
     search_context_size:
