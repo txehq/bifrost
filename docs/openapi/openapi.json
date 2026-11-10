@@ -112553,7 +112553,8 @@
           "cloudflare",
           "typesafe",
           "minimax",
-          "byteplus"
+          "byteplus",
+          "tencent"
         ]
       },
       "Fallback": {

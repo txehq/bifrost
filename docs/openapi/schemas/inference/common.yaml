@@ -39,6 +39,7 @@ ModelProvider:
     - typesafe
     - minimax
     - byteplus
+    - tencent
 
 Fallback:
   type: object

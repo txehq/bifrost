@@ -948,6 +948,25 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	tencent: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				shapeRendering="geometricPrecision"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>Tencent TokenHub</title>
+				<rect x="1" y="1" width="22" height="22" rx="5" fill="#0052D9" />
+				<path fill="#FFFFFF" d="M6 6.5h12v2.6h-4.7V18h-2.6V9.1H6z" />
+			</svg>
+		);
+	},
 	databricks: ({ size = "md", className = "" }: IconProps) => {
 		const resolvedSize = resolveSize(size);
 

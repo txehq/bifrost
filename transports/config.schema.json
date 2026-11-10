@@ -713,6 +713,9 @@
         "byteplus": {
           "$ref": "#/$defs/provider"
         },
+        "tencent": {
+          "$ref": "#/$defs/provider"
+        },
         "cloudflare": {
           "$ref": "#/$defs/provider_with_cloudflare_config"
         },
@@ -12905,6 +12908,7 @@
             "sarvam",
             "wafer",
             "cloudflare",
+            "tencent",
             "typesafe"
           ],
           "description": "Base provider type to extend"
