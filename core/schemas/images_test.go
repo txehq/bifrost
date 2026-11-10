@@ -1,8 +1,12 @@
 package schemas
 
 import (
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // An image source arrives either as the object form or as a bare string, so images: ["https://..."]
@@ -282,4 +286,118 @@ func BenchmarkImageResponseBackfillParams(b *testing.B) {
 			resp.BackfillParams(req)
 		}
 	})
+}
+
+// TXE-7051 (contract C9): a sync image response of a vendor with a documented link lifetime
+// carries expires_at = creation + lifetime, on generation and edit alike; a response without a
+// link, or of a vendor with no documented lifetime, carries none.
+func TestImageResponseExpiresAt(t *testing.T) {
+	now := func() time.Time { return time.Unix(1_800_000_000, 0) }
+	link := []ImageData{{URL: "https://example.com/1.png"}}
+	cases := []struct {
+		name     string
+		provider ModelProvider
+		resp     *BifrostImageGenerationResponse
+		want     *int64
+	}{
+		{"vendor created plus 24 hours", BytePlus, &BifrostImageGenerationResponse{Created: 1_762_000_000, Data: link}, new(int64(1_762_000_000 + 86400))},
+		{"no vendor created: the time the answer was read", DashScope, &BifrostImageGenerationResponse{Data: link}, new(int64(1_800_000_000 + 86400))},
+		{"12 hour lifetime", Tencent, &BifrostImageGenerationResponse{Created: 1_762_000_000, Data: link}, new(int64(1_762_000_000 + 43200))},
+		{"one link among bytes", MiniMax, &BifrostImageGenerationResponse{Created: 1_762_000_000, Data: []ImageData{{B64JSON: "aQ=="}, {URL: "https://example.com/2.png", Index: 1}}}, new(int64(1_762_000_000 + 86400))},
+		{"bytes only", BytePlus, &BifrostImageGenerationResponse{Created: 1_762_000_000, Data: []ImageData{{B64JSON: "aQ=="}}}, nil},
+		{"every image blocked", BytePlus, &BifrostImageGenerationResponse{Created: 1_762_000_000, Data: []ImageData{}}, nil},
+		{"vendor with no documented lifetime", OpenAI, &BifrostImageGenerationResponse{Created: 1_762_000_000, Data: link}, nil},
+		{"custom provider", ModelProvider("tkp_42"), &BifrostImageGenerationResponse{Created: 1_762_000_000, Data: link}, nil},
+		{"an expiry the converter set is kept", BytePlus, &BifrostImageGenerationResponse{Created: 1_762_000_000, Data: link, ExpiresAt: new(int64(1_762_000_600))}, new(int64(1_762_000_600))},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.resp.fillExpiresAt(tc.provider, now)
+			switch {
+			case tc.want == nil && tc.resp.ExpiresAt != nil:
+				t.Fatalf("expires_at = %d, want none", *tc.resp.ExpiresAt)
+			case tc.want != nil && (tc.resp.ExpiresAt == nil || *tc.resp.ExpiresAt != *tc.want):
+				t.Fatalf("expires_at = %v, want %d", tc.resp.ExpiresAt, *tc.want)
+			}
+		})
+	}
+
+	t.Run("BackfillParams fills it on generation and edit, from the routed provider", func(t *testing.T) {
+		for _, req := range []*BifrostRequest{
+			{ImageGenerationRequest: &BifrostImageGenerationRequest{Provider: Tencent, Model: "hy-image-v3"}},
+			{ImageEditRequest: &BifrostImageEditRequest{Provider: Tencent, Model: "hy-image-v3"}},
+		} {
+			resp := &BifrostImageGenerationResponse{Created: 1_762_000_000, Data: []ImageData{{URL: "https://example.com/1.png"}}}
+			resp.BackfillParams(req)
+			if resp.ExpiresAt == nil || *resp.ExpiresAt != 1_762_000_000+43200 {
+				t.Fatalf("expires_at = %v, want created + 12 hours", resp.ExpiresAt)
+			}
+			out, err := MarshalSorted(resp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(out), `"expires_at":1762043200`) {
+				t.Fatalf("expires_at missing from the wire: %s", out)
+			}
+		}
+	})
+	t.Run("absent from the wire when unknown", func(t *testing.T) {
+		resp := &BifrostImageGenerationResponse{Created: 1_762_000_000, Data: []ImageData{{URL: "https://example.com/1.png"}}}
+		resp.BackfillParams(&BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{Provider: OpenAI, Model: "gpt-image-1.5"}})
+		out, err := MarshalSorted(resp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(out), "expires_at") {
+			t.Fatalf("expires_at present for a vendor with no documented lifetime: %s", out)
+		}
+	})
+}
+
+// imageLinkLifetimeInDocs matches a provider page line that documents how long an image result
+// link works.
+var imageLinkLifetimeInDocs = regexp.MustCompile(`(?i)image (urls?|links?)[^.|]*(expire|valid for)`)
+
+// TXE-7051: the check that makes the next provider automatic. A provider page that documents an
+// image link lifetime must have a row in ImageLinkLifetimes, or its responses would carry links
+// with no expires_at.
+func TestImageLinkLifetimesMatchProviderDocs(t *testing.T) {
+	pages, err := filepath.Glob(filepath.Join("..", "..", "docs", "providers", "supported-providers", "*.mdx"))
+	if err != nil || len(pages) == 0 {
+		t.Skipf("provider pages not found from %s (err %v)", "core/schemas", err)
+	}
+	documented := 0
+	for _, page := range pages {
+		body, err := os.ReadFile(page)
+		if err != nil {
+			t.Fatal(err)
+		}
+		line := imageLinkLifetimeInDocs.Find(body)
+		if line == nil {
+			continue
+		}
+		documented++
+		provider := ModelProvider(strings.TrimSuffix(filepath.Base(page), ".mdx"))
+		if _, ok := ImageLinkLifetimes[provider]; !ok {
+			t.Errorf("%s documents an image link lifetime (%q) but %s has no row in ImageLinkLifetimes", filepath.Base(page), line, provider)
+		}
+	}
+	if documented == 0 {
+		t.Error("no provider page documents an image link lifetime; the pattern no longer matches the pages it was written for")
+	}
+}
+
+// BenchmarkImageResponseBackfillExpiresAt measures what fillExpiresAt adds to an image response:
+// one map lookup for a vendor without a documented lifetime, and one allocation for one with it.
+func BenchmarkImageResponseBackfillExpiresAt(b *testing.B) {
+	for _, provider := range []ModelProvider{OpenAI, BytePlus} {
+		b.Run(string(provider), func(b *testing.B) {
+			resp := &BifrostImageGenerationResponse{Created: 1_762_000_000, Data: []ImageData{{URL: "https://example.com/1.png"}}}
+			b.ReportAllocs()
+			for b.Loop() {
+				resp.ExpiresAt = nil
+				resp.fillExpiresAt(provider, time.Now)
+			}
+		})
+	}
 }

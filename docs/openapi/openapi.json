@@ -3118,6 +3118,11 @@
                         }
                       }
                     },
+                    "expires_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) after which the links in `data` stop working. Present when the\nresponse carries at least one `url` and the provider documents a fixed link lifetime\n(BytePlus Seedream, MiniMax and Alibaba DashScope: 24 hours; Tencent TokenHub: 12 hours):\nthe provider's `created` time, or the time the answer was read when it reports none, plus\nthat lifetime. Absent for image bytes and for providers that document no lifetime.\n"
+                    },
                     "usage": {
                       "type": "object",
                       "properties": {
@@ -3942,6 +3947,11 @@
                         }
                       }
                     },
+                    "expires_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) after which the links in `data` stop working. Present when the\nresponse carries at least one `url` and the provider documents a fixed link lifetime\n(BytePlus Seedream, MiniMax and Alibaba DashScope: 24 hours; Tencent TokenHub: 12 hours):\nthe provider's `created` time, or the time the answer was read when it reports none, plus\nthat lifetime. Absent for image bytes and for providers that document no lifetime.\n"
+                    },
                     "usage": {
                       "type": "object",
                       "properties": {
@@ -4435,6 +4445,11 @@
                           "description": "Human-readable reasons for filtering"
                         }
                       }
+                    },
+                    "expires_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) after which the links in `data` stop working. Present when the\nresponse carries at least one `url` and the provider documents a fixed link lifetime\n(BytePlus Seedream, MiniMax and Alibaba DashScope: 24 hours; Tencent TokenHub: 12 hours):\nthe provider's `created` time, or the time the answer was read when it reports none, plus\nthat lifetime. Absent for image bytes and for providers that document no lifetime.\n"
                     },
                     "usage": {
                       "type": "object",

@@ -200,7 +200,7 @@ curl -X POST http://localhost:8080/v1/images/generations \
 | `size` | `size` | `WIDTHxHEIGHT`, or a tier such as `2K` |
 | `n` | `sequential_image_generation: auto` and `sequential_image_generation_options.max_images` | Seedream returns several images through group generation. Capped at 15. |
 | `input_images` (generation), `image[]` (edit) | `image` | URLs or base64 data URIs. Masks aren't supported. |
-| `response_format` | `response_format` | `url` (default) or `b64_json`. Image URLs expire after 24 hours. |
+| `response_format` | `response_format` | `url` (default) or `b64_json`. Image URLs expire after 24 hours; a response with a URL carries `expires_at` (`created` + 24 hours). |
 | `seed`, `output_format` | `seed`, `output_format` | |
 | `extra_params.watermark` | `watermark` | |
 | `extra_params.sequential_image_generation`, `extra_params.sequential_image_generation_options` | same fields | Override the values derived from `n` |

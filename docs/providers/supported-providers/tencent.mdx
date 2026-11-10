@@ -10,7 +10,7 @@ Tencent Cloud's TokenHub (大模型服务平台 TokenHub) serves the Hy (Hunyuan
 
 - **Two models, two request shapes.** `hy-image-v3` (HunyuanImage 3.0) takes `prompt` and `images`. `hy-image-v3.5-*` (Hy Image 3.5 Preview) takes an OpenAI chat-style `messages` array. Bifrost picks the shape and path from the model name.
 - **Synchronous.** TokenHub finishes generation before it answers. One request to Bifrost is one TokenHub call; there is no task to poll.
-- **URLs only.** TokenHub returns signed temporary image URLs, valid for 12 hours.
+- **URLs only.** TokenHub returns signed temporary image URLs, valid for 12 hours. The response carries `expires_at` (`created` + 12 hours).
 - **Usage in tokens.** TokenHub reports `tokenhub_usage.total_tokens`, the image tokens it bills.
 
 Tencent's chat models are OpenAI-compatible and run on an `openai`-based custom provider, not on this one.
