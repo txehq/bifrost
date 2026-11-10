@@ -401,7 +401,7 @@
       "video_retrieve": true,
       "video_download": true,
       "video_delete": true,
-      "video_list": false,
+      "video_list": true,
       "video_remix": false,
       "video_edit": false,
       "rerank": false

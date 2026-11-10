@@ -96,13 +96,23 @@ type MiniMaxVideoTask struct {
 		URL    string `json:"url,omitempty"`
 		Prompt string `json:"prompt,omitempty"`
 	} `json:"content,omitempty"`
-	Resolution string `json:"resolution,omitempty"`
-	Duration   int    `json:"duration,omitempty"`
-	Ratio      string `json:"ratio,omitempty"`
-	Usage      *struct {
-		TotalSeconds  float64 `json:"total_seconds,omitempty"`
-		OutputSeconds float64 `json:"output_seconds,omitempty"`
-	} `json:"usage,omitempty"`
+	Resolution string                 `json:"resolution,omitempty"`
+	Duration   int                    `json:"duration,omitempty"`
+	Ratio      string                 `json:"ratio,omitempty"`
+	Usage      *MiniMaxVideoTaskUsage `json:"usage,omitempty"`
+}
+
+// MiniMaxVideoTaskUsage is the usage MiniMax reports on a succeeded v2 task. Each field is a pointer
+// so a quantity MiniMax did not report stays absent from the unified usage (contract C5).
+type MiniMaxVideoTaskUsage struct {
+	TotalSeconds      *float64 `json:"total_seconds,omitempty"`
+	InputSeconds      *float64 `json:"input_seconds,omitempty"`
+	OutputSeconds     *float64 `json:"output_seconds,omitempty"`
+	InputImageCount   *int     `json:"input_image_count,omitempty"`
+	InputAudioSeconds *float64 `json:"input_audio_seconds,omitempty"`
+	TotalTokens       *int     `json:"total_tokens,omitempty"`
+	PromptTokens      *int     `json:"prompt_tokens,omitempty"`
+	CompletionTokens  *int     `json:"completion_tokens,omitempty"`
 }
 
 // MiniMaxTaskError is the failure detail on a failed video task.

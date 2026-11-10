@@ -1136,6 +1136,46 @@ const probeDownload = (spec, reply) => {
 	upstream.on("error", (err) => reply(502, { error: { message: `probe could not reach the gateway: ${err.message}`, type: "probe_error" } }));
 	upstream.end();
 };
+// MiniMax video (folder 414, TXE-6428): recorded v1 and v2 answers from MiniMax's documentation.
+const mmvCalls = [];
+const mmvOk = { status_code: 0, status_msg: "success" };
+const mmvV2Task = (id) => {
+	const status = { "mm-queued": "queued", "mm-running": "running", "mm-done": "succeeded" }[id];
+	if (!status) return undefined;
+	const task = { id, model: "MiniMax-H3", status, created_at: 1762700000, updated_at: 1762700090, resolution: "768P", duration: 6, ratio: "16:9" };
+	if (status === "succeeded") {
+		task.content = { url: "https://cdn.minimax.example/mm-done.mp4?sig=fixture" };
+		task.usage = { total_seconds: 8, input_seconds: 2, output_seconds: 6, input_image_count: 1, total_tokens: 120, prompt_tokens: 20, completion_tokens: 100 };
+	}
+	return task;
+};
+const miniMaxVideoAnswer = (method, path, query, raw) => {
+	let body = {};
+	try { body = JSON.parse(raw) || {}; } catch {}
+	if (method === "POST" && path === "/mmv/v2/video_generation") return { status: 200, body: { task_id: "mm-queued" } };
+	if (method === "POST" && path === "/mmv/v1/video_generation") {
+		if (String(body.prompt || "").includes("blocked")) return { status: 200, body: { task_id: "", base_resp: { status_code: 1026, status_msg: "input new_sensitive" } } };
+		return { status: 200, body: { task_id: "106916112212032", base_resp: mmvOk } };
+	}
+	if (method === "GET" && path === "/mmv/v1/query/video_generation") {
+		return { status: 200, body: { task_id: query.get("task_id"), status: "Success", file_id: "176844028768320", video_width: 1920, video_height: 1080, base_resp: mmvOk } };
+	}
+	if (method === "GET" && path === "/mmv/v1/files/retrieve") {
+		return { status: 200, body: { file: { file_id: Number(query.get("file_id")), bytes: 5896337, created_at: 1762700300, filename: "output.mp4", purpose: "video_generation", download_url: "https://cdn.minimax.example/output.mp4?sig=fixture" }, base_resp: mmvOk } };
+	}
+	if (method === "GET" && path === "/mmv/v2/query/video_generation") {
+		return { status: 200, body: { items: ["mm-done", "mm-queued"].map(mmvV2Task), total: 2 } };
+	}
+	const queried = /^\/mmv\/v2\/query\/video_generation\/([^/]+)$/.exec(path);
+	if (method === "GET" && queried && mmvV2Task(decodeURIComponent(queried[1]))) {
+		return { status: 200, body: { task: mmvV2Task(decodeURIComponent(queried[1])) } };
+	}
+	const deleted = /^\/mmv\/v2\/video_generation\/([^/]+)$/.exec(path);
+	if (method === "DELETE" && deleted) {
+		return { status: 200, body: { task_id: decodeURIComponent(deleted[1]), action: "cancelled", status: "cancelled" } };
+	}
+	return { status: 404, body: { type: "error", error: { type: "not_found_error", message: "unknown fixture route" } } };
+};
 
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
 const hits = Object.create(null);
@@ -1344,6 +1384,7 @@ const handleRequest = (req, res) => {
 		wireCalls.length = 0;
 		for (const k of Object.keys(sentBodies)) delete sentBodies[k];
 		assemblyAICalls.length = 0;
+		mmvCalls.length = 0;
 		return send(200, {}, JSON.stringify({ data: [{ reset: true }] }));
 	}
 	if (req.method === "POST" && path === "/pp/assemblyai/v1/transcribe") {
@@ -1566,6 +1607,28 @@ const handleRequest = (req, res) => {
 			return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
 		});
 		return undefined;
+	}
+	// MiniMax video v1 and v2 (folder 414, TXE-6428), served to the custom provider minimax_video under /mmv.
+	// Every call is recorded with its method, path, query, body and bearer token at GET /__mmv, so a case can
+	// prove which calls a request made and with which key. v2 task ids name the state the query answers:
+	// mm-queued is queued, mm-running running, mm-done succeeded with usage; DELETE always answers "cancelled",
+	// so a case proves a finished task was not deleted by counting DELETEs, not by the answer. A v1 create whose
+	// prompt contains "blocked" answers MiniMax's 200 with base_resp 1026.
+	if (path.startsWith("/mmv/")) {
+		const chunks = [];
+		req.on("data", (c) => chunks.push(c));
+		req.on("end", () => {
+			const url = new URL(req.url, "http://localhost");
+			const body = Buffer.concat(chunks).toString("utf8");
+			const bearer = (req.headers.authorization || "").replace(/^Bearer /, "");
+			mmvCalls.push({ method: req.method, path, query: url.search, body, bearer });
+			const answer = miniMaxVideoAnswer(req.method, path, url.searchParams, body);
+			send(answer.status, {}, JSON.stringify(answer.body));
+		});
+		return undefined;
+	}
+	if (req.method === "GET" && path === "/__mmv") {
+		return send(200, {}, JSON.stringify({ data: [{ calls: mmvCalls }] }));
 	}
 	// The OpenAI video task routes (TXE-6521). Every request is counted under
 	// "videos <METHOD> <bearer token>", so a case can prove which key a task query used and that a
