@@ -2152,5 +2152,17 @@ func TestImageTasksAreBoundToTheCreatingVirtualKey(t *testing.T) {
 		require.NotNil(t, shortCircuit, "%s: another key's task is refused", requestType)
 		assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
 		assert.Contains(t, shortCircuit.Error.Error.Message, "image task")
+
+		// The rest of the id is rewritable (BFL polls t2 whatever model or host follows it), so
+		// an id with no row is refused too: otherwise rewriting it would reach another key's task.
+		for _, rewritten := range []string{"t2", "t2|flux-3-image", "t2|flux-pro-1.1|api.bfl.ai", "never-created"} {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), reference(requestType, rewritten))
+			require.NoError(t, err)
+			require.NotNil(t, shortCircuit, "%s %s: an unrecorded image task id is refused", requestType, rewritten)
+			assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+		}
+		_, shortCircuit, err = plugin.PreLLMHook(emptyCtx(), reference(requestType, "never-created"))
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit, "a request that presented no virtual key is unrestricted")
 	}
 }

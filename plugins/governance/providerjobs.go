@@ -1253,15 +1253,26 @@ func (p *GovernancePlugin) refuseForeignProviderObject(ctx *schemas.BifrostConte
 			Error:      &schemas.ErrorField{Message: fmt.Sprintf("failed to verify access to %s '%s'", label, ref.requestID)},
 		}}
 	}
+	notFound := func() *schemas.LLMPluginShortCircuit {
+		ctx.SetValue(governanceRejectedContextKey, true)
+		return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
+			Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
+			StatusCode: bifrost.Ptr(404),
+			Error:      &schemas.ErrorField{Message: fmt.Sprintf("%s '%s' not found", label, ref.requestID)},
+		}}
+	}
 	for _, owner := range owners {
 		if owner != vkID {
-			ctx.SetValue(governanceRejectedContextKey, true)
-			return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
-				Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
-				StatusCode: bifrost.Ptr(404),
-				Error:      &schemas.ErrorField{Message: fmt.Sprintf("%s '%s' not found", label, ref.requestID)},
-			}}
+			return notFound()
 		}
+	}
+	// An image task fails closed (TXE-6431). Its id carries more than the vendor's task id (BFL's
+	// carries the model and the polling host), so one vendor task can be named by ids that were
+	// never recorded, and "no row stays reachable" would let another key reach it by rewriting the
+	// rest of the id. Image tasks are new, so every one a virtual key created through the gateway
+	// has its row: a key reaches an image task only under the id its own create recorded.
+	if ref.kind == configstoreTables.ProviderObjectKindImageTask && len(owners) == 0 {
+		return notFound()
 	}
 	if len(ambiguous) > 0 {
 		// A short Vertex id that several keys' full names end in names one job per project, which
