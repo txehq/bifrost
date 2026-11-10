@@ -2352,3 +2352,50 @@ func TestMiniMaxPassthroughRefusesOtherPaths(t *testing.T) {
 		t.Fatalf("upstream requests = %d, want 0", n)
 	}
 }
+
+// TXE-6595: MiniMax returns reasoning as reasoning_text content with an empty summary. Replaying
+// that output as the next turn's input must keep the reasoning item, on both transports, or
+// multi-turn and tool-call continuations lose the provider's reasoning.
+func TestMiniMaxResponsesReplaysReasoningContent(t *testing.T) {
+	const first = `{"id":"resp_1","object":"response","created_at":1,"model":"MiniMax-M3","status":"completed","output":[{"id":"rs_1","type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":"compare 9.90 and 9.11"}]},{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"9.9","annotations":[]}]}],"usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8}}`
+	provider, captured := newMockMiniMax(t, map[string]func(w http.ResponseWriter){
+		"POST /v1/responses": jsonResponse(http.StatusOK, first),
+	})
+	ctx := testContext(t)
+	user := schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Which is bigger, 9.11 or 9.9?")}}
+	resp, bifrostErr := provider.Responses(ctx, testKey(), &schemas.BifrostResponsesRequest{Provider: schemas.MiniMax, Model: "MiniMax-M3", Input: []schemas.ResponsesMessage{user}})
+	if bifrostErr != nil {
+		t.Fatalf("Responses: %+v", bifrostErr)
+	}
+
+	followUp := schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Why?")}}
+	history := append(append([]schemas.ResponsesMessage{user}, resp.Output...), followUp)
+	if _, bifrostErr := provider.Responses(ctx, testKey(), &schemas.BifrostResponsesRequest{Provider: schemas.MiniMax, Model: "MiniMax-M3", Input: history}); bifrostErr != nil {
+		t.Fatalf("Responses (replay): %+v", bifrostErr)
+	}
+	stream, bifrostErr := provider.ResponsesStream(ctx, passthroughPostHook, nil, testKey(), &schemas.BifrostResponsesRequest{Provider: schemas.MiniMax, Model: "MiniMax-M3", Input: history})
+	if bifrostErr != nil {
+		t.Fatalf("ResponsesStream (replay): %+v", bifrostErr)
+	}
+	for range stream {
+	}
+
+	reqs := captured()
+	if len(reqs) != 3 {
+		t.Fatalf("upstream requests = %d, want 3", len(reqs))
+	}
+	for i, r := range reqs[1:] {
+		var reasoning gjson.Result
+		for _, item := range gjson.GetBytes(r.body, "input").Array() {
+			if item.Get("type").Str == "reasoning" {
+				reasoning = item
+			}
+		}
+		if !reasoning.Exists() {
+			t.Fatalf("replay %d dropped the reasoning item: %s", i, r.body)
+		}
+		if got := reasoning.Get("content.0.text").Str; got != "compare 9.90 and 9.11" {
+			t.Errorf("replay %d reasoning content = %q; item %s", i, got, reasoning.Raw)
+		}
+	}
+}

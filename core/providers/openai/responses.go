@@ -913,7 +913,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		if message.ResponsesReasoning != nil {
-			usesContentBlocks := caps.SupportsReasoningContentBlocks(defaultSupportsReasoningContentBlocks(capModel))
+			usesContentBlocks := caps.SupportsReasoningContentBlocks(defaultSupportsReasoningContentBlocks(capModel) || providerUsesReasoningContentBlocks(bifrostReq.Provider))
 			isReasoning := caps.SupportsReasoning(IsOpenAIReasoningModel(capModel))
 
 			// Models that read reasoning from summary[] have nothing to gain from a

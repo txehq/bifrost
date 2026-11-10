@@ -316878,7 +316878,7 @@
     },
     {
       "name": "313. MiniMax chat content-safety flags (minimax sensitivity flags)",
-      "description": "TXE-6595 (vendor sheet B1, contract C6): MiniMax reports whether its content filter fired in top-level input_sensitive, output_sensitive, input_sensitive_type and output_sensitive_type on every chat response (platform.minimax.io/docs/api-reference/text-chat-openai). Bifrost returns them under the same names on the unified chat response. A benign prompt must come back with all four present and input_sensitive false. The streamed terminal chunk carrying the flags is pinned by TestMiniMaxChatStreamCarriesSensitivityFlags in core/providers/minimax. The native /v1/responses and /anthropic/v1/messages cases for the same ticket stay in folder 284 next to the cases they replaced.",
+      "description": "TXE-6595 (vendor sheet B1, contract C6): MiniMax reports whether its content filter fired in top-level input_sensitive, output_sensitive, input_sensitive_type and output_sensitive_type on every chat response (platform.minimax.io/docs/api-reference/text-chat-openai). Bifrost returns them under the same names on the unified chat response. A benign prompt must come back with all four present and input_sensitive false. The streamed terminal chunk carrying the flags is pinned by TestMiniMaxChatStreamCarriesSensitivityFlags in core/providers/minimax. The native /v1/responses and /anthropic/v1/messages cases for the same ticket stay in folder 284 next to the cases they replaced. The replay case sends MiniMax-shaped reasoning history (summary [], reasoning_text content) back to /v1/responses; that Bifrost keeps the reasoning item on the wire is pinned by TestMiniMaxResponsesReplaysReasoningContent.",
       "item": [
         {
           "name": "/v1/chat/completions - content-safety flags input_sensitive/output_sensitive - minimax/MiniMax-M3",
@@ -316923,6 +316923,51 @@
                 "v1",
                 "chat",
                 "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses - replayed MiniMax reasoning_text history is accepted - minimax/MiniMax-M3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('replayed reasoning history is accepted by MiniMax /v1/responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields.provider).to.eql('minimax');",
+                  "  pm.expect(j.status).to.eql('completed');",
+                  "  var msg = (j.output || []).filter(function (o) { return o.type === 'message'; })[0];",
+                  "  pm.expect(msg, 'no message item: ' + pm.response.text().slice(0, 500)).to.exist;",
+                  "  pm.expect(msg.content[0].text).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Which is bigger, 9.11 or 9.9?\"\n    },\n    {\n      \"id\": \"rs_replay_1\",\n      \"type\": \"reasoning\",\n      \"summary\": [],\n      \"content\": [\n        {\n          \"type\": \"reasoning_text\",\n          \"text\": \"9.9 = 9.90, and 9.90 > 9.11.\"\n        }\n      ]\n    },\n    {\n      \"id\": \"msg_replay_1\",\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"status\": \"completed\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"9.9 is bigger.\",\n          \"annotations\": []\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer again in one word: which one?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
               ]
             }
           }
