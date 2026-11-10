@@ -308,6 +308,30 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "pp_vercel": {
+      "keys": [
+        {
+          "name": "tk-key-vercel-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "allowed_requests": {
+          "image_generation": true,
+          "embedding": true
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/vercel",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "fireworks": {
       "keys": [
         {

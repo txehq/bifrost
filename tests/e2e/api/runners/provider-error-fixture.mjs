@@ -431,11 +431,21 @@ const cpCloudflareChat = (body) => ({ status: 200, stream: cpChunks(body.model, 
 	[cpDelta(0, { content: "After." })],
 	[cpDelta(0, {}, "tool_calls")]) });
 
+// Vercel AI Gateway image channel, TXE-6438. pp_vercel is an openai-based custom provider configured as Tokun's
+// reconciler writes it (contract C12). The answer is the OpenAI images shape with no usage block, one image per
+// requested n: no Vercel image response has been recorded yet and its usage fields were not found, so this stands in
+// for the shape that leaves the gateway nothing to read but data[].
+const vercelImageAnswer = (body) => {
+	const n = Number.isInteger(body.n) && body.n > 0 ? body.n : 1;
+	return { created: 1, data: Array.from({ length: n }, () => ({ b64_json: "iVBORw0KGgo=" })) };
+};
+
 const wireAnswer = (path, body) => {
 	if (path === "/pp/bounds/v1/chat/completions") {
 		return { status: 200, body: JSON.stringify({ id: "chatcmpl_bounds", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
 	}
 	if (path === "/pp/cp/v1/chat/completions") return cpChatAnswerFor(body);
+	if (path === "/pp/vercel/v1/images/generations") return { status: 200, body: JSON.stringify(vercelImageAnswer(body)) };
 	if (path === "/pp/cp/v1/responses") return cpResponsesAnswerFor(body);
 	if (path === "/pp/cloudflare/accounts/acct-1/ai/v1/chat/completions") return cpCloudflareChat(body);
 	if (path === "/pp/xai/v1/messages" || path === "/pp/anthropic/v1/messages") {

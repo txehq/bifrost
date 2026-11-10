@@ -173,3 +173,113 @@ func TestImageResponseContentFilter(t *testing.T) {
 		}
 	})
 }
+
+// TXE-6438 (contract C5): every sync image response carries usage.output_images equal to the number
+// of images the vendor delivered in data, also when the vendor sent no usage at all (Vercel AI
+// Gateway's OpenAI-compatible images endpoint), and a count the provider decoded from the vendor's
+// own usage report is kept.
+func TestImageResponseOutputImages(t *testing.T) {
+	genReq := &BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{Model: "meta/muse-image-1.0"}}
+	cases := []struct {
+		name string
+		resp *BifrostImageGenerationResponse
+		req  *BifrostRequest
+		want int
+	}{
+		{
+			name: "vendor sent no usage",
+			resp: &BifrostImageGenerationResponse{Data: []ImageData{{B64JSON: "aQ=="}, {B64JSON: "aQ==", Index: 1}}},
+			req:  genReq,
+			want: 2,
+		},
+		{
+			name: "vendor sent token usage without a count",
+			resp: &BifrostImageGenerationResponse{
+				Data:  []ImageData{{URL: "https://example.com/1.png"}},
+				Usage: &ImageUsage{InputTokens: 12, OutputTokens: 4160, TotalTokens: 4172},
+			},
+			req:  genReq,
+			want: 1,
+		},
+		{
+			name: "vendor-reported count is kept",
+			resp: &BifrostImageGenerationResponse{
+				Data:  []ImageData{{URL: "https://example.com/1.png"}},
+				Usage: &ImageUsage{OutputImages: new(3)},
+			},
+			req:  genReq,
+			want: 3,
+		},
+		{
+			name: "every image blocked",
+			resp: &BifrostImageGenerationResponse{ContentFilter: &ContentFilterInfo{FilteredCount: 1}},
+			req:  genReq,
+			want: 0,
+		},
+		{
+			name: "image edit",
+			resp: &BifrostImageGenerationResponse{Data: []ImageData{{URL: "u"}}},
+			req: &BifrostRequest{ImageEditRequest: &BifrostImageEditRequest{
+				Input: &ImageEditInput{Images: []ImageInput{{Image: []byte("png")}}},
+			}},
+			want: 1,
+		},
+		{
+			name: "nil request",
+			resp: &BifrostImageGenerationResponse{Data: []ImageData{{URL: "u"}, {URL: "v"}}},
+			want: 2,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.resp.BackfillParams(tc.req)
+			out, err := Marshal(tc.resp)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var decoded struct {
+				Data  []ImageData `json:"data"`
+				Usage *struct {
+					OutputImages *int `json:"output_images"`
+				} `json:"usage"`
+			}
+			if err := Unmarshal(out, &decoded); err != nil {
+				t.Fatalf("unmarshal %s: %v", out, err)
+			}
+			if decoded.Usage == nil || decoded.Usage.OutputImages == nil {
+				t.Fatalf("usage.output_images missing from %s", out)
+			}
+			if got := *decoded.Usage.OutputImages; got != tc.want {
+				t.Fatalf("usage.output_images = %d, want %d in %s", got, tc.want, out)
+			}
+		})
+	}
+}
+
+// TXE-6438: the request-path cost of BackfillParams on a sync image response, which now writes
+// usage.output_images. Each iteration builds a fresh response, as the provider does per request.
+func BenchmarkImageResponseBackfillParams(b *testing.B) {
+	req := &BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{Model: "meta/muse-image-1.0"}}
+	data := []ImageData{{B64JSON: "aQ=="}, {B64JSON: "aQ==", Index: 1}}
+	b.Run("no usage", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			resp := &BifrostImageGenerationResponse{Data: data}
+			resp.BackfillParams(req)
+		}
+	})
+	b.Run("token usage", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			resp := &BifrostImageGenerationResponse{Data: data, Usage: &ImageUsage{InputTokens: 12, OutputTokens: 4160}}
+			resp.BackfillParams(req)
+		}
+	})
+	b.Run("vendor count", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			resp := &BifrostImageGenerationResponse{Data: data, Usage: &ImageUsage{OutputImages: new(2)}}
+			resp.BackfillParams(req)
+		}
+	})
+}
