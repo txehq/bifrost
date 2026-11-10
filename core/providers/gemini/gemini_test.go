@@ -113,6 +113,7 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 		response     *gemini.GenerateContentResponse
 		isStream     bool
 		expectFinish string
+		expectNative string // the vendor's blockReason or finishReason; "" when Gemini gave none
 	}{
 		{
 			name: "EmptyCandidates_NonStream",
@@ -151,6 +152,7 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 			},
 			isStream:     false,
 			expectFinish: "content_filter",
+			expectNative: "SAFETY",
 		},
 		{
 			name: "PromptBlocked_Stream",
@@ -160,6 +162,7 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 			},
 			isStream:     true,
 			expectFinish: "content_filter",
+			expectNative: "PROHIBITED_CONTENT",
 		},
 		{
 			name: "SafetyFilter_NonStream",
@@ -176,6 +179,26 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 			},
 			isStream:     false,
 			expectFinish: "content_filter",
+			expectNative: "SAFETY",
+		},
+		{
+			// The vendor's reason survives for every blocked output, not only SAFETY, and on
+			// the streamed final frame as well (TXE-6535, contract C6).
+			name: "RecitationFilter_Stream",
+			response: &gemini.GenerateContentResponse{
+				ResponseID:   "test-5",
+				ModelVersion: "gemini-2.0-flash",
+				Candidates: []*gemini.Candidate{
+					{
+						Index:        0,
+						FinishReason: gemini.FinishReasonRecitation,
+						Content:      &gemini.Content{Role: string(gemini.RoleModel), Parts: []*gemini.Part{}},
+					},
+				},
+			},
+			isStream:     true,
+			expectFinish: "content_filter",
+			expectNative: "RECITATION",
 		},
 		{
 			name: "MalformedFunctionCall_Stream",
@@ -192,6 +215,7 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 			},
 			isStream:     true,
 			expectFinish: "stop",
+			expectNative: "MALFORMED_FUNCTION_CALL",
 		},
 	}
 
@@ -216,6 +240,19 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 			choice := bifrostResp.Choices[0]
 			require.NotNil(t, choice.FinishReason, "finish_reason must be set")
 			assert.Equal(t, tt.expectFinish, *choice.FinishReason, "finish_reason should signal the error type")
+
+			// The vendor's own reason rides next to the unified one, verbatim, and is
+			// absent when Gemini gave none (TXE-6535, contract C6).
+			if tt.expectNative == "" {
+				assert.Nil(t, choice.NativeFinishReason, "native_finish_reason must stay empty when the vendor gave no reason")
+			} else {
+				require.NotNil(t, choice.NativeFinishReason, "native_finish_reason must carry the vendor's reason")
+				assert.Equal(t, tt.expectNative, *choice.NativeFinishReason)
+				wire, err := schemas.Marshal(bifrostResp)
+				require.NoError(t, err)
+				assert.Contains(t, string(wire), `"native_finish_reason":"`+tt.expectNative+`"`)
+				assert.Contains(t, string(wire), `"finish_reason":"`+tt.expectFinish+`"`)
+			}
 
 			// Verify message structure exists
 			if !tt.isStream {
@@ -3551,6 +3588,138 @@ func TestConvertGeminiUsageMetadataToChatUsage(t *testing.T) {
 				}
 			} else {
 				assert.Nil(t, result.CompletionTokensDetails)
+			}
+		})
+	}
+}
+
+// geminiMultimodalToolUsageSample is a generateContent response for a prompt with text, a
+// video (with its audio track) and a PDF, answered after a vendor-run tool call. Gemini
+// bills VIDEO and DOCUMENT prompt tokens apart from text, and reports tool-use prompt
+// tokens next to promptTokenCount, not inside it: 12+15480+1500+508 = 17500 prompt tokens,
+// and 17500 + 120 + 550 = 18170 total.
+const geminiMultimodalToolUsageSample = `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP","index":0}],` +
+	`"usageMetadata":{"promptTokenCount":17500,"candidatesTokenCount":120,"totalTokenCount":18170,"toolUsePromptTokenCount":550,` +
+	`"promptTokensDetails":[{"modality":"TEXT","tokenCount":12},{"modality":"VIDEO","tokenCount":15480},{"modality":"AUDIO","tokenCount":1500},{"modality":"DOCUMENT","tokenCount":508}],` +
+	`"toolUsePromptTokensDetails":[{"modality":"TEXT","tokenCount":530},{"modality":"IMAGE","tokenCount":20}],` +
+	`"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":120}]},"modelVersion":"gemini-3.8-flash","responseId":"r-1"}`
+
+// TestGeminiUsageCarriesVideoDocumentAndToolUsePromptTokens pins TXE-6535 items 1 and 2
+// (contract C5): the VIDEO and DOCUMENT entries of promptTokensDetails and
+// toolUsePromptTokenCount with its breakdown reach the unified usage, on the chat response,
+// the streamed final frame and the Responses usage, and a response that reports none of
+// them serialises exactly as before.
+func TestGeminiUsageCarriesVideoDocumentAndToolUsePromptTokens(t *testing.T) {
+	var sample gemini.GenerateContentResponse
+	require.NoError(t, schemas.Unmarshal([]byte(geminiMultimodalToolUsageSample), &sample))
+
+	const wantPromptDetails = `"prompt_tokens_details":{"text_tokens":12,"audio_tokens":1500,"video_tokens":15480,"document_tokens":508,"cached_tokens":0,"cache_write_tokens":0}`
+	const wantToolUse = `"tool_use_prompt_tokens":550,"tool_use_prompt_tokens_details":{"text_tokens":530,"image_tokens":20}`
+
+	checkChatUsage := func(t *testing.T, usage *schemas.BifrostLLMUsage) {
+		t.Helper()
+		require.NotNil(t, usage)
+		require.NotNil(t, usage.PromptTokensDetails)
+		assert.Equal(t, 15480, usage.PromptTokensDetails.VideoTokens)
+		assert.Equal(t, 508, usage.PromptTokensDetails.DocumentTokens)
+		assert.Equal(t, 12, usage.PromptTokensDetails.TextTokens)
+		assert.Equal(t, 1500, usage.PromptTokensDetails.AudioTokens)
+		assert.Equal(t, 550, usage.ToolUsePromptTokens)
+		assert.Equal(t, &schemas.ToolUsePromptTokensDetails{TextTokens: 530, ImageTokens: 20}, usage.ToolUsePromptTokensDetails)
+		// The vendor's own counts are passed on, not recomputed: tool-use prompt tokens are
+		// not folded into prompt_tokens, and total_tokens is the vendor's total.
+		assert.Equal(t, 17500, usage.PromptTokens)
+		assert.Equal(t, 18170, usage.TotalTokens)
+		wire, err := schemas.Marshal(usage)
+		require.NoError(t, err)
+		assert.Contains(t, string(wire), wantPromptDetails)
+		assert.Contains(t, string(wire), wantToolUse)
+	}
+
+	t.Run("chat", func(t *testing.T) {
+		checkChatUsage(t, sample.ToBifrostChatResponse().Usage)
+	})
+
+	t.Run("chat stream final frame", func(t *testing.T) {
+		chunks, bifrostErr, last := sample.ToBifrostChatCompletionStream(gemini.NewGeminiStreamState())
+		require.Nil(t, bifrostErr)
+		require.True(t, last)
+		require.NotEmpty(t, chunks)
+		checkChatUsage(t, chunks[len(chunks)-1].Usage)
+	})
+
+	t.Run("blocked response keeps its usage", func(t *testing.T) {
+		blocked := sample
+		blocked.Candidates = nil
+		blocked.PromptFeedback = &gemini.GenerateContentResponsePromptFeedback{BlockReason: "SAFETY"}
+		checkChatUsage(t, blocked.ToBifrostChatResponse().Usage)
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		usage := gemini.ConvertGeminiUsageMetadataToResponsesUsage(sample.UsageMetadata)
+		require.NotNil(t, usage)
+		assert.Equal(t, 15480, usage.InputTokensDetails.VideoTokens)
+		assert.Equal(t, 508, usage.InputTokensDetails.DocumentTokens)
+		assert.Equal(t, 550, usage.ToolUsePromptTokens)
+		assert.Equal(t, &schemas.ToolUsePromptTokensDetails{TextTokens: 530, ImageTokens: 20}, usage.ToolUsePromptTokensDetails)
+		wire, err := schemas.Marshal(usage)
+		require.NoError(t, err)
+		assert.Contains(t, string(wire), `"video_tokens":15480`)
+		assert.Contains(t, string(wire), `"document_tokens":508`)
+		assert.Contains(t, string(wire), wantToolUse)
+
+		// The /genai egress turns the unified usage back into usageMetadata; the new
+		// quantities survive the round trip.
+		back := gemini.ConvertBifrostResponsesUsageToGeminiUsageMetadata(usage)
+		assert.Equal(t, int32(550), back.ToolUsePromptTokenCount)
+		assert.Equal(t, sample.UsageMetadata.ToolUsePromptTokensDetails, back.ToolUsePromptTokensDetails)
+		byModality := map[gemini.Modality]int32{}
+		for _, d := range back.PromptTokensDetails {
+			byModality[d.Modality] = d.TokenCount
+		}
+		assert.Equal(t, int32(15480), byModality[gemini.ModalityVideo])
+		assert.Equal(t, int32(508), byModality[gemini.ModalityDocument])
+	})
+
+	t.Run("chat and responses usage convert into each other", func(t *testing.T) {
+		chatUsage := sample.ToBifrostChatResponse().Usage
+		checkChatUsage(t, chatUsage.ToResponsesResponseUsage().ToBifrostLLMUsage())
+	})
+
+	t.Run("a response without them is unchanged", func(t *testing.T) {
+		usage := gemini.ConvertGeminiUsageMetadataToChatUsage(&gemini.GenerateContentResponseUsageMetadata{
+			PromptTokenCount: 6, CandidatesTokenCount: 4, TotalTokenCount: 10,
+			PromptTokensDetails: []*gemini.ModalityTokenCount{{Modality: gemini.ModalityText, TokenCount: 6}},
+		})
+		assert.Zero(t, usage.ToolUsePromptTokens)
+		assert.Nil(t, usage.ToolUsePromptTokensDetails, "a quantity the vendor did not report stays empty")
+		wire, err := schemas.Marshal(usage)
+		require.NoError(t, err)
+		assert.JSONEq(t, `{"prompt_tokens":6,"prompt_tokens_details":{"text_tokens":6,"cached_tokens":0,"cache_write_tokens":0},"completion_tokens":4,"total_tokens":10}`, string(wire))
+	})
+}
+
+// BenchmarkConvertGeminiUsageMetadataToChatUsage measures the usage conversion every Gemini
+// and Vertex chat response and streamed usage frame runs (TXE-6535): a text-only response,
+// the common case, and one with video, document and tool-use prompt tokens.
+func BenchmarkConvertGeminiUsageMetadataToChatUsage(b *testing.B) {
+	var sample gemini.GenerateContentResponse
+	if err := schemas.Unmarshal([]byte(geminiMultimodalToolUsageSample), &sample); err != nil {
+		b.Fatal(err)
+	}
+	cases := map[string]*gemini.GenerateContentResponseUsageMetadata{
+		"text-only": {
+			PromptTokenCount: 6, CandidatesTokenCount: 4, TotalTokenCount: 10,
+			PromptTokensDetails:     []*gemini.ModalityTokenCount{{Modality: gemini.ModalityText, TokenCount: 6}},
+			CandidatesTokensDetails: []*gemini.ModalityTokenCount{{Modality: gemini.ModalityText, TokenCount: 4}},
+		},
+		"video-document-tool-use": sample.UsageMetadata,
+	}
+	for name, metadata := range cases {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = gemini.ConvertGeminiUsageMetadataToChatUsage(metadata)
 			}
 		})
 	}

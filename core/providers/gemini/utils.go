@@ -908,6 +908,9 @@ func ConvertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsag
 
 		// Map modality breakdowns from PromptTokensDetails
 		for _, detail := range metadata.PromptTokensDetails {
+			if detail == nil {
+				continue
+			}
 			switch detail.Modality {
 			case ModalityText:
 				usage.PromptTokensDetails.TextTokens = int(detail.TokenCount)
@@ -915,6 +918,10 @@ func ConvertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsag
 				usage.PromptTokensDetails.AudioTokens = int(detail.TokenCount)
 			case ModalityImage:
 				usage.PromptTokensDetails.ImageTokens = int(detail.TokenCount)
+			case ModalityVideo:
+				usage.PromptTokensDetails.VideoTokens = int(detail.TokenCount)
+			case ModalityDocument:
+				usage.PromptTokensDetails.DocumentTokens = int(detail.TokenCount)
 			}
 		}
 
@@ -949,7 +956,38 @@ func ConvertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsag
 		}
 	}
 
+	usage.ToolUsePromptTokens = int(metadata.ToolUsePromptTokenCount)
+	usage.ToolUsePromptTokensDetails = convertGeminiToolUsePromptTokensDetails(metadata.ToolUsePromptTokensDetails)
+
 	return usage
+}
+
+// convertGeminiToolUsePromptTokensDetails maps Gemini's toolUsePromptTokensDetails, the
+// per-modality breakdown of toolUsePromptTokenCount, to the unified structure. Nil when
+// Gemini reported no breakdown, so a quantity the vendor did not report stays empty.
+func convertGeminiToolUsePromptTokensDetails(details []*ModalityTokenCount) *schemas.ToolUsePromptTokensDetails {
+	if len(details) == 0 {
+		return nil
+	}
+	converted := &schemas.ToolUsePromptTokensDetails{}
+	for _, detail := range details {
+		if detail == nil {
+			continue
+		}
+		switch detail.Modality {
+		case ModalityText:
+			converted.TextTokens = int(detail.TokenCount)
+		case ModalityAudio:
+			converted.AudioTokens = int(detail.TokenCount)
+		case ModalityImage:
+			converted.ImageTokens = int(detail.TokenCount)
+		case ModalityVideo:
+			converted.VideoTokens = int(detail.TokenCount)
+		case ModalityDocument:
+			converted.DocumentTokens = int(detail.TokenCount)
+		}
+	}
+	return converted
 }
 
 // convertGeminiUsageMetadataToSpeechUsage converts Gemini usage metadata to Bifrost speech usage
@@ -1243,9 +1281,15 @@ func ConvertGeminiUsageMetadataToResponsesUsage(metadata *GenerateContentRespons
 				usage.InputTokensDetails.AudioTokens = int(detail.TokenCount)
 			case ModalityImage:
 				usage.InputTokensDetails.ImageTokens = int(detail.TokenCount)
+			case ModalityVideo:
+				usage.InputTokensDetails.VideoTokens = int(detail.TokenCount)
+			case ModalityDocument:
+				usage.InputTokensDetails.DocumentTokens = int(detail.TokenCount)
 			}
 		}
 	}
+	usage.ToolUsePromptTokens = int(metadata.ToolUsePromptTokenCount)
+	usage.ToolUsePromptTokensDetails = convertGeminiToolUsePromptTokensDetails(metadata.ToolUsePromptTokensDetails)
 
 	// Add cached tokens if present
 	if metadata.CachedContentTokenCount > 0 {
@@ -1312,8 +1356,37 @@ func ConvertBifrostResponsesUsageToGeminiUsageMetadata(usage *schemas.ResponsesR
 				TokenCount: int32(usage.InputTokensDetails.ImageTokens),
 			})
 		}
+		if usage.InputTokensDetails.VideoTokens > 0 {
+			promptTokensDetails = append(promptTokensDetails, &ModalityTokenCount{
+				Modality:   ModalityVideo,
+				TokenCount: int32(usage.InputTokensDetails.VideoTokens),
+			})
+		}
+		if usage.InputTokensDetails.DocumentTokens > 0 {
+			promptTokensDetails = append(promptTokensDetails, &ModalityTokenCount{
+				Modality:   ModalityDocument,
+				TokenCount: int32(usage.InputTokensDetails.DocumentTokens),
+			})
+		}
 	}
 	metadata.PromptTokensDetails = promptTokensDetails
+	metadata.ToolUsePromptTokenCount = int32(usage.ToolUsePromptTokens)
+	if d := usage.ToolUsePromptTokensDetails; d != nil {
+		for _, m := range []struct {
+			modality Modality
+			tokens   int
+		}{
+			{ModalityText, d.TextTokens},
+			{ModalityAudio, d.AudioTokens},
+			{ModalityImage, d.ImageTokens},
+			{ModalityVideo, d.VideoTokens},
+			{ModalityDocument, d.DocumentTokens},
+		} {
+			if m.tokens > 0 {
+				metadata.ToolUsePromptTokensDetails = append(metadata.ToolUsePromptTokensDetails, &ModalityTokenCount{Modality: m.modality, TokenCount: int32(m.tokens)})
+			}
+		}
+	}
 	if usage.OutputTokensDetails != nil {
 		candidatesTokensDetails = append(candidatesTokensDetails, &ModalityTokenCount{
 			Modality:   ModalityText,

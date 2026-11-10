@@ -54,6 +54,10 @@ func (u *BifrostLLMUsage) MergeStreamFrame(frame *BifrostLLMUsage) {
 	if frame.SearchContextSize != nil {
 		u.SearchContextSize = frame.SearchContextSize
 	}
+	u.ToolUsePromptTokens = max(u.ToolUsePromptTokens, frame.ToolUsePromptTokens)
+	if frame.ToolUsePromptTokensDetails != nil {
+		u.ToolUsePromptTokensDetails = frame.ToolUsePromptTokensDetails
+	}
 	if frame.Cost != nil {
 		u.Cost = frame.Cost
 	}

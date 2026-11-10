@@ -1778,6 +1778,11 @@ type BifrostResponseChoice struct {
 	FinishReason         *string          `json:"finish_reason"`
 	LogProbs             *BifrostLogProbs `json:"logprobs"`
 	ContentFilterResults json.RawMessage  `json:"content_filter_results,omitempty"` // Azure content-filter annotations for this choice, passed through untouched
+	// NativeFinishReason is the vendor's own reason, verbatim, when the vendor blocked the
+	// prompt or the output: Gemini's promptFeedback.blockReason or candidates[].finishReason
+	// (SAFETY, RECITATION, PROHIBITED_CONTENT, ...). FinishReason keeps the unified value
+	// ("content_filter"); this field is added next to it and never replaces it.
+	NativeFinishReason *string `json:"native_finish_reason,omitempty"`
 
 	*TextCompletionResponseChoice
 	*ChatNonStreamResponseChoice
@@ -1984,7 +1989,12 @@ type BifrostLLMUsage struct {
 	BilledCharacters  *int                 `json:"billed_characters,omitempty"` // Vendor-billed character count; nil when unreported
 	ToolUsage         *ToolUsage           `json:"tool_usage,omitempty"`
 	SearchContextSize *string              `json:"search_context_size,omitempty"` // Search context tier the vendor billed ("low" | "medium" | "high")
-	Cost              *BifrostCost         `json:"cost,omitempty"`                // Only for the providers which support cost calculation
+	// ToolUsePromptTokens is the number of tokens in tool-use prompts, the results of
+	// vendor-run tools fed back to the model (Gemini's toolUsePromptTokenCount). The vendor
+	// reports it next to prompt_tokens, not inside it; total_tokens includes it.
+	ToolUsePromptTokens        int                         `json:"tool_use_prompt_tokens,omitempty"`
+	ToolUsePromptTokensDetails *ToolUsePromptTokensDetails `json:"tool_use_prompt_tokens_details,omitempty"`
+	Cost                       *BifrostCost                `json:"cost,omitempty"` // Only for the providers which support cost calculation
 	// xAI-specific usage field, normalized into Cost and VendorCost by NormalizeProviderCost.
 	CostInUsdTicks *int64      `json:"cost_in_usd_ticks,omitempty"`
 	VendorCost     *VendorCost `json:"vendor_cost,omitempty"` // money the vendor reported (fork, TXE-6967); nil when it reported none
@@ -2080,9 +2090,11 @@ func (u *BifrostLLMUsage) NormalizeVendorSpellings() {
 }
 
 type ChatPromptTokensDetails struct {
-	TextTokens  int `json:"text_tokens,omitempty"`
-	AudioTokens int `json:"audio_tokens,omitempty"`
-	ImageTokens int `json:"image_tokens,omitempty"`
+	TextTokens     int `json:"text_tokens,omitempty"`
+	AudioTokens    int `json:"audio_tokens,omitempty"`
+	ImageTokens    int `json:"image_tokens,omitempty"`
+	VideoTokens    int `json:"video_tokens,omitempty"`    // Tokens for video input, when the vendor reports them apart (Gemini's VIDEO modality)
+	DocumentTokens int `json:"document_tokens,omitempty"` // Tokens for document (PDF) input, when the vendor reports them apart (Gemini's DOCUMENT modality)
 
 	// For Providers which don't separate between cache creation and cache read tokens (like Openai, Gemini, etc), this is the total number of cached tokens read.
 	CachedReadTokens        int                          `json:"cached_read_tokens,omitempty"`
@@ -2219,6 +2231,8 @@ func (d *ChatPromptTokensDetails) UnmarshalJSON(data []byte) error {
 		TextTokens              int                            `json:"text_tokens"`
 		AudioTokens             int                            `json:"audio_tokens"`
 		ImageTokens             int                            `json:"image_tokens"`
+		VideoTokens             int                            `json:"video_tokens"`
+		DocumentTokens          int                            `json:"document_tokens"`
 		CachedReadTokens        int                            `json:"cached_read_tokens"`
 		CachedWriteTokens       int                            `json:"cached_write_tokens"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails   `json:"cached_write_token_details"`
@@ -2232,6 +2246,8 @@ func (d *ChatPromptTokensDetails) UnmarshalJSON(data []byte) error {
 	d.TextTokens = raw.TextTokens
 	d.AudioTokens = raw.AudioTokens
 	d.ImageTokens = raw.ImageTokens
+	d.VideoTokens = raw.VideoTokens
+	d.DocumentTokens = raw.DocumentTokens
 	d.CachedReadTokens = raw.CachedReadTokens
 	d.CachedWriteTokens = raw.CachedWriteTokens
 	d.CachedWriteTokenDetails = raw.CachedWriteTokenDetails
@@ -2256,6 +2272,8 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		TextTokens              int                          `json:"text_tokens,omitempty"`
 		AudioTokens             int                          `json:"audio_tokens,omitempty"`
 		ImageTokens             int                          `json:"image_tokens,omitempty"`
+		VideoTokens             int                          `json:"video_tokens,omitempty"`
+		DocumentTokens          int                          `json:"document_tokens,omitempty"`
 		CachedReadTokens        int                          `json:"cached_read_tokens,omitempty"`
 		CachedWriteTokens       int                          `json:"cached_write_tokens,omitempty"`
 		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
@@ -2270,6 +2288,8 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		TextTokens:              d.TextTokens,
 		AudioTokens:             d.AudioTokens,
 		ImageTokens:             d.ImageTokens,
+		VideoTokens:             d.VideoTokens,
+		DocumentTokens:          d.DocumentTokens,
 		CachedReadTokens:        d.CachedReadTokens,
 		CachedWriteTokens:       d.CachedWriteTokens,
 		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
@@ -2339,6 +2359,8 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 			TextTokens:        baseDetails.TextTokens + addDetails.TextTokens,
 			AudioTokens:       baseDetails.AudioTokens + addDetails.AudioTokens,
 			ImageTokens:       baseDetails.ImageTokens + addDetails.ImageTokens,
+			VideoTokens:       baseDetails.VideoTokens + addDetails.VideoTokens,
+			DocumentTokens:    baseDetails.DocumentTokens + addDetails.DocumentTokens,
 			CachedReadTokens:  baseDetails.CachedReadTokens + addDetails.CachedReadTokens,
 			CachedWriteTokens: baseDetails.CachedWriteTokens + addDetails.CachedWriteTokens,
 		}
@@ -2373,6 +2395,8 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 	merged.ProcessedTokens = base.ProcessedTokens.Add(add.ProcessedTokens)
 	merged.BilledCharacters = sumOptionalInts(base.BilledCharacters, add.BilledCharacters)
 	merged.ToolUsage = base.ToolUsage.Add(add.ToolUsage)
+	merged.ToolUsePromptTokens = base.ToolUsePromptTokens + add.ToolUsePromptTokens
+	merged.ToolUsePromptTokensDetails = base.ToolUsePromptTokensDetails.Add(add.ToolUsePromptTokensDetails)
 	merged.Cost = base.Cost.Add(add.Cost)
 	// A tier is not a quantity: the later call's report stands, else the earlier one's.
 	merged.SearchContextSize = add.SearchContextSize
@@ -2420,6 +2444,44 @@ type ToolUsage struct {
 // ToolRequestUsage counts billable calls of one server-side tool.
 type ToolRequestUsage struct {
 	NumRequests int `json:"num_requests"`
+}
+
+// ToolUsePromptTokensDetails is the per-modality breakdown of tool-use prompt tokens
+// (Gemini's toolUsePromptTokensDetails). A modality the vendor did not report stays 0.
+type ToolUsePromptTokensDetails struct {
+	TextTokens     int `json:"text_tokens,omitempty"`
+	AudioTokens    int `json:"audio_tokens,omitempty"`
+	ImageTokens    int `json:"image_tokens,omitempty"`
+	VideoTokens    int `json:"video_tokens,omitempty"`
+	DocumentTokens int `json:"document_tokens,omitempty"`
+}
+
+// Add returns the per-modality sum of d and o; nil when both are nil.
+func (d *ToolUsePromptTokensDetails) Add(o *ToolUsePromptTokensDetails) *ToolUsePromptTokensDetails {
+	if d == nil && o == nil {
+		return nil
+	}
+	sum := ToolUsePromptTokensDetails{}
+	for _, part := range []*ToolUsePromptTokensDetails{d, o} {
+		if part == nil {
+			continue
+		}
+		sum.TextTokens += part.TextTokens
+		sum.AudioTokens += part.AudioTokens
+		sum.ImageTokens += part.ImageTokens
+		sum.VideoTokens += part.VideoTokens
+		sum.DocumentTokens += part.DocumentTokens
+	}
+	return &sum
+}
+
+// DeepCopy returns a copy of d; nil for a nil receiver.
+func (d *ToolUsePromptTokensDetails) DeepCopy() *ToolUsePromptTokensDetails {
+	if d == nil {
+		return nil
+	}
+	c := *d
+	return &c
 }
 
 // WebSearchToolUsage counts billable web search calls.
@@ -2819,6 +2881,7 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 		scs := *u.SearchContextSize
 		c.SearchContextSize = &scs
 	}
+	c.ToolUsePromptTokensDetails = u.ToolUsePromptTokensDetails.DeepCopy()
 	c.Cost = u.Cost.DeepCopy()
 	if u.CostInUsdTicks != nil {
 		t := *u.CostInUsdTicks

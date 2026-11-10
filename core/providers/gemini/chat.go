@@ -148,10 +148,12 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	// Handle empty candidates (filtered/malformed responses)
 	if len(response.Candidates) == 0 {
 		finishReason := ConvertGeminiFinishReasonToBifrost(FinishReasonMalformedFunctionCall)
+		nativeReason := ""
 		if response.promptBlockError() != nil {
 			finishReason = ConvertGeminiFinishReasonToBifrost(FinishReasonSafety)
+			nativeReason = response.PromptFeedback.BlockReason
 		}
-		return createErrorResponse(response, finishReason, false)
+		return createErrorResponse(response, finishReason, nativeReason, false)
 	}
 
 	candidate := response.Candidates[0]
@@ -159,7 +161,7 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	// Check for filtered finish reasons that indicate errors
 	if isErrorFinishReason(candidate.FinishReason) {
 		finishReason := ConvertGeminiFinishReasonToBifrost(candidate.FinishReason)
-		return createErrorResponse(response, finishReason, false)
+		return createErrorResponse(response, finishReason, string(candidate.FinishReason), false)
 	}
 
 	// Collect all content and tool calls into a single message
@@ -524,10 +526,12 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 	// Handle empty candidates (filtered/malformed responses)
 	if len(response.Candidates) == 0 {
 		finishReason := ConvertGeminiFinishReasonToBifrost(FinishReasonMalformedFunctionCall)
+		nativeReason := ""
 		if response.promptBlockError() != nil {
 			finishReason = ConvertGeminiFinishReasonToBifrost(FinishReasonSafety)
+			nativeReason = response.PromptFeedback.BlockReason
 		}
-		return createErrorResponse(response, finishReason, true), nil, true
+		return createErrorResponse(response, finishReason, nativeReason, true), nil, true
 	}
 
 	candidate := response.Candidates[0]
@@ -535,7 +539,7 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 	// Check for filtered finish reasons that indicate errors
 	if isErrorFinishReason(candidate.FinishReason) {
 		finishReason := ConvertGeminiFinishReasonToBifrost(candidate.FinishReason)
-		return createErrorResponse(response, finishReason, true), nil, true
+		return createErrorResponse(response, finishReason, string(candidate.FinishReason), true), nil, true
 	}
 
 	// Determine if this is the last chunk based on finish reason and usage metadata
@@ -837,8 +841,11 @@ func isErrorFinishReason(reason FinishReason) bool {
 		reason == FinishReasonNoImage
 }
 
-// createErrorResponse creates a complete BifrostChatResponse for error cases
-func createErrorResponse(response *GenerateContentResponse, finishReason string, isStream bool) *schemas.BifrostChatResponse {
+// createErrorResponse creates a complete BifrostChatResponse for error cases. nativeReason
+// is the vendor's own reason, verbatim: promptFeedback.blockReason for a blocked prompt,
+// candidates[0].finishReason for a blocked or malformed output. It is added next to
+// finishReason as native_finish_reason and never replaces it; empty when Gemini gave none.
+func createErrorResponse(response *GenerateContentResponse, finishReason string, nativeReason string, isStream bool) *schemas.BifrostChatResponse {
 	var choice schemas.BifrostResponseChoice
 	if isStream {
 		choice = schemas.BifrostResponseChoice{
@@ -859,6 +866,10 @@ func createErrorResponse(response *GenerateContentResponse, finishReason string,
 				},
 			},
 		}
+	}
+
+	if nativeReason != "" {
+		choice.NativeFinishReason = &nativeReason
 	}
 
 	objectType := "chat.completion"

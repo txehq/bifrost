@@ -1388,6 +1388,10 @@ const (
 	ModalityImage Modality = "IMAGE"
 	// Indicates the model should return audio.
 	ModalityAudio Modality = "AUDIO"
+	// ModalityVideo and ModalityDocument appear only in usage metadata (promptTokensDetails,
+	// toolUsePromptTokensDetails): the model takes video and documents as input.
+	ModalityVideo    Modality = "VIDEO"
+	ModalityDocument Modality = "DOCUMENT"
 )
 
 // Schema is used to define the format of input/output data.

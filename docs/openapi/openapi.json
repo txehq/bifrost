@@ -447,6 +447,10 @@
                           "finish_reason": {
                             "type": "string"
                           },
+                          "native_finish_reason": {
+                            "type": "string",
+                            "description": "The provider's own reason, verbatim, when it blocked the prompt or the output: Gemini's promptFeedback.blockReason or candidates[].finishReason (SAFETY, RECITATION, PROHIBITED_CONTENT, ...). Added next to finish_reason, which keeps the unified value (content_filter); absent when the provider gave no reason.\n"
+                          },
                           "log_probs": {
                             "type": "object",
                             "properties": {
@@ -833,6 +837,10 @@
                           },
                           "finish_reason": {
                             "type": "string"
+                          },
+                          "native_finish_reason": {
+                            "type": "string",
+                            "description": "The provider's own reason, verbatim, when it blocked the prompt or the output: Gemini's promptFeedback.blockReason or candidates[].finishReason (SAFETY, RECITATION, PROHIBITED_CONTENT, ...). Added next to finish_reason, which keeps the unified value (content_filter); absent when the provider gave no reason.\n"
                           },
                           "log_probs": {
                             "type": "object",
@@ -9320,6 +9328,14 @@
                             "image_tokens": {
                               "type": "integer"
                             },
+                            "video_tokens": {
+                              "type": "integer",
+                              "description": "Tokens for video input, when the provider reports them apart from the other modalities (Gemini and Vertex). Already included in input_tokens.\n"
+                            },
+                            "document_tokens": {
+                              "type": "integer",
+                              "description": "Tokens for document (PDF) input, when the provider reports them apart from the other modalities (Gemini and Vertex). Already included in input_tokens.\n"
+                            },
                             "cached_read_tokens": {
                               "type": "integer",
                               "description": "Tokens served from the prompt cache (cache hit), billed at the reduced cache-read rate. Already included in the parent input_tokens total.\n"
@@ -9367,6 +9383,31 @@
                         "search_context_size": {
                           "type": "string",
                           "description": "Search context tier the provider reports it billed the request at (\"low\", \"medium\" or \"high\"). Present only when the provider reports it.\n"
+                        },
+                        "tool_use_prompt_tokens": {
+                          "type": "integer",
+                          "description": "Tokens in tool-use prompts (Gemini's toolUsePromptTokenCount). Reported next to input_tokens, not included in it. Absent when the provider reports none.\n"
+                        },
+                        "tool_use_prompt_tokens_details": {
+                          "type": "object",
+                          "description": "Per-modality breakdown of tool_use_prompt_tokens, as the provider reports it.",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            },
+                            "image_tokens": {
+                              "type": "integer"
+                            },
+                            "video_tokens": {
+                              "type": "integer"
+                            },
+                            "document_tokens": {
+                              "type": "integer"
+                            }
+                          }
                         },
                         "cost": {
                           "$ref": "#/components/schemas/BifrostCost"
@@ -15275,6 +15316,10 @@
                           "finish_reason": {
                             "type": "string"
                           },
+                          "native_finish_reason": {
+                            "type": "string",
+                            "description": "The provider's own reason, verbatim, when it blocked the prompt or the output: Gemini's promptFeedback.blockReason or candidates[].finishReason (SAFETY, RECITATION, PROHIBITED_CONTENT, ...). Added next to finish_reason, which keeps the unified value (content_filter); absent when the provider gave no reason.\n"
+                          },
                           "log_probs": {
                             "type": "object",
                             "properties": {
@@ -15598,6 +15643,10 @@
                           "finish_reason": {
                             "type": "string"
                           },
+                          "native_finish_reason": {
+                            "type": "string",
+                            "description": "The provider's own reason, verbatim, when it blocked the prompt or the output: Gemini's promptFeedback.blockReason or candidates[].finishReason (SAFETY, RECITATION, PROHIBITED_CONTENT, ...). Added next to finish_reason, which keeps the unified value (content_filter); absent when the provider gave no reason.\n"
+                          },
                           "log_probs": {
                             "type": "object",
                             "properties": {
@@ -15900,6 +15949,10 @@
                           },
                           "finish_reason": {
                             "type": "string"
+                          },
+                          "native_finish_reason": {
+                            "type": "string",
+                            "description": "The provider's own reason, verbatim, when it blocked the prompt or the output: Gemini's promptFeedback.blockReason or candidates[].finishReason (SAFETY, RECITATION, PROHIBITED_CONTENT, ...). Added next to finish_reason, which keeps the unified value (content_filter); absent when the provider gave no reason.\n"
                           },
                           "log_probs": {
                             "type": "object",
@@ -16218,6 +16271,10 @@
                           },
                           "finish_reason": {
                             "type": "string"
+                          },
+                          "native_finish_reason": {
+                            "type": "string",
+                            "description": "The provider's own reason, verbatim, when it blocked the prompt or the output: Gemini's promptFeedback.blockReason or candidates[].finishReason (SAFETY, RECITATION, PROHIBITED_CONTENT, ...). Added next to finish_reason, which keeps the unified value (content_filter); absent when the provider gave no reason.\n"
                           },
                           "log_probs": {
                             "type": "object",
@@ -20935,6 +20992,14 @@
                             "image_tokens": {
                               "type": "integer"
                             },
+                            "video_tokens": {
+                              "type": "integer",
+                              "description": "Tokens for video input, when the provider reports them apart from the other modalities (Gemini and Vertex). Already included in input_tokens.\n"
+                            },
+                            "document_tokens": {
+                              "type": "integer",
+                              "description": "Tokens for document (PDF) input, when the provider reports them apart from the other modalities (Gemini and Vertex). Already included in input_tokens.\n"
+                            },
                             "cached_read_tokens": {
                               "type": "integer",
                               "description": "Tokens served from the prompt cache (cache hit), billed at the reduced cache-read rate. Already included in the parent input_tokens total.\n"
@@ -20982,6 +21047,31 @@
                         "search_context_size": {
                           "type": "string",
                           "description": "Search context tier the provider reports it billed the request at (\"low\", \"medium\" or \"high\"). Present only when the provider reports it.\n"
+                        },
+                        "tool_use_prompt_tokens": {
+                          "type": "integer",
+                          "description": "Tokens in tool-use prompts (Gemini's toolUsePromptTokenCount). Reported next to input_tokens, not included in it. Absent when the provider reports none.\n"
+                        },
+                        "tool_use_prompt_tokens_details": {
+                          "type": "object",
+                          "description": "Per-modality breakdown of tool_use_prompt_tokens, as the provider reports it.",
+                          "properties": {
+                            "text_tokens": {
+                              "type": "integer"
+                            },
+                            "audio_tokens": {
+                              "type": "integer"
+                            },
+                            "image_tokens": {
+                              "type": "integer"
+                            },
+                            "video_tokens": {
+                              "type": "integer"
+                            },
+                            "document_tokens": {
+                              "type": "integer"
+                            }
+                          }
                         },
                         "cost": {
                           "$ref": "#/components/schemas/BifrostCost"
@@ -32173,6 +32263,10 @@
                           "finish_reason": {
                             "type": "string"
                           },
+                          "native_finish_reason": {
+                            "type": "string",
+                            "description": "The provider's own reason, verbatim, when it blocked the prompt or the output: Gemini's promptFeedback.blockReason or candidates[].finishReason (SAFETY, RECITATION, PROHIBITED_CONTENT, ...). Added next to finish_reason, which keeps the unified value (content_filter); absent when the provider gave no reason.\n"
+                          },
                           "log_probs": {
                             "type": "object",
                             "properties": {
@@ -33643,6 +33737,10 @@
                           "finish_reason": {
                             "type": "string"
                           },
+                          "native_finish_reason": {
+                            "type": "string",
+                            "description": "The provider's own reason, verbatim, when it blocked the prompt or the output: Gemini's promptFeedback.blockReason or candidates[].finishReason (SAFETY, RECITATION, PROHIBITED_CONTENT, ...). Added next to finish_reason, which keeps the unified value (content_filter); absent when the provider gave no reason.\n"
+                          },
                           "log_probs": {
                             "type": "object",
                             "properties": {
@@ -33942,6 +34040,10 @@
                           },
                           "finish_reason": {
                             "type": "string"
+                          },
+                          "native_finish_reason": {
+                            "type": "string",
+                            "description": "The provider's own reason, verbatim, when it blocked the prompt or the output: Gemini's promptFeedback.blockReason or candidates[].finishReason (SAFETY, RECITATION, PROHIBITED_CONTENT, ...). Added next to finish_reason, which keeps the unified value (content_filter); absent when the provider gave no reason.\n"
                           },
                           "log_probs": {
                             "type": "object",
@@ -36839,6 +36941,10 @@
                           "finish_reason": {
                             "type": "string"
                           },
+                          "native_finish_reason": {
+                            "type": "string",
+                            "description": "The provider's own reason, verbatim, when it blocked the prompt or the output: Gemini's promptFeedback.blockReason or candidates[].finishReason (SAFETY, RECITATION, PROHIBITED_CONTENT, ...). Added next to finish_reason, which keeps the unified value (content_filter); absent when the provider gave no reason.\n"
+                          },
                           "log_probs": {
                             "type": "object",
                             "properties": {
@@ -37138,6 +37244,10 @@
                           },
                           "finish_reason": {
                             "type": "string"
+                          },
+                          "native_finish_reason": {
+                            "type": "string",
+                            "description": "The provider's own reason, verbatim, when it blocked the prompt or the output: Gemini's promptFeedback.blockReason or candidates[].finishReason (SAFETY, RECITATION, PROHIBITED_CONTENT, ...). Added next to finish_reason, which keeps the unified value (content_filter); absent when the provider gave no reason.\n"
                           },
                           "log_probs": {
                             "type": "object",
@@ -40146,6 +40256,10 @@
                           "finish_reason": {
                             "type": "string"
                           },
+                          "native_finish_reason": {
+                            "type": "string",
+                            "description": "The provider's own reason, verbatim, when it blocked the prompt or the output: Gemini's promptFeedback.blockReason or candidates[].finishReason (SAFETY, RECITATION, PROHIBITED_CONTENT, ...). Added next to finish_reason, which keeps the unified value (content_filter); absent when the provider gave no reason.\n"
+                          },
                           "log_probs": {
                             "type": "object",
                             "properties": {
@@ -40445,6 +40559,10 @@
                           },
                           "finish_reason": {
                             "type": "string"
+                          },
+                          "native_finish_reason": {
+                            "type": "string",
+                            "description": "The provider's own reason, verbatim, when it blocked the prompt or the output: Gemini's promptFeedback.blockReason or candidates[].finishReason (SAFETY, RECITATION, PROHIBITED_CONTENT, ...). Added next to finish_reason, which keeps the unified value (content_filter); absent when the provider gave no reason.\n"
                           },
                           "log_probs": {
                             "type": "object",
@@ -115368,6 +115486,31 @@
             "type": "string",
             "description": "Search context tier the provider reports it billed the request at (\"low\", \"medium\" or \"high\"); Perplexity prices its per-request search fee by it. Present only when the provider reports it.\n"
           },
+          "tool_use_prompt_tokens": {
+            "type": "integer",
+            "description": "Tokens in tool-use prompts: the results of provider-run tools fed back to the model (Gemini's toolUsePromptTokenCount). Reported next to prompt_tokens, not included in it; total_tokens includes it. Absent when the provider reports none.\n"
+          },
+          "tool_use_prompt_tokens_details": {
+            "type": "object",
+            "description": "Per-modality breakdown of tool_use_prompt_tokens, as the provider reports it.",
+            "properties": {
+              "text_tokens": {
+                "type": "integer"
+              },
+              "audio_tokens": {
+                "type": "integer"
+              },
+              "image_tokens": {
+                "type": "integer"
+              },
+              "video_tokens": {
+                "type": "integer"
+              },
+              "document_tokens": {
+                "type": "integer"
+              }
+            }
+          },
           "cost": {
             "$ref": "#/components/schemas/BifrostCost"
           },
@@ -115408,6 +115551,14 @@
           },
           "image_tokens": {
             "type": "integer"
+          },
+          "video_tokens": {
+            "type": "integer",
+            "description": "Tokens for video input, when the provider reports them apart from the other modalities (Gemini and Vertex). Already included in prompt_tokens.\n"
+          },
+          "document_tokens": {
+            "type": "integer",
+            "description": "Tokens for document (PDF) input, when the provider reports them apart from the other modalities (Gemini and Vertex). Already included in prompt_tokens.\n"
           },
           "cached_read_tokens": {
             "type": "integer",
@@ -116124,6 +116275,10 @@
                 "finish_reason": {
                   "type": "string"
                 },
+                "native_finish_reason": {
+                  "type": "string",
+                  "description": "The provider's own reason, verbatim, when it blocked the prompt or the output: Gemini's promptFeedback.blockReason or candidates[].finishReason (SAFETY, RECITATION, PROHIBITED_CONTENT, ...). Added next to finish_reason, which keeps the unified value (content_filter); absent when the provider gave no reason.\n"
+                },
                 "log_probs": {
                   "type": "object",
                   "properties": {
@@ -116763,6 +116918,10 @@
                 },
                 "finish_reason": {
                   "type": "string"
+                },
+                "native_finish_reason": {
+                  "type": "string",
+                  "description": "The provider's own reason, verbatim, when it blocked the prompt or the output: Gemini's promptFeedback.blockReason or candidates[].finishReason (SAFETY, RECITATION, PROHIBITED_CONTENT, ...). Added next to finish_reason, which keeps the unified value (content_filter); absent when the provider gave no reason.\n"
                 },
                 "log_probs": {
                   "type": "object",
@@ -119562,6 +119721,14 @@
                   "image_tokens": {
                     "type": "integer"
                   },
+                  "video_tokens": {
+                    "type": "integer",
+                    "description": "Tokens for video input, when the provider reports them apart from the other modalities (Gemini and Vertex). Already included in input_tokens.\n"
+                  },
+                  "document_tokens": {
+                    "type": "integer",
+                    "description": "Tokens for document (PDF) input, when the provider reports them apart from the other modalities (Gemini and Vertex). Already included in input_tokens.\n"
+                  },
                   "cached_read_tokens": {
                     "type": "integer",
                     "description": "Tokens served from the prompt cache (cache hit), billed at the reduced cache-read rate. Already included in the parent input_tokens total.\n"
@@ -119609,6 +119776,31 @@
               "search_context_size": {
                 "type": "string",
                 "description": "Search context tier the provider reports it billed the request at (\"low\", \"medium\" or \"high\"). Present only when the provider reports it.\n"
+              },
+              "tool_use_prompt_tokens": {
+                "type": "integer",
+                "description": "Tokens in tool-use prompts (Gemini's toolUsePromptTokenCount). Reported next to input_tokens, not included in it. Absent when the provider reports none.\n"
+              },
+              "tool_use_prompt_tokens_details": {
+                "type": "object",
+                "description": "Per-modality breakdown of tool_use_prompt_tokens, as the provider reports it.",
+                "properties": {
+                  "text_tokens": {
+                    "type": "integer"
+                  },
+                  "audio_tokens": {
+                    "type": "integer"
+                  },
+                  "image_tokens": {
+                    "type": "integer"
+                  },
+                  "video_tokens": {
+                    "type": "integer"
+                  },
+                  "document_tokens": {
+                    "type": "integer"
+                  }
+                }
               },
               "cost": {
                 "$ref": "#/components/schemas/BifrostCost"
@@ -123525,6 +123717,14 @@
               },
               "image_tokens": {
                 "type": "integer"
+              },
+              "video_tokens": {
+                "type": "integer",
+                "description": "Tokens for video input, when the provider reports them apart from the other modalities (Gemini and Vertex). Already included in input_tokens.\n"
+              },
+              "document_tokens": {
+                "type": "integer",
+                "description": "Tokens for document (PDF) input, when the provider reports them apart from the other modalities (Gemini and Vertex). Already included in input_tokens.\n"
               },
               "cached_read_tokens": {
                 "type": "integer",

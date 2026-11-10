@@ -497,6 +497,13 @@ BifrostResponseChoice:
       type: integer
     finish_reason:
       type: string
+    native_finish_reason:
+      type: string
+      description: >
+        The provider's own reason, verbatim, when it blocked the prompt or the output:
+        Gemini's promptFeedback.blockReason or candidates[].finishReason (SAFETY,
+        RECITATION, PROHIBITED_CONTENT, ...). Added next to finish_reason, which keeps
+        the unified value (content_filter); absent when the provider gave no reason.
     log_probs:
       $ref: '#/BifrostLogProbs'
     text:

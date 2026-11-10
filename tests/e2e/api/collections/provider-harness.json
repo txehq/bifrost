@@ -318057,6 +318057,882 @@
           }
         }
       ]
+    },
+    {
+      "name": "337. Gemini and Vertex chat and Responses report document and tool-prompt tokens; Vertex delivers or refuses service_tier and forwards URLs (google chat usage)",
+      "description": "Pins contract C4 and C5 for Google chat. (1) Usage: every modality Gemini bills in usageMetadata.promptTokensDetails reaches usage.prompt_tokens_details under its own field (VIDEO as video_tokens, DOCUMENT as document_tokens; both were dropped), and usageMetadata.toolUsePromptTokenCount reaches usage.tool_use_prompt_tokens (it was not mapped). The cases compare the unified usage with the vendor's own numbers in extra_fields.raw_response, so they hold for whatever the vendor reports. (2) service_tier on Vertex travels as the X-Vertex-AI-LLM-Shared-Request-Type header. A tier that cannot be sent used to be dropped silently and the request billed at the standard tier; it is now 400 caller_unsupported_parameter with error.param service_tier, before any upstream call, on chat, streamed chat, Responses and streamed Responses. default asks for standard processing and is accepted. (3) An https image URL on a Vertex Gemini request is sent as fileData.fileUri; Bifrost used to download it and send inlineData. (4) The same usage fields and URL forwarding are pinned on /v1/responses (input_tokens_details, tool_use_prompt_tokens) and on the streamed chat and Responses routes, where a PDF prompt must produce a usage frame that names document_tokens. A blocked prompt or output (native_finish_reason next to finish_reason content_filter) cannot be triggered deterministically by a live request and is pinned by unit tests only.",
+      "item": [
+        {
+          "name": "[EXPECT-400] /v1/chat/completions - a service_tier Vertex cannot deliver is refused with caller_unsupported_parameter - vertex/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat: a service_tier Vertex cannot deliver is refused, not dropped', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.extra_fields && body.extra_fields.error_type, 'extra_fields.error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(body.error && body.error.param, 'error.param: ' + pm.response.text()).to.eql('service_tier');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_tokens\": 16,\n  \"service_tier\": \"ultrafast\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/chat/completions stream - a service_tier Vertex cannot deliver is refused with caller_unsupported_parameter - vertex/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat stream: a service_tier Vertex cannot deliver is refused, not dropped', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.extra_fields && body.extra_fields.error_type, 'extra_fields.error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(body.error && body.error.param, 'error.param: ' + pm.response.text()).to.eql('service_tier');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_tokens\": 16,\n  \"service_tier\": \"ultrafast\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/responses - a service_tier Vertex cannot deliver is refused with caller_unsupported_parameter - vertex/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses: a service_tier Vertex cannot deliver is refused, not dropped', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.extra_fields && body.extra_fields.error_type, 'extra_fields.error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(body.error && body.error.param, 'error.param: ' + pm.response.text()).to.eql('service_tier');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_output_tokens\": 16,\n  \"service_tier\": \"ultrafast\",\n  \"input\": \"hi\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - service_tier default asks for standard processing and is accepted - vertex/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('service_tier default is accepted on Vertex', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.choices, 'choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_tokens\": 16,\n  \"service_tier\": \"default\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - an https image URL reaches Vertex as fileData.fileUri and is not downloaded - vertex/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the image URL was forwarded as a URL', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  var sent = body.extra_fields && body.extra_fields.raw_request;",
+                  "  pm.expect(sent, 'extra_fields.raw_request missing: ' + pm.response.text().slice(0, 600)).to.exist;",
+                  "  var text = typeof sent === 'string' ? sent : JSON.stringify(sent);",
+                  "  pm.expect(text, 'fileUri not sent: ' + text.slice(0, 600)).to.include('https://storage.googleapis.com/generativeai-downloads/images/scones.jpg');",
+                  "  pm.expect(text, 'the image was inlined: ' + text.slice(0, 300)).to.not.include('inlineData');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What food is in this picture? One word.\"\n        },\n        {\n          \"type\": \"image_url\",\n          \"image_url\": {\n            \"url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - PDF prompt tokens reach prompt_tokens_details as the vendor reports them - gemini/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini: the request succeeded and the vendor response came back', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var rawResp = body.extra_fields && body.extra_fields.raw_response;",
+                  "if (typeof rawResp === 'string') { rawResp = JSON.parse(rawResp); }",
+                  "var meta = (rawResp && rawResp.usageMetadata) || null;",
+                  "var usage = body.usage || {};",
+                  "pm.test('gemini: every modality in promptTokensDetails reaches prompt_tokens_details', function () {",
+                  "  pm.expect(meta, 'extra_fields.raw_response.usageMetadata missing: ' + pm.response.text().slice(0, 600)).to.be.an('object');",
+                  "  var details = meta.promptTokensDetails || [];",
+                  "  pm.expect(details.length, 'the vendor reported no promptTokensDetails: ' + JSON.stringify(meta)).to.be.above(0);",
+                  "  var field = { TEXT: 'text_tokens', AUDIO: 'audio_tokens', IMAGE: 'image_tokens', VIDEO: 'video_tokens', DOCUMENT: 'document_tokens' };",
+                  "  var unified = usage.prompt_tokens_details || {};",
+                  "  details.forEach(function (d) {",
+                  "    pm.expect(field[d.modality], 'modality with no unified field: ' + d.modality).to.be.a('string');",
+                  "    pm.expect(unified[field[d.modality]] || 0, field[d.modality] + ' vs vendor ' + JSON.stringify(details) + ' unified ' + JSON.stringify(unified)).to.eql(d.tokenCount || 0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"url\",\n            \"url\": \"https://storage.googleapis.com/generativeai-downloads/data/A17_FlightPlan.pdf\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Name this document in five words.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - PDF prompt tokens reach prompt_tokens_details as the vendor reports them - vertex/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex: the request succeeded and the vendor response came back', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var rawResp = body.extra_fields && body.extra_fields.raw_response;",
+                  "if (typeof rawResp === 'string') { rawResp = JSON.parse(rawResp); }",
+                  "var meta = (rawResp && rawResp.usageMetadata) || null;",
+                  "var usage = body.usage || {};",
+                  "pm.test('vertex: every modality in promptTokensDetails reaches prompt_tokens_details', function () {",
+                  "  pm.expect(meta, 'extra_fields.raw_response.usageMetadata missing: ' + pm.response.text().slice(0, 600)).to.be.an('object');",
+                  "  var details = meta.promptTokensDetails || [];",
+                  "  pm.expect(details.length, 'the vendor reported no promptTokensDetails: ' + JSON.stringify(meta)).to.be.above(0);",
+                  "  var field = { TEXT: 'text_tokens', AUDIO: 'audio_tokens', IMAGE: 'image_tokens', VIDEO: 'video_tokens', DOCUMENT: 'document_tokens' };",
+                  "  var unified = usage.prompt_tokens_details || {};",
+                  "  details.forEach(function (d) {",
+                  "    pm.expect(field[d.modality], 'modality with no unified field: ' + d.modality).to.be.a('string');",
+                  "    pm.expect(unified[field[d.modality]] || 0, field[d.modality] + ' vs vendor ' + JSON.stringify(details) + ' unified ' + JSON.stringify(unified)).to.eql(d.tokenCount || 0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"url\",\n            \"url\": \"https://storage.googleapis.com/generativeai-downloads/data/A17_FlightPlan.pdf\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Name this document in five words.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - toolUsePromptTokenCount reaches usage.tool_use_prompt_tokens - gemini/gemini-2.5-flash google_search",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var rawResp = body.extra_fields && body.extra_fields.raw_response;",
+                  "if (typeof rawResp === 'string') { rawResp = JSON.parse(rawResp); }",
+                  "var meta = (rawResp && rawResp.usageMetadata) || null;",
+                  "var usage = body.usage || {};",
+                  "pm.test('tool_use_prompt_tokens equals the vendor toolUsePromptTokenCount', function () {",
+                  "  pm.expect(meta, 'extra_fields.raw_response.usageMetadata missing: ' + pm.response.text().slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(usage.tool_use_prompt_tokens || 0, 'vendor ' + JSON.stringify(meta) + ' unified ' + JSON.stringify(usage)).to.eql(meta.toolUsePromptTokenCount || 0);",
+                  "  pm.expect(usage.prompt_tokens, 'tool-use prompt tokens must not be folded into prompt_tokens').to.eql(meta.promptTokenCount);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Who won the most recent Formula 1 race? One sentence.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"google_search\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/responses stream - a service_tier Vertex cannot deliver is refused with caller_unsupported_parameter - vertex/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses stream: a service_tier Vertex cannot deliver is refused, not dropped', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.extra_fields && body.extra_fields.error_type, 'extra_fields.error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(body.error && body.error.param, 'error.param: ' + pm.response.text()).to.eql('service_tier');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_output_tokens\": 16,\n  \"service_tier\": \"ultrafast\",\n  \"stream\": true,\n  \"input\": \"hi\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses - an https image URL reaches Vertex as fileData.fileUri and is not downloaded - vertex/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses: the image URL was forwarded as a URL', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  var sent = body.extra_fields && body.extra_fields.raw_request;",
+                  "  pm.expect(sent, 'extra_fields.raw_request missing: ' + pm.response.text().slice(0, 600)).to.exist;",
+                  "  var text = typeof sent === 'string' ? sent : JSON.stringify(sent);",
+                  "  pm.expect(text, 'fileUri not sent: ' + text.slice(0, 600)).to.include('https://storage.googleapis.com/generativeai-downloads/images/scones.jpg');",
+                  "  pm.expect(text, 'the image was inlined: ' + text.slice(0, 300)).to.not.include('inlineData');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_output_tokens\": 64,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What food is in this picture? One word.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses - PDF prompt tokens reach input_tokens_details as the vendor reports them - gemini/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini responses: the request succeeded and the vendor response came back', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var rawResp = body.extra_fields && body.extra_fields.raw_response;",
+                  "if (typeof rawResp === 'string') { rawResp = JSON.parse(rawResp); }",
+                  "var meta = (rawResp && rawResp.usageMetadata) || null;",
+                  "var usage = body.usage || {};",
+                  "pm.test('gemini responses: every modality in promptTokensDetails reaches input_tokens_details', function () {",
+                  "  pm.expect(meta, 'extra_fields.raw_response.usageMetadata missing: ' + pm.response.text().slice(0, 600)).to.be.an('object');",
+                  "  var details = meta.promptTokensDetails || [];",
+                  "  pm.expect(details.length, 'the vendor reported no promptTokensDetails: ' + JSON.stringify(meta)).to.be.above(0);",
+                  "  var field = { TEXT: 'text_tokens', AUDIO: 'audio_tokens', IMAGE: 'image_tokens', VIDEO: 'video_tokens', DOCUMENT: 'document_tokens' };",
+                  "  var unified = usage.input_tokens_details || {};",
+                  "  details.forEach(function (d) {",
+                  "    pm.expect(field[d.modality], 'modality with no unified field: ' + d.modality).to.be.a('string');",
+                  "    pm.expect(unified[field[d.modality]] || 0, field[d.modality] + ' vs vendor ' + JSON.stringify(details) + ' unified ' + JSON.stringify(unified)).to.eql(d.tokenCount || 0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"file_url\": \"https://storage.googleapis.com/generativeai-downloads/data/A17_FlightPlan.pdf\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Name this document in five words.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses - PDF prompt tokens reach input_tokens_details as the vendor reports them - vertex/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex responses: the request succeeded and the vendor response came back', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var rawResp = body.extra_fields && body.extra_fields.raw_response;",
+                  "if (typeof rawResp === 'string') { rawResp = JSON.parse(rawResp); }",
+                  "var meta = (rawResp && rawResp.usageMetadata) || null;",
+                  "var usage = body.usage || {};",
+                  "pm.test('vertex responses: every modality in promptTokensDetails reaches input_tokens_details', function () {",
+                  "  pm.expect(meta, 'extra_fields.raw_response.usageMetadata missing: ' + pm.response.text().slice(0, 600)).to.be.an('object');",
+                  "  var details = meta.promptTokensDetails || [];",
+                  "  pm.expect(details.length, 'the vendor reported no promptTokensDetails: ' + JSON.stringify(meta)).to.be.above(0);",
+                  "  var field = { TEXT: 'text_tokens', AUDIO: 'audio_tokens', IMAGE: 'image_tokens', VIDEO: 'video_tokens', DOCUMENT: 'document_tokens' };",
+                  "  var unified = usage.input_tokens_details || {};",
+                  "  details.forEach(function (d) {",
+                  "    pm.expect(field[d.modality], 'modality with no unified field: ' + d.modality).to.be.a('string');",
+                  "    pm.expect(unified[field[d.modality]] || 0, field[d.modality] + ' vs vendor ' + JSON.stringify(details) + ' unified ' + JSON.stringify(unified)).to.eql(d.tokenCount || 0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"file_url\": \"https://storage.googleapis.com/generativeai-downloads/data/A17_FlightPlan.pdf\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Name this document in five words.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses - toolUsePromptTokenCount reaches usage.tool_use_prompt_tokens - gemini/gemini-2.5-flash web_search",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses: the request succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "var rawResp = body.extra_fields && body.extra_fields.raw_response;",
+                  "if (typeof rawResp === 'string') { rawResp = JSON.parse(rawResp); }",
+                  "var meta = (rawResp && rawResp.usageMetadata) || null;",
+                  "var usage = body.usage || {};",
+                  "pm.test('responses: tool_use_prompt_tokens equals the vendor toolUsePromptTokenCount', function () {",
+                  "  pm.expect(meta, 'extra_fields.raw_response.usageMetadata missing: ' + pm.response.text().slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(usage.tool_use_prompt_tokens || 0, 'vendor ' + JSON.stringify(meta) + ' unified ' + JSON.stringify(usage)).to.eql(meta.toolUsePromptTokenCount || 0);",
+                  "  pm.expect(usage.input_tokens, 'tool-use prompt tokens must not be folded into input_tokens').to.eql(meta.promptTokenCount);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_output_tokens\": 256,\n  \"input\": \"Who won the most recent Formula 1 race? One sentence.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions stream - PDF prompt tokens reach the streamed usage as document_tokens - gemini/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat stream: the stream succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text().slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var usage = null;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var ev; try { ev = JSON.parse(payload); } catch (e) { return; }",
+                  "  var u = ev.usage;",
+                  "  if (u && typeof u === 'object') { usage = u; }",
+                  "});",
+                  "pm.test('chat stream: the streamed usage reports the PDF as document_tokens', function () {",
+                  "  pm.expect(usage, 'no usage frame in the stream: ' + pm.response.text().slice(-600)).to.be.an('object');",
+                  "  var details = usage.prompt_tokens_details || {};",
+                  "  pm.expect(details.document_tokens || 0, 'prompt_tokens_details: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"url\",\n            \"url\": \"https://storage.googleapis.com/generativeai-downloads/data/A17_FlightPlan.pdf\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Name this document in five words.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions stream - PDF prompt tokens reach the streamed usage as document_tokens - vertex/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex chat stream: the stream succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text().slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var usage = null;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var ev; try { ev = JSON.parse(payload); } catch (e) { return; }",
+                  "  var u = ev.usage;",
+                  "  if (u && typeof u === 'object') { usage = u; }",
+                  "});",
+                  "pm.test('vertex chat stream: the streamed usage reports the PDF as document_tokens', function () {",
+                  "  pm.expect(usage, 'no usage frame in the stream: ' + pm.response.text().slice(-600)).to.be.an('object');",
+                  "  var details = usage.prompt_tokens_details || {};",
+                  "  pm.expect(details.document_tokens || 0, 'prompt_tokens_details: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"document\",\n          \"source\": {\n            \"type\": \"url\",\n            \"url\": \"https://storage.googleapis.com/generativeai-downloads/data/A17_FlightPlan.pdf\"\n          }\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"Name this document in five words.\"\n        }\n      ]\n    }\n  ],\n  \"max_tokens\": 256,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses stream - PDF prompt tokens reach response.completed usage as document_tokens - gemini/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses stream: the stream succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text().slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var usage = null;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var ev; try { ev = JSON.parse(payload); } catch (e) { return; }",
+                  "  var u = ev.type === 'response.completed' && ev.response && ev.response.usage;",
+                  "  if (u && typeof u === 'object') { usage = u; }",
+                  "});",
+                  "pm.test('responses stream: the streamed usage reports the PDF as document_tokens', function () {",
+                  "  pm.expect(usage, 'no usage frame in the stream: ' + pm.response.text().slice(-600)).to.be.an('object');",
+                  "  var details = usage.input_tokens_details || {};",
+                  "  pm.expect(details.document_tokens || 0, 'input_tokens_details: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"file_url\": \"https://storage.googleapis.com/generativeai-downloads/data/A17_FlightPlan.pdf\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Name this document in five words.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 256,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses stream - PDF prompt tokens reach response.completed usage as document_tokens - vertex/gemini-2.5-flash",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex responses stream: the stream succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'expected 200: ' + pm.response.text().slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var usage = null;",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var ev; try { ev = JSON.parse(payload); } catch (e) { return; }",
+                  "  var u = ev.type === 'response.completed' && ev.response && ev.response.usage;",
+                  "  if (u && typeof u === 'object') { usage = u; }",
+                  "});",
+                  "pm.test('vertex responses stream: the streamed usage reports the PDF as document_tokens', function () {",
+                  "  pm.expect(usage, 'no usage frame in the stream: ' + pm.response.text().slice(-600)).to.be.an('object');",
+                  "  var details = usage.input_tokens_details || {};",
+                  "  pm.expect(details.document_tokens || 0, 'input_tokens_details: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"file_url\": \"https://storage.googleapis.com/generativeai-downloads/data/A17_FlightPlan.pdf\"\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Name this document in five words.\"\n        }\n      ]\n    }\n  ],\n  \"max_output_tokens\": 256,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

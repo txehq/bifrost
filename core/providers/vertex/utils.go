@@ -331,6 +331,48 @@ func vertexServiceTierHeaderValue(region string, model string, tier schemas.Bifr
 	}
 }
 
+// resolveVertexServiceTierHeader says how a request's service_tier reaches a model served
+// through the Gemini conversion on Vertex, where the tier travels in the
+// X-Vertex-AI-LLM-Shared-Request-Type header and never in the body.
+//
+// service_tier is price-affecting, so it is delivered or the request fails; it is never
+// dropped (contract C4, agreement three):
+//   - unset, "auto" and "default" ask for Vertex's standard processing, which is what a
+//     request without the header gets: no header, no error;
+//   - "priority" and "flex" return the header value when vertexServiceTierHeaderValue has
+//     one for this region and model;
+//   - anything else, or priority/flex where the header cannot be sent, is
+//     400 caller_unsupported_parameter with error.param "service_tier".
+//
+// An operator who pins the header in the provider's extra headers owns the tier: the
+// pinned value is sent and the request's service_tier is not checked.
+func (provider *VertexProvider) resolveVertexServiceTierHeader(region string, model string, tier *schemas.BifrostServiceTier) (string, *schemas.BifrostError) {
+	if tier == nil {
+		return "", nil
+	}
+	switch *tier {
+	case "", schemas.BifrostServiceTierAuto, schemas.BifrostServiceTierDefault:
+		return "", nil
+	}
+	if _, pinned := provider.networkConfig.ExtraHeaders[VertexServiceTierHeader]; pinned {
+		return "", nil
+	}
+	if value := vertexServiceTierHeaderValue(region, model, *tier); value != "" {
+		return value, nil
+	}
+	var reason string
+	switch {
+	case *tier != schemas.BifrostServiceTierPriority && *tier != schemas.BifrostServiceTierFlex:
+		reason = "Vertex AI takes only priority and flex"
+	case region != "global":
+		reason = fmt.Sprintf("Vertex AI serves it only on the global endpoint, and this key's region is %q", region)
+	default:
+		reason = fmt.Sprintf("model %q does not offer it on Vertex AI", model)
+	}
+	return "", schemas.NewUnsupportedParameterError("service_tier",
+		fmt.Sprintf("service_tier %q cannot be delivered: %s", string(*tier), reason))
+}
+
 // buildResponseFromConfig builds a list models response from configured deployments and allowedModels.
 // This is used when the user has explicitly configured which models they want to use.
 func buildResponseFromConfig(deployments schemas.KeyAliases, allowedModels schemas.WhiteList, blacklistedModels schemas.BlackList) *schemas.BifrostListModelsResponse {
