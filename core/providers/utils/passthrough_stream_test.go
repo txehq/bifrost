@@ -217,3 +217,47 @@ func TestStreamPassthrough_InterruptedStreamBillsObservedUsage(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkStreamPassthrough measures the shared passthrough stream loop over an
+// in-memory Anthropic SSE body (no sockets), with and without token usage reported.
+// with_usage registers the accumulated-usage handle on the first usage event and copies
+// each later usage into it (TXE-6548); no_usage must cost what it did before. Observe
+// returns prebuilt usage so only the loop's own allocations are counted.
+func BenchmarkStreamPassthrough(b *testing.B) {
+	var sse strings.Builder
+	sse.WriteString("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":20,\"output_tokens\":1}}}\n\n")
+	for range 64 {
+		sse.WriteString("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello world \"}}\n\n")
+	}
+	sse.WriteString("event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":65}}\n\n")
+	sse.WriteString("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	body := sse.String()
+	usage := &schemas.BifrostPassthroughUsage{LLMUsage: &schemas.BifrostLLMUsage{PromptTokens: 20, CompletionTokens: 65, TotalTokens: 85}}
+	runner := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return r, err
+	}
+	for _, bc := range []struct {
+		name      string
+		withUsage bool
+	}{{"with_usage", true}, {"no_usage", false}} {
+		b.Run(bc.name, func(b *testing.B) {
+			params := PassthroughStreamParams{
+				StatusCode: 200,
+				HasUsage:   func(event []byte) bool { return strings.Contains(string(event), `"usage"`) },
+				Observe: func([]byte) *schemas.BifrostPassthroughUsage {
+					if bc.withUsage {
+						return usage
+					}
+					return nil
+				},
+			}
+			b.ReportAllocs()
+			b.SetBytes(int64(len(body)))
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+				for range StreamPassthroughHTTP(ctx, runner, nil, io.NopCloser(strings.NewReader(body)), params) {
+				}
+			}
+		})
+	}
+}

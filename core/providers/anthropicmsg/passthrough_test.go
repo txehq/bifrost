@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -385,6 +386,75 @@ func TestPassthroughAppliesResolvedKeyAliasToModel(t *testing.T) {
 	}
 	if got := string(<-received); got != countTokens {
 		t.Fatalf("a non-Messages path changed:\n got: %s\nwant: %s", got, countTokens)
+	}
+}
+
+// TestPassthroughLargePayloadAppliesResolvedKeyAlias covers a body large payload mode
+// streams upstream unbuffered: the resolved key alias reaches the vendor as its model id,
+// as it does on the buffered path, so a caller cannot pass the alias name through by
+// sending a large body.
+func TestPassthroughLargePayloadAppliesResolvedKeyAlias(t *testing.T) {
+	received := make(chan []byte, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ := io.ReadAll(r.Body)
+		received <- got
+		if bytes.Contains(got, []byte(`"stream":true`)) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","content":[]}`))
+	}))
+	defer server.Close()
+
+	largeCtx := func(body, model string, alias bool) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, strings.NewReader(body))
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(body))
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, "application/json")
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{Model: model})
+		if alias {
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+				Key: "flash-anthropic", Config: &schemas.AliasConfig{ModelID: "deepseek-v4-flash"},
+			})
+		}
+		return ctx
+	}
+	cfg := Config{Provider: schemas.DeepSeek, Endpoint: server.URL}
+	postHook := func(_ *schemas.BifrostContext, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return response, err
+	}
+	req := &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: "/v1/messages"}
+
+	cases := []struct {
+		name, model, sent, want string
+		alias                   bool
+	}{
+		{"alias", "deepseek/flash-anthropic", `{"model":"deepseek/flash-anthropic","stream":%s,"messages":[]}`, `{"model":"deepseek-v4-flash","stream":%s,"messages":[]}`, true},
+		{"alias_without_prefix", "flash-anthropic", `{"model":"flash-anthropic","stream":%s,"messages":[]}`, `{"model":"deepseek-v4-flash","stream":%s,"messages":[]}`, true},
+		{"prefix_only", "deepseek/deepseek-v4-pro", `{"model":"deepseek/deepseek-v4-pro","stream":%s,"messages":[]}`, `{"model":"deepseek-v4-pro","stream":%s,"messages":[]}`, true},
+		{"no_alias", "deepseek/flash-anthropic", `{"model":"deepseek/flash-anthropic","stream":%s,"messages":[]}`, `{"model":"flash-anthropic","stream":%s,"messages":[]}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, bifrostErr := Passthrough(largeCtx(fmt.Sprintf(tc.sent, "false"), tc.model, tc.alias), &fasthttp.Client{}, testKey("k"), req, cfg); bifrostErr != nil {
+				t.Fatalf("Passthrough: %+v", bifrostErr)
+			}
+			if got, want := string(<-received), fmt.Sprintf(tc.want, "false"); got != want {
+				t.Fatalf("buffered call, large body:\n got: %s\nwant: %s", got, want)
+			}
+			stream, bifrostErr := PassthroughStream(largeCtx(fmt.Sprintf(tc.sent, "true"), tc.model, tc.alias), postHook, nil, &fasthttp.Client{}, testKey("k"), req, cfg)
+			if bifrostErr != nil {
+				t.Fatalf("PassthroughStream: %+v", bifrostErr)
+			}
+			for range stream {
+			}
+			if got, want := string(<-received), fmt.Sprintf(tc.want, "true"); got != want {
+				t.Fatalf("streamed call, large body:\n got: %s\nwant: %s", got, want)
+			}
+		})
 	}
 }
 

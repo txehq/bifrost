@@ -74,14 +74,42 @@ func applyResolvedAliasModel(ctx *schemas.BifrostContext, req *schemas.BifrostPa
 	if !IsMessagesPath(req.Path) {
 		return req.Body, nil
 	}
+	if alias := schemas.GetResolvedAlias(ctx); alias == nil || alias.Config == nil || alias.Config.ModelID == "" || alias.Config.ModelID == alias.Key {
+		return req.Body, nil
+	}
+	model := providerUtils.GetJSONField(req.Body, "model")
+	if model.Type != gjson.String {
+		return req.Body, nil
+	}
+	target := resolvedAliasModel(ctx, model.Str)
+	if target == model.Str {
+		return req.Body, nil
+	}
+	return providerUtils.SetJSONField(req.Body, "model", target)
+}
+
+// resolvedAliasModel is the model id of the key alias core resolved for this attempt
+// when model spells that alias's key, else model unchanged.
+func resolvedAliasModel(ctx *schemas.BifrostContext, model string) string {
 	alias := schemas.GetResolvedAlias(ctx)
-	if alias == nil || alias.Config == nil || alias.Config.ModelID == "" || alias.Config.ModelID == alias.Key {
-		return req.Body, nil
+	if alias == nil || alias.Config == nil || alias.Config.ModelID == "" || alias.Key != model {
+		return model
 	}
-	if model := providerUtils.GetJSONField(req.Body, "model"); model.Type != gjson.String || model.Str != alias.Key {
-		return req.Body, nil
+	return alias.Config.ModelID
+}
+
+// applyLargePayloadBody streams a large-payload body upstream when large payload mode
+// prepared one, with the provider prefix stripped and the resolved key alias applied
+// to its model, as requestBody does for a buffered body. It reports whether it did.
+func (c Config) applyLargePayloadBody(ctx *schemas.BifrostContext, upstreamReq *fasthttp.Request, req *schemas.BifrostPassthroughRequest) bool {
+	if !providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		return false
 	}
-	return providerUtils.SetJSONField(req.Body, "model", alias.Config.ModelID)
+	var mapModel func(string) string
+	if IsMessagesPath(req.Path) {
+		mapModel = func(model string) string { return resolvedAliasModel(ctx, model) }
+	}
+	return providerUtils.ApplyLargePayloadRequestBodyWithModelMapping(ctx, upstreamReq, c.Provider, mapModel)
 }
 
 // StripAnthropicOnlyFields removes from a native Messages body what only Anthropic
@@ -177,7 +205,7 @@ func Passthrough(ctx *schemas.BifrostContext, client *fasthttp.Client, key schem
 	upstreamReq.SetRequestURI(requestURL)
 	providerUtils.StripCallerAuthForInsecureURL(requestURL, req.SafeHeaders)
 	cfg.setHeaders(ctx, upstreamReq, key, req.SafeHeaders)
-	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, upstreamReq, cfg.Provider) {
+	if !cfg.applyLargePayloadBody(ctx, upstreamReq, req) {
 		body, bifrostErr := cfg.requestBody(ctx, req)
 		if bifrostErr != nil {
 			return nil, bifrostErr
@@ -232,7 +260,7 @@ func PassthroughStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostH
 	providerUtils.StripCallerAuthForInsecureURL(requestURL, req.SafeHeaders)
 	cfg.setHeaders(ctx, upstreamReq, key, req.SafeHeaders)
 	upstreamReq.Header.Set("Connection", "close")
-	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, upstreamReq, cfg.Provider) {
+	if !cfg.applyLargePayloadBody(ctx, upstreamReq, req) {
 		body, bifrostErr := cfg.requestBody(ctx, req)
 		if bifrostErr != nil {
 			fasthttp.ReleaseResponse(resp)
