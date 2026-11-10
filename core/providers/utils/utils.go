@@ -2538,10 +2538,31 @@ func hasFoldedPrefix(b, name []byte) bool {
 //   - "model" is refused at the top level of a request body whatever the body holds.
 //     A provider that carries the model in the URL has no "model" in its body, and one
 //     added there could be read in its place.
+//   - A field the gateway alone decides (unsettableExtraParamFields) cannot be added
+//     either: it selects the model or deployment at some vendor under another name, or,
+//     like "stream", changes the shape of the response the gateway is about to parse.
+//     When the converter did set it, the ordinary rule applies.
 
 // reservedExtraParamFields are top-level request fields an extra param never names,
 // even when the converter left them out of the body.
 var reservedExtraParamFields = []string{"model"}
+
+// unsettableExtraParamFields are top-level request fields an extra param cannot add
+// to a body that lacks them (TXE-7031). The rule above only protects fields the
+// converter wrote; these are the ones that matter even when it wrote nothing:
+//
+//   - "model_id", "version", "deployment", "deployment_id", "engine": the names under
+//     which a vendor reads the model, or the deployment that stands for it, when it is
+//     not "model" (ElevenLabs model_id, Replicate version, Azure and legacy OpenAI
+//     deployment and engine). A converter that routes by URL leaves them out of the
+//     body, and one added there could be read in the URL's place.
+//   - "stream": a buffered converter leaves it out. Added as true, the vendor answers
+//     with an event stream, which the buffered path cannot parse: the caller gets an
+//     error, the vendor bills the tokens, and no usage is recorded for them.
+//
+// The list is one place for every provider. A vendor that reads its model under yet
+// another name needs that name added here.
+var unsettableExtraParamFields = []string{"stream", "model_id", "version", "deployment", "deployment_id", "engine"}
 
 // sameJSONField reports whether a and b name the same field once case and
 // underscores are ignored: "max_tokens", "maxTokens" and "MaxTokens" are one field.
@@ -2608,6 +2629,39 @@ func reservedExtraParamField(key string) string {
 		}
 	}
 	return ""
+}
+
+// ExtraParamUnsettableField returns the field only the gateway decides that an extra
+// param named key stands for (unsettableExtraParamFields), or "". It is for a writer
+// that puts extra params on the wire itself (a multipart form), where
+// MergeExtraParamsIntoJSON cannot refuse the request; the writer refuses it with
+// ExtraParamUnsettableError unless it wrote that field from the typed request.
+func ExtraParamUnsettableField(key string) string {
+	return unsettableExtraParamField(key)
+}
+
+// unsettableExtraParamField returns the unsettable field an extra param named key
+// stands for, or "".
+func unsettableExtraParamField(key string) string {
+	for _, field := range unsettableExtraParamFields {
+		if sameJSONField(key, field) {
+			return field
+		}
+	}
+	return ""
+}
+
+// ExtraParamUnsettableError is the refusal for an extra param that would add a field
+// only the gateway decides (unsettableExtraParamFields) to a request that does not set
+// it. Like ExtraParamConflictError it is a 400 caller_invalid_request with error.param
+// set to the extra param as the caller wrote it.
+func ExtraParamUnsettableError(param, field string) error {
+	bifrostErr := NewBifrostBadRequestError(fmt.Sprintf(
+		"extra params cannot set %q: %s is decided by the gateway from the request (its model, and whether it streams), never by an extra param",
+		param, field))
+	bifrostErr.Error.Param = param
+	bifrostErr.ExtraFields.ErrorType = schemas.ErrorTypeCallerInvalidRequest
+	return ConverterBifrostError(bifrostErr)
 }
 
 // ExtraParamConflictError is the refusal for an extra param that names a field the
@@ -2790,6 +2844,11 @@ func fillJSONObject(jsonBody []byte, extraParams map[string]interface{}, path st
 			if sameJSONField(pairs[i].key, k) {
 				idx = i
 				break
+			}
+		}
+		if topLevel && idx < 0 {
+			if field := unsettableExtraParamField(k); field != "" {
+				return nil, ExtraParamUnsettableError(path+k, field)
 			}
 		}
 		newValBytes, err := MarshalSorted(extraParams[k])

@@ -1368,6 +1368,32 @@ func TestMergeExtraParamsIntoJSON_NeverReplacesAConvertedField(t *testing.T) {
 			wantParam: "top_k",
 		},
 		{
+			// TXE-7031: a field only the gateway decides cannot be added.
+			name:      "stream cannot be added to a buffered body",
+			body:      `{"model":"allowed","messages":[]}`,
+			extra:     map[string]interface{}{"stream": true},
+			wantParam: "stream",
+		},
+		{name: "Stream", body: `{"model":"allowed"}`, extra: map[string]interface{}{"Stream": true}, wantParam: "Stream"},
+		{name: "version cannot be added", body: `{"input":{}}`, extra: map[string]interface{}{"version": "abc"}, wantParam: "version"},
+		{name: "model_id cannot be added", body: `{"text":"hi"}`, extra: map[string]interface{}{"model_id": "x"}, wantParam: "model_id"},
+		{name: "modelId cannot be added", body: `{"text":"hi"}`, extra: map[string]interface{}{"modelId": "x"}, wantParam: "modelId"},
+		{name: "deployment cannot be added", body: `{"messages":[]}`, extra: map[string]interface{}{"deployment": "x"}, wantParam: "deployment"},
+		{name: "deployment_id cannot be added", body: `{"messages":[]}`, extra: map[string]interface{}{"deploymentId": "x"}, wantParam: "deploymentId"},
+		{name: "engine cannot be added", body: `{"messages":[]}`, extra: map[string]interface{}{"engine": "x"}, wantParam: "engine"},
+		{
+			name:  "stream repeated with the converter's own value is dropped, as any set field is",
+			body:  `{"model":"allowed","stream":true}`,
+			extra: map[string]interface{}{"stream": true},
+			want:  `{"model":"allowed","stream":true}`,
+		},
+		{
+			name:  "inside an object these names are ordinary fields",
+			body:  `{"model":"allowed","input":{"prompt":"p"}}`,
+			extra: map[string]interface{}{"input": map[string]interface{}{"stream": true, "version": "v"}},
+			want:  `{"model":"allowed","input":{"prompt":"p","stream":true,"version":"v"}}`,
+		},
+		{
 			name:  "an unset field is added, after the converted ones and in sorted order",
 			body:  `{"model":"allowed","messages":[]}`,
 			extra: map[string]interface{}{"top_k": 3, "guardrailConfig": map[string]interface{}{"id": "g"}},
@@ -1509,6 +1535,19 @@ func TestMergeExtraParams_NeverReplacesASetKey(t *testing.T) {
 	}
 	assertExtraParamRefusal(t, MergeExtraParams(map[string]interface{}{"maxTokens": 5}, map[string]interface{}{"max_tokens": 9}), "max_tokens")
 	assertExtraParamRefusal(t, MergeExtraParams(map[string]interface{}{"obj": map[string]interface{}{"x": 1}}, map[string]interface{}{"obj": map[string]interface{}{"X": 2}}), "obj.X")
+}
+
+func TestExtraParamUnsettableField(t *testing.T) {
+	for key, want := range map[string]string{
+		"stream": "stream", "STREAM": "stream", "modelId": "model_id", "version": "version",
+		"deployment": "deployment", "deployment_id": "deployment_id", "Engine": "engine",
+		"model": "", "stream_options": "", "api_version": "", "anthropic_version": "", "top_k": "",
+	} {
+		if got := ExtraParamUnsettableField(key); got != want {
+			t.Errorf("ExtraParamUnsettableField(%q) = %q, want %q", key, got, want)
+		}
+	}
+	assertExtraParamRefusal(t, ExtraParamUnsettableError("Stream", "stream"), "Stream")
 }
 
 func TestExtraParamNamingASetField(t *testing.T) {

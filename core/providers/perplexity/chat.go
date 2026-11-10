@@ -108,10 +108,9 @@ func ToPerplexityChatCompletionRequest(bifrostReq *schemas.BifrostChatRequest) *
 				perplexityReq.TopK = topK
 			}
 
-			if stream, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["stream"]); ok {
-				delete(perplexityReq.ExtraParams, "stream")
-				perplexityReq.Stream = stream
-			}
+			// stream is never taken from the extra params: the streaming route sets it, and
+			// on the buffered route the shared merge refuses an extra param that would add
+			// it (fork, TXE-7031).
 
 			if disableSearch, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["disable_search"]); ok {
 				delete(perplexityReq.ExtraParams, "disable_search")

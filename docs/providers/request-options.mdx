@@ -686,6 +686,8 @@ An extra parameter can add a field the request left unset. It can never replace 
 - Field names are compared ignoring case and underscores, so `Model` or `maxTokens` cannot stand in for `model` or `max_tokens`.
 - When both values are JSON objects, the rule applies inside the object, so an extra parameter can still add a sub-field.
 - An extra parameter that repeats the request's own value exactly is accepted and changes nothing.
+- `stream` cannot be added by an extra parameter: whether a request streams is decided by the request itself.
+- The other names under which some provider reads the model or its deployment (`model_id`, `version`, `deployment`, `deployment_id`, `engine`) cannot be added at the top level of the request either.
 
 To change a field Bifrost sets, send it in the request itself.
 

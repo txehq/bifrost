@@ -1165,3 +1165,32 @@ func TestChat_ErrorsCarryErrorType(t *testing.T) {
 		}
 	}
 }
+
+// TXE-7031: stream is never taken from the extra params. It stays among them, where the
+// shared merge refuses a request that would add it to a buffered body.
+func TestPerplexityConvertersDoNotTakeStreamFromExtraParams(t *testing.T) {
+	text := "hi"
+	chat := perplexity.ToPerplexityChatCompletionRequest(&schemas.BifrostChatRequest{
+		Provider: schemas.Perplexity, Model: "sonar",
+		Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}},
+		Params: &schemas.ChatParameters{ExtraParams: map[string]interface{}{"stream": true}},
+	})
+	if chat == nil || chat.Stream != nil {
+		t.Fatalf("chat: stream was taken from the extra params: %+v", chat)
+	}
+	if _, err := providerUtils.MarshalConvertedRequestBody(chat, true); err == nil {
+		t.Fatal("chat: want the shared merge to refuse stream among the extra params")
+	} else if bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err); !ok || bifrostErr.Error.Param != "stream" {
+		t.Fatalf("chat: want a bad-request refusal naming stream, got %v", err)
+	}
+
+	role, kind := schemas.ResponsesInputMessageRoleUser, schemas.ResponsesMessageTypeMessage
+	responses := perplexity.ToPerplexityResponsesRequest(&schemas.BifrostResponsesRequest{
+		Provider: schemas.Perplexity, Model: "sonar",
+		Input:  []schemas.ResponsesMessage{{Type: &kind, Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &text}}},
+		Params: &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"stream": true}},
+	})
+	if responses == nil || responses.Stream != nil {
+		t.Fatalf("responses: stream was taken from the extra params: %+v", responses)
+	}
+}

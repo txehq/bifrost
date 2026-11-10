@@ -10834,12 +10834,28 @@ const (
 	// guardPlantInput plants every common name for a request's input: what a caller
 	// would send to swap the content after the gateway has read it.
 	guardPlantInput
+	// guardPlantModelAlias plants the names under which some vendor reads the model or
+	// its deployment when it is not "model" (TXE-7031).
+	guardPlantModelAlias
+	// guardPlantStreamOn and guardPlantStreamOff plant stream, to turn a buffered
+	// request into a stream or a stream into a buffered one (TXE-7031).
+	guardPlantStreamOn
+	guardPlantStreamOff
 )
 
 func guardExtraParams(plant guardPlant) map[string]interface{} {
 	switch plant {
 	case guardPlantModel:
 		return map[string]interface{}{"model": guardDeniedModel, "Model": guardDeniedModel, "MODEL": guardDeniedModel}
+	case guardPlantModelAlias:
+		return map[string]interface{}{
+			"model_id": guardDeniedModel, "modelId": guardDeniedModel, "version": guardDeniedModel,
+			"deployment": guardDeniedModel, "deployment_id": guardDeniedModel, "engine": guardDeniedModel,
+		}
+	case guardPlantStreamOn:
+		return map[string]interface{}{"stream": true}
+	case guardPlantStreamOff:
+		return map[string]interface{}{"stream": false}
 	case guardPlantInput:
 		replacedMessages := []interface{}{map[string]interface{}{"role": "user", "content": guardReplacedText}}
 		return map[string]interface{}{
@@ -10874,6 +10890,8 @@ type guardUpstream struct {
 	mu     sync.Mutex
 	seen   []guardRequest
 	leaves map[string]*tls.Certificate
+	// respond, when set, answers a request in place of the default JSON object.
+	respond func(w http.ResponseWriter, body []byte)
 }
 
 type guardRequest struct {
@@ -10967,7 +10985,12 @@ func (u *guardUpstream) answer(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	u.mu.Lock()
 	u.seen = append(u.seen, guardRequest{target: r.Method + " " + r.Host + r.URL.RequestURI(), body: body})
+	respond := u.respond
 	u.mu.Unlock()
+	if respond != nil {
+		respond(w, body)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"access_token":"guard-token","token_type":"Bearer","expires_in":3600}`))
 }
@@ -11371,9 +11394,34 @@ func TestExtraParamsNeverReplaceTheModelOrInputOnAnyProvider(t *testing.T) {
 
 			// Pass 2: the routed model. Pass 3: the input.
 			refused := []string{}
-			for _, plant := range []guardPlant{guardPlantModel, guardPlantInput} {
+			for _, plant := range []guardPlant{guardPlantModel, guardPlantInput, guardPlantModelAlias, guardPlantStreamOn, guardPlantStreamOff} {
 				for _, op := range guardOperations(plant) {
+					streamed := strings.HasSuffix(op.name, " stream")
+					// stream is planted against what the operation is: on for a buffered
+					// one, off for a streamed one.
+					if (plant == guardPlantStreamOn && streamed) || (plant == guardPlantStreamOff && !streamed) {
+						continue
+					}
 					bifrostErr, requests := send(op)
+					if plant == guardPlantStreamOn || plant == guardPlantStreamOff {
+						planted := "true"
+						if plant == guardPlantStreamOff {
+							planted = "false"
+						}
+						for _, request := range requests {
+							// Inside a vendor model's own input object, stream is that model's
+							// parameter (Replicate), as model is.
+							body := request.body
+							if hasVendorInput {
+								body = guardBodyOutsideField(t, body, vendorInputField)
+							}
+							compact := bytes.ReplaceAll(body, []byte(" "), nil)
+							if bytes.Contains(compact, []byte(`"stream":`+planted)) || bytes.Contains(request.body, []byte("name=\"stream\"\r\n\r\n"+planted)) {
+								t.Errorf("%s: an extra param set stream to %s on the wire\n%s\n%s", op.name, planted, request.target, request.body)
+							}
+						}
+						continue
+					}
 					for _, request := range requests {
 						modelScope := request.body
 						if hasVendorInput {
@@ -11387,20 +11435,24 @@ func TestExtraParamsNeverReplaceTheModelOrInputOnAnyProvider(t *testing.T) {
 							t.Errorf("%s: an extra param replaced the request's input\n%s\n%s", op.name, request.target, request.body)
 						}
 					}
-					if plant != guardPlantModel || !passesExtraParams[op.name] || hasVendorInput {
+					if plant == guardPlantInput || !passesExtraParams[op.name] || hasVendorInput {
 						continue
 					}
-					// Extra params reach the wire on this operation, so one naming the model
-					// must be refused: a 400 naming it, and the request never sent.
+					// Extra params reach the wire on this operation, so one naming the model,
+					// under "model" or under another vendor's name for it, must be refused: a
+					// 400 naming it, and the request never sent.
 					if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest ||
 						bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest ||
-						!strings.EqualFold(fmt.Sprint(bifrostErr.Error.Param), "model") {
-						t.Errorf("%s: want a 400 caller_invalid_request with error.param model, got %+v", op.name, bifrostErr)
+						(plant == guardPlantModel && !strings.EqualFold(fmt.Sprint(bifrostErr.Error.Param), "model")) ||
+						(plant == guardPlantModelAlias && guardExtraParams(plant)[fmt.Sprint(bifrostErr.Error.Param)] == nil) {
+						t.Errorf("%s: want a 400 caller_invalid_request with error.param naming the planted field, got %+v", op.name, bifrostErr)
 					}
 					if carries(requests, original) || carries(requests, originalBase64) {
 						t.Errorf("%s: the request was sent although its extra params named the model", op.name)
 					}
-					refused = append(refused, op.name)
+					if plant == guardPlantModel {
+						refused = append(refused, op.name)
+					}
 				}
 			}
 			t.Logf("refused a model among the extra params: %s", strings.Join(refused, ", "))
@@ -11460,4 +11512,74 @@ func TestExtraParamsModelIsRefusedOnAnOpenAIBasedCustomProvider(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TXE-7031: stream among the extra params of a buffered request is refused, and nothing
+// is sent. Before, the vendor was asked to stream: it billed the tokens, the buffered
+// path could not parse the event stream, and the caller got an error with no usage
+// recorded. A streamed request is not turned into a buffered one either.
+func TestExtraParamsCannotSwitchStreaming(t *testing.T) {
+	upstream := newGuardUpstream(t)
+	// A vendor that honours stream: an event stream when asked, a JSON body otherwise.
+	upstream.respond = func(w http.ResponseWriter, body []byte) {
+		if bytes.Contains(body, []byte(`"stream":true`)) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"m\",\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":1,\"total_tokens\":10}}\n\ndata: [DONE]\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":1,"total_tokens":10}}`))
+	}
+	client := &Bifrost{logger: NewNoOpLogger()}
+	config := &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: "http://" + guardUpstreamHost, DefaultRequestTimeoutInSeconds: 10},
+		ProxyConfig: &schemas.ProxyConfig{
+			Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(upstream.proxyURL), CACertPEM: schemas.NewSecretVar(upstream.caPEM),
+		},
+	}
+	provider, err := client.createBaseProvider(schemas.OpenAI, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := "hello"
+	request := func(extra map[string]interface{}) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI, Model: "m",
+			Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &text}}},
+			Params: &schemas.ChatParameters{ExtraParams: extra},
+		}
+	}
+	newContext := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		return ctx
+	}
+	assertRefused := func(t *testing.T, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest ||
+			bifrostErr.Error.Param != "stream" || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest {
+			t.Fatalf("want a 400 caller_invalid_request naming stream, got %+v", bifrostErr)
+		}
+		if requests := upstream.take(); len(requests) != 0 {
+			t.Fatalf("%d request(s) reached the upstream, want none: %s", len(requests), requests[0].body)
+		}
+	}
+
+	t.Run("a buffered request without extra params is answered and its usage read", func(t *testing.T) {
+		upstream.take()
+		response, bifrostErr := provider.ChatCompletion(newContext(), guardKey(schemas.OpenAI), request(nil))
+		if bifrostErr != nil || response == nil || response.Usage == nil || response.Usage.TotalTokens != 10 {
+			t.Fatalf("response %+v, error %+v", response, bifrostErr)
+		}
+	})
+	t.Run("stream=true cannot be added to a buffered request", func(t *testing.T) {
+		upstream.take()
+		_, bifrostErr := provider.ChatCompletion(newContext(), guardKey(schemas.OpenAI), request(map[string]interface{}{"stream": true}))
+		assertRefused(t, bifrostErr)
+	})
+	t.Run("stream=false cannot replace the stream a streamed request set", func(t *testing.T) {
+		upstream.take()
+		_, bifrostErr := provider.ChatCompletionStream(newContext(), guardPostHook, nil, guardKey(schemas.OpenAI), request(map[string]interface{}{"stream": false}))
+		assertRefused(t, bifrostErr)
+	})
 }

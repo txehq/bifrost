@@ -124,6 +124,10 @@ func ToBedrockRerankRequest(bifrostReq *schemas.BifrostRerankRequest, modelARN s
 	}
 	extra := make(map[string]interface{}, len(bifrostReq.Params.ExtraParams))
 	for k, v := range bifrostReq.Params.ExtraParams {
+		// Nor can an extra param add a field only the gateway decides (TXE-7031).
+		if field := providerUtils.ExtraParamUnsettableField(k); field != "" {
+			return nil, providerUtils.ExtraParamUnsettableError(k, field)
+		}
 		extra[k] = v
 	}
 	if err := providerUtils.MergeExtraParams(additionalFields, extra); err != nil {
