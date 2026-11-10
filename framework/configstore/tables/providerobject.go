@@ -12,6 +12,7 @@ const (
 	ProviderObjectKindCachedContent = "cached_content"
 	ProviderObjectKindContainerFile = "container_file"
 	ProviderObjectKindLiveSession   = "live_session"
+	ProviderObjectKindImageTask     = "image_task" // fork (TXE-6431): a task of the image task routes
 )
 
 // TableProviderObject records which virtual key created a provider-side object.

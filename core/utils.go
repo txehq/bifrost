@@ -657,6 +657,12 @@ func isModellessVideoRequestType(reqType schemas.RequestType) bool {
 	}
 }
 
+// isModellessImageTaskRequestType returns true for the image task requests that address a task
+// id, not a model: the query and the cancel (fork, TXE-6431).
+func isModellessImageTaskRequestType(reqType schemas.RequestType) bool {
+	return reqType == schemas.ImageTaskRetrieveRequest || reqType == schemas.ImageTaskCancelRequest
+}
+
 // isPassthroughRequestType returns true if the given request type is a passthrough request.
 func isPassthroughRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.PassthroughRequest || reqType == schemas.PassthroughStreamRequest

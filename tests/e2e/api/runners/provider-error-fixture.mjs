@@ -624,7 +624,28 @@ const miniMaxSpeechAnswer = (body) => {
 	return { status: 200, body: JSON.stringify({ data: { audio: "4944330000", status: 2 }, extra_info: miniMaxSpeechExtraInfo, trace_id: "t_pp", base_resp: miniMaxOk }) };
 };
 
+// BFL image tasks, TXE-6431 (folder 421). The config points bfl at /pp/bfl, so a submit (POST /pp/bfl/v1/{model})
+// arrives through the wire capture and answers BFL's AsyncResponse, and GET /pp/bfl/v1/get_result answers BFL's
+// ResultResponse for the task id it names: bfl-ready is Ready with a sample link and its settled cost, bfl-moderated
+// is Content Moderated with the vendor's reasons, bfl-pending is Pending, anything else is "Task not found". The
+// polling_url is plain http, so the gateway polls its configured base, which is this fixture.
+const BFL_FIXTURE_BASE = "http://127.0.0.1:8791/pp/bfl";
+const bflSubmitAnswer = () => ({ id: "bfl-ready", polling_url: `${BFL_FIXTURE_BASE}/v1/get_result?id=bfl-ready`, cost: 4, input_mp: 0, output_mp: 1.05 });
+const bflResult = (id) => {
+	switch (id) {
+	case "bfl-ready":
+		return { id, status: "Ready", result: { sample: "https://delivery.example.test/bfl/sample.jpeg", end_time: 1762700000, seed: 7 }, progress: null, details: null, cost: 4 };
+	case "bfl-moderated":
+		return { id, status: "Content Moderated", result: null, progress: null, details: { "Moderation Reasons": ["Derivative Works Filter"] }, cost: 0 };
+	case "bfl-pending":
+		return { id, status: "Pending", result: null, progress: 0.2, details: null };
+	default:
+		return { id, status: "Task not found", result: null, progress: null, details: null };
+	}
+};
+
 const wireAnswer = (path, body, bytes) => {
+	if (path.startsWith("/pp/bfl/v1/")) return { status: 200, body: JSON.stringify(bflSubmitAnswer()) };
 	if (isOpenAIImagePath(path)) return openAIImageAnswer(body, bytes, path === "/v1/images/edits");
 	const geminiImage = geminiImageAnswerFor(path);
 	if (geminiImage) return geminiImage;
@@ -904,6 +925,12 @@ const server = http.createServer((req, res) => {
 	if (req.method === "GET" && path === "/__sent") {
 		const model = new URL(req.url, "http://localhost").searchParams.get("model") || "";
 		return send(200, {}, JSON.stringify({ data: [{ model, body: Object.hasOwn(sentBodies, model) ? sentBodies[model] : null }] }));
+	}
+	// BFL's task query (TXE-6431), counted under "bfl get_result <id>".
+	if (req.method === "GET" && path === "/pp/bfl/v1/get_result") {
+		const id = new URL(req.url, "http://localhost").searchParams.get("id") || "";
+		countHit(`bfl get_result ${id}`);
+		return send(200, {}, JSON.stringify(bflResult(id)));
 	}
 	// The OpenAI video task routes (TXE-6521). Every request is counted under
 	// "videos <METHOD> <bearer token>", so a case can prove which key a task query used and that a

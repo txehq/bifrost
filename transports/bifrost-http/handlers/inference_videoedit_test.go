@@ -429,3 +429,121 @@ func TestVideoCancelRoute(t *testing.T) {
 	assert.Contains(t, string(ctx.Response.Body()), "video_id must be in id:provider format")
 	assert.Zero(t, upstream.Load())
 }
+
+// imageTaskRoutes serves every route of the real RegisterRoutes from a core client whose OpenAI
+// provider (which has no image tasks) points at a local upstream, and counts upstream requests.
+func imageTaskRoutes(t *testing.T) (fasthttp.RequestHandler, *atomic.Int64) {
+	t.Helper()
+	var upstream atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstream.Add(1)
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	t.Cleanup(server.Close)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: videoTaskAccount{baseURL: server.URL}, Logger: bifrost.NewDefaultLogger(schemas.LogLevelError)})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+
+	h := &CompletionHandler{client: client, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+	r := router.New()
+	h.RegisterRoutes(r) // panics if the task routes conflict with the sync image routes
+	return r.Handler, &upstream
+}
+
+func serveImageTask(handler fasthttp.RequestHandler, method, path, body string) *fasthttp.RequestCtx {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(method)
+	ctx.Request.SetRequestURI(path)
+	if body != "" {
+		ctx.Request.Header.SetContentType("application/json")
+		ctx.Request.SetBodyString(body)
+	}
+	handler(ctx)
+	return ctx
+}
+
+// TXE-6431 (contract C7 BF16): the four image task routes are registered beside the sync image
+// routes and reach core. A provider without image tasks answers each without an upstream call:
+// a create or query with unsupported_operation, a cancel with provider_cancel_unsupported.
+func TestImageTaskRoutes(t *testing.T) {
+	handler, upstream := imageTaskRoutes(t)
+	cases := []struct {
+		name, method, path, body string
+		status                   int
+		errorType                string
+		code                     string
+	}{
+		{"generation task", "POST", "/v1/images/generations/tasks", `{"model":"openai/gpt-image-1","prompt":"a fox"}`, 400, "", "unsupported_operation"},
+		{"edit task", "POST", "/v1/images/edits/tasks", `{"model":"openai/gpt-image-1","prompt":"a fox","images":[{"url":"https://example.com/a.png"}]}`, 400, "", "unsupported_operation"},
+		{"query", "GET", "/v1/images/tasks/task_1:openai", "", 400, "", "unsupported_operation"},
+		{"cancel", "POST", "/v1/images/tasks/task_1:openai/cancel", "", 400, string(schemas.ErrorTypeProviderCancelUnsupported), ""},
+		{"a task id without a provider", "GET", "/v1/images/tasks/task_1", "", 400, "", ""},
+		{"stream on a task route", "POST", "/v1/images/generations/tasks", `{"model":"openai/gpt-image-1","prompt":"a fox","stream":true}`, 400, "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := serveImageTask(handler, tc.method, tc.path, tc.body)
+			require.Equal(t, tc.status, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+				ExtraFields struct {
+					ErrorType string `json:"error_type"`
+				} `json:"extra_fields"`
+			}
+			require.NoError(t, sonic.Unmarshal(ctx.Response.Body(), &body))
+			if tc.code != "" {
+				assert.Equal(t, tc.code, body.Error.Code)
+			}
+			if tc.errorType != "" {
+				assert.Equal(t, tc.errorType, body.ExtraFields.ErrorType)
+			}
+		})
+	}
+	assert.Equal(t, int64(0), upstream.Load(), "no route may call the upstream")
+}
+
+// TXE-6431 (contract C7 BF12): a task create's control fields leave the extra params for their
+// typed form, so none reaches a vendor unconverted; a wrongly typed one is the caller's error.
+func TestTakeTaskControl(t *testing.T) {
+	extra := map[string]any{
+		"callback_url": "https://hooks.tokun.sh/v/t1", "client_reference_id": "t1", "expires_after_seconds": float64(7200),
+		"output_storage_uri": "gs://b/t1/", "safety_tolerance": float64(2),
+	}
+	control, err := takeTaskControl(extra)
+	require.NoError(t, err)
+	require.NotNil(t, control)
+	assert.Equal(t, "https://hooks.tokun.sh/v/t1", *control.CallbackURL)
+	assert.Equal(t, "t1", *control.ClientReferenceID)
+	assert.Equal(t, 7200, *control.ExpiresAfterSeconds)
+	assert.Equal(t, "gs://b/t1/", *control.OutputStorageURI)
+	assert.Equal(t, map[string]any{"safety_tolerance": float64(2)}, extra, "only the vendor field stays an extra param")
+
+	multipart := map[string]any{"expires_after_seconds": "60"}
+	control, err = takeTaskControl(multipart)
+	require.NoError(t, err)
+	assert.Equal(t, 60, *control.ExpiresAfterSeconds, "a multipart form carries numbers as strings")
+
+	none, err := takeTaskControl(map[string]any{"safety_tolerance": float64(2)})
+	require.NoError(t, err)
+	assert.Nil(t, none)
+
+	for _, bad := range []map[string]any{{"callback_url": float64(1)}, {"expires_after_seconds": 1.5}, {"expires_after_seconds": "soon"}} {
+		_, err := takeTaskControl(bad)
+		assert.Error(t, err, "%v", bad)
+	}
+}
+
+// TXE-6431: the sync image route keeps a field named callback_url as an extra param, as before
+// the task routes existed; only the task routes give it the task-control meaning.
+func TestSyncImageRouteLeavesCallbackURLAnExtraParam(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyString(`{"model":"openai/gpt-image-1","prompt":"a fox","callback_url":"https://example.com/cb"}`)
+	_, bifrostReq, err := prepareImageGenerationRequest(ctx, &lib.Config{ClientConfig: &configstore.ClientConfig{}})
+	require.NoError(t, err)
+	assert.Nil(t, bifrostReq.TaskControl)
+	assert.Equal(t, "https://example.com/cb", bifrostReq.Params.ExtraParams["callback_url"])
+}

@@ -211,45 +211,51 @@ const (
 	VideoListRequest               RequestType = "video_list"
 	VideoRemixRequest              RequestType = "video_remix"
 	VideoCancelRequest             RequestType = "video_cancel" // fork (TXE-6521): POST /v1/videos/{id}/cancel
-	BatchCreateRequest             RequestType = "batch_create"
-	BatchListRequest               RequestType = "batch_list"
-	BatchRetrieveRequest           RequestType = "batch_retrieve"
-	BatchCancelRequest             RequestType = "batch_cancel"
-	BatchResultsRequest            RequestType = "batch_results"
-	BatchDeleteRequest             RequestType = "batch_delete"
-	FileUploadRequest              RequestType = "file_upload"
-	FileListRequest                RequestType = "file_list"
-	FileRetrieveRequest            RequestType = "file_retrieve"
-	FileDeleteRequest              RequestType = "file_delete"
-	CachedContentCreateRequest     RequestType = "cached_content_create"
-	CachedContentListRequest       RequestType = "cached_content_list"
-	CachedContentRetrieveRequest   RequestType = "cached_content_retrieve"
-	CachedContentUpdateRequest     RequestType = "cached_content_update"
-	CachedContentDeleteRequest     RequestType = "cached_content_delete"
-	FileContentRequest             RequestType = "file_content"
-	ContainerCreateRequest         RequestType = "container_create"
-	ContainerListRequest           RequestType = "container_list"
-	ContainerRetrieveRequest       RequestType = "container_retrieve"
-	ContainerDeleteRequest         RequestType = "container_delete"
-	ContainerFileCreateRequest     RequestType = "container_file_create"
-	ContainerFileListRequest       RequestType = "container_file_list"
-	ContainerFileRetrieveRequest   RequestType = "container_file_retrieve"
-	ContainerFileContentRequest    RequestType = "container_file_content"
-	ContainerFileDeleteRequest     RequestType = "container_file_delete"
-	RerankRequest                  RequestType = "rerank"
-	DecisionRequest                RequestType = "decisions"
-	OCRRequest                     RequestType = "ocr"
-	CountTokensRequest             RequestType = "count_tokens"
-	CompactionRequest              RequestType = "compaction"
-	MCPToolExecutionRequest        RequestType = "mcp_tool_execution"
-	PassthroughRequest             RequestType = "passthrough"
-	PassthroughStreamRequest       RequestType = "passthrough_stream"
-	UnknownRequest                 RequestType = "unknown"
-	WebSocketResponsesRequest      RequestType = "websocket_responses"
-	RealtimeRequest                RequestType = "realtime"
-	LiveRequest                    RequestType = "live"
-	LiveContentRequest             RequestType = "live_content"
-	LiveSidebandRequest            RequestType = "live_sideband"
+	// Fork (TXE-6431, contract C2/C7 BF16): the image task routes, for vendors whose image API is
+	// itself task-based (BFL). Bifrost stores no task: each is one call to the vendor.
+	ImageGenerationTaskRequest   RequestType = "image_generation_task" // POST /v1/images/generations/tasks
+	ImageEditTaskRequest         RequestType = "image_edit_task"       // POST /v1/images/edits/tasks
+	ImageTaskRetrieveRequest     RequestType = "image_task_retrieve"   // GET /v1/images/tasks/{id}
+	ImageTaskCancelRequest       RequestType = "image_task_cancel"     // POST /v1/images/tasks/{id}/cancel
+	BatchCreateRequest           RequestType = "batch_create"
+	BatchListRequest             RequestType = "batch_list"
+	BatchRetrieveRequest         RequestType = "batch_retrieve"
+	BatchCancelRequest           RequestType = "batch_cancel"
+	BatchResultsRequest          RequestType = "batch_results"
+	BatchDeleteRequest           RequestType = "batch_delete"
+	FileUploadRequest            RequestType = "file_upload"
+	FileListRequest              RequestType = "file_list"
+	FileRetrieveRequest          RequestType = "file_retrieve"
+	FileDeleteRequest            RequestType = "file_delete"
+	CachedContentCreateRequest   RequestType = "cached_content_create"
+	CachedContentListRequest     RequestType = "cached_content_list"
+	CachedContentRetrieveRequest RequestType = "cached_content_retrieve"
+	CachedContentUpdateRequest   RequestType = "cached_content_update"
+	CachedContentDeleteRequest   RequestType = "cached_content_delete"
+	FileContentRequest           RequestType = "file_content"
+	ContainerCreateRequest       RequestType = "container_create"
+	ContainerListRequest         RequestType = "container_list"
+	ContainerRetrieveRequest     RequestType = "container_retrieve"
+	ContainerDeleteRequest       RequestType = "container_delete"
+	ContainerFileCreateRequest   RequestType = "container_file_create"
+	ContainerFileListRequest     RequestType = "container_file_list"
+	ContainerFileRetrieveRequest RequestType = "container_file_retrieve"
+	ContainerFileContentRequest  RequestType = "container_file_content"
+	ContainerFileDeleteRequest   RequestType = "container_file_delete"
+	RerankRequest                RequestType = "rerank"
+	DecisionRequest              RequestType = "decisions"
+	OCRRequest                   RequestType = "ocr"
+	CountTokensRequest           RequestType = "count_tokens"
+	CompactionRequest            RequestType = "compaction"
+	MCPToolExecutionRequest      RequestType = "mcp_tool_execution"
+	PassthroughRequest           RequestType = "passthrough"
+	PassthroughStreamRequest     RequestType = "passthrough_stream"
+	UnknownRequest               RequestType = "unknown"
+	WebSocketResponsesRequest    RequestType = "websocket_responses"
+	RealtimeRequest              RequestType = "realtime"
+	LiveRequest                  RequestType = "live"
+	LiveContentRequest           RequestType = "live_content"
+	LiveSidebandRequest          RequestType = "live_sideband"
 )
 
 // BifrostContextKey is a type for context keys used in Bifrost.
@@ -874,6 +880,8 @@ type BifrostRequest struct {
 	VideoRemixRequest            *BifrostVideoRemixRequest
 	VideoDeleteRequest           *BifrostVideoDeleteRequest
 	VideoCancelRequest           *BifrostVideoCancelRequest
+	ImageTaskRetrieveRequest     *BifrostImageTaskRetrieveRequest // fork (TXE-6431); a task create carries ImageGenerationRequest or ImageEditRequest
+	ImageTaskCancelRequest       *BifrostImageTaskCancelRequest   // fork (TXE-6431)
 	FileUploadRequest            *BifrostFileUploadRequest
 	FileListRequest              *BifrostFileListRequest
 	FileRetrieveRequest          *BifrostFileRetrieveRequest
@@ -960,6 +968,10 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.VideoDeleteRequest.Provider, "", nil
 	case br.VideoCancelRequest != nil:
 		return br.VideoCancelRequest.Provider, "", nil
+	case br.ImageTaskRetrieveRequest != nil:
+		return br.ImageTaskRetrieveRequest.Provider, "", nil
+	case br.ImageTaskCancelRequest != nil:
+		return br.ImageTaskCancelRequest.Provider, "", nil
 	case br.VideoRemixRequest != nil:
 		return br.VideoRemixRequest.Provider, "", nil
 	case br.FileUploadRequest != nil:
@@ -1122,6 +1134,10 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.VideoDeleteRequest.Provider = provider
 	case br.VideoCancelRequest != nil:
 		br.VideoCancelRequest.Provider = provider
+	case br.ImageTaskRetrieveRequest != nil:
+		br.ImageTaskRetrieveRequest.Provider = provider
+	case br.ImageTaskCancelRequest != nil:
+		br.ImageTaskCancelRequest.Provider = provider
 	case br.VideoRemixRequest != nil:
 		br.VideoRemixRequest.Provider = provider
 	case br.CachedContentCreateRequest != nil:
@@ -1451,6 +1467,7 @@ type BifrostResponse struct {
 	ImageGenerationResponse       *BifrostImageGenerationResponse
 	ImageGenerationStreamResponse *BifrostImageGenerationStreamResponse
 	VideoGenerationResponse       *BifrostVideoGenerationResponse
+	ImageTaskResponse             *BifrostImageTaskResponse // fork (TXE-6431): the image task object
 	VideoDownloadResponse         *BifrostVideoDownloadResponse
 	VideoListResponse             *BifrostVideoListResponse
 	LiveSession                   *LiveSessionLog // GPT Live: what a session's closing unit reports for its log row
@@ -1541,6 +1558,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.LiveContentResponse.ExtraFields
 	case r.VideoGenerationResponse != nil:
 		return &r.VideoGenerationResponse.ExtraFields
+	case r.ImageTaskResponse != nil:
+		return &r.ImageTaskResponse.ExtraFields
 	case r.VideoDownloadResponse != nil:
 		return &r.VideoDownloadResponse.ExtraFields
 	case r.VideoListResponse != nil:
@@ -1768,6 +1787,8 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 		setCoreExtraFields(&r.ImageGenerationStreamResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.VideoGenerationResponse != nil:
 		setCoreExtraFields(&r.VideoGenerationResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
+	case r.ImageTaskResponse != nil:
+		setCoreExtraFields(&r.ImageTaskResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.VideoDownloadResponse != nil:
 		setCoreExtraFields(&r.VideoDownloadResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.VideoListResponse != nil:

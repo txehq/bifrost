@@ -4561,6 +4561,1632 @@
         ]
       }
     },
+    "/v1/images/generations/tasks": {
+      "post": {
+        "operationId": "imageGenerationTask",
+        "summary": "Submit an image generation task",
+        "description": "For providers whose image API is itself task-based (BFL). Takes the body of\n`POST /v1/images/generations` plus the task control fields and returns the task object, usually\n`queued`; query it with `GET /v1/images/tasks/{task_id}`. One call to the provider. A provider\nwithout image tasks answers 400 `unsupported_operation`; a field the provider cannot deliver is\n400 `caller_unsupported_parameter` with no call to the provider.\n",
+        "tags": [
+          "Images"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "allOf": [
+                  {
+                    "allOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "model",
+                          "prompt"
+                        ],
+                        "properties": {
+                          "model": {
+                            "type": "string",
+                            "description": "Model identifier in format `provider/model`"
+                          },
+                          "prompt": {
+                            "type": "string",
+                            "description": "Text prompt to generate image"
+                          },
+                          "n": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10,
+                            "description": "Number of images to generate"
+                          },
+                          "size": {
+                            "type": "string",
+                            "enum": [
+                              "256x256",
+                              "512x512",
+                              "1024x1024",
+                              "1792x1024",
+                              "1024x1792",
+                              "1536x1024",
+                              "1024x1536",
+                              "auto"
+                            ],
+                            "description": "Size of the generated image"
+                          },
+                          "quality": {
+                            "type": "string",
+                            "enum": [
+                              "auto",
+                              "high",
+                              "medium",
+                              "low",
+                              "hd",
+                              "standard"
+                            ],
+                            "description": "Quality of the generated image"
+                          },
+                          "style": {
+                            "type": "string",
+                            "enum": [
+                              "natural",
+                              "vivid"
+                            ],
+                            "description": "Style of the generated image"
+                          },
+                          "response_format": {
+                            "type": "string",
+                            "enum": [
+                              "url",
+                              "b64_json",
+                              "data_uri"
+                            ],
+                            "default": "url",
+                            "description": "Format of the response. `data_uri` is supported by providers that return an inline\ndata URI (e.g. Runware).\n"
+                          },
+                          "input_images": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "description": "Input images for image-to-image generation, as public URLs, provider-side asset IDs,\nor base64 data URIs. Providers that accept only a single input use the first entry.\n"
+                          },
+                          "aspect_ratio": {
+                            "type": "string",
+                            "description": "Aspect ratio of the generated image (e.g. `16:9`), for providers that accept one in place of `size`"
+                          },
+                          "resolution": {
+                            "type": "string",
+                            "description": "Resolution tier of the generated image (e.g. `1K`, `2K`, `4K`), one name on every provider.\nEach provider maps it to its own field; a provider that has not mapped it yet receives it\nonly through `x-bf-passthrough-extra-params: true`, under this name.\n"
+                          },
+                          "type": {
+                            "type": "string",
+                            "description": "Operation selector for providers that expose more than one generation task\n(e.g. `vectorize` for text-to-SVG on Runware). Omit for standard generation.\n"
+                          },
+                          "background": {
+                            "type": "string",
+                            "enum": [
+                              "transparent",
+                              "opaque",
+                              "auto"
+                            ],
+                            "description": "Background type for the image"
+                          },
+                          "moderation": {
+                            "type": "string",
+                            "enum": [
+                              "low",
+                              "auto"
+                            ],
+                            "description": "Content moderation level"
+                          },
+                          "partial_images": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 3,
+                            "description": "Number of partial images to generate"
+                          },
+                          "output_compression": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 100,
+                            "description": "Compression level (0-100%)"
+                          },
+                          "output_format": {
+                            "type": "string",
+                            "enum": [
+                              "png",
+                              "webp",
+                              "jpeg",
+                              "tiff",
+                              "svg"
+                            ],
+                            "description": "Output image format. `svg` applies to vectorize operations"
+                          },
+                          "user": {
+                            "type": "string",
+                            "description": "User identifier for tracking"
+                          },
+                          "seed": {
+                            "type": "integer",
+                            "description": "Seed for reproducible image generation"
+                          },
+                          "negative_prompt": {
+                            "type": "string",
+                            "description": "Negative prompt to guide what to avoid in generation"
+                          },
+                          "num_inference_steps": {
+                            "type": "integer",
+                            "description": "Number of inference steps for generation"
+                          },
+                          "stream": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Whether to stream the response. When true, images are sent as SSE.\nWhen streaming, providers may return base64 chunks (`b64_json`) and/or URLs (`url`) depending on provider and configuration.\n"
+                          },
+                          "fallbacks": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/components/schemas/Fallback"
+                            },
+                            "description": "Fallback models to try if primary model fails"
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "description": "The task control fields of an image task create, beside the body of the matching sync route. A\nfield the provider does not take is never dropped: the request is refused with 400 and\n`extra_fields.error_type` `caller_unsupported_parameter`, `error.param` naming the field, before\nany call to the provider.\n",
+                    "properties": {
+                      "callback_url": {
+                        "type": "string",
+                        "format": "uri",
+                        "description": "Where the provider notifies task state changes (BFL: `webhook_url`). Sent unchanged; Bifrost\nreceives no callback. `webhook_secret`, when the provider takes one, travels as an extra field.\n"
+                      },
+                      "client_reference_id": {
+                        "type": "string",
+                        "description": "The caller's own task id, sent in the provider's external-task-id field."
+                      },
+                      "expires_after_seconds": {
+                        "type": "integer",
+                        "description": "Upper bound on the task's whole lifetime, in seconds from creation."
+                      },
+                      "output_storage_uri": {
+                        "type": "string",
+                        "description": "Where the provider writes the artifact."
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response. Returns the task object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The image task object, the response of all four image task routes. It has the shape of the video\ntask object with the artifacts in `data`. Bifrost stores no task: each route is one call to the\nprovider, and the id carries what the provider needs to query the task again.\n",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "`{URL-encoded provider task id}:{provider}`. Pass it unchanged to\n`GET /v1/images/tasks/{task_id}` and `POST /v1/images/tasks/{task_id}/cancel`.\n"
+                    },
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "image.task"
+                      ]
+                    },
+                    "model": {
+                      "type": "string",
+                      "description": "The model the task was created with, when known"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "queued",
+                        "in_progress",
+                        "completed",
+                        "failed",
+                        "cancelled",
+                        "expired"
+                      ],
+                      "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n- `cancelled`: The job was cancelled at the provider\n- `expired`: The job passed its deadline at the provider before finishing\n"
+                    },
+                    "provider_status": {
+                      "type": "string",
+                      "description": "The provider's raw status string, verbatim"
+                    },
+                    "created_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when the task was submitted"
+                    },
+                    "completed_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) of the provider's completion time"
+                    },
+                    "expires_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when the artifact links expire: the provider's own value, or the\ncompletion time plus the provider's documented link lifetime (BFL: one hour for FLUX 3, ten\nminutes for the other models). Absent when neither is known.\n"
+                    },
+                    "data": {
+                      "type": "array",
+                      "description": "The delivered images; a blocked image takes no slot",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "url",
+                              "content"
+                            ],
+                            "description": "`url`: a public link, valid until `expires_at`"
+                          },
+                          "url": {
+                            "type": "string",
+                            "format": "uri"
+                          },
+                          "content_type": {
+                            "type": "string",
+                            "description": "MIME type of the image, when the link names it"
+                          }
+                        }
+                      }
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "description": "Error code"
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "Human-readable error message"
+                        }
+                      }
+                    },
+                    "content_filter": {
+                      "type": "object",
+                      "description": "Information about content that was filtered due to safety policies",
+                      "properties": {
+                        "filtered_count": {
+                          "type": "integer",
+                          "description": "Number of items filtered"
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Human-readable reasons for filtering"
+                        }
+                      }
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "input_tokens": {
+                          "type": "integer",
+                          "description": "Number of input tokens"
+                        },
+                        "input_tokens_details": {
+                          "type": "object",
+                          "properties": {
+                            "image_tokens": {
+                              "type": "integer",
+                              "description": "Tokens used for images"
+                            },
+                            "text_tokens": {
+                              "type": "integer",
+                              "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "total_tokens": {
+                          "type": "integer",
+                          "description": "Total tokens used"
+                        },
+                        "output_tokens": {
+                          "type": "integer",
+                          "description": "Number of output tokens"
+                        },
+                        "output_tokens_details": {
+                          "type": "object",
+                          "properties": {
+                            "image_tokens": {
+                              "type": "integer",
+                              "description": "Tokens used for images"
+                            },
+                            "text_tokens": {
+                              "type": "integer",
+                              "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "output_images": {
+                          "type": "integer",
+                          "description": "Images the provider reported it billed for. Absent when the provider reported none; never Bifrost's own count"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "output_megapixels": {
+                          "type": "number",
+                          "description": "Output megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "input_megapixels": {
+                          "type": "number",
+                          "description": "Input megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/images/edits/tasks": {
+      "post": {
+        "operationId": "imageEditTask",
+        "summary": "Submit an image edit task",
+        "description": "The task form of `POST /v1/images/edits`: the same JSON or multipart body plus the task control\nfields. Returns the task object. One call to the provider.\n",
+        "tags": [
+          "Images"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "allOf": [
+                  {
+                    "type": "object",
+                    "description": "JSON encoding of an image edit. Sources are supplied as an `images` array, the same nested form\n/v1/videos/edits uses for its source video. Unrecognised top-level fields are forwarded to the\nprovider as extra params with their JSON types intact, which is what a model's nested tuning\nobject needs (e.g. Runware's `settings` and `providerSettings`). To upload the image as a file,\npost `multipart/form-data` instead - see `ImageEditMultipartRequest`.\n",
+                    "required": [
+                      "model",
+                      "images"
+                    ],
+                    "properties": {
+                      "model": {
+                        "type": "string",
+                        "description": "Model identifier in format `provider/model`"
+                      },
+                      "images": {
+                        "type": "array",
+                        "items": {
+                          "description": "One source image, either as a bare string - the form `input_images` takes on\n/v1/images/generations - or as an object naming which arm it fills. Providers that cannot accept\na given form reject it.\n",
+                          "oneOf": [
+                            {
+                              "type": "string",
+                              "description": "Public URL, data URI, base64 payload, or provider-side asset ID. Equivalent to the object\nform's `url`.\n"
+                            },
+                            {
+                              "type": "object",
+                              "description": "Exactly one of the two properties is expected.",
+                              "properties": {
+                                "url": {
+                                  "type": "string",
+                                  "description": "Public URL, data URI, or provider-side asset ID, for providers whose upstream fetches\nthe asset itself (e.g. Runware). Avoids round-tripping the asset through the gateway as\nbase64.\n"
+                                },
+                                "image": {
+                                  "type": "string",
+                                  "format": "byte",
+                                  "description": "Base64-encoded image bytes"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "description": "Source images. Entries carrying neither a URL nor bytes are dropped; a request left with no\nusable image is rejected. Providers treat the first image as the primary one (Runware's seed\nimage, Bedrock's style-transfer base), so the order is part of the contract. Only the\nreference-image models accept more than one; elsewhere images after the first are dropped.\n"
+                      },
+                      "prompt": {
+                        "type": "string",
+                        "description": "Text prompt describing the edit. Required except for the operation types that are driven\npurely by the input image: `background_removal`, `erase_object`, `upscale`, `upscale_fast`,\n`mask`, `segmentation`, `vectorize` and `controlnet_preprocess`.\n"
+                      },
+                      "mask": {
+                        "type": "string",
+                        "format": "byte",
+                        "description": "Optional base64-encoded mask image for inpainting (transparent areas indicate regions to\nedit). Dropped for models that declare no mask input.\n"
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "inpainting",
+                          "outpainting",
+                          "background_removal",
+                          "remove_background",
+                          "remove_bg",
+                          "erase_object",
+                          "recolor",
+                          "search_replace",
+                          "control_sketch",
+                          "control_structure",
+                          "style_guide",
+                          "style_transfer",
+                          "upscale",
+                          "upscale_fast",
+                          "upscale_creative",
+                          "upscale_conservative",
+                          "mask",
+                          "segmentation",
+                          "vectorize",
+                          "controlnet_preprocess",
+                          "controlnet",
+                          "preprocess"
+                        ],
+                        "description": "Type of edit operation. Support varies by provider; unsupported values are dropped and the\nrequest runs as a standard edit.\n"
+                      },
+                      "upscale_factor": {
+                        "type": "integer",
+                        "description": "Multiply each dimension by this factor. `type: \"upscale\"` only; mutually exclusive with\n`target_megapixels`.\n"
+                      },
+                      "target_megapixels": {
+                        "type": "integer",
+                        "description": "Target output size in megapixels. `type: \"upscale\"` only; mutually exclusive with\n`upscale_factor`.\n"
+                      },
+                      "n": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "description": "Number of images to generate"
+                      },
+                      "size": {
+                        "type": "string",
+                        "enum": [
+                          "256x256",
+                          "512x512",
+                          "1024x1024",
+                          "1536x1024",
+                          "1024x1536",
+                          "auto"
+                        ],
+                        "description": "Size of the output image"
+                      },
+                      "response_format": {
+                        "type": "string",
+                        "enum": [
+                          "url",
+                          "b64_json",
+                          "data_uri"
+                        ],
+                        "default": "url",
+                        "description": "Format of the response. `data_uri` is supported by providers that return an inline\ndata URI (e.g. Runware).\n"
+                      },
+                      "stream": {
+                        "type": "boolean",
+                        "default": false,
+                        "description": "When true, stream the response via Server-Sent Events"
+                      },
+                      "background": {
+                        "type": "string",
+                        "enum": [
+                          "transparent",
+                          "opaque",
+                          "auto"
+                        ],
+                        "description": "Background type for the image"
+                      },
+                      "input_fidelity": {
+                        "type": "string",
+                        "enum": [
+                          "low",
+                          "high"
+                        ],
+                        "description": "How closely to follow the original image"
+                      },
+                      "partial_images": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 3,
+                        "description": "Number of partial images to generate when streaming"
+                      },
+                      "quality": {
+                        "type": "string",
+                        "enum": [
+                          "auto",
+                          "high",
+                          "medium",
+                          "low",
+                          "standard"
+                        ],
+                        "description": "Quality of the output image"
+                      },
+                      "output_format": {
+                        "type": "string",
+                        "enum": [
+                          "png",
+                          "webp",
+                          "jpeg",
+                          "tiff",
+                          "svg"
+                        ],
+                        "description": "Output image format. `svg` applies to vectorize operations"
+                      },
+                      "num_inference_steps": {
+                        "type": "integer",
+                        "description": "Number of inference steps"
+                      },
+                      "seed": {
+                        "type": "integer",
+                        "description": "Seed for reproducible editing"
+                      },
+                      "output_compression": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 100,
+                        "description": "Compression level (0-100%)"
+                      },
+                      "negative_prompt": {
+                        "type": "string",
+                        "description": "What to avoid in the edit"
+                      },
+                      "resolution": {
+                        "type": "string",
+                        "description": "Resolution tier of the edited image (e.g. `1K`, `2K`, `4K`); see the generation request's `resolution`"
+                      },
+                      "user": {
+                        "type": "string",
+                        "description": "User identifier for tracking"
+                      },
+                      "fallbacks": {
+                        "type": "array",
+                        "items": {
+                          "$ref": "#/components/schemas/Fallback"
+                        },
+                        "description": "Fallback models to try if primary model fails"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "description": "The task control fields of an image task create, beside the body of the matching sync route. A\nfield the provider does not take is never dropped: the request is refused with 400 and\n`extra_fields.error_type` `caller_unsupported_parameter`, `error.param` naming the field, before\nany call to the provider.\n",
+                    "properties": {
+                      "callback_url": {
+                        "type": "string",
+                        "format": "uri",
+                        "description": "Where the provider notifies task state changes (BFL: `webhook_url`). Sent unchanged; Bifrost\nreceives no callback. `webhook_secret`, when the provider takes one, travels as an extra field.\n"
+                      },
+                      "client_reference_id": {
+                        "type": "string",
+                        "description": "The caller's own task id, sent in the provider's external-task-id field."
+                      },
+                      "expires_after_seconds": {
+                        "type": "integer",
+                        "description": "Upper bound on the task's whole lifetime, in seconds from creation."
+                      },
+                      "output_storage_uri": {
+                        "type": "string",
+                        "description": "Where the provider writes the artifact."
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "description": "Multipart encoding of an image edit, and the only encoding that can upload the image as a file.\nThis is what the official OpenAI SDKs send unconditionally. Every value crosses the wire as a\nstring, so provider-native extra params arrive as strings; post `application/json` instead when\na provider expects them as numbers, booleans or nested objects - see `ImageEditRequest`.\n",
+                "required": [
+                  "model"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "Model identifier in format `provider/model`"
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "description": "Text prompt describing the edit. Required except for the operation types that are driven\npurely by the input image: `background_removal`, `erase_object`, `upscale`, `upscale_fast`,\n`mask`, `segmentation`, `vectorize` and `controlnet_preprocess`.\n"
+                  },
+                  "image": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Image file to edit. Use field name `image` for a single file or `image[]` for multiple files.\nEither `image` or `image_url` is required.\n"
+                  },
+                  "image_url": {
+                    "type": "string",
+                    "description": "Input image as a public URL or provider-side asset ID, for providers whose upstream fetches\nthe asset itself (e.g. Runware). Use `image_url` for one or `image_url[]` for several; this\navoids round-tripping the asset through the gateway as base64. Uploads keep their leading\nposition, and providers treat the first image as the primary one.\n"
+                  },
+                  "mask": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "Optional mask image for inpainting (transparent areas indicate regions to edit). Dropped for\nmodels that declare no mask input.\n"
+                  },
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "inpainting",
+                      "outpainting",
+                      "background_removal",
+                      "remove_background",
+                      "remove_bg",
+                      "erase_object",
+                      "recolor",
+                      "search_replace",
+                      "control_sketch",
+                      "control_structure",
+                      "style_guide",
+                      "style_transfer",
+                      "upscale",
+                      "upscale_fast",
+                      "upscale_creative",
+                      "upscale_conservative",
+                      "mask",
+                      "segmentation",
+                      "vectorize",
+                      "controlnet_preprocess",
+                      "controlnet",
+                      "preprocess"
+                    ],
+                    "description": "Type of edit operation. Support varies by provider; unsupported values are dropped and the\nrequest runs as a standard edit.\n"
+                  },
+                  "upscale_factor": {
+                    "type": "integer",
+                    "description": "Multiply each dimension by this factor. `type: \"upscale\"` only; mutually exclusive with\n`target_megapixels`.\n"
+                  },
+                  "target_megapixels": {
+                    "type": "integer",
+                    "description": "Target output size in megapixels. `type: \"upscale\"` only; mutually exclusive with\n`upscale_factor`.\n"
+                  },
+                  "n": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": "Number of images to generate"
+                  },
+                  "size": {
+                    "type": "string",
+                    "enum": [
+                      "256x256",
+                      "512x512",
+                      "1024x1024",
+                      "1536x1024",
+                      "1024x1536",
+                      "auto"
+                    ],
+                    "description": "Size of the output image"
+                  },
+                  "response_format": {
+                    "type": "string",
+                    "enum": [
+                      "url",
+                      "b64_json",
+                      "data_uri"
+                    ],
+                    "default": "url",
+                    "description": "Format of the response. `data_uri` is supported by providers that return an inline\ndata URI (e.g. Runware).\n"
+                  },
+                  "stream": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When true, stream the response via Server-Sent Events"
+                  },
+                  "background": {
+                    "type": "string",
+                    "enum": [
+                      "transparent",
+                      "opaque",
+                      "auto"
+                    ],
+                    "description": "Background type for the image"
+                  },
+                  "input_fidelity": {
+                    "type": "string",
+                    "enum": [
+                      "low",
+                      "high"
+                    ],
+                    "description": "How closely to follow the original image"
+                  },
+                  "partial_images": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3,
+                    "description": "Number of partial images to generate when streaming"
+                  },
+                  "quality": {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "high",
+                      "medium",
+                      "low",
+                      "standard"
+                    ],
+                    "description": "Quality of the output image"
+                  },
+                  "output_format": {
+                    "type": "string",
+                    "enum": [
+                      "png",
+                      "webp",
+                      "jpeg",
+                      "tiff",
+                      "svg"
+                    ],
+                    "description": "Output image format. `svg` applies to vectorize operations"
+                  },
+                  "num_inference_steps": {
+                    "type": "integer",
+                    "description": "Number of inference steps"
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "description": "Seed for reproducible editing"
+                  },
+                  "output_compression": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Compression level (0-100%)"
+                  },
+                  "negative_prompt": {
+                    "type": "string",
+                    "description": "What to avoid in the edit"
+                  },
+                  "resolution": {
+                    "type": "string",
+                    "description": "Resolution tier of the edited image (e.g. `1K`, `2K`, `4K`); see the generation request's `resolution`"
+                  },
+                  "user": {
+                    "type": "string",
+                    "description": "User identifier for tracking"
+                  },
+                  "fallbacks": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Fallback"
+                    },
+                    "description": "Fallback models to try if primary model fails"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response. Returns the task object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The image task object, the response of all four image task routes. It has the shape of the video\ntask object with the artifacts in `data`. Bifrost stores no task: each route is one call to the\nprovider, and the id carries what the provider needs to query the task again.\n",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "`{URL-encoded provider task id}:{provider}`. Pass it unchanged to\n`GET /v1/images/tasks/{task_id}` and `POST /v1/images/tasks/{task_id}/cancel`.\n"
+                    },
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "image.task"
+                      ]
+                    },
+                    "model": {
+                      "type": "string",
+                      "description": "The model the task was created with, when known"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "queued",
+                        "in_progress",
+                        "completed",
+                        "failed",
+                        "cancelled",
+                        "expired"
+                      ],
+                      "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n- `cancelled`: The job was cancelled at the provider\n- `expired`: The job passed its deadline at the provider before finishing\n"
+                    },
+                    "provider_status": {
+                      "type": "string",
+                      "description": "The provider's raw status string, verbatim"
+                    },
+                    "created_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when the task was submitted"
+                    },
+                    "completed_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) of the provider's completion time"
+                    },
+                    "expires_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when the artifact links expire: the provider's own value, or the\ncompletion time plus the provider's documented link lifetime (BFL: one hour for FLUX 3, ten\nminutes for the other models). Absent when neither is known.\n"
+                    },
+                    "data": {
+                      "type": "array",
+                      "description": "The delivered images; a blocked image takes no slot",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "url",
+                              "content"
+                            ],
+                            "description": "`url`: a public link, valid until `expires_at`"
+                          },
+                          "url": {
+                            "type": "string",
+                            "format": "uri"
+                          },
+                          "content_type": {
+                            "type": "string",
+                            "description": "MIME type of the image, when the link names it"
+                          }
+                        }
+                      }
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "description": "Error code"
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "Human-readable error message"
+                        }
+                      }
+                    },
+                    "content_filter": {
+                      "type": "object",
+                      "description": "Information about content that was filtered due to safety policies",
+                      "properties": {
+                        "filtered_count": {
+                          "type": "integer",
+                          "description": "Number of items filtered"
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Human-readable reasons for filtering"
+                        }
+                      }
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "input_tokens": {
+                          "type": "integer",
+                          "description": "Number of input tokens"
+                        },
+                        "input_tokens_details": {
+                          "type": "object",
+                          "properties": {
+                            "image_tokens": {
+                              "type": "integer",
+                              "description": "Tokens used for images"
+                            },
+                            "text_tokens": {
+                              "type": "integer",
+                              "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "total_tokens": {
+                          "type": "integer",
+                          "description": "Total tokens used"
+                        },
+                        "output_tokens": {
+                          "type": "integer",
+                          "description": "Number of output tokens"
+                        },
+                        "output_tokens_details": {
+                          "type": "object",
+                          "properties": {
+                            "image_tokens": {
+                              "type": "integer",
+                              "description": "Tokens used for images"
+                            },
+                            "text_tokens": {
+                              "type": "integer",
+                              "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "output_images": {
+                          "type": "integer",
+                          "description": "Images the provider reported it billed for. Absent when the provider reported none; never Bifrost's own count"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "output_megapixels": {
+                          "type": "number",
+                          "description": "Output megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "input_megapixels": {
+                          "type": "number",
+                          "description": "Input megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/images/tasks/{task_id}": {
+      "get": {
+        "operationId": "imageTaskRetrieve",
+        "summary": "Query an image task",
+        "description": "Queries the provider once and returns the task object: `status` mapped from the provider's\n`provider_status`, the delivered images in `data` with `expires_at`, `content_filter` when the\nprovider blocked the task, and the usage the provider reported.\n",
+        "tags": [
+          "Images"
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Task ID in format `id:provider`, as the create returned it"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response. Returns the task object.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The image task object, the response of all four image task routes. It has the shape of the video\ntask object with the artifacts in `data`. Bifrost stores no task: each route is one call to the\nprovider, and the id carries what the provider needs to query the task again.\n",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "`{URL-encoded provider task id}:{provider}`. Pass it unchanged to\n`GET /v1/images/tasks/{task_id}` and `POST /v1/images/tasks/{task_id}/cancel`.\n"
+                    },
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "image.task"
+                      ]
+                    },
+                    "model": {
+                      "type": "string",
+                      "description": "The model the task was created with, when known"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "queued",
+                        "in_progress",
+                        "completed",
+                        "failed",
+                        "cancelled",
+                        "expired"
+                      ],
+                      "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n- `cancelled`: The job was cancelled at the provider\n- `expired`: The job passed its deadline at the provider before finishing\n"
+                    },
+                    "provider_status": {
+                      "type": "string",
+                      "description": "The provider's raw status string, verbatim"
+                    },
+                    "created_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when the task was submitted"
+                    },
+                    "completed_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) of the provider's completion time"
+                    },
+                    "expires_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when the artifact links expire: the provider's own value, or the\ncompletion time plus the provider's documented link lifetime (BFL: one hour for FLUX 3, ten\nminutes for the other models). Absent when neither is known.\n"
+                    },
+                    "data": {
+                      "type": "array",
+                      "description": "The delivered images; a blocked image takes no slot",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "url",
+                              "content"
+                            ],
+                            "description": "`url`: a public link, valid until `expires_at`"
+                          },
+                          "url": {
+                            "type": "string",
+                            "format": "uri"
+                          },
+                          "content_type": {
+                            "type": "string",
+                            "description": "MIME type of the image, when the link names it"
+                          }
+                        }
+                      }
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "description": "Error code"
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "Human-readable error message"
+                        }
+                      }
+                    },
+                    "content_filter": {
+                      "type": "object",
+                      "description": "Information about content that was filtered due to safety policies",
+                      "properties": {
+                        "filtered_count": {
+                          "type": "integer",
+                          "description": "Number of items filtered"
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Human-readable reasons for filtering"
+                        }
+                      }
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "input_tokens": {
+                          "type": "integer",
+                          "description": "Number of input tokens"
+                        },
+                        "input_tokens_details": {
+                          "type": "object",
+                          "properties": {
+                            "image_tokens": {
+                              "type": "integer",
+                              "description": "Tokens used for images"
+                            },
+                            "text_tokens": {
+                              "type": "integer",
+                              "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "total_tokens": {
+                          "type": "integer",
+                          "description": "Total tokens used"
+                        },
+                        "output_tokens": {
+                          "type": "integer",
+                          "description": "Number of output tokens"
+                        },
+                        "output_tokens_details": {
+                          "type": "object",
+                          "properties": {
+                            "image_tokens": {
+                              "type": "integer",
+                              "description": "Tokens used for images"
+                            },
+                            "text_tokens": {
+                              "type": "integer",
+                              "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "output_images": {
+                          "type": "integer",
+                          "description": "Images the provider reported it billed for. Absent when the provider reported none; never Bifrost's own count"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "output_megapixels": {
+                          "type": "number",
+                          "description": "Output megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "input_megapixels": {
+                          "type": "number",
+                          "description": "Input megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/images/tasks/{task_id}/cancel": {
+      "post": {
+        "operationId": "imageTaskCancel",
+        "summary": "Cancel an image task",
+        "description": "Calls the provider's cancel API and returns the task object. The request has no body. When the\nprovider has no cancel API (BFL), the response is 400 with `extra_fields.error_type`\n`provider_cancel_unsupported` and the task runs on.\n",
+        "tags": [
+          "Images"
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Task ID in format `id:provider`, as the create returned it"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response. Returns the task object, with `status` `cancelled`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The image task object, the response of all four image task routes. It has the shape of the video\ntask object with the artifacts in `data`. Bifrost stores no task: each route is one call to the\nprovider, and the id carries what the provider needs to query the task again.\n",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "`{URL-encoded provider task id}:{provider}`. Pass it unchanged to\n`GET /v1/images/tasks/{task_id}` and `POST /v1/images/tasks/{task_id}/cancel`.\n"
+                    },
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "image.task"
+                      ]
+                    },
+                    "model": {
+                      "type": "string",
+                      "description": "The model the task was created with, when known"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "queued",
+                        "in_progress",
+                        "completed",
+                        "failed",
+                        "cancelled",
+                        "expired"
+                      ],
+                      "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n- `cancelled`: The job was cancelled at the provider\n- `expired`: The job passed its deadline at the provider before finishing\n"
+                    },
+                    "provider_status": {
+                      "type": "string",
+                      "description": "The provider's raw status string, verbatim"
+                    },
+                    "created_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when the task was submitted"
+                    },
+                    "completed_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) of the provider's completion time"
+                    },
+                    "expires_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when the artifact links expire: the provider's own value, or the\ncompletion time plus the provider's documented link lifetime (BFL: one hour for FLUX 3, ten\nminutes for the other models). Absent when neither is known.\n"
+                    },
+                    "data": {
+                      "type": "array",
+                      "description": "The delivered images; a blocked image takes no slot",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "url",
+                              "content"
+                            ],
+                            "description": "`url`: a public link, valid until `expires_at`"
+                          },
+                          "url": {
+                            "type": "string",
+                            "format": "uri"
+                          },
+                          "content_type": {
+                            "type": "string",
+                            "description": "MIME type of the image, when the link names it"
+                          }
+                        }
+                      }
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "description": "Error code"
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "Human-readable error message"
+                        }
+                      }
+                    },
+                    "content_filter": {
+                      "type": "object",
+                      "description": "Information about content that was filtered due to safety policies",
+                      "properties": {
+                        "filtered_count": {
+                          "type": "integer",
+                          "description": "Number of items filtered"
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Human-readable reasons for filtering"
+                        }
+                      }
+                    },
+                    "usage": {
+                      "type": "object",
+                      "properties": {
+                        "input_tokens": {
+                          "type": "integer",
+                          "description": "Number of input tokens"
+                        },
+                        "input_tokens_details": {
+                          "type": "object",
+                          "properties": {
+                            "image_tokens": {
+                              "type": "integer",
+                              "description": "Tokens used for images"
+                            },
+                            "text_tokens": {
+                              "type": "integer",
+                              "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "total_tokens": {
+                          "type": "integer",
+                          "description": "Total tokens used"
+                        },
+                        "output_tokens": {
+                          "type": "integer",
+                          "description": "Number of output tokens"
+                        },
+                        "output_tokens_details": {
+                          "type": "object",
+                          "properties": {
+                            "image_tokens": {
+                              "type": "integer",
+                              "description": "Tokens used for images"
+                            },
+                            "text_tokens": {
+                              "type": "integer",
+                              "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "output_images": {
+                          "type": "integer",
+                          "description": "Images the provider reported it billed for. Absent when the provider reported none; never Bifrost's own count"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "output_megapixels": {
+                          "type": "number",
+                          "description": "Output megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "input_megapixels": {
+                          "type": "number",
+                          "description": "Input megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request, or the task cannot be cancelled (`extra_fields.error_type`\n`provider_cancel_unsupported`).\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
     "/v1/videos": {
       "post": {
         "operationId": "videoGeneration",

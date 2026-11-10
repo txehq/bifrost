@@ -123,6 +123,7 @@ var modelAddressedRequestTypes = map[RequestType]struct{}{
 	TranscriptionStreamRequest:   {},
 	ImageGenerationRequest:       {},
 	ImageGenerationStreamRequest: {},
+	ImageGenerationTaskRequest:   {}, // fork (TXE-6431): POST /v1/{model} on BFL, addressed by the model alone
 	RerankRequest:                {},
 	DecisionRequest:              {},
 	CountTokensRequest:           {},

@@ -1,9 +1,10 @@
 // Package bfl implements the provider for Black Forest Labs' own API: FLUX images, which
 // BFL serves only as tasks (submit, then poll a polling_url), and FLUX 3 video.
 //
-// This file registers the provider. Each operation answers the unsupported-operation
-// error until the ticket that adds it lands, so a configured provider never calls
-// upstream for an operation it cannot convert.
+// This file registers the provider. Images are served on the image task routes
+// (images.go, schemas.ImageTaskProvider); every operation of the Provider interface,
+// sync images included, answers the unsupported-operation error, so a configured
+// provider never calls upstream for an operation it cannot convert.
 package bfl
 
 import (
@@ -80,6 +81,38 @@ func (provider *BFLProvider) requestURL(ctx *schemas.BifrostContext, path string
 func (provider *BFLProvider) setRequestHeaders(ctx context.Context, req *fasthttp.Request, key schemas.Key) {
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	setAuthHeader(req, key)
+}
+
+// doRequest sends one request to BFL and returns the body of a 2xx answer. Any other status is
+// BFL's error, with its status code kept (parseBFLError).
+func (provider *BFLProvider) doRequest(ctx *schemas.BifrostContext, key schemas.Key, method, requestURL string, jsonData []byte, sendBackRawRequest, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	provider.setRequestHeaders(ctx, req, key)
+	req.SetRequestURI(requestURL)
+	req.Header.SetMethod(method)
+	if jsonData != nil {
+		req.Header.SetContentType("application/json")
+		req.SetBody(jsonData)
+	}
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, latency, bifrostErr
+	}
+	if resp.StatusCode() < fasthttp.StatusOK || resp.StatusCode() >= fasthttp.StatusMultipleChoices {
+		return nil, latency, providerUtils.EnrichError(ctx, parseBFLError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		rawErrBody := append([]byte(nil), resp.Body()...)
+		return nil, latency, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+	return append([]byte(nil), body...), latency, nil
 }
 
 // ListModels is not supported by the BFL provider yet.

@@ -122,6 +122,10 @@ export const RequestTypes = [
 	"video_list",
 	"video_remix",
 	"video_cancel",
+	"image_generation_task",
+	"image_edit_task",
+	"image_task_retrieve",
+	"image_task_cancel",
 	"count_tokens",
 	"compaction",
 	// Batch operations
@@ -359,6 +363,10 @@ export const RequestTypeLabels = {
 	video_list: "Video List",
 	video_remix: "Video Remix",
 	video_cancel: "Video Cancel",
+	image_generation_task: "Image Generation Task",
+	image_edit_task: "Image Edit Task",
+	image_task_retrieve: "Image Task Retrieve",
+	image_task_cancel: "Image Task Cancel",
 	count_tokens: "Count Tokens",
 	compaction: "Compaction",
 
@@ -455,6 +463,10 @@ export const RequestTypeColors = {
 	video_list: "bg-cyan-100 text-cyan-800",
 	video_remix: "bg-pink-100 text-pink-800",
 	video_cancel: "bg-rose-100 text-rose-800",
+	image_generation_task: "bg-pink-100 text-pink-800",
+	image_edit_task: "bg-pink-100 text-pink-800",
+	image_task_retrieve: "bg-blue-100 text-blue-800",
+	image_task_cancel: "bg-rose-100 text-rose-800",
 	count_tokens: "bg-cyan-100 text-cyan-800",
 	compaction: "bg-indigo-100 text-indigo-800",
 

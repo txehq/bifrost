@@ -2079,6 +2079,8 @@ func TestNormalizedUsageCoversEveryUsageBearingFamily(t *testing.T) {
 		"TranscriptionStreamResponse":   "accumulated into TranscriptionResponse",
 		"ImageGenerationStreamResponse": "accumulated into ImageGenerationResponse",
 		"VideoGenerationResponse":       "never wired to logging or spans",
+		// Fork (TXE-6431): the image task object reports vendor_cost and megapixels, no tokens.
+		"ImageTaskResponse": "a task object, like video; it reports no tokens",
 	}
 
 	rt := reflect.TypeOf(BifrostResponse{})

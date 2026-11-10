@@ -24,6 +24,10 @@ type BifrostImageGenerationRequest struct {
 	Params         *ImageGenerationParameters `json:"params,omitempty"`
 	Fallbacks      []Fallback                 `json:"fallbacks,omitempty"`
 	RawRequestBody []byte                     `json:"-"`
+	// TaskControl holds the task control fields of an image task create (fork, TXE-6431,
+	// contract C7 BF12). Only POST /v1/images/generations/tasks sets it; the sync route leaves
+	// it nil, so a field of the same name stays an extra param there, as before.
+	TaskControl *TaskControlParameters `json:"-"`
 }
 
 // GetRawRequestBody implements utils.RequestBodyGetter.
@@ -410,6 +414,9 @@ type BifrostImageEditRequest struct {
 	Params         *ImageEditParameters `json:"params,omitempty"`
 	Fallbacks      []Fallback           `json:"fallbacks,omitempty"`
 	RawRequestBody []byte               `json:"-"`
+	// TaskControl holds the task control fields of an image edit task create (fork, TXE-6431);
+	// only POST /v1/images/edits/tasks sets it. See BifrostImageGenerationRequest.TaskControl.
+	TaskControl *TaskControlParameters `json:"-"`
 }
 
 // GetRawRequestBody implements [utils.RequestBodyGetter].

@@ -12045,3 +12045,180 @@ func TestRequestWorkerRejectsPriceFieldAmongExtraParamsBeforeUpstream(t *testing
 		t.Fatalf("the provider was called %d times for the two accepted requests, want 2", got)
 	}
 }
+
+// imageTaskTestProvider serves the image task routes (schemas.ImageTaskProvider) and declares the
+// unified fields of the image task create. Everything else comes from the embedded provider.
+type imageTaskTestProvider struct {
+	schemas.Provider
+	supported []string
+
+	creates    atomic.Int64
+	gotControl atomic.Pointer[schemas.TaskControlParameters]
+	retrieves  atomic.Int64
+	gotID      atomic.Pointer[string]
+}
+
+func (p *imageTaskTestProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
+	if requestType != schemas.ImageGenerationTaskRequest && requestType != schemas.ImageEditTaskRequest {
+		return nil, false
+	}
+	return p.supported, true
+}
+
+func (p *imageTaskTestProvider) ImageGenerationTask(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
+	p.creates.Add(1)
+	p.gotControl.Store(req.TaskControl)
+	return &schemas.BifrostImageTaskResponse{ID: "task_1:openai", Object: schemas.ImageTaskObject, Status: schemas.VideoStatusQueued}, nil
+}
+
+func (p *imageTaskTestProvider) ImageEditTask(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostImageEditRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
+	p.creates.Add(1)
+	p.gotControl.Store(req.TaskControl)
+	return &schemas.BifrostImageTaskResponse{ID: "task_2:openai", Object: schemas.ImageTaskObject, Status: schemas.VideoStatusQueued}, nil
+}
+
+func (p *imageTaskTestProvider) ImageTaskRetrieve(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostImageTaskRetrieveRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
+	p.retrieves.Add(1)
+	id := req.ID
+	p.gotID.Store(&id)
+	return &schemas.BifrostImageTaskResponse{ID: req.ID + ":openai", Object: schemas.ImageTaskObject, Status: schemas.VideoStatusCompleted}, nil
+}
+
+// cancellableImageTaskProvider adds a vendor cancel API (schemas.ImageTaskCanceller).
+type cancellableImageTaskProvider struct {
+	*imageTaskTestProvider
+	cancels atomic.Int64
+}
+
+func (p *cancellableImageTaskProvider) ImageTaskCancel(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostImageTaskCancelRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
+	p.cancels.Add(1)
+	return &schemas.BifrostImageTaskResponse{ID: req.ID + ":openai", Object: schemas.ImageTaskObject, Status: schemas.VideoStatusCancelled}, nil
+}
+
+// imageTaskCreate is an image generation task create carrying control.
+func imageTaskCreate(control *schemas.TaskControlParameters) schemas.BifrostRequest {
+	return schemas.BifrostRequest{
+		RequestType: schemas.ImageGenerationTaskRequest,
+		ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
+			Provider:    schemas.OpenAI,
+			Model:       "gpt-image-1",
+			Input:       &schemas.ImageGenerationInput{Prompt: "a fox"},
+			TaskControl: control,
+		},
+	}
+}
+
+// The image task routes (TXE-6431, contract C7 BF16): the request worker refuses what the
+// provider cannot do before a key is chosen, and hands the rest to the optional interface.
+func TestImageTaskRequests(t *testing.T) {
+	t.Run("a provider without image tasks answers unsupported_operation and calls nothing", func(t *testing.T) {
+		_, bifrostErr, upstream := runVideoTaskRequest(t, func(p schemas.Provider) schemas.Provider { return p }, imageTaskCreate(nil), "")
+		if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "unsupported_operation" {
+			t.Fatalf("got %+v, want unsupported_operation", bifrostErr)
+		}
+		if upstream != 0 {
+			t.Fatalf("upstream calls = %d, want 0", upstream)
+		}
+	})
+
+	t.Run("a declared callback_url reaches the provider; the task object comes back", func(t *testing.T) {
+		provider := &imageTaskTestProvider{supported: []string{schemas.TaskControlFieldCallbackURL}}
+		control := &schemas.TaskControlParameters{CallbackURL: schemas.Ptr("https://hooks.tokun.sh/v/t1")}
+		resp, bifrostErr, _ := runVideoTaskRequest(t, func(p schemas.Provider) schemas.Provider { provider.Provider = p; return provider }, imageTaskCreate(control), "")
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %+v", bifrostErr.Error)
+		}
+		if resp == nil || resp.ImageTaskResponse == nil || resp.ImageTaskResponse.ID != "task_1:openai" {
+			t.Fatalf("got %+v, want the provider's task object", resp)
+		}
+		if got := provider.gotControl.Load(); got == nil || got.CallbackURL == nil || *got.CallbackURL != "https://hooks.tokun.sh/v/t1" {
+			t.Fatalf("callback_url did not reach the provider: %+v", got)
+		}
+	})
+
+	t.Run("an undeclared control field is refused before the provider is called", func(t *testing.T) {
+		provider := &imageTaskTestProvider{supported: []string{schemas.TaskControlFieldCallbackURL}}
+		control := &schemas.TaskControlParameters{ClientReferenceID: schemas.Ptr("t1")}
+		_, bifrostErr, upstream := runVideoTaskRequest(t, func(p schemas.Provider) schemas.Provider { provider.Provider = p; return provider }, imageTaskCreate(control), "")
+		if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != "client_reference_id" {
+			t.Fatalf("got %+v, want caller_unsupported_parameter on client_reference_id", bifrostErr)
+		}
+		if provider.creates.Load() != 0 || upstream != 0 {
+			t.Fatalf("creates = %d, upstream = %d; want none", provider.creates.Load(), upstream)
+		}
+	})
+
+	t.Run("an undeclared unified field is refused before the provider is called", func(t *testing.T) {
+		provider := &imageTaskTestProvider{supported: []string{"size"}}
+		req := imageTaskCreate(nil)
+		req.ImageGenerationRequest.Params = &schemas.ImageGenerationParameters{Quality: schemas.Ptr("hd")}
+		_, bifrostErr, _ := runVideoTaskRequest(t, func(p schemas.Provider) schemas.Provider { provider.Provider = p; return provider }, req, "")
+		if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != "quality" {
+			t.Fatalf("got %+v, want caller_unsupported_parameter on quality", bifrostErr)
+		}
+		if provider.creates.Load() != 0 {
+			t.Fatalf("creates = %d, want 0", provider.creates.Load())
+		}
+	})
+
+	t.Run("a query needs no model and reaches the provider with the task id", func(t *testing.T) {
+		provider := &imageTaskTestProvider{}
+		req := schemas.BifrostRequest{
+			RequestType:              schemas.ImageTaskRetrieveRequest,
+			ImageTaskRetrieveRequest: &schemas.BifrostImageTaskRetrieveRequest{Provider: schemas.OpenAI, ID: "task_1"},
+		}
+		resp, bifrostErr, _ := runVideoTaskRequest(t, func(p schemas.Provider) schemas.Provider { provider.Provider = p; return provider }, req, "")
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %+v", bifrostErr.Error)
+		}
+		if resp.ImageTaskResponse == nil || resp.ImageTaskResponse.Status != schemas.VideoStatusCompleted {
+			t.Fatalf("got %+v, want the queried task", resp.ImageTaskResponse)
+		}
+		if id := provider.gotID.Load(); id == nil || *id != "task_1" {
+			t.Fatalf("provider got id %v, want task_1", id)
+		}
+	})
+
+	cancelReq := schemas.BifrostRequest{
+		RequestType:            schemas.ImageTaskCancelRequest,
+		ImageTaskCancelRequest: &schemas.BifrostImageTaskCancelRequest{Provider: schemas.OpenAI, ID: "task_1"},
+	}
+	t.Run("cancel on a provider with no cancel API is 400 provider_cancel_unsupported before a key", func(t *testing.T) {
+		provider := &imageTaskTestProvider{}
+		// The named key does not exist: had the worker chosen a key, it would fail on that instead.
+		_, bifrostErr, upstream := runVideoTaskRequest(t, func(p schemas.Provider) schemas.Provider { provider.Provider = p; return provider }, cancelReq, "no-such-key")
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeProviderCancelUnsupported {
+			t.Fatalf("got %+v, want 400 provider_cancel_unsupported", bifrostErr)
+		}
+		if bifrostErr.ExtraFields.RequestType != schemas.ImageTaskCancelRequest {
+			t.Fatalf("request_type = %q, want image_task_cancel", bifrostErr.ExtraFields.RequestType)
+		}
+		if upstream != 0 {
+			t.Fatalf("upstream calls = %d, want 0", upstream)
+		}
+	})
+
+	t.Run("cancel on a provider with a cancel API reaches it", func(t *testing.T) {
+		provider := &cancellableImageTaskProvider{imageTaskTestProvider: &imageTaskTestProvider{}}
+		resp, bifrostErr, _ := runVideoTaskRequest(t, func(p schemas.Provider) schemas.Provider { provider.Provider = p; return provider }, cancelReq, "")
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %+v", bifrostErr.Error)
+		}
+		if provider.cancels.Load() != 1 || resp.ImageTaskResponse.Status != schemas.VideoStatusCancelled {
+			t.Fatalf("cancels = %d, status %q", provider.cancels.Load(), resp.ImageTaskResponse.Status)
+		}
+	})
+}
+
+// BenchmarkImageTaskCancelCheck is the request worker's image task cancel check on a request
+// that is not a cancel, the path every other request takes (AGENTS.md cost rule).
+func BenchmarkImageTaskCancelCheck(b *testing.B) {
+	req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest}
+	provider := &imageTaskTestProvider{}
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := schemas.CheckImageTaskCancelSupported(provider, req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

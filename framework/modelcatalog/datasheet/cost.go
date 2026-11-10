@@ -569,7 +569,9 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	// succeeded) would otherwise be billed again on every poll, inflating logs, traces and
 	// governance budgets.
 	// A cancel returns the same task object and is no generation either (fork, TXE-6521).
-	if requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoCancelRequest {
+	// The image task query and cancel return the task object too (fork, TXE-6431).
+	if requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoCancelRequest ||
+		requestType == schemas.ImageTaskRetrieveRequest || requestType == schemas.ImageTaskCancelRequest {
 		return nil
 	}
 
@@ -717,7 +719,8 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		cost = computeSpeechCost(pricing, input.usage, input.audioSeconds, input.audioTextInputChars, input.tier)
 	case schemas.TranscriptionRequest:
 		cost = computeTranscriptionCost(pricing, input.usage, input.audioSeconds, input.audioTokenDetails, input.tier)
-	case schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest:
+	case schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest,
+		schemas.ImageGenerationTaskRequest, schemas.ImageEditTaskRequest:
 		cost = computeImageCost(pricing, input.imageUsage, input.imageSize, input.imageQuality, input.tier)
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest, schemas.VideoEditRequest:
 		cost = computeVideoCost(pricing, input.usage, input.videoSeconds, input.videoSize, input.videoCount, input.tier)
@@ -856,6 +859,18 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 			input.imageSize = result.ImageGenerationResponse.ImageGenerationResponseParameters.Size
 			input.imageQuality = result.ImageGenerationResponse.ImageGenerationResponseParameters.Quality
 		}
+
+	case result.ImageTaskResponse != nil:
+		// Fork (TXE-6431): an image task is billed once, at its create, priced as the one image it
+		// makes (a task makes one image; n must be 1). The vendor charges at submission and reports
+		// that cost on the submit, and the query and cancel are not billed (see computeCost), so the
+		// create is the only response that can carry the charge exactly once.
+		if result.ImageTaskResponse.Usage != nil {
+			input.imageUsage = result.ImageTaskResponse.Usage.DeepCopy()
+		} else {
+			input.imageUsage = &schemas.ImageUsage{}
+		}
+		populateOutputImageCount(input.imageUsage, max(len(result.ImageTaskResponse.Data), 1))
 
 	case result.ImageGenerationStreamResponse != nil:
 		// Defensive copy mirrors the non-stream path so CalculateCost never
@@ -2582,6 +2597,7 @@ func (s *Store) getBasePricingLocked(model, provider string, requestType schemas
 	// Lookup in image generation if image edit not found
 	if requestType == schemas.ImageEditRequest ||
 		requestType == schemas.ImageEditStreamRequest ||
+		requestType == schemas.ImageEditTaskRequest ||
 		requestType == schemas.ImageVariationRequest {
 		s.logger.Debug("primary lookup failed, trying image generation provider for the same model")
 		pricing, ok = s.pricingData[makeKey(model, provider, normalizeRequestType(schemas.ImageGenerationRequest))]

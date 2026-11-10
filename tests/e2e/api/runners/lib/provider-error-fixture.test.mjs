@@ -389,3 +389,27 @@ test("gpt-image-drop is recorded on the wire and its connection dropped without 
   const calls = (await (await fetch(`${base}/__wire`)).json()).data[0].calls;
   assert.deepEqual(calls.map((c) => JSON.parse(c.body).model), ["gpt-image-drop", "gpt-image-1.5"]);
 });
+
+// Folder 421 (TXE-6431): BFL's submit answers AsyncResponse and is kept on the wire, and get_result answers per
+// task id with BFL's statuses, counted under "bfl get_result <id>".
+test("the BFL stand-in answers a submit and the task query by id", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  await fetch(`${base}/__reset`, { method: "POST" });
+  const submitted = await post({ prompt: "a fox", width: 1024 }, "/pp/bfl/v1/flux-pro-1.1");
+  assert.equal(submitted.status, 200);
+  const task = await submitted.json();
+  assert.equal(task.id, "bfl-ready");
+  assert.equal(task.polling_url, "http://127.0.0.1:8791/pp/bfl/v1/get_result?id=bfl-ready");
+  assert.equal(task.cost, 4);
+  const wire = (await (await fetch(`${base}/__wire`)).json()).data[0].calls;
+  assert.equal(wire[0].path, "/pp/bfl/v1/flux-pro-1.1");
+  assert.deepEqual(JSON.parse(wire[0].body), { prompt: "a fox", width: 1024 });
+  const status = async (id) => (await (await fetch(`${base}/pp/bfl/v1/get_result?id=${id}`)).json()).status;
+  assert.equal(await status("bfl-ready"), "Ready");
+  assert.equal(await status("bfl-moderated"), "Content Moderated");
+  assert.equal(await status("bfl-pending"), "Pending");
+  assert.equal(await status("nope"), "Task not found");
+  const hits = (await (await fetch(`${base}/__hits`)).json()).data[0].hits;
+  assert.equal(hits["bfl get_result bfl-ready"], 1);
+});

@@ -66,6 +66,8 @@ func providerObjectLabel(kind string) string {
 		return "cached content"
 	case configstoreTables.ProviderObjectKindContainerFile:
 		return "container file"
+	case configstoreTables.ProviderObjectKindImageTask:
+		return "image task"
 	}
 	return "object"
 }
@@ -128,7 +130,8 @@ func providerObjectIDForms(kind string, provider schemas.ModelProvider, id strin
 	if id == "" {
 		return nil
 	}
-	if kind == configstoreTables.ProviderObjectKindVideo {
+	// An image task id has the video id's shape, "{URL-encoded vendor id}:{provider}".
+	if kind == configstoreTables.ProviderObjectKindVideo || kind == configstoreTables.ProviderObjectKindImageTask {
 		return videoIDForms(provider, id)
 	}
 	forms := []string{id}
@@ -198,6 +201,10 @@ func providerObjectReference(req *schemas.BifrostRequest) (providerObjectRef, bo
 		return objectRef(video, req.VideoDeleteRequest.Provider, req.VideoDeleteRequest.ID)
 	case req.VideoCancelRequest != nil:
 		return objectRef(video, req.VideoCancelRequest.Provider, req.VideoCancelRequest.ID)
+	case req.ImageTaskRetrieveRequest != nil:
+		return objectRef(configstoreTables.ProviderObjectKindImageTask, req.ImageTaskRetrieveRequest.Provider, req.ImageTaskRetrieveRequest.ID)
+	case req.ImageTaskCancelRequest != nil:
+		return objectRef(configstoreTables.ProviderObjectKindImageTask, req.ImageTaskCancelRequest.Provider, req.ImageTaskCancelRequest.ID)
 	case req.VideoRemixRequest != nil:
 		return objectRef(video, req.VideoRemixRequest.Provider, req.VideoRemixRequest.ID)
 	case req.VideoListRequest != nil:
@@ -1246,15 +1253,26 @@ func (p *GovernancePlugin) refuseForeignProviderObject(ctx *schemas.BifrostConte
 			Error:      &schemas.ErrorField{Message: fmt.Sprintf("failed to verify access to %s '%s'", label, ref.requestID)},
 		}}
 	}
+	notFound := func() *schemas.LLMPluginShortCircuit {
+		ctx.SetValue(governanceRejectedContextKey, true)
+		return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
+			Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
+			StatusCode: bifrost.Ptr(404),
+			Error:      &schemas.ErrorField{Message: fmt.Sprintf("%s '%s' not found", label, ref.requestID)},
+		}}
+	}
 	for _, owner := range owners {
 		if owner != vkID {
-			ctx.SetValue(governanceRejectedContextKey, true)
-			return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
-				Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
-				StatusCode: bifrost.Ptr(404),
-				Error:      &schemas.ErrorField{Message: fmt.Sprintf("%s '%s' not found", label, ref.requestID)},
-			}}
+			return notFound()
 		}
+	}
+	// An image task fails closed (TXE-6431). Its id carries more than the vendor's task id (BFL's
+	// carries the model and the polling host), so one vendor task can be named by ids that were
+	// never recorded, and "no row stays reachable" would let another key reach it by rewriting the
+	// rest of the id. Image tasks are new, so every one a virtual key created through the gateway
+	// has its row: a key reaches an image task only under the id its own create recorded.
+	if ref.kind == configstoreTables.ProviderObjectKindImageTask && len(owners) == 0 {
+		return notFound()
 	}
 	if len(ambiguous) > 0 {
 		// A short Vertex id that several keys' full names end in names one job per project, which
@@ -1480,6 +1498,8 @@ func (p *GovernancePlugin) recordProviderObjectLifecycle(ctx *schemas.BifrostCon
 		createdKind, createdID = configstoreTables.ProviderObjectKindFile, result.FileUploadResponse.ID
 	case result.VideoGenerationResponse != nil && (requestType == schemas.VideoGenerationRequest || requestType == schemas.VideoEditRequest || requestType == schemas.VideoRemixRequest):
 		createdKind, createdID = configstoreTables.ProviderObjectKindVideo, result.VideoGenerationResponse.ID
+	case result.ImageTaskResponse != nil && (requestType == schemas.ImageGenerationTaskRequest || requestType == schemas.ImageEditTaskRequest):
+		createdKind, createdID = configstoreTables.ProviderObjectKindImageTask, result.ImageTaskResponse.ID
 	case result.ContainerCreateResponse != nil:
 		createdKind, createdID = configstoreTables.ProviderObjectKindContainer, result.ContainerCreateResponse.ID
 	case result.ContainerFileCreateResponse != nil:

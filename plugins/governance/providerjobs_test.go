@@ -2112,3 +2112,57 @@ func BenchmarkPreLLMHookResourceNameLookup(b *testing.B) {
 		})
 	}
 }
+
+// TXE-6431: an image task belongs to the virtual key that created it, like a video. The create's
+// task id ("{URL-encoded vendor id}:{provider}") is recorded, and a query or cancel naming the
+// decoded vendor id, as the image task routes pass it, or the full id is bound to that key.
+func TestImageTasksAreBoundToTheCreatingVirtualKey(t *testing.T) {
+	plugin, store := newProviderJobTestPlugin(t)
+	const createdID = "t1%7Cflux-pro-1.1:openai"
+
+	ctx := presentCtx(mcpTestVKValue)
+	create := &schemas.BifrostRequest{RequestType: schemas.ImageGenerationTaskRequest, ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{Provider: schemas.OpenAI, Model: "flux-pro-1.1"}}
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, create)
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{ImageTaskResponse: &schemas.BifrostImageTaskResponse{ID: createdID,
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ImageGenerationTaskRequest, Provider: schemas.OpenAI}}}, nil)
+	require.NoError(t, err)
+	rows, err := store.GetProviderObjectsByIDs(context.Background(), []string{configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindImageTask, "openai", createdID)})
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "the create was recorded")
+	assert.Equal(t, "vk-mcp-stamp", rows[0].VirtualKeyID)
+
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindImageTask, "openai", "t2%7Cflux-pro-1.1:openai", "vk-someone-else")
+	reference := func(requestType schemas.RequestType, id string) *schemas.BifrostRequest {
+		ref := &schemas.BifrostImageTaskReferenceRequest{Provider: schemas.OpenAI, ID: id}
+		if requestType == schemas.ImageTaskCancelRequest {
+			return &schemas.BifrostRequest{RequestType: requestType, ImageTaskCancelRequest: ref}
+		}
+		return &schemas.BifrostRequest{RequestType: requestType, ImageTaskRetrieveRequest: ref}
+	}
+	for _, requestType := range []schemas.RequestType{schemas.ImageTaskRetrieveRequest, schemas.ImageTaskCancelRequest} {
+		for _, id := range []string{"t1|flux-pro-1.1", createdID} {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), reference(requestType, id))
+			require.NoError(t, err)
+			assert.Nil(t, shortCircuit, "%s %s: the creating key reaches its own task", requestType, id)
+		}
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), reference(requestType, "t2|flux-pro-1.1"))
+		require.NoError(t, err)
+		require.NotNil(t, shortCircuit, "%s: another key's task is refused", requestType)
+		assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+		assert.Contains(t, shortCircuit.Error.Error.Message, "image task")
+
+		// The rest of the id is rewritable (BFL polls t2 whatever model or host follows it), so
+		// an id with no row is refused too: otherwise rewriting it would reach another key's task.
+		for _, rewritten := range []string{"t2", "t2|flux-3-image", "t2|flux-pro-1.1|api.bfl.ai", "never-created"} {
+			_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), reference(requestType, rewritten))
+			require.NoError(t, err)
+			require.NotNil(t, shortCircuit, "%s %s: an unrecorded image task id is refused", requestType, rewritten)
+			assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+		}
+		_, shortCircuit, err = plugin.PreLLMHook(emptyCtx(), reference(requestType, "never-created"))
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit, "a request that presented no virtual key is unrestricted")
+	}
+}

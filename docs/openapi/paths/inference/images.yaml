@@ -113,3 +113,140 @@ image-variation:
     - BearerAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
+
+image-generation-task:
+  post:
+    operationId: imageGenerationTask
+    summary: Submit an image generation task
+    description: |
+      For providers whose image API is itself task-based (BFL). Takes the body of
+      `POST /v1/images/generations` plus the task control fields and returns the task object, usually
+      `queued`; query it with `GET /v1/images/tasks/{task_id}`. One call to the provider. A provider
+      without image tasks answers 400 `unsupported_operation`; a field the provider cannot deliver is
+      400 `caller_unsupported_parameter` with no call to the provider.
+    tags:
+    - Images
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/images.yaml#/ImageGenerationTaskRequest'
+    responses:
+      '200':
+        description: Successful response. Returns the task object.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/images.yaml#/ImageTaskResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+image-edit-task:
+  post:
+    operationId: imageEditTask
+    summary: Submit an image edit task
+    description: |
+      The task form of `POST /v1/images/edits`: the same JSON or multipart body plus the task control
+      fields. Returns the task object. One call to the provider.
+    tags:
+    - Images
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/images.yaml#/ImageEditTaskRequest'
+        multipart/form-data:
+          schema:
+            $ref: '../../schemas/inference/images.yaml#/ImageEditMultipartRequest'
+    responses:
+      '200':
+        description: Successful response. Returns the task object.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/images.yaml#/ImageTaskResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+image-task-retrieve:
+  get:
+    operationId: imageTaskRetrieve
+    summary: Query an image task
+    description: |
+      Queries the provider once and returns the task object: `status` mapped from the provider's
+      `provider_status`, the delivered images in `data` with `expires_at`, `content_filter` when the
+      provider blocked the task, and the usage the provider reported.
+    tags:
+    - Images
+    parameters:
+    - name: task_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Task ID in format `id:provider`, as the create returned it
+    responses:
+      '200':
+        description: Successful response. Returns the task object.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/images.yaml#/ImageTaskResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+image-task-cancel:
+  post:
+    operationId: imageTaskCancel
+    summary: Cancel an image task
+    description: |
+      Calls the provider's cancel API and returns the task object. The request has no body. When the
+      provider has no cancel API (BFL), the response is 400 with `extra_fields.error_type`
+      `provider_cancel_unsupported` and the task runs on.
+    tags:
+    - Images
+    parameters:
+    - name: task_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Task ID in format `id:provider`, as the create returned it
+    responses:
+      '200':
+        description: Successful response. Returns the task object, with `status` `cancelled`.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/images.yaml#/ImageTaskResponse'
+      '400':
+        description: |
+          Bad request, or the task cannot be cancelled (`extra_fields.error_type`
+          `provider_cancel_unsupported`).
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
