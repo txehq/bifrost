@@ -239,7 +239,7 @@
             },
             "should_convert_params": {
               "type": "boolean",
-              "description": "Converts model parameter values that are not supported by the model.",
+              "description": "Kept for configuration compatibility; converts nothing. Output caps and thinking budgets reach the provider as sent.",
               "default": false
             },
             "azure_deepseek": {

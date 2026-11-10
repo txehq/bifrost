@@ -214,6 +214,21 @@ before any upstream call. `azure-content-filter` answers with Azure OpenAI's doc
 Rows 336.9 to 336.12 save `client.disable_encrypted_reasoning_retry` through `PUT /api/config` with the
 config's setup token and turn it off again; if the run stops between them, restart the gateway.
 
+Folder 427 (the compat plugin never drops or rewrites a price-affecting field, TXE-7026) runs on the same
+fixture and gateway:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "427. The compat plugin never drops or rewrites a price-affecting field (compat price fields)" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1
+```
+
+The gateway config sets no compat option, so the plugin's parameter drop is on. `oc-capped` (moonshot chat)
+and `cp-capped` (the openai-based custom provider `cp_plain`, Responses) have capability records with a
+64-token output limit and no parameter list, so a row reads back that the output cap, `service_tier`,
+`prompt_cache_key` and reasoning reached the vendor as sent while `seed` or `top_p` was dropped.
+
 The fixture answers by model name: `upstream-500` returns HTTP 500, `upstream-503` returns HTTP 503,
 `upstream-429` returns 429 with `Retry-After: 7`, `upstream-429-ms` returns 429 with
 `retry-after-ms: 2500`, `upstream-ok` returns a chat completion, and `upstream-slow` returns the

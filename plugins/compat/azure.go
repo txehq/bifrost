@@ -32,11 +32,3 @@ func isCodingHarnessRequest(ctx *schemas.BifrostContext) bool {
 func shouldConvertAzureDeepSeekResponsesToChat(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) bool {
 	return isAzureDeepSeekResponsesRequest(req) && isCodingHarnessRequest(ctx)
 }
-
-// isConvertedToChatCompletions reports whether an earlier hook already marked the
-// request for conversion to chat completions, where the dropped-on-Responses
-// params are supported again.
-func isConvertedToChatCompletions(ctx *schemas.BifrostContext) bool {
-	changeType, ok := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
-	return ok && changeType == schemas.ChatCompletionRequest
-}

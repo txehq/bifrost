@@ -134,7 +134,7 @@ export default function CompatibilityView() {
 						<label htmlFor="compat-should-convert-params" className="text-sm font-medium">
 							Convert Unsupported Param Values
 						</label>
-						<p className="text-muted-foreground text-sm">Converts model parameter values that are not supported by the model.</p>
+						<p className="text-muted-foreground text-sm">No longer converts anything: output caps and thinking budgets reach the provider as sent.</p>
 					</div>
 					<Switch
 						id="compat-should-convert-params"

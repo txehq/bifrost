@@ -10,8 +10,8 @@ The LiteLLM compatibility plugin provides two transformations:
 
 1. **Text-to-Chat Conversion** - Automatically converts text completion requests to chat completion format for models that only support chat APIs
 2. **Chat-to-Responses Conversion** - Automatically converts chat completion requests to responses format for models that only support responses APIs
-3. **Drop Unsupported Params** - Automatically drops unsupported parameters if the model doesn't support them. On chat completions, `max_completion_tokens` (`max_tokens`) and `service_tier` are never dropped: they decide what the request is billed, so they go on as sent and the provider delivers them or refuses the request with 400 `caller_unsupported_parameter`. A `reasoning.summary` value the datasheet marks unsupported (`supports_reasoning_summary_detailed`, `supports_reasoning_summary_concise` or `supports_reasoning_summary_auto` set to `false`) becomes `auto` when the model accepts `auto`, and is dropped otherwise. Reasoning effort is always kept
-4. **Unsupported Parameter Conversion** - Automatically converts unsupported parameters to their supported equivalents
+3. **Drop Unsupported Params** - Automatically drops unsupported parameters if the model doesn't support them. A price-affecting field the caller sent is never dropped or rewritten: the output cap (`max_completion_tokens` / `max_tokens`, `max_output_tokens`), `service_tier`, `prompt_cache_key`, `prompt_cache_retention` and `reasoning` (effort and budget). They decide what the request is billed, so they go on as sent and the provider delivers them or refuses the request (400 `caller_unsupported_parameter` when Bifrost refuses, the vendor's own error otherwise). A `reasoning.summary` value the datasheet marks unsupported (`supports_reasoning_summary_detailed`, `supports_reasoning_summary_concise` or `supports_reasoning_summary_auto` set to `false`) becomes `auto` when the model accepts `auto`, and is dropped otherwise. Reasoning effort is always kept
+4. **Unsupported Parameter Conversion** - No longer converts anything. It used to lower an output cap or thinking budget above the model's limit; both are price-affecting, so they now go on as sent. The `should_convert_params` setting is still accepted
 5. **Reasoning-Only Models to Responses** - Routes chat completion requests to the Responses API for models that cannot reason alongside tool calls on chat completions
 6. **Decision-to-Responses Emulation** - Answers decision requests for models without a native decisions endpoint by prompting the model through the Responses API (off by default)
 
@@ -99,7 +99,7 @@ Some models (for example several GPT-5 series models) do not support reasoning t
 
 With `force_reasoning_only_models_to_responses` off, the request stays on chat completions. What happens to reasoning then depends on `should_drop_params`:
 
-- **`should_drop_params` on**: when the request carries tools, reasoning is turned off (dropped, or set to `none` when the model supports it).
+- **`should_drop_params` on**: reasoning the caller sent stays as sent, and the provider answers. When the request carries tools and no reasoning setting, reasoning is set to `none` for a model that supports it.
 - **`should_drop_params` off**: the request is sent with its reasoning setting unchanged.
 
 Controlled by `force_reasoning_only_models_to_responses` (on by default).
@@ -148,7 +148,7 @@ We recommend keeping this setting off and sending decisions to a model that serv
    - **Convert Text to Chat** - converts text completion requests to chat for models that only support chat
    - **Convert Chat to Responses** - converts chat completion requests to responses for models that only support responses
    - **Drop Unsupported Params** - drops unsupported parameters based on model catalog allowlist
-   - **Convert Unsupported Params Values** - converts parameter values the model cannot accept, such as a token cap above the model limit, to values it can. See the list of [supported parameters](#supported-parameters) below.
+   - **Convert Unsupported Params Values** - kept for configuration compatibility; converts nothing. See [supported parameters](#supported-parameters) below.
    - **Azure DeepSeek** - converts Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses
    - **Reasoning-only models to Responses** - routes chat completion requests to the Responses API for models that cannot reason with tool calls on chat completions
    - **Emulate Decisions API on non-decision models** - answers decision requests for models without a native decisions endpoint through the Responses API
@@ -182,17 +182,7 @@ We recommend keeping this setting off and sending decisions to a model that serv
 
 ## Supported Parameters
 
-The following parameter values are converted to values the model accepts:
-
-| Parameter | Original Value | Transformed Value | Provider |
-|-----------|----------------|-------------------|----------|
-| `max_completion_tokens` / `max_tokens` (chat), `max_output_tokens` (responses), `max_tokens` (text) | Above the model's `max_output_tokens` | The model's `max_output_tokens` | Every model with a known output limit |
-| Same as above | Below the model's `min_output_tokens` | The model's `min_output_tokens` | Models whose catalog row sets `min_output_tokens` |
-| `reasoning.max_tokens` | Sent with a token cap that was lowered | Scaled by the same ratio as the cap | Every model with a known output limit |
-| `reasoning.max_tokens` | Outside the model's thinking-budget range | The nearest end of the range | Claude, Gemini 2.5, and models whose catalog row sets `reasoning_budget` |
-| `reasoning.max_tokens` | At or above the lowered cap, or the model's `max_output_tokens` when no cap was sent | One below that cap | Every model with a known output limit |
-
-Limits come from the model catalog, with built-in fallbacks for Claude output limits and Claude and Gemini 2.5 thinking budgets. Only values present in the request are changed; none are added. Budgets of `0` and `-1` are left as sent. The conversion runs again for each fallback, so every fallback model is fitted to its own limits. Each conversion is logged as a warning on the request, for example `max_output_tokens: 1000000 -> 65536`.
+No parameter value is converted. `should_convert_params` used to lower `max_completion_tokens` / `max_tokens` / `max_output_tokens` and `reasoning.max_tokens` to the model's limits. Those values decide what the request is billed, so they now reach the provider as sent: a value outside the model's limits gets the provider's own error instead of being changed. The setting and its `x-bf-compat` name are still accepted, so existing configuration keeps loading.
 
 `developer` role messages are mapped to `system` by the Gemini, Vertex and Bedrock providers themselves, so that works without this setting.
 

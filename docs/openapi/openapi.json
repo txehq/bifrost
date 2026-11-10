@@ -128542,7 +128542,7 @@
                   "should_convert_params": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Converts model parameter values that are not supported by the model"
+                    "description": "Kept for configuration compatibility; converts nothing. Output caps and thinking budgets reach the provider as sent"
                   },
                   "azure_deepseek": {
                     "type": "boolean",
@@ -129082,7 +129082,7 @@
                   "should_convert_params": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Converts model parameter values that are not supported by the model"
+                    "description": "Kept for configuration compatibility; converts nothing. Output caps and thinking budgets reach the provider as sent"
                   },
                   "azure_deepseek": {
                     "type": "boolean",
