@@ -1264,6 +1264,91 @@ func TestContextTransport_WriteOnceRequestIsNeverResent(t *testing.T) {
 	})
 }
 
+// TestContextTransport_GetSurvivesAPoolOfDeadConnections pins TXE-7071. A GET keeps the
+// stale-connection retry, but that retry gives up after maxStaleConnRetries dead sockets, and
+// a pool holds more than that after any burst (startup model discovery leaves four for a
+// provider with two keys). The GET must not fail on them: its pooled connection is checked
+// before the write, as a write-once request's is, and it reaches the upstream once.
+func TestContextTransport_GetSurvivesAPoolOfDeadConnections(t *testing.T) {
+	const burst = 8 // more than the retry walks past
+	get := func(ctx context.Context, client *fasthttp.Client, target, method string) error {
+		req, resp := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseRequest(req)
+		defer fasthttp.ReleaseResponse(resp)
+		req.SetRequestURI(target + "/v1/videos/task_1")
+		req.Header.SetMethod(method)
+		_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+		wait()
+		if bifrostErr != nil {
+			return errors.New(bifrostErr.Error.Message)
+		}
+		if resp.StatusCode() != http.StatusOK {
+			return fmt.Errorf("status %d", resp.StatusCode())
+		}
+		return nil
+	}
+	plainContext := func(t *testing.T) *schemas.BifrostContext {
+		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 20*time.Second)
+		t.Cleanup(cancel)
+		return ctx
+	}
+	cases := []struct {
+		name    string
+		method  string
+		context func(t *testing.T) *schemas.BifrostContext
+	}{
+		{"GET", http.MethodGet, plainContext},
+		{"GET of a write-once request type", http.MethodGet, writeOnceContext},
+		{"HEAD", http.MethodHead, plainContext},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var closeAll atomic.Bool
+			release := make(chan struct{})
+			up := newWriteOnceUpstream(t, false, func(_, _ int32) upstreamAction {
+				if closeAll.Load() {
+					return answerAndKeep
+				}
+				<-release // hold the burst so every request needs its own connection
+				return answerThenClose
+			})
+			client := ConfigureDialer(&fasthttp.Client{ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second}, true)
+			var wg sync.WaitGroup
+			errs := make(chan error, burst)
+			for range burst {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					errs <- get(tc.context(t), client, up.target, http.MethodGet)
+				}()
+			}
+			deadline := time.Now().Add(10 * time.Second)
+			for up.requests.Load() < burst && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			close(release)
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				if err != nil {
+					t.Fatalf("a burst request failed: %v", err)
+				}
+			}
+			if conns := up.accepted.Load(); conns != burst {
+				t.Fatalf("the burst used %d connections, want %d", conns, burst)
+			}
+			closeAll.Store(true)
+			time.Sleep(300 * time.Millisecond) // every pooled socket has seen the upstream's close
+			if err := get(tc.context(t), client, up.target, tc.method); err != nil {
+				t.Fatalf("the %s after the burst failed with %d dead pooled connections: %v", tc.method, burst, err)
+			}
+			if got, conns := up.requests.Load(), up.accepted.Load(); got != burst+1 || conns != burst+1 {
+				t.Fatalf("upstream read %d requests on %d connections, want %d on %d: the request written once, on a connection dialed for it", got, conns, burst+1, burst+1)
+			}
+		})
+	}
+}
+
 // TestPooledConnIsOpen pins the three answers of the pre-write check on a real socket, plain
 // and under TLS: an idle open connection is open; one the peer closed, and one holding bytes
 // nobody asked for, are not.
@@ -1386,6 +1471,53 @@ func BenchmarkPooledConnIsOpen(b *testing.B) {
 		if !pooledConnIsOpen(conn) {
 			b.Fatal("an open connection was reported not open")
 		}
+	}
+}
+
+// BenchmarkTransport_PooledGet measures a GET on a reused TCP connection through the context
+// transport: what a task query or a list pays, the open-connection check before the write
+// included (TXE-7071).
+func BenchmarkTransport_PooledGet(b *testing.B) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				br := bufio.NewReader(conn)
+				for {
+					httpReq, err := http.ReadRequest(br)
+					if err != nil {
+						return
+					}
+					_, _ = io.Copy(io.Discard, httpReq.Body)
+					_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
+				}
+			}()
+		}
+	}()
+	client := ConfigureDialer(&fasthttp.Client{ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second}, true)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	target := "http://" + ln.Addr().String() + "/v1/videos/task_1"
+	b.ReportAllocs()
+	for b.Loop() {
+		req, resp := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
+		req.SetRequestURI(target)
+		req.Header.SetMethod(http.MethodGet)
+		_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+		wait()
+		if bifrostErr != nil || resp.StatusCode() != http.StatusOK {
+			b.Fatalf("request failed: %v", bifrostErr)
+		}
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
 	}
 }
 
