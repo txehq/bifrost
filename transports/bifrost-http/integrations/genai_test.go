@@ -8,6 +8,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/providers/gemini"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/providers/vertex"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -768,4 +769,48 @@ func TestGenAIEmbeddingRouteResponseRepeatsOnlyReportedUsage(t *testing.T) {
 	assert.False(t, gjson.GetBytes(body, "embedding.statistics").Exists(), "no count was reported: %s", body)
 	body = convert(embedCtx, &schemas.BifrostLLMUsage{PromptTokens: 5, TotalTokens: 5})
 	assert.Equal(t, int64(5), gjson.GetBytes(body, "embedding.statistics.tokenCount").Int(), "%s", body)
+}
+
+// OpenAI-shaped ingress to Google (TXE-6636): /openai/v1/embeddings, and the same route
+// under alias prefixes such as /litellm, decodes encoding_format into the unified
+// parameters, so base64 for a gemini or vertex model is refused with
+// caller_unsupported_parameter; the unified response returns billed_characters as reported.
+func TestOpenAIEmbeddingsRouteToGoogleRefusesBase64(t *testing.T) {
+	for _, prefix := range []string{"/openai", "/litellm"} {
+		var route *RouteConfig
+		routes := CreateOpenAIRouteConfigs(prefix, nil)
+		for i := range routes {
+			if routes[i].Path == prefix+"/v1/embeddings" {
+				route = &routes[i]
+			}
+		}
+		require.NotNil(t, route, prefix)
+		for _, model := range []string{"gemini/gemini-embedding-001", "vertex/text-embedding-005"} {
+			t.Run(prefix+"/"+model, func(t *testing.T) {
+				toBifrost := func(body string) *schemas.BifrostEmbeddingRequest {
+					native := route.GetRequestTypeInstance(context.Background())
+					require.NoError(t, sonic.Unmarshal([]byte(body), native))
+					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					bifrostReq, err := route.RequestConverter(ctx, native)
+					require.NoError(t, err)
+					return bifrostReq.EmbeddingRequest
+				}
+				err := gemini.RejectNonFloatEncodingFormat(toBifrost(`{"model":"` + model + `","input":"hi","encoding_format":"base64"}`))
+				bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+				require.True(t, ok, "want a caller error, got %v", err)
+				assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+				assert.Equal(t, "encoding_format", bifrostErr.Error.Param)
+				require.NoError(t, gemini.RejectNonFloatEncodingFormat(toBifrost(`{"model":"`+model+`","input":"hi","encoding_format":"float"}`)))
+			})
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp := &schemas.BifrostEmbeddingResponse{Usage: &schemas.BifrostLLMUsage{PromptTokens: 5, TotalTokens: 5, BilledCharacters: schemas.Ptr(18)}}
+		resp.ExtraFields.Provider = schemas.Vertex
+		out, err := route.EmbeddingResponseConverter(ctx, resp)
+		require.NoError(t, err)
+		body, err := sonic.Marshal(out)
+		require.NoError(t, err)
+		assert.Equal(t, int64(18), gjson.GetBytes(body, "usage.billed_characters").Int(), "%s", body)
+		assert.Equal(t, int64(5), gjson.GetBytes(body, "usage.prompt_tokens").Int(), "%s", body)
+	}
 }
