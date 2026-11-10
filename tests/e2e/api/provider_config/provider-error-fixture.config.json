@@ -66,7 +66,9 @@
             "gpt-6-pp-search",
             "sora-fixture",
             "upstream-idle-stream",
-            "upstream-ok~batch"
+            "upstream-ok~batch",
+            "gpt-image-1.5",
+            "gpt-image-blocked"
           ],
           "use_for_batch_api": true,
           "weight": 1
@@ -84,7 +86,8 @@
           "name": "local-error-fixture",
           "value": "test-key",
           "models": [
-            "azure-filtered"
+            "azure-filtered",
+            "gpt-image-1.5"
           ],
           "weight": 1,
           "azure_key_config": {

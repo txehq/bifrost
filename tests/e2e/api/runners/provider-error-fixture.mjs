@@ -457,7 +457,46 @@ const imagenPartiallyBlocked = {
 	],
 };
 
-const wireAnswer = (path, body) => {
+// OpenAI's own images API, TXE-6528 (contract C4, C5, C6): the openai provider's base URL is this fixture's root, so
+// an image request to it arrives on /v1/images/generations or /v1/images/edits. gpt-image-blocked answers with
+// OpenAI's documented moderation block (HTTP 400, code moderation_blocked); every other model answers in the
+// gpt-image shape, n images with the token usage block OpenAI reports and no image count. A streamed edit is answered
+// as server-sent events. An edit arrives as a
+// multipart form, or as OpenAI's JSON edit body when its input images are links, so the model and n are read from
+// whichever body came.
+const openAIImageModerationBlocked = JSON.stringify({ error: { message: "Your request was rejected by the safety system. If you believe this is an error, contact us at help.openai.com and include the request ID req_fixture.", type: "image_generation_user_error", param: null, code: "moderation_blocked" } });
+const formField = (bytes, name) => {
+	const match = new RegExp(`name="${name}"\\r\\n\\r\\n([^\\r]*)\\r\\n`).exec(bytes);
+	return match ? match[1] : undefined;
+};
+const openAIImageAnswer = (body, bytes, isEdit) => {
+	const model = typeof body.model === "string" ? body.model : formField(bytes, "model");
+	if (model === "gpt-image-blocked") return { status: 400, body: openAIImageModerationBlocked };
+	const requested = Number.isInteger(body.n) ? body.n : Number(formField(bytes, "n"));
+	const n = Number.isInteger(requested) && requested > 0 ? requested : 1;
+	// A streamed edit (stream: true in either body) is answered as OpenAI streams it: one partial image, then the
+	// completed event carrying the token usage.
+	if (isEdit && (body.stream === true || formField(bytes, "stream") === "true")) {
+		const events = [
+			{ type: "image_edit.partial_image", b64_json: "iVBORw0KGgo=", partial_image_index: 0, sequence_number: 1, created_at: 1, size: "1024x1024", quality: "low", background: "opaque", output_format: "png" },
+			{ type: "image_edit.completed", b64_json: "iVBORw0KGgo=", sequence_number: 2, created_at: 1, size: "1024x1024", quality: "low", background: "opaque", output_format: "png", usage: { input_tokens: 12, input_tokens_details: { image_tokens: 0, text_tokens: 12 }, output_tokens: 272, output_tokens_details: { image_tokens: 272, text_tokens: 0 }, total_tokens: 284 } },
+		];
+		return { status: 200, stream: events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join("") };
+	}
+	return {
+		status: 200,
+		body: JSON.stringify({
+			created: 1, background: "opaque", output_format: "png", quality: "low", size: "1024x1024",
+			data: Array.from({ length: n }, () => ({ b64_json: "iVBORw0KGgo=" })),
+			usage: { input_tokens: 12, input_tokens_details: { image_tokens: 0, text_tokens: 12 }, output_tokens: 272 * n, output_tokens_details: { image_tokens: 272 * n, text_tokens: 0 }, total_tokens: 12 + 272 * n },
+		}),
+	};
+};
+// Azure runs the same images API on its endpoint under /openai/v1 (the azure key's endpoint is this fixture).
+const isOpenAIImagePath = (path) => path === "/v1/images/generations" || path === "/v1/images/edits" || path === "/openai/v1/images/generations";
+
+const wireAnswer = (path, body, bytes) => {
+	if (isOpenAIImagePath(path)) return openAIImageAnswer(body, bytes, path === "/v1/images/edits");
 	if (path === "/pp/bounds/v1/chat/completions") {
 		return { status: 200, body: JSON.stringify({ id: "chatcmpl_bounds", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
 	}
@@ -634,15 +673,18 @@ const server = http.createServer((req, res) => {
 	if (req.method === "GET" && path === "/__wire") {
 		return send(200, {}, JSON.stringify({ data: [{ calls: wireCalls }] }));
 	}
-	if (req.method === "POST" && (path.startsWith("/pp/") || path === "/v1/embeddings")) {
+	if (req.method === "POST" && (path.startsWith("/pp/") || path === "/v1/embeddings" || isOpenAIImagePath(path))) {
 		const body = [];
 		req.on("data", (c) => body.push(c));
 		req.on("end", () => {
 			const bytes = Buffer.concat(body).toString("utf8");
-			wireCalls.push({ path, query: new URL(req.url, "http://localhost").search, body: bytes });
+			const call = { path, query: new URL(req.url, "http://localhost").search, body: bytes };
+			// An image edit is a form or a JSON body (TXE-6528), so its row also says which one arrived.
+			if (isOpenAIImagePath(path)) call.contentType = req.headers["content-type"] || "";
+			wireCalls.push(call);
 			let parsed = {};
 			try { parsed = JSON.parse(bytes) || {}; } catch {}
-			const answer = wireAnswer(path, parsed);
+			const answer = wireAnswer(path, parsed, bytes);
 			if (answer.stream !== undefined) {
 				res.writeHead(answer.status, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
 				return res.end(answer.stream);

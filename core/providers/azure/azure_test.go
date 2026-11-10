@@ -810,3 +810,83 @@ func TestAzureBatchResultsMergeTheErrorFileAndPage(t *testing.T) {
 		t.Errorf("paged lines = %v, want %v", paged, want)
 	}
 }
+
+// TXE-6528 (contract C4): Azure image generation runs OpenAI's images API through the shared
+// handlers, so a unified field that API has no field for is refused here too, on the sync and the
+// streaming route: 400 caller_unsupported_parameter naming the field, and the request never
+// reaches Azure. A request carrying only fields the API takes still makes its one call.
+func TestAzureImageGenerationRejectsUndeliverableFields(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"created":1,"data":[{"b64_json":"aGk="}]}`)
+	}))
+	defer server.Close()
+	provider := newAzureDecisionProvider(t)
+	key := newAzureDecisionKey(server.URL)
+	request := func(params schemas.ImageGenerationParameters) *schemas.BifrostImageGenerationRequest {
+		return &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Azure,
+			Model:    "gpt-image-1.5",
+			Input:    &schemas.ImageGenerationInput{Prompt: "a fox"},
+			Params:   &params,
+		}
+	}
+	checkRefused := func(t *testing.T, bifrostErr *schemas.BifrostError, param string) {
+		t.Helper()
+		if bifrostErr == nil {
+			t.Fatalf("want a 400 naming %s", param)
+		}
+		if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %v, want 400", bifrostErr.StatusCode)
+		}
+		if got := bifrostErr.ResolveErrorType(); got != schemas.ErrorTypeCallerUnsupportedParameter {
+			t.Fatalf("error_type = %q, want %q", got, schemas.ErrorTypeCallerUnsupportedParameter)
+		}
+		if bifrostErr.Error == nil || bifrostErr.Error.Param != param {
+			t.Fatalf("error.param = %+v, want %q", bifrostErr.Error, param)
+		}
+	}
+	for _, tc := range []struct {
+		param  string
+		params schemas.ImageGenerationParameters
+	}{
+		{"aspect_ratio", schemas.ImageGenerationParameters{AspectRatio: schemas.Ptr("16:9")}},
+		{"input_images", schemas.ImageGenerationParameters{InputImages: []string{"https://example.com/a.png"}}},
+		{"resolution", schemas.ImageGenerationParameters{Resolution: "2K"}},
+		{"type", schemas.ImageGenerationParameters{Type: schemas.Ptr("vectorize")}},
+	} {
+		t.Run(tc.param, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.ImageGeneration(ctx, key, request(tc.params))
+			checkRefused(t, bifrostErr, tc.param)
+		})
+		t.Run(tc.param+" stream", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			stream, bifrostErr := provider.ImageGenerationStream(ctx, nil, nil, key, request(tc.params))
+			if stream != nil {
+				t.Fatal("a stream was opened for a refused request")
+			}
+			checkRefused(t, bifrostErr, tc.param)
+		})
+	}
+	mu.Lock()
+	if len(paths) != 0 {
+		t.Fatalf("refused requests reached Azure: %v", paths)
+	}
+	mu.Unlock()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, bifrostErr := provider.ImageGeneration(ctx, key, request(schemas.ImageGenerationParameters{N: schemas.Ptr(1), Size: schemas.Ptr("1024x1024")})); bifrostErr != nil {
+		t.Fatalf("ImageGeneration with deliverable fields: %+v", bifrostErr.Error)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) != 1 || paths[0] != "/openai/v1/images/generations" {
+		t.Fatalf("upstream calls = %v, want one to /openai/v1/images/generations", paths)
+	}
+}
