@@ -132,7 +132,7 @@ These return `400` with `extra_fields.error_type: "caller_unsupported_parameter"
 - `response_format` values with no `audioEncoding` (`aac`, `flac`)
 - `speed` outside `0.25` to `2.0`
 - `voice` given as a multi-speaker list
-- `voice` absent, or of another family than the model
+- `voice` of another family than the model, or a name that carries no family
 
 ### Model and Voice Family
 
@@ -143,7 +143,7 @@ Google names every voice `<language>-<REGION>-<family>-<variant>`: `en-US-Wavene
 | `google-cloud-tts/wavenet` | `en-US-Wavenet-D` | Sent |
 | `google-cloud-tts/chirp3-hd` | `en-US-Chirp3-HD-Achernar` | Sent |
 | `google-cloud-tts/wavenet` | `en-US-Chirp3-HD-Achernar` | `400`, `error.param: "voice"` |
-| `google-cloud-tts/wavenet` | none | `400`, `error.param: "voice"` |
+| `google-cloud-tts/wavenet` | none | `400` (the speech route requires a voice) |
 
 Voices that are not selected by name (an instant custom voice, which takes a voice cloning key) cannot be requested.
 
