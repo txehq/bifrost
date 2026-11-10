@@ -291794,6 +291794,193 @@
       ]
     },
     {
+      "name": "307. Tencent TokenHub Hy image generation (tencent provider)",
+      "description": "Tencent Cloud TokenHub serves the Hy image models at their own paths, not OpenAI's: hy-image-v3 (HunyuanImage 3.0) at /v1/wand/hunyuan-image/v3-generation with prompt and images, hy-image-v3.5-* at /v1/wand/hunyuan-image/v35-generation with an OpenAI chat-style messages array (https://cloud.tencent.com/document/product/1823/135745). Both answer synchronously with signed image URLs and report tokenhub_usage.total_tokens, which Bifrost writes as total_tokens and output image tokens next to output_images (contract C5). TokenHub has no count parameter and returns URLs only, so n other than 1 and every unified field it cannot take are refused with 400 caller_unsupported_parameter before any upstream call (contract C4). A moderation block (422, or finish_reason error with code content_filter) is caller_content_filtered; it is pinned by Go tests on the documented body, since a live block would need prohibited content. Needs TENCENT_API_KEY.",
+      "item": [
+        {
+          "name": "307.1 /v1/images/generations - HunyuanImage 3.0 returns a URL with image tokens - tencent/hy-image-v3 (tencent provider)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('one image URL and TokenHub usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data, 'data: ' + pm.response.text().slice(0, 800)).to.be.an('array').with.length(1);",
+                  "  pm.expect(j.data[0].url, 'url').to.match(/^https:\\/\\//);",
+                  "  var u = j.usage || {};",
+                  "  pm.expect(u.output_images, 'output_images: ' + pm.response.text().slice(0, 800)).to.eql(j.data.length);",
+                  "  pm.expect(u.total_tokens, 'total_tokens: ' + pm.response.text().slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(u.output_tokens_details && u.output_tokens_details.image_tokens, 'image_tokens: ' + pm.response.text().slice(0, 800)).to.eql(u.total_tokens);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"tencent/hy-image-v3\",\n  \"prompt\": \"a small red square on a white background, flat illustration\",\n  \"size\": \"512x512\",\n  \"n\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "307.2 /v1/images/generations - Hy Image 3.5 Preview takes the prompt as a chat message and reports the pixel size - tencent/hy-image-v3.5-preview (tencent provider)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('one image URL, its size and TokenHub usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data, 'data: ' + pm.response.text().slice(0, 800)).to.be.an('array').with.length(1);",
+                  "  pm.expect(j.data[0].url, 'url').to.match(/^https:\\/\\//);",
+                  "  pm.expect(j.size, 'size: ' + pm.response.text().slice(0, 800)).to.eql('1024x1024');",
+                  "  var u = j.usage || {};",
+                  "  pm.expect(u.output_images, 'output_images: ' + pm.response.text().slice(0, 800)).to.eql(j.data.length);",
+                  "  pm.expect(u.total_tokens, 'total_tokens: ' + pm.response.text().slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(u.output_tokens_details && u.output_tokens_details.image_tokens, 'image_tokens: ' + pm.response.text().slice(0, 800)).to.eql(u.total_tokens);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"tencent/hy-image-v3.5-preview\",\n  \"prompt\": \"a small red square on a white background, flat illustration\",\n  \"size\": \"1024x1024\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "307.3 [EXPECT-400] /v1/images/generations - n=2 is refused, TokenHub generates one image - tencent/hy-image-v3 (tencent provider)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('n is refused as caller_unsupported_parameter', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'param: ' + pm.response.text()).to.eql('n');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"tencent/hy-image-v3\",\n  \"prompt\": \"a small red square\",\n  \"n\": 2\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "307.4 [EXPECT-400] /v1/images/generations - quality is refused, TokenHub has no quality tier - tencent/hy-image-v3.5-preview (tencent provider)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('quality is refused as caller_unsupported_parameter', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'param: ' + pm.response.text()).to.eql('quality');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"tencent/hy-image-v3.5-preview\",\n  \"prompt\": \"a small red square\",\n  \"quality\": \"high\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "280. OpenAI passthrough Responses stream ends on response.completed (PR #9177) (passthrough responses end event)",
       "description": "Codex CLI and Codex Desktop close the connection as soon as they read response.completed. The OpenAI passthrough stream used to finish only on upstream EOF, so a client that hung up first was logged as cancelled (499, 'Request cancelled: client disconnected') with no usage. core/providers/utils/passthrough_stream.go now finishes the stream on a provider end event (PassthroughStreamParams.EndsStream; OpenAI matches response.completed, response.failed, response.incomplete and error) and abandons the upstream body instead of draining it. newman reads the stream to EOF, so it cannot reproduce the early hangup; that is pinned by TestStreamPassthrough_EndsStreamFinalizesBeforeClientHangup and TestStreamPassthrough_EndsStreamAbandonsParkedUpstream. This case pins the wire path: a streamed Responses request through /openai_passthrough completes, and its log row ends as success with the usage from response.completed.",
       "item": [

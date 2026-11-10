@@ -91,6 +91,7 @@ const (
 	Typesafe      ModelProvider = "typesafe"
 	MiniMax       ModelProvider = "minimax"
 	BytePlus      ModelProvider = "byteplus"
+	Tencent       ModelProvider = "tencent" // Tencent Cloud TokenHub: Hy image generation (fork)
 )
 
 // SupportedBaseProviders is the list of base providers allowed for custom providers.
@@ -110,6 +111,7 @@ var SupportedBaseProviders = []ModelProvider{
 	Volcengine,
 	HuggingFace,
 	Replicate,
+	Tencent,
 	Typesafe,
 }
 
@@ -156,6 +158,7 @@ var StandardProviders = []ModelProvider{
 	Typesafe,
 	MiniMax,
 	BytePlus,
+	Tencent,
 }
 
 // RequestType represents the type of request being made to a provider.

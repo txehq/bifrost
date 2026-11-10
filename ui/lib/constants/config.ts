@@ -73,6 +73,7 @@ export const ModelPlaceholders = {
 	wafer: "e.g. glm-5.2, kimi-k2.6",
 	minimax: "e.g. MiniMax-M3, image-01, MiniMax-H3",
 	byteplus: "e.g. deepseek-v4-flash-260425, dola-seedream-5-0-pro-260628, dreamina-seedance-2-5-260628",
+	tencent: "e.g. hy-image-v3.5-preview, hy-image-v3",
 	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
 	cloudflare: "e.g. @cf/meta/llama-4-scout-17b-16e-instruct, @cf/baai/bge-large-en-v1.5",
 	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
@@ -117,6 +118,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	wafer: true,
 	minimax: true,
 	byteplus: true,
+	tencent: true,
 	databricks: false,
 	cloudflare: true,
 	"github-copilot": false,
@@ -295,6 +297,7 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"image_variation",
 	],
 	huggingface: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream"],
+	tencent: ["image_generation"],
 	minimax: [
 		"list_models",
 		"text_completion",

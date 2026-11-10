@@ -53,6 +53,7 @@ import (
 	"github.com/capsohq/bifrost/core/providers/runway"
 	"github.com/capsohq/bifrost/core/providers/sarvam"
 	"github.com/capsohq/bifrost/core/providers/sgl"
+	"github.com/capsohq/bifrost/core/providers/tencent"
 	"github.com/capsohq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/providers/vertex"
@@ -5073,6 +5074,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return wafer.NewWaferProvider(config, bifrost.logger)
 	case schemas.BytePlus:
 		return byteplus.NewBytePlusProvider(config, bifrost.logger)
+	case schemas.Tencent:
+		return tencent.NewTencentProvider(config, bifrost.logger)
 	case schemas.Cloudflare:
 		return cloudflare.NewCloudflareProvider(config, bifrost.logger)
 	case schemas.Gemini:

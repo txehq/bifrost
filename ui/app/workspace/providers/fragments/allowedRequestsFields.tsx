@@ -58,6 +58,10 @@ const ProviderEndpoints: Partial<Record<BaseProvider, Partial<Record<RequestType
 		responses_stream: "/v2/chat",
 		embedding: "/v2/embed",
 	},
+	tencent: {
+		// The default depends on the model: hy-image-v3.5-* uses /v1/wand/hunyuan-image/v35-generation.
+		image_generation: "/v1/wand/hunyuan-image/v3-generation",
+	},
 };
 
 // Helper function to get the appropriate placeholder

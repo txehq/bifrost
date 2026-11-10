@@ -1,0 +1,114 @@
+---
+title: "Tencent"
+description: "Tencent Cloud TokenHub conversion guide for Hy (Hunyuan) image generation: HunyuanImage 3.0 and Hy Image 3.5 Preview"
+icon: "t"
+---
+
+## Overview
+
+Tencent Cloud's TokenHub (大模型服务平台 TokenHub) serves the Hy (Hunyuan) image models. Their API is not OpenAI's image API: each model has its own path and body, so Bifrost has its own `tencent` provider for them. Key characteristics:
+
+- **Two models, two request shapes.** `hy-image-v3` (HunyuanImage 3.0) takes `prompt` and `images`. `hy-image-v3.5-*` (Hy Image 3.5 Preview) takes an OpenAI chat-style `messages` array. Bifrost picks the shape and path from the model name.
+- **Synchronous.** TokenHub finishes generation before it answers. One request to Bifrost is one TokenHub call; there is no task to poll.
+- **URLs only.** TokenHub returns signed temporary image URLs, valid for 12 hours.
+- **Usage in tokens.** TokenHub reports `tokenhub_usage.total_tokens`, the image tokens it bills.
+
+Tencent's chat models are OpenAI-compatible and run on an `openai`-based custom provider, not on this one.
+
+Source: TokenHub's "Hy 生图调用指南", [cloud.tencent.com/document/product/1823/135745](https://cloud.tencent.com/document/product/1823/135745).
+
+### Supported operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Image Generation (`hy-image-v3`) | ✅ | - | `/v1/wand/hunyuan-image/v3-generation` |
+| Image Generation (`hy-image-v3.5-*`) | ✅ | - | `/v1/wand/hunyuan-image/v35-generation` |
+| Everything else | ❌ | ❌ | - |
+
+## Setup and configuration
+
+Bifrost calls `https://tokenhub.tencentmaas.com` by default and sends the TokenHub API key as a bearer token (`Authorization: Bearer <key>`). Set `network_config.base_url` to use another host; Bifrost appends the paths above itself.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Click **Add New Provider** and select **Tencent TokenHub**.
+2. Click **Add Key**, name it, and paste your TokenHub API key or an environment variable (for example, `env.TENCENT_API_KEY`).
+3. Under **Allowed Models**, list `hy-image-v3` and `hy-image-v3.5-preview`.
+4. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "tencent": {
+      "keys": [
+        {
+          "name": "tokenhub",
+          "value": "env.TENCENT_API_KEY",
+          "models": ["hy-image-v3", "hy-image-v3.5-preview"],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+`tencent` can be the `base_provider_type` of a custom provider. Such a provider reports its own name, honours `allowed_requests`, and `request_path_overrides.image_generation` replaces the model's default path.
+
+## Image generation
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tencent/hy-image-v3.5-preview",
+    "prompt": "a cat on a sofa, watercolour",
+    "size": "2048x2048"
+  }'
+```
+
+### Request conversion
+
+| Bifrost field | `hy-image-v3` | `hy-image-v3.5-*` |
+|---------------|---------------|-------------------|
+| `prompt` | `prompt` | text part of the single `user` message |
+| `input_images` (URLs or data URIs) | `images`, unchanged | `image_url` parts of that message, unchanged |
+| `size` (`WxH`) | `size`, unchanged | `size`, unchanged |
+| `seed` | `seed` | `seed` |
+| `n` | only `1` (TokenHub has no count parameter) | only `1` |
+| `response_format` | only `url` | only `url` |
+
+Any other unified field (`quality`, `aspect_ratio`, `resolution`, `output_format`, `background`, `style`, ...) returns `400` with `extra_fields.error_type` `caller_unsupported_parameter` and the field in `error.param`, and nothing is sent to TokenHub. So do `n` other than 1 and `response_format` other than `url`. TokenHub validates the `size` range itself (v3: each side 512 to 2048, at most 1024x1024 in area; v3.5: each side 256 to 8192, at most 4096x4096).
+
+TokenHub-only fields (`footnote`, `revise`, `generate_max_pixels`, `resize_max_pixels`, `session`, `use_search_tool`) reach the body when the request carries `x-bf-passthrough-extra-params: true`.
+
+### Response conversion
+
+| TokenHub | Bifrost |
+|----------|---------|
+| `data[].url`, `data[].revised_prompt` (v3) | `data[].url`, `data[].revised_prompt` |
+| `choices[0].delta.image.url` (v3.5) | `data[0].url` |
+| `choices[0].delta.image.width`, `height` (v3.5) | `size` (`WxH`) |
+| `tokenhub_usage.total_tokens` (or `usage.total_tokens`) | `usage.total_tokens`, `usage.output_tokens`, `usage.output_tokens_details.image_tokens` |
+| number of images returned | `usage.output_images` |
+
+When TokenHub reports no usage, the token fields stay empty.
+
+### Errors and content filtering
+
+| TokenHub answer | Bifrost answer |
+|-----------------|----------------|
+| HTTP 422, or `error.code` `content_filter` (moderation of input or output) | The same status, `error_type` `caller_content_filtered` |
+| 200 with `finish_reason: "error"` and `error.code` `content_filter` (v3.5) | `400`, `error_type` `caller_content_filtered`, `error.code` `content_filter` |
+| 200 with `finish_reason: "error"` and any other code | `502` with the vendor's code |
+| 200 with no image and no error | `502`, `error_type` `provider_empty_result` |
+| Other 4xx and 5xx | The same status, with TokenHub's `error.type`, `error.code` and `error.message` |
+
+With `x-bf-send-back-raw-response: true`, TokenHub's body is in `extra_fields.raw_response` on errors as well as on success.
