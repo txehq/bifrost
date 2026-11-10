@@ -536,6 +536,19 @@ const miniMaxBaseRespAnswer = (selector) => {
 	return { status: 200, body: JSON.stringify({ id: "", choices: null, base_resp: { status_code: Number(m[1]), status_msg: `fixture base_resp ${m[1]}` } }) };
 };
 
+// Google Cloud Text-to-Speech, TXE-6541. text:synthesize answers by the voice name in the request: a WaveNet voice
+// gets Google's documented sample response (audioContent is base64, shortened as in Google's quickstart), a voice name
+// ending in -ZZ gets Google's INVALID_ARGUMENT error envelope with status 400, one ending in -Quota a 429
+// RESOURCE_EXHAUSTED, and one ending in -Silent a 200 with no audioContent.
+const cloudTTSAudioContent = "//NExAASCCIIAAhEAGAAEMW4kAYPnwwIKw/BBTpwTvB+IAxIfghU";
+const cloudTTSAnswer = (body) => {
+	const voice = body.voice && typeof body.voice.name === "string" ? body.voice.name : "";
+	if (voice.endsWith("-ZZ")) return { status: 400, body: JSON.stringify({ error: { code: 400, message: `Voice '${voice}' does not exist. Is it misspelled?`, status: "INVALID_ARGUMENT" } }) };
+	if (voice.endsWith("-Quota")) return { status: 429, body: JSON.stringify({ error: { code: 429, message: "Quota exceeded for quota metric 'All requests' and limit 'All requests per minute'.", status: "RESOURCE_EXHAUSTED" } }) };
+	if (voice.endsWith("-Silent")) return { status: 200, body: "{}" };
+	return { status: 200, body: JSON.stringify({ audioContent: cloudTTSAudioContent }) };
+};
+
 // OpenAI's own images API, TXE-6528 (contract C4, C5, C6): the openai provider's base URL is this fixture's root, so
 // an image request to it arrives on /v1/images/generations or /v1/images/edits. gpt-image-blocked answers with
 // OpenAI's documented moderation block (HTTP 400, code moderation_blocked); every other model answers in the
@@ -711,6 +724,7 @@ const wireAnswer = (path, body, bytes) => {
 	if (path === "/pp/byteplus/api/v3/contents/generations/tasks") return { status: 200, body: JSON.stringify({ id: "cgt-fixture-video-task" }) };
 	if (path.startsWith("/pp/gemini/models/") && path.endsWith(":predictLongRunning")) return { status: 200, body: JSON.stringify({ name: `${path.slice("/pp/gemini/".length, -":predictLongRunning".length)}/operations/fixture-video-op` }) };
 	if (path === "/pp/vercel/v1/images/generations") return { status: 200, body: JSON.stringify(vercelImageAnswer(body)) };
+	if (path === "/pp/google-cloud-tts/v1/text:synthesize") return cloudTTSAnswer(body);
 	if (path === "/pp/cp/v1/responses") return cpResponsesAnswerFor(body);
 	if (path === "/pp/cloudflare/accounts/acct-1/ai/v1/chat/completions") return cpCloudflareChat(body);
 	// DeepSeek's Anthropic-compatible endpoint is {base}/anthropic/v1/messages (TXE-6548), under the same /pp/oc base its chat uses.

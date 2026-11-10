@@ -1,0 +1,511 @@
+package googlecloudtts_test
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"sync"
+	"testing"
+	"time"
+
+	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/providers/googlecloudtts"
+	"github.com/capsohq/bifrost/core/schemas"
+)
+
+// The request and response samples are Google's own, from "Create audio from text by
+// using the command line"
+// (https://docs.cloud.google.com/text-to-speech/docs/create-audio-text-command-line),
+// with a WaveNet voice of the same locale in place of the Standard one. The documented
+// audioContent is shortened there; sampleAudioContent is its first 52 characters.
+const (
+	sampleText         = "Android is a mobile operating system developed by Google, based on the Linux kernel and designed primarily for touchscreen mobile devices such as smartphones and tablets."
+	sampleVoice        = "en-GB-Wavenet-A"
+	sampleLanguageCode = "en-gb"
+	sampleAudioContent = "//NExAASCCIIAAhEAGAAEMW4kAYPnwwIKw/BBTpwTvB+IAxIfghU"
+	sampleResponseBody = `{"audioContent": "` + sampleAudioContent + `"}`
+
+	// Google's error envelope (google.rpc.Status in JSON) for a voice that does not exist.
+	invalidArgumentBody = `{"error":{"code":400,"message":"Voice 'en-GB-Wavenet-ZZ' does not exist. Is it misspelled?","status":"INVALID_ARGUMENT"}}`
+)
+
+type capturedRequest struct {
+	method string
+	path   string
+	query  string
+	header http.Header
+	body   []byte
+}
+
+// newMockCloudTTS starts a server that records every request and answers each with respond.
+func newMockCloudTTS(t *testing.T, respond func(w http.ResponseWriter)) (*googlecloudtts.GoogleCloudTTSProvider, func() []capturedRequest) {
+	t.Helper()
+	var mu sync.Mutex
+	var captured []capturedRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		captured = append(captured, capturedRequest{method: r.Method, path: r.URL.Path, query: r.URL.RawQuery, header: r.Header.Clone(), body: body})
+		mu.Unlock()
+		respond(w)
+	}))
+	t.Cleanup(server.Close)
+
+	provider, err := googlecloudtts.NewGoogleCloudTTSProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        server.URL,
+			DefaultRequestTimeoutInSeconds: 10,
+			AllowPrivateNetwork:            true,
+		},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		t.Fatalf("NewGoogleCloudTTSProvider: %v", err)
+	}
+	return provider, func() []capturedRequest {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]capturedRequest(nil), captured...)
+	}
+}
+
+func jsonResponse(status int, body string) func(w http.ResponseWriter) {
+	return func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}
+}
+
+func testContext(t *testing.T) *schemas.BifrostContext {
+	t.Helper()
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+func testKey() schemas.Key {
+	return schemas.Key{Value: *schemas.NewSecretVar("test-key"), Models: []string{"*"}}
+}
+
+func speechRequest(input string, params *schemas.SpeechParameters) *schemas.BifrostSpeechRequest {
+	return &schemas.BifrostSpeechRequest{
+		Provider: schemas.GoogleCloudTTS,
+		Model:    "wavenet",
+		Input:    &schemas.SpeechInput{Input: input},
+		Params:   params,
+	}
+}
+
+func voice(name string) *schemas.SpeechVoiceInput {
+	return &schemas.SpeechVoiceInput{Voice: schemas.Ptr(name)}
+}
+
+// sentBody decodes the one request body the mock received.
+func sentBody(t *testing.T, reqs []capturedRequest) map[string]any {
+	t.Helper()
+	if len(reqs) != 1 {
+		t.Fatalf("expected 1 upstream request, got %d", len(reqs))
+	}
+	var body map[string]any
+	if err := json.Unmarshal(reqs[0].body, &body); err != nil {
+		t.Fatalf("upstream body is not JSON: %v: %s", err, reqs[0].body)
+	}
+	return body
+}
+
+func TestSpeechSendsSynthesizeBodyAndReturnsDecodedAudio(t *testing.T) {
+	provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+
+	resp, bifrostErr := provider.Speech(testContext(t), testKey(), speechRequest(sampleText, &schemas.SpeechParameters{
+		VoiceConfig:    voice(sampleVoice),
+		LanguageCode:   schemas.Ptr(sampleLanguageCode),
+		ResponseFormat: "mp3",
+		Speed:          schemas.Ptr(1.25),
+	}))
+	if bifrostErr != nil {
+		t.Fatalf("Speech error: %+v", bifrostErr.Error)
+	}
+
+	reqs := captured()
+	got := sentBody(t, reqs)
+	want := map[string]any{
+		"input":       map[string]any{"text": sampleText},
+		"voice":       map[string]any{"languageCode": sampleLanguageCode, "name": sampleVoice},
+		"audioConfig": map[string]any{"audioEncoding": "MP3", "speakingRate": 1.25},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("upstream body = %s, want %v", reqs[0].body, want)
+	}
+	if reqs[0].method != http.MethodPost || reqs[0].path != "/v1/text:synthesize" || reqs[0].query != "" {
+		t.Errorf("upstream request = %s %s?%s, want POST /v1/text:synthesize", reqs[0].method, reqs[0].path, reqs[0].query)
+	}
+	if key := reqs[0].header.Get("x-goog-api-key"); key != "test-key" {
+		t.Errorf("x-goog-api-key = %q, want the key value", key)
+	}
+	if auth := reqs[0].header.Get("Authorization"); auth != "" {
+		t.Errorf("Authorization = %q, want none: the key travels in x-goog-api-key only", auth)
+	}
+
+	wantAudio, err := base64.StdEncoding.DecodeString(sampleAudioContent)
+	if err != nil {
+		t.Fatalf("sample audio is not base64: %v", err)
+	}
+	if !bytes.Equal(resp.Audio, wantAudio) {
+		t.Errorf("audio = %d bytes, want the %d decoded bytes of audioContent", len(resp.Audio), len(wantAudio))
+	}
+	// The vendor reports no usage, so the provider reports none (contract C5).
+	if resp.Usage != nil {
+		t.Errorf("usage = %+v, want none: text:synthesize reports no usage", resp.Usage)
+	}
+	if resp.AudioBase64 != nil || resp.Alignment != nil {
+		t.Errorf("response carries fields the vendor did not send: %+v", resp)
+	}
+}
+
+func TestSpeechRequestMapping(t *testing.T) {
+	ssml := `<speak>Hello <break time="300ms"/> world</speak>`
+	tests := []struct {
+		name   string
+		input  string
+		params *schemas.SpeechParameters
+		want   map[string]any
+	}{
+		{
+			name:  "no params sends the required audioEncoding as mp3",
+			input: "hi",
+			want: map[string]any{
+				"input": map[string]any{"text": "hi"}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
+			},
+		},
+		{
+			name:   "an SSML document goes to input.ssml",
+			input:  ssml,
+			params: &schemas.SpeechParameters{VoiceConfig: voice("en-US-Wavenet-D"), LanguageCode: schemas.Ptr("en-US")},
+			want: map[string]any{
+				"input": map[string]any{"ssml": ssml}, "voice": map[string]any{"languageCode": "en-US", "name": "en-US-Wavenet-D"}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
+			},
+		},
+		{
+			name:  "text that only mentions a speak tag stays text",
+			input: "<speaker> is not SSML, and neither is a late <speak>",
+			want: map[string]any{
+				"input": map[string]any{"text": "<speaker> is not SSML, and neither is a late <speak>"}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
+			},
+		},
+		{
+			name:   "opus is Opus in an Ogg container",
+			input:  "hi",
+			params: &schemas.SpeechParameters{ResponseFormat: "opus"},
+			want: map[string]any{
+				"input": map[string]any{"text": "hi"}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "OGG_OPUS"},
+			},
+		},
+		{
+			name:   "wav is LINEAR16, which carries a WAV header",
+			input:  "hi",
+			params: &schemas.SpeechParameters{ResponseFormat: "wav"},
+			want: map[string]any{
+				"input": map[string]any{"text": "hi"}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "LINEAR16"},
+			},
+		},
+		{
+			name:   "pcm is headerless PCM",
+			input:  "hi",
+			params: &schemas.SpeechParameters{ResponseFormat: "pcm"},
+			want: map[string]any{
+				"input": map[string]any{"text": "hi"}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "PCM"},
+			},
+		},
+		{
+			name:   "a vendor encoding is taken under its own name",
+			input:  "hi",
+			params: &schemas.SpeechParameters{ResponseFormat: "MULAW"},
+			want: map[string]any{
+				"input": map[string]any{"text": "hi"}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "MULAW"},
+			},
+		},
+		{
+			name:   "the speaking rate bounds are sent as given",
+			input:  "hi",
+			params: &schemas.SpeechParameters{Speed: schemas.Ptr(0.25)},
+			want: map[string]any{
+				"input": map[string]any{"text": "hi"}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "MP3", "speakingRate": 0.25},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+			if _, bifrostErr := provider.Speech(testContext(t), testKey(), speechRequest(tt.input, tt.params)); bifrostErr != nil {
+				t.Fatalf("Speech error: %+v", bifrostErr.Error)
+			}
+			reqs := captured()
+			if got := sentBody(t, reqs); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("upstream body = %s, want %v", reqs[0].body, tt.want)
+			}
+		})
+	}
+}
+
+// Vendor fields outside the unified structure reach text:synthesize through the
+// extra-params channel, merged into the object the mapped fields are in (contract C4).
+func TestSpeechMergesExtraParamsIntoTheBody(t *testing.T) {
+	provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+	ctx := testContext(t)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
+	_, bifrostErr := provider.Speech(ctx, testKey(), speechRequest("hi", &schemas.SpeechParameters{
+		VoiceConfig:    voice("en-US-Wavenet-D"),
+		LanguageCode:   schemas.Ptr("en-US"),
+		ResponseFormat: "wav",
+		ExtraParams: map[string]any{
+			"audioConfig": map[string]any{"pitch": -2.0, "sampleRateHertz": 16000.0},
+		},
+	}))
+	if bifrostErr != nil {
+		t.Fatalf("Speech error: %+v", bifrostErr.Error)
+	}
+	reqs := captured()
+	want := map[string]any{
+		"input":       map[string]any{"text": "hi"},
+		"voice":       map[string]any{"languageCode": "en-US", "name": "en-US-Wavenet-D"},
+		"audioConfig": map[string]any{"audioEncoding": "LINEAR16", "pitch": -2.0, "sampleRateHertz": 16000.0},
+	}
+	if got := sentBody(t, reqs); !reflect.DeepEqual(got, want) {
+		t.Errorf("upstream body = %s, want %v", reqs[0].body, want)
+	}
+}
+
+func TestSpeechRefusesWhatTheVendorCannotTake(t *testing.T) {
+	tests := []struct {
+		name      string
+		params    *schemas.SpeechParameters
+		wantParam string
+	}{
+		{"a format with no AudioEncoding", &schemas.SpeechParameters{ResponseFormat: "aac"}, "response_format"},
+		{"flac", &schemas.SpeechParameters{ResponseFormat: "flac"}, "response_format"},
+		{"a speed above the range is not clamped", &schemas.SpeechParameters{Speed: schemas.Ptr(2.5)}, "speed"},
+		{"a speed below the range is not clamped", &schemas.SpeechParameters{Speed: schemas.Ptr(0.1)}, "speed"},
+		{"a multi-speaker voice list", &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{MultiVoiceConfig: []schemas.VoiceConfig{{Speaker: "a", Voice: "en-US-Wavenet-D"}}}}, "voice"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+			_, bifrostErr := provider.Speech(testContext(t), testKey(), speechRequest("hi", tt.params))
+			assertUnsupportedParameter(t, bifrostErr, tt.wantParam)
+			if n := len(captured()); n != 0 {
+				t.Errorf("made %d upstream calls for a refused request, want 0", n)
+			}
+		})
+	}
+}
+
+func assertUnsupportedParameter(t *testing.T, bifrostErr *schemas.BifrostError, wantParam string) {
+	t.Helper()
+	if bifrostErr == nil {
+		t.Fatal("expected caller_unsupported_parameter, got no error")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %v, want 400", bifrostErr.StatusCode)
+	}
+	if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter {
+		t.Errorf("error_type = %q, want %q", bifrostErr.ExtraFields.ErrorType, schemas.ErrorTypeCallerUnsupportedParameter)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Param != wantParam {
+		t.Errorf("error.param = %+v, want %q", bifrostErr.Error, wantParam)
+	}
+}
+
+// The fields the provider does not take at all are refused by core from the provider's
+// declaration, before a key is chosen.
+func TestDeclaredUnifiedFields(t *testing.T) {
+	provider, _ := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+
+	supported := &schemas.SpeechParameters{VoiceConfig: voice(sampleVoice), LanguageCode: schemas.Ptr("en-GB"), ResponseFormat: "mp3", Speed: schemas.Ptr(1.0)}
+	for _, requestType := range []schemas.RequestType{schemas.SpeechRequest, schemas.SpeechStreamRequest} {
+		req := &schemas.BifrostRequest{RequestType: requestType, SpeechRequest: speechRequest("hi", supported)}
+		if bifrostErr := schemas.CheckDeclaredUnifiedFields(provider, req); bifrostErr != nil {
+			t.Errorf("%s: the mapped fields were refused: %+v", requestType, bifrostErr.Error)
+		}
+	}
+
+	refused := []struct {
+		name      string
+		params    *schemas.SpeechParameters
+		wantParam string
+	}{
+		{"instructions", &schemas.SpeechParameters{VoiceConfig: voice(sampleVoice), Instructions: "speak slowly"}, "instructions"},
+		{"with_timestamps", &schemas.SpeechParameters{VoiceConfig: voice(sampleVoice), WithTimestamps: schemas.Ptr(true)}, "with_timestamps"},
+		{"pronunciation_dictionary_locators", &schemas.SpeechParameters{VoiceConfig: voice(sampleVoice), PronunciationDictionaryLocators: []schemas.SpeechPronunciationDictionaryLocator{{PronunciationDictionaryID: "d"}}}, "pronunciation_dictionary_locators"},
+	}
+	for _, tt := range refused {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &schemas.BifrostRequest{RequestType: schemas.SpeechRequest, SpeechRequest: speechRequest("hi", tt.params)}
+			assertUnsupportedParameter(t, schemas.CheckDeclaredUnifiedFields(provider, req), tt.wantParam)
+		})
+	}
+
+	if _, declared := provider.SupportedUnifiedFields(schemas.ChatCompletionRequest); declared {
+		t.Error("declared unified fields for an operation the provider does not serve")
+	}
+}
+
+// stream_format selects the stream route, and text:synthesize has no stream to deliver.
+func TestSpeechStreamRefusesStreamFormat(t *testing.T) {
+	provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+	stream, bifrostErr := provider.SpeechStream(testContext(t), nil, nil, testKey(), speechRequest("hi", &schemas.SpeechParameters{VoiceConfig: voice(sampleVoice)}))
+	if stream != nil {
+		t.Error("got a stream from a provider that cannot stream")
+	}
+	assertUnsupportedParameter(t, bifrostErr, "stream_format")
+	if n := len(captured()); n != 0 {
+		t.Errorf("made %d upstream calls for a refused request, want 0", n)
+	}
+}
+
+func TestSpeechVendorErrorKeepsStatusAndClassifies(t *testing.T) {
+	tests := []struct {
+		name           string
+		status         int
+		body           string
+		wantMessage    string
+		wantCode       string
+		wantType       string
+		wantErrorType  schemas.ErrorType
+		wantRetryAfter int64
+	}{
+		{
+			name:          "invalid argument",
+			status:        http.StatusBadRequest,
+			body:          invalidArgumentBody,
+			wantMessage:   "Voice 'en-GB-Wavenet-ZZ' does not exist. Is it misspelled?",
+			wantCode:      "400",
+			wantType:      "INVALID_ARGUMENT",
+			wantErrorType: schemas.ErrorTypeCallerInvalidRequest,
+		},
+		{
+			name:          "a rejected key",
+			status:        http.StatusForbidden,
+			body:          `{"error":{"code":403,"message":"The request is missing a valid API key.","status":"PERMISSION_DENIED"}}`,
+			wantMessage:   "The request is missing a valid API key.",
+			wantCode:      "403",
+			wantType:      "PERMISSION_DENIED",
+			wantErrorType: schemas.ErrorTypeProviderAuthFailed,
+		},
+		{
+			name:           "quota exhausted with a retry hint",
+			status:         http.StatusTooManyRequests,
+			body:           `{"error":{"code":429,"message":"Quota exceeded for quota metric 'All requests per minute'.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"39s"}]}}`,
+			wantMessage:    "Quota exceeded for quota metric 'All requests per minute'.",
+			wantCode:       "429",
+			wantType:       "RESOURCE_EXHAUSTED",
+			wantErrorType:  schemas.ErrorTypeProviderRateLimited,
+			wantRetryAfter: 39000,
+		},
+		{
+			name:          "a vendor failure",
+			status:        http.StatusInternalServerError,
+			body:          `{"error":{"code":500,"message":"Internal error encountered.","status":"INTERNAL"}}`,
+			wantMessage:   "Internal error encountered.",
+			wantCode:      "500",
+			wantType:      "INTERNAL",
+			wantErrorType: schemas.ErrorTypeProviderServerError,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, captured := newMockCloudTTS(t, jsonResponse(tt.status, tt.body))
+			resp, bifrostErr := provider.Speech(testContext(t), testKey(), speechRequest("hi", &schemas.SpeechParameters{VoiceConfig: voice("en-GB-Wavenet-ZZ"), LanguageCode: schemas.Ptr("en-GB")}))
+			if resp != nil || bifrostErr == nil {
+				t.Fatalf("expected an error, got response %+v", resp)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tt.status {
+				t.Errorf("status = %v, want the vendor's %d", bifrostErr.StatusCode, tt.status)
+			}
+			if bifrostErr.IsBifrostError {
+				t.Error("a vendor error is marked as a Bifrost error")
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Message != tt.wantMessage {
+				t.Fatalf("error = %+v, want message %q", bifrostErr.Error, tt.wantMessage)
+			}
+			if bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != tt.wantCode {
+				t.Errorf("error.code = %v, want %q", bifrostErr.Error.Code, tt.wantCode)
+			}
+			if bifrostErr.Error.Type == nil || *bifrostErr.Error.Type != tt.wantType {
+				t.Errorf("error.type = %v, want %q", bifrostErr.Error.Type, tt.wantType)
+			}
+			if bifrostErr.ExtraFields.RetryAfter != tt.wantRetryAfter {
+				t.Errorf("retry_after_ms = %d, want %d", bifrostErr.ExtraFields.RetryAfter, tt.wantRetryAfter)
+			}
+			// What the transport writes as extra_fields.error_type (contract C6).
+			if got := schemas.ClassifyErrorType(bifrostErr, schemas.SpeechRequest); got != tt.wantErrorType {
+				t.Errorf("error_type = %q, want %q", got, tt.wantErrorType)
+			}
+			if n := len(captured()); n != 1 {
+				t.Errorf("made %d upstream calls, want exactly 1", n)
+			}
+		})
+	}
+}
+
+// A 200 with no audio and no error object is the vendor's failure: 502
+// provider_empty_result, not a caller error.
+func TestSpeechEmptyAudioIsProviderEmptyResult(t *testing.T) {
+	for name, body := range map[string]string{"no audioContent": `{}`, "empty audioContent": `{"audioContent":""}`} {
+		t.Run(name, func(t *testing.T) {
+			provider, _ := newMockCloudTTS(t, jsonResponse(http.StatusOK, body))
+			resp, bifrostErr := provider.Speech(testContext(t), testKey(), speechRequest("hi", nil))
+			if resp != nil || bifrostErr == nil {
+				t.Fatalf("expected an error, got response %+v", resp)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadGateway {
+				t.Errorf("status = %v, want 502", bifrostErr.StatusCode)
+			}
+			if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeProviderEmptyResult {
+				t.Errorf("error_type = %q, want %q", bifrostErr.ExtraFields.ErrorType, schemas.ErrorTypeProviderEmptyResult)
+			}
+		})
+	}
+}
+
+func TestSpeechRequiresInput(t *testing.T) {
+	provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+	_, bifrostErr := provider.Speech(testContext(t), testKey(), speechRequest("", nil))
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("error = %+v, want a 400", bifrostErr)
+	}
+	if n := len(captured()); n != 0 {
+		t.Errorf("made %d upstream calls for a refused request, want 0", n)
+	}
+}
+
+// The vendor's raw response is returned when the caller asks for it (contract C5).
+func TestSpeechSendsBackRawResponseOnRequest(t *testing.T) {
+	provider, _ := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+	ctx := testContext(t)
+	ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
+
+	resp, bifrostErr := provider.Speech(ctx, testKey(), speechRequest("hi", nil))
+	if bifrostErr != nil {
+		t.Fatalf("Speech error: %+v", bifrostErr.Error)
+	}
+	raw, ok := resp.ExtraFields.RawResponse.(map[string]any)
+	if !ok || raw["audioContent"] != sampleAudioContent {
+		t.Errorf("raw_response = %#v, want the vendor's body", resp.ExtraFields.RawResponse)
+	}
+}
+
+func TestDefaultBaseURL(t *testing.T) {
+	config := &schemas.ProviderConfig{}
+	if _, err := googlecloudtts.NewGoogleCloudTTSProvider(config, bifrost.NewDefaultLogger(schemas.LogLevelError)); err != nil {
+		t.Fatalf("NewGoogleCloudTTSProvider: %v", err)
+	}
+	if config.NetworkConfig.BaseURL != "https://texttospeech.googleapis.com" {
+		t.Errorf("base URL = %q, want https://texttospeech.googleapis.com", config.NetworkConfig.BaseURL)
+	}
+}

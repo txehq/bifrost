@@ -182,6 +182,45 @@ func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T)
 	}
 }
 
+// TestAddProvider_GoogleCloudTTS pins that the built-in Google Cloud Text-to-Speech provider
+// can be created through POST /api/providers under its own name, with no custom provider
+// config, the way Tokun's reconciler writes a provider that serves a non-chat operation
+// (max_retries 0).
+func TestAddProvider_GoogleCloudTTS(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	modelsManager := &mockModelsManager{}
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		modelsManager: modelsManager,
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/api/providers")
+	ctx.Request.SetBody([]byte(`{"provider":"google-cloud-tts","network_config":{"max_retries":0,"default_request_timeout_in_seconds":60}}`))
+
+	h.addProvider(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	stored, exists := h.inMemoryStore.Providers[schemas.GoogleCloudTTS]
+	if !exists {
+		t.Fatalf("expected google-cloud-tts in the in-memory store, got %#v", h.inMemoryStore.Providers)
+	}
+	if stored.CustomProviderConfig != nil {
+		t.Fatalf("a built-in provider was stored with a custom provider config: %#v", stored.CustomProviderConfig)
+	}
+	if stored.NetworkConfig == nil || stored.NetworkConfig.MaxRetries != 0 || stored.NetworkConfig.DefaultRequestTimeoutInSeconds != 60 {
+		t.Fatalf("network config = %#v, want max_retries 0 and a 60s timeout", stored.NetworkConfig)
+	}
+	if len(modelsManager.reloadCalls) != 1 || modelsManager.reloadCalls[0] != schemas.GoogleCloudTTS {
+		t.Fatalf("expected one provider reload for google-cloud-tts, got %#v", modelsManager.reloadCalls)
+	}
+}
+
 // TestAddProvider_CustomProviderBaseTypes pins which base_provider_type values
 // the provider API accepts: typesafe is a supported base, vertex is not.
 func TestAddProvider_CustomProviderBaseTypes(t *testing.T) {

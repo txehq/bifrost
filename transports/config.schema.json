@@ -727,6 +727,9 @@
         "bfl": {
           "$ref": "#/$defs/provider"
         },
+        "google-cloud-tts": {
+          "$ref": "#/$defs/provider"
+        },
         "cloudflare": {
           "$ref": "#/$defs/provider_with_cloudflare_config"
         },

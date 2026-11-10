@@ -1,0 +1,146 @@
+---
+title: "Google Cloud Text-to-Speech"
+description: "Google Cloud Text-to-Speech conversion guide - the text:synthesize API on the unified speech route"
+icon: "g"
+---
+
+## Overview
+
+Google Cloud Text-to-Speech is Google's dedicated speech synthesis API (WaveNet, Neural2, Studio, Chirp 3: HD, Standard and Polyglot voices). It is a different API from Gemini and Vertex speech: Bifrost calls [`text:synthesize`](https://docs.cloud.google.com/text-to-speech/docs/reference/rest/v1/text/synthesize) and returns the decoded audio bytes.
+
+- **One operation** - `POST /v1/audio/speech` maps onto `POST https://texttospeech.googleapis.com/v1/text:synthesize`
+- **API key authentication** - the key travels in the `x-goog-api-key` header
+- **No usage from the vendor** - `text:synthesize` reports no usage, so Bifrost reports none for this provider
+- **No silent conversion** - a field or value the API cannot take returns `400` with `error_type: caller_unsupported_parameter`
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Speech (TTS) | ✅ | ❌ | `/v1/text:synthesize` |
+| Transcription (STT) | ❌ | ❌ | - |
+| Chat Completions | ❌ | ❌ | - |
+| Responses API | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| List Models | ❌ | - | - |
+
+<Note>
+**Unsupported Operations** (❌): every operation other than non-streaming speech returns `UnsupportedOperationError`. A speech request with `stream_format` returns `400 caller_unsupported_parameter`, because `text:synthesize` answers with the whole audio in one response.
+</Note>
+
+## Setup & Configuration
+
+Create an API key in the Google Cloud project that has the Cloud Text-to-Speech API enabled, and restrict it to that API. See Google's [Use API keys to access APIs](https://docs.cloud.google.com/docs/authentication/api-keys-use).
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Click **Add New Provider** and select **Google Cloud Text-to-Speech**.
+2. Click **Add Key**.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.GOOGLE_CLOUD_TTS_API_KEY`).
+5. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "google-cloud-tts": {
+      "keys": [
+        {
+          "name": "google-cloud-tts-key-1",
+          "value": "env.GOOGLE_CLOUD_TTS_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.GoogleCloudTTS:
+    return []schemas.Key{{
+        Name:   "google-cloud-tts-key-1",
+        Value:  *schemas.NewSecretVar("env.GOOGLE_CLOUD_TTS_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+Only API keys are supported. OAuth access tokens and service-account credentials, which the API also accepts, are not.
+</Note>
+
+## Speech (Text-to-Speech)
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "google-cloud-tts/wavenet",
+    "input": "Hello from Bifrost.",
+    "voice": "en-US-Wavenet-D",
+    "language_code": "en-US",
+    "response_format": "mp3",
+    "speed": 1.0
+  }' \
+  --output speech.mp3
+```
+
+### Request Mapping
+
+| Bifrost field | `text:synthesize` field | Notes |
+|---------------|-------------------------|-------|
+| `input` | `input.text` | An SSML document (an input whose root element is `<speak>`) is sent as `input.ssml` |
+| `voice` | `voice.name` | A voice name such as `en-US-Wavenet-D`. A multi-speaker voice list is refused |
+| `language_code` | `voice.languageCode` | Required by the API. Bifrost does not derive it from the voice name |
+| `response_format` | `audioConfig.audioEncoding` | See the table below. Defaults to `mp3` |
+| `speed` | `audioConfig.speakingRate` | `0.25` to `2.0`. A value outside the range is refused, not clamped |
+| `model` | - | Not sent. The API has no model field for these voices: the voice name selects the voice. Use the voice family (`wavenet`, `neural2`, `chirp3-hd`, `standard`, `studio`, `polyglot`) as the model name |
+
+| `response_format` | `audioEncoding` | Audio |
+|-------------------|-----------------|-------|
+| `mp3` (default) | `MP3` | MP3 |
+| `opus`, `ogg_opus` | `OGG_OPUS` | Opus in an Ogg container |
+| `wav`, `linear16` | `LINEAR16` | 16-bit linear PCM with a WAV header |
+| `pcm` | `PCM` | 16-bit linear PCM, no header |
+| `mulaw` | `MULAW` | 8-bit G.711 mu-law with a WAV header |
+| `alaw` | `ALAW` | 8-bit G.711 A-law with a WAV header |
+| `m4a` | `M4A` | M4A |
+| `aac`, `flac` | - | Refused with `caller_unsupported_parameter` |
+
+### Refused Fields
+
+These return `400` with `extra_fields.error_type: "caller_unsupported_parameter"` and the field name in `error.param`. No request is sent to Google.
+
+- `instructions`, `stream_format`, `with_timestamps`, `pronunciation_dictionary_locators`, `enable_logging`, `optimize_streaming_latency`
+- `response_format` values with no `audioEncoding` (`aac`, `flac`)
+- `speed` outside `0.25` to `2.0`
+- `voice` given as a multi-speaker list
+
+### Vendor-specific Fields
+
+With the `x-bf-passthrough-extra-params: true` header, top-level request fields outside the unified structure are merged into the `text:synthesize` body, objects recursively. For example `"audioConfig": {"pitch": -2.0, "sampleRateHertz": 16000}` adds `pitch` and `sampleRateHertz` next to the mapped `audioEncoding`.
+
+### Response and Usage
+
+Bifrost decodes `audioContent` from base64 and returns the audio bytes. `text:synthesize` reports no usage, so the provider reports none: Google bills per character of `input.text` or `input.ssml`, and the caller counts them.
+
+### Errors
+
+A Google error keeps its HTTP status. `error.message` is Google's message, `error.type` its status name (`INVALID_ARGUMENT`, `PERMISSION_DENIED`, `RESOURCE_EXHAUSTED`, ...) and `error.code` its numeric code. A `200` response with no `audioContent` returns `502` with `error_type: provider_empty_result`.
