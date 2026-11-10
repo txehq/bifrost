@@ -80,10 +80,11 @@ var ImageGenerationRequestKnownFields = map[string]bool{
 // field, a url the provider cannot run in a batch. Providers answer it with a 400 naming
 // the line.
 type BatchLineError struct {
-	Index    int    // Position of the line in requests
-	CustomID string // The line's custom_id
-	Param    string // The request field at fault, as a path under requests[i]
-	Message  string
+	Index       int    // Position of the line in requests
+	CustomID    string // The line's custom_id
+	Param       string // The request field at fault, as a path under requests[i]
+	Message     string
+	Unsupported bool // A well-formed field the provider's batch cannot take, not a malformed line
 }
 
 func (e *BatchLineError) Error() string {

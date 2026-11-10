@@ -3,6 +3,8 @@ package vertex
 import (
 	"bytes"
 	"context"
+	"errors"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -638,11 +640,16 @@ func TestVertexBatchLinesAreTheSyncRequest(t *testing.T) {
 	})
 
 	t.Run("a line the batch cannot run is an error naming the line", func(t *testing.T) {
-		for name, tc := range map[string]struct{ line, param, text string }{
-			"embeddings url": {`{"custom_id":"e-1","url":"/v1/embeddings","body":{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}}`, "url", "/v1/embeddings"},
-			"another model":  {`{"custom_id":"l-1","url":"/v1/chat/completions","body":{"model":"gemini-2.5-pro","messages":[{"role":"user","content":"hi"}]}}`, "body.model", "gemini-2.5-pro"},
-			"no body":        {`{"custom_id":"l-1","url":"/v1/chat/completions"}`, "body", "body is required"},
-			"another url":    {`{"custom_id":"i-1","url":"/v1/images/generations","body":{"model":"gemini-2.5-flash","prompt":"a cat"}}`, "url", "a batch runs one url"},
+		// The 400 BatchCreate answers with carries the error_type: a field the batch cannot
+		// take is caller_unsupported_parameter, a malformed line caller_invalid_request.
+		for name, tc := range map[string]struct {
+			line, param, text string
+			errorType         schemas.ErrorType
+		}{
+			"embeddings url": {`{"custom_id":"e-1","url":"/v1/embeddings","body":{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}}`, "url", "/v1/embeddings", schemas.ErrorTypeCallerUnsupportedParameter},
+			"another model":  {`{"custom_id":"l-1","url":"/v1/chat/completions","body":{"model":"gemini-2.5-pro","messages":[{"role":"user","content":"hi"}]}}`, "body.model", "gemini-2.5-pro", schemas.ErrorTypeCallerUnsupportedParameter},
+			"no body":        {`{"custom_id":"l-1","url":"/v1/chat/completions"}`, "body", "body is required", schemas.ErrorTypeCallerInvalidRequest},
+			"another url":    {`{"custom_id":"i-1","url":"/v1/images/generations","body":{"model":"gemini-2.5-flash","prompt":"a cat"}}`, "url", "a batch runs one url", schemas.ErrorTypeCallerUnsupportedParameter},
 		} {
 			ok := parse(`{"custom_id":"ok","url":"/v1/chat/completions","body":{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}}`)
 			_, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{ok, parse(tc.line)}, "gemini-2.5-flash", schemas.BatchEndpointChatCompletions)
@@ -651,6 +658,12 @@ func TestVertexBatchLinesAreTheSyncRequest(t *testing.T) {
 			assert.Equal(t, 1, lineErr.Index, name)
 			assert.Equal(t, tc.param, lineErr.Param, name)
 			assert.Contains(t, lineErr.Message, tc.text, name)
+
+			bifrostErr := gemini.NewBatchLineBadRequestError(lineErr.Index, lineErr)
+			require.NotNil(t, bifrostErr.StatusCode, name)
+			assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode, name)
+			assert.Equal(t, "requests[1]."+tc.param, bifrostErr.Error.Param, name)
+			assert.Equal(t, tc.errorType, bifrostErr.ExtraFields.ErrorType, name)
 		}
 	})
 }
@@ -712,6 +725,7 @@ func TestVertexBatchMetadataBecomesJobLabels(t *testing.T) {
 		var labelErr *vertexLabelError
 		require.ErrorAs(t, err, &labelErr)
 		assert.Equal(t, "labels.team", labelErr.Param)
+		assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, labelErr.bifrostError().ExtraFields.ErrorType)
 	})
 
 	t.Run("no metadata is no labels field", func(t *testing.T) {
@@ -725,18 +739,28 @@ func TestVertexBatchMetadataBecomesJobLabels(t *testing.T) {
 			metadata    map[string]string
 			extraParams map[string]interface{}
 			wantParam   string
+			wantType    schemas.ErrorType
 		}{
-			"uppercase value":    {map[string]string{"tokun_batch_id": "Batch_TK_1"}, nil, "metadata.tokun_batch_id"},
-			"value with a slash": {map[string]string{"tokun_batch_id": "batch/1"}, nil, "metadata.tokun_batch_id"},
-			"value too long":     {map[string]string{"tokun_batch_id": strings.Repeat("a", 64)}, nil, "metadata.tokun_batch_id"},
-			"key not a label":    {map[string]string{"Tokun-Batch": "b1"}, nil, "metadata.Tokun-Batch"},
-			"labels not strings": {nil, map[string]interface{}{"labels": map[string]interface{}{"team": 7}}, "labels.team"},
-			"labels not a map":   {nil, map[string]interface{}{"labels": "team=tokun"}, "labels"},
+			// A string entry outside Vertex's label rules is a field Vertex cannot take; a
+			// labels field of the wrong JSON type is a malformed request.
+			"uppercase value":    {map[string]string{"tokun_batch_id": "Batch_TK_1"}, nil, "metadata.tokun_batch_id", schemas.ErrorTypeCallerUnsupportedParameter},
+			"value with a slash": {map[string]string{"tokun_batch_id": "batch/1"}, nil, "metadata.tokun_batch_id", schemas.ErrorTypeCallerUnsupportedParameter},
+			"value too long":     {map[string]string{"tokun_batch_id": strings.Repeat("a", 64)}, nil, "metadata.tokun_batch_id", schemas.ErrorTypeCallerUnsupportedParameter},
+			"key not a label":    {map[string]string{"Tokun-Batch": "b1"}, nil, "metadata.Tokun-Batch", schemas.ErrorTypeCallerUnsupportedParameter},
+			"label value":        {nil, map[string]interface{}{"labels": map[string]interface{}{"team": "Not A Label"}}, "labels.team", schemas.ErrorTypeCallerUnsupportedParameter},
+			"labels not strings": {nil, map[string]interface{}{"labels": map[string]interface{}{"team": 7}}, "labels.team", schemas.ErrorTypeCallerInvalidRequest},
+			"labels not a map":   {nil, map[string]interface{}{"labels": "team=tokun"}, "labels", schemas.ErrorTypeCallerInvalidRequest},
 		} {
 			_, err := ToVertexBatchCreateRequest(ctx, &schemas.BifrostBatchCreateRequest{Model: schemas.Ptr("gemini-2.5-flash"), Metadata: tc.metadata, ExtraParams: tc.extraParams}, "job", "gs://in/input.jsonl", "gs://out/")
 			var labelErr *vertexLabelError
 			require.ErrorAs(t, err, &labelErr, name)
 			assert.Equal(t, tc.wantParam, labelErr.Param, name)
+
+			bifrostErr := labelErr.bifrostError()
+			require.NotNil(t, bifrostErr.StatusCode, name)
+			assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode, name)
+			assert.Equal(t, tc.wantParam, bifrostErr.Error.Param, name)
+			assert.Equal(t, tc.wantType, bifrostErr.ExtraFields.ErrorType, name)
 		}
 	})
 
@@ -875,4 +899,25 @@ func TestVertexBatchLineModelMatchesPublisherPath(t *testing.T) {
 	require.NoError(t, sonic.UnmarshalString(`{"custom_id":"l-1","url":"/v1/chat/completions","body":{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}}`, &item))
 	_, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{item}, "publishers/google/models/gemini-2.5-flash", schemas.BatchEndpointChatCompletions)
 	require.NoError(t, err)
+}
+
+// BenchmarkVertexLabelErrorBifrostError measures the 400 built for batch metadata or labels
+// Vertex cannot hold, for both classifications.
+func BenchmarkVertexLabelErrorBifrostError(b *testing.B) {
+	for name, unsupported := range map[string]bool{"unsupported_parameter": true, "invalid_request": false} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_, _, err := vertexBatchJobLabels(&schemas.BifrostBatchCreateRequest{Metadata: map[string]string{"tokun_batch_id": "Not A Label"}})
+				var labelErr *vertexLabelError
+				if !errors.As(err, &labelErr) {
+					b.Fatal("no label error")
+				}
+				labelErr.Unsupported = unsupported
+				if bifrostErr := labelErr.bifrostError(); bifrostErr.StatusCode == nil {
+					b.Fatal("no status code")
+				}
+			}
+		})
+	}
 }

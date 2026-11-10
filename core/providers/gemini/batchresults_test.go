@@ -729,7 +729,9 @@ func gjsonGet(t *testing.T, document, path string) string {
 }
 
 // A batch the caller got wrong is a 400 before anything is sent: no model (never a default
-// model), a url batchGenerateContent cannot run, a line naming another model.
+// model), a url batchGenerateContent cannot run, a line naming another model. A well-formed
+// field the batch cannot take is error_type caller_unsupported_parameter (contract C4); a
+// malformed batch or line is caller_invalid_request. Both name the field in error.param.
 func TestGeminiBatchCreateRefusesWhatItCannotRun(t *testing.T) {
 	chat := `{"custom_id":"line-1","url":"/v1/chat/completions","body":{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}}`
 	cases := []struct {
@@ -738,14 +740,16 @@ func TestGeminiBatchCreateRefusesWhatItCannotRun(t *testing.T) {
 		line      string
 		wantParam string
 		wantText  string
+		wantType  schemas.ErrorType
 	}{
-		{"no model", nil, chat, "model", "model is required"},
-		{"empty model", schemas.Ptr(""), chat, "model", "model is required"},
-		{"embeddings url", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"e-1","url":"/v1/embeddings","body":{"model":"gemini-2.5-flash","input":"hi"}}`, "requests[0].url", "/v1/embeddings"},
-		{"line names another model", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"line-1","url":"/v1/chat/completions","body":{"model":"gemini-2.5-pro","messages":[{"role":"user","content":"hi"}]}}`, "requests[0].body.model", "gemini-2.5-pro"},
-		{"chat line without messages", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"line-1","url":"/v1/chat/completions","body":{"model":"gemini-2.5-flash"}}`, "requests[0].body", "messages is required"},
-		{"imagen image line", schemas.Ptr("imagen-4.0-generate-001"), `{"custom_id":"img-1","url":"/v1/images/generations","body":{"model":"imagen-4.0-generate-001","prompt":"a cat"}}`, "requests[0].url", "Imagen"},
-		{"line without a body", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"line-1","url":"/v1/chat/completions"}`, "requests[0].body", "body is required"},
+		{"no model", nil, chat, "model", "model is required", schemas.ErrorTypeCallerInvalidRequest},
+		{"empty model", schemas.Ptr(""), chat, "model", "model is required", schemas.ErrorTypeCallerInvalidRequest},
+		{"embeddings url", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"e-1","url":"/v1/embeddings","body":{"model":"gemini-2.5-flash","input":"hi"}}`, "requests[0].url", "/v1/embeddings", schemas.ErrorTypeCallerUnsupportedParameter},
+		{"line names another model", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"line-1","url":"/v1/chat/completions","body":{"model":"gemini-2.5-pro","messages":[{"role":"user","content":"hi"}]}}`, "requests[0].body.model", "gemini-2.5-pro", schemas.ErrorTypeCallerUnsupportedParameter},
+		{"chat line without messages", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"line-1","url":"/v1/chat/completions","body":{"model":"gemini-2.5-flash"}}`, "requests[0].body", "messages is required", schemas.ErrorTypeCallerInvalidRequest},
+		{"imagen image line", schemas.Ptr("imagen-4.0-generate-001"), `{"custom_id":"img-1","url":"/v1/images/generations","body":{"model":"imagen-4.0-generate-001","prompt":"a cat"}}`, "requests[0].url", "Imagen", schemas.ErrorTypeCallerUnsupportedParameter},
+		{"line with neither a url nor messages", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"line-1","body":{"model":"gemini-2.5-flash","prompt":"hi"}}`, "requests[0].url", "url is required", schemas.ErrorTypeCallerInvalidRequest},
+		{"line without a body", schemas.Ptr("gemini-2.5-flash"), `{"custom_id":"line-1","url":"/v1/chat/completions"}`, "requests[0].body", "body is required", schemas.ErrorTypeCallerInvalidRequest},
 	}
 	t.Run("lines of two urls", func(t *testing.T) {
 		// A batch runs one url: settlement prices a batch as one operation, so a chat line
@@ -765,6 +769,7 @@ func TestGeminiBatchCreateRefusesWhatItCannotRun(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
 		assert.Equal(t, "requests[1].url", bifrostErr.Error.Param)
 		assert.Contains(t, bifrostErr.Error.Message, "a batch runs one url")
+		assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
 		assert.Empty(t, vendor.calls)
 	})
 	t.Run("a line may name the batch's model in another spelling", func(t *testing.T) {
@@ -801,6 +806,11 @@ func TestGeminiBatchCreateRefusesWhatItCannotRun(t *testing.T) {
 			assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
 			assert.Equal(t, tc.wantParam, bifrostErr.Error.Param)
 			assert.Contains(t, bifrostErr.Error.Message, tc.wantText)
+			assert.Equal(t, tc.wantType, bifrostErr.ExtraFields.ErrorType)
+			if tc.wantType == schemas.ErrorTypeCallerUnsupportedParameter {
+				require.NotNil(t, bifrostErr.Error.Code)
+				assert.Equal(t, string(tc.wantType), *bifrostErr.Error.Code)
+			}
 			assert.Empty(t, vendor.calls, "nothing may be sent upstream")
 		})
 	}
@@ -1007,5 +1017,21 @@ func TestGeminiBatchListReturnsDisplayNameAndBothStateSpellings(t *testing.T) {
 		"JOB_STATE_PAUSED":              schemas.BatchStatus("JOB_STATE_PAUSED"),
 	} {
 		assert.Equal(t, want, ToBifrostBatchStatus(state), state)
+	}
+}
+
+// BenchmarkNewBatchLineBadRequestError measures the 400 built for a refused batch line, for
+// both classifications: a field the batch cannot take and a malformed line.
+func BenchmarkNewBatchLineBadRequestError(b *testing.B) {
+	for name, unsupported := range map[string]bool{"unsupported_parameter": true, "invalid_request": false} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				lineErr := &schemas.BatchLineError{CustomID: "line-1", Param: "url", Unsupported: unsupported, Message: "url /v1/embeddings cannot run in a generateContent batch"}
+				if bifrostErr := NewBatchLineBadRequestError(1, lineErr); bifrostErr.StatusCode == nil {
+					b.Fatal("no status code")
+				}
+			}
+		})
 	}
 }

@@ -264,7 +264,7 @@ func vertexBatchJobLabels(request *schemas.BifrostBatchCreateRequest) (map[strin
 			continue
 		}
 		if err := validateVertexLabel(key, value); err != nil {
-			return nil, nil, &vertexLabelError{Param: "metadata." + key, Err: err}
+			return nil, nil, &vertexLabelError{Param: "metadata." + key, Unsupported: true, Err: err}
 		}
 		labels[key] = value
 	}
@@ -299,7 +299,7 @@ func vertexBatchJobLabels(request *schemas.BifrostBatchCreateRequest) (map[strin
 		}
 		for key, value := range callerLabels {
 			if err := validateVertexLabel(key, value); err != nil {
-				return nil, nil, &vertexLabelError{Param: "labels." + key, Err: err}
+				return nil, nil, &vertexLabelError{Param: "labels." + key, Unsupported: true, Err: err}
 			}
 			labels[key] = value
 		}
@@ -311,9 +311,24 @@ func vertexBatchJobLabels(request *schemas.BifrostBatchCreateRequest) (map[strin
 }
 
 // vertexLabelError is a batch metadata or label entry Vertex cannot hold, naming the field.
+// Unsupported marks a string entry outside Vertex's label rules (caller_unsupported_parameter);
+// false is a labels field of the wrong JSON type (caller_invalid_request).
 type vertexLabelError struct {
-	Param string
-	Err   error
+	Param       string
+	Unsupported bool
+	Err         error
+}
+
+// bifrostError is the 400 for the entry, with the field in error.param.
+func (e *vertexLabelError) bifrostError() *schemas.BifrostError {
+	if e.Unsupported {
+		bifrostErr := schemas.NewUnsupportedParameterError(e.Param, e.Error())
+		bifrostErr.IsBifrostError = true
+		return bifrostErr
+	}
+	bifrostErr := providerUtils.NewBifrostBadRequestError(e.Error())
+	bifrostErr.Error.Param = e.Param
+	return bifrostErr
 }
 
 func (e *vertexLabelError) Error() string {

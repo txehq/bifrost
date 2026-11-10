@@ -3071,12 +3071,11 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		// caller's to fix: a 400 naming the entry before anything is uploaded, not a label
 		// silently dropped.
 		if _, _, labelErr := vertexBatchJobLabels(request); labelErr != nil {
-			badRequest := providerUtils.NewBifrostBadRequestError(labelErr.Error())
 			var named *vertexLabelError
 			if errors.As(labelErr, &named) {
-				badRequest.Error.Param = named.Param
+				return nil, named.bifrostError()
 			}
-			return nil, badRequest
+			return nil, providerUtils.NewBifrostBadRequestError(labelErr.Error())
 		}
 
 		jobName = fmt.Sprintf("bifrost-batch-%d", time.Now().Unix())
