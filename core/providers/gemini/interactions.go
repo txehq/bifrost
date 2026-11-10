@@ -716,34 +716,104 @@ func (provider *GeminiProvider) interactionVideoDownload(ctx *schemas.BifrostCon
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	content, contentType, latency, bifrostErr := provider.fetchGeminiFile(ctx, key, downloadURL)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if contentType == "" {
+		contentType = videoResp.Videos[0].ContentType
+	}
+	bifrostResp.Content = content
+	bifrostResp.ContentType = contentType
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	return bifrostResp, nil
+}
+
+// geminiFileMaxRedirects bounds the redirects a Gemini Files download follows.
+const geminiFileMaxRedirects = 5
+
+// fetchGeminiFile downloads a Gemini Files file. Redirects are followed by hand, so the key and
+// the provider's extra headers go only to the provider's own origin: a redirect that leaves it
+// (a storage host serving the bytes) is fetched without them.
+func (provider *GeminiProvider) fetchGeminiFile(ctx *schemas.BifrostContext, key schemas.Key, downloadURL string) ([]byte, string, time.Duration, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(downloadURL)
-	req.Header.SetMethod(http.MethodGet)
-	setGeminiAuthHeader(req, key.Value.GetValue())
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContextFollowRedirects(ctx, provider.client, req, resp, 5)
-	defer wait()
-	if bifrostErr != nil {
-		return nil, bifrostErr
+
+	target := downloadURL
+	var total time.Duration
+	for hop := 0; ; hop++ {
+		req.Reset()
+		resp.Reset()
+		req.SetRequestURI(target)
+		req.Header.SetMethod(http.MethodGet)
+		if sameOrigin(provider.networkConfig.BaseURL, target) {
+			providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+			setGeminiAuthHeader(req, key.Value.GetValue())
+		}
+		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+		total += latency
+		if bifrostErr != nil {
+			wait()
+			return nil, "", total, bifrostErr
+		}
+		if !fasthttp.StatusCodeIsRedirect(resp.StatusCode()) {
+			defer wait()
+			break
+		}
+		location := string(resp.Header.Peek("Location"))
+		wait()
+		next, err := resolveRedirect(target, location)
+		if err != nil || hop >= geminiFileMaxRedirects {
+			return nil, "", total, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(
+				"failed to download video: the file download redirected too often or to an invalid location", err), total)
+		}
+		target = next
 	}
+
 	if resp.StatusCode() != fasthttp.StatusOK {
 		respBody := append([]byte(nil), resp.Body()...)
-		return nil, providerUtils.EnrichError(ctx, parseGeminiError(resp), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		return nil, "", total, providerUtils.EnrichError(ctx, parseGeminiError(resp), nil, respBody, provider.sendBackRawRequest, provider.sendBackRawResponse, total)
 	}
 	body, err := providerUtils.CheckAndDecodeBody(resp)
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+		return nil, "", total, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
 	}
-	bifrostResp.Content = append([]byte(nil), body...)
-	bifrostResp.ContentType = string(resp.Header.ContentType())
-	if bifrostResp.ContentType == "" {
-		bifrostResp.ContentType = videoResp.Videos[0].ContentType
+	return append([]byte(nil), body...), string(resp.Header.ContentType()), total, nil
+}
+
+// sameOrigin reports whether target has the scheme and host of base.
+func sameOrigin(base, target string) bool {
+	b, err := url.Parse(base)
+	if err != nil || b.Host == "" {
+		return false
 	}
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	return bifrostResp, nil
+	t, err := url.Parse(target)
+	if err != nil {
+		return false
+	}
+	return t.Scheme == b.Scheme && strings.EqualFold(t.Host, b.Host)
+}
+
+// resolveRedirect resolves a Location header against the URL that answered with it. Only an
+// http or https target is accepted.
+func resolveRedirect(from, location string) (string, error) {
+	if location == "" {
+		return "", fmt.Errorf("redirect without a Location header")
+	}
+	base, err := url.Parse(from)
+	if err != nil {
+		return "", err
+	}
+	next, err := base.Parse(location)
+	if err != nil {
+		return "", err
+	}
+	if (next.Scheme != "https" && next.Scheme != "http") || next.Host == "" {
+		return "", fmt.Errorf("redirect to an unsupported location")
+	}
+	return next.String(), nil
 }
 
 // geminiFileDownloadURL returns the URL the key is sent to for a delivery=uri artifact. The
@@ -764,7 +834,7 @@ func geminiFileDownloadURL(baseURL, uri string) (string, *schemas.BifrostError) 
 	if err != nil || parsed.Host == "" {
 		return "", providerUtils.NewBifrostOperationError("the provider returned a video uri that is not a URL", err)
 	}
-	if parsed.Scheme != base.Scheme || !strings.EqualFold(parsed.Host, base.Host) {
+	if !sameOrigin(baseURL, target) {
 		return "", providerUtils.NewBifrostOperationError(
 			fmt.Sprintf("the provider returned a video uri on host %q, outside the provider's own host %q; it is not fetched with the key", parsed.Host, base.Host), nil)
 	}

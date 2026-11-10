@@ -685,6 +685,56 @@ func TestGeminiOmniVideoDownload(t *testing.T) {
 		assert.Equal(t, []string{"GET /v1beta/interactions/" + omniInteractionID}, calls)
 	})
 
+	// Gemini Files may answer a download with a redirect to a storage host: the bytes are
+	// fetched there, without the key.
+	t.Run("uri redirected off the provider host", func(t *testing.T) {
+		var storageKeys []string
+		var storageMu sync.Mutex
+		storage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			storageMu.Lock()
+			storageKeys = append(storageKeys, r.Header.Get("x-goog-api-key")+"|"+r.Header.Get("Authorization"))
+			storageMu.Unlock()
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write(video)
+		}))
+		defer storage.Close()
+		provider, recorder := newOmniTestProvider(t, func(w http.ResponseWriter, r *http.Request, serverURL string) {
+			switch {
+			case r.URL.Path == "/v1beta/files/abc123:download":
+				http.Redirect(w, r, "/v1beta/files/abc123:hop", http.StatusFound)
+			case r.URL.Path == "/v1beta/files/abc123:hop":
+				http.Redirect(w, r, storage.URL+"/signed/abc123.mp4?sig=1", http.StatusFound)
+			default:
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(strings.Replace(omniInteractionCompletedURITemplate, "FILE_URI", serverURL+"/v1beta/files/abc123:download?alt=media", 1)))
+			}
+		})
+		resp, bifrostErr := provider.VideoDownload(omniTestContext(), omniTestKey, &schemas.BifrostVideoDownloadRequest{Provider: schemas.Gemini, ID: omniTaskID})
+		require.Nil(t, bifrostErr)
+		assert.Equal(t, video, resp.Content)
+		assert.Equal(t, "video/mp4", resp.ContentType)
+		// The two hops on the provider's own host carry the key; the storage host gets none.
+		assert.Equal(t, []string{"gemini-test", "gemini-test", "gemini-test"}, recorder.keys)
+		storageMu.Lock()
+		defer storageMu.Unlock()
+		assert.Equal(t, []string{"|"}, storageKeys)
+	})
+
+	t.Run("a redirect loop ends in an error", func(t *testing.T) {
+		provider, recorder := newOmniTestProvider(t, func(w http.ResponseWriter, r *http.Request, serverURL string) {
+			if strings.HasPrefix(r.URL.Path, "/v1beta/files/") {
+				http.Redirect(w, r, r.URL.RequestURI(), http.StatusFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(strings.Replace(omniInteractionCompletedURITemplate, "FILE_URI", serverURL+"/v1beta/files/abc123:download?alt=media", 1)))
+		})
+		_, bifrostErr := provider.VideoDownload(omniTestContext(), omniTestKey, &schemas.BifrostVideoDownloadRequest{Provider: schemas.Gemini, ID: omniTaskID})
+		require.NotNil(t, bifrostErr)
+		calls, _ := recorder.snapshot()
+		assert.Len(t, calls, 2+geminiFileMaxRedirects, "the query, the download and %d redirects", geminiFileMaxRedirects)
+	})
+
 	t.Run("uri on another host is not fetched", func(t *testing.T) {
 		provider, recorder := newOmniTestProvider(t, func(w http.ResponseWriter, r *http.Request, _ string) {
 			w.Header().Set("Content-Type", "application/json")
