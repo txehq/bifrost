@@ -7,7 +7,7 @@
 // guard throws a script error instead of failing a named assertion, which aborts
 // the capture and leaves every dependent request stranded.
 import assert from "node:assert";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -1273,6 +1273,48 @@ test("provider-harness: the routed-identity check skips an async submit and stil
   }
   assert.strictEqual(identityTests("http://gw/v1/images/generations", 200).length, 8, "a synchronous image generation is no longer checked");
   assert.strictEqual(identityTests("http://gw/openai/v1/images/generations", 200).length, 8, "the OpenAI image route is no longer checked");
+});
+
+// ── Every script of every collection parses (TXE-7065) ───────────────────────
+// A script with a syntax error is reported by Newman as one script error and runs none of
+// its assertions, so the row looks like it has nothing to check. Structural validation
+// (augment, filter) does not read the scripts, and one such row was merged: its name
+// carried an apostrophe into a single-quoted string of its own test script. This compiles,
+// without running, every prerequest and test script of every collection in this directory.
+// The async constructor is used so a script that awaits at its top level still parses.
+test("every prerequest and test script of every collection parses", () => {
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const files = readdirSync(here).filter((name) => name.endsWith(".json"));
+  let compiled = 0;
+  const broken = [];
+  for (const file of files) {
+    const parsed = JSON.parse(readFileSync(join(here, file), "utf8"));
+    // A file that is not a Postman collection (the smoke manifest) has no scripts.
+    if (!parsed || !Array.isArray(parsed.item)) continue;
+    const compile = (trail, events) => {
+      for (const event of events || []) {
+        const exec = event && event.script && event.script.exec;
+        if (exec === undefined || exec === null) continue;
+        const source = Array.isArray(exec) ? exec.join("\n") : String(exec);
+        compiled++;
+        try {
+          new AsyncFunction("pm", source);
+        } catch (err) {
+          broken.push(`${file} / ${trail.join(" / ")} [${event.listen}]: ${err.message}`);
+        }
+      }
+    };
+    compile(["(collection)"], parsed.event);
+    (function walk(items, trail) {
+      for (const item of items) {
+        const itemTrail = [...trail, item.name];
+        compile(itemTrail, item.event);
+        if (item.item) walk(item.item, itemTrail);
+      }
+    })(parsed.item, []);
+  }
+  assert.ok(compiled > 1000, `only ${compiled} scripts were found; the walk is not seeing the collections`);
+  assert.strictEqual(broken.length, 0, `${broken.length} script(s) do not parse:\n    ${broken.slice(0, 10).join("\n    ")}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

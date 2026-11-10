@@ -29,6 +29,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
+	"regexp"
+	"slices"
+	"sync/atomic"
 )
 
 func TestParsePassthroughBody_MultipartExtractsModelAfterFilePart(t *testing.T) {
@@ -2081,4 +2084,244 @@ func BenchmarkIsChatGPTBearer(b *testing.B) {
 	for b.Loop() {
 		_ = isChatGPTBearer(authHeader)
 	}
+}
+
+// ingressLoopback is the only place a provider in TestIntegrationIngressPassesThePriceFieldCheck
+// can reach: one loopback server that is every provider's base URL and every provider's
+// HTTP proxy. It answers nothing useful and refuses CONNECT, so a provider that dials a
+// fixed vendor host (Bedrock) is stopped on this machine. It counts what reaches it.
+type ingressLoopback struct {
+	hits atomic.Int64
+}
+
+func (l *ingressLoopback) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	l.hits.Add(1)
+	if r.Method == http.MethodConnect {
+		http.Error(w, "the ingress test tunnels nothing", http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, `{}`)
+}
+
+// ingressTestAccount configures every provider the integration routes can name at the
+// loopback server, with placeholder credentials.
+type ingressTestAccount struct {
+	url string
+}
+
+var ingressTestProviders = []schemas.ModelProvider{schemas.OpenAI, schemas.Cohere, schemas.Bedrock, schemas.Gemini}
+
+func (a ingressTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return ingressTestProviders, nil
+}
+
+func (a ingressTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	key := schemas.Key{ID: "ingress-test-key", Name: "ingress-test-key", Value: *schemas.NewSecretVar("placeholder"), Models: schemas.WhiteList{"*"}, Weight: 1.0}
+	if p == schemas.Bedrock {
+		key.Value = *schemas.NewSecretVar("")
+		key.BedrockKeyConfig = &schemas.BedrockKeyConfig{
+			AccessKey: *schemas.NewSecretVar("AKIAPLACEHOLDER000000"), SecretKey: *schemas.NewSecretVar("placeholder"), Region: schemas.NewSecretVar("us-east-1"),
+		}
+	}
+	return []schemas.Key{key}, nil
+}
+
+func (a ingressTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	nc := schemas.DefaultNetworkConfig
+	nc.BaseURL = a.url
+	nc.MaxRetries = 0
+	nc.DefaultRequestTimeoutInSeconds = 5
+	return &schemas.ProviderConfig{
+		NetworkConfig:            nc,
+		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		ProxyConfig:              &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(a.url)},
+	}, nil
+}
+
+// ingressSample is one request in a route's own shape, with every price-affecting field
+// that shape has.
+type ingressSample struct {
+	name   string
+	path   string
+	body   string            // a JSON body, or
+	form   map[string]string // the fields of a multipart form, and
+	file   string            // the name of its file field
+	stream bool
+}
+
+// ingressSamples covers every integration route that serves an operation in contract C4's
+// table. A route added later must get a sample here or a line in ingressRoutesOutsideC4.
+var ingressSamples = []ingressSample{
+	{name: "openai embeddings", path: "/openai/v1/embeddings",
+		body: `{"model":"openai/text-embedding-3-small","input":"ok","dimensions":256,"encoding_format":"float"}`},
+	{name: "openai embeddings, short path", path: "/openai/embeddings",
+		body: `{"model":"openai/text-embedding-3-small","input":"ok","dimensions":256}`},
+	{name: "openai speech", path: "/openai/v1/audio/speech",
+		body: `{"model":"openai/gpt-4o-mini-tts","input":"hi","voice":"alloy","response_format":"mp3","speed":1.25,"instructions":"calm"}`},
+	{name: "openai speech, short path", path: "/openai/audio/speech",
+		body: `{"model":"openai/tts-1","input":"hi","voice":"alloy","speed":1.25}`},
+	{name: "openai transcription", path: "/openai/v1/audio/transcriptions", file: "file",
+		form: map[string]string{"model": "openai/whisper-1", "language": "en", "response_format": "verbose_json", "timestamp_granularities[]": "word"}},
+	{name: "openai transcription, short path", path: "/openai/audio/transcriptions", file: "file",
+		form: map[string]string{"model": "openai/whisper-1", "language": "en"}},
+	{name: "openai image generation", path: "/openai/v1/images/generations",
+		body: `{"model":"openai/gpt-image-1","prompt":"a red square","n":2,"size":"1024x1024","quality":"high","background":"transparent","output_format":"png"}`},
+	{name: "openai image generation, short path", path: "/openai/images/generations",
+		body: `{"model":"openai/gpt-image-1","prompt":"a red square","n":2,"size":"1024x1024"}`},
+	{name: "openai image edit", path: "/openai/v1/images/edits", file: "image",
+		form: map[string]string{"model": "openai/gpt-image-1", "prompt": "make it blue", "n": "2", "size": "1024x1024", "quality": "high", "resolution": "2K"}},
+	{name: "openai image edit, short path", path: "/openai/images/edits", file: "image",
+		form: map[string]string{"model": "openai/gpt-image-1", "prompt": "make it blue", "size": "1024x1024"}},
+	{name: "openai video", path: "/openai/v1/videos",
+		body: `{"model":"openai/sora-2","prompt":"a paper boat","seconds":"8","size":"1280x720"}`},
+	{name: "openai video, short path", path: "/openai/videos",
+		body: `{"model":"openai/sora-2","prompt":"a paper boat","seconds":"8","size":"1280x720"}`},
+	{name: "openai video, azure-style path", path: "/openai/openai/videos",
+		body: `{"model":"openai/sora-2","prompt":"a paper boat","seconds":"8","size":"1280x720"}`},
+	{name: "cohere embed", path: "/cohere/v2/embed",
+		body: `{"model":"cohere/embed-v4.0","texts":["ok"],"input_type":"search_document","embedding_types":["float"],"output_dimension":256}`},
+	{name: "bedrock invoke, Titan embedding", path: "/bedrock/model/amazon.titan-embed-text-v2:0/invoke",
+		body: `{"inputText":"ok","dimensions":256,"normalize":true}`},
+	{name: "bedrock invoke, Cohere embedding", path: "/bedrock/model/cohere.embed-v4:0/invoke",
+		body: `{"texts":["ok"],"input_type":"search_document","embedding_types":["float"],"output_dimension":256}`},
+	{name: "bedrock invoke, Nova Canvas image", path: "/bedrock/model/amazon.nova-canvas-v1:0/invoke",
+		body: `{"taskType":"TEXT_IMAGE","textToImageParams":{"text":"a red square"},"imageGenerationConfig":{"numberOfImages":2,"width":1024,"height":1024,"quality":"premium"}}`},
+	{name: "genai embedContent", path: "/genai/v1beta/models/gemini/gemini-embedding-001:embedContent",
+		body: `{"content":{"parts":[{"text":"ok"}]},"taskType":"RETRIEVAL_QUERY","outputDimensionality":256}`},
+	{name: "genai Veo video", path: "/genai/v1beta/models/gemini/veo-3.1-generate-preview:predictLongRunning",
+		body: `{"instances":[{"prompt":"a paper boat"}],"parameters":{"aspectRatio":"16:9","resolution":"1080p","durationSeconds":8,"sampleCount":1,"generateAudio":true}}`},
+	{name: "genai Imagen image", path: "/genai/v1beta/models/gemini/imagen-4.0-generate-001:predict",
+		body: `{"instances":[{"prompt":"a red square"}],"parameters":{"sampleCount":2,"aspectRatio":"16:9","sampleImageSize":"2K"}}`},
+	{name: "genai Gemini image", path: "/genai/v1beta/models/gemini/gemini-2.5-flash-image:generateContent",
+		body: `{"contents":[{"role":"user","parts":[{"text":"a red square"}]}],"generationConfig":{"responseModalities":["IMAGE"],"imageConfig":{"aspectRatio":"16:9","imageSize":"2K"}}}`},
+	{name: "genai Gemini speech", path: "/genai/v1beta/models/gemini/gemini-2.5-flash-preview-tts:generateContent",
+		body: `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Kore"}},"languageCode":"en-US"}}}`},
+}
+
+// ingressRoutesOutsideC4 are the POST route patterns that serve no operation in contract
+// C4's table (chat, responses, messages, rerank, token counting, decisions) or serve one
+// the price-field rule does not cover (image variation, video edit and remix; TXE-7059).
+var ingressRoutesOutsideC4 = []string{
+	"/openai/openai/deployments/{deploymentPath:*}",
+	"/openai/v1/chat/completions", "/openai/chat/completions",
+	"/openai/v1/completions", "/openai/completions",
+	"/openai/v1/responses", "/openai/responses", "/openai/openai/responses",
+	"/openai/v1/responses/input_tokens", "/openai/responses/input_tokens", "/openai/openai/responses/input_tokens",
+	"/openai/v1/responses/{response_id}/cancel", "/openai/responses/{response_id}/cancel", "/openai/openai/responses/{response_id}/cancel",
+	"/openai/v1/responses/compact", "/openai/responses/compact", "/openai/openai/responses/compact",
+	"/openai/v1/decisions", "/openai/decisions",
+	"/openai/v1/images/variations", "/openai/images/variations",
+	"/openai/v1/videos/{video_id}/remix", "/openai/videos/{video_id}/remix", "/openai/openai/videos/{video_id}/remix",
+	"/openai/v1/videos/edits", "/openai/videos/edits",
+	"/anthropic/v1/complete", "/anthropic/v1/messages", "/anthropic/v1/messages/{path:*}",
+	"/cohere/v2/chat", "/cohere/v2/rerank", "/cohere/v1/tokenize",
+	"/bedrock/model/{modelId}/converse", "/bedrock/model/{modelId}/converse-stream",
+	"/bedrock/model/{modelId}/invoke-with-response-stream", // text models only; embeddings and images are not streamed
+	"/bedrock/rerank", "/bedrock/model/{modelId}/count-tokens",
+	"/genai/v1/rank",
+	"/typesafe/v1/systemone",
+}
+
+// ingressRoutePattern turns a route path with {name} and {name:*} segments into a regexp.
+func ingressRoutePattern(path string) *regexp.Regexp {
+	quoted := regexp.QuoteMeta(path)
+	quoted = regexp.MustCompile(`\\\{[A-Za-z_]+:\\\*\\\}`).ReplaceAllString(quoted, `.+`)
+	quoted = regexp.MustCompile(`\\\{[A-Za-z_]+\\\}`).ReplaceAllString(quoted, `[^/]+`)
+	return regexp.MustCompile("^" + quoted + "$")
+}
+
+// TXE-7065: every integration route that serves an operation in contract C4's table is
+// driven with a request in its own shape, through its real ingress conversion, the
+// router, the Bifrost client and the request worker. The worker's price-field check
+// (schemas.CheckExtraParamPriceFieldsFor) must let the route's own request through: a
+// route whose converter writes a price-affecting field only into the extra params, or
+// under a vendor's name without the unified field, fails here and not in production.
+//
+// Every provider is configured at one loopback server that is both its base URL and its
+// HTTP proxy, so nothing can leave this machine. The request counts as having passed the
+// worker when the provider tried to send it there.
+func TestIntegrationIngressPassesThePriceFieldCheck(t *testing.T) {
+	loopback := &ingressLoopback{}
+	server := httptest.NewServer(loopback)
+	defer server.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: ingressTestAccount{url: server.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	store := &mockHandlerStore{}
+	NewOpenAIRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewCohereRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewBedrockRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+	NewGenAIRouter(client, store, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	for _, sample := range ingressSamples {
+		t.Run(sample.name, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI(sample.path)
+			ctx.Request.Header.Set("x-bf-passthrough-extra-params", "true")
+			if sample.form != nil {
+				var body bytes.Buffer
+				writer := multipart.NewWriter(&body)
+				for field, value := range sample.form {
+					require.NoError(t, writer.WriteField(field, value))
+				}
+				part, err := writer.CreateFormFile(sample.file, "sample.bin")
+				require.NoError(t, err)
+				_, err = part.Write([]byte("ID3fake"))
+				require.NoError(t, err)
+				require.NoError(t, writer.Close())
+				ctx.Request.Header.SetContentType(writer.FormDataContentType())
+				ctx.Request.SetBody(body.Bytes())
+			} else {
+				ctx.Request.Header.SetContentType("application/json")
+				ctx.Request.SetBodyString(sample.body)
+			}
+
+			before := loopback.hits.Load()
+			r.Handler(&ctx)
+			response := string(ctx.Response.Body())
+
+			require.NotContains(t, response, string(schemas.ErrorTypeCallerUnsupportedParameter),
+				"the route's own request was refused by a unified-field check: %s", response)
+			require.NotContains(t, response, "extra params cannot set",
+				"the route's own request was refused by the extra-params rule: %s", response)
+			require.Greater(t, loopback.hits.Load(), before,
+				"the request never reached the provider's send, so it did not pass the worker: status %d, body %s", ctx.Response.StatusCode(), response)
+		})
+	}
+
+	// Every POST route of every integration is either sampled above or listed as outside
+	// C4's table, so a route added later cannot be missed.
+	routes := map[string][]RouteConfig{
+		"openai":    CreateOpenAIRouteConfigs("/openai", nil),
+		"anthropic": CreateAnthropicRouteConfigs("/anthropic", &testLogger{}),
+		"cohere":    CreateCohereRouteConfigs("/cohere"),
+		"bedrock":   CreateBedrockRouteConfigs("/bedrock", nil),
+		"genai":     CreateGenAIRouteConfigs("/genai"),
+		"typesafe":  CreateTypesafeRouteConfigs("/typesafe"),
+	}
+	patterns := 0
+	for integration, configs := range routes {
+		for _, route := range configs {
+			if route.Method != fasthttp.MethodPost || route.RequestConverter == nil {
+				continue
+			}
+			patterns++
+			if slices.Contains(ingressRoutesOutsideC4, route.Path) {
+				continue
+			}
+			pattern := ingressRoutePattern(route.Path)
+			sampled := slices.ContainsFunc(ingressSamples, func(sample ingressSample) bool { return pattern.MatchString(sample.path) })
+			assert.True(t, sampled, "%s route %s has no sample in ingressSamples and is not in ingressRoutesOutsideC4", integration, route.Path)
+		}
+	}
+	require.Greater(t, patterns, 40, "the route constructors returned too few routes; the test is not seeing them")
 }

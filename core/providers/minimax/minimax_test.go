@@ -2064,3 +2064,36 @@ func assertMiniMaxError(t *testing.T, bifrostErr *schemas.BifrostError, wantStat
 		t.Errorf("error.code = %v, want %s", bifrostErr.Error, wantCode)
 	}
 }
+
+// TXE-7065: the unified aspect_ratio is delivered as MiniMax's ratio, overrides the ratio
+// derived from size, and its copy among the extra params is not sent as a second field.
+func TestMiniMaxVideoDeliversTheUnifiedAspectRatio(t *testing.T) {
+	extra := map[string]interface{}{"aspect_ratio": "9:16", "prompt_optimizer": true}
+	req, err := minimax.ToMiniMaxVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Provider: schemas.MiniMax, Model: "MiniMax-H3",
+		Input:  &schemas.VideoGenerationInput{Prompt: "a dog"},
+		Params: &schemas.VideoGenerationParameters{Size: "1280x720", AspectRatio: "9:16", ExtraParams: extra},
+	})
+	if err != nil {
+		t.Fatalf("ToMiniMaxVideoGenerationRequest: %v", err)
+	}
+	if req.Ratio == nil || *req.Ratio != "9:16" {
+		t.Fatalf("ratio = %v, want the unified aspect_ratio 9:16, not the 16:9 derived from size", req.Ratio)
+	}
+	if _, sent := req.GetExtraParams()["aspect_ratio"]; sent {
+		t.Errorf("the copy of aspect_ratio would be sent to MiniMax as an unknown field: %v", req.GetExtraParams())
+	}
+
+	// A Go SDK request sends the unified field and no extra params at all.
+	sdk, err := minimax.ToMiniMaxVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Provider: schemas.MiniMax, Model: "MiniMax-H3",
+		Input:  &schemas.VideoGenerationInput{Prompt: "a dog"},
+		Params: &schemas.VideoGenerationParameters{Size: "1280x720", AspectRatio: "9:16"},
+	})
+	if err != nil {
+		t.Fatalf("without extra params: %v", err)
+	}
+	if sdk.Ratio == nil || *sdk.Ratio != "9:16" {
+		t.Fatalf("without extra params: ratio = %v, want the unified aspect_ratio 9:16", sdk.Ratio)
+	}
+}

@@ -668,6 +668,11 @@ const wireAnswer = (path, body, bytes) => {
 		if (answer) return answer;
 	}
 	if (path === "/pp/minimax/v1/t2a_v2") return miniMaxSpeechAnswer(body);
+	// Video create, accepted (folder 434, TXE-7065): each vendor's own task answer, so a row can read what the
+	// converter sent from /__wire without creating a billed task. MiniMax's base-resp models are answered above.
+	if (path === "/pp/minimax/v2/video_generation") return { status: 200, body: JSON.stringify({ task_id: "fixture-video-task", base_resp: { status_code: 0, status_msg: "success" } }) };
+	if (path === "/pp/byteplus/api/v3/contents/generations/tasks") return { status: 200, body: JSON.stringify({ id: "cgt-fixture-video-task" }) };
+	if (path.startsWith("/pp/gemini/models/") && path.endsWith(":predictLongRunning")) return { status: 200, body: JSON.stringify({ name: `${path.slice("/pp/gemini/".length, -":predictLongRunning".length)}/operations/fixture-video-op` }) };
 	if (path === "/pp/vercel/v1/images/generations") return { status: 200, body: JSON.stringify(vercelImageAnswer(body)) };
 	if (path === "/pp/cp/v1/responses") return cpResponsesAnswerFor(body);
 	if (path === "/pp/cloudflare/accounts/acct-1/ai/v1/chat/completions") return cpCloudflareChat(body);

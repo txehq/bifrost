@@ -262,7 +262,7 @@ curl -X POST http://localhost:8080/v1/videos \
 | `seed` | `seed` | |
 | `audio` | `generate_audio` | Models with audio output only |
 | `resolution` | `resolution` | Unified field. Overrides the tier derived from `size`. |
-| `extra_params.ratio` | `ratio` | Overrides the ratio derived from `size`. Also accepts `adaptive`. |
+| `aspect_ratio` | `ratio` | Unified field. Overrides the ratio derived from `size`. Also accepts `adaptive`. Ark's own name, `ratio`, is accepted as an extra parameter only together with `aspect_ratio` and the same value. |
 | `last_frame` | `content[]` image item with role `last_frame` | |
 | `reference_images` | `content[]` image items with role `reference_image` | Can't be combined with first or last frame images |
 | `extra_params.reference_videos` | `content[]` video items with role `reference_video` | Added after `video_uri`. Seedance 2.5 takes up to 10, Seedance 2.0 up to 3. |
@@ -270,7 +270,7 @@ curl -X POST http://localhost:8080/v1/videos \
 | `extra_params.draft_task_id` | `content[]` draft task item | Turns a draft into the final video. `prompt` is optional when it is set. |
 | `callback_url` | not sent | A task control field. Refused with `400` `caller_unsupported_parameter`, as a request field or as an extra parameter, because this provider does not declare it. |
 
-`resolution`, `last_frame` and `reference_images` are unified request fields: send them as the request's own fields. Naming one only among the extra parameters is refused with `400` `caller_unsupported_parameter`, because a field that affects the price must be visible on the request. Go SDK callers set the field on `Params` and keep the same value in `ExtraParams`, where this provider's converter reads it; the HTTP routes do that for you.
+`aspect_ratio`, `resolution`, `last_frame` and `reference_images` are unified request fields: send them as the request's own fields. Naming one only among the extra parameters is refused with `400` `caller_unsupported_parameter`, because a field that affects the price must be visible on the request. Go SDK callers set the field on `Params` and keep the same value in `ExtraParams`, where this provider's converter reads it; the HTTP routes do that for you.
 
 Image references, and the first and last frames, also accept the `asset://<ASSET_ID>` form for media in your Ark asset library.
 

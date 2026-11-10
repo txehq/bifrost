@@ -691,7 +691,9 @@ An extra parameter can add a field the request left unset. It can never replace 
 
 To change a field Bifrost sets, send it in the request itself.
 
-On image, video, embedding, speech and transcription requests, an extra parameter also cannot supply a unified field that affects the price (`size`, `n`, `quality`, `resolution`, `seconds`, `dimensions`, `voice`, `speed`, and the others listed for the operation) when the request did not send that field itself. Such a request is refused with `400` `caller_unsupported_parameter`, with the extra parameter in `error.param`. Send the field as the request's own. `prompt`, `seed` and `negative_prompt` are exempt, as is a provider's own name for the field (for example `ratio`).
+On image, video, embedding, speech and transcription requests, an extra parameter also cannot supply a unified field that affects the price (`size`, `n`, `quality`, `resolution`, `seconds`, `dimensions`, `voice`, `speed`, and the others listed for the operation) when the request did not send that field itself. Such a request is refused with `400` `caller_unsupported_parameter`, with the extra parameter in `error.param`. Send the field as the request's own. `prompt`, `seed` and `negative_prompt` are exempt.
+
+A provider's own name for one of these fields is treated as the field where the provider's converter reads it: `ratio` on BytePlus and MiniMax video and `aspectRatio` on Gemini and Vertex video are `aspect_ratio`, `outputFormat` on Runware video is `output_format`, `references` on Runway video is `reference_images`, and on Sarvam `speaker`, `pace` and `target_language_code` are `voice`, `speed` and `language_code` for speech and `language_code` is `language` for transcription. Such a name is accepted only when the request also sends the unified field with the same value.
 
 How parameters are collected depends on the entrypoint:
 

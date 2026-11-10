@@ -1837,3 +1837,39 @@ func TestBytePlusRefusesModelInExtraParams(t *testing.T) {
 		t.Errorf("want one call with the request's model and the extra param, got %d: %s", len(reqs), reqs[len(reqs)-1].body)
 	}
 }
+
+// TXE-7065: the unified aspect_ratio is delivered as Seedance's ratio, overrides the ratio
+// derived from size, and its copy among the extra params is not sent as a second field.
+func TestBytePlusVideoDeliversTheUnifiedAspectRatio(t *testing.T) {
+	extra := map[string]interface{}{"aspect_ratio": "9:16", "watermark": false}
+	req, err := byteplus.ToBytePlusVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Provider: schemas.BytePlus, Model: "seedance-1-0-pro-fast-251015",
+		Input:  &schemas.VideoGenerationInput{Prompt: "a dog"},
+		Params: &schemas.VideoGenerationParameters{Size: "1280x720", AspectRatio: "9:16", ExtraParams: extra},
+	})
+	if err != nil {
+		t.Fatalf("ToBytePlusVideoGenerationRequest: %v", err)
+	}
+	if req.Ratio == nil || *req.Ratio != "9:16" {
+		t.Fatalf("ratio = %v, want the unified aspect_ratio 9:16, not the 16:9 derived from size", req.Ratio)
+	}
+	if _, sent := req.GetExtraParams()["aspect_ratio"]; sent {
+		t.Errorf("the copy of aspect_ratio would be sent to Ark as an unknown field: %v", req.GetExtraParams())
+	}
+	if req.GetExtraParams()["watermark"] != false {
+		t.Errorf("other extra params must stay: %v", req.GetExtraParams())
+	}
+
+	// A Go SDK request sends the unified field and no extra params at all.
+	sdk, err := byteplus.ToBytePlusVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Provider: schemas.BytePlus, Model: "seedance-1-0-pro-fast-251015",
+		Input:  &schemas.VideoGenerationInput{Prompt: "a dog"},
+		Params: &schemas.VideoGenerationParameters{Size: "1280x720", AspectRatio: "9:16"},
+	})
+	if err != nil {
+		t.Fatalf("without extra params: %v", err)
+	}
+	if sdk.Ratio == nil || *sdk.Ratio != "9:16" {
+		t.Fatalf("without extra params: ratio = %v, want the unified aspect_ratio 9:16", sdk.Ratio)
+	}
+}
