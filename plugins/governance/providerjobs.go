@@ -196,6 +196,8 @@ func providerObjectReference(req *schemas.BifrostRequest) (providerObjectRef, bo
 		return objectRef(video, req.VideoDownloadRequest.Provider, req.VideoDownloadRequest.ID)
 	case req.VideoDeleteRequest != nil:
 		return objectRef(video, req.VideoDeleteRequest.Provider, req.VideoDeleteRequest.ID)
+	case req.VideoCancelRequest != nil:
+		return objectRef(video, req.VideoCancelRequest.Provider, req.VideoCancelRequest.ID)
 	case req.VideoRemixRequest != nil:
 		return objectRef(video, req.VideoRemixRequest.Provider, req.VideoRemixRequest.ID)
 	case req.VideoListRequest != nil:

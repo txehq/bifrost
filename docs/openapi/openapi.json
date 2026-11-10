@@ -4644,6 +4644,23 @@
                       "$ref": "#/components/schemas/Fallback"
                     },
                     "description": "Fallback models to try if primary model fails"
+                  },
+                  "callback_url": {
+                    "type": "string",
+                    "format": "uri",
+                    "description": "Task control field. Where the provider notifies task state changes. Sent to the provider\nunchanged; Bifrost receives no callback and never substitutes an address of its own.\n"
+                  },
+                  "client_reference_id": {
+                    "type": "string",
+                    "description": "Task control field. The caller's own task id, sent in the provider's external-task-id or\ntag field so the task can be found again in the provider's records.\n"
+                  },
+                  "expires_after_seconds": {
+                    "type": "integer",
+                    "description": "Task control field. Upper bound on the task's whole lifetime, in seconds from creation."
+                  },
+                  "output_storage_uri": {
+                    "type": "string",
+                    "description": "Task control field. Where the provider writes the artifact. A task control field the\nprovider does not take is never dropped: the request is refused with 400 and\n`extra_fields.error_type` `caller_unsupported_parameter`, `error.param` naming the field,\nbefore any call to the provider.\n"
                   }
                 }
               }
@@ -4679,9 +4696,15 @@
                         "queued",
                         "in_progress",
                         "completed",
-                        "failed"
+                        "failed",
+                        "cancelled",
+                        "expired"
                       ],
-                      "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n"
+                      "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n- `cancelled`: The job was cancelled at the provider\n- `expired`: The job passed its deadline at the provider before finishing\n"
+                    },
+                    "provider_status": {
+                      "type": "string",
+                      "description": "The provider's raw status string, verbatim"
                     },
                     "progress": {
                       "type": "number",
@@ -4719,7 +4742,7 @@
                     "expires_at": {
                       "type": "integer",
                       "format": "int64",
-                      "description": "Unix timestamp (seconds) when downloadable assets expire"
+                      "description": "Unix timestamp (seconds) when downloadable assets expire: the provider's own value when it\nreturns one, else the completion time plus the provider's documented link lifetime\n"
                     },
                     "videos": {
                       "type": "array",
@@ -4731,9 +4754,10 @@
                             "type": "string",
                             "enum": [
                               "url",
-                              "base64"
+                              "base64",
+                              "content"
                             ],
-                            "description": "Output format of this video"
+                            "description": "Output format of this video. `content` marks a video that can only be fetched with\nthe provider's key: the entry has no `url`, fetch it from\n`GET /v1/videos/{video_id}/content`.\n"
                           },
                           "url": {
                             "type": "string",
@@ -4969,9 +4993,11 @@
                               "queued",
                               "in_progress",
                               "completed",
-                              "failed"
+                              "failed",
+                              "cancelled",
+                              "expired"
                             ],
-                            "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n"
+                            "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n- `cancelled`: The job was cancelled at the provider\n- `expired`: The job passed its deadline at the provider before finishing\n"
                           },
                           "progress": {
                             "type": "number",
@@ -5130,9 +5156,15 @@
                         "queued",
                         "in_progress",
                         "completed",
-                        "failed"
+                        "failed",
+                        "cancelled",
+                        "expired"
                       ],
-                      "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n"
+                      "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n- `cancelled`: The job was cancelled at the provider\n- `expired`: The job passed its deadline at the provider before finishing\n"
+                    },
+                    "provider_status": {
+                      "type": "string",
+                      "description": "The provider's raw status string, verbatim"
                     },
                     "progress": {
                       "type": "number",
@@ -5170,7 +5202,7 @@
                     "expires_at": {
                       "type": "integer",
                       "format": "int64",
-                      "description": "Unix timestamp (seconds) when downloadable assets expire"
+                      "description": "Unix timestamp (seconds) when downloadable assets expire: the provider's own value when it\nreturns one, else the completion time plus the provider's documented link lifetime\n"
                     },
                     "videos": {
                       "type": "array",
@@ -5182,9 +5214,10 @@
                             "type": "string",
                             "enum": [
                               "url",
-                              "base64"
+                              "base64",
+                              "content"
                             ],
-                            "description": "Output format of this video"
+                            "description": "Output format of this video. `content` marks a video that can only be fetched with\nthe provider's key: the entry has no `url`, fetch it from\n`GET /v1/videos/{video_id}/content`.\n"
                           },
                           "url": {
                             "type": "string",
@@ -5591,9 +5624,15 @@
                         "queued",
                         "in_progress",
                         "completed",
-                        "failed"
+                        "failed",
+                        "cancelled",
+                        "expired"
                       ],
-                      "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n"
+                      "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n- `cancelled`: The job was cancelled at the provider\n- `expired`: The job passed its deadline at the provider before finishing\n"
+                    },
+                    "provider_status": {
+                      "type": "string",
+                      "description": "The provider's raw status string, verbatim"
                     },
                     "progress": {
                       "type": "number",
@@ -5631,7 +5670,7 @@
                     "expires_at": {
                       "type": "integer",
                       "format": "int64",
-                      "description": "Unix timestamp (seconds) when downloadable assets expire"
+                      "description": "Unix timestamp (seconds) when downloadable assets expire: the provider's own value when it\nreturns one, else the completion time plus the provider's documented link lifetime\n"
                     },
                     "videos": {
                       "type": "array",
@@ -5643,9 +5682,10 @@
                             "type": "string",
                             "enum": [
                               "url",
-                              "base64"
+                              "base64",
+                              "content"
                             ],
-                            "description": "Output format of this video"
+                            "description": "Output format of this video. `content` marks a video that can only be fetched with\nthe provider's key: the entry has no `url`, fetch it from\n`GET /v1/videos/{video_id}/content`.\n"
                           },
                           "url": {
                             "type": "string",
@@ -5766,6 +5806,258 @@
           },
           "404": {
             "description": "Source video not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "VirtualKeyAuth": []
+          },
+          {
+            "ApiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/videos/{video_id}/cancel": {
+      "post": {
+        "operationId": "videoCancel",
+        "summary": "Cancel a video task",
+        "description": "Calls the provider's cancel API for the task and returns the task object. The request has no\nbody.\n\nA finished task's video and record are never removed. Where the provider's cancel API is\nalso its delete API, the task is queried first and the API is called only while the task is\nqueued.\n\nWhen the provider has no cancel API, or does not allow cancelling in the task's current\nstate, the response is 400 with `extra_fields.error_type` `provider_cancel_unsupported` and\nthe task runs on.\n",
+        "tags": [
+          "Videos"
+        ],
+        "parameters": [
+          {
+            "name": "video_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Video ID in format `id:provider` (e.g., `video_abc123:openai`)"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response. Returns the task object, with `status` `cancelled`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "description": "Provider-native job ID. To use in path parameters (retrieve/delete/download), combine as `{id}:{provider}` (e.g., `task_abc123:runway`)"
+                    },
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "video"
+                      ],
+                      "description": "Object type, always \"video\""
+                    },
+                    "model": {
+                      "type": "string",
+                      "description": "Model used for video generation"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "queued",
+                        "in_progress",
+                        "completed",
+                        "failed",
+                        "cancelled",
+                        "expired"
+                      ],
+                      "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n- `cancelled`: The job was cancelled at the provider\n- `expired`: The job passed its deadline at the provider before finishing\n"
+                    },
+                    "provider_status": {
+                      "type": "string",
+                      "description": "The provider's raw status string, verbatim"
+                    },
+                    "progress": {
+                      "type": "number",
+                      "format": "float",
+                      "minimum": 0,
+                      "maximum": 100,
+                      "description": "Approximate completion percentage (0-100)"
+                    },
+                    "prompt": {
+                      "type": "string",
+                      "description": "Prompt used to generate the video"
+                    },
+                    "remixed_from_video_id": {
+                      "type": "string",
+                      "description": "Source video ID if this is a remix"
+                    },
+                    "seconds": {
+                      "type": "string",
+                      "description": "Duration of the generated video in seconds as a string (e.g., \"4\")"
+                    },
+                    "size": {
+                      "type": "string",
+                      "description": "Resolution of the generated video (e.g., \"1920x1080\")"
+                    },
+                    "created_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when the job was created"
+                    },
+                    "completed_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when the job completed"
+                    },
+                    "expires_at": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Unix timestamp (seconds) when downloadable assets expire: the provider's own value when it\nreturns one, else the completion time plus the provider's documented link lifetime\n"
+                    },
+                    "videos": {
+                      "type": "array",
+                      "description": "Generated video outputs (only present when status is \"completed\")",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "url",
+                              "base64",
+                              "content"
+                            ],
+                            "description": "Output format of this video. `content` marks a video that can only be fetched with\nthe provider's key: the entry has no `url`, fetch it from\n`GET /v1/videos/{video_id}/content`.\n"
+                          },
+                          "url": {
+                            "type": "string",
+                            "format": "uri",
+                            "description": "URL to the generated video (present when type is \"url\")"
+                          },
+                          "base64": {
+                            "type": "string",
+                            "description": "Base64-encoded video content (present when type is \"base64\")"
+                          },
+                          "content_type": {
+                            "type": "string",
+                            "description": "MIME type of the video (e.g., \"video/mp4\")"
+                          }
+                        }
+                      }
+                    },
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "description": "Error code"
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "Human-readable error message"
+                        }
+                      }
+                    },
+                    "content_filter": {
+                      "type": "object",
+                      "description": "Information about content that was filtered due to safety policies",
+                      "properties": {
+                        "filtered_count": {
+                          "type": "integer",
+                          "description": "Number of items filtered"
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Human-readable reasons for filtering"
+                        }
+                      }
+                    },
+                    "usage": {
+                      "type": "object",
+                      "description": "The billable quantities the provider reported for the task. A field the provider did not\nreport is absent: Bifrost never fills one from its own count, the request or a default.\n",
+                      "properties": {
+                        "cost": {
+                          "$ref": "#/components/schemas/BifrostCost"
+                        },
+                        "output_tokens": {
+                          "type": "integer",
+                          "description": "Tokens the provider bills the output by (e.g. Seedance `completion_tokens`)"
+                        },
+                        "output_seconds": {
+                          "type": "number",
+                          "description": "Seconds of output the provider billed"
+                        },
+                        "input_seconds": {
+                          "type": "number",
+                          "description": "Seconds of input media the provider billed"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider billed"
+                        },
+                        "compute_seconds": {
+                          "type": "number",
+                          "description": "Run time a hosting platform bills by (e.g. Replicate `metrics.predict_time`)"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "extra_fields": {
+                      "$ref": "#/components/schemas/BifrostResponseExtraFields"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request, or the task cannot be cancelled (`extra_fields.error_type`\n`provider_cancel_unsupported`).\n",
             "content": {
               "application/json": {
                 "schema": {
@@ -5975,9 +6267,15 @@
                         "queued",
                         "in_progress",
                         "completed",
-                        "failed"
+                        "failed",
+                        "cancelled",
+                        "expired"
                       ],
-                      "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n"
+                      "description": "Current lifecycle status of the video generation job:\n- `queued`: Job is waiting to be processed\n- `in_progress`: Video is currently being generated\n- `completed`: Video generation completed successfully\n- `failed`: Video generation failed\n- `cancelled`: The job was cancelled at the provider\n- `expired`: The job passed its deadline at the provider before finishing\n"
+                    },
+                    "provider_status": {
+                      "type": "string",
+                      "description": "The provider's raw status string, verbatim"
                     },
                     "progress": {
                       "type": "number",
@@ -6015,7 +6313,7 @@
                     "expires_at": {
                       "type": "integer",
                       "format": "int64",
-                      "description": "Unix timestamp (seconds) when downloadable assets expire"
+                      "description": "Unix timestamp (seconds) when downloadable assets expire: the provider's own value when it\nreturns one, else the completion time plus the provider's documented link lifetime\n"
                     },
                     "videos": {
                       "type": "array",
@@ -6027,9 +6325,10 @@
                             "type": "string",
                             "enum": [
                               "url",
-                              "base64"
+                              "base64",
+                              "content"
                             ],
-                            "description": "Output format of this video"
+                            "description": "Output format of this video. `content` marks a video that can only be fetched with\nthe provider's key: the entry has no `url`, fetch it from\n`GET /v1/videos/{video_id}/content`.\n"
                           },
                           "url": {
                             "type": "string",
@@ -128021,6 +128320,16 @@
                 "default": false,
                 "description": "Allow individual requests to override raw request/response visibility via the x-bf-send-back-raw-request and x-bf-send-back-raw-response headers. When false (default), provider-level settings are authoritative and per-request overrides are ignored."
               },
+              "disable_provider_job_accounting": {
+                "type": "boolean",
+                "default": false,
+                "description": "Fork (txehq/bifrost): turn off provider job accounting for video tasks and batches. When true, no provider job row is written when a video or batch is created or polled, nothing is settled inline, and neither accounting sweeper runs, so Bifrost makes no vendor call outside a caller's request. Honoured on a config save without a restart."
+              },
+              "disable_passthrough_sse_heartbeat": {
+                "type": "boolean",
+                "default": false,
+                "description": "Fork (txehq/bifrost): turn off the SSE comment heartbeat on passthrough streams. When true, an idle text/event-stream passthrough response carries only the bytes the vendor sent. Honoured on a config save without a restart."
+              },
               "enforce_auth_on_inference": {
                 "type": "boolean",
                 "description": "Whether to enforce virtual key authentication on inference requests"
@@ -128550,6 +128859,16 @@
                 "type": "boolean",
                 "default": false,
                 "description": "Allow individual requests to override raw request/response visibility via the x-bf-send-back-raw-request and x-bf-send-back-raw-response headers. When false (default), provider-level settings are authoritative and per-request overrides are ignored."
+              },
+              "disable_provider_job_accounting": {
+                "type": "boolean",
+                "default": false,
+                "description": "Fork (txehq/bifrost): turn off provider job accounting for video tasks and batches. When true, no provider job row is written when a video or batch is created or polled, nothing is settled inline, and neither accounting sweeper runs, so Bifrost makes no vendor call outside a caller's request. Honoured on a config save without a restart."
+              },
+              "disable_passthrough_sse_heartbeat": {
+                "type": "boolean",
+                "default": false,
+                "description": "Fork (txehq/bifrost): turn off the SSE comment heartbeat on passthrough streams. When true, an idle text/event-stream passthrough response carries only the bytes the vendor sent. Honoured on a config save without a restart."
               },
               "enforce_auth_on_inference": {
                 "type": "boolean",

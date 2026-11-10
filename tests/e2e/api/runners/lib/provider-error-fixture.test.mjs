@@ -277,3 +277,24 @@ test("OpenAI image paths answer in the gpt-image shape, record the wire, and blo
   assert.equal(calls[0].contentType, "application/json");
   assert.match(calls[1].contentType, /^multipart\/form-data/);
 });
+
+// The video task routes count every request by method and bearer token, which is how a harness case
+// proves which key a task query used and that a refused request never reached the upstream.
+test("video task routes answer a queued task and count requests per key", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  const hits = async () => (await (await fetch(`${base}/__hits`)).json()).data[0].hits;
+  const get = (id, key) => fetch(`${base}/v1/videos/${id}`, { headers: { Authorization: `Bearer ${key}` } });
+
+  const task = await get("task_1", "video-secret-b");
+  assert.equal(task.status, 200);
+  assert.deepEqual(await task.json(), { id: "task_1", object: "video", model: "sora-2", status: "queued", progress: 0, created_at: 1762700000, seconds: "4", size: "720x1280" });
+  await get("task_1", "video-secret-b");
+  await get("task_1", "video-secret-a");
+  const cancel = await fetch(`${base}/v1/videos/task_1/cancel`, { method: "POST", headers: { Authorization: "Bearer video-secret-a" } });
+  assert.equal(cancel.status, 404, "OpenAI has no cancel API, so the fixture has none");
+  assert.deepEqual(await hits(), { "videos GET video-secret-b": 2, "videos GET video-secret-a": 1, "videos POST video-secret-a": 1 });
+
+  await fetch(`${base}/__reset`, { method: "POST" });
+  assert.deepEqual(await hits(), {});
+});

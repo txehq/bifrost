@@ -1,5 +1,7 @@
 package schemas
 
+import "slices"
+
 // VideoStatus is the lifecycle status of a video job.
 type VideoStatus string
 
@@ -8,13 +10,43 @@ const (
 	VideoStatusInProgress VideoStatus = "in_progress"
 	VideoStatusCompleted  VideoStatus = "completed"
 	VideoStatusFailed     VideoStatus = "failed"
+	// Fork (TXE-6521, contract C7 BF11): a vendor's cancelled and expired states are their own
+	// statuses, not folded into "failed". A provider maps to them through its status table
+	// (providers/utils.VideoStatusTable).
+	VideoStatusCancelled VideoStatus = "cancelled"
+	VideoStatusExpired   VideoStatus = "expired"
 )
+
+// VideoStatuses is every status a task object can carry, in lifecycle order.
+var VideoStatuses = []VideoStatus{
+	VideoStatusQueued,
+	VideoStatusInProgress,
+	VideoStatusCompleted,
+	VideoStatusFailed,
+	VideoStatusCancelled,
+	VideoStatusExpired,
+}
+
+// IsTerminal reports whether the task will not change state again: completed, failed,
+// cancelled or expired.
+func (s VideoStatus) IsTerminal() bool {
+	switch s {
+	case VideoStatusCompleted, VideoStatusFailed, VideoStatusCancelled, VideoStatusExpired:
+		return true
+	default:
+		return false
+	}
+}
 
 type VideoOutputType string
 
 const (
 	VideoOutputTypeBase64 VideoOutputType = "base64"
 	VideoOutputTypeURL    VideoOutputType = "url"
+	// VideoOutputTypeContent marks an artifact that can only be fetched with the vendor's key
+	// (OpenAI and Azure /videos/{id}/content, Vertex gs://, Gemini Files). The entry carries no
+	// url: the caller fetches it through GET /v1/videos/{id}/content (fork, TXE-6521, contract C9).
+	VideoOutputTypeContent VideoOutputType = "content"
 )
 
 // VideoCreateError is the error payload when video generation fails.
@@ -32,7 +64,7 @@ type ContentFilterInfo struct {
 
 type VideoOutput struct {
 	ID          string          `json:"id,omitempty"` // provider-side asset identifier, when one is assigned
-	Type        VideoOutputType `json:"type"`         // "url" | "base64"
+	Type        VideoOutputType `json:"type"`         // "url" | "base64" | "content"
 	URL         *string         `json:"url,omitempty"`
 	Base64Data  *string         `json:"base64,omitempty"`
 	ContentType string          `json:"content_type"`
@@ -112,6 +144,102 @@ type VideoGenerationParameters struct {
 	// Upscale operations (type "upscale"); mutually exclusive.
 	UpscaleFactor    *int `json:"upscale_factor,omitempty"`
 	TargetMegapixels *int `json:"target_megapixels,omitempty"`
+
+	// Fork (TXE-6521, contract C7 BF12): the four task control fields, see TaskControlParameters.
+	TaskControlParameters
+}
+
+// TaskControlParameters are the task control fields of an async task create request (fork,
+// TXE-6521, contract C7 BF12): one name on every vendor, embedded in the create parameters of each
+// task operation. A provider sends each one in its vendor's own field. A provider that does not
+// take one never drops it: the request is refused with caller_unsupported_parameter before any
+// upstream call (see CheckTaskControlFields).
+type TaskControlParameters struct {
+	// CallbackURL is where the vendor notifies task state changes. It is sent to the vendor
+	// unchanged; Bifrost never substitutes an address of its own and receives no callback.
+	CallbackURL *string `json:"callback_url,omitempty"`
+	// ClientReferenceID is the caller's own task id, sent in the vendor's external-task-id or
+	// tag field so the caller can find the task again in the vendor's records.
+	ClientReferenceID *string `json:"client_reference_id,omitempty"`
+	// ExpiresAfterSeconds is the upper bound on the task's whole lifetime, counted from creation.
+	ExpiresAfterSeconds *int `json:"expires_after_seconds,omitempty"`
+	// OutputStorageURI is where the vendor writes the artifact.
+	OutputStorageURI *string `json:"output_storage_uri,omitempty"`
+}
+
+// The JSON names of the task control fields.
+const (
+	TaskControlFieldCallbackURL         = "callback_url"
+	TaskControlFieldClientReferenceID   = "client_reference_id"
+	TaskControlFieldExpiresAfterSeconds = "expires_after_seconds"
+	TaskControlFieldOutputStorageURI    = "output_storage_uri"
+)
+
+// TaskControlFields lists the JSON names of the task control fields, sorted.
+var TaskControlFields = []string{
+	TaskControlFieldCallbackURL,
+	TaskControlFieldClientReferenceID,
+	TaskControlFieldExpiresAfterSeconds,
+	TaskControlFieldOutputStorageURI,
+}
+
+// Present returns, sorted, the JSON names of the task control fields that are set.
+func (p *TaskControlParameters) Present() []string {
+	if p == nil {
+		return nil
+	}
+	var fields []string
+	if p.CallbackURL != nil {
+		fields = append(fields, TaskControlFieldCallbackURL)
+	}
+	if p.ClientReferenceID != nil {
+		fields = append(fields, TaskControlFieldClientReferenceID)
+	}
+	if p.ExpiresAfterSeconds != nil {
+		fields = append(fields, TaskControlFieldExpiresAfterSeconds)
+	}
+	if p.OutputStorageURI != nil {
+		fields = append(fields, TaskControlFieldOutputStorageURI)
+	}
+	return fields
+}
+
+// TaskControl returns the task control fields of the task create request br carries, or nil when
+// br is not a task create request. An operation that gains the fields is added here, which is all
+// CheckTaskControlFields needs to cover it.
+func (br *BifrostRequest) TaskControl() *TaskControlParameters {
+	if br == nil {
+		return nil
+	}
+	if br.VideoGenerationRequest != nil && br.VideoGenerationRequest.Params != nil {
+		return &br.VideoGenerationRequest.Params.TaskControlParameters
+	}
+	return nil
+}
+
+// CheckTaskControlFields refuses a task control field the provider does not take (contract C7,
+// C4 convention three). A control field decides whether the caller can recover or bound the task,
+// so support is opt-in: a provider takes a field only when it implements UnifiedFieldDeclarer and
+// lists the field for req's request type. Every other provider, including one that declares
+// nothing, gets 400 caller_unsupported_parameter naming the first unsupported field. Core runs it
+// before a key is chosen, so a refused request makes no upstream call.
+func CheckTaskControlFields(provider any, req *BifrostRequest) *BifrostError {
+	present := req.TaskControl().Present()
+	if len(present) == 0 {
+		return nil
+	}
+	var supported []string
+	if declarer, ok := provider.(UnifiedFieldDeclarer); ok {
+		if fields, declared := declarer.SupportedUnifiedFields(req.RequestType); declared {
+			supported = fields
+		}
+	}
+	for _, field := range present {
+		if !slices.Contains(supported, field) {
+			return NewUnsupportedParameterError(field, "")
+		}
+	}
+	return nil
 }
 
 // DefaultVideoDuration is the default video duration in seconds for Gemini/Vertex when not specified.
@@ -132,6 +260,7 @@ type BifrostVideoGenerationResponse struct {
 	Seconds            *string            `json:"seconds,omitempty"`               // Duration of the generated clip in seconds
 	Size               string             `json:"size,omitempty"`                  // Resolution of the generated video
 	Status             VideoStatus        `json:"status,omitempty"`                // Current lifecycle status of the video job
+	ProviderStatus     string             `json:"provider_status,omitempty"`       // The vendor's raw status string, verbatim (fork, TXE-6521, contract C7 BF11)
 	Videos             []VideoOutput      `json:"videos,omitempty"`                // Generated videos (supports multiple videos)
 	ContentFilter      *ContentFilterInfo `json:"content_filter,omitempty"`        // Information about content filtering (if applicable)
 	Usage              *VideoUsage        `json:"usage,omitempty"`                 // Provider-reported usage/cost, when the provider returns it
@@ -353,6 +482,61 @@ type BifrostVideoReferenceRequest struct {
 
 type BifrostVideoDeleteRequest = BifrostVideoReferenceRequest
 type BifrostVideoRetrieveRequest = BifrostVideoReferenceRequest
+
+// --- Video Cancel ---
+
+// BifrostVideoCancelRequest names the task POST /v1/videos/{id}/cancel cancels (fork, TXE-6521,
+// contract C7 BF13). The response is the task object, as for a retrieve.
+type BifrostVideoCancelRequest = BifrostVideoReferenceRequest
+
+// VideoCanceller is implemented by a provider whose vendor has a cancel API for video tasks.
+// Cancel is not part of the Provider interface: a provider that does not implement it has no
+// cancel API, and core answers 400 provider_cancel_unsupported without an upstream call.
+//
+// VideoCancel calls the vendor's cancel API once and returns the task object. It must never
+// remove a finished task's artifact or record. When the vendor does not allow cancelling in the
+// task's current state it returns NewVideoCancelUnsupportedError. A vendor whose cancel API is
+// also its delete API (ModelArk, MiniMax v2 DELETE) goes through
+// providers/utils.CancelVideoWhileQueued, which queries first and calls it only while the task is
+// queued.
+type VideoCanceller interface {
+	VideoCancel(ctx *BifrostContext, key Key, request *BifrostVideoCancelRequest) (*BifrostVideoGenerationResponse, *BifrostError)
+}
+
+// NewVideoCancelUnsupportedError is the error of the cancel route when the task cannot be
+// cancelled: the vendor has no cancel API, or does not allow cancelling in the task's current
+// state. 400, error_type provider_cancel_unsupported. message says which, for the caller; empty
+// gives the no-cancel-API default.
+func NewVideoCancelUnsupportedError(message string) *BifrostError {
+	if message == "" {
+		message = "this provider has no API to cancel a video task"
+	}
+	return &BifrostError{
+		StatusCode: Ptr(400),
+		Error: &ErrorField{
+			Type:    Ptr("invalid_request_error"),
+			Code:    Ptr(string(ErrorTypeProviderCancelUnsupported)),
+			Message: message,
+		},
+		ExtraFields: BifrostErrorExtraFields{
+			RequestType: VideoCancelRequest,
+			ErrorType:   ErrorTypeProviderCancelUnsupported,
+		},
+	}
+}
+
+// CheckVideoCancelSupported returns the provider_cancel_unsupported error when req is a video
+// cancel and provider has no cancel API (it does not implement VideoCanceller), nil otherwise.
+// Core runs it before a key is chosen.
+func CheckVideoCancelSupported(provider any, req *BifrostRequest) *BifrostError {
+	if req == nil || req.RequestType != VideoCancelRequest {
+		return nil
+	}
+	if _, ok := provider.(VideoCanceller); ok {
+		return nil
+	}
+	return NewVideoCancelUnsupportedError("")
+}
 
 type BifrostVideoDeleteResponse struct {
 	ID          string                     `json:"id"`

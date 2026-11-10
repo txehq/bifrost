@@ -303,6 +303,52 @@ video-remix:
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 
+video-cancel:
+  post:
+    operationId: videoCancel
+    summary: Cancel a video task
+    description: |
+      Calls the provider's cancel API for the task and returns the task object. The request has no
+      body.
+
+      A finished task's video and record are never removed. Where the provider's cancel API is
+      also its delete API, the task is queried first and the API is called only while the task is
+      queued.
+
+      When the provider has no cancel API, or does not allow cancelling in the task's current
+      state, the response is 400 with `extra_fields.error_type` `provider_cancel_unsupported` and
+      the task runs on.
+    tags:
+    - Videos
+    parameters:
+    - name: video_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
+    responses:
+      '200':
+        description: Successful response. Returns the task object, with `status` `cancelled`.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/videos.yaml#/VideoGenerationResponse'
+      '400':
+        description: |
+          Bad request, or the task cannot be cancelled (`extra_fields.error_type`
+          `provider_cancel_unsupported`).
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
 video-edit:
   post:
     operationId: videoEdit

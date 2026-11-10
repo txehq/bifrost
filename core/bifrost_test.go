@@ -10513,3 +10513,280 @@ func TestTranscriptionURLOnlyReachesOnlyProvidersThatTakeAURL(t *testing.T) {
 		t.Fatalf("a request with no file and no url must be refused as missing input, got %v", bifrostErr)
 	}
 }
+
+// videoTaskProvider is a provider whose video create takes the unified fields it declares
+// (schemas.UnifiedFieldDeclarer). Everything else comes from the embedded real OpenAI provider.
+type videoTaskProvider struct {
+	schemas.Provider
+	supported []string // nil = declares nothing for video create
+
+	creates   atomic.Int64
+	gotParams atomic.Pointer[schemas.VideoGenerationParameters]
+}
+
+func (p *videoTaskProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
+	if requestType != schemas.VideoGenerationRequest || p.supported == nil {
+		return nil, false
+	}
+	return p.supported, true
+}
+
+func (p *videoTaskProvider) VideoGeneration(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	p.creates.Add(1)
+	p.gotParams.Store(req.Params)
+	return &schemas.BifrostVideoGenerationResponse{ID: "task_1:openai", Status: schemas.VideoStatusQueued, ProviderStatus: "queued"}, nil
+}
+
+// cancellableVideoTaskProvider adds a vendor cancel API (schemas.VideoCanceller) and records the
+// key every cancel call was made with.
+type cancellableVideoTaskProvider struct {
+	*videoTaskProvider
+	mu         sync.Mutex
+	cancelKeys []string
+	cancelIDs  []string
+}
+
+func (p *cancellableVideoTaskProvider) VideoCancel(_ *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostVideoCancelRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cancelKeys = append(p.cancelKeys, key.Name)
+	p.cancelIDs = append(p.cancelIDs, req.ID)
+	return &schemas.BifrostVideoGenerationResponse{ID: req.ID + ":openai", Status: schemas.VideoStatusCancelled, ProviderStatus: "cancelled"}, nil
+}
+
+// runVideoTaskRequest sends one request through a request worker bound to provider, the way
+// tryRequest hands it over, and returns what the worker answers. upstreamCalls counts every HTTP
+// request that reached the provider's base URL. keyName, when set, names the key as x-bf-api-key
+// does.
+func runVideoTaskRequest(t *testing.T, wrap func(schemas.Provider) schemas.Provider, req schemas.BifrostRequest, keyName string) (resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, upstreamCalls int64) {
+	t.Helper()
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	t.Cleanup(server.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 4, server.URL)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("sk-test-1"), Weight: 1, Models: schemas.WhiteList{"*"}},
+		{ID: "k2", Name: "K2", Value: *schemas.NewSecretVar("sk-test-2"), Weight: 1, Models: schemas.WhiteList{"*"}},
+	})
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+	cfg, err := account.GetConfigForProvider(schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetConfigForProvider: %v", err)
+	}
+
+	pq := &ProviderQueue{queue: make(chan *ChannelMessage, 1), done: make(chan struct{})}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go client.requestWorker(wrap(openaiprovider.NewOpenAIProvider(cfg, NewNoOpLogger())), cfg, pq, &wg)
+	defer func() {
+		pq.signalClosing()
+		wg.Wait()
+	}()
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	tracer := client.getTracer()
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, tracer.CreateTrace(""))
+	if keyName != "" {
+		ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, keyName)
+	}
+	msg := client.getChannelMessage(req)
+	msg.Context = ctx
+	pq.queue <- msg
+
+	select {
+	case resp = <-msg.Response:
+	case e := <-msg.Err:
+		bifrostErr = &e
+	case <-time.After(10 * time.Second):
+		t.Fatal("the worker never answered")
+	}
+	return resp, bifrostErr, calls.Load()
+}
+
+func videoCreateWithControl(control schemas.TaskControlParameters) schemas.BifrostRequest {
+	return schemas.BifrostRequest{
+		RequestType: schemas.VideoGenerationRequest,
+		VideoGenerationRequest: &schemas.BifrostVideoGenerationRequest{
+			Provider: schemas.OpenAI,
+			Model:    "sora-2",
+			Input:    &schemas.VideoGenerationInput{Prompt: "a dog"},
+			Params:   &schemas.VideoGenerationParameters{TaskControlParameters: control},
+		},
+	}
+}
+
+// TXE-6521 (contract C7 BF12): a task control field reaches a provider that declares it, typed
+// and unchanged; a provider that does not take it never sees the request, and no call is made
+// upstream: 400 caller_unsupported_parameter naming the field.
+func TestVideoCreateTaskControlFields(t *testing.T) {
+	control := schemas.TaskControlParameters{
+		CallbackURL:         schemas.Ptr("https://hooks.tokun.sh/v/task_1"),
+		ClientReferenceID:   schemas.Ptr("task_1"),
+		ExpiresAfterSeconds: schemas.Ptr(7200),
+		OutputStorageURI:    schemas.Ptr("gs://bucket/task_1/"),
+	}
+
+	t.Run("declared fields reach the provider", func(t *testing.T) {
+		provider := &videoTaskProvider{supported: schemas.TaskControlFields}
+		resp, bifrostErr, _ := runVideoTaskRequest(t, func(base schemas.Provider) schemas.Provider {
+			provider.Provider = base
+			return provider
+		}, videoCreateWithControl(control), "")
+		if bifrostErr != nil {
+			t.Fatalf("create refused: %+v", bifrostErr.Error)
+		}
+		if resp.VideoGenerationResponse == nil || resp.VideoGenerationResponse.Status != schemas.VideoStatusQueued {
+			t.Fatalf("response = %+v", resp.VideoGenerationResponse)
+		}
+		got := provider.gotParams.Load()
+		if provider.creates.Load() != 1 || got == nil {
+			t.Fatalf("provider create calls = %d", provider.creates.Load())
+		}
+		if !reflect.DeepEqual(got.TaskControlParameters, control) {
+			t.Fatalf("provider received %+v, want the four fields unchanged", got.TaskControlParameters)
+		}
+	})
+
+	for _, field := range schemas.TaskControlFields {
+		t.Run("refused when not taken: "+field, func(t *testing.T) {
+			one := schemas.TaskControlParameters{}
+			switch field {
+			case schemas.TaskControlFieldCallbackURL:
+				one.CallbackURL = control.CallbackURL
+			case schemas.TaskControlFieldClientReferenceID:
+				one.ClientReferenceID = control.ClientReferenceID
+			case schemas.TaskControlFieldExpiresAfterSeconds:
+				one.ExpiresAfterSeconds = control.ExpiresAfterSeconds
+			case schemas.TaskControlFieldOutputStorageURI:
+				one.OutputStorageURI = control.OutputStorageURI
+			}
+			// The provider declares nothing: the default for every provider not yet wired.
+			provider := &videoTaskProvider{}
+			resp, bifrostErr, upstream := runVideoTaskRequest(t, func(base schemas.Provider) schemas.Provider {
+				provider.Provider = base
+				return provider
+			}, videoCreateWithControl(one), "")
+			if resp != nil || bifrostErr == nil {
+				t.Fatalf("resp/err = %v/%v, want a refusal", resp, bifrostErr)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %v, want 400", bifrostErr.StatusCode)
+			}
+			if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != field {
+				t.Fatalf("error_type/param = %q/%v", bifrostErr.ExtraFields.ErrorType, bifrostErr.Error.Param)
+			}
+			if bifrostErr.ExtraFields.Provider != schemas.OpenAI || bifrostErr.ExtraFields.RequestType != schemas.VideoGenerationRequest {
+				t.Fatalf("error identity = %q/%q", bifrostErr.ExtraFields.Provider, bifrostErr.ExtraFields.RequestType)
+			}
+			if provider.creates.Load() != 0 || upstream != 0 {
+				t.Fatalf("provider calls/upstream calls = %d/%d, want none", provider.creates.Load(), upstream)
+			}
+		})
+	}
+
+	// The real OpenAI provider takes no task control field: it is refused before any upstream call.
+	t.Run("a built-in provider that declares nothing", func(t *testing.T) {
+		_, bifrostErr, upstream := runVideoTaskRequest(t, func(base schemas.Provider) schemas.Provider { return base },
+			videoCreateWithControl(schemas.TaskControlParameters{CallbackURL: control.CallbackURL}), "")
+		if bifrostErr == nil || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter {
+			t.Fatalf("err = %+v, want caller_unsupported_parameter", bifrostErr)
+		}
+		if upstream != 0 {
+			t.Fatalf("made %d upstream calls for a refused field", upstream)
+		}
+	})
+}
+
+// TXE-6521 (contract C7 BF13, C3): a cancel calls the provider's cancel API exactly once, with
+// the key x-bf-api-key names and no other, and returns the task object. A provider with no cancel
+// API is answered 400 provider_cancel_unsupported without an upstream call.
+func TestVideoCancelRequest(t *testing.T) {
+	cancelReq := schemas.BifrostRequest{
+		RequestType:        schemas.VideoCancelRequest,
+		VideoCancelRequest: &schemas.BifrostVideoCancelRequest{Provider: schemas.OpenAI, ID: "task_1"},
+	}
+
+	for _, keyName := range []string{"K1", "K2"} {
+		t.Run("one cancel call with the named key "+keyName, func(t *testing.T) {
+			provider := &cancellableVideoTaskProvider{videoTaskProvider: &videoTaskProvider{}}
+			resp, bifrostErr, _ := runVideoTaskRequest(t, func(base schemas.Provider) schemas.Provider {
+				provider.Provider = base
+				return provider
+			}, cancelReq, keyName)
+			if bifrostErr != nil {
+				t.Fatalf("cancel failed: %+v", bifrostErr.Error)
+			}
+			task := resp.VideoGenerationResponse
+			if task == nil || task.Status != schemas.VideoStatusCancelled || task.ProviderStatus != "cancelled" || task.ID != "task_1:openai" {
+				t.Fatalf("task object = %+v", task)
+			}
+			if task.ExtraFields.RequestType != schemas.VideoCancelRequest || task.ExtraFields.Provider != schemas.OpenAI {
+				t.Fatalf("extra_fields = %q/%q", task.ExtraFields.RequestType, task.ExtraFields.Provider)
+			}
+			provider.mu.Lock()
+			defer provider.mu.Unlock()
+			if !slices.Equal(provider.cancelKeys, []string{keyName}) || !slices.Equal(provider.cancelIDs, []string{"task_1"}) {
+				t.Fatalf("cancel calls: keys %v ids %v, want one call with %s", provider.cancelKeys, provider.cancelIDs, keyName)
+			}
+		})
+	}
+
+	t.Run("a key the provider does not have", func(t *testing.T) {
+		provider := &cancellableVideoTaskProvider{videoTaskProvider: &videoTaskProvider{}}
+		_, bifrostErr, upstream := runVideoTaskRequest(t, func(base schemas.Provider) schemas.Provider {
+			provider.Provider = base
+			return provider
+		}, cancelReq, "K9")
+		if bifrostErr == nil {
+			t.Fatal("a cancel naming an unknown key was served")
+		}
+		if len(provider.cancelKeys) != 0 || upstream != 0 {
+			t.Fatalf("cancel calls %v, upstream calls %d: another key was used", provider.cancelKeys, upstream)
+		}
+	})
+
+	t.Run("a provider with no cancel API", func(t *testing.T) {
+		resp, bifrostErr, upstream := runVideoTaskRequest(t, func(base schemas.Provider) schemas.Provider { return base }, cancelReq, "K1")
+		if resp != nil || bifrostErr == nil {
+			t.Fatalf("resp/err = %v/%v, want a refusal", resp, bifrostErr)
+		}
+		if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeProviderCancelUnsupported {
+			t.Fatalf("status/error_type = %v/%q, want 400/provider_cancel_unsupported", bifrostErr.StatusCode, bifrostErr.ExtraFields.ErrorType)
+		}
+		if bifrostErr.ExtraFields.Provider != schemas.OpenAI || bifrostErr.ExtraFields.RequestType != schemas.VideoCancelRequest {
+			t.Fatalf("error identity = %q/%q", bifrostErr.ExtraFields.Provider, bifrostErr.ExtraFields.RequestType)
+		}
+		if upstream != 0 {
+			t.Fatalf("made %d upstream calls for a provider with no cancel API", upstream)
+		}
+	})
+
+	// The public entry point validates like the other id-addressed video requests.
+	t.Run("entry point validation", func(t *testing.T) {
+		client := &Bifrost{}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		for name, req := range map[string]*schemas.BifrostVideoCancelRequest{
+			"nil request": nil,
+			"no provider": {ID: "task_1"},
+			"no id":       {Provider: schemas.OpenAI},
+		} {
+			if resp, bifrostErr := client.VideoCancelRequest(ctx, req); resp != nil || bifrostErr == nil || bifrostErr.ExtraFields.RequestType != schemas.VideoCancelRequest {
+				t.Fatalf("%s: resp/err = %v/%+v", name, resp, bifrostErr)
+			}
+		}
+		if !isModellessVideoRequestType(schemas.VideoCancelRequest) {
+			t.Fatal("video cancel must be served without a model")
+		}
+	})
+}

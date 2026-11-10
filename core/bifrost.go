@@ -2632,6 +2632,44 @@ func (bifrost *Bifrost) VideoDeleteRequest(ctx *schemas.BifrostContext, req *sch
 	return response.VideoDeleteResponse, nil
 }
 
+// VideoCancelRequest cancels a video task through the vendor's cancel API and returns the task
+// object (fork, TXE-6521, contract C7 BF13). A provider with no cancel API, or a task whose state
+// the vendor does not let be cancelled, is answered 400 provider_cancel_unsupported.
+func (bifrost *Bifrost) VideoCancelRequest(ctx *schemas.BifrostContext, req *schemas.BifrostVideoCancelRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	invalid := func(message string, provider schemas.ModelProvider) *schemas.BifrostError {
+		return &schemas.BifrostError{
+			IsBifrostError: false,
+			Error:          &schemas.ErrorField{Message: message},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.VideoCancelRequest,
+				Provider:    provider,
+			},
+		}
+	}
+	if req == nil {
+		return nil, invalid("video cancel request is nil", "")
+	}
+	if req.Provider == "" {
+		return nil, invalid("provider is required for video cancel request", "")
+	}
+	if req.ID == "" {
+		return nil, invalid("video_id is required for video cancel request", req.Provider)
+	}
+
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.VideoCancelRequest
+	bifrostReq.VideoCancelRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	if response == nil || response.VideoGenerationResponse == nil {
+		return nil, invalid("received nil response from provider", req.Provider)
+	}
+	return response.VideoGenerationResponse, nil
+}
+
 // BatchCreateRequest creates a new batch job for asynchronous processing.
 func (bifrost *Bifrost) BatchCreateRequest(ctx *schemas.BifrostContext, req *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	if req == nil {
@@ -8113,6 +8151,19 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			continue
 		}
 
+		// The async task contract (C7) refuses two requests here, before a key is chosen, so
+		// neither makes an upstream call: a task control field this provider does not take, and
+		// a cancel on a provider with no cancel API.
+		taskErr := schemas.CheckTaskControlFields(provider, &req.BifrostRequest)
+		if taskErr == nil {
+			taskErr = schemas.CheckVideoCancelSupported(provider, &req.BifrostRequest)
+		}
+		if taskErr != nil {
+			taskErr.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), model, model)
+			bifrost.sendWorkerError(req, *taskErr)
+			continue
+		}
+
 		var keys []schemas.Key
 		// keyProvider is passed to executeRequestWithRetries to manage key selection and rotation.
 		// It is nil when no key is required (e.g. providerRequiresKey=false) or for multi-key
@@ -9379,6 +9430,18 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.VideoGenerationResponse = videoRemixResponse
+	case schemas.VideoCancelRequest:
+		// The worker already refused a provider with no cancel API (CheckVideoCancelSupported);
+		// the assertion is repeated so this path cannot reach a nil method.
+		canceller, ok := provider.(schemas.VideoCanceller)
+		if !ok {
+			return nil, schemas.NewVideoCancelUnsupportedError("")
+		}
+		videoCancelResponse, bifrostError := canceller.VideoCancel(req.Context, key, req.BifrostRequest.VideoCancelRequest)
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.VideoGenerationResponse = videoCancelResponse
 	case schemas.FileUploadRequest:
 		fileUploadResponse, bifrostError := provider.FileUpload(req.Context, key, req.BifrostRequest.FileUploadRequest)
 		if bifrostError != nil {
@@ -10668,6 +10731,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.VideoListRequest = nil
 	req.VideoRemixRequest = nil
 	req.VideoDeleteRequest = nil
+	req.VideoCancelRequest = nil
 	req.FileUploadRequest = nil
 	req.FileListRequest = nil
 	req.FileRetrieveRequest = nil

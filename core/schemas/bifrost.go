@@ -201,6 +201,7 @@ const (
 	VideoDeleteRequest             RequestType = "video_delete"
 	VideoListRequest               RequestType = "video_list"
 	VideoRemixRequest              RequestType = "video_remix"
+	VideoCancelRequest             RequestType = "video_cancel" // fork (TXE-6521): POST /v1/videos/{id}/cancel
 	BatchCreateRequest             RequestType = "batch_create"
 	BatchListRequest               RequestType = "batch_list"
 	BatchRetrieveRequest           RequestType = "batch_retrieve"
@@ -861,6 +862,7 @@ type BifrostRequest struct {
 	VideoListRequest             *BifrostVideoListRequest
 	VideoRemixRequest            *BifrostVideoRemixRequest
 	VideoDeleteRequest           *BifrostVideoDeleteRequest
+	VideoCancelRequest           *BifrostVideoCancelRequest
 	FileUploadRequest            *BifrostFileUploadRequest
 	FileListRequest              *BifrostFileListRequest
 	FileRetrieveRequest          *BifrostFileRetrieveRequest
@@ -945,6 +947,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 		return br.VideoListRequest.Provider, "", nil
 	case br.VideoDeleteRequest != nil:
 		return br.VideoDeleteRequest.Provider, "", nil
+	case br.VideoCancelRequest != nil:
+		return br.VideoCancelRequest.Provider, "", nil
 	case br.VideoRemixRequest != nil:
 		return br.VideoRemixRequest.Provider, "", nil
 	case br.FileUploadRequest != nil:
@@ -1105,6 +1109,8 @@ func (br *BifrostRequest) SetProvider(provider ModelProvider) {
 		br.VideoListRequest.Provider = provider
 	case br.VideoDeleteRequest != nil:
 		br.VideoDeleteRequest.Provider = provider
+	case br.VideoCancelRequest != nil:
+		br.VideoCancelRequest.Provider = provider
 	case br.VideoRemixRequest != nil:
 		br.VideoRemixRequest.Provider = provider
 	case br.CachedContentCreateRequest != nil:

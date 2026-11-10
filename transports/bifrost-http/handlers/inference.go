@@ -309,6 +309,13 @@ var videoGenerationParamsKnownFields = map[string]bool{
 	"video_uri":         true,
 	"audio":             true,
 	"fallbacks":         true,
+	// Fork (TXE-6521, contract C7): the task control fields are typed and never extra params. A
+	// provider that takes one reads the typed field; every other provider refuses the request
+	// (schemas.CheckTaskControlFields), so none can reach a vendor as an unconverted extra.
+	schemas.TaskControlFieldCallbackURL:         true,
+	schemas.TaskControlFieldClientReferenceID:   true,
+	schemas.TaskControlFieldExpiresAfterSeconds: true,
+	schemas.TaskControlFieldOutputStorageURI:    true,
 }
 
 var videoRemixParamsKnownFields = map[string]bool{
@@ -921,11 +928,13 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	videoDownloadMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.VideoDownloadRequest)}, middlewares...)
 	videoDeleteMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.VideoDeleteRequest)}, middlewares...)
 	videoRemixMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.VideoRemixRequest)}, middlewares...)
+	videoCancelMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.VideoCancelRequest)}, middlewares...)
 	r.GET("/v1/videos", lib.ChainMiddlewares(h.videoList, videoListMW...))
 	r.GET("/v1/videos/{video_id}", lib.ChainMiddlewares(h.videoRetrieve, videoRetrieveMW...))
 	r.GET("/v1/videos/{video_id}/content", lib.ChainMiddlewares(h.videoDownload, videoDownloadMW...))
 	r.DELETE("/v1/videos/{video_id}", lib.ChainMiddlewares(h.videoDelete, videoDeleteMW...))
 	r.POST("/v1/videos/{video_id}/remix", lib.ChainMiddlewares(h.videoRemix, videoRemixMW...))
+	r.POST("/v1/videos/{video_id}/cancel", lib.ChainMiddlewares(h.videoCancel, videoCancelMW...))
 
 	// Batch API endpoints (parameterized routes need explicit request type middleware)
 	batchCreateMW := append([]schemas.BifrostHTTPMiddleware{createRequestTypeMiddleware(schemas.BatchCreateRequest)}, middlewares...)
@@ -3752,6 +3761,56 @@ func (h *CompletionHandler) videoDelete(ctx *fasthttp.RequestCtx) {
 	}
 
 	resp, bifrostErr := h.client.VideoDeleteRequest(bifrostCtx, bifrostVideoReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
+	}
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	SendJSON(ctx, resp)
+}
+
+// videoCancel handles POST /v1/videos/{video_id}/cancel - Cancel a video task (fork, TXE-6521,
+// contract C7 BF13). It calls the vendor's cancel API and returns the task object. A provider with
+// no cancel API, or a task in a state the vendor does not let be cancelled, is answered 400 with
+// extra_fields.error_type provider_cancel_unsupported. The request takes no body.
+func (h *CompletionHandler) videoCancel(ctx *fasthttp.RequestCtx) {
+	videoID, ok := ctx.UserValue("video_id").(string)
+	if !ok || videoID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id is required")
+		return
+	}
+
+	decodedID, err := url.PathUnescape(videoID)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "invalid video_id encoding")
+		return
+	}
+	idParts := strings.SplitN(decodedID, ":", 2)
+	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "video_id must be in id:provider format")
+		return
+	}
+
+	bifrostVideoReq := &schemas.BifrostVideoCancelRequest{
+		Provider: schemas.ModelProvider(idParts[1]),
+		ID:       idParts[0],
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.VideoCancelRequest(bifrostCtx, bifrostVideoReq)
 	if bifrostErr != nil {
 		forwardProviderHeadersFromContext(ctx, bifrostCtx)
 		SendBifrostError(ctx, bifrostErr)

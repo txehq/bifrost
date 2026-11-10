@@ -568,7 +568,8 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	// polled response (e.g. Runware, which echoes it on every getResponse once the task has
 	// succeeded) would otherwise be billed again on every poll, inflating logs, traces and
 	// governance budgets.
-	if requestType == schemas.VideoRetrieveRequest {
+	// A cancel returns the same task object and is no generation either (fork, TXE-6521).
+	if requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoCancelRequest {
 		return nil
 	}
 

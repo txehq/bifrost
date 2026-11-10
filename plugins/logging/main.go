@@ -897,8 +897,8 @@ func (p *LoggerPlugin) recordVideoJobLifecycle(entry *logstore.Log, result *sche
 	}
 
 	now := time.Now().UTC()
-	switch resp.Status {
-	case schemas.VideoStatusCompleted, schemas.VideoStatusFailed:
+	switch {
+	case resp.Status.IsTerminal():
 		job.NextCheckAt = &now
 	default:
 		// Video jobs finish in minutes, so the first poll is soon.
@@ -3895,6 +3895,10 @@ func (p *LoggerPlugin) captureRequestInput(ctx *schemas.BifrostContext, req *sch
 	case schemas.VideoDeleteRequest:
 		initialData.Params = &schemas.VideoLogParams{
 			VideoID: req.VideoDeleteRequest.ID,
+		}
+	case schemas.VideoCancelRequest:
+		initialData.Params = &schemas.VideoLogParams{
+			VideoID: req.VideoCancelRequest.ID,
 		}
 	case schemas.PassthroughRequest, schemas.PassthroughStreamRequest:
 		passthroughParams := &schemas.PassthroughLogParams{

@@ -74,6 +74,27 @@ VideoGenerationRequest:
       items:
         $ref: './common.yaml#/Fallback'
       description: Fallback models to try if primary model fails
+    callback_url:
+      type: string
+      format: uri
+      description: |
+        Task control field. Where the provider notifies task state changes. Sent to the provider
+        unchanged; Bifrost receives no callback and never substitutes an address of its own.
+    client_reference_id:
+      type: string
+      description: |
+        Task control field. The caller's own task id, sent in the provider's external-task-id or
+        tag field so the task can be found again in the provider's records.
+    expires_after_seconds:
+      type: integer
+      description: Task control field. Upper bound on the task's whole lifetime, in seconds from creation.
+    output_storage_uri:
+      type: string
+      description: |
+        Task control field. Where the provider writes the artifact. A task control field the
+        provider does not take is never dropped: the request is refused with 400 and
+        `extra_fields.error_type` `caller_unsupported_parameter`, `error.param` naming the field,
+        before any call to the provider.
 
 VideoGenerationResponse:
   type: object
@@ -91,6 +112,9 @@ VideoGenerationResponse:
       description: Model used for video generation
     status:
       $ref: '#/VideoStatus'
+    provider_status:
+      type: string
+      description: The provider's raw status string, verbatim
     progress:
       type: number
       format: float
@@ -119,7 +143,9 @@ VideoGenerationResponse:
     expires_at:
       type: integer
       format: int64
-      description: Unix timestamp (seconds) when downloadable assets expire
+      description: |
+        Unix timestamp (seconds) when downloadable assets expire: the provider's own value when it
+        returns one, else the completion time plus the provider's documented link lifetime
     videos:
       type: array
       description: Generated video outputs (only present when status is "completed")
@@ -131,7 +157,11 @@ VideoGenerationResponse:
             enum:
               - "url"
               - "base64"
-            description: Output format of this video
+              - "content"
+            description: |
+              Output format of this video. `content` marks a video that can only be fetched with
+              the provider's key: the entry has no `url`, fetch it from
+              `GET /v1/videos/{video_id}/content`.
           url:
             type: string
             format: uri
@@ -404,12 +434,16 @@ VideoStatus:
     - "in_progress"
     - "completed"
     - "failed"
+    - "cancelled"
+    - "expired"
   description: |
     Current lifecycle status of the video generation job:
     - `queued`: Job is waiting to be processed
     - `in_progress`: Video is currently being generated
     - `completed`: Video generation completed successfully
     - `failed`: Video generation failed
+    - `cancelled`: The job was cancelled at the provider
+    - `expired`: The job passed its deadline at the provider before finishing
 
 VideoSize:
   type: string

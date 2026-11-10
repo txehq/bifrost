@@ -193,8 +193,9 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 	// A failed generation is priced, at zero. Providers are explicit that an
 	// unsuccessful video is not billed, and that is a final answer about the money —
 	// not an absence of one. Recording it as unpriceable instead would leave free
-	// work parked in the sweeper forever.
-	if resp != nil && resp.Status == schemas.VideoStatusFailed {
+	// work parked in the sweeper forever. A cancelled or expired job produced no video
+	// either and settles the same way.
+	if resp != nil && isUnbilledTerminalVideoStatus(resp.Status) {
 		settlement.Priced = true
 		settlement.Complete = true
 		return settlement, nil
@@ -281,7 +282,7 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 
 	// A failed generation settled at a real price of zero, not an absent one.
 	// Repricing must not resurrect it as unpriceable for every backfill to retry.
-	if entry.VideoDebugParsed.Status == schemas.VideoStatusFailed {
+	if isUnbilledTerminalVideoStatus(entry.VideoDebugParsed.Status) {
 		return &RepricedCost{}, nil
 	}
 
@@ -430,12 +431,13 @@ func videoUnreachableReason(err error) string {
 }
 
 func isTerminalVideoStatus(status schemas.VideoStatus) bool {
-	switch status {
-	case schemas.VideoStatusCompleted, schemas.VideoStatusFailed:
-		return true
-	default:
-		return false
-	}
+	return status.IsTerminal()
+}
+
+// isUnbilledTerminalVideoStatus reports whether a job ended without producing a video: failed,
+// or (fork, TXE-6521) cancelled or expired. Such a job settles at a real price of zero.
+func isUnbilledTerminalVideoStatus(status schemas.VideoStatus) bool {
+	return status.IsTerminal() && status != schemas.VideoStatusCompleted
 }
 
 // videoObjectFor labels the aggregate row as the settlement it is, mirroring the

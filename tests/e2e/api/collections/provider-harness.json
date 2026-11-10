@@ -302066,6 +302066,493 @@
           }
         }
       ]
+    },
+    {
+      "name": "302. Async task contract: task control fields, cancel route, named key (fork async task contract)",
+      "description": "Pins contract C7 (TXE-6521; BF12, BF13) and C3 on the unified video routes. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. openai_video_keys is an OpenAI-shaped provider on the fixture with two keys, video-key-a and video-key-b. The fixture counts every request under /v1/videos by method and bearer token. Rows 2 to 5: each of the four task control fields (callback_url, client_reference_id, expires_after_seconds, output_storage_uri) is refused with 400 caller_unsupported_parameter naming the field, because the provider declares none of them; before the change the field was forwarded or dropped as an extra param and the create succeeded. Row 6: POST /v1/videos/{id}/cancel on a provider with no cancel API is 400 provider_cancel_unsupported; before the change the route did not exist (404 or 405). Rows 7 to 9: a task query with x-bf-api-key uses the named key. Row 10 reads the fixture's counters: two queries with video-key-b, one with video-key-a and nothing else, so the five refused requests made no upstream call and no query used a key other than the one named. A provider that has a cancel API and the cancel-is-delete rule are pinned by the Go tests (core TestVideoCancelRequest, providers/utils TestCancelVideoWhileQueued) until a vendor ticket adds a provider that implements cancel.",
+      "item": [
+        {
+          "name": "302.1 reset the fixture's hit counters (fork async task contract)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "http://127.0.0.1:8791/__reset"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the fixture reset its counters', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.json().data[0].reset).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "302.2 [EXPECT-400] openai_video_keys/sora-2 POST /v1/videos refuses the task control field callback_url the provider does not take (fork async task contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_video_keys/sora-2\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"callback_url\": \"https://hooks.example.test/v/task_1\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('callback_url is refused as caller_unsupported_parameter naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('callback_url');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "302.3 [EXPECT-400] openai_video_keys/sora-2 POST /v1/videos refuses the task control field client_reference_id the provider does not take (fork async task contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_video_keys/sora-2\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"client_reference_id\": \"task_1\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('client_reference_id is refused as caller_unsupported_parameter naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('client_reference_id');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "302.4 [EXPECT-400] openai_video_keys/sora-2 POST /v1/videos refuses the task control field expires_after_seconds the provider does not take (fork async task contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_video_keys/sora-2\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"expires_after_seconds\": 7200\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('expires_after_seconds is refused as caller_unsupported_parameter naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('expires_after_seconds');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "302.5 [EXPECT-400] openai_video_keys/sora-2 POST /v1/videos refuses the task control field output_storage_uri the provider does not take (fork async task contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_video_keys/sora-2\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"output_storage_uri\": \"gs://harness-bucket/task_1/\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('output_storage_uri is refused as caller_unsupported_parameter naming the field', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('output_storage_uri');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "302.6 [EXPECT-400] openai_video_keys POST /v1/videos/{id}/cancel on a provider with no cancel API is provider_cancel_unsupported (fork async task contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "video-key-b"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/video_fixture_1:openai_video_keys/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "video_fixture_1:openai_video_keys",
+                "cancel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the cancel is refused as provider_cancel_unsupported', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_cancel_unsupported');",
+                  "  pm.expect(j.extra_fields.request_type, 'request_type: ' + pm.response.text()).to.eql('video_cancel');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "302.7 openai_video_keys GET /v1/videos/{id} queries the vendor with the key x-bf-api-key names (video-key-b) (fork async task contract)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "video-key-b"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/video_fixture_1:openai_video_keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "video_fixture_1:openai_video_keys"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the query returns the task object', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('video_fixture_1:openai_video_keys');",
+                  "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('queued');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "302.8 openai_video_keys GET /v1/videos/{id} queries the vendor with the key x-bf-api-key names (video-key-b) (fork async task contract)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "video-key-b"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/video_fixture_1:openai_video_keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "video_fixture_1:openai_video_keys"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the query returns the task object', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('video_fixture_1:openai_video_keys');",
+                  "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('queued');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "302.9 openai_video_keys GET /v1/videos/{id} queries the vendor with the key x-bf-api-key names (video-key-a) (fork async task contract)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "video-key-a"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos/video_fixture_1:openai_video_keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos",
+                "video_fixture_1:openai_video_keys"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the query returns the task object', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('video_fixture_1:openai_video_keys');",
+                  "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('queued');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "302.10 fixture hit counts prove each query used only the named key and no refused request reached the vendor (fork async task contract)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "http://127.0.0.1:8791/__hits"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var h = pm.response.json().data[0].hits;",
+                  "var video = {};",
+                  "Object.keys(h).forEach(function (k) { if (k.indexOf('videos ') === 0) { video[k] = h[k]; } });",
+                  "pm.test('two queries used video-key-b, one used video-key-a, and nothing else reached /v1/videos', function () {",
+                  "  pm.expect(video, JSON.stringify(h)).to.eql({ 'videos GET video-secret-b': 2, 'videos GET video-secret-a': 1 });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

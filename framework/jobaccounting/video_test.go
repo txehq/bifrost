@@ -169,6 +169,30 @@ func TestVideoSettle_FailedJobIsPricedAtZero(t *testing.T) {
 	assert.Empty(t, settlement.UnpriceableReason)
 }
 
+// TXE-6521: a cancelled or expired job produced no video. Like a failed one it is terminal and
+// settles at a real price of zero, so the sweeper stops polling it instead of waiting forever for
+// a status it does not know.
+func TestVideoSettle_CancelledAndExpiredJobsAreTerminalAndPricedAtZero(t *testing.T) {
+	for _, status := range []schemas.VideoStatus{schemas.VideoStatusCancelled, schemas.VideoStatusExpired} {
+		t.Run(string(status), func(t *testing.T) {
+			job := videoJob(t, "vid_"+string(status), generationDims("sora-2-pro", "1920x1080", 8))
+			resp := &schemas.BifrostVideoGenerationResponse{ID: "vid_" + string(status), Status: status, ProviderStatus: string(status)}
+
+			poll, err := NewVideoSettler(&fakeVideoRetriever{resp: resp}).Poll(context.Background(), job)
+			require.NoError(t, err)
+			require.NotNil(t, poll)
+			assert.True(t, poll.Terminal, "the job will not change state again")
+			assert.True(t, poll.Settleable)
+
+			settlement := settleVideo(t, job, resp)
+			assert.True(t, settlement.Priced)
+			assert.True(t, settlement.Complete)
+			assert.Zero(t, settlement.Cost)
+			assert.Empty(t, settlement.UnpriceableReason)
+		})
+	}
+}
+
 // Content filtering is the one case we refuse to guess: real compute was spent, and
 // whether the provider bills for it is undocumented. Parking it keeps the job
 // re-drivable instead of over- or under-charging.
