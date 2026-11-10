@@ -254,6 +254,13 @@ func TestXAIImageGenerationRefusesUndeliverableFields(t *testing.T) {
 		{"quality on grok-imagine-image", "grok-imagine-image", &schemas.ImageGenerationParameters{Quality: schemas.Ptr("low")}, "quality"},
 		{"deferred", "grok-imagine-image-2.0", &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"deferred": true}}, "deferred"},
 		{"resolution 4K", "grok-imagine-image-2.0", &schemas.ImageGenerationParameters{Resolution: "4K"}, "resolution"},
+		// TXE-6960: every unified field xAI generation does not take is refused, never dropped.
+		{"size", "grok-imagine-image-2.0", &schemas.ImageGenerationParameters{Size: schemas.Ptr("1024x1024")}, "size"},
+		{"style", "grok-imagine-image-2.0", &schemas.ImageGenerationParameters{Style: schemas.Ptr("vivid")}, "style"},
+		{"output_compression", "grok-imagine-image-2.0", &schemas.ImageGenerationParameters{OutputCompression: schemas.Ptr(80)}, "output_compression"},
+		{"output_format", "grok-imagine-image-2.0", &schemas.ImageGenerationParameters{OutputFormat: schemas.Ptr("png")}, "output_format"},
+		{"background", "grok-imagine-image-2.0", &schemas.ImageGenerationParameters{Background: schemas.Ptr("transparent")}, "background"},
+		{"input_images", "grok-imagine-image-2.0", &schemas.ImageGenerationParameters{InputImages: []string{"https://example.com/a.png"}}, "input_images"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -270,6 +277,27 @@ func TestXAIImageGenerationRefusesUndeliverableFields(t *testing.T) {
 			require.Zero(t, recorder.calls(), "a refused field must make no upstream call")
 		})
 	}
+}
+
+// TXE-6960: the unpriced fields (seed, negative_prompt) stay exempt, so a request carrying them
+// with only fields xAI takes still reaches xAI, and nothing it sends carries a size.
+func TestXAIImageGenerationKeepsExemptFields(t *testing.T) {
+	t.Parallel()
+	recorder := &xaiImageRecorder{response: xaiRecordedImageResponse}
+	provider := newXAIImageProvider(t, recorder.serve(t).URL)
+	_, bifrostErr := provider.ImageGeneration(xaiImageCtx(), xaiImageKey, &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.XAI,
+		Model:    "grok-imagine-image-2.0",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse"},
+		Params: &schemas.ImageGenerationParameters{
+			N: schemas.Ptr(1), AspectRatio: schemas.Ptr("1:1"), ResponseFormat: schemas.Ptr("url"), User: schemas.Ptr("u1"),
+			Seed: schemas.Ptr(7), NegativePrompt: schemas.Ptr("fog"),
+		},
+	})
+	require.Nil(t, bifrostErr)
+	_, body, _ := recorder.last(t)
+	require.Equal(t, "1:1", body["aspect_ratio"])
+	require.NotContains(t, body, "size")
 }
 
 // B9 (contract C4, C5): an edit is a JSON POST to /v1/images/edits; a URL source is sent

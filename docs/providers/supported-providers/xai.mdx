@@ -187,7 +187,7 @@ xAI's image endpoints take JSON. Generation goes to `/v1/images/generations` in 
 **Request Conversion**
 
 - **Model & Prompt**: `bifrostReq.Model` → `model`, the prompt → `prompt`
-- **Generation parameters**: the `ImageGenerationParameters` fields are embedded as in [OpenAI Image Generation](/providers/supported-providers/openai#7-image-generation); `size`, `style` and `output_compression` have no xAI counterpart and are not sent
+- **Generation parameters**: `n`, `response_format`, `aspect_ratio`, `resolution`, `quality` and `user`, in the OpenAI request shape. Any other field (`size`, `style`, `output_compression`, `output_format`, `background`, `moderation`, `partial_images`, `input_images`, ...) is refused with 400 `caller_unsupported_parameter` before any upstream call. `size` is not mapped: xAI sizes an image by `aspect_ratio` and `resolution`, and a pixel size does not correspond to one documented pair. `seed` and `negative_prompt` are exempt and not sent
 - **Edit parameters**: `n`, `response_format`, `aspect_ratio`, `resolution`, `quality` and `user`. Any other price-affecting field (`size`, `mask`, `background`, `output_format`, ...) is refused with 400 `caller_unsupported_parameter`
 - **Edit source images**: one image goes in `image`, several (up to five) in `images`, each as `{"url": ..., "type": "image_url"}`. A URL or data URI is sent unchanged; image bytes (multipart upload or JSON `image` bytes) are sent as a data URI
 - **`quality`**: sent on `grok-imagine-image-2.0`, the only model xAI documents as taking it. On any other model it is refused with 400 `caller_unsupported_parameter`, `error.param: quality`, before any upstream call
