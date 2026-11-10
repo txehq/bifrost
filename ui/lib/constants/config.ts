@@ -84,6 +84,7 @@ export const ModelPlaceholders = {
 	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
 	cloudflare: "e.g. @cf/meta/llama-4-scout-17b-16e-instruct, @cf/baai/bge-large-en-v1.5",
 	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
+	voyage: "e.g. voyage-4, voyage-4-large, voyage-4-lite",
 	typesafe: "e.g. jev-1.13.0, jev-latest, jev-preview",
 };
 
@@ -137,6 +138,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	cloudflare: true,
 	"github-copilot": false,
 	typesafe: true,
+	voyage: true,
 };
 
 export const DefaultNetworkConfig = {
@@ -410,6 +412,7 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"embedding",
 	],
 	typesafe: ["list_models", "decisions"],
+	voyage: ["embedding"],
 };
 
 export const IS_ENTERPRISE = process.env.BIFROST_IS_ENTERPRISE === "true";

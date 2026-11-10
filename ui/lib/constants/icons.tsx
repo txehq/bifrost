@@ -39,6 +39,7 @@ export const ProviderIcons = {
 	bfl: GenericProviderIcon,
 	azurespeech: GenericProviderIcon,
 	volcengine: GenericProviderIcon,
+	voyage: GenericProviderIcon,
 
 	anthropic: ({ size = "md", className = "", theme }: IconProps) => {
 		const resolvedSize = resolveSize(size);

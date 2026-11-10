@@ -184,6 +184,7 @@ func (account *ComprehensiveTestAccount) GetConfiguredProviders() ([]schemas.Mod
 		schemas.Bedrock,
 		schemas.BedrockMantle,
 		schemas.Cohere,
+		schemas.Voyage,
 		schemas.Azure,
 		schemas.Vertex,
 		schemas.Ollama,
@@ -346,6 +347,8 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
+	case schemas.Voyage:
+		return []schemas.Key{{Value: *schemas.NewSecretVar("env.VOYAGE_API_KEY"), Models: []string{"*"}, Weight: 1.0}}, nil
 	case schemas.Cohere:
 		return []schemas.Key{
 			{

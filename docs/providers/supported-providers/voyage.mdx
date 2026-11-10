@@ -1,0 +1,66 @@
+---
+title: "Voyage AI"
+description: "Text embeddings through Voyage AI's native embeddings API"
+---
+
+Bifrost serves Voyage text embeddings through `POST /v1/embeddings` (and the
+OpenAI-compatible `/openai/v1/embeddings` route) with models `voyage/voyage-4`,
+`voyage/voyage-4-large`, and `voyage/voyage-4-lite`. The Go SDK uses provider
+`voyage` and the model name without the prefix. All other operations, including
+model listing, reranking and multimodal embeddings, return unsupported.
+
+```json
+{
+  "providers": {
+    "voyage": {
+      "keys": [{"name": "voyage-key", "value": "env.VOYAGE_API_KEY", "models": ["*"], "weight": 1}],
+      "network_config": {"max_retries": 0}
+    }
+  }
+}
+```
+
+The default upstream is `https://api.voyageai.com/v1/embeddings`, authenticated
+with a bearer token. Configure `network_config.base_url` to change the host.
+Name the key with `x-bf-api-key: voyage-key`. Use `max_retries: 0` and no fallbacks
+for one upstream attempt per customer request. The provider always sends the
+entire input array in one call; it never splits or retries individual inputs.
+
+```json
+{
+  "model": "voyage/voyage-4",
+  "input": ["A search query", "A second query"],
+  "dimensions": 256,
+  "encoding_format": "float",
+  "task_type": "query",
+  "auto_truncate": false
+}
+```
+
+| Unified field | Voyage field |
+| --- | --- |
+| `input` | `input`, one array of text strings |
+| `dimensions` | `output_dimension` |
+| `encoding_format`: float, int8, uint8, binary, ubinary | `output_dtype` |
+| `encoding_format`: base64 | `encoding_format` |
+| `task_type`: query, document | `input_type` |
+| `auto_truncate` | `truncation` |
+
+Omitted options remain omitted. Dimensions accept 256, 512, 1024 and 2048.
+Unsupported unified options, per-item parameters, and non-text inputs return
+400 with `extra_fields.error_type: caller_unsupported_parameter` and the field
+in `error.param`. Vendor-specific extras are forwarded with
+`x-bf-passthrough-extra-params: true`.
+
+Voyage's `usage.total_tokens` supplies both unified `usage.prompt_tokens` and
+`usage.total_tokens`; missing usage stays absent. Vendor error statuses are
+preserved. Raw vendor responses are available with
+`x-bf-send-back-raw-response: true` when per-request raw overrides are enabled.
+
+The request mappings are documented in the
+[Voyage text embeddings reference](https://docs.voyageai.com/reference/embeddings-api).
+The vendor sheet does not establish unknown-field behavior, content-block
+semantics, charging on failures, or how free tokens affect Tokun costs; this
+integration does not infer those facts. Tests use the published response example (with its display ellipses removed) and
+synthetic error fixtures matching the documented schema, not paid live samples. Retail billing verification and the
+fork release are separate rollout steps.

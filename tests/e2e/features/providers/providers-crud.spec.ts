@@ -91,6 +91,18 @@ test.describe("Providers", () => {
   });
 
   test.describe("Provider Navigation", () => {
+    test("Voyage catalog entry opens an API key form", async ({ providersPage }) => {
+      if (!(await providersPage.getProviderItem("voyage").isVisible())) {
+        createdProviders.push("voyage");
+        await providersPage.addKnownProviderFromDropdown("voyage");
+      }
+      await providersPage.selectProvider("voyage");
+      await expect(providersPage.page).toHaveURL(/provider=voyage/);
+      await providersPage.addKeyBtn.click();
+      await expect(providersPage.page.getByTestId("key-value-input")).toBeVisible();
+      await providersPage.keyCancelBtn.click();
+    });
+
     test("should display standard providers in sidebar", async ({
       providersPage,
     }) => {
