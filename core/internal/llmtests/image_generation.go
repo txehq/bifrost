@@ -71,6 +71,13 @@ func RunImageGenerationTest(t *testing.T, client *bifrost.Bifrost, ctx context.C
 				},
 				Fallbacks: testConfig.ImageGenerationFallbacks,
 			}
+			// xAI sizes an image by aspect_ratio and resolution and refuses a pixel size with
+			// caller_unsupported_parameter (TXE-6960), so it is asked for the same square image
+			// in its own terms.
+			if testConfig.Provider == schemas.XAI {
+				request.Params.Size = nil
+				request.Params.AspectRatio = bifrost.Ptr("1:1")
+			}
 
 			response, err := client.ImageGenerationRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), request)
 			if err != nil {

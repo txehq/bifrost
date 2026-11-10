@@ -822,6 +822,24 @@ func TestXAIImageGenerationIngressToEgress(t *testing.T) {
 		require.EqualValues(t, 2, body["n"])
 	})
 
+	// TXE-6960: size is parsed into the typed params by the parser that /v1/images/generations and
+	// /v1/async/images/generations share, and xAI refuses it before any upstream call.
+	t.Run("JSON body: size is refused before any upstream call", func(t *testing.T) {
+		egress := &xaiEgress{}
+		provider := egress.provider(t)
+		_, req, err := prepareImageGenerationRequest(jsonRequestCtx("/v1/async/images/generations",
+			`{"model":"xai/grok-imagine-image-2.0","prompt":"a lighthouse","size":"1024x1024"}`), nil)
+		require.NoError(t, err)
+		require.NotNil(t, req.Params.Size, "the parser carries size into the typed params")
+
+		_, bifrostErr := provider.ImageGeneration(xaiEgressCtx(), xaiEgressKey, req)
+		require.NotNil(t, bifrostErr)
+		require.Equal(t, 400, *bifrostErr.StatusCode)
+		require.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+		require.Equal(t, "size", bifrostErr.Error.Param)
+		require.Zero(t, egress.calls())
+	})
+
 	t.Run("JSON body: deferred is refused before any upstream call", func(t *testing.T) {
 		egress := &xaiEgress{}
 		provider := egress.provider(t)

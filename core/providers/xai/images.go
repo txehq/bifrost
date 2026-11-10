@@ -47,6 +47,20 @@ var xaiRespectModerationKey = []byte(`"respect_moderation"`)
 // counterpart and is refused with caller_unsupported_parameter instead of being dropped.
 var xaiImageEditFields = []string{"n", "response_format", "aspect_ratio", "resolution", "quality", "user"}
 
+// xaiImageGenerationFields are the unified image generation fields xAI's /v1/images/generations
+// takes (fork, TXE-6960, contract C4). Every other unified field is refused with
+// caller_unsupported_parameter before any upstream call, never dropped or forwarded:
+//   - size: xAI sizes an image by aspect_ratio and resolution, and a pixel size does not map
+//     onto one documented pair (1024x1024 is 1:1, but at which tier?), so it is refused, not
+//     guessed;
+//   - background, moderation, partial_images, output_format, input_images, type and
+//     num_inference_steps: xAI's REST reference documents none of them;
+//   - style and output_compression: not price-affecting under C4, so dropping them would be
+//     allowed, but they are refused like every field xAI does not deliver, so the caller is
+//     told rather than receiving an image without them. seed and negative_prompt stay exempt
+//     (UnpricedUnifiedFields).
+var xaiImageGenerationFields = []string{"n", "response_format", "aspect_ratio", "resolution", "quality", "user"}
+
 // XAIImageSource is one source image of an edit: a public URL or a data URI.
 type XAIImageSource struct {
 	URL  string `json:"url"`
@@ -220,6 +234,9 @@ func (provider *XAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key sc
 		if bifrostErr := checkXAIImageRequest(request.Model, params.Quality, params.ExtraParams); bifrostErr != nil {
 			return nil, bifrostErr
 		}
+	}
+	if bifrostErr := schemas.CheckUnifiedFields(&schemas.BifrostRequest{RequestType: schemas.ImageGenerationRequest, ImageGenerationRequest: request}, xaiImageGenerationFields); bifrostErr != nil {
+		return nil, bifrostErr
 	}
 
 	// A large-payload passthrough streams the caller's body unchanged; the OpenAI-shaped
