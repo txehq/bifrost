@@ -1,6 +1,6 @@
 {
   "name": "312. BytePlus Seedream per-image refusals reach the client as content_filter (seedream content filter) [SERIAL]",
-  "description": "TXE-6605 regression, contract C5, C6. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. The byteplus provider there points at /pp/byteplus, where the fixture answers /api/v3/images/generations with Ark's 200 shape: data[] mixing delivered images with per-image error objects (OutputImageSensitiveContentDetected), selected by model. A refused image is counted in content_filter, every image refused is still a 200 with data [], and a 200 with neither images nor refusals is 502 provider_empty_result. 312.1 reads the bytes that reached the fixture from /__wire. Run the whole folder in order.",
+  "description": "TXE-6605 regression, contract C5, C6. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. The byteplus provider there points at /pp/byteplus, where the fixture answers /api/v3/images/generations with Ark's 200 shape: data[] mixing delivered images with per-image error objects (OutputImageSensitiveContentDetected), selected by model. A refused image is counted in content_filter, every image refused is still a 200 with data [], and a 200 with neither images nor refusals is 502 provider_empty_result. 312.4 and 312.5 pin the same on /v1/images/edits (multipart, with a reference image), and 312.4 also pins the resolution tier reaching Ark as size. 312.1 and 312.4 read the bytes that reached the fixture from /__wire. Run the whole folder in order.",
   "item": [
     {
       "name": "312.1 byteplus/seedream-partly-filtered /v1/images/generations: Ark delivers 2 of 3 images and refuses one, the client gets 200 with the 2 images, content_filter counting the refusal with Ark's code, and usage.output_images 2 (seedream content filter)",
@@ -214,6 +214,177 @@
               "pm.test('the client gets 502', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(502); });",
               "pm.test('extra_fields.error_type is provider_empty_result', function () { pm.expect(body.extra_fields, pm.response.text()).to.be.an('object'); pm.expect(body.extra_fields.error_type, pm.response.text()).to.equal('provider_empty_result'); });",
               "pm.test('no content_filter: nothing was refused', function () { pm.expect(body.content_filter, pm.response.text()).to.equal(undefined); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "312.4 byteplus/seedream-partly-filtered /v1/images/edits with resolution 2K: the edit route reports the refusal in content_filter with the 2 delivered images, and the tier reaches Ark as size (seedream content filter)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "byteplus/seedream-partly-filtered",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "make the background a deep blue",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            },
+            {
+              "key": "resolution",
+              "value": "2K",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('seedream content filter setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var FX = pm.variables.get('providerErrorFixtureUrl');",
+              "var body = pm.response.json();",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+              "pm.test('data carries the two delivered images, re-indexed', function () {",
+              "  pm.expect(body.data, pm.response.text()).to.be.an('array').with.length(2);",
+              "  pm.expect(body.data[1].url, pm.response.text()).to.equal('https://fixture.invalid/seedream/2.png');",
+              "  pm.expect(body.data[1].index, pm.response.text()).to.equal(1);",
+              "});",
+              "pm.test('content_filter counts the refused image with Ark\\'s code', function () {",
+              "  pm.expect(body.content_filter, pm.response.text()).to.be.an('object');",
+              "  pm.expect(body.content_filter.filtered_count, pm.response.text()).to.equal(1);",
+              "  pm.expect(body.content_filter.reasons, pm.response.text()).to.eql(['OutputImageSensitiveContentDetected']);",
+              "});",
+              "pm.test('usage.output_images is 2', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.output_images, pm.response.text()).to.equal(2); });",
+              "pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('one call reached Ark with the reference image, size 2K and no resolution field', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/byteplus/api/v3/images/generations'; });",
+              "    pm.expect(calls, JSON.stringify(res.json())).to.have.length(1);",
+              "    var sent = JSON.parse(calls[0].body);",
+              "    pm.expect(sent.size, calls[0].body.slice(0, 500)).to.equal('2K');",
+              "    pm.expect(sent, calls[0].body.slice(0, 500)).to.not.have.property('resolution');",
+              "    pm.expect(sent.image, calls[0].body.slice(0, 500)).to.be.an('array').with.length(1);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "312.5 byteplus/seedream-all-filtered /v1/images/edits: every edited image refused is a 200 with data [] and content_filter (seedream content filter)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "byteplus/seedream-all-filtered",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "make the background a deep blue",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.json();",
+              "pm.test('the client gets 200, not an error', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(body.error, pm.response.text()).to.equal(undefined); });",
+              "pm.test('data is an empty array, present on the wire', function () { pm.expect(body.data, pm.response.text()).to.be.an('array').that.is.empty; });",
+              "pm.test('content_filter counts the refusal with Ark\\'s code', function () {",
+              "  pm.expect(body.content_filter, pm.response.text()).to.be.an('object');",
+              "  pm.expect(body.content_filter.filtered_count, pm.response.text()).to.equal(1);",
+              "  pm.expect(body.content_filter.reasons, pm.response.text()).to.eql(['OutputImageSensitiveContentDetected']);",
+              "});",
+              "pm.test('usage.output_images is 0', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.output_images, pm.response.text()).to.equal(0); });"
             ]
           }
         }
