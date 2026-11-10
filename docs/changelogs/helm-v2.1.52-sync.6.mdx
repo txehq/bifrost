@@ -1,0 +1,14 @@
+---
+title: "v2.1.52-sync.6"
+description: "Helm v2.1.52-sync.6 prerelease changelog - 2026-11-10"
+---
+
+<Update label="Bifrost Helm" description="v2.1.52-sync.6 (prerelease)">
+
+## Changelog
+
+Prerelease of the txehq fork for transport v2.4.0-sync.6; the stable chart stays 2.1.51 until a stable version supersedes it. Install this one with `helm install --devel` or `--version 2.1.52-sync.6`.
+
+- `appVersion` is now `2.4.0-sync.6`, so an empty `image.tag` selects `v2.4.0-sync.6`. That transport adds the unified media request fields (video `aspect_ratio`, `resolution`, `last_frame`, `reference_images`; image `resolution`), vendor-reported usage fields with `vendor_cost` on image, video task and speech usage, `content_filter` on image responses, and extra form fields on multipart image edits sent with `x-bf-passthrough-extra-params: true`. No values, templates or schema change.
+
+</Update>
