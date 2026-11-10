@@ -374,7 +374,10 @@ func (provider *XAIProvider) doXAIImageRequest(ctx *schemas.BifrostContext, key 
 	if sendBackRawRequest {
 		response.ExtraFields.RawRequest = rawRequest
 	}
-	if sendBackRawResponse {
+	// xAI's body still carries an image it marked respect_moderation: false, so the raw copy is
+	// withheld when one was blocked: attaching it would hand the caller the image that data and
+	// content_filter say was not delivered.
+	if sendBackRawResponse && response.ContentFilter == nil {
 		response.ExtraFields.RawResponse = rawResponse
 	}
 	return response, nil

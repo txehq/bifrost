@@ -409,6 +409,38 @@ func TestXAIImageBlockedImagesFillContentFilter(t *testing.T) {
 		require.Contains(t, string(out), `"data":[]`)
 		require.Contains(t, string(out), `"content_filter":{"filtered_count":2}`)
 	})
+
+	t.Run("raw response is withheld when an image was blocked", func(t *testing.T) {
+		t.Parallel()
+		const blocked = `{"data":[{"url":"https://imgen.x.ai/a.jpg","respect_moderation":true},{"url":"https://imgen.x.ai/blocked.jpg","respect_moderation":false}],"usage":{"cost_in_usd_ticks":800000000}}`
+		request := &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.XAI, Model: "grok-imagine-image",
+			Input:  &schemas.ImageGenerationInput{Prompt: "p"},
+			Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(2)},
+		}
+		for _, tc := range []struct {
+			name, body string
+			wantRaw    bool
+		}{
+			{"one blocked", blocked, false},
+			{"none blocked", xaiRecordedImageResponse, true},
+		} {
+			recorder := &xaiImageRecorder{response: tc.body}
+			provider := newXAIImageProvider(t, recorder.serve(t).URL)
+			ctx := xaiImageCtx()
+			ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
+			response, bifrostErr := provider.ImageGeneration(ctx, xaiImageKey, request)
+			require.Nil(t, bifrostErr, tc.name)
+			if !tc.wantRaw {
+				require.Nil(t, response.ExtraFields.RawResponse, "%s: the raw body would hand back the blocked image", tc.name)
+				out, err := json.Marshal(response)
+				require.NoError(t, err)
+				require.NotContains(t, string(out), "blocked.jpg", tc.name)
+				continue
+			}
+			require.NotNil(t, response.ExtraFields.RawResponse, tc.name)
+		}
+	})
 }
 
 // B8, B10 (contract C6): a vendor error recognised as a content block keeps the vendor's
