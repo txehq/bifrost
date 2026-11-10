@@ -9550,6 +9550,53 @@ func TestNonChatRequestsReachTheVendorOnce(t *testing.T) {
 	t.Logf("%d provider operations had a request read and dropped, none was written twice: %v", exercised, exercisedPairs)
 }
 
+// A caller may reuse one context across requests. The mark is each request's own
+// classification: a chat request after an image request on the same context is not
+// write-once and keeps its retry.
+func TestMarkWriteOnceFollowsTheRequestNotTheContext(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	marked := func() bool {
+		v, _ := ctx.Value(schemas.BifrostContextKeyWriteOnce).(bool)
+		return v
+	}
+	chat := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest}
+	image := &schemas.BifrostRequest{RequestType: schemas.ImageGenerationRequest}
+
+	markWriteOnce(ctx, chat)
+	if marked() {
+		t.Fatal("a chat request was marked write-once")
+	}
+	markWriteOnce(ctx, image)
+	if !marked() {
+		t.Fatal("an image request was not marked write-once")
+	}
+	markWriteOnce(ctx, chat)
+	if marked() {
+		t.Fatal("a chat request inherited the mark of the image request before it on the same context")
+	}
+	markWriteOnce(ctx, image)
+	if !marked() {
+		t.Fatal("an image request after a chat request was not marked write-once")
+	}
+}
+
+// BenchmarkMarkWriteOnce measures what the request worker pays per request to stamp the
+// context: a chat request on a fresh context reads once and writes nothing.
+func BenchmarkMarkWriteOnce(b *testing.B) {
+	for name, req := range map[string]*schemas.BifrostRequest{
+		"chat":             {RequestType: schemas.ChatCompletionRequest},
+		"image generation": {RequestType: schemas.ImageGenerationRequest},
+	} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				markWriteOnce(ctx, req)
+			}
+		})
+	}
+}
+
 // BenchmarkRequestIsWriteOnce measures what the request worker pays per request to decide
 // whether to mark it write-once: chat is one switch; a passthrough also checks its path.
 func BenchmarkRequestIsWriteOnce(b *testing.B) {
