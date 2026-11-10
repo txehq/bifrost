@@ -2308,3 +2308,17 @@ func TestWarpTurnUsageIncludesSemanticSearchEmbeddings(t *testing.T) {
 	require.NotNil(t, done.Usage, "the turn paid for an embedding")
 	require.Equal(t, 7, done.Usage.TotalTokens)
 }
+
+// TXE-6531: the agent's usage total keeps OpenAI's 30m and 12h cache-write tiers.
+func TestMergeCachedWriteTokenDetailsSumsEveryTier(t *testing.T) {
+	total := mergeCachedWriteTokenDetails(nil, &schemas.ChatCachedWriteTokenDetails{
+		CachedWriteTokens5m: 1, CachedWriteTokens1h: 2, CachedWriteTokens30m: 3, CachedWriteTokens12h: 4,
+	})
+	total = mergeCachedWriteTokenDetails(total, &schemas.ChatCachedWriteTokenDetails{
+		CachedWriteTokens5m: 10, CachedWriteTokens1h: 20, CachedWriteTokens30m: 30, CachedWriteTokens12h: 40,
+	})
+	require.NotNil(t, total)
+	assert.Equal(t, schemas.ChatCachedWriteTokenDetails{
+		CachedWriteTokens5m: 11, CachedWriteTokens1h: 22, CachedWriteTokens30m: 33, CachedWriteTokens12h: 44,
+	}, *total)
+}

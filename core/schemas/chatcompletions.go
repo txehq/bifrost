@@ -2041,22 +2041,70 @@ type ChatPromptTokensDetails struct {
 	CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details,omitempty"`
 }
 
+// ChatCachedWriteTokenDetails splits cache-write tokens by cache lifetime. Anthropic and Bedrock
+// report the 5-minute and 1-hour tiers; OpenAI reports the 30-minute and 12-hour tiers (chosen by
+// the request's prompt cache retention). A tier the vendor did not report stays zero.
 type ChatCachedWriteTokenDetails struct {
-	CachedWriteTokens5m int `json:"cached_write_tokens_5m"`
-	CachedWriteTokens1h int `json:"cached_write_tokens_1h"`
+	CachedWriteTokens5m  int `json:"cached_write_tokens_5m"`
+	CachedWriteTokens1h  int `json:"cached_write_tokens_1h"`
+	CachedWriteTokens30m int `json:"cached_write_tokens_30m,omitempty"`
+	CachedWriteTokens12h int `json:"cached_write_tokens_12h,omitempty"`
+}
+
+// openAICacheWriteTokensDetails is OpenAI's wire shape for the per-lifetime split of cache
+// writes: cache_write_tokens_details under prompt_tokens_details (Chat Completions) or
+// input_tokens_details (Responses).
+type openAICacheWriteTokensDetails struct {
+	TTL30mTokens int `json:"ttl_30m_tokens,omitempty"`
+	TTL12hTokens int `json:"ttl_12h_tokens,omitempty"`
+}
+
+// withOpenAICacheWriteTiers folds OpenAI's cache_write_tokens_details into the unified tier
+// details. Bifrost's own cached_write_token_details takes precedence per tier, mirroring the
+// cached_write_tokens/cache_write_tokens precedence. A split the vendor did not report (absent,
+// or all zero) leaves details as they were: usage is never filled from defaults.
+func withOpenAICacheWriteTiers(details *ChatCachedWriteTokenDetails, vendor *openAICacheWriteTokensDetails) *ChatCachedWriteTokenDetails {
+	if vendor == nil || (vendor.TTL30mTokens == 0 && vendor.TTL12hTokens == 0) {
+		return details
+	}
+	merged := ChatCachedWriteTokenDetails{}
+	if details != nil {
+		merged = *details
+	}
+	if merged.CachedWriteTokens30m == 0 {
+		merged.CachedWriteTokens30m = vendor.TTL30mTokens
+	}
+	if merged.CachedWriteTokens12h == 0 {
+		merged.CachedWriteTokens12h = vendor.TTL12hTokens
+	}
+	return &merged
+}
+
+// openAICacheWriteTiersOf renders the 30-minute and 12-hour tiers back in OpenAI's wire shape,
+// so an OpenAI-SDK consumer of Bifrost's response finds them where OpenAI puts them. Nil when
+// neither tier is set, so other vendors' responses do not grow the field.
+func openAICacheWriteTiersOf(details *ChatCachedWriteTokenDetails) *openAICacheWriteTokensDetails {
+	if details == nil || (details.CachedWriteTokens30m == 0 && details.CachedWriteTokens12h == 0) {
+		return nil
+	}
+	return &openAICacheWriteTokensDetails{
+		TTL30mTokens: details.CachedWriteTokens30m,
+		TTL12hTokens: details.CachedWriteTokens12h,
+	}
 }
 
 // UnmarshalJSON maps OpenAI's cached_tokens into CachedReadTokens for compatibility.
 func (d *ChatPromptTokensDetails) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		TextTokens              int                          `json:"text_tokens"`
-		AudioTokens             int                          `json:"audio_tokens"`
-		ImageTokens             int                          `json:"image_tokens"`
-		CachedReadTokens        int                          `json:"cached_read_tokens"`
-		CachedWriteTokens       int                          `json:"cached_write_tokens"`
-		CachedWriteTokenDetails *ChatCachedWriteTokenDetails `json:"cached_write_token_details"`
-		CachedTokens            *int                         `json:"cached_tokens"`
-		CacheWriteTokens        *int                         `json:"cache_write_tokens"`
+		TextTokens              int                            `json:"text_tokens"`
+		AudioTokens             int                            `json:"audio_tokens"`
+		ImageTokens             int                            `json:"image_tokens"`
+		CachedReadTokens        int                            `json:"cached_read_tokens"`
+		CachedWriteTokens       int                            `json:"cached_write_tokens"`
+		CachedWriteTokenDetails *ChatCachedWriteTokenDetails   `json:"cached_write_token_details"`
+		CachedTokens            *int                           `json:"cached_tokens"`
+		CacheWriteTokens        *int                           `json:"cache_write_tokens"`
+		CacheWriteTokensDetails *openAICacheWriteTokensDetails `json:"cache_write_tokens_details"`
 	}
 	if err := Unmarshal(data, &raw); err != nil {
 		return err
@@ -2075,6 +2123,8 @@ func (d *ChatPromptTokensDetails) UnmarshalJSON(data []byte) error {
 	if raw.CacheWriteTokens != nil && d.CachedWriteTokens == 0 {
 		d.CachedWriteTokens = *raw.CacheWriteTokens
 	}
+	// OpenAI splits cache writes by lifetime (30m, 12h) under cache_write_tokens_details.
+	d.CachedWriteTokenDetails = withOpenAICacheWriteTiers(d.CachedWriteTokenDetails, raw.CacheWriteTokensDetails)
 	return nil
 }
 
@@ -2093,6 +2143,8 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		// OpenAI's field name for cache writes (mirrors cached_tokens for reads) so the
 		// OpenAI SDK — which reads cache_write_tokens, not cached_write_tokens — finds it.
 		CacheWriteTokens int `json:"cache_write_tokens"`
+		// OpenAI's per-lifetime split of cache writes, present only when a 30m or 12h tier is set.
+		CacheWriteTokensDetails *openAICacheWriteTokensDetails `json:"cache_write_tokens_details,omitempty"`
 	}
 	return MarshalSorted(raw{
 		TextTokens:              d.TextTokens,
@@ -2103,6 +2155,7 @@ func (d ChatPromptTokensDetails) MarshalJSON() ([]byte, error) {
 		CachedWriteTokenDetails: d.CachedWriteTokenDetails,
 		CachedTokens:            d.CachedReadTokens,
 		CacheWriteTokens:        d.CachedWriteTokens,
+		CacheWriteTokensDetails: openAICacheWriteTiersOf(d.CachedWriteTokenDetails),
 	})
 }
 
@@ -2171,8 +2224,10 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 		}
 		if baseDetails.CachedWriteTokenDetails != nil || addDetails.CachedWriteTokenDetails != nil {
 			merged.PromptTokensDetails.CachedWriteTokenDetails = &ChatCachedWriteTokenDetails{
-				CachedWriteTokens5m: cachedWriteTokens5m(baseDetails) + cachedWriteTokens5m(addDetails),
-				CachedWriteTokens1h: cachedWriteTokens1h(baseDetails) + cachedWriteTokens1h(addDetails),
+				CachedWriteTokens5m:  cachedWriteTokens5m(baseDetails) + cachedWriteTokens5m(addDetails),
+				CachedWriteTokens1h:  cachedWriteTokens1h(baseDetails) + cachedWriteTokens1h(addDetails),
+				CachedWriteTokens30m: cachedWriteTokens30m(baseDetails) + cachedWriteTokens30m(addDetails),
+				CachedWriteTokens12h: cachedWriteTokens12h(baseDetails) + cachedWriteTokens12h(addDetails),
 			}
 		}
 	}
@@ -2256,6 +2311,20 @@ func cachedWriteTokens1h(details *ChatPromptTokensDetails) int {
 		return 0
 	}
 	return details.CachedWriteTokenDetails.CachedWriteTokens1h
+}
+
+func cachedWriteTokens30m(details *ChatPromptTokensDetails) int {
+	if details == nil || details.CachedWriteTokenDetails == nil {
+		return 0
+	}
+	return details.CachedWriteTokenDetails.CachedWriteTokens30m
+}
+
+func cachedWriteTokens12h(details *ChatPromptTokensDetails) int {
+	if details == nil || details.CachedWriteTokenDetails == nil {
+		return 0
+	}
+	return details.CachedWriteTokenDetails.CachedWriteTokens12h
 }
 
 func sumOptionalInts(base, add *int) *int {
