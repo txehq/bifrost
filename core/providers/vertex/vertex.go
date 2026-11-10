@@ -719,24 +719,8 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 				var err error
 
 				if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) || schemas.IsGemmaModelFamily(ctx, request.Model) {
-					reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
-					if err != nil {
-						return nil, err
-					}
-					if reqBody == nil {
-						return nil, fmt.Errorf("chat completion input is not provided")
-					}
-					extraParams = reqBody.GetExtraParams()
-					// Strip unsupported fields for Vertex Gemini
-					stripVertexGeminiUnsupportedFields(reqBody)
-					if request.Params != nil {
-						applyVertexSessionRouting(ctx, key, request.Model, request.Params.PromptCacheKey, reqBody)
-					}
-					// Marshal to JSON bytes
-					rawBody, err = providerUtils.MarshalSorted(reqBody)
-					if err != nil {
-						return nil, fmt.Errorf("failed to marshal request body: %w", err)
-					}
+					// Shared with the batch path, so an inline batch line is this request.
+					return vertexGeminiChatRequestBody(ctx, key, request)
 				} else {
 					// Use centralized OpenAI converter for non-Claude models
 					reqBody := openai.ToOpenAIChatRequest(ctx, request)
@@ -2129,18 +2113,8 @@ func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 			var err error
 
 			if schemas.IsGeminiModelFamily(ctx, request.Model) || schemas.IsAllDigitsASCII(request.Model) {
-				reqBody := gemini.ToGeminiImageGenerationRequest(request)
-				if reqBody == nil {
-					return nil, fmt.Errorf("image generation input is not provided")
-				}
-				extraParams = reqBody.GetExtraParams()
-				// Strip unsupported fields for Vertex Gemini
-				stripVertexGeminiUnsupportedFields(reqBody)
-				// Marshal to JSON bytes, preserving key order
-				rawBody, err = providerUtils.MarshalSorted(reqBody)
-				if err != nil {
-					return nil, fmt.Errorf("failed to marshal request body: %w", err)
-				}
+				// Shared with the batch path, so an inline batch line is this request.
+				return vertexGeminiImageGenerationRequestBody(request)
 			} else if schemas.IsImagenModelFamily(ctx, request.Model) {
 				reqBody := gemini.ToImagenImageGenerationRequest(request)
 				if reqBody == nil {
@@ -2899,6 +2873,60 @@ func (provider *VertexProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.
 
 // stripVertexGeminiUnsupportedFields removes fields that are not supported by Vertex AI's Gemini API.
 // Specifically, it removes the "id" field from function_call and function_response objects in contents.
+// vertexGeminiChatRequestBody builds the chat body the Vertex sync route sends for a
+// Gemini-family model: the Gemini converter's request with the fields Vertex takes
+// elsewhere stripped, session routing applied and the region field removed. The sync chat
+// route and the inline batch path both call it, so the two send the same request.
+func vertexGeminiChatRequestBody(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostChatRequest) (*VertexRawRequestBody, error) {
+	reqBody, err := gemini.ToGeminiChatCompletionRequestWithImageURLSchemes(ctx, request, geminiImageURLSchemes...)
+	if err != nil {
+		return nil, err
+	}
+	if reqBody == nil {
+		return nil, fmt.Errorf("chat completion input is not provided")
+	}
+	extraParams := reqBody.GetExtraParams()
+	// Strip unsupported fields for Vertex Gemini
+	stripVertexGeminiUnsupportedFields(reqBody)
+	if request.Params != nil {
+		applyVertexSessionRouting(ctx, key, request.Model, request.Params.PromptCacheKey, reqBody)
+	}
+	// Marshal to JSON bytes
+	rawBody, err := providerUtils.MarshalSorted(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+	// Remove region field if present
+	rawBody, err = providerUtils.DeleteJSONField(rawBody, "region")
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete region field: %w", err)
+	}
+	return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
+}
+
+// vertexGeminiImageGenerationRequestBody builds the image generation body the Vertex sync
+// route sends for a Gemini-family model, shared with the inline batch path.
+func vertexGeminiImageGenerationRequestBody(request *schemas.BifrostImageGenerationRequest) (*VertexRawRequestBody, error) {
+	reqBody := gemini.ToGeminiImageGenerationRequest(request)
+	if reqBody == nil {
+		return nil, fmt.Errorf("image generation input is not provided")
+	}
+	extraParams := reqBody.GetExtraParams()
+	// Strip unsupported fields for Vertex Gemini
+	stripVertexGeminiUnsupportedFields(reqBody)
+	// Marshal to JSON bytes, preserving key order
+	rawBody, err := providerUtils.MarshalSorted(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+	// Remove region field if present
+	rawBody, err = providerUtils.DeleteJSONField(rawBody, "region")
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete region field: %w", err)
+	}
+	return &VertexRawRequestBody{RawBody: rawBody, ExtraParams: extraParams}, nil
+}
+
 func stripVertexGeminiUnsupportedFields(requestBody *gemini.GeminiGenerationRequest) {
 	// Strip service tier — Vertex uses HTTP headers for this, not the request body.
 	requestBody.ServiceTier = ""
@@ -3021,6 +3049,18 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 			return nil, providerUtils.NewBifrostOperationError("output_folder.url (gs:// prefix) is required for Vertex batch API", nil)
 		}
 
+		// Metadata becomes the job's labels. An entry Vertex cannot hold as a label is the
+		// caller's to fix: a 400 naming the entry before anything is uploaded, not a label
+		// silently dropped.
+		if _, _, labelErr := vertexBatchJobLabels(request); labelErr != nil {
+			badRequest := providerUtils.NewBifrostBadRequestError(labelErr.Error())
+			var named *vertexLabelError
+			if errors.As(labelErr, &named) {
+				badRequest.Error.Param = named.Param
+			}
+			return nil, badRequest
+		}
+
 		jobName = fmt.Sprintf("bifrost-batch-%d", time.Now().Unix())
 		if request.DisplayName != nil && *request.DisplayName != "" {
 			jobName = *request.DisplayName
@@ -3033,8 +3073,13 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 
 		// Inline mode: convert to JSONL and upload next to the output location (Bedrock pattern).
 		if inputFileID == "" {
-			jsonlData, err := vertexConvertRequestsToJSONL(ctx, request.Requests, *request.Model)
+			jsonlData, err := vertexConvertRequestsToJSONL(ctx, key, request.Requests, *request.Model, request.Endpoint)
 			if err != nil {
+				// A line the caller got wrong is a 400 naming the line; nothing was uploaded.
+				var lineErr *schemas.BatchLineError
+				if errors.As(err, &lineErr) {
+					return nil, gemini.NewBatchLineBadRequestError(lineErr.Index, lineErr)
+				}
 				return nil, providerUtils.NewBifrostOperationError("failed to convert requests to Vertex JSONL", err)
 			}
 			outBucket, outKey, parseErr := parseGCSURI(outputURI)
@@ -3072,7 +3117,7 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToVertexBatchCreateRequest(ctx, request, jobName, inputFileID, outputURI), nil
+			return ToVertexBatchCreateRequest(ctx, request, jobName, inputFileID, outputURI)
 		},
 	)
 	if bodyErr != nil {
@@ -3210,18 +3255,7 @@ func (provider *VertexProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 		return nil, 0, cfgErr
 	}
 
-	params := url.Values{}
-	pageSize := request.PageSize
-	if pageSize <= 0 {
-		pageSize = request.Limit
-	}
-	if pageSize <= 0 {
-		pageSize = 20
-	}
-	params.Set("pageSize", fmt.Sprintf("%d", pageSize))
-	if request.PageToken != nil && *request.PageToken != "" {
-		params.Set("pageToken", *request.PageToken)
-	}
+	params := vertexBatchListQuery(request)
 
 	authHeader, authErr := provider.gcsGetAuthHeader(key)
 	if authErr != nil {
@@ -3539,7 +3573,10 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		return nil, listErr
 	}
 
-	results := []schemas.BatchResultItem{}
+	// Vertex writes the lines into one or more predictions files under the output directory.
+	// Each is a result source, in the order the listing returns them (by name), read as a
+	// streamed download so a page never holds a whole file.
+	sources := make([]providerUtils.BatchResultsSource, 0, len(objects))
 	for _, obj := range objects {
 		name := obj.Name
 		if idx := strings.LastIndexByte(name, '/'); idx >= 0 {
@@ -3548,52 +3585,73 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		if !strings.HasPrefix(name, "predictions") {
 			continue
 		}
+		sources = append(sources, provider.gcsObjectResultSource(ctx, authHeader, bucket, obj.Name))
+	}
 
-		content, downloadErr := provider.gcsDownloadObject(ctx, authHeader, bucket, obj.Name)
-		if downloadErr != nil {
-			return nil, downloadErr
-		}
+	_, bareModel := schemas.ParseModelString(job.Model, schemas.Vertex)
+	if stripped, ok := stripVertexPublisherModelPath(job.Model); ok {
+		bareModel = stripped
+	}
+	isAnthropic := strings.Contains(job.Model, "publishers/anthropic/") || schemas.IsAnthropicModelFamily(ctx, bareModel)
+	includeRaw := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
-		for _, rawLine := range bytes.Split(content, []byte("\n")) {
-			if len(bytes.TrimSpace(rawLine)) == 0 {
-				continue
-			}
-			var line VertexBatchOutputLine
-			if err := sonic.Unmarshal(rawLine, &line); err != nil {
-				continue // skip malformed lines rather than failing the whole result set
-			}
-			// Anthropic/Claude jobs echo a native top-level custom_id; Gemini jobs carry it in labels.
-			customID := line.CustomID
-			if customID == "" {
-				customID = line.Request.Labels[vertexBatchCustomIDLabel]
-			}
-			item := schemas.BatchResultItem{
-				CustomID: customID,
-			}
-			if line.Response != nil {
-				item.Response = &schemas.BatchResultResponse{
-					StatusCode: 200,
-					Body:       vertexNormalizeBatchUsage(line.Response),
-				}
-			} else {
-				item.Error = &schemas.BatchResultError{Message: line.Status}
-			}
-			results = append(results, item)
+	results := []schemas.BatchResultItem{}
+	var parseErrors []schemas.BatchError
+	endpoint := schemas.BatchEndpoint("")
+	page, pageErr := providerUtils.ReadBatchResultsPage(sources, request.After, request.Limit, func(_ int, rawLine []byte) {
+		item, lineEndpoint, err := vertexBatchOutputLineToResultItem(rawLine, isAnthropic, includeRaw)
+		if err != nil {
+			// A line that cannot be parsed is counted, not silently skipped: its usage is
+			// missing from the results and the caller must know how many are.
+			parseErrors = append(parseErrors, schemas.BatchError{Code: "parse_error", Message: err.Error()})
+			return
 		}
+		if endpoint == "" {
+			endpoint = lineEndpoint
+		}
+		results = append(results, item)
+	})
+	if pageErr != nil {
+		return nil, pageErr
+	}
+	// The job has no endpoint of its own: it is the url its lines were created with, which
+	// every line of one batch shares. Lines with no such label are chat lines.
+	if endpoint == "" {
+		endpoint = schemas.BatchEndpointChatCompletions
 	}
 
 	batchResultsResp := &schemas.BifrostBatchResultsResponse{
-		BatchID:  request.BatchID,
-		Endpoint: schemas.BatchEndpointChatCompletions,
-		Results:  results,
+		BatchID:    request.BatchID,
+		Endpoint:   endpoint,
+		Results:    results,
+		HasMore:    page.HasMore,
+		NextCursor: page.NextCursor,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: time.Since(startTime).Milliseconds(),
 		},
 	}
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+	if len(parseErrors) > 0 {
+		batchResultsResp.ExtraFields.ParseErrors = parseErrors
+	}
+	if includeRaw {
 		batchResultsResp.ExtraFields.RawResponse = results
 	}
 	return batchResultsResp, nil
+}
+
+// gcsObjectResultSource opens a Cloud Storage object as a streamed download starting at a
+// byte offset.
+func (provider *VertexProvider) gcsObjectResultSource(ctx *schemas.BifrostContext, authHeader, bucket, objectKey string) providerUtils.BatchResultsSource {
+	return func(offset int64) (*providerUtils.ResultStream, *schemas.BifrostError) {
+		return providerUtils.OpenResultStream(ctx, provider.streamingClient, offset, func(req *fasthttp.Request) {
+			req.SetRequestURI(fmt.Sprintf("%s/b/%s/o/%s?alt=media", gcsStorageBase, url.PathEscape(bucket), gcsEncodeObjectName(objectKey)))
+			req.Header.SetMethod(http.MethodGet)
+			providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+			req.Header.Set("Authorization", authHeader)
+		}, func(resp *fasthttp.Response) *schemas.BifrostError {
+			return parseGCSAPIError(resp.Body(), resp.StatusCode(), "content download")
+		})
+	}
 }
 
 // vertexNormalizeBatchUsage normalizes Vertex usageMetadata into OpenAI-compatible

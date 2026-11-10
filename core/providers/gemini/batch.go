@@ -546,21 +546,54 @@ func isNativeGeminiBatchBody(body map[string]any) bool {
 	return !hasMessages && !hasPrompt
 }
 
-// ToGeminiBatchLineRequest builds the GenerateContentRequest Gemini runs for one inline
+// BatchLineConverters are the sync operations' request converters a host of Gemini models
+// runs an inline batch line through. The Gemini API and Vertex shape the same converted
+// request differently (Vertex strips fields it takes elsewhere), so each passes its own.
+type BatchLineConverters struct {
+	Chat            func(request *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error)
+	ImageGeneration func(request *schemas.BifrostImageGenerationRequest) (providerUtils.RequestBodyWithExtraParams, error)
+}
+
+// ToGeminiBatchLineRequest builds the GenerateContentRequest the Gemini API runs for one
+// inline batch line, with the Gemini provider's sync converters. See ConvertBatchLine.
+func ToGeminiBatchLineRequest(ctx *schemas.BifrostContext, item schemas.BatchRequestItem, provider schemas.ModelProvider, model string, batchEndpoint schemas.BatchEndpoint) ([]byte, schemas.BatchEndpoint, error) {
+	return ConvertBatchLine(ctx, item, provider, model, batchEndpoint, BatchLineConverters{
+		Chat: func(request *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error) {
+			converted, err := ToGeminiChatCompletionRequest(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			if converted == nil {
+				return nil, fmt.Errorf("chat request could not be converted")
+			}
+			return converted, nil
+		},
+		ImageGeneration: func(request *schemas.BifrostImageGenerationRequest) (providerUtils.RequestBodyWithExtraParams, error) {
+			converted := ToGeminiImageGenerationRequest(request)
+			if converted == nil {
+				return nil, fmt.Errorf("image generation request could not be converted")
+			}
+			return converted, nil
+		},
+	})
+}
+
+// ConvertBatchLine builds the GenerateContentRequest a Gemini model runs for one inline
 // batch line, as encoded JSON, and returns the endpoint the line's result is converted
-// back to. An OpenAI-shape body is converted with the sync operation's converter and
-// encoded as the sync route encodes it, so the line and a sync request with the same body
-// reach the vendor with the same parameters:
+// back to. An OpenAI-shape body is parsed into the request the sync route builds from it,
+// converted with the sync operation's converter and encoded as the sync route encodes it,
+// so the line and a sync request with the same body reach the vendor with the same
+// parameters:
 //
-//   - /v1/chat/completions: ToGeminiChatCompletionRequest, extra params merged when the
-//     caller asked for passthrough, as on the chat route;
-//   - /v1/images/generations: ToGeminiImageGenerationRequest, extra params always merged,
+//   - /v1/chat/completions: the chat converter, extra params merged when the caller asked
+//     for passthrough, as on the chat route;
+//   - /v1/images/generations: the image generation converter, extra params always merged,
 //     as on the image route.
 //
 // A body already in Gemini shape (contents, no messages) is sent as it is, and its result
-// is a chat line. Any other url is an error: batchGenerateContent cannot run it. provider
-// and model are the batch's. Shared by the Gemini and Vertex batch paths.
-func ToGeminiBatchLineRequest(ctx *schemas.BifrostContext, item schemas.BatchRequestItem, provider schemas.ModelProvider, model string, batchEndpoint schemas.BatchEndpoint) ([]byte, schemas.BatchEndpoint, error) {
+// is a chat line. Any other url is an error: a generateContent batch cannot run it.
+// provider and model are the batch's.
+func ConvertBatchLine(ctx *schemas.BifrostContext, item schemas.BatchRequestItem, provider schemas.ModelProvider, model string, batchEndpoint schemas.BatchEndpoint, converters BatchLineConverters) ([]byte, schemas.BatchEndpoint, error) {
 	body := item.RequestBody()
 	if body == nil {
 		return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: "body is required"}
@@ -589,12 +622,9 @@ func ToGeminiBatchLineRequest(ctx *schemas.BifrostContext, item schemas.BatchReq
 		if err != nil {
 			return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: err.Error()}
 		}
-		converted, err := ToGeminiChatCompletionRequest(ctx, chatRequest)
+		converted, err := converters.Chat(chatRequest)
 		if err != nil {
 			return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: err.Error()}
-		}
-		if converted == nil {
-			return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: "chat request could not be converted"}
 		}
 		mergeExtraParams := ctx != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true
 		encoded, err := providerUtils.MarshalConvertedRequestBody(converted, mergeExtraParams)
@@ -604,15 +634,15 @@ func ToGeminiBatchLineRequest(ctx *schemas.BifrostContext, item schemas.BatchReq
 		return encoded, endpoint, nil
 	case schemas.BatchEndpointImageGeneration:
 		if schemas.IsImagenModel(model) {
-			return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "url", Message: fmt.Sprintf("model %s is an Imagen model, which batchGenerateContent cannot run", model)}
+			return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "url", Message: fmt.Sprintf("model %s is an Imagen model, which a generateContent batch cannot run", model)}
 		}
 		imageRequest, err := item.ToBifrostImageGenerationRequest(provider, model)
 		if err != nil {
 			return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: err.Error()}
 		}
-		converted := ToGeminiImageGenerationRequest(imageRequest)
-		if converted == nil {
-			return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: "image generation request could not be converted"}
+		converted, err := converters.ImageGeneration(imageRequest)
+		if err != nil {
+			return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: err.Error()}
 		}
 		encoded, err := providerUtils.MarshalConvertedRequestBody(converted, true)
 		if err != nil {

@@ -1,6 +1,7 @@
 package vertex
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/capsohq/bifrost/core/providers/gemini"
@@ -480,6 +481,11 @@ type VertexBatchCreateRequest struct {
 	Model        string                  `json:"model"`
 	InputConfig  VertexBatchInputConfig  `json:"inputConfig"`
 	OutputConfig VertexBatchOutputConfig `json:"outputConfig"`
+	// Labels are the job's labels: the batch's metadata, and any labels the caller sent.
+	// They are a field of the job body in their own right, so they reach Vertex whether or
+	// not the caller asked for extra params to be passed through, and the list can filter
+	// on them (labels.key=value).
+	Labels map[string]string `json:"labels,omitempty"`
 
 	ExtraParams map[string]interface{} `json:"-"`
 }
@@ -504,7 +510,9 @@ type VertexBatchOutputLine struct {
 	Request  struct {
 		Labels map[string]string `json:"labels"`
 	} `json:"request"`
-	Response map[string]interface{} `json:"response,omitempty"`
+	// Response is the model's native response, kept as sent: a GenerateContentResponse for
+	// Gemini jobs, an Anthropic message for Claude jobs.
+	Response json.RawMessage `json:"response,omitempty"`
 }
 
 // ================================ GCS File API Types ================================

@@ -3,13 +3,16 @@ package vertex
 import (
 	"bytes"
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
+	"github.com/capsohq/bifrost/core/providers/gemini"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // parseVertexJSONLLines splits the JSONL output into one decoded map per line.
@@ -45,7 +48,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(ctx, requests, "gemini-1.5-flash")
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, requests, "gemini-1.5-flash", "")
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -76,7 +79,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(ctx, requests, "gemini-1.5-flash")
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, requests, "gemini-1.5-flash", "")
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -103,7 +106,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(ctx, requests, "gemini-1.5-flash")
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, requests, "gemini-1.5-flash", "")
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -136,7 +139,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(ctx, requests, "gemini-1.5-flash")
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, requests, "gemini-1.5-flash", "")
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -153,7 +156,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			{CustomID: "b", Body: map[string]interface{}{"messages": []interface{}{map[string]interface{}{"role": "user", "content": "2"}}}},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(ctx, requests, "gemini-1.5-flash")
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, requests, "gemini-1.5-flash", "")
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -164,7 +167,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 
 	t.Run("ErrorsWhenItemHasNoBody", func(t *testing.T) {
 		requests := []schemas.BatchRequestItem{{CustomID: "empty"}}
-		_, err := vertexConvertRequestsToJSONL(ctx, requests, "gemini-1.5-flash")
+		_, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, requests, "gemini-1.5-flash", "")
 		require.Error(t, err)
 	})
 
@@ -183,7 +186,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(ctx, requests, "claude-3-5-haiku")
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, requests, "claude-3-5-haiku", "")
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -222,7 +225,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 				},
 			}
 
-			data, err := vertexConvertRequestsToJSONL(ctx, requests, "claude-3-5-haiku")
+			data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, requests, "claude-3-5-haiku", "")
 			require.NoError(t, err)
 
 			lines := parseVertexJSONLLines(t, data)
@@ -243,7 +246,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 				},
 			},
 		}
-		data, err := vertexConvertRequestsToJSONL(ctx, requests, "claude-3-5-haiku")
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, requests, "claude-3-5-haiku", "")
 		require.NoError(t, err)
 		lines := parseVertexJSONLLines(t, data)
 		require.Len(t, lines, 1)
@@ -267,7 +270,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(ctx, requests, "claude-3-5-haiku")
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, requests, "claude-3-5-haiku", "")
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -290,7 +293,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(ctx, requests, "claude-3-5-haiku")
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, requests, "claude-3-5-haiku", "")
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -316,7 +319,7 @@ func TestVertexConvertRequestsToJSONL(t *testing.T) {
 			},
 		}
 
-		data, err := vertexConvertRequestsToJSONL(ctx, requests, "claude-3-5-haiku")
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, requests, "claude-3-5-haiku", "")
 		require.NoError(t, err)
 
 		lines := parseVertexJSONLLines(t, data)
@@ -342,7 +345,8 @@ func TestToVertexBatchCreateRequestPublisher(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			req := &schemas.BifrostBatchCreateRequest{Model: schemas.Ptr(tc.model)}
-			out := ToVertexBatchCreateRequest(ctx, req, "job", "gs://in/input.jsonl", "gs://out/")
+			out, err := ToVertexBatchCreateRequest(ctx, req, "job", "gs://in/input.jsonl", "gs://out/")
+			require.NoError(t, err)
 			assert.Equal(t, tc.expected, out.Model)
 		})
 	}
@@ -400,7 +404,8 @@ func TestToBifrostBatchCreateRequestModelLookup(t *testing.T) {
 		req := ToBifrostBatchCreateRequest(job)
 		assert.Equal(t, "llama-3.1-405b-instruct-maas", *req.Model)
 
-		out := ToVertexBatchCreateRequest(ctx, req, "job", "gs://in/input.jsonl", "gs://out/")
+		out, err := ToVertexBatchCreateRequest(ctx, req, "job", "gs://in/input.jsonl", "gs://out/")
+		require.NoError(t, err)
 		body, err := providerUtils.MergeExtraParamsIntoJSON(mustMarshal(t, out), out.GetExtraParams())
 		require.NoError(t, err)
 
@@ -520,4 +525,282 @@ func TestVertexNormalizeBatchUsage_ThinkingTokens(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An OpenAI-shape inline line reaches Vertex as the request the Vertex sync route sends for
+// the same body (contract C8, BF17): the line is built by the sync route's own builder, so
+// the two are compared here. Before this, the line kept only messages and dropped
+// max_tokens, temperature, response_format, OpenAI-shape tools and the rest.
+func TestVertexBatchLinesAreTheSyncRequest(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	parse := func(line string) schemas.BatchRequestItem {
+		var item schemas.BatchRequestItem
+		require.NoError(t, sonic.UnmarshalString(line, &item))
+		return item
+	}
+	lineRequest := func(data []byte) map[string]interface{} {
+		lines := parseVertexJSONLLines(t, data)
+		require.Len(t, lines, 1)
+		request, ok := lines[0]["request"].(map[string]interface{})
+		require.True(t, ok)
+		return request
+	}
+	asMap := func(encoded []byte) map[string]interface{} {
+		out := map[string]interface{}{}
+		require.NoError(t, sonic.Unmarshal(encoded, &out))
+		return out
+	}
+
+	t.Run("chat line", func(t *testing.T) {
+		item := parse(`{"custom_id":"line-1","method":"POST","url":"/v1/chat/completions","body":{"model":"gemini-2.5-flash","messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"What is the capital of France?"}],"max_tokens":256,"temperature":0.2,"top_p":0.9,"stop":["END"],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}}],"tool_choice":"auto"}}`)
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{item}, "gemini-2.5-flash", schemas.BatchEndpointChatCompletions)
+		require.NoError(t, err)
+		got := lineRequest(data)
+
+		chatRequest, err := item.ToBifrostChatRequest(schemas.Vertex, "gemini-2.5-flash")
+		require.NoError(t, err)
+		syncBody, err := vertexGeminiChatRequestBody(ctx, schemas.Key{}, chatRequest)
+		require.NoError(t, err)
+		want := asMap(syncBody.RawBody)
+
+		assert.Equal(t, map[string]interface{}{"bifrost_custom_id": "line-1", "bifrost_endpoint": "chat_completions"}, got["labels"])
+		delete(got, "labels")
+		assert.Equal(t, want, got, "the batch line, labels aside, must be the sync request")
+
+		generationConfig := got["generationConfig"].(map[string]interface{})
+		assert.EqualValues(t, 256, generationConfig["maxOutputTokens"])
+		assert.EqualValues(t, 0.2, generationConfig["temperature"])
+		assert.EqualValues(t, 0.9, generationConfig["topP"])
+		assert.Equal(t, []interface{}{"END"}, generationConfig["stopSequences"])
+		declarations := got["tools"].([]interface{})[0].(map[string]interface{})["functionDeclarations"].([]interface{})
+		assert.Equal(t, "lookup", declarations[0].(map[string]interface{})["name"])
+		assert.NotNil(t, got["systemInstruction"])
+	})
+
+	t.Run("structured output line", func(t *testing.T) {
+		item := parse(`{"custom_id":"line-2","url":"/v1/chat/completions","body":{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"Name a city."}],"max_completion_tokens":64,"response_format":{"type":"json_schema","json_schema":{"name":"answer","schema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}}}`)
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{item}, "gemini-2.5-flash", schemas.BatchEndpointChatCompletions)
+		require.NoError(t, err)
+		generationConfig := lineRequest(data)["generationConfig"].(map[string]interface{})
+		assert.EqualValues(t, 64, generationConfig["maxOutputTokens"])
+		assert.Equal(t, "application/json", generationConfig["responseMimeType"])
+		assert.True(t, generationConfig["responseSchema"] != nil || generationConfig["responseJsonSchema"] != nil, "the response schema is missing: %v", generationConfig)
+	})
+
+	t.Run("image generation line", func(t *testing.T) {
+		item := parse(`{"custom_id":"img-1","url":"/v1/images/generations","body":{"model":"gemini-2.5-flash-image","prompt":"A lighthouse at dusk","aspect_ratio":"16:9"}}`)
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{item}, "gemini-2.5-flash-image", schemas.BatchEndpointImageGeneration)
+		require.NoError(t, err)
+		got := lineRequest(data)
+
+		imageRequest, err := item.ToBifrostImageGenerationRequest(schemas.Vertex, "gemini-2.5-flash-image")
+		require.NoError(t, err)
+		syncBody, err := vertexGeminiImageGenerationRequestBody(imageRequest)
+		require.NoError(t, err)
+
+		assert.Equal(t, map[string]interface{}{"bifrost_custom_id": "img-1", "bifrost_endpoint": "images_generations"}, got["labels"])
+		delete(got, "labels")
+		assert.Equal(t, asMap(syncBody.RawBody), got)
+	})
+
+	t.Run("a line the batch cannot run is an error naming the line", func(t *testing.T) {
+		for name, tc := range map[string]struct{ line, param, text string }{
+			"embeddings url": {`{"custom_id":"e-1","url":"/v1/embeddings","body":{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}}`, "url", "/v1/embeddings"},
+			"another model":  {`{"custom_id":"l-1","url":"/v1/chat/completions","body":{"model":"gemini-2.5-pro","messages":[{"role":"user","content":"hi"}]}}`, "body.model", "gemini-2.5-pro"},
+			"no body":        {`{"custom_id":"l-1","url":"/v1/chat/completions"}`, "body", "body is required"},
+		} {
+			ok := parse(`{"custom_id":"ok","url":"/v1/chat/completions","body":{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}}`)
+			_, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{ok, parse(tc.line)}, "gemini-2.5-flash", schemas.BatchEndpointChatCompletions)
+			var lineErr *schemas.BatchLineError
+			require.ErrorAs(t, err, &lineErr, name)
+			assert.Equal(t, 1, lineErr.Index, name)
+			assert.Equal(t, tc.param, lineErr.Param, name)
+			assert.Contains(t, lineErr.Message, tc.text, name)
+		}
+	})
+}
+
+// The batch's metadata reaches the job as labels, a field of the job body in its own right:
+// present whether or not extra params are passed through, and what the list filters on
+// (contract C8 agreement two, BF19).
+func TestVertexBatchMetadataBecomesJobLabels(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("metadata and a labels field merge into labels", func(t *testing.T) {
+		extraParams := map[string]interface{}{
+			"labels":          map[string]interface{}{"team": "tokun", "tokun_batch_id": "from-labels"},
+			"modelParameters": map[string]interface{}{"temperature": 0.1},
+		}
+		request := &schemas.BifrostBatchCreateRequest{
+			Model:       schemas.Ptr("gemini-2.5-flash"),
+			Metadata:    map[string]string{"tokun_batch_id": "batch_tk_1", "chunk": "3", "job_name": "my job"},
+			ExtraParams: extraParams,
+		}
+		job, err := ToVertexBatchCreateRequest(ctx, request, "my job", "gs://in/input.jsonl", "gs://out/")
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"tokun_batch_id": "from-labels", "chunk": "3", "team": "tokun"}, job.Labels, "job_name is the display name, not a label; a labels field wins over metadata")
+		assert.NotContains(t, job.ExtraParams, "labels", "labels must not be merged a second time as an extra param")
+		assert.Contains(t, job.ExtraParams, "modelParameters")
+		assert.Contains(t, extraParams, "labels", "the caller's map is not modified")
+
+		// The encoded job body carries labels with no extra-params passthrough at all.
+		encoded, err := providerUtils.MarshalConvertedRequestBody(job, false)
+		require.NoError(t, err)
+		var body map[string]interface{}
+		require.NoError(t, sonic.Unmarshal(encoded, &body))
+		assert.Equal(t, map[string]interface{}{"tokun_batch_id": "from-labels", "chunk": "3", "team": "tokun"}, body["labels"])
+		assert.NotContains(t, body, "modelParameters", "other extra params still need the passthrough switch")
+	})
+
+	t.Run("no metadata is no labels field", func(t *testing.T) {
+		job, err := ToVertexBatchCreateRequest(ctx, &schemas.BifrostBatchCreateRequest{Model: schemas.Ptr("gemini-2.5-flash")}, "job", "gs://in/input.jsonl", "gs://out/")
+		require.NoError(t, err)
+		assert.Nil(t, job.Labels)
+	})
+
+	t.Run("metadata Vertex cannot hold as a label is an error naming the entry", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			metadata    map[string]string
+			extraParams map[string]interface{}
+			wantParam   string
+		}{
+			"uppercase value":    {map[string]string{"tokun_batch_id": "Batch_TK_1"}, nil, "metadata.tokun_batch_id"},
+			"value with a slash": {map[string]string{"tokun_batch_id": "batch/1"}, nil, "metadata.tokun_batch_id"},
+			"value too long":     {map[string]string{"tokun_batch_id": strings.Repeat("a", 64)}, nil, "metadata.tokun_batch_id"},
+			"key not a label":    {map[string]string{"Tokun-Batch": "b1"}, nil, "metadata.Tokun-Batch"},
+			"labels not strings": {nil, map[string]interface{}{"labels": map[string]interface{}{"team": 7}}, "labels.team"},
+			"labels not a map":   {nil, map[string]interface{}{"labels": "team=tokun"}, "labels"},
+		} {
+			_, err := ToVertexBatchCreateRequest(ctx, &schemas.BifrostBatchCreateRequest{Model: schemas.Ptr("gemini-2.5-flash"), Metadata: tc.metadata, ExtraParams: tc.extraParams}, "job", "gs://in/input.jsonl", "gs://out/")
+			var labelErr *vertexLabelError
+			require.ErrorAs(t, err, &labelErr, name)
+			assert.Equal(t, tc.wantParam, labelErr.Param, name)
+		}
+	})
+
+	t.Run("the job's labels come back as the batch's metadata", func(t *testing.T) {
+		batch := vertexBatchJobToBifrost(&VertexBatchPredictionJob{
+			Name:        "projects/p/locations/us-central1/batchPredictionJobs/123",
+			DisplayName: "my job",
+			State:       "JOB_STATE_RUNNING",
+			Labels:      map[string]string{"tokun_batch_id": "batch_tk_1"},
+		})
+		assert.Equal(t, "projects/p/locations/us-central1/batchPredictionJobs/123", batch.ID)
+		assert.Equal(t, map[string]string{"tokun_batch_id": "batch_tk_1"}, batch.Metadata)
+		assert.Equal(t, schemas.BatchStatusInProgress, batch.Status)
+	})
+}
+
+// The list sends the caller's filter as Vertex's own filter expression, so a batch whose
+// create response was lost is found by its label.
+func TestVertexBatchListQueryCarriesTheFilter(t *testing.T) {
+	query := vertexBatchListQuery(&schemas.BifrostBatchListRequest{Limit: 5, Filter: schemas.Ptr(" labels.tokun_batch_id=batch_tk_1 "), PageToken: schemas.Ptr("next")})
+	assert.Equal(t, "labels.tokun_batch_id=batch_tk_1", query.Get("filter"))
+	assert.Equal(t, "5", query.Get("pageSize"))
+	assert.Equal(t, "next", query.Get("pageToken"))
+	assert.Contains(t, query.Encode(), "filter=labels.tokun_batch_id%3Dbatch_tk_1")
+
+	plain := vertexBatchListQuery(&schemas.BifrostBatchListRequest{})
+	assert.False(t, plain.Has("filter"), "no filter is no filter parameter")
+	assert.Equal(t, "20", plain.Get("pageSize"))
+}
+
+// Lines of a Vertex predictions file, as batch prediction writes them: the request echoed
+// with its labels, the model's native response, and for a failed record the error in status.
+const (
+	vertexOutputLineChat    = `{"status":"","processed_time":"2026-11-10T09:13:16.826+00:00","request":{"contents":[{"role":"user","parts":[{"text":"What is the capital of France?"}]}],"generationConfig":{"maxOutputTokens":256},"labels":{"bifrost_custom_id":"line-1","bifrost_endpoint":"chat_completions"}},"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Paris."}]},"finishReason":"STOP","avgLogprobs":-0.1,"safetyRatings":[{"category":"HARM_CATEGORY_HARASSMENT","probability":"NEGLIGIBLE"}]}],"modelVersion":"gemini-2.5-flash","responseId":"resp-1","usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":60,"totalTokenCount":480,"cachedContentTokenCount":40,"thoughtsTokenCount":300,"promptTokensDetails":[{"modality":"TEXT","tokenCount":120}],"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":60}]}}}`
+	vertexOutputLineImage   = `{"status":"","processed_time":"2026-11-10T09:13:17.100+00:00","request":{"contents":[{"role":"user","parts":[{"text":"A lighthouse at dusk"}]}],"labels":{"bifrost_custom_id":"img-1","bifrost_endpoint":"images_generations"}},"response":{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":"iVBORw0KGgoAAAANSUhEUg=="}}]},"finishReason":"STOP"}],"modelVersion":"gemini-2.5-flash-image","usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":1290,"totalTokenCount":1298,"promptTokensDetails":[{"modality":"TEXT","tokenCount":8}],"candidatesTokensDetails":[{"modality":"IMAGE","tokenCount":1290}]}}}`
+	vertexOutputLineFailed  = `{"status":"Bad Request: {\"error\": {\"code\": 400, \"message\": \"Unable to submit request because it has a maxOutputTokens value of 99999 but the supported range is from 1 to 65536.\", \"status\": \"INVALID_ARGUMENT\"}}","processed_time":"2026-11-10T09:13:18.000+00:00","request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"labels":{"bifrost_custom_id":"line-3","bifrost_endpoint":"chat_completions"}},"response":{}}`
+	vertexOutputLineClaude  = `{"custom_id":"claude-1","request":{"anthropic_version":"vertex-2023-10-16","messages":[{"role":"user","content":"hi"}],"max_tokens":32},"response":{"id":"msg_1","type":"message","role":"assistant","model":"claude-3-5-haiku","content":[{"type":"text","text":"Hello."}],"stop_reason":"end_turn","usage":{"input_tokens":9,"output_tokens":4}}}`
+	vertexOutputLineNoLabel = `{"status":"","request":{"contents":[{"role":"user","parts":[{"text":"hi"}]}]},"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello."}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}}`
+)
+
+// Results convert each predictions line back to the OpenAI shape of the line's url with
+// status and the sync operation's unified usage; a failed record carries Vertex's error; a
+// line that cannot be parsed is an error for the caller to count (contract C8, BF18).
+func TestVertexBatchOutputLineToResultItem(t *testing.T) {
+	t.Run("chat line", func(t *testing.T) {
+		item, endpoint, err := vertexBatchOutputLineToResultItem([]byte(vertexOutputLineChat), false, true)
+		require.NoError(t, err)
+		assert.Equal(t, schemas.BatchEndpointChatCompletions, endpoint)
+		assert.Equal(t, "line-1", item.CustomID)
+		assert.Equal(t, schemas.BatchResultStatusSucceeded, item.Status)
+		assert.Equal(t, 200, item.Response.StatusCode)
+		body := item.Response.Body
+		assert.Equal(t, "chat.completion", body["object"])
+		assert.Equal(t, "gemini-2.5-flash", body["model"])
+		choice := body["choices"].([]interface{})[0].(map[string]interface{})
+		assert.Equal(t, "Paris.", choice["message"].(map[string]interface{})["content"])
+		assert.Equal(t, "stop", choice["finish_reason"])
+		usage := body["usage"].(map[string]interface{})
+		assert.EqualValues(t, 120, usage["prompt_tokens"])
+		assert.EqualValues(t, 360, usage["completion_tokens"], "candidates plus thoughts, as on the sync route")
+		assert.EqualValues(t, 480, usage["total_tokens"])
+		assert.EqualValues(t, 300, usage["completion_tokens_details"].(map[string]interface{})["reasoning_tokens"])
+		assert.EqualValues(t, 40, usage["prompt_tokens_details"].(map[string]interface{})["cached_read_tokens"])
+		assert.EqualValues(t, 40, usage["prompt_tokens_details"].(map[string]interface{})["cached_tokens"])
+		raw := body["extra_fields"].(map[string]interface{})["raw_response"].(map[string]interface{})
+		assert.NotNil(t, raw["candidates"].([]interface{})[0].(map[string]interface{})["safetyRatings"])
+
+		// The body is the sync chat response of the same native response.
+		var native gemini.GenerateContentResponse
+		require.NoError(t, sonic.UnmarshalString(gjson.Get(vertexOutputLineChat, "response").Raw, &native))
+		want, err := sonic.Marshal(native.ToBifrostChatResponse())
+		require.NoError(t, err)
+		var wantBody map[string]interface{}
+		require.NoError(t, sonic.Unmarshal(want, &wantBody))
+		delete(wantBody, "extra_fields")
+		delete(body, "extra_fields")
+		assert.Equal(t, wantBody, body)
+	})
+
+	t.Run("image line keeps its artifact", func(t *testing.T) {
+		item, endpoint, err := vertexBatchOutputLineToResultItem([]byte(vertexOutputLineImage), false, false)
+		require.NoError(t, err)
+		assert.Equal(t, schemas.BatchEndpointImageGeneration, endpoint)
+		assert.Equal(t, "img-1", item.CustomID)
+		assert.Equal(t, schemas.BatchResultStatusSucceeded, item.Status)
+		data := item.Response.Body["data"].([]interface{})
+		require.Len(t, data, 1)
+		assert.Equal(t, "iVBORw0KGgoAAAANSUhEUg==", data[0].(map[string]interface{})["b64_json"])
+		usage := item.Response.Body["usage"].(map[string]interface{})
+		assert.EqualValues(t, 1290, usage["output_tokens"])
+		assert.EqualValues(t, 1290, usage["output_tokens_details"].(map[string]interface{})["image_tokens"])
+		_, hasExtraFields := item.Response.Body["extra_fields"]
+		assert.False(t, hasExtraFields)
+	})
+
+	t.Run("failed record carries Vertex's error, not an empty success", func(t *testing.T) {
+		item, endpoint, err := vertexBatchOutputLineToResultItem([]byte(vertexOutputLineFailed), false, false)
+		require.NoError(t, err)
+		assert.Equal(t, schemas.BatchEndpointChatCompletions, endpoint)
+		assert.Equal(t, "line-3", item.CustomID)
+		assert.Equal(t, schemas.BatchResultStatusFailed, item.Status)
+		assert.True(t, item.Failed())
+		assert.Nil(t, item.Response)
+		assert.Contains(t, item.Error.Message, "maxOutputTokens value of 99999")
+	})
+
+	t.Run("a line with no endpoint label is a chat line", func(t *testing.T) {
+		item, endpoint, err := vertexBatchOutputLineToResultItem([]byte(vertexOutputLineNoLabel), false, false)
+		require.NoError(t, err)
+		assert.Equal(t, schemas.BatchEndpoint(""), endpoint)
+		assert.Equal(t, "chat.completion", item.Response.Body["object"])
+	})
+
+	t.Run("Claude line keeps its native response with status", func(t *testing.T) {
+		item, _, err := vertexBatchOutputLineToResultItem([]byte(vertexOutputLineClaude), true, false)
+		require.NoError(t, err)
+		assert.Equal(t, "claude-1", item.CustomID)
+		assert.Equal(t, schemas.BatchResultStatusSucceeded, item.Status)
+		assert.Equal(t, "message", item.Response.Body["type"])
+		assert.EqualValues(t, 9, item.Response.Body["usage"].(map[string]interface{})["input_tokens"])
+	})
+
+	t.Run("a malformed line is an error to count", func(t *testing.T) {
+		for _, bad := range []string{`{"status":`, `{"request":{"labels":{}},"response":{"candidates":"nope"}}`} {
+			_, _, err := vertexBatchOutputLineToResultItem([]byte(bad), false, false)
+			require.Error(t, err, bad)
+		}
+	})
 }
