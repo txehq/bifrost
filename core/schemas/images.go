@@ -91,6 +91,8 @@ type BifrostImageGenerationResponse struct {
 //
 // It also keeps Data an array (fork, TXE-6518, contract C6): a response whose every image the
 // vendor blocked carries "data": [] next to its content_filter, never "data": null.
+//
+// And it writes usage.output_images (fork, TXE-6438, contract C5), see fillOutputImages.
 func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 	if r == nil {
 		return
@@ -98,6 +100,7 @@ func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 	if r.Data == nil {
 		r.Data = []ImageData{}
 	}
+	r.fillOutputImages()
 	if req == nil {
 		return
 	}
@@ -147,6 +150,24 @@ func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
 		}
 		r.ImageGenerationResponseParameters.AspectRatio = aspectRatio
 	}
+}
+
+// fillOutputImages writes usage.output_images as the number of images the vendor delivered in
+// Data (fork, TXE-6438, contract C5, shared by every image vendor). Data holds exactly what the
+// vendor returned: images it blocked take no slot (see ContentFilter), so the length is the
+// vendor's delivered count, not a request parameter or a Bifrost default, and a response whose
+// every image was blocked reports 0. An image count a provider already decoded from the vendor's
+// own usage report is kept unchanged. Without this, a vendor that reports no usage at all (an
+// OpenAI-compatible reseller such as Vercel AI Gateway) left the response with no readable count:
+// the internal NImages and NumInputImages counts are never serialised.
+func (r *BifrostImageGenerationResponse) fillOutputImages() {
+	if r.Usage != nil && r.Usage.OutputImages != nil {
+		return
+	}
+	if r.Usage == nil {
+		r.Usage = &ImageUsage{}
+	}
+	r.Usage.OutputImages = new(len(r.Data))
 }
 
 // getNumInputImagesSizeQualityAndAspectRatioFromRequest extracts request params for cost
@@ -251,7 +272,9 @@ type ImageUsage struct {
 	// Fork (TXE-6518, contract C5 BF6): billable quantities the vendor reported. Each one is set only
 	// from the vendor's own report: Bifrost never fills one with a value it counted, a request
 	// parameter or a default (NumInputImages and NImages above are Bifrost's own counts and stay
-	// unserialised), so a nil field means the vendor did not report it.
+	// unserialised), so a nil field means the vendor did not report it. OutputImages is the one
+	// exception to "nil means unreported" on a sync image response: BackfillParams writes it from
+	// the images the vendor delivered in Data when the vendor reports no count (TXE-6438).
 	OutputImages     *int        `json:"output_images,omitempty"`
 	InputImages      *int        `json:"input_images,omitempty"`
 	OutputMegapixels *float64    `json:"output_megapixels,omitempty"`

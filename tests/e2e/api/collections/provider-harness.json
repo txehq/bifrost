@@ -295960,6 +295960,254 @@
           }
         }
       ]
+    },
+    {
+      "name": "324. Vercel AI Gateway image channel on an openai-based custom provider (vercel image channel) [SERIAL]",
+      "description": "TXE-6438 regression, contract C3, C4, C5, C12. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. pp_vercel is configured the way Tokun's reconciler writes the Vercel AI Gateway provider: base_provider_type openai, allowed_requests image_generation and embedding, max_retries 0, a named key. The fixture answers /pp/vercel/v1/images/generations in the OpenAI images shape with no usage block, which is what leaves the gateway only data[] to read: usage.output_images must equal the length of data. Vercel's own image response has not been recorded and its usage fields and single-upstream field were not found; replace the fixture answer with a recorded response, and x_fixture_upstream_pin with Vercel's field, once they are. The rows read back the bytes that reached the fixture from /__wire. Run the whole folder in order.",
+      "item": [
+        {
+          "name": "pp_vercel/meta/muse-image-1.0 /v1/images/generations n=2: usage.output_images equals the length of data, from one upstream call (vercel image channel)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "tk-key-vercel-fixture"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"pp_vercel/meta/muse-image-1.0\", \"prompt\": \"a lighthouse at dusk\", \"n\": 2}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('vercel image channel setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function imageCalls(calls) { return calls.filter(function (c) { return c.path === '/pp/vercel/v1/images/generations'; }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('data carries the two images the upstream delivered', function () { pm.expect(body.data, pm.response.text()).to.be.an('array').with.length(2); });",
+                  "pm.test('usage.output_images is readable and equals the length of data', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.output_images, pm.response.text()).to.equal(body.data.length); });",
+                  "pm.test('the upstream reported no usage, so no token count is invented', function () { var usage = body.usage || {}; pm.expect(usage.output_tokens, pm.response.text()).to.equal(undefined); pm.expect(usage.input_tokens, pm.response.text()).to.equal(undefined); });",
+                  "pm.test('the named key served the request', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), JSON.stringify(pm.response.headers.toObject())).to.equal('tk-key-vercel-fixture'); });",
+                  "wire(function (calls) { var images = imageCalls(calls); pm.test('exactly one upstream call, with the model and n unchanged', function () { pm.expect(images, JSON.stringify(calls)).to.have.length(1); var sent = JSON.parse(images[0].body); pm.expect(sent.model, images[0].body).to.equal('meta/muse-image-1.0'); pm.expect(sent.n, images[0].body).to.equal(2); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "pp_vercel/microsoft/mai-image-2.6 /v1/images/generations with x-bf-passthrough-extra-params: true delivers a nested extra field to the upstream unchanged (vercel image channel)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "tk-key-vercel-fixture"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"pp_vercel/microsoft/mai-image-2.6\", \"prompt\": \"a lighthouse at dusk\", \"x_fixture_upstream_pin\": {\"gateway\": {\"fixture_pin\": [\"fixture-upstream\"]}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('vercel image channel setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function imageCalls(calls) { return calls.filter(function (c) { return c.path === '/pp/vercel/v1/images/generations'; }); }",
+                  "// Vercel's field that pins a request to one upstream was not found (TXE-6438 open question). This case pins the channel",
+                  "// it will travel on: a nested top-level object outside the unified structure reaches the upstream body unchanged. When the",
+                  "// field is known, rename x_fixture_upstream_pin to it.",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('usage.output_images equals the length of data', function () { pm.expect(body.data, pm.response.text()).to.have.length(1); pm.expect(body.usage && body.usage.output_images, pm.response.text()).to.equal(1); });",
+                  "wire(function (calls) { var images = imageCalls(calls); pm.test('one upstream call carries the extra field unchanged', function () { pm.expect(images, JSON.stringify(calls)).to.have.length(1); var sent = JSON.parse(images[0].body); pm.expect(sent.x_fixture_upstream_pin, images[0].body).to.deep.equal({\"gateway\": {\"fixture_pin\": [\"fixture-upstream\"]}}); pm.expect(sent.model, images[0].body).to.equal('microsoft/mai-image-2.6'); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] pp_vercel/meta/muse-image-1.0 /v1/images/edits is refused before any upstream call: image_edit is not in allowed_requests (vercel image channel)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "tk-key-vercel-fixture"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "pp_vercel/meta/muse-image-1.0",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "make the background a deep blue",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('vercel image channel setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function imageCalls(calls) { return calls.filter(function (c) { return c.path === '/pp/vercel/v1/images/generations'; }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('the error names the unsupported operation', function () { pm.expect(body.error && body.error.code, pm.response.text()).to.equal('unsupported_operation'); });",
+                  "wire(function (calls) { pm.test('nothing reached the upstream', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(0); }); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
