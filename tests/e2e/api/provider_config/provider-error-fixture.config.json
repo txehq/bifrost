@@ -117,6 +117,24 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "perplexity": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "sonar-search-usage",
+            "sonar-invalid-model"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "openrouter": {
       "keys": [
         {

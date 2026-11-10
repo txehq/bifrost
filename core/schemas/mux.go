@@ -1148,6 +1148,7 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 		}
 	}
 	usage.ToolUsage = cu.ToolUsage.DeepCopy()
+	usage.SearchContextSize = cu.SearchContextSize
 	usage.BillingTurns = cu.BillingTurns
 
 	return usage
@@ -1189,6 +1190,7 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 		}
 	}
 	usage.ToolUsage = ru.ToolUsage.DeepCopy()
+	usage.SearchContextSize = ru.SearchContextSize
 	usage.BillingTurns = ru.BillingTurns
 
 	return usage

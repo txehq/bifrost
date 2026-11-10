@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -1969,9 +1970,10 @@ type BifrostLLMUsage struct {
 	// ProcessedTokens carries the token counts the vendor processed when it reports them
 	// apart from the billed counts in PromptTokens/CompletionTokens (Cohere's usage.tokens
 	// next to usage.billed_units). Absent when the vendor reports only one set (contract C5).
-	ProcessedTokens *ProcessedTokenUsage `json:"processed_tokens,omitempty"`
-	ToolUsage       *ToolUsage           `json:"tool_usage,omitempty"`
-	Cost            *BifrostCost         `json:"cost,omitempty"` // Only for the providers which support cost calculation
+	ProcessedTokens   *ProcessedTokenUsage `json:"processed_tokens,omitempty"`
+	ToolUsage         *ToolUsage           `json:"tool_usage,omitempty"`
+	SearchContextSize *string              `json:"search_context_size,omitempty"` // Search context tier the vendor billed ("low" | "medium" | "high")
+	Cost              *BifrostCost         `json:"cost,omitempty"`                // Only for the providers which support cost calculation
 	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
 	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
 	// Laya decision usage: state token accounting and truncation, reported on /v1/decisions.
@@ -2333,6 +2335,11 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 	merged.ProcessedTokens = base.ProcessedTokens.Add(add.ProcessedTokens)
 	merged.ToolUsage = base.ToolUsage.Add(add.ToolUsage)
 	merged.Cost = base.Cost.Add(add.Cost)
+	// A tier is not a quantity: the later call's report stands, else the earlier one's.
+	merged.SearchContextSize = add.SearchContextSize
+	if merged.SearchContextSize == nil {
+		merged.SearchContextSize = base.SearchContextSize
+	}
 
 	return merged
 }
@@ -2360,12 +2367,13 @@ func (p *ProcessedTokenUsage) Add(o *ProcessedTokenUsage) *ProcessedTokenUsage {
 
 // ToolUsage counts provider-hosted (server-side) tool calls billed per call.
 // Every counter is filled only when the vendor reports a non-zero count (contract C5).
-// A new counter must also be handled in Add and DeepCopy;
+// A new counter or field must also be handled in Add and DeepCopy;
 // TestToolUsageAddDeepCopyCoverEveryField fails when it is not.
 type ToolUsage struct {
-	WebSearch     *WebSearchToolUsage `json:"web_search,omitempty"`
-	WebFetch      *ToolRequestUsage   `json:"web_fetch,omitempty"`      // Anthropic server_tool_use.web_fetch_requests
-	CodeExecution *ToolRequestUsage   `json:"code_execution,omitempty"` // Anthropic server_tool_use.code_execution_requests
+	WebSearch     *WebSearchToolUsage         `json:"web_search,omitempty"`
+	WebFetch      *ToolRequestUsage           `json:"web_fetch,omitempty"`      // Anthropic server_tool_use.web_fetch_requests
+	CodeExecution *ToolRequestUsage           `json:"code_execution,omitempty"` // Anthropic server_tool_use.code_execution_requests
+	PerTool       map[string]ToolRequestUsage `json:"per_tool,omitempty"`       // Call count per vendor tool name, as the vendor reported it
 }
 
 // ToolRequestUsage counts billable calls of one server-side tool.
@@ -2391,7 +2399,26 @@ func (t *ToolUsage) Add(o *ToolUsage) *ToolUsage {
 		WebSearch:     addToolRequestUsage(t.WebSearch, o.WebSearch),
 		WebFetch:      addToolRequestUsage(t.WebFetch, o.WebFetch),
 		CodeExecution: addToolRequestUsage(t.CodeExecution, o.CodeExecution),
+		PerTool:       addPerToolUsage(t.PerTool, o.PerTool),
 	}
+}
+
+// addPerToolUsage returns an owned tool-by-tool sum; nil when neither side reports per-tool
+// counts, so a usage without them never allocates a map. ToolUsage.PerTool holds every tool the
+// vendor reported a call count for, keyed by the vendor's own tool name (Perplexity's
+// usage.tool_calls_details.<tool>.invocation). It is filled only from the vendor's report
+// (fork, TXE-6549, contract C5).
+func addPerToolUsage(a, b map[string]ToolRequestUsage) map[string]ToolRequestUsage {
+	if len(a) == 0 && len(b) == 0 {
+		return nil
+	}
+	sum := make(map[string]ToolRequestUsage, len(a)+len(b))
+	for _, side := range [2]map[string]ToolRequestUsage{a, b} {
+		for tool, count := range side {
+			sum[tool] = ToolRequestUsage{NumRequests: sum[tool].NumRequests + count.NumRequests}
+		}
+	}
+	return sum
 }
 
 // addToolRequestUsage returns an owned sum; nil when the tool is absent on both sides.
@@ -2421,6 +2448,7 @@ func (t *ToolUsage) DeepCopy() *ToolUsage {
 			*p = &v
 		}
 	}
+	c.PerTool = maps.Clone(t.PerTool)
 	return &c
 }
 
@@ -2737,6 +2765,10 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 	c.InputImages = copyIntPtr(u.InputImages)
 	c.ProcessedTokens = u.ProcessedTokens.Add(nil)
 	c.ToolUsage = u.ToolUsage.DeepCopy()
+	if u.SearchContextSize != nil {
+		scs := *u.SearchContextSize
+		c.SearchContextSize = &scs
+	}
 	c.Cost = u.Cost.DeepCopy()
 	if u.CostInUsdTicks != nil {
 		t := *u.CostInUsdTicks

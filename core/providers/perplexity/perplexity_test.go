@@ -865,3 +865,303 @@ func TestDecision_PassesPerplexityErrorsThrough(t *testing.T) {
 		t.Errorf("message = %+v, want Perplexity's", bifrostErr.Error)
 	}
 }
+
+// perplexityUsageSample is a Sonar usage object with every billing field Perplexity reports on
+// chat: the search context tier behind the per-request fee, the search and per-tool call counts,
+// citation and reasoning tokens, and its flat cost (TXE-6549).
+const perplexityUsageSample = `{"prompt_tokens":12,"completion_tokens":40,"total_tokens":52,` +
+	`"search_context_size":"high","citation_tokens":300,"num_search_queries":3,"reasoning_tokens":8,` +
+	`"cost":{"input_tokens_cost":0.000036,"output_tokens_cost":0.0006,"reasoning_tokens_cost":0.000024,` +
+	`"citation_tokens_cost":0.0006,"search_queries_cost":0.015,"request_cost":0.014,"total_cost":0.03026},` +
+	`"tool_calls_details":{"web_search":{"invocation":3},"fetch_url":{"invocation":1}}}`
+
+func perplexityChatRequest(model string) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.Perplexity,
+		Model:    model,
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	}
+}
+
+func passthroughPostHook(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return result, bifrostErr
+}
+
+// perplexityNonStreamedUsage returns the usage of the sample served without streaming.
+func perplexityNonStreamedUsage(t *testing.T) *schemas.BifrostLLMUsage {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"pplx-1","object":"chat.completion","created":1,"model":"sonar-pro",`+
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}],`+
+			`"usage":`+perplexityUsageSample+`}`)
+	}))
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	response, bifrostErr := newTestProvider(t, server.URL).ChatCompletion(ctx, newTestKey(), perplexityChatRequest("sonar-pro"))
+	if bifrostErr != nil {
+		t.Fatalf("chat completion failed: %+v", bifrostErr.Error)
+	}
+	if response.Usage == nil {
+		t.Fatal("chat completion returned no usage")
+	}
+	return response.Usage
+}
+
+// perplexityStreamServer serves the sample as a stream: a running usage on the first frame and
+// the full usage on the frame that carries finish_reason, as Perplexity sends it. extraFrames
+// are written between the two.
+func perplexityStreamServer(extraFrames ...string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		head := `{"id":"pplx-1","object":"chat.completion.chunk","created":1,"model":"sonar-pro",`
+		_, _ = fmt.Fprint(w, "data: "+head+`"choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"},"finish_reason":null}],`+
+			`"usage":{"prompt_tokens":12,"completion_tokens":1,"total_tokens":13,"search_context_size":"high"}}`+"\n\n")
+		for _, frame := range extraFrames {
+			_, _ = fmt.Fprint(w, "data: "+frame+"\n\n")
+		}
+		_, _ = fmt.Fprint(w, "data: "+head+`"choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":"stop"}],`+
+			`"usage":`+perplexityUsageSample+`}`+"\n\n"+"data: [DONE]\n\n")
+	}))
+}
+
+// TestChatCompletion_ReportsSearchContextSizeAndPerToolCounts: the vendor's search context tier
+// and every tool's call count reach the unified usage (contract C5), next to the fields the
+// conversion already carried.
+func TestChatCompletion_ReportsSearchContextSizeAndPerToolCounts(t *testing.T) {
+	usage := perplexityNonStreamedUsage(t)
+
+	if usage.SearchContextSize == nil || *usage.SearchContextSize != "high" {
+		t.Errorf("search_context_size = %v, want high", usage.SearchContextSize)
+	}
+	if usage.ToolUsage == nil {
+		t.Fatal("tool_usage is missing")
+	}
+	if usage.ToolUsage.WebSearch == nil || usage.ToolUsage.WebSearch.NumRequests != 3 {
+		t.Errorf("tool_usage.web_search = %+v, want num_requests 3", usage.ToolUsage.WebSearch)
+	}
+	wantPerTool := map[string]schemas.ToolRequestUsage{"web_search": {NumRequests: 3}, "fetch_url": {NumRequests: 1}}
+	if got := usage.ToolUsage.PerTool; len(got) != len(wantPerTool) || got["web_search"] != wantPerTool["web_search"] || got["fetch_url"] != wantPerTool["fetch_url"] {
+		t.Errorf("tool_usage.per_tool = %+v, want %+v", got, wantPerTool)
+	}
+	details := usage.CompletionTokensDetails
+	if details == nil || details.CitationTokens == nil || *details.CitationTokens != 300 ||
+		details.NumSearchQueries == nil || *details.NumSearchQueries != 3 || details.ReasoningTokens != 8 {
+		t.Errorf("completion_tokens_details = %+v, want citation 300, searches 3, reasoning 8", details)
+	}
+	if usage.Cost == nil || usage.Cost.TotalCost != 0.03026 {
+		t.Errorf("cost = %+v, want total 0.03026", usage.Cost)
+	}
+
+	out, err := schemas.Marshal(usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"search_context_size":"high"`, `"per_tool":{`, `"fetch_url":{"num_requests":1}`, `"web_search":{"num_requests":3}`} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("usage JSON lacks %s: %s", want, out)
+		}
+	}
+}
+
+// TestChatCompletion_UnreportedUsageFieldsStayEmpty: a usage with token counts only yields no
+// search context size, no tool_usage and no details (contract C5 agreement two).
+func TestChatCompletion_UnreportedUsageFieldsStayEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"pplx-1","object":"chat.completion","created":1,"model":"sonar",`+
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"Hello"},"finish_reason":"stop"}],`+
+			`"usage":{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}}`)
+	}))
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	response, bifrostErr := newTestProvider(t, server.URL).ChatCompletion(ctx, newTestKey(), perplexityChatRequest("sonar"))
+	if bifrostErr != nil {
+		t.Fatalf("chat completion failed: %+v", bifrostErr.Error)
+	}
+	out, err := schemas.Marshal(response.Usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"prompt_tokens":5,"completion_tokens":7,"total_tokens":12}`; string(out) != want {
+		t.Errorf("usage = %s, want %s", out, want)
+	}
+}
+
+// canonicalUsageJSON is the usage as the gateway serializes it, with object keys sorted: per_tool
+// is a map, and its key order on the wire is not fixed.
+func canonicalUsageJSON(t *testing.T, usage *schemas.BifrostLLMUsage) string {
+	t.Helper()
+	wire, err := schemas.Marshal(usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded any
+	if err := json.Unmarshal(wire, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	sorted, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(sorted)
+}
+
+// TestChatCompletionStream_FinalFrameUsageMatchesNonStreamed is contract C10 for Perplexity:
+// the stream's final frame carries the same usage, field for field, as the same response served
+// without streaming. The generic decode used to lose num_search_queries, citation_tokens,
+// search_context_size, the per-tool counts and every cost category but the total.
+func TestChatCompletionStream_FinalFrameUsageMatchesNonStreamed(t *testing.T) {
+	want := canonicalUsageJSON(t, perplexityNonStreamedUsage(t))
+
+	// A frame that is not JSON is skipped, as on the shared stream, and does not end the stream.
+	server := perplexityStreamServer(`{"id":"pplx-1","choices":[`)
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	stream, bifrostErr := newTestProvider(t, server.URL).ChatCompletionStream(ctx, passthroughPostHook, nil, newTestKey(), perplexityChatRequest("sonar-pro"))
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %+v", bifrostErr.Error)
+	}
+
+	var content strings.Builder
+	var final *schemas.BifrostChatResponse
+	for chunk := range stream {
+		if chunk.BifrostError != nil {
+			t.Fatalf("stream returned an error: %+v", chunk.BifrostError.Error)
+		}
+		response := chunk.BifrostChatResponse
+		if response == nil {
+			continue
+		}
+		for _, choice := range response.Choices {
+			if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil && choice.ChatStreamResponseChoice.Delta.Content != nil {
+				content.WriteString(*choice.ChatStreamResponseChoice.Delta.Content)
+			}
+		}
+		if response.Usage != nil {
+			final = response
+		}
+	}
+	if content.String() != "Hello" {
+		t.Errorf("streamed content = %q, want Hello", content.String())
+	}
+	if final == nil {
+		t.Fatal("stream emitted no frame with usage")
+	}
+	got := canonicalUsageJSON(t, final.Usage)
+	if got != want {
+		t.Fatalf("streamed final usage differs from non-streamed\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// TestResponsesStream_SonarFallbackKeepsSearchUsage: a Sonar model on the Responses route is
+// served by the chat stream; its response.completed usage keeps the same search fields.
+func TestResponsesStream_SonarFallbackKeepsSearchUsage(t *testing.T) {
+	server := perplexityStreamServer()
+	defer server.Close()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	stream, bifrostErr := newTestProvider(t, server.URL).ResponsesStream(ctx, passthroughPostHook, nil, newTestKey(), &schemas.BifrostResponsesRequest{
+		Provider: schemas.Perplexity,
+		Model:    "sonar-pro",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %+v", bifrostErr.Error)
+	}
+
+	var usage *schemas.ResponsesResponseUsage
+	for chunk := range stream {
+		if chunk.BifrostError != nil {
+			t.Fatalf("stream returned an error: %+v", chunk.BifrostError.Error)
+		}
+		if event := chunk.BifrostResponsesStreamResponse; event != nil && event.Response != nil && event.Response.Usage != nil {
+			usage = event.Response.Usage
+		}
+	}
+	if usage == nil {
+		t.Fatal("stream emitted no terminal event with usage")
+	}
+	if usage.SearchContextSize == nil || *usage.SearchContextSize != "high" {
+		t.Errorf("search_context_size = %v, want high", usage.SearchContextSize)
+	}
+	if usage.ToolUsage == nil || usage.ToolUsage.WebSearch == nil || usage.ToolUsage.WebSearch.NumRequests != 3 ||
+		usage.ToolUsage.PerTool["fetch_url"].NumRequests != 1 || usage.ToolUsage.PerTool["web_search"].NumRequests != 3 {
+		t.Errorf("tool_usage = %+v, want web_search 3 and per_tool web_search 3, fetch_url 1", usage.ToolUsage)
+	}
+	if d := usage.OutputTokensDetails; d == nil || d.CitationTokens == nil || *d.CitationTokens != 300 || d.NumSearchQueries == nil || *d.NumSearchQueries != 3 {
+		t.Errorf("output_tokens_details = %+v, want citation 300, searches 3", d)
+	}
+	if usage.Cost == nil || usage.Cost.TotalCost != 0.03026 || usage.Cost.OutputCostDetails == nil || usage.Cost.OutputCostDetails.SearchQueriesCost != 0.015 {
+		t.Errorf("cost = %+v, want total 0.03026 with search queries 0.015", usage.Cost)
+	}
+	if usage.InputTokens != 12 || usage.OutputTokens != 40 || usage.TotalTokens != 52 {
+		t.Errorf("tokens = %d/%d/%d, want 12/40/52", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+	}
+}
+
+// TestChat_ErrorsCarryErrorType is contract C6 for Perplexity: an error on either chat path
+// keeps the vendor's status and resolves to a published extra_fields.error_type. Perplexity
+// sends error.code as a number and answers a bad key with an HTML page.
+func TestChat_ErrorsCarryErrorType(t *testing.T) {
+	cases := []struct {
+		name        string
+		status      int
+		contentType string
+		body        string
+		wantType    schemas.ErrorType
+		wantCode    string
+	}{
+		{"invalid model", 400, "application/json", `{"error":{"message":"Invalid model 'sonar-x'. Permitted models can be found in the documentation at https://docs.perplexity.ai/guides/model-cards.","type":"invalid_model","code":400}}`, schemas.ErrorTypeCallerInvalidRequest, "400"},
+		{"bad key, HTML body", 401, "text/html", `<html><head><title>401 Authorization Required</title></head><body><center><h1>401 Authorization Required</h1></center></body></html>`, schemas.ErrorTypeProviderAuthFailed, ""},
+		{"rate limit", 429, "application/json", `{"error":{"message":"Rate limit exceeded","type":"rate_limit_exceeded","code":429}}`, schemas.ErrorTypeProviderRateLimited, "429"},
+		{"vendor failure", 500, "application/json", `{"error":{"message":"Internal server error","type":"internal_server_error","code":500}}`, schemas.ErrorTypeProviderServerError, "500"},
+	}
+	for _, tc := range cases {
+		for _, streaming := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%v", tc.name, streaming), func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", tc.contentType)
+					w.WriteHeader(tc.status)
+					_, _ = fmt.Fprint(w, tc.body)
+				}))
+				defer server.Close()
+
+				provider := newTestProvider(t, server.URL)
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				var bifrostErr *schemas.BifrostError
+				requestType := schemas.ChatCompletionRequest
+				if streaming {
+					requestType = schemas.ChatCompletionStreamRequest
+					_, bifrostErr = provider.ChatCompletionStream(ctx, passthroughPostHook, nil, newTestKey(), perplexityChatRequest("sonar-x"))
+				} else {
+					_, bifrostErr = provider.ChatCompletion(ctx, newTestKey(), perplexityChatRequest("sonar-x"))
+				}
+				if bifrostErr == nil {
+					t.Fatal("expected an error")
+				}
+				if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tc.status {
+					t.Errorf("status = %v, want %d", bifrostErr.StatusCode, tc.status)
+				}
+				if tc.wantCode != "" && (bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != tc.wantCode) {
+					t.Errorf("error = %+v, want code %s", bifrostErr.Error, tc.wantCode)
+				}
+				// Core fills the request type when the request settles; the transport then
+				// resolves the error type on the copy it sends.
+				bifrostErr.ExtraFields.RequestType = requestType
+				if got := bifrostErr.ResolveErrorType(); got != tc.wantType || bifrostErr.ExtraFields.ErrorType != tc.wantType {
+					t.Errorf("error_type = %q (extra_fields %q), want %q", got, bifrostErr.ExtraFields.ErrorType, tc.wantType)
+				}
+			})
+		}
+	}
+}

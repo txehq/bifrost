@@ -672,6 +672,35 @@ const probeStreamGaps = (spec, reply) => {
 // An OpenAI video task as GET /v1/videos/{id} returns it while the task waits in the queue.
 const videoTask = (id) => ({ id, object: "video", model: "sora-2", status: "queued", progress: 0, created_at: 1762700000, seconds: "4", size: "720x1280" });
 
+// Perplexity chat, TXE-6549 (contract C5, C10, C6). Perplexity serves chat on /chat/completions (no /v1) and
+// reports its billing quantities in its own usage shape: the search context tier, top-level citation_tokens and
+// num_search_queries, a flat cost, and a per-tool call report. Streamed, every frame carries a usage and the
+// frame with the finish reason carries the full one. sonar-search-usage answers with that usage;
+// sonar-invalid-model with Perplexity's 400, whose error.code is a number.
+const perplexityUsage = {
+	prompt_tokens: 12, completion_tokens: 40, total_tokens: 52,
+	search_context_size: "high", citation_tokens: 300, num_search_queries: 3, reasoning_tokens: 8,
+	cost: { input_tokens_cost: 0.000036, output_tokens_cost: 0.0006, reasoning_tokens_cost: 0.000024, citation_tokens_cost: 0.0006, search_queries_cost: 0.015, request_cost: 0.014, total_cost: 0.03026 },
+	tool_calls_details: { web_search: { invocation: 3 }, fetch_url: { invocation: 1 } },
+};
+const perplexityChat = (model, stream) => {
+	if (model === "sonar-invalid-model") {
+		return { status: 400, body: JSON.stringify({ error: { message: "Invalid model 'sonar-invalid-model'. Permitted models can be found in the documentation at https://docs.perplexity.ai/guides/model-cards.", type: "invalid_model", code: 400 } }) };
+	}
+	if (model !== "sonar-search-usage") {
+		return { status: 404, body: errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found") };
+	}
+	const base = { id: "pplx-sonar-search-usage", created: 1, model, citations: ["https://example.com/a"] };
+	if (!stream) {
+		return { status: 200, body: JSON.stringify({ ...base, object: "chat.completion", choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }], usage: perplexityUsage }) };
+	}
+	const frames = [
+		{ ...base, object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "hel" }, finish_reason: null }], usage: { prompt_tokens: 12, completion_tokens: 1, total_tokens: 13, search_context_size: "high" } },
+		{ ...base, object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: "lo" }, finish_reason: "stop" }], usage: perplexityUsage },
+	];
+	return { status: 200, stream: frames.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n" };
+};
+
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
 const hits = Object.create(null);
 // The exact bytes the last streamed answer for a model wrote, keyed by the request's model; GET /__sent?model=
@@ -859,7 +888,7 @@ const server = http.createServer((req, res) => {
 		countHit("batch.retrieve");
 		return send(200, {}, JSON.stringify(fixtureBatch("in_progress")));
 	}
-	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions" && path !== "/mcp" && path !== "/v1/decisions" && path !== "/alpha/decisions" && path !== "/v1/audio/speech" && path !== "/v1/completions")) {
+	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions" && path !== "/mcp" && path !== "/v1/decisions" && path !== "/alpha/decisions" && path !== "/v1/audio/speech" && path !== "/v1/completions" && path !== "/chat/completions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
 	}
 	const chunks = [];
@@ -920,6 +949,14 @@ const server = http.createServer((req, res) => {
 		const auth = req.headers.authorization;
 		if (auth !== undefined && auth !== "Bearer test-key") {
 			return send(401, {}, errorBody("Incorrect API key provided", "invalid_request_error", "invalid_api_key"));
+		}
+		if (path === "/chat/completions") {
+			const answer = perplexityChat(model, parsed.stream === true);
+			if (answer.stream !== undefined) {
+				res.writeHead(answer.status, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+				return res.end(answer.stream);
+			}
+			return send(answer.status, {}, answer.body);
 		}
 		// Speech, TXE-6522: an error behaviour answers with its status before any frame; upstream-gapped streams its
 		// deltas GAP_MS apart when stream_format is "sse" and otherwise answers with audio bytes.

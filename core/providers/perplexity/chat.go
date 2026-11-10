@@ -294,44 +294,8 @@ func (response *PerplexityChatResponse) ToBifrostChatResponse(model string) *sch
 		bifrostResponse.Choices = response.Choices
 	}
 
-	// Convert usage information with all available fields
-	if response.Usage != nil {
-		usage := &schemas.BifrostLLMUsage{
-			PromptTokens:     response.Usage.PromptTokens,
-			CompletionTokens: response.Usage.CompletionTokens,
-			TotalTokens:      response.Usage.TotalTokens,
-		}
-
-		// Map Perplexity-specific usage details to CompletionTokensDetails
-		completionDetails := &schemas.ChatCompletionTokensDetails{}
-		hasCompletionDetails := false
-
-		if response.Usage.CitationTokens != nil {
-			completionDetails.CitationTokens = response.Usage.CitationTokens
-			hasCompletionDetails = true
-		}
-
-		if response.Usage.NumSearchQueries != nil {
-			completionDetails.NumSearchQueries = response.Usage.NumSearchQueries
-			hasCompletionDetails = true
-			usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *response.Usage.NumSearchQueries}}
-		}
-
-		if response.Usage.ReasoningTokens != nil {
-			completionDetails.ReasoningTokens = *response.Usage.ReasoningTokens
-			hasCompletionDetails = true
-		}
-
-		if hasCompletionDetails {
-			usage.CompletionTokensDetails = completionDetails
-		}
-
-		if response.Usage.Cost != nil {
-			usage.Cost = response.Usage.Cost.toBifrostCost()
-		}
-
-		bifrostResponse.Usage = usage
-	}
+	// Usage goes through the same conversion as every streamed frame.
+	bifrostResponse.Usage = response.Usage.toBifrostUsage()
 
 	return bifrostResponse
 }

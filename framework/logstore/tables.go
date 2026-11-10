@@ -3231,14 +3231,15 @@ type NodeUsageAggregate struct {
 }
 
 // serializeTokenUsage stores the web search count as completion_tokens_details.num_search_queries
-// (which is how existing logs store it); every other tool counter stays in tool_usage.
+// (which is how existing logs store it); every other tool counter, and the per-tool map, stays in
+// tool_usage.
 func serializeTokenUsage(u *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage {
 	if u.ToolUsage == nil {
 		return u
 	}
 	stored := *u
 	stored.ToolUsage = nil
-	if rest := *u.ToolUsage; rest.WebFetch != nil || rest.CodeExecution != nil {
+	if rest := *u.ToolUsage; rest.WebFetch != nil || rest.CodeExecution != nil || len(rest.PerTool) > 0 {
 		rest.WebSearch = nil
 		stored.ToolUsage = &rest
 	}

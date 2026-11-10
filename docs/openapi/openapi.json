@@ -7722,6 +7722,10 @@
                         "total_tokens": {
                           "type": "integer"
                         },
+                        "search_context_size": {
+                          "type": "string",
+                          "description": "Search context tier the provider reports it billed the request at (\"low\", \"medium\" or \"high\"). Present only when the provider reports it.\n"
+                        },
                         "cost": {
                           "$ref": "#/components/schemas/BifrostCost"
                         }
@@ -19296,6 +19300,10 @@
                         },
                         "total_tokens": {
                           "type": "integer"
+                        },
+                        "search_context_size": {
+                          "type": "string",
+                          "description": "Search context tier the provider reports it billed the request at (\"low\", \"medium\" or \"high\"). Present only when the provider reports it.\n"
                         },
                         "cost": {
                           "$ref": "#/components/schemas/BifrostCost"
@@ -113541,8 +113549,25 @@
                     "description": "Number of billable code execution calls."
                   }
                 }
+              },
+              "per_tool": {
+                "type": "object",
+                "description": "Call count of every tool the provider reported one for, keyed by the provider's own tool name (Perplexity usage.tool_calls_details.<tool>.invocation). Present only when the provider reports per-tool counts.\n",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "num_requests": {
+                      "type": "integer",
+                      "description": "Number of calls of this tool."
+                    }
+                  }
+                }
               }
             }
+          },
+          "search_context_size": {
+            "type": "string",
+            "description": "Search context tier the provider reports it billed the request at (\"low\", \"medium\" or \"high\"); Perplexity prices its per-request search fee by it. Present only when the provider reports it.\n"
           },
           "cost": {
             "$ref": "#/components/schemas/BifrostCost"
@@ -117742,6 +117767,10 @@
               "total_tokens": {
                 "type": "integer"
               },
+              "search_context_size": {
+                "type": "string",
+                "description": "Search context tier the provider reports it billed the request at (\"low\", \"medium\" or \"high\"). Present only when the provider reports it.\n"
+              },
               "cost": {
                 "$ref": "#/components/schemas/BifrostCost"
               }
@@ -117777,6 +117806,19 @@
                   "num_requests": {
                     "type": "integer",
                     "description": "Number of billable code execution calls."
+                  }
+                }
+              },
+              "per_tool": {
+                "type": "object",
+                "description": "Call count of every tool the provider reported one for, keyed by the provider's own tool name (Perplexity usage.tool_calls_details.<tool>.invocation). Present only when the provider reports per-tool counts.\n",
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "num_requests": {
+                      "type": "integer",
+                      "description": "Number of calls of this tool."
+                    }
                   }
                 }
               }

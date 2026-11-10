@@ -87,14 +87,74 @@ type PerplexityChatResponse struct {
 }
 
 type Usage struct {
-	PromptTokens      int             `json:"prompt_tokens"`
-	CompletionTokens  int             `json:"completion_tokens"`
-	TotalTokens       int             `json:"total_tokens"`
-	SearchContextSize *string         `json:"search_context_size,omitempty"`
-	CitationTokens    *int            `json:"citation_tokens,omitempty"`
-	NumSearchQueries  *int            `json:"num_search_queries,omitempty"`
-	ReasoningTokens   *int            `json:"reasoning_tokens,omitempty"`
-	Cost              *perplexityCost `json:"cost,omitempty"`
+	PromptTokens      int                                  `json:"prompt_tokens"`
+	CompletionTokens  int                                  `json:"completion_tokens"`
+	TotalTokens       int                                  `json:"total_tokens"`
+	SearchContextSize *string                              `json:"search_context_size,omitempty"`
+	CitationTokens    *int                                 `json:"citation_tokens,omitempty"`
+	NumSearchQueries  *int                                 `json:"num_search_queries,omitempty"`
+	ReasoningTokens   *int                                 `json:"reasoning_tokens,omitempty"`
+	Cost              *perplexityCost                      `json:"cost,omitempty"`
+	ToolCallsDetails  map[string]PerplexityToolCallDetails `json:"tool_calls_details,omitempty"` // Per-tool call report, keyed by Perplexity's tool name
+}
+
+// PerplexityToolCallDetails is one entry of usage.tool_calls_details. Only the call count is read.
+type PerplexityToolCallDetails struct {
+	Invocation int `json:"invocation"`
+}
+
+// toBifrostUsage maps Perplexity's usage onto the unified usage. The non-streamed response and
+// every streamed frame go through it, so a stream's final usage equals the non-streamed one
+// (contract C10). A field Perplexity did not report stays unset (contract C5).
+// SearchContextSize is the tier Perplexity says it billed the request at; its per-request search
+// fee is priced by it, so it is copied from the vendor's usage, never from the request (TXE-6549).
+func (u *Usage) toBifrostUsage() *schemas.BifrostLLMUsage {
+	if u == nil {
+		return nil
+	}
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:      u.PromptTokens,
+		CompletionTokens:  u.CompletionTokens,
+		TotalTokens:       u.TotalTokens,
+		SearchContextSize: u.SearchContextSize,
+		Cost:              u.Cost.toBifrostCost(),
+	}
+
+	if u.CitationTokens != nil || u.NumSearchQueries != nil || u.ReasoningTokens != nil {
+		details := &schemas.ChatCompletionTokensDetails{
+			CitationTokens:   u.CitationTokens,
+			NumSearchQueries: u.NumSearchQueries,
+		}
+		if u.ReasoningTokens != nil {
+			details.ReasoningTokens = *u.ReasoningTokens
+		}
+		usage.CompletionTokensDetails = details
+	}
+
+	if u.NumSearchQueries != nil || len(u.ToolCallsDetails) > 0 {
+		toolUsage := &schemas.ToolUsage{}
+		if u.NumSearchQueries != nil {
+			toolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: *u.NumSearchQueries}
+		}
+		if len(u.ToolCallsDetails) > 0 {
+			toolUsage.PerTool = make(map[string]schemas.ToolRequestUsage, len(u.ToolCallsDetails))
+			for tool, details := range u.ToolCallsDetails {
+				toolUsage.PerTool[tool] = schemas.ToolRequestUsage{NumRequests: details.Invocation}
+			}
+		}
+		usage.ToolUsage = toolUsage
+	}
+
+	return usage
+}
+
+// PerplexityStreamFrame decodes one streamed chat.completion.chunk. Everything but usage decodes straight
+// into the embedded unified response, as the shared OpenAI-compatible stream does; usage is
+// shadowed so Perplexity's own usage shape is read instead of the unified one, which has no
+// place for its top-level citation_tokens and num_search_queries or its flat cost names.
+type PerplexityStreamFrame struct {
+	*schemas.BifrostChatResponse
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 // perplexityCost is Perplexity's raw cost object, a flat per-category shape. It

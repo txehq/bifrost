@@ -150,6 +150,25 @@ make run-provider-harness-test PROVIDER=openai FEATURE="streamed frames timing" 
 Set `providerErrorFixtureUrl` when the fixture is not on `http://127.0.0.1:8791`. The probe passes the
 harness's `admin_auth_header` to the gateway when one is set.
 
+## Perplexity search usage
+
+Folder 333 pins TXE-6549 (contract C5, C10, C6) for Perplexity chat. The config's `perplexity` entry points at
+the fixture, which answers `/chat/completions` (Perplexity's path has no `/v1`) in Perplexity's own usage
+shape: `search_context_size`, top-level `citation_tokens` and `num_search_queries`, a flat `cost`, and
+`tool_calls_details.<tool>.invocation`. Streamed, every frame carries a usage and the frame with the finish
+reason carries the full one. `sonar-search-usage` gets that answer; rows 1-3 assert the unified usage
+(`search_context_size`, `tool_usage.web_search`, `tool_usage.per_tool`, the token details and the cost) on the
+non-streamed response and on the final frame of a stream on `/v1/chat/completions` and
+`/openai/v1/chat/completions`; rows 4-5 assert it on `/v1/responses`, which serves Sonar models from chat.
+`sonar-invalid-model` gets Perplexity's 400, whose `error.code` is a number; rows 6-7 assert the status is
+kept, streamed or not, with `extra_fields.error_type` `caller_invalid_request`.
+
+Start the fixture and the isolated gateway as for content-length truncation above, then:
+
+```bash
+make run-provider-harness-test PROVIDER=perplexity FEATURE="perplexity search usage" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
+
 ## Provider 5xx failover and 429 retry-hint propagation
 
 These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live
