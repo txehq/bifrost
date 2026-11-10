@@ -570,6 +570,18 @@ Only `framework/vectorstore` needs any of this. Every other framework package pa
 
 ## Testing
 
+### Run local tests through `scripts/test-offline.sh`
+
+A provider's live suite runs whenever its key variable is set, and it calls the vendor for real. Run every local `go test`, harness run and test script through the offline runner, which removes every credential variable from the command's environment:
+
+```bash
+scripts/test-offline.sh go test ./...                 # in core/, transports/ or a plugin
+scripts/test-offline.sh make run-provider-harness-test PROVIDER=openai ...
+scripts/test-offline.sh --list                        # names it would remove; never values
+```
+
+It removes `*_API_KEY`, `*SECRET*`, `*_TOKEN`, `AWS_*`, `AZURE_*` and `GOOGLE_APPLICATION_CREDENTIALS` (the full list is in the script's header). It behaves the same whatever shell calls it, so live suites skip and nothing leaves the machine. Never strip keys by hand. The common idiom `U=$(env | grep … | sed 's/^/-u /'); env $U go test` passes one argument in zsh, which does not word-split an unquoted parameter, so every key stayed set and a live suite called the vendor (TXE-7053). A run that is meant to be live (`make test-core` with real keys) is the only exception, and it is a deliberate, paid choice. `tests/test_offline_test.sh`, which runs in the API collection offline suites, fails when any credential reaches the child.
+
 ### Every fix and every change ships with regression tests
 
 Any issue fix or code change lands together with regression tests that pin the new behavior. This applies to every issue type (bug, feature, refactor) and every layer, not only bug fixes in `core/`:
