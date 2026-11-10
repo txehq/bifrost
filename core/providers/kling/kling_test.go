@@ -817,6 +817,45 @@ func TestKlingVideoDownload(t *testing.T) {
 	}
 }
 
+// A download's task query is part of the download: a custom provider that allows only
+// video_download can download, and its video_download path override, not the retrieve one,
+// replaces the query's path.
+func TestKlingVideoDownloadIsGatedAndRoutedAsADownload(t *testing.T) {
+	videoProxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write([]byte("mp4data"))
+	})
+	provider, captured := newMockKling(t, &schemas.ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{
+		CustomProviderKey: "tkp_kling_dl",
+		BaseProviderType:  schemas.Kling,
+		AllowedRequests:   &schemas.AllowedRequests{VideoDownload: true},
+		RequestPathOverrides: map[schemas.RequestType]string{
+			schemas.VideoDownloadRequest: "/download-tasks",
+			schemas.VideoRetrieveRequest: "/retrieve-tasks",
+		},
+	}}, http.StatusOK, succeededBody)
+	ctx := testContext(t)
+	ctx.SetValue(schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(videoProxy.URL)})
+
+	downloaded, bifrostErr := provider.VideoDownload(ctx, testKey(), &schemas.BifrostVideoDownloadRequest{Provider: "tkp_kling_dl", ID: klingTaskID + ":tkp_kling_dl"})
+	if bifrostErr != nil {
+		t.Fatalf("VideoDownload error: %+v", bifrostErr.Error)
+	}
+	if string(downloaded.Content) != "mp4data" {
+		t.Errorf("content = %q", downloaded.Content)
+	}
+	if req := onlyRequest(t, captured); req.path != "/download-tasks" || req.query != "task_ids="+klingTaskID {
+		t.Errorf("query = %s?%s, want the video_download override", req.path, req.query)
+	}
+
+	if _, bifrostErr := provider.VideoRetrieve(testContext(t), testKey(), &schemas.BifrostVideoRetrieveRequest{Provider: "tkp_kling_dl", ID: klingTaskID}); bifrostErr == nil {
+		t.Error("video retrieve ran on a custom provider that allows only downloads")
+	}
+	if n := len(captured()); n != 1 {
+		t.Errorf("upstream calls = %d, want 1", n)
+	}
+}
+
 // Kling has no cancel API and no delete API: the provider does not implement VideoCanceller, so
 // core answers the cancel route 400 provider_cancel_unsupported before a key is chosen, and the
 // delete is unsupported. Neither reaches Kling.

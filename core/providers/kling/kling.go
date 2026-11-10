@@ -162,7 +162,7 @@ func (provider *KlingProvider) VideoRetrieve(ctx *schemas.BifrostContext, key sc
 	if request.IDType == schemas.VideoIDTypeClientReference {
 		return provider.VideoRetrieveByClientReferenceID(ctx, key, request)
 	}
-	return provider.queryTask(ctx, key, klingTaskIDsParam, "task id", request.ID)
+	return provider.queryTask(ctx, key, schemas.VideoRetrieveRequest, klingTaskIDsParam, "task id", request.ID)
 }
 
 // VideoRetrieveByClientReferenceID queries a task by the client_reference_id it was created with
@@ -170,14 +170,16 @@ func (provider *KlingProvider) VideoRetrieve(ctx *schemas.BifrostContext, key sc
 // task object as VideoRetrieve, whose id is Kling's task id. It implements
 // schemas.VideoClientReferenceRetriever.
 func (provider *KlingProvider) VideoRetrieveByClientReferenceID(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	return provider.queryTask(ctx, key, klingExternalTaskIDsParam, "client_reference_id", request.ID)
+	return provider.queryTask(ctx, key, schemas.VideoRetrieveRequest, klingExternalTaskIDsParam, "client_reference_id", request.ID)
 }
 
-// queryTask is the query by either id. param is Kling's query parameter and idKind names the id
-// in error messages. Kling's parameter takes a comma-separated batch; this route queries one
+// queryTask is the query by either id. requestType is the operation the query serves, a retrieve
+// or a download: it decides which allowed_requests entry gates the call and which
+// request_path_overrides entry replaces the path, so a custom provider that allows only downloads
+// can download. param is Kling's query parameter and idKind names the id in error messages. Kling's parameter takes a comma-separated batch; this route queries one
 // task, so an id with a comma is refused instead of being read as several.
-func (provider *KlingProvider) queryTask(ctx *schemas.BifrostContext, key schemas.Key, param, idKind, rawID string) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	if bifrostErr := providerUtils.CheckOperationAllowed(schemas.Kling, provider.customProviderConfig, schemas.VideoRetrieveRequest); bifrostErr != nil {
+func (provider *KlingProvider) queryTask(ctx *schemas.BifrostContext, key schemas.Key, requestType schemas.RequestType, param, idKind, rawID string) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	if bifrostErr := providerUtils.CheckOperationAllowed(schemas.Kling, provider.customProviderConfig, requestType); bifrostErr != nil {
 		return nil, bifrostErr
 	}
 	providerName := provider.GetProviderKey()
@@ -195,7 +197,7 @@ func (provider *KlingProvider) queryTask(ctx *schemas.BifrostContext, key schema
 	}
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-	requestURL := provider.requestURL(ctx, klingTasksPath, schemas.VideoRetrieveRequest) + "?" + param + "=" + url.QueryEscape(id)
+	requestURL := provider.requestURL(ctx, klingTasksPath, requestType) + "?" + param + "=" + url.QueryEscape(id)
 	body, latency, bifrostErr := provider.do(ctx, key, fasthttp.MethodGet, requestURL, nil, false, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -324,7 +326,7 @@ func (provider *KlingProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 	if bifrostErr := providerUtils.CheckOperationAllowed(schemas.Kling, provider.customProviderConfig, schemas.VideoDownloadRequest); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	task, bifrostErr := provider.queryTask(ctx, key, klingTaskIDsParam, "task id", request.ID)
+	task, bifrostErr := provider.queryTask(ctx, key, schemas.VideoDownloadRequest, klingTaskIDsParam, "task id", request.ID)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
