@@ -312784,6 +312784,76 @@
           ]
         }
       ]
+    },
+    {
+      "name": "471. A GET after a provider's pooled connections went stale is answered, not failed (stale connection get)",
+      "description": "Local fixture regression for TXE-7071, no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs and an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, then run with providerErrorFixture=1 (and providerErrorFixtureUrl when the fixture is not on http://127.0.0.1:8791). The row calls the fixture's POST /__probe/stale-get, which sends six concurrent task queries through the gateway, has the vendor side close all six connections after answering, and then sends one more task query. Before the change that last GET failed with 502: a GET only had the stale-connection retry, which gives up after three dead sockets.",
+      "item": [
+        {
+          "name": "471.1 openai /v1/videos/{id} task query after six pooled vendor connections were closed answers 200 from one vendor call (stale connection get)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
+                  "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
+                  "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
+                  "pm.variables.set('staleProbeHeaders', JSON.stringify(auth ? { Authorization: auth } : {}));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'probe failed: ' + pm.response.text()).to.equal(200);",
+                  "var r = pm.response.json().data[0];",
+                  "pm.test('six concurrent task queries were answered, each on its own vendor connection', function () {",
+                  "  pm.expect(r.burst, JSON.stringify(r)).to.deep.equal([200, 200, 200, 200, 200, 200]);",
+                  "  pm.expect(r.connections, JSON.stringify(r)).to.equal(6);",
+                  "});",
+                  "pm.test('the task query sent after the vendor closed those connections answers 200', function () {",
+                  "  pm.expect(r.after.status, JSON.stringify(r)).to.equal(200);",
+                  "  pm.expect(JSON.parse(r.after.body).status, JSON.stringify(r)).to.equal('completed');",
+                  "});",
+                  "pm.test('that query reached the vendor once', function () {",
+                  "  pm.expect(r.after_upstream_requests, JSON.stringify(r)).to.equal(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"base_url\": \"{{baseUrl}}\",\n  \"hold_path\": \"/v1/videos/video_stale_hold:openai\",\n  \"path\": \"/v1/videos/video_stale_after:openai\",\n  \"headers\": {{staleProbeHeaders}},\n  \"count\": 6\n}"
+            },
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__probe/stale-get",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__probe",
+                "stale-get"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

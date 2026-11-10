@@ -831,6 +831,53 @@ const drain = (req, then) => {
 };
 
 
+// Stale pooled connections, TXE-7071. GET /v1/videos/video_stale_hold is held until staleHold.want requests
+// are waiting, so the gateway needs one upstream connection for each. Then every one is answered and, 50 ms
+// later, its socket is closed with no Connection: close header, which leaves the gateway's pool for this
+// provider holding that many dead connections. GET /v1/videos/video_stale_after is answered at once and counted.
+// POST /__probe/stale-get is the client: {base_url, hold_path, path, headers?, count?}. It sends count
+// concurrent GETs of hold_path to the gateway, waits for the closes to land, then sends one GET of path.
+// Answers {data: [{burst: [status...], connections, after: {status, body}, after_upstream_requests}]}:
+// connections is how many upstream sockets carried the burst, after_upstream_requests how many times the last
+// GET reached this fixture. A gateway that fails a GET on a pool of dead connections answers after.status 502.
+const STALE_HOLD_ID = "video_stale_hold";
+const STALE_AFTER_ID = "video_stale_after";
+const staleHold = { want: 0, waiting: [], timer: null, afterHits: 0 };
+const flushStaleHold = () => {
+	clearTimeout(staleHold.timer);
+	staleHold.want = 0;
+	const body = JSON.stringify(fixtureVideo("completed", 100));
+	for (const { req, res } of staleHold.waiting.splice(0)) {
+		res.writeHead(200, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) });
+		res.end(body, () => setTimeout(() => req.socket.destroy(), 50));
+	}
+};
+const probeStaleGet = (spec, reply) => {
+	const count = Math.min(Math.max(Number(spec.count) || 6, 1), 32);
+	const get = (path) => new Promise((resolve) => {
+		const request = http.request(new URL(String(path || ""), String(spec.base_url || "")), { method: "GET", headers: spec.headers || {}, agent: false }, (gw) => {
+			const chunks = [];
+			gw.on("data", (c) => chunks.push(c));
+			gw.on("end", () => resolve({ status: gw.statusCode, body: Buffer.concat(chunks).toString("utf8").slice(0, 600) }));
+		});
+		request.on("error", (err) => resolve({ status: 0, body: `probe could not reach the gateway: ${err.message}` }));
+		request.end();
+	});
+	flushStaleHold();
+	staleHold.want = count;
+	staleHold.afterHits = 0;
+	const sockets = new Set();
+	staleHold.sockets = sockets;
+	// A gateway that never opens count connections must not hang the probe.
+	staleHold.timer = setTimeout(flushStaleHold, 8000);
+	Promise.all(Array.from({ length: count }, () => get(spec.hold_path))).then((burst) => {
+		// The closes land 50 ms after each answer; give the gateway's sockets time to see them.
+		setTimeout(() => {
+			get(spec.path).then((after) => reply(200, { data: [{ burst: burst.map((b) => b.status), connections: sockets.size, after, after_upstream_requests: staleHold.afterHits }] }));
+		}, 500);
+	});
+};
+
 const server = http.createServer((req, res) => {
 	const path = new URL(req.url, "http://localhost").pathname;
 	const send = (status, headers, body) => {
@@ -910,6 +957,17 @@ const server = http.createServer((req, res) => {
 		});
 		return undefined;
 	}
+	if (req.method === "POST" && path === "/__probe/stale-get") {
+		const body = [];
+		req.on("data", (c) => body.push(c));
+		req.on("end", () => {
+			let spec;
+			try { spec = JSON.parse(Buffer.concat(body).toString("utf8")); }
+			catch { return send(400, {}, errorBody("invalid JSON", "invalid_request_error", "invalid_json")); }
+			probeStaleGet(spec, (status, answer) => send(status, {}, JSON.stringify(answer)));
+		});
+		return undefined;
+	}
 	if (req.method === "POST" && path === "/__probe/stream-gaps") {
 		const body = [];
 		req.on("data", (c) => body.push(c));
@@ -958,6 +1016,20 @@ const server = http.createServer((req, res) => {
 	}
 	// Video, file and batch endpoints in OpenAI shape (folder 329, TXE-6519); see fixtureVideo above.
 	const videoMatch = path.match(/^\/v1\/videos\/([^/]+)(\/content)?$/);
+	// The stale-connection probe's two tasks (TXE-7071); see staleHold above.
+	if (req.method === "GET" && videoMatch && !videoMatch[2] && videoMatch[1] === STALE_HOLD_ID) {
+		if (staleHold.want === 0) {
+			return send(200, {}, JSON.stringify(fixtureVideo("completed", 100)));
+		}
+		staleHold.sockets.add(req.socket);
+		staleHold.waiting.push({ req, res });
+		if (staleHold.waiting.length >= staleHold.want) flushStaleHold();
+		return undefined;
+	}
+	if (req.method === "GET" && videoMatch && !videoMatch[2] && videoMatch[1] === STALE_AFTER_ID) {
+		staleHold.afterHits++;
+		return send(200, {}, JSON.stringify(fixtureVideo("completed", 100)));
+	}
 	if (req.method === "POST" && path === "/v1/videos") {
 		return drain(req, () => {
 			countHit("video.create");

@@ -150,6 +150,29 @@ make run-provider-harness-test PROVIDER=openai FEATURE="streamed frames timing" 
 Set `providerErrorFixtureUrl` when the fixture is not on `http://127.0.0.1:8791`. The probe passes the
 harness's `admin_auth_header` to the gateway when one is set.
 
+## A GET after pooled connections went stale
+
+Folder 471 pins TXE-7071: a GET the gateway sends to a provider must not fail because the provider closed
+the connections the gateway kept in its pool. A GET may be resent, but the resend gives up after three dead
+connections, and a pool holds more than that after any burst (startup model discovery leaves four for a
+provider with two keys). The row makes no live provider call.
+
+A harness request cannot put a known number of dead connections in the gateway's pool, so the row calls the
+fixture's `POST /__probe/stale-get`. The fixture sends six concurrent `GET /v1/videos/video_stale_hold` task
+queries through the gateway and holds them until all six have arrived, so the gateway opens six connections.
+It answers them, closes each connection 50 ms later without a `Connection: close` header, and then sends one
+`GET /v1/videos/video_stale_after`. That last query must answer 200 and reach the fixture once.
+
+Start the fixture and the isolated gateway as for content-length truncation above (ports 8790, 8791 and
+8799), then:
+
+```bash
+make run-provider-harness-test PROVIDER=openai FEATURE="stale connection get" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
+
+Set `providerErrorFixtureUrl` when the fixture is not on `http://127.0.0.1:8791`. The probe passes the
+harness's `admin_auth_header` to the gateway when one is set.
+
 ## Perplexity search usage
 
 Folder 333 pins TXE-6549 (contract C5, C10, C6) for Perplexity chat. The config's `perplexity` entry points at
