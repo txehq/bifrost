@@ -26,6 +26,8 @@ const (
 	BatchEndpointCompletions     BatchEndpoint = "/v1/completions"
 	BatchEndpointResponses       BatchEndpoint = "/v1/responses"
 	BatchEndpointMessages        BatchEndpoint = "/v1/messages" // Anthropic
+	BatchEndpointImageGeneration BatchEndpoint = "/v1/images/generations"
+	BatchEndpointImageEdit       BatchEndpoint = "/v1/images/edits"
 )
 
 // BatchRequestItem represents a single request in a batch (for inline requests).
@@ -398,9 +400,26 @@ func (request *BifrostBatchResultsRequest) GetRawRequestBody() []byte {
 	return request.RawRequestBody
 }
 
+// BatchResultStatus is the outcome of one batch line, the same four values for every
+// provider.
+type BatchResultStatus string
+
+const (
+	BatchResultStatusSucceeded BatchResultStatus = "succeeded"
+	BatchResultStatusFailed    BatchResultStatus = "failed"
+	BatchResultStatusExpired   BatchResultStatus = "expired"
+	BatchResultStatusCancelled BatchResultStatus = "cancelled"
+)
+
 // BatchResultItem represents a single result from a batch request.
 type BatchResultItem struct {
+	// ID is the vendor's own id for the line (OpenAI and Azure: batch_req_...), unchanged.
+	ID       string `json:"id,omitempty"`
 	CustomID string `json:"custom_id"`
+
+	// Status is the line's outcome. A succeeded line carries Response; a failed, expired
+	// or cancelled one carries the vendor's Error. Empty on providers that do not set it.
+	Status BatchResultStatus `json:"status,omitempty"`
 
 	// Result data (varies by request type)
 	Response *BatchResultResponse `json:"response,omitempty"` // OpenAI format
@@ -412,6 +431,9 @@ type BatchResultItem struct {
 
 // Failed reports whether the result item represents a failed per-request batch result.
 func (i BatchResultItem) Failed() bool {
+	if i.Status != "" && i.Status != BatchResultStatusSucceeded {
+		return true
+	}
 	if i.Error != nil {
 		return true
 	}
@@ -470,4 +492,44 @@ type BifrostBatchResultsResponse struct {
 	NextCursor *string `json:"next_cursor,omitempty"`
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// UnifyBatchResultUsage rewrites body["usage"] of a succeeded batch line into the unified
+// usage of the line's operation, the shape the sync route returns for the same request, so
+// one billing map reads both. The vendor's usage is decoded into the operation's unified
+// type and encoded back; a body without usage, or an endpoint with no unified usage type,
+// is left as it is. The body is modified in place and returned.
+func UnifyBatchResultUsage(endpoint BatchEndpoint, body map[string]any) map[string]any {
+	raw, ok := body["usage"]
+	if !ok || raw == nil {
+		return body
+	}
+	var unified any
+	switch endpoint {
+	case BatchEndpointChatCompletions, BatchEndpointCompletions, BatchEndpointEmbeddings:
+		unified = &BifrostLLMUsage{}
+	case BatchEndpointResponses:
+		unified = &ResponsesResponseUsage{}
+	case BatchEndpointImageGeneration, BatchEndpointImageEdit:
+		unified = &ImageUsage{}
+	default:
+		return body
+	}
+	encoded, err := Marshal(raw)
+	if err != nil {
+		return body
+	}
+	if err := Unmarshal(encoded, unified); err != nil {
+		return body
+	}
+	encoded, err = Marshal(unified)
+	if err != nil {
+		return body
+	}
+	var usage map[string]any
+	if err := Unmarshal(encoded, &usage); err != nil {
+		return body
+	}
+	body["usage"] = usage
+	return body
 }
