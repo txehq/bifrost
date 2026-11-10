@@ -101,7 +101,10 @@ const (
 // 24 kHz, mono.
 const speechPCMMimeType = "audio/L16;codec=pcm;rate=24000"
 
-// speechMaxOutputTokensParam is the unified speech field for the output-token bound.
+// speechMaxOutputTokensParam is the unified speech field for the output-token bound
+// (schemas.SpeechParameters.MaxOutputTokens, contract C4): the most output tokens the vendor
+// may generate for the speech. Gemini takes it as generationConfig.maxOutputTokens, and its TTS
+// models bill audio output by the token. It is sent as given, never clamped.
 const speechMaxOutputTokensParam = "max_output_tokens"
 
 // SpeechUnifiedFields are the unified speech fields (the JSON names of

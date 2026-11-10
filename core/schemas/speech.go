@@ -63,10 +63,7 @@ type SpeechParameters struct {
 	OptimizeStreamingLatency        *bool                                  `json:"optimize_streaming_latency,omitempty"`
 	WithTimestamps                  *bool                                  `json:"with_timestamps,omitempty"` // Returns character-level timing information
 
-	// Fork (TXE-6539, contract C4): the bound on the output tokens the vendor may generate for
-	// this speech (Gemini generationConfig.maxOutputTokens; its TTS models bill audio output by
-	// the token). Sent as given, never clamped.
-	MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
+	MaxOutputTokens *int `json:"max_output_tokens,omitempty"` // Fork (TXE-6539): output-token bound, sent as given
 
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
@@ -190,12 +187,11 @@ type SpeechUsageOutputTokenDetails struct {
 }
 
 type SpeechUsage struct {
-	InputTokens       int                           `json:"input_tokens"`
-	InputChars        int                           `json:"input_chars,omitempty"`
-	InputTokenDetails *SpeechUsageInputTokenDetails `json:"input_token_details,omitempty"`
-	OutputTokens      int                           `json:"output_tokens"`
-	// OutputTokenDetails is nil when the vendor reported no breakdown (fork, TXE-6539).
-	OutputTokenDetails *SpeechUsageOutputTokenDetails `json:"output_token_details,omitempty"`
+	InputTokens        int                            `json:"input_tokens"`
+	InputChars         int                            `json:"input_chars,omitempty"`
+	InputTokenDetails  *SpeechUsageInputTokenDetails  `json:"input_token_details,omitempty"`
+	OutputTokens       int                            `json:"output_tokens"`
+	OutputTokenDetails *SpeechUsageOutputTokenDetails `json:"output_token_details,omitempty"` // Fork (TXE-6539): nil when the vendor reported none
 	TotalTokens        int                            `json:"total_tokens"`
 	// AudioSeconds is the generated audio duration in seconds. Populated for
 	// duration-based audio models (e.g. ElevenLabs sound effects) so per-second
