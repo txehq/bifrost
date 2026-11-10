@@ -2,6 +2,9 @@ package xai_test
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -111,4 +114,347 @@ func TestXAIModelRetrieve(t *testing.T) {
 	_, bifrostErr = provider.ModelRetrieve(ctx, key, &schemas.BifrostModelRetrieveRequest{Model: "../models"})
 	require.NotNil(t, bifrostErr)
 	require.Equal(t, schemas.Ptr(http.StatusBadRequest), bifrostErr.StatusCode)
+}
+
+// xaiImageRecorder is a fake xAI image API: it records every request and answers with the
+// status and body the test sets.
+type xaiImageRecorder struct {
+	mu       sync.Mutex
+	paths    []string
+	bodies   []map[string]any
+	ctypes   []string
+	status   int
+	response string
+}
+
+func (r *xaiImageRecorder) serve(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		raw, _ := io.ReadAll(req.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		r.mu.Lock()
+		r.paths = append(r.paths, req.URL.Path)
+		r.bodies = append(r.bodies, body)
+		r.ctypes = append(r.ctypes, req.Header.Get("Content-Type"))
+		status, response := r.status, r.response
+		r.mu.Unlock()
+		if status == 0 {
+			status = http.StatusOK
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(response))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func (r *xaiImageRecorder) calls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.paths)
+}
+
+func (r *xaiImageRecorder) last(t *testing.T) (string, map[string]any, string) {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	require.NotEmpty(t, r.paths, "no upstream call was made")
+	n := len(r.paths) - 1
+	return r.paths[n], r.bodies[n], r.ctypes[n]
+}
+
+func newXAIImageProvider(t *testing.T, baseURL string) *xai.XAIProvider {
+	t.Helper()
+	provider, err := xai.NewXAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: baseURL, DefaultRequestTimeoutInSeconds: 30},
+	}, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+	return provider
+}
+
+func xaiImageCtx() *schemas.BifrostContext {
+	return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+}
+
+var xaiImageKey = schemas.Key{Value: *schemas.NewSecretVar("xai-test")}
+
+// A recorded two-image generation: the shape of xAI's REST reference, with the usage
+// fields it lists (cost_in_usd_ticks is required; one USD cent is 100,000,000 ticks).
+const xaiRecordedImageResponse = `{"created":1762761600,"data":[{"url":"https://imgen.x.ai/a.jpg","mime_type":"image/jpeg"},{"url":"https://imgen.x.ai/b.jpg","mime_type":"image/jpeg"}],"usage":{"cost_in_usd_ticks":800000000,"input_tokens":12,"output_tokens":0,"total_tokens":12}}`
+
+func requireUnsupportedParameter(t *testing.T, bifrostErr *schemas.BifrostError, param string) {
+	t.Helper()
+	require.NotNil(t, bifrostErr)
+	require.Equal(t, schemas.Ptr(http.StatusBadRequest), bifrostErr.StatusCode)
+	require.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+	require.NotNil(t, bifrostErr.Error)
+	require.Equal(t, param, bifrostErr.Error.Param)
+}
+
+// requireVendorUsage runs BackfillParams, as core does on every image response, because
+// usage.output_images is written there (TXE-6438) from the images the provider left in data.
+func requireVendorUsage(t *testing.T, response *schemas.BifrostImageGenerationResponse, outputImages int) {
+	t.Helper()
+	require.NotNil(t, response)
+	response.BackfillParams(nil)
+	usage := response.Usage
+	require.NotNil(t, usage)
+	require.Equal(t, schemas.Ptr(outputImages), usage.OutputImages)
+	require.Equal(t, &schemas.VendorCost{Amount: 800000000, Unit: schemas.VendorCostUnitUSDTicks}, usage.VendorCost)
+	require.NotNil(t, usage.Cost, "the provider cost is still derived from cost_in_usd_ticks")
+	require.InDelta(t, 0.08, usage.Cost.TotalCost, 1e-12)
+}
+
+// B4, B6 (contract C4, C5): quality and the unified resolution tier reach xAI on
+// grok-imagine-image-2.0, and the recorded usage yields vendor_cost and output_images.
+func TestXAIImageGenerationDeliversQualityAndVendorUsage(t *testing.T) {
+	t.Parallel()
+	recorder := &xaiImageRecorder{response: xaiRecordedImageResponse}
+	provider := newXAIImageProvider(t, recorder.serve(t).URL)
+
+	response, bifrostErr := provider.ImageGeneration(xaiImageCtx(), xaiImageKey, &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.XAI,
+		Model:    "grok-imagine-image-2.0",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse"},
+		Params: &schemas.ImageGenerationParameters{
+			N:           schemas.Ptr(2),
+			Quality:     schemas.Ptr("medium"),
+			Resolution:  "2K",
+			AspectRatio: schemas.Ptr("16:9"),
+			ExtraParams: map[string]interface{}{"resolution": "2K"},
+		},
+	})
+	require.Nil(t, bifrostErr)
+
+	path, body, ctype := recorder.last(t)
+	require.Equal(t, "/v1/images/generations", path)
+	require.Equal(t, "application/json", ctype)
+	require.Equal(t, "medium", body["quality"])
+	require.Equal(t, "2k", body["resolution"])
+	require.Equal(t, "16:9", body["aspect_ratio"])
+	require.EqualValues(t, 2, body["n"])
+
+	require.Len(t, response.Data, 2)
+	require.Nil(t, response.ContentFilter)
+	requireVendorUsage(t, response, 2)
+}
+
+// B4, B5 (contract C2–C4): quality on a model without it, deferred, and a resolution tier
+// xAI does not offer are refused with caller_unsupported_parameter before any upstream call.
+func TestXAIImageGenerationRefusesUndeliverableFields(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		model  string
+		params *schemas.ImageGenerationParameters
+		param  string
+	}{
+		{"quality on grok-imagine-image", "grok-imagine-image", &schemas.ImageGenerationParameters{Quality: schemas.Ptr("low")}, "quality"},
+		{"deferred", "grok-imagine-image-2.0", &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"deferred": true}}, "deferred"},
+		{"resolution 4K", "grok-imagine-image-2.0", &schemas.ImageGenerationParameters{Resolution: "4K"}, "resolution"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			recorder := &xaiImageRecorder{response: xaiRecordedImageResponse}
+			provider := newXAIImageProvider(t, recorder.serve(t).URL)
+			_, bifrostErr := provider.ImageGeneration(xaiImageCtx(), xaiImageKey, &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.XAI,
+				Model:    tc.model,
+				Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse"},
+				Params:   tc.params,
+			})
+			requireUnsupportedParameter(t, bifrostErr, tc.param)
+			require.Zero(t, recorder.calls(), "a refused field must make no upstream call")
+		})
+	}
+}
+
+// B9 (contract C4, C5): an edit is a JSON POST to /v1/images/edits; a URL source is sent
+// unchanged, bytes become a data URI, and the response carries the same usage as generation.
+func TestXAIImageEditSendsJSONSources(t *testing.T) {
+	t.Parallel()
+	pngBytes := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00")
+
+	t.Run("one URL source goes in image", func(t *testing.T) {
+		t.Parallel()
+		recorder := &xaiImageRecorder{response: xaiRecordedImageResponse}
+		provider := newXAIImageProvider(t, recorder.serve(t).URL)
+		response, bifrostErr := provider.ImageEdit(xaiImageCtx(), xaiImageKey, &schemas.BifrostImageEditRequest{
+			Provider: schemas.XAI,
+			Model:    "grok-imagine-image-2.0",
+			Input: &schemas.ImageEditInput{
+				Prompt: "make it night",
+				Images: []schemas.ImageInput{{URL: "https://example.com/day.png"}},
+			},
+			Params: &schemas.ImageEditParameters{Quality: schemas.Ptr("medium"), N: schemas.Ptr(2)},
+		})
+		require.Nil(t, bifrostErr)
+
+		path, body, ctype := recorder.last(t)
+		require.Equal(t, "/v1/images/edits", path)
+		require.Equal(t, "application/json", ctype)
+		require.Equal(t, "grok-imagine-image-2.0", body["model"])
+		require.Equal(t, "make it night", body["prompt"])
+		require.Equal(t, map[string]any{"url": "https://example.com/day.png", "type": "image_url"}, body["image"])
+		require.NotContains(t, body, "images")
+		require.Equal(t, "medium", body["quality"])
+
+		require.Len(t, response.Data, 2)
+		requireVendorUsage(t, response, 2)
+	})
+
+	t.Run("several sources, bytes as a data URI, go in images", func(t *testing.T) {
+		t.Parallel()
+		recorder := &xaiImageRecorder{response: xaiRecordedImageResponse}
+		provider := newXAIImageProvider(t, recorder.serve(t).URL)
+		dataURI := "data:image/jpeg;base64,/9j/4AAQ"
+		_, bifrostErr := provider.ImageEdit(xaiImageCtx(), xaiImageKey, &schemas.BifrostImageEditRequest{
+			Provider: schemas.XAI,
+			Model:    "grok-imagine-image",
+			Input: &schemas.ImageEditInput{
+				Prompt: "put <IMAGE_0> beside <IMAGE_1>",
+				Images: []schemas.ImageInput{{Image: pngBytes}, {URL: dataURI}},
+			},
+		})
+		require.Nil(t, bifrostErr)
+
+		_, body, _ := recorder.last(t)
+		require.NotContains(t, body, "image")
+		require.Equal(t, []any{
+			map[string]any{"url": "data:image/png;base64," + base64.StdEncoding.EncodeToString(pngBytes), "type": "image_url"},
+			map[string]any{"url": dataURI, "type": "image_url"},
+		}, body["images"])
+	})
+}
+
+// B9, B5 (contract C4): an edit refuses, before any upstream call, the price-affecting
+// fields xAI's edit endpoint has no counterpart for, quality on a model without it, and
+// deferred.
+func TestXAIImageEditRefusesUndeliverableFields(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		model  string
+		params *schemas.ImageEditParameters
+		param  string
+	}{
+		{"size", "grok-imagine-image-2.0", &schemas.ImageEditParameters{Size: schemas.Ptr("1024x1024")}, "size"},
+		{"mask", "grok-imagine-image-2.0", &schemas.ImageEditParameters{Mask: []byte("mask")}, "mask"},
+		{"output_format", "grok-imagine-image-2.0", &schemas.ImageEditParameters{OutputFormat: schemas.Ptr("png")}, "output_format"},
+		{"quality on grok-imagine-image", "grok-imagine-image", &schemas.ImageEditParameters{Quality: schemas.Ptr("low")}, "quality"},
+		{"deferred", "grok-imagine-image-2.0", &schemas.ImageEditParameters{ExtraParams: map[string]interface{}{"deferred": true}}, "deferred"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			recorder := &xaiImageRecorder{response: xaiRecordedImageResponse}
+			provider := newXAIImageProvider(t, recorder.serve(t).URL)
+			_, bifrostErr := provider.ImageEdit(xaiImageCtx(), xaiImageKey, &schemas.BifrostImageEditRequest{
+				Provider: schemas.XAI,
+				Model:    tc.model,
+				Input: &schemas.ImageEditInput{
+					Prompt: "make it night",
+					Images: []schemas.ImageInput{{URL: "https://example.com/day.png"}},
+				},
+				Params: tc.params,
+			})
+			requireUnsupportedParameter(t, bifrostErr, tc.param)
+			require.Zero(t, recorder.calls(), "a refused field must make no upstream call")
+		})
+	}
+}
+
+// B7 (contract C6 convention three): an image xAI marks respect_moderation: false takes no
+// slot in data and is counted in content_filter; output_images counts only what was
+// delivered. xAI gives no reason code, so reasons stays empty.
+func TestXAIImageBlockedImagesFillContentFilter(t *testing.T) {
+	t.Parallel()
+
+	t.Run("partly blocked", func(t *testing.T) {
+		t.Parallel()
+		recorder := &xaiImageRecorder{response: `{"data":[{"url":"https://imgen.x.ai/a.jpg","respect_moderation":true},{"url":"https://imgen.x.ai/b.jpg","respect_moderation":false}],"usage":{"cost_in_usd_ticks":800000000}}`}
+		provider := newXAIImageProvider(t, recorder.serve(t).URL)
+		response, bifrostErr := provider.ImageGeneration(xaiImageCtx(), xaiImageKey, &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.XAI, Model: "grok-imagine-image",
+			Input:  &schemas.ImageGenerationInput{Prompt: "p"},
+			Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(2)},
+		})
+		require.Nil(t, bifrostErr)
+		require.Len(t, response.Data, 1)
+		require.Equal(t, "https://imgen.x.ai/a.jpg", response.Data[0].URL)
+		require.Equal(t, &schemas.ContentFilterInfo{FilteredCount: 1}, response.ContentFilter)
+		requireVendorUsage(t, response, 1)
+	})
+
+	t.Run("all blocked on an edit", func(t *testing.T) {
+		t.Parallel()
+		recorder := &xaiImageRecorder{response: `{"data":[{"respect_moderation":false},{"respect_moderation":false}],"usage":{"cost_in_usd_ticks":800000000}}`}
+		provider := newXAIImageProvider(t, recorder.serve(t).URL)
+		response, bifrostErr := provider.ImageEdit(xaiImageCtx(), xaiImageKey, &schemas.BifrostImageEditRequest{
+			Provider: schemas.XAI, Model: "grok-imagine-image",
+			Input:  &schemas.ImageEditInput{Prompt: "p", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}},
+			Params: &schemas.ImageEditParameters{N: schemas.Ptr(2)},
+		})
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, response.Data)
+		require.Empty(t, response.Data)
+		require.Equal(t, &schemas.ContentFilterInfo{FilteredCount: 2}, response.ContentFilter)
+		requireVendorUsage(t, response, 0)
+
+		out, err := json.Marshal(response)
+		require.NoError(t, err)
+		require.Contains(t, string(out), `"data":[]`)
+		require.Contains(t, string(out), `"content_filter":{"filtered_count":2}`)
+	})
+}
+
+// B8, B10 (contract C6): a vendor error recognised as a content block keeps the vendor's
+// status and is declared caller_content_filtered, on generation and edit, in xAI's own
+// error shape and in the OpenAI envelope; any other vendor error is not.
+func TestXAIImageErrorsMarkContentBlocks(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		status   int
+		body     string
+		edit     bool
+		filtered bool
+		message  string
+	}{
+		{"xAI shape 400 on generation", http.StatusBadRequest, `{"code":"content_policy_violation","error":"Generated image rejected by content moderation."}`, false, true, "Generated image rejected by content moderation."},
+		{"xAI shape 403 on edit", http.StatusForbidden, `{"code":"content_policy_violation","error":"Generated image rejected by content moderation."}`, true, true, "Generated image rejected by content moderation."},
+		{"OpenAI envelope on edit", http.StatusBadRequest, `{"error":{"message":"blocked","type":"invalid_request_error","code":"moderation_blocked","param":null}}`, true, true, "blocked"},
+		{"other error", http.StatusUnprocessableEntity, `{"code":"Client specified an invalid argument","error":"prompt is required"}`, false, false, "prompt is required"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			recorder := &xaiImageRecorder{status: tc.status, response: tc.body}
+			provider := newXAIImageProvider(t, recorder.serve(t).URL)
+			var bifrostErr *schemas.BifrostError
+			if tc.edit {
+				_, bifrostErr = provider.ImageEdit(xaiImageCtx(), xaiImageKey, &schemas.BifrostImageEditRequest{
+					Provider: schemas.XAI, Model: "grok-imagine-image",
+					Input: &schemas.ImageEditInput{Prompt: "p", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}},
+				})
+			} else {
+				_, bifrostErr = provider.ImageGeneration(xaiImageCtx(), xaiImageKey, &schemas.BifrostImageGenerationRequest{
+					Provider: schemas.XAI, Model: "grok-imagine-image",
+					Input: &schemas.ImageGenerationInput{Prompt: "p"},
+				})
+			}
+			require.NotNil(t, bifrostErr)
+			require.Equal(t, 1, recorder.calls())
+			require.Equal(t, schemas.Ptr(tc.status), bifrostErr.StatusCode, "the vendor status is kept")
+			require.Equal(t, tc.message, bifrostErr.Error.Message)
+			if tc.filtered {
+				require.Equal(t, schemas.ErrorTypeCallerContentFiltered, bifrostErr.ExtraFields.ErrorType)
+			} else {
+				require.NotEqual(t, schemas.ErrorTypeCallerContentFiltered, bifrostErr.ExtraFields.ErrorType)
+			}
+		})
+	}
 }

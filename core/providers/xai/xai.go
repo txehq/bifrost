@@ -341,36 +341,9 @@ func (provider *XAIProvider) TranscriptionStream(ctx *schemas.BifrostContext, po
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
-// ImageGeneration performs an image generation request to the xAI API.
-func (provider *XAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	response, bifrostErr := openai.HandleOpenAIImageGenerationRequest(
-		ctx,
-		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/images/generations"),
-		request,
-		key,
-		provider.networkConfig.ExtraHeaders,
-		nil,
-		provider.GetProviderKey(),
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		provider.logger,
-	)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	response.Usage.NormalizeProviderCost()
-	return response, nil
-}
-
 // ImageGenerationStream is not supported by the xAI provider.
 func (provider *XAIProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
-}
-
-// ImageEdit is not supported by the xAI provider.
-func (provider *XAIProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditRequest, provider.GetProviderKey())
 }
 
 // ImageEditStream is not supported by the xAI provider.
