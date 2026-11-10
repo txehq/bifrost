@@ -75,6 +75,9 @@ jobs:
           chmod +x .github/workflows/scripts/validate-helm-config-fields.sh
           .github/workflows/scripts/validate-helm-config-fields.sh
 
+      - name: Validate every client setting has a chart value
+        run: python3 .github/workflows/scripts/check-helm-client-config-keys.py
+
       - name: Validate Go ↔ config.schema.json ↔ helm-chart sync (schemasync)
         run: |
           chmod +x .github/workflows/scripts/validate-schema-sync.sh
