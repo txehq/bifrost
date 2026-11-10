@@ -191,6 +191,13 @@ func TestDashScopeVideoCreateReachesEachFamilyInItsShape(t *testing.T) {
 			want:        `{"model":"wan2.6-t2v","input":{"prompt":"A paper boat","audio_url":"https://cdn.example.com/s.mp3"},"parameters":{"size":"1920*1080","shot_type":"multi"}}`,
 		},
 		{
+			name:   "an empty unified field is the field left out",
+			model:  "wan2.6-t2v",
+			input:  schemas.VideoGenerationInput{Prompt: "A paper boat"},
+			params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"resolution": "", "aspect_ratio": nil, "reference_images": []any{}, "last_frame": ""}},
+			want:   `{"model":"wan2.6-t2v","input":{"prompt":"A paper boat"}}`,
+		},
+		{
 			name:   "no parameters object when the caller sets none",
 			model:  "wan2.2-t2v-plus",
 			input:  schemas.VideoGenerationInput{Prompt: "A paper boat"},

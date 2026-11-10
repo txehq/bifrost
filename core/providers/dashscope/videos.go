@@ -162,7 +162,8 @@ func ToDashScopeVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGeneratio
 		"reference_images": len(params.ReferenceImages) > 0,
 	}
 	for _, name := range schemas.UnifiedVideoGenerationFields {
-		if _, ok := extras[name]; ok && !typedPresent[name] {
+		// An empty string or an empty list is the field left out, as it is for the typed field.
+		if value, ok := extras[name]; ok && !typedPresent[name] && !isEmptyUnifiedValue(value) {
 			return nil, unsupportedVideoParameter(name, "dashscope: %s must be a string (reference_images: an array of strings)", name)
 		}
 		delete(extras, name)
@@ -314,6 +315,21 @@ func ToDashScopeVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGeneratio
 		req.ExtraParams = extras
 	}
 	return req, nil
+}
+
+// isEmptyUnifiedValue reports whether an extra param holds nothing: null, "" or an empty list.
+func isEmptyUnifiedValue(value any) bool {
+	switch v := value.(type) {
+	case nil:
+		return true
+	case string:
+		return v == ""
+	case []any:
+		return len(v) == 0
+	case []string:
+		return len(v) == 0
+	}
+	return false
 }
 
 // wanLegacySize turns a unified size ("1280x720", or DashScope's own "1280*720") into
