@@ -76,6 +76,25 @@ func TestPrepareTranscriptionRequest_TimestampGranularities(t *testing.T) {
 	}
 }
 
+// file_format is a unified field (TranscriptionParameters.Format). The native route listed it
+// as known, which kept it out of extra params, and then never set it: a provider that needs it
+// to name headerless audio (AssemblyAI's raw PCM, TXE-6435) never saw it.
+func TestPrepareTranscriptionRequest_FileFormat(t *testing.T) {
+	req, _, err := prepareTranscriptionRequest(multipartTranscriptionCtx(t, [][2]string{
+		{"model", "assemblyai/universal-3-5-pro"},
+		{"file_format", "pcm"},
+	}), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Params.Format == nil || *req.Params.Format != "pcm" {
+		t.Fatalf("file_format = %v, want pcm", req.Params.Format)
+	}
+	if _, leaked := req.Params.ExtraParams["file_format"]; leaked {
+		t.Fatalf("file_format leaked into extra params: %+v", req.Params.ExtraParams)
+	}
+}
+
 func TestPrepareTranscriptionRequest_NoTimestampGranularities(t *testing.T) {
 	req, _, err := prepareTranscriptionRequest(multipartTranscriptionCtx(t, [][2]string{
 		{"model", "minimax/asr-1.0"},

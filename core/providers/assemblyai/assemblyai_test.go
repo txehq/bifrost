@@ -442,6 +442,25 @@ func TestAssemblyAITranscriptionExtraParamNeverReplacesAUnifiedField(t *testing.
 	}
 }
 
+// The OpenAI drop-in route has no file_format field and delivers it as an extra field: it
+// still names the audio part's Content-Type, and is not sent as a config member.
+func TestAssemblyAITranscriptionFileFormatAsExtraField(t *testing.T) {
+	provider, captured := newMockAssemblyAI(t, respondWith(http.StatusOK, "application/json", syncTranscriptBody))
+
+	request := transcriptionRequest(&schemas.TranscriptionParameters{ExtraParams: map[string]interface{}{"file_format": "pcm"}})
+	request.Input = &schemas.TranscriptionInput{File: []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06}, Filename: "blob"}
+	if _, bifrostErr := provider.Transcription(testContext(t), testKey(), request); bifrostErr != nil {
+		t.Fatalf("Transcription error: %+v", bifrostErr.Error)
+	}
+	parts, _ := multipartParts(t, captured()[0])
+	if got := parts["audio"].contentType; got != "audio/pcm" {
+		t.Errorf("audio Content-Type = %q, want audio/pcm", got)
+	}
+	if _, sent := parts["config"]; sent {
+		t.Errorf("file_format was sent as a config member: %s", parts["config"].data)
+	}
+}
+
 // A vendor error comes back with the vendor's status, its detail and title, and the
 // error_type for that status, after one call (contract C3, C6).
 func TestAssemblyAITranscriptionVendorError(t *testing.T) {

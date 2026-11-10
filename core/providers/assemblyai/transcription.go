@@ -23,6 +23,10 @@ var assemblyAITranscriptionUnifiedFields = []string{"file_format", "language", "
 // for a caller that wants its members sent exactly as written.
 const assemblyAIConfigExtraParam = "config"
 
+// assemblyAIFileFormatField is the unified file_format field's name. A route with no such
+// field of its own (the OpenAI drop-in) delivers it as an extra field.
+const assemblyAIFileFormatField = "file_format"
+
 // ToAssemblyAITranscriptionRequest resolves a Bifrost transcription request into the Sync
 // API's model header, audio part and config part.
 //
@@ -49,6 +53,10 @@ func ToAssemblyAITranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRe
 	fileFormat := ""
 	if params != nil && params.Format != nil {
 		fileFormat = *params.Format
+	} else if params != nil {
+		// The OpenAI drop-in route has no file_format of its own and hands the form field
+		// over as an extra field; it means the same thing there.
+		fileFormat, _ = params.ExtraParams[assemblyAIFileFormatField].(string)
 	}
 	req.AudioContentType = assemblyAIAudioContentType(bifrostReq.Input.File, bifrostReq.Input.Filename, fileFormat)
 	if params == nil {
@@ -89,7 +97,8 @@ func ToAssemblyAITranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRe
 		}
 	}
 	for name, value := range params.ExtraParams {
-		if name == assemblyAIConfigExtraParam {
+		if name == assemblyAIConfigExtraParam || name == assemblyAIFileFormatField {
+			// file_format names the audio part's Content-Type; it is not a config member.
 			continue
 		}
 		extraParams[name] = assemblyAIConfigValue(name, value)
