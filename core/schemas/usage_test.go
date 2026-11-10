@@ -945,3 +945,38 @@ func serializedFieldsOf(t *testing.T, body []byte) map[string]any {
 	}
 	return fields
 }
+
+// BenchmarkBifrostLLMUsageCustomDecoder measures what the custom decoder (TXE-6439) costs on the
+// response path, where every chat response and every streamed usage frame decodes one usage
+// object. "before" decodes the same bytes into the struct without the method, which is what
+// every decode did before the change; the other rows are OpenAI's usage (nested details),
+// StepFun's (top-level cached_tokens) and a token-only usage through the method.
+func BenchmarkBifrostLLMUsageCustomDecoder(b *testing.B) {
+	type plainUsage BifrostLLMUsage
+	bodies := map[string][]byte{
+		"tokens-only":      []byte(`{"prompt_tokens":591,"completion_tokens":120,"total_tokens":711}`),
+		"nested-details":   []byte(`{"prompt_tokens":591,"completion_tokens":120,"total_tokens":711,"prompt_tokens_details":{"cached_tokens":512,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":4,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}}`),
+		"top-level-cached": []byte(`{"cached_tokens":512,"prompt_tokens":591,"completion_tokens":120,"total_tokens":711}`),
+	}
+	for _, name := range []string{"tokens-only", "nested-details", "top-level-cached"} {
+		body := bodies[name]
+		b.Run("before/"+name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var u plainUsage
+				if err := Unmarshal(body, &u); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run("after/"+name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var u BifrostLLMUsage
+				if err := Unmarshal(body, &u); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

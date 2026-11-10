@@ -1609,6 +1609,10 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 // which strict OpenAI SDKs reject. The embedded pointer promotes every other
 // usage field unchanged; the shallower Cost field shadows the embedded object's
 // `cost` at marshal time.
+//
+// Response-only: the embedded pointer also promotes BifrostLLMUsage's UnmarshalJSON,
+// which fills the embedded usage and knows nothing of this Cost, so never decode into
+// an OpenAIUsage.
 type OpenAIUsage struct {
 	*schemas.BifrostLLMUsage
 	Cost *float64 `json:"cost,omitempty"`
