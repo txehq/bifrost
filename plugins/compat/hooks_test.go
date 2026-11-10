@@ -26,17 +26,17 @@ func newTestPlugin(t *testing.T, supported map[string][]string) *CompatPlugin {
 	return p
 }
 
-// newServiceTierChatRequest builds a chat request carrying service_tier plus a
+// newSeedChatRequest builds a chat request carrying seed plus a
 // param every model in these tests supports, so a mix-up between two concurrent
 // requests shows up as a difference in the reported dropped list.
-func newServiceTierChatRequest(model string) *schemas.BifrostRequest {
+func newSeedChatRequest(model string) *schemas.BifrostRequest {
 	return &schemas.BifrostRequest{
 		RequestType: schemas.ChatCompletionRequest,
 		ChatRequest: &schemas.BifrostChatRequest{
 			Provider: schemas.OpenAI,
 			Model:    model,
 			Params: &schemas.ChatParameters{
-				ServiceTier: schemas.Ptr(schemas.BifrostServiceTierPriority),
+				Seed:        schemas.Ptr(7),
 				Temperature: schemas.Ptr(0.5),
 			},
 		},
@@ -49,21 +49,20 @@ func newServiceTierChatRequest(model string) *schemas.BifrostRequest {
 // The plugin is registered once per process, so any per-request state parked on
 // the plugin struct is shared by every in-flight request: one request's
 // PreLLMHook overwrites another's list before that other request reaches
-// PostLLMHook. Callers debugging a silently scrubbed param (see the service_tier
-// drop in dropUnsupportedParams) read exactly this field, so it has to describe
+// PostLLMHook. Callers debugging a silently scrubbed param (see dropUnsupportedParams) read exactly this field, so it has to describe
 // the request it is attached to.
 func TestPluginDroppedParamsAreRequestScoped(t *testing.T) {
 	p := newTestPlugin(t, map[string][]string{
-		"tier-model":   {"service_tier", "temperature"},
-		"notier-model": {"temperature"},
+		"seed-model":   {"seed", "temperature"},
+		"noseed-model": {"temperature"},
 	})
 
 	cases := []struct {
 		model       string
 		wantDropped []string
 	}{
-		{model: "tier-model", wantDropped: nil},
-		{model: "notier-model", wantDropped: []string{"service_tier"}},
+		{model: "seed-model", wantDropped: nil},
+		{model: "noseed-model", wantDropped: []string{"seed"}},
 	}
 
 	if len(cases) != 2 {
@@ -88,7 +87,7 @@ func TestPluginDroppedParamsAreRequestScoped(t *testing.T) {
 			defer wg.Done()
 			for range iterations {
 				ctx := newTestContext()
-				_, _, preErr := p.PreLLMHook(ctx, newServiceTierChatRequest(model))
+				_, _, preErr := p.PreLLMHook(ctx, newSeedChatRequest(model))
 
 				arrived[self] <- struct{}{}
 				<-arrived[1-self]
@@ -123,10 +122,10 @@ func TestPluginDroppedParamsAreRequestScoped(t *testing.T) {
 // sequential path, so a regression in the concurrent test is not mistaken for
 // the field having stopped being populated at all.
 func TestPluginDroppedParamsSingleRequest(t *testing.T) {
-	p := newTestPlugin(t, map[string][]string{"notier-model": {"temperature"}})
+	p := newTestPlugin(t, map[string][]string{"noseed-model": {"temperature"}})
 
 	ctx := newTestContext()
-	if _, _, err := p.PreLLMHook(ctx, newServiceTierChatRequest("notier-model")); err != nil {
+	if _, _, err := p.PreLLMHook(ctx, newSeedChatRequest("noseed-model")); err != nil {
 		t.Fatalf("PreLLMHook: %v", err)
 	}
 
@@ -136,8 +135,8 @@ func TestPluginDroppedParamsSingleRequest(t *testing.T) {
 	}
 
 	got := resp.ChatResponse.ExtraFields.DroppedCompatPluginParams
-	if !slices.Contains(got, "service_tier") {
-		t.Errorf("dropped_compat_plugin_params = %v, want it to report service_tier", got)
+	if !slices.Contains(got, "seed") {
+		t.Errorf("dropped_compat_plugin_params = %v, want it to report seed", got)
 	}
 }
 
@@ -147,20 +146,20 @@ func TestPluginDroppedParamsSingleRequest(t *testing.T) {
 // attempt that drops nothing must not inherit the previous attempt's list.
 func TestPluginDroppedParamsClearedBetweenAttempts(t *testing.T) {
 	p := newTestPlugin(t, map[string][]string{
-		"notier-model": {"temperature"},
-		"tier-model":   {"service_tier", "temperature"},
+		"noseed-model": {"temperature"},
+		"seed-model":   {"seed", "temperature"},
 	})
 
 	ctx := newTestContext()
 
-	// First attempt drops service_tier.
-	if _, _, err := p.PreLLMHook(ctx, newServiceTierChatRequest("notier-model")); err != nil {
+	// First attempt drops seed.
+	if _, _, err := p.PreLLMHook(ctx, newSeedChatRequest("noseed-model")); err != nil {
 		t.Fatalf("PreLLMHook (first attempt): %v", err)
 	}
 
 	// Fallback to a model that supports every param on the request, on the same
 	// context the first attempt used.
-	if _, _, err := p.PreLLMHook(ctx, newServiceTierChatRequest("tier-model")); err != nil {
+	if _, _, err := p.PreLLMHook(ctx, newSeedChatRequest("seed-model")); err != nil {
 		t.Fatalf("PreLLMHook (fallback attempt): %v", err)
 	}
 
@@ -365,5 +364,50 @@ func TestConfigConvertDecisionToResponsesDefaultsOff(t *testing.T) {
 	}
 	if !c.ConvertDecisionToResponses {
 		t.Error("convert_decision_to_responses should be true when set")
+	}
+}
+
+// With the parameter drop on (its default), a chat request to a model whose catalog record
+// lists neither field leaves the plugin with max_completion_tokens and service_tier as
+// sent, and the response does not report them as dropped. They decide what the caller is
+// billed, so the provider delivers or refuses them (contract C4); a param that does not
+// affect the price is still dropped and reported.
+func TestPluginNeverDropsPriceAffectingChatParams(t *testing.T) {
+	p := newTestPlugin(t, map[string][]string{"record-model": {"temperature"}})
+
+	ctx := newTestContext()
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.Moonshot,
+			Model:    "record-model",
+			Params: &schemas.ChatParameters{
+				MaxCompletionTokens: schemas.Ptr(1),
+				ServiceTier:         schemas.Ptr(schemas.BifrostServiceTierFlex),
+				Seed:                schemas.Ptr(7),
+			},
+		},
+	}
+	out, _, err := p.PreLLMHook(ctx, req)
+	if err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	params := out.ChatRequest.Params
+	if params.MaxCompletionTokens == nil || *params.MaxCompletionTokens != 1 {
+		t.Fatalf("max_completion_tokens = %v, want 1 as sent", params.MaxCompletionTokens)
+	}
+	if params.ServiceTier == nil || *params.ServiceTier != schemas.BifrostServiceTierFlex {
+		t.Fatalf("service_tier = %v, want flex as sent", params.ServiceTier)
+	}
+	if params.Seed != nil {
+		t.Fatal("seed is not in the model's list and does not affect the price: it is still dropped")
+	}
+
+	resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
+	if _, _, err := p.PostLLMHook(ctx, resp, nil); err != nil {
+		t.Fatalf("PostLLMHook: %v", err)
+	}
+	if got := resp.ChatResponse.ExtraFields.DroppedCompatPluginParams; !slices.Equal(got, []string{"seed"}) {
+		t.Fatalf("dropped_compat_plugin_params = %v, want [seed]", got)
 	}
 }

@@ -144,37 +144,42 @@ func TestDropUnsupportedParams_MaxOutputTokensSurgical(t *testing.T) {
 	}
 }
 
-// TestDropUnsupportedParams_ChatMaxCompletionTokensUnchanged guards the
-// pre-existing chat-branch behaviour that the Responses fix mirrors.
-func TestDropUnsupportedParams_ChatMaxCompletionTokensUnchanged(t *testing.T) {
-	newChat := func() *schemas.BifrostRequest {
-		return &schemas.BifrostRequest{
-			RequestType: schemas.ChatCompletionRequest,
-			ChatRequest: &schemas.BifrostChatRequest{
-				Provider: schemas.OpenAI,
-				Model:    "gpt-4o-mini",
-				Params:   &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(16)},
-			},
-		}
-	}
-
-	keep := newChat()
-	dropUnsupportedParams(newTestContext(), keep, []string{"max_tokens"})
-	if keep.ChatRequest.Params.MaxCompletionTokens == nil {
-		t.Errorf("max_completion_tokens = dropped, want preserved (max_tokens supported)")
-	}
-
-	drop := newChat()
-	dropUnsupportedParams(newTestContext(), drop, []string{"temperature"})
-	if drop.ChatRequest.Params.MaxCompletionTokens != nil {
-		t.Errorf("max_completion_tokens = preserved, want dropped (no token cap supported)")
+// A chat request keeps max_completion_tokens whatever the catalog lists: it bounds
+// what the caller is billed for, so it is delivered as sent and never dropped.
+func TestDropUnsupportedParams_ChatMaxCompletionTokensIsNeverDropped(t *testing.T) {
+	for name, supported := range map[string][]string{
+		"max_tokens listed":            {"max_tokens"},
+		"max_completion_tokens listed": {"max_completion_tokens"},
+		"no token cap listed":          {"temperature"},
+		"empty list":                   {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-4o-mini",
+					Params:   &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(1), TopP: schemas.Ptr(0.5)},
+				},
+			}
+			dropped := dropUnsupportedParams(newTestContext(), req, supported)
+			if got := req.ChatRequest.Params.MaxCompletionTokens; got == nil || *got != 1 {
+				t.Fatalf("max_completion_tokens = %v, want 1 as sent", got)
+			}
+			if slices.Contains(dropped, "max_completion_tokens") {
+				t.Fatalf("dropped = %v, must not name max_completion_tokens", dropped)
+			}
+			if !slices.Contains(dropped, "top_p") {
+				t.Fatalf("dropped = %v, want top_p: other unsupported params are still dropped", dropped)
+			}
+		})
 	}
 }
 
-// TestDropUnsupportedParams_ServiceTier pins service_tier passthrough on both
-// request paths. A dropped service_tier is invisible to the caller - the
-// provider simply serves the request at its default tier and bills it as such -
-// so this guards that the param survives whenever the catalog allowlists it.
+// TestDropUnsupportedParams_ServiceTier pins service_tier on both request paths.
+// service_tier decides what the caller is billed. On chat it is never dropped: the
+// provider delivers it or refuses it with 400 caller_unsupported_parameter. On
+// Responses it survives whenever the catalog allowlists it and is dropped otherwise.
 func TestDropUnsupportedParams_ServiceTier(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -213,7 +218,7 @@ func TestDropUnsupportedParams_ServiceTier(t *testing.T) {
 			}
 
 			dropped := dropUnsupportedParams(newTestContext(), req, tt.supported)
-			assertServiceTier(t, req.ChatRequest.Params.ServiceTier, dropped, tt.wantPreserved, tt.supported)
+			assertServiceTier(t, req.ChatRequest.Params.ServiceTier, dropped, true, tt.supported)
 		})
 
 		t.Run(tt.name+"/responses", func(t *testing.T) {

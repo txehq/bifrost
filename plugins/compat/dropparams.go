@@ -53,12 +53,13 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 			params.LogProbs = nil
 			dropped = append(dropped, "logprobs")
 		}
-		// max_tokens is converted to max_completion_tokens before compat plugin's PreLLMHook is called.
-		// so if either max_tokens or max_completion_tokens is supported, we let max_completion_tokens pass through.
-		if params.MaxCompletionTokens != nil && !isSupported["max_completion_tokens"] && !isSupported["max_tokens"] {
-			params.MaxCompletionTokens = nil
-			dropped = append(dropped, "max_completion_tokens")
-		}
+		// max_completion_tokens and service_tier (below) are never dropped from a chat
+		// request, whatever the catalog lists: they decide what the caller is billed
+		// (output size, tier), so the request goes on with them as sent and the provider
+		// delivers or refuses them (openai.ChatServiceTierError returns 400
+		// caller_unsupported_parameter for a tier the model's record does not list).
+		// Dropping one here would serve and bill a different request than the caller
+		// sent, with only extra_fields.dropped_compat_plugin_params to say so.
 		if params.Metadata != nil && !isSupported["metadata"] {
 			params.Metadata = nil
 			dropped = append(dropped, "metadata")
@@ -119,10 +120,6 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 		if params.Seed != nil && !isSupported["seed"] {
 			params.Seed = nil
 			dropped = append(dropped, "seed")
-		}
-		if params.ServiceTier != nil && !isSupported["service_tier"] {
-			params.ServiceTier = nil
-			dropped = append(dropped, "service_tier")
 		}
 		if len(params.Stop) > 0 && !isSupported["stop"] {
 			params.Stop = nil
