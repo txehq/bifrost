@@ -1,6 +1,8 @@
 package schemas
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -317,4 +319,127 @@ func TestVendorCost(t *testing.T) {
 			t.Errorf("%q should not be valid", u)
 		}
 	}
+}
+
+// fillNonZero sets every settable field reachable from v to a non-zero value, allocating
+// pointers, slices and maps along the way, so a test can see which fields a copy dropped.
+func fillNonZero(t *testing.T, v reflect.Value, seed int) {
+	t.Helper()
+	fillNonZeroDepth(t, v, seed, 0)
+}
+
+func fillNonZeroDepth(t *testing.T, v reflect.Value, seed, depth int) {
+	t.Helper()
+	if depth > 4 { // recursive types (BillingTurns []BifrostLLMUsage) stop here, left zero
+		return
+	}
+	switch v.Kind() {
+	case reflect.Pointer:
+		v.Set(reflect.New(v.Type().Elem()))
+		fillNonZeroDepth(t, v.Elem(), seed, depth+1)
+	case reflect.Struct:
+		for i := 0; i < v.NumField(); i++ {
+			if v.Type().Field(i).IsExported() {
+				fillNonZeroDepth(t, v.Field(i), seed+i+1, depth+1)
+			}
+		}
+	case reflect.Slice:
+		v.Set(reflect.MakeSlice(v.Type(), 1, 1))
+		fillNonZeroDepth(t, v.Index(0), seed, depth+1)
+	case reflect.Map:
+		v.Set(reflect.MakeMap(v.Type()))
+		k := reflect.New(v.Type().Key()).Elem()
+		fillNonZeroDepth(t, k, seed, depth+1)
+		e := reflect.New(v.Type().Elem()).Elem()
+		fillNonZeroDepth(t, e, seed, depth+1)
+		v.SetMapIndex(k, e)
+	case reflect.String:
+		v.SetString("v" + string(rune('a'+seed%26)))
+	case reflect.Bool:
+		v.SetBool(true)
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		v.SetInt(int64(seed))
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		v.SetUint(uint64(seed))
+	case reflect.Float32, reflect.Float64:
+		v.SetFloat(float64(seed) + 0.5)
+	case reflect.Interface:
+		v.Set(reflect.ValueOf(seed))
+	default:
+		t.Fatalf("fillNonZero: unhandled kind %s", v.Kind())
+	}
+}
+
+// TestMergeStreamFrameCarriesEveryField is the check behind contract C10 BF21: a stream's final
+// usage must equal the non-streamed usage field for field. A frame with every field set, merged
+// into an empty accumulator, must come out whole; a field added to BifrostLLMUsage and not handled
+// in MergeStreamFrame fails here by name.
+func TestMergeStreamFrameCarriesEveryField(t *testing.T) {
+	var frame BifrostLLMUsage
+	fillNonZero(t, reflect.ValueOf(&frame).Elem(), 0)
+	frame.BillingTurns = nil // set only by AddBillingTurn, never on a vendor frame
+	frame.TotalTokens = frame.PromptTokens + frame.CompletionTokens + 1
+
+	got := &BifrostLLMUsage{}
+	got.MergeStreamFrame(&frame)
+
+	gv, fv := reflect.ValueOf(got).Elem(), reflect.ValueOf(&frame).Elem()
+	for i := 0; i < fv.NumField(); i++ {
+		name := fv.Type().Field(i).Name
+		if !reflect.DeepEqual(gv.Field(i).Interface(), fv.Field(i).Interface()) {
+			t.Errorf("MergeStreamFrame dropped or changed %s: got %#v, want %#v", name, gv.Field(i).Interface(), fv.Field(i).Interface())
+		}
+	}
+}
+
+// TestMergeStreamFrameMatchesNonStreamedUsage replays a recorded OpenAI-compatible stream with web
+// search and an xAI-style reported cost: running usage frames followed by the trailing usage frame.
+// The accumulated usage must serialise exactly like the same usage returned without streaming.
+func TestMergeStreamFrameMatchesNonStreamedUsage(t *testing.T) {
+	nonStreamed := `{"prompt_tokens":120,"prompt_tokens_details":{"cached_read_tokens":64},` +
+		`"completion_tokens":48,"completion_tokens_details":{"reasoning_tokens":12,"num_search_queries":2},` +
+		`"total_tokens":168,"tool_usage":{"web_search":{"num_requests":2}},` +
+		`"cost":{"total_cost":0.0123},"cost_in_usd_ticks":123000000}`
+	frames := []string{
+		`{"prompt_tokens":120,"completion_tokens":1,"total_tokens":121}`,
+		`{"prompt_tokens":120,"completion_tokens":30,"total_tokens":150}`,
+		nonStreamed,
+	}
+
+	acc := &BifrostLLMUsage{}
+	for _, f := range frames {
+		var u BifrostLLMUsage
+		if err := json.Unmarshal([]byte(f), &u); err != nil {
+			t.Fatal(err)
+		}
+		acc.MergeStreamFrame(&u)
+	}
+
+	var want BifrostLLMUsage
+	if err := json.Unmarshal([]byte(nonStreamed), &want); err != nil {
+		t.Fatal(err)
+	}
+	gotJSON, _ := json.Marshal(acc)
+	wantJSON, _ := json.Marshal(&want)
+	if string(gotJSON) != string(wantJSON) {
+		t.Fatalf("streamed usage differs from non-streamed\n got: %s\nwant: %s", gotJSON, wantJSON)
+	}
+}
+
+// TestMergeStreamFrameKeepsLargestTokenCounts: a later, smaller running total does not lower the
+// counts, and total_tokens never falls below prompt plus completion.
+func TestMergeStreamFrameKeepsLargestTokenCounts(t *testing.T) {
+	acc := &BifrostLLMUsage{}
+	acc.MergeStreamFrame(&BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 20, TotalTokens: 30})
+	acc.MergeStreamFrame(&BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, ToolUsage: &ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 1}}})
+	acc.MergeStreamFrame(&BifrostLLMUsage{PromptTokens: 12, CompletionTokens: 22})
+	if acc.PromptTokens != 12 || acc.CompletionTokens != 22 || acc.TotalTokens != 34 {
+		t.Fatalf("token counts = %d/%d/%d, want 12/22/34", acc.PromptTokens, acc.CompletionTokens, acc.TotalTokens)
+	}
+	if acc.ToolUsage == nil || acc.ToolUsage.WebSearch.NumRequests != 1 {
+		t.Fatalf("a frame without tool_usage cleared the earlier report: %#v", acc.ToolUsage)
+	}
+	var nilAcc *BifrostLLMUsage
+	nilAcc.MergeStreamFrame(&BifrostLLMUsage{PromptTokens: 1}) // no panic
+	acc.MergeStreamFrame(nil)                                  // no-op
 }

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 )
@@ -1918,4 +1919,120 @@ func TestChatStreamRawCaptureKeepsLargeForwardedFrame(t *testing.T) {
 			t.Errorf("%s frame appears %d times in the captured raw response; expected exactly 1", w.name, n)
 		}
 	}
+}
+
+// recordedUsage is a vendor usage report with web search and a vendor-reported cost (xAI's
+// cost_in_usd_ticks, OpenRouter-style cost), sent once in the trailing usage frame of a stream and
+// in the body of the same request made without streaming.
+const recordedUsage = `{"prompt_tokens":120,"prompt_tokens_details":{"cached_tokens":64},` +
+	`"completion_tokens":48,"completion_tokens_details":{"reasoning_tokens":12,"num_search_queries":2},` +
+	`"total_tokens":168,"tool_usage":{"web_search":{"num_requests":2}},` +
+	`"cost":{"total_cost":0.0123},"cost_in_usd_ticks":123000000}`
+
+// usageJSON serialises a usage for a field-for-field comparison.
+func usageJSON(t *testing.T, u any) string {
+	t.Helper()
+	b, err := sonic.Marshal(u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// Contract C10 BF21 (TXE-6522): the usage on a stream's final frame equals the usage the same
+// request returns without streaming, field for field, including tool_usage and the vendor's
+// reported cost. The accumulator used to copy only token counts, token details and cost.
+func TestChatStreamFinalUsageEqualsNonStreamedUsage(t *testing.T) {
+	stop := "stop"
+	nonStreamed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-repro","object":"chat.completion","created":1,"model":"repro-model",`+
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":`+recordedUsage+`}`)
+	}))
+	defer nonStreamed.Close()
+	resp, bifrostErr := newStreamTestProvider(nonStreamed.URL).ChatCompletion(newStreamTestContext(), testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("non-streamed request failed: %v", bifrostErr.Error)
+	}
+	want := usageJSON(t, resp.Usage)
+	for _, field := range []string{`"tool_usage":{"web_search":{"num_requests":2}}`, `"cost_in_usd_ticks":123000000`} {
+		if !strings.Contains(want, field) {
+			t.Fatalf("fixture: non-streamed usage lacks %s: %s", field, want)
+		}
+	}
+
+	runningUsage := `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model",` +
+		`"choices":[{"index":0,"delta":{"content":"hel"},"finish_reason":null}],` +
+		`"usage":{"prompt_tokens":120,"completion_tokens":1,"total_tokens":121}}` + "\n\n"
+	trailingUsage := `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model",` +
+		`"choices":[],"usage":` + recordedUsage + `}` + "\n\n"
+	body := runningUsage + chatChunk("lo", nil) + chatChunk("", &stop) + trailingUsage + "data: [DONE]\n\n"
+
+	t.Run("chat", func(t *testing.T) {
+		server := completeSSEServer(t, body)
+		defer server.Close()
+		stream, bifrostErr := newStreamTestProvider(server.URL).ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+		if bifrostErr != nil {
+			t.Fatalf("stream setup failed: %v", bifrostErr)
+		}
+		chunks := collectChunks(t, stream)
+		final := chunks[len(chunks)-1]
+		if final.BifrostChatResponse == nil || final.BifrostChatResponse.Usage == nil {
+			t.Fatalf("final chunk carries no usage: %+v", final)
+		}
+		if got := usageJSON(t, final.BifrostChatResponse.Usage); got != want {
+			t.Fatalf("final frame usage differs from non-streamed usage\n got: %s\nwant: %s", got, want)
+		}
+	})
+
+	t.Run("responses fallback to chat", func(t *testing.T) {
+		server := completeSSEServer(t, body)
+		defer server.Close()
+		ctx := newStreamTestContext()
+		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+		stream, bifrostErr := newStreamTestProvider(server.URL).ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), basicChatRequest())
+		if bifrostErr != nil {
+			t.Fatalf("stream setup failed: %v", bifrostErr)
+		}
+		var completed *schemas.ResponsesResponseUsage
+		for _, c := range collectChunks(t, stream) {
+			if c.BifrostResponsesStreamResponse != nil && c.BifrostResponsesStreamResponse.Response != nil && c.BifrostResponsesStreamResponse.Response.Usage != nil {
+				completed = c.BifrostResponsesStreamResponse.Response.Usage
+			}
+		}
+		if completed == nil {
+			t.Fatal("no terminal Responses event carried usage")
+		}
+		if completed.ToolUsage == nil || completed.ToolUsage.WebSearch == nil || completed.ToolUsage.WebSearch.NumRequests != 2 {
+			t.Errorf("response.completed lost tool_usage: %+v", completed.ToolUsage)
+		}
+		if completed.CostInUsdTicks == nil || *completed.CostInUsdTicks != 123000000 {
+			t.Errorf("response.completed lost cost_in_usd_ticks: %v", completed.CostInUsdTicks)
+		}
+	})
+
+	t.Run("text completion", func(t *testing.T) {
+		textBody := `data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"hello","finish_reason":"stop"}]}` + "\n\n" +
+			`data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[],"usage":` + recordedUsage + `}` + "\n\n" +
+			"data: [DONE]\n\n"
+		server := completeSSEServer(t, textBody)
+		defer server.Close()
+		request := &schemas.BifrostTextCompletionRequest{
+			Provider: schemas.OpenAI,
+			Model:    "repro-model",
+			Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+		}
+		stream, bifrostErr := newStreamTestProvider(server.URL).TextCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), request)
+		if bifrostErr != nil {
+			t.Fatalf("stream setup failed: %v", bifrostErr)
+		}
+		chunks := collectChunks(t, stream)
+		final := chunks[len(chunks)-1]
+		if final.BifrostTextCompletionResponse == nil || final.BifrostTextCompletionResponse.Usage == nil {
+			t.Fatalf("final chunk carries no usage: %+v", final)
+		}
+		if got := usageJSON(t, final.BifrostTextCompletionResponse.Usage); got != want {
+			t.Fatalf("final frame usage differs from non-streamed usage\n got: %s\nwant: %s", got, want)
+		}
+	})
 }
