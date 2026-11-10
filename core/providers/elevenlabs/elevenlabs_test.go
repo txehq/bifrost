@@ -325,7 +325,7 @@ func TestElevenlabsTranscriptionVendorErrorKeepsStatusAndCarriesErrorType(t *tes
 		wantInRaw string
 	}{
 		{"401 invalid key", http.StatusUnauthorized, `{"detail":{"status":"invalid_api_key","message":"Invalid API key"}}`, schemas.ErrorTypeProviderAuthFailed, "Invalid API key", "invalid_api_key"},
-		{"422 validation", http.StatusUnprocessableEntity, `{"detail":[{"loc":["body","model_id"],"msg":"Input should be 'scribe_v1' or 'scribe_v2'","type":"enum"}]}`, schemas.ClassifyErrorType(&schemas.BifrostError{StatusCode: schemas.Ptr(422)}, schemas.TranscriptionRequest), "Input should be 'scribe_v1' or 'scribe_v2' [body.model_id]", ""},
+		{"422 validation", http.StatusUnprocessableEntity, `{"detail":[{"loc":["body","model_id"],"msg":"Input should be 'scribe_v1' or 'scribe_v2'","type":"enum"}]}`, schemas.ClassifyErrorType(&schemas.BifrostError{StatusCode: schemas.Ptr(422)}, schemas.TranscriptionRequest), "Input should be 'scribe_v1' or 'scribe_v2' [body.model_id]", "model_id"},
 		{"429 rate limit", http.StatusTooManyRequests, `{"detail":{"status":"too_many_concurrent_requests","message":"Too many concurrent requests"}}`, schemas.ErrorTypeProviderRateLimited, "Too many concurrent requests", "too_many_concurrent_requests"},
 	}
 	for _, tc := range cases {
