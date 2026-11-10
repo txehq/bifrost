@@ -462,6 +462,18 @@ const imagenPartiallyBlocked = {
 	],
 };
 
+const miniMaxBaseRespRoutes = new Set([
+	"/pp/minimax/v1/chat/completions",
+	"/pp/minimax/v1/t2a_v2",
+	"/pp/minimax/v1/image_generation",
+	"/pp/minimax/v2/video_generation",
+]);
+const miniMaxBaseRespAnswer = (selector) => {
+	const m = /^base-resp-(\d+)$/.exec(selector || "");
+	if (!m) return undefined;
+	return { status: 200, body: JSON.stringify({ id: "", choices: null, base_resp: { status_code: Number(m[1]), status_msg: `fixture base_resp ${m[1]}` } }) };
+};
+
 // OpenAI's own images API, TXE-6528 (contract C4, C5, C6): the openai provider's base URL is this fixture's root, so
 // an image request to it arrives on /v1/images/generations or /v1/images/edits. gpt-image-blocked answers with
 // OpenAI's documented moderation block (HTTP 400, code moderation_blocked); every other model answers in the
@@ -556,6 +568,13 @@ const wireAnswer = (path, body, bytes) => {
 		return { status: 200, body: JSON.stringify({ id: "chatcmpl_bounds", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
 	}
 	if (path === "/pp/cp/v1/chat/completions") return cpChatAnswerFor(body);
+	// MiniMax answers its failures inside a 200 as base_resp, with no result (TXE-6588, contract C6). The model
+	// "base-resp-<code>" selects the code, so a case asks for exactly the MiniMax error it pins. Chat (which also
+	// serves Responses), speech, image generation and video create each read base_resp from their own route.
+	if (miniMaxBaseRespRoutes.has(path)) {
+		const answer = miniMaxBaseRespAnswer(body.model);
+		if (answer) return answer;
+	}
 	if (path === "/pp/minimax/v1/t2a_v2") return miniMaxSpeechAnswer(body);
 	if (path === "/pp/vercel/v1/images/generations") return { status: 200, body: JSON.stringify(vercelImageAnswer(body)) };
 	if (path === "/pp/cp/v1/responses") return cpResponsesAnswerFor(body);
@@ -730,6 +749,13 @@ const server = http.createServer((req, res) => {
 	}
 	if (req.method === "GET" && path === "/__wire") {
 		return send(200, {}, JSON.stringify({ data: [{ calls: wireCalls }] }));
+	}
+	// MiniMax video query is a GET; the task id "base-resp-<code>" selects the base_resp code (TXE-6588).
+	if (req.method === "GET" && path.startsWith("/pp/minimax/v2/query/video_generation/")) {
+		wireCalls.push({ path, query: new URL(req.url, "http://localhost").search, body: "" });
+		const answer = miniMaxBaseRespAnswer(decodeURIComponent(path.slice("/pp/minimax/v2/query/video_generation/".length)));
+		if (answer) return send(answer.status, {}, answer.body);
+		return send(404, {}, JSON.stringify({ error: "unknown fixture task" }));
 	}
 	if (req.method === "POST" && (path.startsWith("/pp/") || path === "/v1/embeddings" || isOpenAIImagePath(path))) {
 		const body = [];
