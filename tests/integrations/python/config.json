@@ -193,7 +193,7 @@
           "value": "env.XAI_API_KEY",
           "weight": 1,
           "models": ["*"],
-          "use_for_batch_api": false
+          "use_for_batch_api": true
         }
       ],
       "network_config": {
