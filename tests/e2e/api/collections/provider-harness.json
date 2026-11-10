@@ -316890,9 +316890,6 @@
                 "exec": [
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
-                  "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) {",
-                  "  pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "}"
                 ]
               }
@@ -316924,9 +316921,6 @@
                 "exec": [
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
-                  "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) {",
-                  "  pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "}"
                 ]
               }
@@ -316982,9 +316976,6 @@
                 "exec": [
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
-                  "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) {",
-                  "  pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "}"
                 ]
               }
@@ -317039,9 +317030,6 @@
                 "exec": [
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
-                  "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) {",
-                  "  pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "}"
                 ]
               }
@@ -317055,7 +317043,7 @@
                   "pm.test('status is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "pm.test('a completed Responses object from minimax', function () { pm.expect(j.extra_fields && j.extra_fields.provider, pm.response.text()).to.equal('minimax'); pm.expect(j.status, pm.response.text()).to.equal('completed'); });",
                   "pm.test('MiniMax\\'s reasoning item comes back with its reasoning_text', function () { var r = (j.output || []).filter(function (o) { return o.type === 'reasoning'; })[0]; pm.expect(r, pm.response.text()).to.exist; pm.expect(JSON.stringify(r.content || []), pm.response.text()).to.include('Compare the tenths'); });",
-                  "var fx = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var fx = pm.variables.get('providerErrorFixtureUrl');",
                   "pm.sendRequest({ url: fx + '/__wire', method: 'GET' }, function (err, res) {",
                   "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
                   "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/minimax/') === 0 && c.body.indexOf('And 9.11 or 9.2?') !== -1; });",
@@ -317104,9 +317092,6 @@
                 "exec": [
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
-                  "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) {",
-                  "  pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "}"
                 ]
               }
@@ -317119,7 +317104,7 @@
                   "var j = pm.response.json();",
                   "pm.test('status is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "pm.test('the Messages response MiniMax sent comes back', function () { pm.expect(j.type, pm.response.text()).to.equal('message'); pm.expect(j.id, pm.response.text()).to.equal('msg_fixture'); });",
-                  "var fx = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var fx = pm.variables.get('providerErrorFixtureUrl');",
                   "pm.sendRequest({ url: fx + '/__wire', method: 'GET' }, function (err, res) {",
                   "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
                   "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/anthropic/v1/messages'; });",
