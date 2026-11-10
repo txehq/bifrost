@@ -267,8 +267,11 @@ func TestMiniMaxChatBaseRespErrorOn200(t *testing.T) {
 	if bifrostErr == nil {
 		t.Fatal("expected an error for non-zero base_resp")
 	}
-	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusPaymentRequired {
-		t.Errorf("status code = %v, want 402", bifrostErr.StatusCode)
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadGateway {
+		t.Errorf("status code = %v, want 502", bifrostErr.StatusCode)
+	}
+	if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeProviderBilling {
+		t.Errorf("error_type = %q, want %q", bifrostErr.ExtraFields.ErrorType, schemas.ErrorTypeProviderBilling)
 	}
 	if bifrostErr.Error == nil || bifrostErr.Error.Message != "insufficient balance" {
 		t.Errorf("message = %+v, want insufficient balance", bifrostErr.Error)
@@ -300,8 +303,11 @@ func TestMiniMaxChatStreamBaseRespErrorOn200(t *testing.T) {
 	if streamErr == nil {
 		t.Fatal("expected a stream error for non-zero base_resp")
 	}
-	if streamErr.StatusCode == nil || *streamErr.StatusCode != http.StatusPaymentRequired {
-		t.Errorf("status code = %v, want 402", streamErr.StatusCode)
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != http.StatusBadGateway {
+		t.Errorf("status code = %v, want 502", streamErr.StatusCode)
+	}
+	if streamErr.ExtraFields.ErrorType != schemas.ErrorTypeProviderBilling {
+		t.Errorf("error_type = %q, want %q", streamErr.ExtraFields.ErrorType, schemas.ErrorTypeProviderBilling)
 	}
 	if streamErr.Error == nil || streamErr.Error.Message != "insufficient balance" {
 		t.Errorf("message = %+v, want insufficient balance", streamErr.Error)
@@ -1083,8 +1089,11 @@ func TestMiniMaxTranscriptionStreamBaseRespError(t *testing.T) {
 	if streamErr == nil || streamErr.Error == nil || streamErr.Error.Message != "authentication failed" {
 		t.Fatalf("expected the MiniMax base_resp error, got %+v", streamErr)
 	}
-	if streamErr.StatusCode == nil || *streamErr.StatusCode != http.StatusUnauthorized {
-		t.Errorf("status code = %v, want 401", streamErr.StatusCode)
+	if streamErr.StatusCode == nil || *streamErr.StatusCode != http.StatusBadGateway {
+		t.Errorf("status code = %v, want 502", streamErr.StatusCode)
+	}
+	if streamErr.ExtraFields.ErrorType != schemas.ErrorTypeProviderAuthFailed {
+		t.Errorf("error_type = %q, want %q", streamErr.ExtraFields.ErrorType, schemas.ErrorTypeProviderAuthFailed)
 	}
 }
 
@@ -1542,7 +1551,7 @@ func TestMiniMaxStreamTerminalEventWithParkedBody(t *testing.T) {
 			start: func(p *minimax.MiniMaxProvider, ctx *schemas.BifrostContext, fin func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 				return p.SpeechStream(ctx, passthroughPostHook, fin, testKey(), speechRequest("English_Graceful_Lady", nil))
 			},
-			want: outcome{wantErrStatus: http.StatusTooManyRequests},
+			want: outcome{wantErrStatus: http.StatusBadGateway},
 		},
 		{
 			name: "transcription finish",
@@ -1566,7 +1575,7 @@ func TestMiniMaxStreamTerminalEventWithParkedBody(t *testing.T) {
 			start: func(p *minimax.MiniMaxProvider, ctx *schemas.BifrostContext, fin func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 				return p.TranscriptionStream(ctx, passthroughPostHook, fin, testKey(), transcriptionRequest(nil))
 			},
-			want: outcome{wantErrStatus: http.StatusUnauthorized},
+			want: outcome{wantErrStatus: http.StatusBadGateway},
 		},
 	}
 	for _, tc := range cases {
@@ -1885,5 +1894,121 @@ func BenchmarkMiniMaxToBifrostSpeechResponse(b *testing.B) {
 		if _, bifrostErr := minimax.ToBifrostSpeechResponse(&raw); bifrostErr != nil {
 			b.Fatal(bifrostErr.Error)
 		}
+	}
+}
+
+// MiniMax's documented base_resp codes (platform.minimax.io/docs/api-reference/errorcode),
+// returned inside an HTTP 200 with no result. Contract C6: customer causes are 400, vendor
+// causes are 502 with a provider_* error_type, and error.code is the vendor code verbatim.
+func TestMiniMaxBaseRespCodesCarryErrorType(t *testing.T) {
+	cases := []struct {
+		code       string
+		wantStatus int
+		wantType   schemas.ErrorType
+	}{
+		{"1026", http.StatusBadRequest, schemas.ErrorTypeCallerContentFiltered},
+		{"1027", http.StatusBadRequest, schemas.ErrorTypeCallerContentFiltered},
+		{"1042", http.StatusBadRequest, schemas.ErrorTypeCallerInvalidRequest},
+		{"1043", http.StatusBadRequest, schemas.ErrorTypeCallerInvalidRequest},
+		{"1044", http.StatusBadRequest, schemas.ErrorTypeCallerInvalidRequest},
+		{"2013", http.StatusBadRequest, schemas.ErrorTypeCallerInvalidRequest},
+		{"20132", http.StatusBadRequest, schemas.ErrorTypeCallerInvalidRequest},
+		{"2037", http.StatusBadRequest, schemas.ErrorTypeCallerInvalidRequest},
+		{"2039", http.StatusBadRequest, schemas.ErrorTypeCallerInvalidRequest},
+		{"2042", http.StatusBadRequest, schemas.ErrorTypeCallerInvalidRequest},
+		{"2048", http.StatusBadRequest, schemas.ErrorTypeCallerInvalidRequest},
+		{"2054", http.StatusBadRequest, schemas.ErrorTypeCallerInvalidRequest},
+		{"1002", http.StatusBadGateway, schemas.ErrorTypeProviderRateLimited},
+		{"1039", http.StatusBadGateway, schemas.ErrorTypeProviderRateLimited},
+		{"1041", http.StatusBadGateway, schemas.ErrorTypeProviderRateLimited},
+		{"2045", http.StatusBadGateway, schemas.ErrorTypeProviderRateLimited},
+		{"2056", http.StatusBadGateway, schemas.ErrorTypeProviderRateLimited},
+		{"1004", http.StatusBadGateway, schemas.ErrorTypeProviderAuthFailed},
+		{"2049", http.StatusBadGateway, schemas.ErrorTypeProviderAuthFailed},
+		{"1008", http.StatusBadGateway, schemas.ErrorTypeProviderBilling},
+		{"1001", http.StatusBadGateway, schemas.ErrorTypeProviderTimeout},
+		{"1000", http.StatusBadGateway, schemas.ErrorTypeProviderServerError},
+		{"1013", http.StatusBadGateway, schemas.ErrorTypeProviderServerError},
+		{"1024", http.StatusBadGateway, schemas.ErrorTypeProviderServerError},
+		{"1033", http.StatusBadGateway, schemas.ErrorTypeProviderServerError},
+		{"99999", http.StatusBadGateway, schemas.ErrorTypeProviderServerError}, // undocumented
+	}
+	for _, tc := range cases {
+		t.Run(tc.code, func(t *testing.T) {
+			provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+				"POST /v1/chat/completions": jsonResponse(http.StatusOK, `{"id":"","choices":null,"base_resp":{"status_code":`+tc.code+`,"status_msg":"vendor says no"}}`),
+			})
+			_, bifrostErr := provider.ChatCompletion(testContext(t), testKey(), userChatRequest(nil))
+			assertMiniMaxError(t, bifrostErr, tc.wantStatus, tc.wantType, tc.code)
+		})
+	}
+}
+
+// 1026 (sensitive input) and 1027 (sensitive output) are content blocks on every MiniMax
+// operation, all of which read base_resp through the same parser.
+func TestMiniMaxContentFilterCodesOnEveryOperation(t *testing.T) {
+	for _, code := range []string{"1026", "1027"} {
+		baseResp := `"base_resp":{"status_code":` + code + `,"status_msg":"input new_sensitive"}`
+		t.Run("chat/"+code, func(t *testing.T) {
+			provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+				"POST /v1/chat/completions": jsonResponse(http.StatusOK, `{"id":"","choices":null,`+baseResp+`}`),
+			})
+			_, bifrostErr := provider.ChatCompletion(testContext(t), testKey(), userChatRequest(nil))
+			assertMiniMaxError(t, bifrostErr, http.StatusBadRequest, schemas.ErrorTypeCallerContentFiltered, code)
+		})
+		t.Run("speech/"+code, func(t *testing.T) {
+			provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+				"POST /v1/t2a_v2": jsonResponse(http.StatusOK, `{`+baseResp+`}`),
+			})
+			_, bifrostErr := provider.Speech(testContext(t), testKey(), speechRequest("English_Graceful_Lady", nil))
+			assertMiniMaxError(t, bifrostErr, http.StatusBadRequest, schemas.ErrorTypeCallerContentFiltered, code)
+		})
+		t.Run("video create/"+code, func(t *testing.T) {
+			provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+				"POST /v2/video_generation": jsonResponse(http.StatusOK, `{"task_id":"",`+baseResp+`}`),
+			})
+			_, bifrostErr := provider.VideoGeneration(testContext(t), testKey(), &schemas.BifrostVideoGenerationRequest{
+				Provider: schemas.MiniMax,
+				Model:    "MiniMax-H3",
+				Input:    &schemas.VideoGenerationInput{Prompt: "a dog"},
+			})
+			assertMiniMaxError(t, bifrostErr, http.StatusBadRequest, schemas.ErrorTypeCallerContentFiltered, code)
+		})
+		t.Run("video query/"+code, func(t *testing.T) {
+			provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+				"GET /v2/query/video_generation/t1": jsonResponse(http.StatusOK, `{`+baseResp+`}`),
+			})
+			_, bifrostErr := provider.VideoRetrieve(testContext(t), testKey(), &schemas.BifrostVideoRetrieveRequest{Provider: schemas.MiniMax, ID: "t1"})
+			assertMiniMaxError(t, bifrostErr, http.StatusBadRequest, schemas.ErrorTypeCallerContentFiltered, code)
+		})
+	}
+}
+
+// A non-2xx MiniMax response keeps MiniMax's own status (contract C6); a content-filter
+// code in its base_resp is still declared, since a 4xx alone reads as a parameter error.
+func TestMiniMaxHTTPErrorContentFilterKeepsStatus(t *testing.T) {
+	provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"POST /v1/chat/completions": jsonResponse(http.StatusForbidden, `{"base_resp":{"status_code":1026,"status_msg":"input new_sensitive"}}`),
+	})
+	_, bifrostErr := provider.ChatCompletion(testContext(t), testKey(), userChatRequest(nil))
+	assertMiniMaxError(t, bifrostErr, http.StatusForbidden, schemas.ErrorTypeCallerContentFiltered, "1026")
+}
+
+func assertMiniMaxError(t *testing.T, bifrostErr *schemas.BifrostError, wantStatus int, wantType schemas.ErrorType, wantCode string) {
+	t.Helper()
+	if bifrostErr == nil {
+		t.Fatal("expected an error, got a success")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != wantStatus {
+		t.Errorf("status code = %v, want %d", bifrostErr.StatusCode, wantStatus)
+	}
+	if bifrostErr.ExtraFields.ErrorType != wantType {
+		t.Errorf("error_type = %q, want %q", bifrostErr.ExtraFields.ErrorType, wantType)
+	}
+	if got := schemas.ClassifyErrorType(bifrostErr, schemas.ChatCompletionRequest); got != wantType {
+		t.Errorf("ClassifyErrorType = %q, want %q", got, wantType)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != wantCode {
+		t.Errorf("error.code = %v, want %s", bifrostErr.Error, wantCode)
 	}
 }

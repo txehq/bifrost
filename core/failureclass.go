@@ -255,6 +255,18 @@ func ClassifyFailure(err *schemas.BifrostError) schemas.FailureClass {
 	if schemas.IsContentFilterError(err) {
 		return schemas.FailureClassCallerFault
 	}
+	// A provider that reports a vendor cause under a status of its own choosing (MiniMax's
+	// base_resp codes are all returned as 502, contract C6) declares which cause it was.
+	// The declaration says what the status no longer can, so it decides before the status
+	// rules, which would read a 502 as transient.
+	switch err.ExtraFields.ErrorType {
+	case schemas.ErrorTypeProviderAuthFailed:
+		return schemas.FailureClassCredential
+	case schemas.ErrorTypeProviderBilling:
+		return schemas.FailureClassQuota
+	case schemas.ErrorTypeProviderRateLimited:
+		return schemas.FailureClassRateLimit
+	}
 	status := 0
 	if err.StatusCode != nil {
 		status = *err.StatusCode

@@ -294181,6 +294181,49 @@
           }
         },
         {
+          "name": "[EXPECT-400] /v1/audio/speech - a 200 carrying only base_resp is an error with error_type and the vendor code - minimax/speech-2.8-turbo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('base_resp 2054 inside a 200 is a 400 caller_invalid_request carrying the vendor code', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.extra_fields && body.extra_fields.error_type, 'extra_fields.error_type: ' + pm.response.text()).to.eql('caller_invalid_request');",
+                  "  pm.expect(body.error && body.error.code, 'error.code: ' + pm.response.text()).to.eql('2054');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/speech-2.8-turbo\",\n  \"input\": \"Hello.\",\n  \"voice\": \"not_a_real_minimax_voice\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
           "name": "/v1/audio/transcriptions - json text and duration usage - minimax/asr-1.0",
           "event": [
             {

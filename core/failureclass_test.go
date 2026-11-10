@@ -186,6 +186,38 @@ func TestClassifyFailure(t *testing.T) {
 	}
 }
 
+// A provider that reports a vendor cause as a 502 (MiniMax's base_resp codes, contract C6)
+// declares the cause in error_type, and that declaration, not the 502, decides the class:
+// a dead key or an empty balance still rotates instead of being retried as transient.
+func TestClassifyFailure_DeclaredProviderCause(t *testing.T) {
+	cases := []struct {
+		declared schemas.ErrorType
+		want     schemas.FailureClass
+	}{
+		{schemas.ErrorTypeProviderAuthFailed, schemas.FailureClassCredential},
+		{schemas.ErrorTypeProviderBilling, schemas.FailureClassQuota},
+		{schemas.ErrorTypeProviderRateLimited, schemas.FailureClassRateLimit},
+		{schemas.ErrorTypeProviderServerError, schemas.FailureClassTransient},
+		{schemas.ErrorTypeProviderTimeout, schemas.FailureClassTransient},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.declared), func(t *testing.T) {
+			err := providerError(502, "", "1004", "minimax error")
+			err.ExtraFields.ErrorType = tc.declared
+			if got := ClassifyFailure(err); got != tc.want {
+				t.Errorf("ClassifyFailure(502, declared %s) = %q, want %q", tc.declared, got, tc.want)
+			}
+		})
+	}
+	// A Bifrost-built error is never re-attributed by a declaration.
+	bifrostErr := providerError(502, "", "", "x")
+	bifrostErr.IsBifrostError = true
+	bifrostErr.ExtraFields.ErrorType = schemas.ErrorTypeProviderAuthFailed
+	if got := ClassifyFailure(bifrostErr); got != schemas.FailureClassUnknown {
+		t.Errorf("Bifrost error with declared provider_auth_failed = %q, want unknown", got)
+	}
+}
+
 // What a status decides on its own, with no provider body behind it: the per-key statuses
 // rotate (401/403 as a rejected credential, 402 as quota, 429 as a rate limit), the
 // transient 5xx set retries the same key (529 included: an overloaded provider is not this
