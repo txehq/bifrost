@@ -38,6 +38,8 @@ USE_NODE = NVM_SH="$${NVM_DIR:-$$HOME/.nvm}/nvm.sh"; \
 #   USE_INFISICAL=1|y|Y|yes|YES|true|TRUE  -> source secrets from Infisical (`infisical export --path <p>`)
 #   anything else                          -> source ./.env
 # Honors INFISICAL_PATH (default /local) when sourcing from Infisical.
+# BIFROST_TEST_OFFLINE=1 (set by scripts/test-offline.sh, TXE-7053) loads nothing, so a recipe
+# run under that script cannot re-load the credentials it removed.
 # After invoking `$(EXPOSE_ENV);`, all subsequent commands inherit the secrets
 # - no per-command prefix needed.
 # Use as: `$(EXPOSE_ENV); <your command>`
@@ -46,7 +48,9 @@ define EXPOSE_ENV
 		1|y|Y|yes|YES|true|TRUE) USE_INFISICAL_RESOLVED=1 ;; \
 		*) USE_INFISICAL_RESOLVED=0 ;; \
 	esac; \
-	if [ "$$USE_INFISICAL_RESOLVED" = "1" ]; then \
+	if [ "$$BIFROST_TEST_OFFLINE" = "1" ]; then \
+		$(ECHO) "$(YELLOW)BIFROST_TEST_OFFLINE=1 (scripts/test-offline.sh): not loading .env or Infisical secrets$(NC)"; \
+	elif [ "$$USE_INFISICAL_RESOLVED" = "1" ]; then \
 		if ! which infisical > /dev/null 2>&1; then \
 			$(ECHO) "$(RED)infisical CLI not found. Install: https://infisical.com/docs/cli/overview$(NC)"; \
 			exit 1; \

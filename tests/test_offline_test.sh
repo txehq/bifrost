@@ -21,7 +21,7 @@ credentials=(
 	AZURE_CLIENT_SECRET MY_CLIENT_SECRET SECRET_SAUCE
 	GH_TOKEN HF_TOKEN TOKEN SLACK_TOKEN_PROD
 	AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_PROFILE AZURE_OPENAI_ENDPOINT
-	GOOGLE_APPLICATION_CREDENTIALS
+	GOOGLE_APPLICATION_CREDENTIALS VERTEX_CREDENTIALS GITHUB_COPILOT_PRIVATE_KEY DATABRICKS_TOKEN
 )
 keep=(KEEP_ME MAX_TOKENS TOKENIZER_PATH KEYBOARD_LAYOUT)
 for name in "${credentials[@]}"; do export "$name=value-of-$name"; done
@@ -75,6 +75,47 @@ if command -v zsh >/dev/null 2>&1; then
 	else
 		pass "the hand-built zsh idiom did not leak here"
 	fi
+fi
+
+# Every vendor credential the repository names outside the *_API_KEY convention
+# (OTHER_PROVIDER_CREDENTIALS in check-provider-key-environment.py) is removed. A credential
+# added there that no pattern of the runner matches fails here, in the same PR.
+other=$(sed -n '/^OTHER_PROVIDER_CREDENTIALS = {/,/^}/p' "$ROOT/.github/workflows/scripts/check-provider-key-environment.py" | grep -o '"[A-Z0-9_]*"' | tr -d '"')
+if [ -z "$other" ]; then
+	fail "OTHER_PROVIDER_CREDENTIALS could not be read from check-provider-key-environment.py"
+else
+	missed=()
+	for name in $other; do
+		if ! env "$name=x" "$RUN" --list | grep -qx "$name"; then missed+=("$name"); fi
+	done
+	if [ "${#missed[@]}" -gt 0 ]; then
+		fail "credentials in OTHER_PROVIDER_CREDENTIALS the runner keeps: ${missed[*]}"
+	else
+		pass "every OTHER_PROVIDER_CREDENTIALS name is removed ($(printf '%s\n' "$other" | wc -l | tr -d ' '))"
+	fi
+fi
+
+# A make recipe run under the runner does not re-load credentials: EXPOSE_ENV sees
+# BIFROST_TEST_OFFLINE=1 and skips .env and Infisical. The plain run is the control: it does
+# load .env, so the probe can tell the two apart.
+if command -v make >/dev/null 2>&1; then
+	probe=$(mktemp -d)
+	printf 'PROBE_API_KEY=from-dotenv\n' >"$probe/.env"
+	# $(EXPOSE_ENV) is make syntax, expanded by make, not here.
+	# shellcheck disable=SC2016
+	printf 'include %s/Makefile\noffline-probe:\n\t@$(EXPOSE_ENV); env | grep -c "^PROBE_API_KEY=" || true\n' "$ROOT" >"$probe/probe.mk"
+	control=$(cd "$probe" && make -s -f probe.mk -I "$ROOT" offline-probe 2>/dev/null | tail -1)
+	offline=$(cd "$probe" && "$RUN" make -s -f probe.mk -I "$ROOT" offline-probe 2>/dev/null | tail -1)
+	rm -rf "$probe"
+	if [ "$control" != "1" ]; then
+		fail "control: a plain make recipe did not load .env (got '$control'), so the probe proves nothing"
+	elif [ "$offline" != "0" ]; then
+		fail "a make recipe under the runner re-loaded a credential from .env (got '$offline')"
+	else
+		pass "a make recipe under the runner loads no .env credential (the plain run does)"
+	fi
+else
+	echo "  skip - make recipe: make is not installed here"
 fi
 
 # --list prints names only, never a value.

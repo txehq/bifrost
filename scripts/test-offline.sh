@@ -16,8 +16,16 @@
 #   *_API_KEY, *_API_KEY_*, API_KEY     provider keys (OPENAI_API_KEY, DEEPSEEK_API_KEY, ...)
 #   *SECRET*                            client secrets, AWS_SECRET_ACCESS_KEY, ...
 #   *_TOKEN, *_TOKEN_*, TOKEN           bearer and session tokens (GH_TOKEN, HF_TOKEN, ...)
+#   *_CREDENTIALS                       VERTEX_CREDENTIALS, GOOGLE_APPLICATION_CREDENTIALS, ...
+#   *_PRIVATE_KEY                       GITHUB_COPILOT_PRIVATE_KEY, ...
 #   AWS_*, AZURE_*                      cloud credentials and their profiles/endpoints
-#   GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_API_KEY, GEMINI_API_KEY (covered by *_API_KEY)
+# Every name in OTHER_PROVIDER_CREDENTIALS (.github/workflows/scripts/
+# check-provider-key-environment.py), the repository's list of vendor credentials not called
+# API keys, must match; the check reads that list and fails on one that does not.
+#
+# The child also gets BIFROST_TEST_OFFLINE=1, which the Makefile's EXPOSE_ENV honours: a make
+# recipe run under this script loads neither .env nor Infisical secrets, so
+# `scripts/test-offline.sh make <target>` cannot re-load the keys removed here.
 # tests/test_offline_test.sh is the check: it fails when any such variable reaches the child.
 set -euo pipefail
 
@@ -30,7 +38,7 @@ is_credential() {
 	local upper
 	upper=$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')
 	case "$upper" in
-	API_KEY | *_API_KEY | *_API_KEY_* | *SECRET* | TOKEN | *_TOKEN | *_TOKEN_* | AWS_* | AZURE_* | GOOGLE_APPLICATION_CREDENTIALS)
+	API_KEY | *_API_KEY | *_API_KEY_* | *SECRET* | TOKEN | *_TOKEN | *_TOKEN_* | *_CREDENTIALS | *_PRIVATE_KEY | AWS_* | AZURE_*)
 		return 0
 		;;
 	esac
@@ -57,4 +65,4 @@ unset_args=()
 for name in ${removed[@]+"${removed[@]}"}; do
 	unset_args+=(-u "$name")
 done
-exec env ${unset_args[@]+"${unset_args[@]}"} "$@"
+exec env ${unset_args[@]+"${unset_args[@]}"} BIFROST_TEST_OFFLINE=1 "$@"
