@@ -318933,6 +318933,505 @@
           }
         }
       ]
+    },
+    {
+      "name": "407. Zhipu bigmodel batch on an openai-based custom provider reaches /api/paas/v4 with the named key (bigmodel batch) [SERIAL]",
+      "description": "TXE-6665 regression, contract C3, C8, C12. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream (providerErrorFixtureUrl when it is not on http://127.0.0.1:8791). Every row is skipped otherwise. Zhipu bigmodel, the z.ai domestic site, serves OpenAI-shaped files and batches under /api/paas/v4. tkp_bigmodel is configured the way Tokun's reconciler writes that provider: base_provider_type openai, allowed_requests batch_* and file_*, max_retries 0, two named keys enabled for batches, and request_path_overrides for every batch and file request type. For a call that names a batch or a file the override is a template: {batch_id} or {file_id} is where the id goes (batch_retrieve /api/paas/v4/batches/{batch_id}, batch_cancel /api/paas/v4/batches/{batch_id}/cancel, file_content /api/paas/v4/files/{file_id}/content). Before the change the gateway built retrieve, cancel, results and the file calls on /v1 whatever the overrides said. The fixture answers only under /pp/bigmodel/api/paas/v4, so a call on a default path is a 404 and fails its row, and GET /__wire returns each call with the name of the key it carried. Rows: (1) an inline batch uploads its lines unchanged as a JSONL to /api/paas/v4/files and creates the batch at /api/paas/v4/batches, metadata included; (2) retrieve, (3) cancel and (4) the first results page reach /api/paas/v4/batches/{id} and /api/paas/v4/files/{id}/content; each succeeded line carries custom_id, status and an OpenAI chat body whose usage is the chat operation's unified usage, read from a batch whose endpoint the vendor spells /v4/chat/completions; (5) the page after the cursor carries the error file's line with the vendor's error. All of it with the second key, the one named in x-bf-api-key, and never the first. (6) writing a provider whose batch_retrieve override has no {batch_id} is refused. The output lines are the shape bigmodel documents (docs.bigmodel.cn/cn/guide/tools/batch.md, read 2026-11-10); no real bigmodel batch has been recorded, and the error line is OpenAI's shape, which is all the documentation says about the error file. Run the whole folder in order.",
+      "item": [
+        {
+          "name": "tkp_bigmodel/glm-5.3-flash /v1/batches with inline requests: the JSONL is uploaded to /api/paas/v4/files and the batch created at /api/paas/v4/batches, both with the named key (bigmodel batch)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "tk-key-bigmodel-b"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"tkp_bigmodel/glm-5.3-flash\",\n  \"endpoint\": \"/v4/chat/completions\",\n  \"metadata\": {\n    \"tokun_batch_id\": \"harness-bigmodel-batch\"\n  },\n  \"requests\": [\n    {\n      \"custom_id\": \"request-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v4/chat/completions\",\n      \"body\": {\n        \"model\": \"glm-5.3-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    },\n    {\n      \"custom_id\": \"request-2\",\n      \"method\": \"POST\",\n      \"url\": \"/v4/chat/completions\",\n      \"body\": {\n        \"model\": \"glm-5.3-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: yes\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: (pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('bigmodel batch setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var ROOT = '/pp/bigmodel/api/paas/v4';",
+                  "var KEY = 'tk-key-bigmodel-b';",
+                  "// wire: the calls that reached the fixture's bigmodel upstream, in order, each with its method, path, body and the",
+                  "// name of the key it carried. The fixture answers only under ROOT, so a call built on the default /v1 path is a 404 there.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path; }); }",
+                  "function namedKeyOnly(calls) { pm.test('every upstream call carried the named key and no other', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(seen(calls))).to.eql(calls.map(function () { return KEY; })); }); }",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('the batch is created and its id is the vendor\\'s', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); pm.expect(body.id, pm.response.text()).to.equal('batch_1791490810192076800'); pm.expect(body.status, pm.response.text()).to.equal('validating'); });",
+                  "pm.test('the key the caller named is the one reported', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), pm.response.text()).to.equal(KEY); });",
+                  "wire(function (calls) {",
+                  "  pm.test('one upload and one create reached the vendor, on the overridden paths', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['POST ' + ROOT + '/files', 'POST ' + ROOT + '/batches']); });",
+                  "  namedKeyOnly(calls);",
+                  "  var upload = (calls[0] || {}).body || '';",
+                  "  pm.test('the uploaded JSONL holds the two lines as they were sent', function () {",
+                  "    var lines = upload.split('\\n').filter(function (l) { return l.indexOf('\"custom_id\"') !== -1; }).map(function (l) { return JSON.parse(l); });",
+                  "    pm.expect(lines.map(function (l) { return l.custom_id; }), upload.slice(0, 900)).to.eql(['request-1', 'request-2']);",
+                  "    pm.expect(lines.map(function (l) { return l.url; }), upload.slice(0, 900)).to.eql(['/v4/chat/completions', '/v4/chat/completions']);",
+                  "    pm.expect(lines[0].body.model + ' ' + lines[0].body.max_tokens, upload.slice(0, 900)).to.equal('glm-5.3-flash 8');",
+                  "    pm.expect(upload, 'the file is uploaded for batch use').to.include('name=\"purpose\"');",
+                  "  });",
+                  "  var create = {}; try { create = JSON.parse((calls[1] || {}).body || '{}'); } catch (e) { create = {}; }",
+                  "  pm.test('the batch create names the uploaded file, the vendor\\'s endpoint and the metadata', function () {",
+                  "    pm.expect(create.input_file_id, JSON.stringify(create)).to.equal('file-bm-input');",
+                  "    pm.expect(create.endpoint, JSON.stringify(create)).to.equal('/v4/chat/completions');",
+                  "    pm.expect((create.metadata || {}).tokun_batch_id, JSON.stringify(create)).to.equal('harness-bigmodel-batch');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "tkp_bigmodel/glm-5.3-flash /v1/batches/{id} retrieve reaches /api/paas/v4/batches/{id} with the named key (bigmodel batch)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "tk-key-bigmodel-b"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/batch_1791490810192076800?provider=tkp_bigmodel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "batch_1791490810192076800"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "tkp_bigmodel"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: (pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('bigmodel batch setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var ROOT = '/pp/bigmodel/api/paas/v4';",
+                  "var KEY = 'tk-key-bigmodel-b';",
+                  "// wire: the calls that reached the fixture's bigmodel upstream, in order, each with its method, path, body and the",
+                  "// name of the key it carried. The fixture answers only under ROOT, so a call built on the default /v1 path is a 404 there.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path; }); }",
+                  "function namedKeyOnly(calls) { pm.test('every upstream call carried the named key and no other', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(seen(calls))).to.eql(calls.map(function () { return KEY; })); }); }",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('the batch is read back in the unified shape', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); pm.expect(body.id, pm.response.text()).to.equal('batch_1791490810192076800'); pm.expect(body.status, pm.response.text()).to.equal('completed'); pm.expect(body.request_counts, pm.response.text()).to.include({ total: 3, completed: 2, failed: 1 }); });",
+                  "wire(function (calls) {",
+                  "  pm.test('one retrieve reached the vendor, on the overridden path with the id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET ' + ROOT + '/batches/batch_1791490810192076800']); });",
+                  "  namedKeyOnly(calls);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "tkp_bigmodel/glm-5.3-flash /v1/batches/{id}/cancel reaches /api/paas/v4/batches/{id}/cancel with the named key (bigmodel batch)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "tk-key-bigmodel-b"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/batch_1791490810192076800/cancel?provider=tkp_bigmodel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "batch_1791490810192076800",
+                "cancel"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "tkp_bigmodel"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: (pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('bigmodel batch setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var ROOT = '/pp/bigmodel/api/paas/v4';",
+                  "var KEY = 'tk-key-bigmodel-b';",
+                  "// wire: the calls that reached the fixture's bigmodel upstream, in order, each with its method, path, body and the",
+                  "// name of the key it carried. The fixture answers only under ROOT, so a call built on the default /v1 path is a 404 there.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path; }); }",
+                  "function namedKeyOnly(calls) { pm.test('every upstream call carried the named key and no other', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(seen(calls))).to.eql(calls.map(function () { return KEY; })); }); }",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('the vendor\\'s cancelling state comes back', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); pm.expect(body.id, pm.response.text()).to.equal('batch_1791490810192076800'); pm.expect(body.status, pm.response.text()).to.equal('cancelling'); });",
+                  "wire(function (calls) {",
+                  "  pm.test('one cancel reached the vendor, on the overridden path with the id in place', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['POST ' + ROOT + '/batches/batch_1791490810192076800/cancel']); });",
+                  "  namedKeyOnly(calls);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "tkp_bigmodel/glm-5.3-flash /v1/batches/{id}/results limit=2: the first page reads the output file from /api/paas/v4/files/{id}/content with the named key (bigmodel batch)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "tk-key-bigmodel-b"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/batch_1791490810192076800/results?provider=tkp_bigmodel&limit=2",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "batch_1791490810192076800",
+                "results"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "tkp_bigmodel"
+                },
+                {
+                  "key": "limit",
+                  "value": "2"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: (pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('bigmodel batch setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var ROOT = '/pp/bigmodel/api/paas/v4';",
+                  "var KEY = 'tk-key-bigmodel-b';",
+                  "// wire: the calls that reached the fixture's bigmodel upstream, in order, each with its method, path, body and the",
+                  "// name of the key it carried. The fixture answers only under ROOT, so a call built on the default /v1 path is a 404 there.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path; }); }",
+                  "function namedKeyOnly(calls) { pm.test('every upstream call carried the named key and no other', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(seen(calls))).to.eql(calls.map(function () { return KEY; })); }); }",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var results = body.results || [];",
+                  "pm.test('the page holds the output file\\'s two lines and says more follow', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); pm.expect(results.map(function (r) { return r.custom_id; }), pm.response.text()).to.eql(['request-1', 'request-2']); pm.expect(body.has_more, pm.response.text()).to.equal(true); pm.expect(body.next_cursor, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "pm.test('each line succeeded with an OpenAI chat body and its usage', function () {",
+                  "  results.forEach(function (r) { pm.expect(r.status, JSON.stringify(r)).to.equal('succeeded'); pm.expect(r.response.status_code, JSON.stringify(r)).to.equal(200); pm.expect(r.response.body.choices[0].message.content, JSON.stringify(r)).to.equal('ok'); pm.expect(r.error, JSON.stringify(r)).to.not.exist; });",
+                  "  pm.expect(results[0].response.body.usage, JSON.stringify(results[0])).to.include({ prompt_tokens: 89, completion_tokens: 26, total_tokens: 115 });",
+                  "  pm.expect(results[0].response.body.request_id, JSON.stringify(results[0])).to.equal('615-request-1');",
+                  "});",
+                  "pm.test('the usage is the chat operation\\'s unified usage although the vendor names the endpoint /v4/chat/completions', function () { pm.expect(((results[1].response.body.usage || {}).prompt_tokens_details || {}).cached_read_tokens, JSON.stringify(results[1])).to.equal(64); });",
+                  "pm.collectionVariables.set('bigmodelBatchCursor', body.next_cursor || '');",
+                  "wire(function (calls) {",
+                  "  pm.test('a retrieve and one download reached the vendor, on the overridden paths', function () { pm.expect(seen(calls), JSON.stringify(calls)).to.eql(['GET ' + ROOT + '/batches/batch_1791490810192076800', 'GET ' + ROOT + '/files/file-bm-output/content']); });",
+                  "  namedKeyOnly(calls);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "tkp_bigmodel/glm-5.3-flash /v1/batches/{id}/results after the cursor: the error file's line carries the vendor's error, read with the named key (bigmodel batch)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "tk-key-bigmodel-b"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/batches/batch_1791490810192076800/results?provider=tkp_bigmodel&limit=2&after={{bigmodelBatchCursor}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "batches",
+                "batch_1791490810192076800",
+                "results"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "tkp_bigmodel"
+                },
+                {
+                  "key": "limit",
+                  "value": "2"
+                },
+                {
+                  "key": "after",
+                  "value": "{{bigmodelBatchCursor}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: (pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('bigmodel batch setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var ROOT = '/pp/bigmodel/api/paas/v4';",
+                  "var KEY = 'tk-key-bigmodel-b';",
+                  "// wire: the calls that reached the fixture's bigmodel upstream, in order, each with its method, path, body and the",
+                  "// name of the key it carried. The fixture answers only under ROOT, so a call built on the default /v1 path is a 404 there.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path; }); }",
+                  "function namedKeyOnly(calls) { pm.test('every upstream call carried the named key and no other', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(seen(calls))).to.eql(calls.map(function () { return KEY; })); }); }",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var results = body.results || [];",
+                  "pm.test('the last page holds the error file\\'s line and nothing follows', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); pm.expect(results.map(function (r) { return r.custom_id; }), pm.response.text()).to.eql(['request-3']); pm.expect(body.has_more, pm.response.text()).to.not.equal(true); });",
+                  "pm.test('the line failed with the vendor\\'s error code and message', function () { var r = results[0] || {}; pm.expect(r.status, JSON.stringify(r)).to.equal('failed'); pm.expect((r.error || {}).code, JSON.stringify(r)).to.equal('1210'); pm.expect((r.error || {}).message, JSON.stringify(r)).to.be.a('string').and.not.empty; });",
+                  "wire(function (calls) {",
+                  "  pm.test('every call stayed under /api/paas/v4 and the error file was downloaded', function () {",
+                  "    calls.forEach(function (c) { pm.expect(c.path.indexOf(ROOT + '/'), JSON.stringify(seen(calls))).to.equal(0); });",
+                  "    pm.expect(seen(calls)[0], JSON.stringify(seen(calls))).to.equal('GET ' + ROOT + '/batches/batch_1791490810192076800');",
+                  "    pm.expect(seen(calls), JSON.stringify(seen(calls))).to.include('GET ' + ROOT + '/files/file-bm-error/content');",
+                  "  });",
+                  "  namedKeyOnly(calls);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] tkp_bigmodel/glm-5.3-flash POST /api/providers: a batch_retrieve path override without {batch_id} is refused when the provider is written (bigmodel batch)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"harness-bigmodel-no-placeholder\",\n  \"keys\": [],\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"allowed_requests\": {\n      \"batch_retrieve\": true\n    },\n    \"request_path_overrides\": {\n      \"batch_retrieve\": \"/api/paas/v4/batches\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/providers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: (pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('bigmodel batch setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var ROOT = '/pp/bigmodel/api/paas/v4';",
+                  "var KEY = 'tk-key-bigmodel-b';",
+                  "// wire: the calls that reached the fixture's bigmodel upstream, in order, each with its method, path, body and the",
+                  "// name of the key it carried. The fixture answers only under ROOT, so a call built on the default /v1 path is a 404 there.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function seen(calls) { return calls.map(function (c) { return c.method + ' ' + c.path; }); }",
+                  "function namedKeyOnly(calls) { pm.test('every upstream call carried the named key and no other', function () { pm.expect(calls.map(function (c) { return c.key; }), JSON.stringify(seen(calls))).to.eql(calls.map(function () { return KEY; })); }); }",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('the provider is refused with a 400 naming the override and its placeholder', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400); pm.expect(pm.response.text()).to.include('request_path_overrides.batch_retrieve'); pm.expect(pm.response.text()).to.include('{batch_id}'); });",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/providers/harness-bigmodel-no-placeholder', method: 'GET' }, function (err, res) { pm.test('nothing was stored', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(404); }); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

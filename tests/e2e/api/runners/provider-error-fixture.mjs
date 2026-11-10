@@ -935,6 +935,55 @@ const fixtureBatch = (status) => ({
 	completion_window: "24h", status, created_at: 1, request_counts: { total: 1, completed: 0, failed: 0 },
 });
 const countHit = (key) => { hits[key] = (hits[key] || 0) + 1; };
+
+// Zhipu bigmodel batch (folder 407, TXE-6665). bigmodel is the z.ai domestic site: OpenAI-shaped files and
+// batches rooted at /api/paas/v4, not /v1. tkp_bigmodel in the fixture config is an openai-based custom provider
+// written as Tokun's reconciler writes it (contract C12), its request_path_overrides naming those paths, and this
+// is its only upstream: every call under /pp/bigmodel is kept for GET /__wire with its method and the name of the
+// key it carried (never the key), and anything outside /api/paas/v4 is a 404, so a call the gateway built on the
+// default /v1 path fails and shows in the wire. The output lines are the shape bigmodel documents
+// (docs.bigmodel.cn/cn/guide/tools/batch.md, read 2026-11-10); the error line is OpenAI's shape, which is all
+// the documentation says about the error file. No real bigmodel batch has been recorded yet.
+const BIGMODEL_ROOT = "/pp/bigmodel/api/paas/v4";
+const BIGMODEL_BATCH_ID = "batch_1791490810192076800";
+const BIGMODEL_KEY_NAMES = { "Bearer bm-fixture-key-a": "tk-key-bigmodel-a", "Bearer bm-fixture-key-b": "tk-key-bigmodel-b" };
+const bigmodelLine = (n, requestId, usage) => JSON.stringify({
+	response: { status_code: 200, body: { created: 1715959701, usage, model: "glm-5.3-flash", id: `866835753385032054${n}`, choices: [{ finish_reason: "stop", index: 0, message: { role: "assistant", content: "ok" } }], request_id: requestId } },
+	custom_id: `request-${n}`, id: BIGMODEL_BATCH_ID,
+});
+const BIGMODEL_FILES = {
+	"file-bm-output": [
+		bigmodelLine(1, "615-request-1", { completion_tokens: 26, prompt_tokens: 89, total_tokens: 115 }),
+		bigmodelLine(2, "616-request-2", { completion_tokens: 22, prompt_tokens: 94, total_tokens: 116, prompt_tokens_details: { cached_tokens: 64 } }),
+	].join("\n") + "\n",
+	"file-bm-error": JSON.stringify({ response: { status_code: 400, body: { error: { code: "1210", message: "API 调用参数有误，请检查文档。" } } }, custom_id: "request-3", id: BIGMODEL_BATCH_ID }) + "\n",
+};
+const bigmodelBatch = (status, extra) => ({
+	id: BIGMODEL_BATCH_ID, object: "batch", endpoint: "/v4/chat/completions", input_file_id: "file-bm-input", completion_window: "24h",
+	status, created_at: 1715959000, request_counts: { total: 3, completed: 0, failed: 0 }, ...extra,
+});
+const bigmodelAnswer = (method, path, body) => {
+	const notFound = { status: 404, body: errorBody(`bigmodel serves nothing at ${method} ${path}`, "invalid_request_error", "not_found") };
+	if (!path.startsWith(BIGMODEL_ROOT + "/")) return notFound;
+	const rest = path.slice(BIGMODEL_ROOT.length);
+	if (method === "POST" && rest === "/files") {
+		return { status: 200, body: JSON.stringify({ id: "file-bm-input", object: "file", bytes: 64, created_at: 1715959000, filename: "batch_requests.jsonl", purpose: "batch" }) };
+	}
+	if (method === "POST" && rest === "/batches") {
+		return { status: 200, body: JSON.stringify(bigmodelBatch("validating", { endpoint: body.endpoint, input_file_id: body.input_file_id, metadata: body.metadata })) };
+	}
+	if (method === "GET" && rest === `/batches/${BIGMODEL_BATCH_ID}`) {
+		return { status: 200, body: JSON.stringify(bigmodelBatch("completed", { output_file_id: "file-bm-output", error_file_id: "file-bm-error", request_counts: { total: 3, completed: 2, failed: 1 } })) };
+	}
+	if (method === "POST" && rest === `/batches/${BIGMODEL_BATCH_ID}/cancel`) {
+		return { status: 200, body: JSON.stringify(bigmodelBatch("cancelling", { cancelling_at: 1715959100 })) };
+	}
+	const content = rest.match(/^\/files\/([^/]+)\/content$/);
+	if (method === "GET" && content && Object.hasOwn(BIGMODEL_FILES, content[1])) {
+		return { status: 200, contentType: "application/octet-stream", body: BIGMODEL_FILES[content[1]] };
+	}
+	return notFound;
+};
 // Reads and discards a request body (JSON or multipart) before answering, so the gateway's upload completes.
 const drain = (req, then) => {
 	req.on("data", () => {});
@@ -1046,6 +1095,19 @@ const server = http.createServer((req, res) => {
 	}
 	if (req.method === "GET" && path === "/__wire") {
 		return send(200, {}, JSON.stringify({ data: [{ calls: wireCalls }] }));
+	}
+	if (path.startsWith("/pp/bigmodel/")) {
+		const body = [];
+		req.on("data", (c) => body.push(c));
+		req.on("end", () => {
+			const bytes = Buffer.concat(body).toString("utf8");
+			wireCalls.push({ method: req.method, path, query: new URL(req.url, "http://localhost").search, body: bytes, key: BIGMODEL_KEY_NAMES[req.headers.authorization] || "unknown" });
+			let parsed = {};
+			try { parsed = JSON.parse(bytes) || {}; } catch {}
+			const answer = bigmodelAnswer(req.method, path, parsed);
+			send(answer.status, answer.contentType ? { "Content-Type": answer.contentType } : {}, answer.body);
+		});
+		return undefined;
 	}
 	// MiniMax video query is a GET; the task id "base-resp-<code>" selects the base_resp code (TXE-6588).
 	if (req.method === "GET" && path.startsWith("/pp/minimax/v2/query/video_generation/")) {
