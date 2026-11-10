@@ -2891,13 +2891,18 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		provider.logger.Error("gemini batch create unmarshal error: " + bifrostErr2.Error.Message)
 		return nil, providerUtils.SetErrorLatency(bifrostErr2, latency)
 	}
+	// The reference does not name asyncBatchEmbedContent's response type, so an embedding
+	// job the vendor accepted (it has a name) is not turned into an error for a metadata or
+	// stats block that is not there: an error here would lose the job's id. Its counts are
+	// what was sent, all still pending.
+	if geminiResp.Metadata == nil && embeddingBatch && geminiResp.Name != "" {
+		geminiResp.Metadata = &GeminiBatchMetadata{Name: geminiResp.Name}
+	}
 	// Check for metadata
 	if geminiResp.Metadata == nil {
 		return nil, providerUtils.NewBifrostOperationError("gemini batch response missing metadata", nil)
 	}
-	// Check for batch stats. The reference does not name asyncBatchEmbedContent's response
-	// type, so an embedding job the vendor accepted is not turned into an error for a stats
-	// block that is not there: its counts are what was sent, all still pending.
+	// Check for batch stats.
 	if geminiResp.Metadata.BatchStats == nil {
 		if !embeddingBatch {
 			return nil, providerUtils.NewBifrostOperationError("gemini batch response missing batch stats", nil)
@@ -2933,6 +2938,10 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	if geminiResp.Metadata.State == "" && len(inlinedResponses) > 0 {
 		status = schemas.BatchStatusCompleted
 		completedCount = len(inlinedResponses) - failedCount
+	}
+	// An accepted embedding job whose response names no state has not finished.
+	if embeddingBatch && geminiResp.Metadata.State == "" && len(inlinedResponses) == 0 {
+		status = schemas.BatchStatusInProgress
 	}
 
 	// Build response

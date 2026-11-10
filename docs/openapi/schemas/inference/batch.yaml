@@ -90,7 +90,12 @@ BatchRequestItem:
         The operation the line runs, e.g. `/v1/chat/completions`. Defaults to the batch's
         `endpoint`. On `gemini` and `vertex` (Gemini models) the supported urls are
         `/v1/chat/completions` and `/v1/images/generations`; any other is a 400 naming
-        the line.
+        the line. On `gemini`, `/v1/embeddings` lines are also supported, as a batch of
+        their own (`asyncBatchEmbedContent`): every line of the batch must then be an
+        embeddings line. A line whose `input` holds several items is sent to the vendor
+        as one request per item, so the batch's `request_counts` count inputs, and comes
+        back as one result line whose `data` holds one embedding per item; the line
+        fails if any of its items fails.
     body:
       type: object
       description: |

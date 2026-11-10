@@ -572,6 +572,14 @@ Supports text and multimodal embeddings (text, image, audio, video, and PDF via 
 
 **Note**: RFC3339 timestamps converted to Unix timestamps
 
+**Embedding batches**: a batch whose lines run `/v1/embeddings` (the batch's `endpoint`, or the first line's `url`) is created with `models/{model}:asyncBatchEmbedContent` instead of `batchGenerateContent`; retrieve, cancel and results use the same `batches/{id}` job. Every line of such a batch must be an embeddings line.
+
+- Each line's body is converted with the sync embeddings converter, so a request in the batch is the `requests[]` entry the sync route sends for the same body.
+- One `EmbedContentRequest` embeds one content: a line whose `input` holds several items is sent as one request per item (the batch's `request_counts` count those requests) and comes back as one result line with one `data[]` entry per item and the summed `usage.prompt_tokens`. The line fails if any of its items fails.
+- Result lines are OpenAI-shape embeddings bodies (`object: "list"`, `data[].embedding`, `usage`), paged with `after` and `limit` like every other batch.
+- Creating a batch is not idempotent at Gemini (two identical creates are two jobs); a caller that lost a create response finds its job in the list by `display_name`.
+- Not reached: Vertex (its batch prediction jobs are a different API) and the `/genai` route, which does not carry `:asyncBatchEmbedContent`.
+
 ---
 
 # 7. Files API

@@ -1170,17 +1170,30 @@ func TestGeminiEmbeddingBatchCreateIsOneAsyncBatchEmbedContentJob(t *testing.T) 
 		assert.Equal(t, "embed-in-1", fileResp.InputFileID)
 	})
 
-	t.Run("a job the vendor accepted is not an error for a missing stats block", func(t *testing.T) {
-		bare := newGeminiBatchVendor(t)
-		bare.embedCreate = `{"name":"batches/bare1","metadata":{"state":"JOB_STATE_PENDING","createTime":"2026-11-10T08:00:00Z"}}`
-		bareProvider, bareKeys := bare.provider(false)
-		bareResp, bareErr := bareProvider.BatchCreate(newCtx(), bareKeys[0], &schemas.BifrostBatchCreateRequest{
+	t.Run("a job the vendor accepted is not an error for a missing stats or metadata block", func(t *testing.T) {
+		for _, created := range []string{
+			`{"name":"batches/bare1","metadata":{"state":"JOB_STATE_PENDING","createTime":"2026-11-10T08:00:00Z"}}`,
+			`{"name":"batches/bare1"}`,
+		} {
+			bare := newGeminiBatchVendor(t)
+			bare.embedCreate = created
+			bareProvider, bareKeys := bare.provider(false)
+			bareResp, bareErr := bareProvider.BatchCreate(newCtx(), bareKeys[0], &schemas.BifrostBatchCreateRequest{
+				Provider: schemas.Gemini, Model: schemas.Ptr("gemini-embedding-001"), Endpoint: schemas.BatchEndpointEmbeddings, Requests: items,
+			})
+			require.Nil(t, bareErr, "the job exists at the vendor: an error here would lose its id (%s)", created)
+			assert.Equal(t, "batches/bare1", bareResp.ID, created)
+			assert.Equal(t, schemas.BatchStatusInProgress, bareResp.Status, created)
+			assert.Equal(t, 4, bareResp.RequestCounts.Total, "the count is what was sent (%s)", created)
+		}
+		// A response that names no job is still an error.
+		nameless := newGeminiBatchVendor(t)
+		nameless.embedCreate = `{}`
+		namelessProvider, namelessKeys := nameless.provider(false)
+		_, namelessErr := namelessProvider.BatchCreate(newCtx(), namelessKeys[0], &schemas.BifrostBatchCreateRequest{
 			Provider: schemas.Gemini, Model: schemas.Ptr("gemini-embedding-001"), Endpoint: schemas.BatchEndpointEmbeddings, Requests: items,
 		})
-		require.Nil(t, bareErr, "the job exists at the vendor: an error here would lose its id")
-		assert.Equal(t, "batches/bare1", bareResp.ID)
-		assert.Equal(t, schemas.BatchStatusInProgress, bareResp.Status)
-		assert.Equal(t, 4, bareResp.RequestCounts.Total, "the count is what was sent")
+		require.NotNil(t, namelessErr)
 	})
 
 	t.Run("lines it cannot run are refused before any upstream call", func(t *testing.T) {
@@ -1450,6 +1463,46 @@ func BenchmarkGeminiEmbeddingBatchLineConversion(b *testing.B) {
 	_, inlined := geminiBatchOutput(&job)
 	require.Len(b, inlined, 7)
 
+	// A generateContent batch's inline responses are decoded through the same type, which now
+	// looks at each response to tell an EmbedContentResponse from a GenerateContentResponse.
+	// "as before" decodes the same job with the plain struct the type was.
+	type plainInlinedResponse struct {
+		Response *GenerateContentResponse `json:"response,omitempty"`
+		Error    *GeminiBatchErrorInfo    `json:"error,omitempty"`
+		Metadata *GeminiBatchMetadata     `json:"metadata,omitempty"`
+	}
+	type plainJob struct {
+		Name     string               `json:"name"`
+		Metadata *GeminiBatchMetadata `json:"metadata,omitempty"`
+		Done     bool                 `json:"done,omitempty"`
+		Response struct {
+			Type             string `json:"@type,omitempty"`
+			InlinedResponses struct {
+				InlinedResponses []plainInlinedResponse `json:"inlinedResponses"`
+			} `json:"inlinedResponses"`
+		} `json:"response"`
+	}
+	b.Run("generateContent job decode, as before", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			var decoded plainJob
+			if err := sonic.UnmarshalString(geminiFinishedInlineBatch, &decoded); err != nil || len(decoded.Response.InlinedResponses.InlinedResponses) != 3 {
+				b.Fatalf("decode: %v", err)
+			}
+		}
+	})
+	b.Run("generateContent job decode, now", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			var decoded GeminiBatchJobResponse
+			if err := sonic.UnmarshalString(geminiFinishedInlineBatch, &decoded); err != nil {
+				b.Fatalf("decode: %v", err)
+			}
+			if _, lines := geminiBatchOutput(&decoded); len(lines) != 3 {
+				b.Fatalf("lines=%d", len(lines))
+			}
+		}
+	})
 	b.Run("line to requests", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {

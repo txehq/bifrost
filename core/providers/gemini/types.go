@@ -13,6 +13,7 @@ import (
 
 	"cloud.google.com/go/civil"
 	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/ast"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -3067,9 +3068,9 @@ type GeminiInlinedResponse struct {
 // UnmarshalJSON decodes "response" as the kind of response it is.
 func (r *GeminiInlinedResponse) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Response json.RawMessage       `json:"response,omitempty"`
-		Error    *GeminiBatchErrorInfo `json:"error,omitempty"`
-		Metadata *GeminiBatchMetadata  `json:"metadata,omitempty"`
+		Response sonic.NoCopyRawMessage `json:"response,omitempty"`
+		Error    *GeminiBatchErrorInfo  `json:"error,omitempty"`
+		Metadata *GeminiBatchMetadata   `json:"metadata,omitempty"`
 	}
 	if err := sonic.Unmarshal(data, &raw); err != nil {
 		return err
@@ -3105,13 +3106,12 @@ func (r GeminiInlinedResponse) MarshalJSON() ([]byte, error) {
 // isGeminiEmbedContentResponse reports whether a batch line's response is an
 // EmbedContentResponse: it has an embedding, which a GenerateContentResponse never has.
 func isGeminiEmbedContentResponse(response []byte) bool {
-	var probe struct {
-		Embedding json.RawMessage `json:"embedding"`
-	}
-	if err := sonic.Unmarshal(response, &probe); err != nil {
+	// A lazy lookup: the response (an image, a long answer) is skipped over, not decoded.
+	node, err := sonic.Get(response, "embedding")
+	if err != nil || !node.Exists() {
 		return false
 	}
-	return len(probe.Embedding) > 0 && string(probe.Embedding) != "null"
+	return node.TypeSafe() == ast.V_OBJECT
 }
 
 // GeminiBatchErrorInfo represents error information.
