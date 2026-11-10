@@ -58,11 +58,12 @@ func TestToCohereEmbeddingRequest(t *testing.T) {
 		assert.Equal(t, map[string]interface{}{"priority": "high"}, req.ExtraParams)
 	})
 
-	t.Run("multiple text contents batch into texts array with default input type", func(t *testing.T) {
+	t.Run("multiple text contents batch into texts array with task_type as input_type", func(t *testing.T) {
 		hello := "hello"
 		world := "world"
 		req, err := ToCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-			Model: "embed-english-v3.0",
+			Model:  "embed-english-v3.0",
+			Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_query")},
 			Input: []schemas.EmbeddingInputItem{
 				{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &hello}}},
 				{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &world}}},
@@ -72,7 +73,7 @@ func TestToCohereEmbeddingRequest(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, req)
 		assert.Equal(t, "embed-english-v3.0", req.Model)
-		assert.Equal(t, "search_document", req.InputType)
+		assert.Equal(t, "search_query", req.InputType)
 		assert.Equal(t, []string{"hello", "world"}, req.Texts)
 		assert.Nil(t, req.ExtraParams)
 	})
@@ -81,7 +82,8 @@ func TestToCohereEmbeddingRequest(t *testing.T) {
 		text := "describe this"
 		imageURL := "data:image/jpeg;base64,abc123"
 		req, err := ToCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-			Model: "embed-v4.0",
+			Model:  "embed-v4.0",
+			Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_document")},
 			Input: []schemas.EmbeddingInputItem{
 				{Content: schemas.EmbeddingContent{
 					{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
@@ -102,7 +104,8 @@ func TestToCohereEmbeddingRequest(t *testing.T) {
 func TestToCohereEmbeddingRequestBodyIncludesModelForDirectCohere(t *testing.T) {
 	text := "hello"
 	bifrostReq := &schemas.BifrostEmbeddingRequest{
-		Model: "embed-v4.0",
+		Model:  "embed-v4.0",
+		Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_document")},
 		Input: []schemas.EmbeddingInputItem{
 			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}},
 		},
@@ -235,6 +238,14 @@ func TestToCohereEmbeddingResponseMetaMatchesEmbedEndpoint(t *testing.T) {
 	assert.Equal(t, 3, *resp.Meta.BilledUnits.InputTokens)
 	require.NotNil(t, resp.Meta.BilledUnits.ImageTokens)
 	assert.Equal(t, 6, *resp.Meta.BilledUnits.ImageTokens)
+	assert.Nil(t, resp.Meta.BilledUnits.Images, "no image count reported, none invented")
+
+	withImages := ToCohereEmbeddingResponse(&schemas.BifrostEmbeddingResponse{
+		Data:  []schemas.EmbeddingData{{Index: 0, Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{1}}}},
+		Usage: &schemas.BifrostLLMUsage{InputImages: schemas.Ptr(2)},
+	})
+	require.NotNil(t, withImages.Meta.BilledUnits.Images, "the native route returns the billed image count")
+	assert.Equal(t, 2, *withImages.Meta.BilledUnits.Images)
 }
 
 // The converter runs again on a retry or fallback with the same request, so lifting the
@@ -262,8 +273,9 @@ func TestToCohereEmbeddingRequest_LeavesCallerExtraParamsIntact(t *testing.T) {
 func TestToCohereEmbeddingRequestTextOnlyUsesTexts(t *testing.T) {
 	text := "hello"
 	req, err := ToCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-		Model: "embed-v4.0",
-		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+		Model:  "embed-v4.0",
+		Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_document")},
+		Input:  []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
 	})
 
 	require.NoError(t, err)
@@ -275,7 +287,8 @@ func TestToCohereEmbeddingRequestTextOnlyUsesTexts(t *testing.T) {
 func TestToCohereEmbeddingRequestMultimodalUsesInputs(t *testing.T) {
 	caption := "caption"
 	req, err := ToCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-		Model: "embed-v4.0",
+		Model:  "embed-v4.0",
+		Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_document")},
 		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
 			{Type: schemas.EmbeddingContentPartTypeText, Text: &caption},
 			{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("https://example.com/cat.png")}},
@@ -293,7 +306,8 @@ func TestToCohereEmbeddingRequestMultimodalUsesInputs(t *testing.T) {
 
 func TestToCohereEmbeddingRequestRejectsUnsupportedModalities(t *testing.T) {
 	_, err := ToCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-		Model: "embed-v4.0",
+		Model:  "embed-v4.0",
+		Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_document")},
 		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
 			{Type: schemas.EmbeddingContentPartTypeAudio, Audio: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("https://example.com/audio.mp3")}},
 		}},
@@ -308,14 +322,16 @@ func TestToCohereEmbeddingRequestBuildsDataURIFromDataAndMIMEType(t *testing.T) 
 	image := schemas.EmbeddingMediaPart{Data: schemas.Ptr("iVBORw0KGgo="), MIMEType: schemas.Ptr("image/png")}
 
 	lone, err := ToCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-		Model: "embed-v4.0",
-		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeImage, Image: &image}}}},
+		Model:  "embed-v4.0",
+		Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_document")},
+		Input:  []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeImage, Image: &image}}}},
 	})
 	require.NoError(t, err)
 	require.Equal(t, []string{"data:image/png;base64,iVBORw0KGgo="}, lone.Images)
 
 	mixed, err := ToCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-		Model: "embed-v4.0",
+		Model:  "embed-v4.0",
+		Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_document")},
 		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
 			{Type: schemas.EmbeddingContentPartTypeText, Text: &caption},
 			{Type: schemas.EmbeddingContentPartTypeImage, Image: &image},
@@ -328,7 +344,8 @@ func TestToCohereEmbeddingRequestBuildsDataURIFromDataAndMIMEType(t *testing.T) 
 func TestToCohereEmbeddingRequestAllLoneImagesUseImages(t *testing.T) {
 	a, b := "data:image/png;base64,AAAA", "data:image/jpeg;base64,BBBB"
 	req, err := ToCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-		Model: "embed-v4.0",
+		Model:  "embed-v4.0",
+		Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_document")},
 		Input: []schemas.EmbeddingInputItem{
 			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: &a}}}},
 			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: &b}}}},
@@ -347,7 +364,7 @@ func TestToCohereEmbeddingRequestMapsEncodingFormat(t *testing.T) {
 	req, err := ToCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
 		Model:  "embed-v4.0",
 		Input:  input,
-		Params: &schemas.EmbeddingParameters{EncodingFormat: schemas.Ptr("base64")},
+		Params: &schemas.EmbeddingParameters{EncodingFormat: schemas.Ptr("base64"), TaskType: schemas.Ptr("search_document")},
 	})
 	require.NoError(t, err)
 	require.Equal(t, []string{"base64"}, req.EmbeddingTypes)
@@ -357,6 +374,7 @@ func TestToCohereEmbeddingRequestMapsEncodingFormat(t *testing.T) {
 		Input: input,
 		Params: &schemas.EmbeddingParameters{
 			EncodingFormat: schemas.Ptr("base64"),
+			TaskType:       schemas.Ptr("search_document"),
 			ExtraParams:    map[string]interface{}{"embedding_types": []string{"int8"}},
 		},
 	})
@@ -389,4 +407,142 @@ func TestCohereEmbeddingRequestUnsupportedBlockIsInvalidRequest(t *testing.T) {
 	badRequest, ok := providerUtils.AsBifrostBadRequestError(err)
 	require.True(t, ok)
 	require.Equal(t, `unsupported cohere embedding block type "audio"`, badRequest.Error.Message)
+}
+
+// Contract C4: Cohere's input_type is required from v3 on, and Bifrost adds no value the
+// caller did not send. A request with neither task_type nor input_type is refused before
+// any upstream call, as 400 caller_unsupported_parameter naming task_type.
+func TestToCohereEmbeddingRequestWithoutTaskTypeIsUnsupportedParameter(t *testing.T) {
+	text := "hello"
+	input := []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}}
+
+	for name, params := range map[string]*schemas.EmbeddingParameters{
+		"no params":           nil,
+		"params without it":   {Dimensions: schemas.Ptr(256)},
+		"empty task_type":     {TaskType: schemas.Ptr("")},
+		"non-string extra it": {ExtraParams: map[string]interface{}{"input_type": 3}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := &schemas.BifrostEmbeddingRequest{Model: "embed-v4.0", Input: input, Params: params}
+			wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(context.Background(), req,
+				func() (providerUtils.RequestBodyWithExtraParams, error) { return ToCohereEmbeddingRequest(req) })
+
+			require.Nil(t, wireBody, "nothing may reach Cohere")
+			require.NotNil(t, bifrostErr)
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, 400, *bifrostErr.StatusCode)
+			assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+			require.NotNil(t, bifrostErr.Error)
+			assert.Equal(t, "task_type", bifrostErr.Error.Param)
+			assert.False(t, bifrostErr.IsBifrostError)
+		})
+	}
+}
+
+// task_type is the unified field (contract C4) and is converted to input_type: Cohere's own
+// values as given, the Gemini dialect's onto their equivalent, anything else refused. A
+// caller speaking Cohere's own name through extra params still works, and the two may not
+// disagree.
+func TestToCohereEmbeddingRequestDeliversTaskTypeAsInputType(t *testing.T) {
+	text := "hello"
+	input := []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}}
+
+	req := &schemas.BifrostEmbeddingRequest{Model: "embed-v4.0", Input: input, Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("classification")}}
+	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(context.Background(), req,
+		func() (providerUtils.RequestBodyWithExtraParams, error) { return ToCohereEmbeddingRequest(req) })
+	require.Nil(t, bifrostErr)
+	assert.JSONEq(t, `{"model":"embed-v4.0","input_type":"classification","texts":["hello"]}`, string(wireBody))
+
+	extra, err := ToCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{Model: "embed-v4.0", Input: input,
+		Params: &schemas.EmbeddingParameters{ExtraParams: map[string]interface{}{"input_type": "image"}}})
+	require.NoError(t, err)
+	assert.Equal(t, "image", extra.InputType)
+	assert.NotContains(t, extra.ExtraParams, "input_type")
+
+	same, err := ToCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{Model: "embed-v4.0", Input: input,
+		Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("clustering"), ExtraParams: map[string]interface{}{"input_type": "clustering"}}})
+	require.NoError(t, err)
+	assert.Equal(t, "clustering", same.InputType)
+
+	for taskType, want := range map[string]string{
+		"RETRIEVAL_QUERY":    "search_query",
+		"RETRIEVAL_DOCUMENT": "search_document",
+		"CLASSIFICATION":     "classification",
+		"Search_Query":       "search_query",
+	} {
+		mapped, err := ToCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{Model: "embed-v4.0", Input: input,
+			Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr(taskType)}})
+		require.NoError(t, err, taskType)
+		assert.Equal(t, want, mapped.InputType, taskType)
+	}
+
+	// No Cohere equivalent: refused with the field named, never sent as something else.
+	unmappable := &schemas.BifrostEmbeddingRequest{Model: "embed-v4.0", Input: input,
+		Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("SEMANTIC_SIMILARITY")}}
+	body, unmappableErr := providerUtils.CheckContextAndGetRequestBody(context.Background(), unmappable,
+		func() (providerUtils.RequestBodyWithExtraParams, error) { return ToCohereEmbeddingRequest(unmappable) })
+	require.Nil(t, body)
+	require.NotNil(t, unmappableErr)
+	assert.Equal(t, 400, *unmappableErr.StatusCode)
+	assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, unmappableErr.ExtraFields.ErrorType)
+	assert.Equal(t, "task_type", unmappableErr.Error.Param)
+
+	_, err = ToCohereEmbeddingRequest(&schemas.BifrostEmbeddingRequest{Model: "embed-v4.0", Input: input,
+		Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_query"), ExtraParams: map[string]interface{}{"input_type": "search_document"}}})
+	badRequest, ok := providerUtils.AsBifrostBadRequestError(err)
+	require.True(t, ok, "disagreeing task_type and input_type is the caller's error")
+	assert.Equal(t, 400, *badRequest.StatusCode)
+}
+
+// Contract C5: usage is what Cohere bills. billed_units wins over the processed counts in
+// meta.tokens, and the billed image count reaches usage.input_images.
+func TestCohereEmbeddingUsageIsBilledUnits(t *testing.T) {
+	t.Run("billed_units first, images counted", func(t *testing.T) {
+		resp := (&CohereEmbeddingResponse{
+			Embeddings: &CohereEmbeddingData{Float: [][]float64{{1}, {2}}},
+			Meta: &CohereEmbeddingMeta{
+				Tokens:      &CohereTokenUsage{InputTokens: schemas.Ptr(40)},
+				BilledUnits: &CohereBilledUnits{InputTokens: schemas.Ptr(12), ImageTokens: schemas.Ptr(1000), Images: schemas.Ptr(2)},
+			},
+		}).ToBifrostEmbeddingResponse()
+
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 12, resp.Usage.PromptTokens, "billed, not processed, input tokens")
+		require.NotNil(t, resp.Usage.PromptTokensDetails)
+		assert.Equal(t, 1000, resp.Usage.PromptTokensDetails.ImageTokens)
+		require.NotNil(t, resp.Usage.InputImages)
+		assert.Equal(t, 2, *resp.Usage.InputImages)
+		assert.Equal(t, 1012, resp.Usage.TotalTokens)
+
+		body, err := schemas.Marshal(resp.Usage)
+		require.NoError(t, err)
+		var wire map[string]any
+		require.NoError(t, schemas.Unmarshal(body, &wire))
+		assert.EqualValues(t, 2, wire["input_images"], "the image count is on the wire")
+		assert.EqualValues(t, 12, wire["prompt_tokens"])
+	})
+
+	t.Run("text only reports no image count", func(t *testing.T) {
+		resp := (&CohereEmbeddingResponse{
+			Meta: &CohereEmbeddingMeta{BilledUnits: &CohereBilledUnits{InputTokens: schemas.Ptr(7)}},
+		}).ToBifrostEmbeddingResponse()
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 7, resp.Usage.PromptTokens)
+		assert.Nil(t, resp.Usage.InputImages, "never filled by Bifrost")
+		assert.Nil(t, resp.Usage.PromptTokensDetails)
+	})
+
+	t.Run("tokens only when nothing is billed", func(t *testing.T) {
+		resp := (&CohereEmbeddingResponse{
+			Meta: &CohereEmbeddingMeta{Tokens: &CohereTokenUsage{InputTokens: schemas.Ptr(5)}},
+		}).ToBifrostEmbeddingResponse()
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 5, resp.Usage.PromptTokens)
+		assert.Equal(t, 5, resp.Usage.TotalTokens)
+	})
+
+	t.Run("no counters, no usage", func(t *testing.T) {
+		resp := (&CohereEmbeddingResponse{Meta: &CohereEmbeddingMeta{}}).ToBifrostEmbeddingResponse()
+		assert.Nil(t, resp.Usage)
+	})
 }

@@ -113191,6 +113191,10 @@
           "total_tokens": {
             "type": "integer"
           },
+          "input_images": {
+            "type": "integer",
+            "description": "Number of input images the provider billed (Cohere embeddings report it as meta.billed_units.images). Present only when the provider reports it.\n"
+          },
           "tool_usage": {
             "type": "object",
             "description": "Counts of provider-hosted (server-side) tool calls billed per call.\n",

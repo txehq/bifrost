@@ -38,6 +38,7 @@ func TestCohere(t *testing.T) {
 		TextModel:                "",                         // Cohere focuses on chat
 		EmbeddingModel:           "embed-v4.0",
 		MultimodalEmbeddingModel: "embed-v4.0",
+		EmbeddingTaskType:        "search_document",
 		RerankModel:              "rerank-v3.5",
 		ReasoningModel:           "command-a-reasoning-08-2025",
 		Scenarios: llmtests.TestScenarios{
@@ -227,6 +228,7 @@ func TestCohereErrorsCarryErrorType(t *testing.T) {
 				Input: []schemas.EmbeddingInputItem{
 					{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("hi")}}},
 				},
+				Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_document")},
 			})
 			return err
 		},

@@ -3470,11 +3470,34 @@ func InvalidRequestErrorf(format string, args ...any) error {
 	return &invalidRequestError{msg: fmt.Sprintf(format, args...)}
 }
 
+// converterBifrostError carries a fully formed BifrostError out of a request converter,
+// for a refusal whose class is more specific than caller_invalid_request (a
+// caller_unsupported_parameter naming error.param, contract C4).
+type converterBifrostError struct{ err *schemas.BifrostError }
+
+func (e *converterBifrostError) Error() string {
+	if e.err != nil && e.err.Error != nil {
+		return e.err.Error.Message
+	}
+	return "request conversion refused"
+}
+
+// ConverterBifrostError wraps bifrostErr so a request converter can return it as a plain
+// error. CheckContextAndGetRequestBody returns bifrostErr unchanged (status, error_type
+// and param included); wrapping it again with %w still unwraps.
+func ConverterBifrostError(bifrostErr *schemas.BifrostError) error {
+	return &converterBifrostError{err: bifrostErr}
+}
+
 // AsBifrostBadRequestError converts a converter error into a 400 when it (or anything it
 // wraps) was built by InvalidRequestErrorf. The BifrostError carries the converter's own
 // message rather than the wrapped chain, because the outer "failed to convert messages:"
 // prefixes describe Bifrost's call stack, not the caller's mistake.
 func AsBifrostBadRequestError(err error) (*schemas.BifrostError, bool) {
+	var carried *converterBifrostError
+	if errors.As(err, &carried) {
+		return carried.err, true
+	}
 	var invalid *invalidRequestError
 	if errors.As(err, &invalid) {
 		return NewBifrostBadRequestError(invalid.msg), true

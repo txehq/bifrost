@@ -299068,6 +299068,303 @@
           }
         }
       ]
+    },
+    {
+      "name": "315. Cohere embeddings bill on billed_units and require task_type (cohere embeddings task_type)",
+      "description": "Fork contract C4/C5 for the cohere provider's /v2/embed. Before this, Bifrost wrote input_type search_document whenever the caller sent none, ignored the unified task_type, and filled usage from meta.tokens (processed counts) ahead of meta.billed_units (what Cohere bills), dropping billed_units.images. Now task_type is converted to input_type (Cohere's own values as given, Gemini's RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT/CLASSIFICATION/CLUSTERING onto their equivalent), a request with neither task_type nor input_type is refused with 400 caller_unsupported_parameter on task_type before any upstream call, and usage comes from billed_units with the image count in usage.input_images. The native /cohere/v2/embed route is covered too: the caller's input_type reaches Cohere unchanged, and a native request without one is refused the same way, the classification arriving in the x-bifrost-error-type header because the Cohere error envelope has no extra_fields. Every case pins the key with x-bf-api-key so the one upstream call goes to that key with no fallback.",
+      "item": [
+        {
+          "name": "315.1 cohere/embed-v4.0 - task_type reaches Cohere as input_type, usage is billed_units, one call on the pinned key",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Cohere API Key"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/embed-v4.0\",\n  \"input\": \"alpha kestrel harbor\",\n  \"task_type\": \"search_query\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function asObj(v) { if (typeof v === 'string') { try { return JSON.parse(v); } catch (e) { return null; } } return v || null; }",
+                  "pm.test('200 with one vector', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+                  "  pm.expect((pm.response.json().data || []).length).to.eql(1);",
+                  "});",
+                  "var j = pm.response.json(); var ef = j.extra_fields || {};",
+                  "pm.test('task_type was sent as input_type, nothing defaulted', function () {",
+                  "  var sent = asObj(ef.raw_request);",
+                  "  pm.expect(sent, 'no raw_request: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(sent.input_type).to.eql('search_query');",
+                  "  pm.expect(sent).to.not.have.property('task_type');",
+                  "});",
+                  "pm.test('usage.prompt_tokens is billed_units.input_tokens', function () {",
+                  "  var got = asObj(ef.raw_response) || {}; var billed = (got.meta || {}).billed_units || {};",
+                  "  pm.expect(billed.input_tokens, 'Cohere reported no billed input_tokens').to.be.a('number');",
+                  "  pm.expect(j.usage.prompt_tokens).to.eql(billed.input_tokens);",
+                  "  pm.expect(j.usage).to.not.have.property('input_images');",
+                  "});",
+                  "pm.test('served by the pinned key, no fallback', function () {",
+                  "  var ri = ef.routing_info || {};",
+                  "  pm.expect(ri.key, JSON.stringify(ri)).to.eql('Cohere API Key');",
+                  "  pm.expect(!!ri.is_fallback).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "315.2 [EXPECT-400] cohere/embed-v4.0 - no task_type is caller_unsupported_parameter with no upstream call",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Cohere API Key"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/embed-v4.0\",\n  \"input\": \"alpha kestrel harbor\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 caller_unsupported_parameter on task_type', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 400)).to.eql(400);",
+                  "  var j = pm.response.json(); var ef = j.extra_fields || {};",
+                  "  pm.expect(ef.error_type).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect((j.error || {}).param).to.eql('task_type');",
+                  "  pm.expect(!!j.is_bifrost_error, 'the caller is at fault, not Bifrost').to.be.false;",
+                  "});",
+                  "pm.test('Cohere was never called', function () {",
+                  "  var ef = pm.response.json().extra_fields || {};",
+                  "  pm.expect(ef.raw_response, 'an upstream response came back').to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "315.3 cohere/embed-v4.0 - image input bills image_tokens and input_images from billed_units",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Cohere API Key"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/embed-v4.0\",\n  \"input\": [\n    [\n      {\n        \"type\": \"image\",\n        \"image\": {\n          \"data\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAOklEQVR4nO3RQREAQAjDwHKS8C8AWSchfPhlBZSZUNOdS+90PR5Y8AfIRMhEyETIRMhEyETIRMhEIR/EvwFs/VkrpgAAAABJRU5ErkJggg==\"\n        }\n      }\n    ]\n  ],\n  \"task_type\": \"search_document\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function asObj(v) { if (typeof v === 'string') { try { return JSON.parse(v); } catch (e) { return null; } } return v || null; }",
+                  "pm.test('200 with one vector', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+                  "  pm.expect((pm.response.json().data || []).length).to.eql(1);",
+                  "});",
+                  "var j = pm.response.json(); var ef = j.extra_fields || {};",
+                  "var billed = ((asObj(ef.raw_response) || {}).meta || {}).billed_units || {};",
+                  "pm.test('image counters come from billed_units', function () {",
+                  "  pm.expect(billed.image_tokens, 'Cohere reported no billed image_tokens: ' + JSON.stringify(billed)).to.be.above(0);",
+                  "  pm.expect((j.usage.prompt_tokens_details || {}).image_tokens).to.eql(billed.image_tokens);",
+                  "  pm.expect(j.usage.prompt_tokens || 0).to.eql(billed.input_tokens || 0);",
+                  "});",
+                  "pm.test('input_images is the billed image count, and only that', function () {",
+                  "  if (billed.images === undefined) { pm.expect(j.usage, 'Bifrost filled an image count Cohere did not report').to.not.have.property('input_images'); return; }",
+                  "  pm.expect(j.usage.input_images).to.eql(billed.images);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "315.4 [EXPECT-400] /cohere/v2/embed cohere/embed-v4.0 - no input_type is caller_unsupported_parameter with no upstream call",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Cohere API Key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/embed-v4.0\",\n  \"texts\": [\n    \"alpha kestrel harbor\"\n  ],\n  \"embedding_types\": [\n    \"float\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cohere/v2/embed",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cohere",
+                "v2",
+                "embed"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400, classified caller_unsupported_parameter', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 400)).to.eql(400);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-error-type')).to.eql('caller_unsupported_parameter');",
+                  "});",
+                  "pm.test('the Cohere error envelope names task_type', function () {",
+                  "  pm.expect(pm.response.json().message || '').to.include('task_type');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "315.5 /cohere/v2/embed cohere/embed-v4.0 - the caller input_type reaches Cohere, billed_units come back",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Cohere API Key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/embed-v4.0\",\n  \"input_type\": \"search_query\",\n  \"texts\": [\n    \"alpha kestrel harbor\"\n  ],\n  \"embedding_types\": [\n    \"float\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/cohere/v2/embed",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "cohere",
+                "v2",
+                "embed"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 with one float vector', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+                  "  pm.expect(((pm.response.json().embeddings || {}).float || []).length).to.eql(1);",
+                  "});",
+                  "pm.test('meta.billed_units is Cohere's own', function () {",
+                  "  var billed = (pm.response.json().meta || {}).billed_units || {};",
+                  "  pm.expect(billed.input_tokens, 'no billed input_tokens: ' + JSON.stringify(pm.response.json().meta)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

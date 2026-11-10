@@ -117,6 +117,9 @@ type ComprehensiveTestConfig struct {
 	ReasoningModel           string
 	EmbeddingModel           string
 	MultimodalEmbeddingModel string // Model for multimodal embedding tests (text + image)
+	// EmbeddingTaskType is sent as task_type on every embedding scenario, for providers
+	// whose API requires one (Cohere's input_type: Bifrost adds no default, contract C4).
+	EmbeddingTaskType        string
 	RerankModel              string
 	DecisionModel            string
 	DecisionEmulationModel   string // a general LLM model used to emulate a decision

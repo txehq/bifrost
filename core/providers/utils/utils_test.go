@@ -4280,3 +4280,32 @@ func BenchmarkProviderHTTPClientRoundTrip(b *testing.B) {
 		resp.Body.Close()
 	}
 }
+
+// A converter that refuses with a specific class (caller_unsupported_parameter, contract
+// C4) returns ConverterBifrostError; CheckContextAndGetRequestBody hands that error back
+// unchanged instead of the generic conversion 500, even when it was wrapped with %w.
+func TestCheckContextAndGetRequestBodyReturnsConverterBifrostError(t *testing.T) {
+	want := &schemas.BifrostError{
+		StatusCode:  schemas.Ptr(400),
+		Error:       &schemas.ErrorField{Message: "field x is not supported", Param: "x"},
+		ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeCallerInvalidRequest},
+	}
+	for name, convErr := range map[string]error{
+		"direct":  ConverterBifrostError(want),
+		"wrapped": fmt.Errorf("converting: %w", ConverterBifrostError(want)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			body, got := CheckContextAndGetRequestBody(context.Background(), nil,
+				func() (RequestBodyWithExtraParams, error) { return nil, convErr })
+			if body != nil {
+				t.Fatalf("body = %s, want none", body)
+			}
+			if got != want {
+				t.Fatalf("got %+v, want the converter's own error", got)
+			}
+		})
+	}
+	if msg := ConverterBifrostError(want).Error(); msg != "field x is not supported" {
+		t.Fatalf("Error() = %q", msg)
+	}
+}

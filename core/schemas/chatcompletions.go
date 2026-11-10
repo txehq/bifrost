@@ -1960,7 +1960,12 @@ type BifrostLLMUsage struct {
 	// a single query against up to 100 document chunks, so a request over that many chunks
 	// bills as several. Distinct from ChatCompletionTokensDetails.NumSearchQueries, which
 	// counts web-search calls made during a chat turn.
-	SearchUnits *int         `json:"search_units,omitempty"`
+	SearchUnits *int `json:"search_units,omitempty"`
+	// InputImages is the count of input images the vendor billed (Cohere embeddings'
+	// meta.billed_units.images), contract C5. Set only from the vendor's own report, never
+	// counted by Bifrost: nil means the vendor did not report it. Same name and meaning as
+	// the image operations' usage.input_images.
+	InputImages *int         `json:"input_images,omitempty"`
 	ToolUsage   *ToolUsage   `json:"tool_usage,omitempty"`
 	Cost        *BifrostCost `json:"cost,omitempty"` // Only for the providers which support cost calculation
 	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
@@ -2253,6 +2258,7 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 		merged.CompletionTokensDetails.ImageTokens = sumOptionalInts(baseDetails.ImageTokens, addDetails.ImageTokens)
 	}
 
+	merged.InputImages = sumOptionalInts(base.InputImages, add.InputImages)
 	merged.ToolUsage = base.ToolUsage.Add(add.ToolUsage)
 	merged.Cost = base.Cost.Add(add.Cost)
 
@@ -2663,6 +2669,7 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 		su := *u.SearchUnits
 		c.SearchUnits = &su
 	}
+	c.InputImages = copyIntPtr(u.InputImages)
 	c.ToolUsage = u.ToolUsage.DeepCopy()
 	c.Cost = u.Cost.DeepCopy()
 	if u.CostInUsdTicks != nil {

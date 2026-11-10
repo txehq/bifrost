@@ -38,6 +38,9 @@ func (u *BifrostLLMUsage) MergeStreamFrame(frame *BifrostLLMUsage) {
 	if frame.SearchUnits != nil {
 		u.SearchUnits = frame.SearchUnits
 	}
+	if frame.InputImages != nil {
+		u.InputImages = frame.InputImages
+	}
 	if frame.ToolUsage != nil {
 		u.ToolUsage = frame.ToolUsage
 	}
