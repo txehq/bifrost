@@ -170,7 +170,7 @@ curl http://localhost:8080/v1/audio/transcriptions \
 | `model` | `definition.enhancedMode = {"enabled": true, "model": "MAI-Transcribe-2"}`. A `mai-transcribe-*` id is sent with the vendor's casing; any other id is sent as given |
 | `language` | `definition.locales = ["en"]` |
 | `timestamp_granularities` | `definition.enhancedMode.modelOptions.timestamps`: `word` or `segment`. Both together send `word`, which carries each word's timing inside its phrase |
-| `response_format` | `json` and `verbose_json` change nothing in the request. `diarized_json` sets `definition.diarization.enabled = true` |
+| `response_format` | `json` changes nothing in the request. `verbose_json` and `diarized_json` ask for segment timestamps when no `timestamp_granularities` is given (the API's default omits all timing), and `diarized_json` also sets `definition.diarization.enabled = true` |
 | `prompt` | Not sent: the fast transcription definition has no prompt |
 
 Fields outside the unified structure are merged into `definition` under their own names when the request carries `x-bf-passthrough-extra-params: true`. Objects are merged key by key, and in a multipart form an object is sent JSON-encoded:

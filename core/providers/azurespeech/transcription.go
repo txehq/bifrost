@@ -81,7 +81,8 @@ func mergeDefinition(dst, src map[string]interface{}) {
 
 // ToAzureSpeechTranscriptionRequest converts a unified transcription request into a fast
 // transcription call. The model goes to definition.enhancedMode, language to
-// definition.locales, timestamp_granularities to enhancedMode.modelOptions.timestamps, and
+// definition.locales, timestamp_granularities to enhancedMode.modelOptions.timestamps
+// (segment by default for verbose_json and diarized_json, whose segments carry times), and
 // response_format diarized_json turns on diarization. When passthroughExtraParams is set
 // (x-bf-passthrough-extra-params), fields outside the unified structure are merged into
 // the definition under their own names (diarization, phraseList, enhancedMode, channels,
@@ -99,10 +100,17 @@ func ToAzureSpeechTranscriptionRequest(request *schemas.BifrostTranscriptionRequ
 	definition := map[string]interface{}{"enhancedMode": enhancedMode}
 
 	if params := request.Params; params != nil {
+		// segmentsExpected: verbose_json and diarized_json answer segments with start and
+		// end times. The API's timestamps default is "none", which omits all timing, so
+		// those formats ask for segment timing unless the caller named a granularity.
+		segmentsExpected := false
 		if params.ResponseFormat != nil {
 			switch strings.ToLower(strings.TrimSpace(*params.ResponseFormat)) {
-			case "", "json", "verbose_json":
+			case "", "json":
+			case "verbose_json":
+				segmentsExpected = true
 			case "diarized_json":
+				segmentsExpected = true
 				definition["diarization"] = map[string]interface{}{"enabled": true}
 			default:
 				// The API answers JSON only; Bifrost does not render text, srt or vtt from it.
@@ -116,6 +124,9 @@ func ToAzureSpeechTranscriptionRequest(request *schemas.BifrostTranscriptionRequ
 		timestamps, bifrostErr := transcriptionTimestamps(params.TimestampGranularities)
 		if bifrostErr != nil {
 			return nil, bifrostErr
+		}
+		if timestamps == "" && segmentsExpected {
+			timestamps = "segment"
 		}
 		if timestamps != "" {
 			enhancedMode["modelOptions"] = map[string]interface{}{"timestamps": timestamps}

@@ -830,6 +830,19 @@ func TestToAzureSpeechTranscriptionRequest(t *testing.T) {
 		}
 	})
 
+	t.Run("verbose_json asks for segment timing unless a granularity is named, json asks for none", func(t *testing.T) {
+		got := definition(t, &schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("verbose_json")}, false)
+		want := `{"enhancedMode":{"enabled":true,"model":"MAI-Transcribe-2","modelOptions":{"timestamps":"segment"}}}`
+		if got != want {
+			t.Errorf("verbose_json: definition = %s, want %s", got, want)
+		}
+		got = definition(t, &schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("json")}, false)
+		want = `{"enhancedMode":{"enabled":true,"model":"MAI-Transcribe-2"}}`
+		if got != want {
+			t.Errorf("json: definition = %s, want %s", got, want)
+		}
+	})
+
 	t.Run("extra fields are merged into the definition with the passthrough header", func(t *testing.T) {
 		got := definition(t, &schemas.TranscriptionParameters{
 			Language:               schemas.Ptr("en"),
@@ -903,7 +916,9 @@ func TestAzureSpeechTranscriptionDiarized(t *testing.T) {
 		t.Fatalf("Transcription error: %+v", bifrostErr.Error)
 	}
 	fields, _, _ := multipartParts(t, captured()[0])
-	want := `{"diarization":{"enabled":true},"enhancedMode":{"enabled":true,"model":"MAI-Transcribe-2"}}`
+	// Segment timestamps are asked for: the API's default is "none", which would leave
+	// every diarized segment without its start and end.
+	want := `{"diarization":{"enabled":true},"enhancedMode":{"enabled":true,"model":"MAI-Transcribe-2","modelOptions":{"timestamps":"segment"}}}`
 	if fields["definition"] != want {
 		t.Errorf("definition = %s, want %s", fields["definition"], want)
 	}
