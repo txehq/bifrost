@@ -552,6 +552,38 @@ func TestAccountBatchResults_AnthropicAggregatesUsage(t *testing.T) {
 	assert.InDelta(t, 0.00040, summary.Cost, 1e-12)
 }
 
+// The unified batch routes return Anthropic lines in the OpenAI shape (TXE-6597): the
+// usage is the chat.completion body's unified usage, priced the same as the native lines.
+func TestAccountBatchResults_AnthropicAggregatesOpenAIShapeLines(t *testing.T) {
+	store := newFakeAccountingStore()
+	line := func(prompt, completion int) schemas.BatchResultItem {
+		return schemas.BatchResultItem{
+			CustomID: "line",
+			Status:   schemas.BatchResultStatusSucceeded,
+			Response: &schemas.BatchResultResponse{StatusCode: 200, Body: map[string]any{
+				"object": "chat.completion",
+				"model":  "claude-3-5-haiku",
+				"usage":  map[string]any{"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion},
+			}},
+		}
+	}
+
+	summary, err := AccountBatchResults(context.Background(), store, store, fakePricing{}, JobRequest{
+		ClaimedBy:     "test-node",
+		Provider:      schemas.Anthropic,
+		ProviderJobID: "anthropic_openai_shape_batch",
+		Payload: BatchPayload{
+			Results: []schemas.BatchResultItem{line(15, 5), line(7, 4)},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, summary)
+	assert.True(t, summary.Accounted)
+	assert.Equal(t, 22, summary.Usage.PromptTokens)
+	assert.Equal(t, 9, summary.Usage.CompletionTokens)
+	assert.Equal(t, 31, summary.Usage.TotalTokens)
+}
+
 func TestAccountBatchResults_BedrockAggregatesUsageFromResponseBody(t *testing.T) {
 	store := newFakeAccountingStore()
 

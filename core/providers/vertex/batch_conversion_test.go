@@ -659,7 +659,7 @@ func TestVertexBatchLinesAreTheSyncRequest(t *testing.T) {
 			assert.Equal(t, tc.param, lineErr.Param, name)
 			assert.Contains(t, lineErr.Message, tc.text, name)
 
-			bifrostErr := gemini.NewBatchLineBadRequestError(lineErr.Index, lineErr)
+			bifrostErr := providerUtils.NewBatchLineBadRequestError(lineErr.Index, lineErr)
 			require.NotNil(t, bifrostErr.StatusCode, name)
 			assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode, name)
 			assert.Equal(t, "requests[1]."+tc.param, bifrostErr.Error.Param, name)

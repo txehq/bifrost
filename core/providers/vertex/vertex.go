@@ -3174,7 +3174,7 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 				// A line the caller got wrong is a 400 naming the line; nothing was uploaded.
 				var lineErr *schemas.BatchLineError
 				if errors.As(err, &lineErr) {
-					return nil, gemini.NewBatchLineBadRequestError(lineErr.Index, lineErr)
+					return nil, providerUtils.NewBatchLineBadRequestError(lineErr.Index, lineErr)
 				}
 				return nil, providerUtils.NewBifrostOperationError("failed to convert requests to Vertex JSONL", err)
 			}

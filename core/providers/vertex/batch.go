@@ -12,7 +12,6 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/providers/anthropic"
 	"github.com/capsohq/bifrost/core/providers/gemini"
-	"github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -409,8 +408,12 @@ func vertexConvertRequestsToJSONL(ctx *schemas.BifrostContext, key schemas.Key, 
 		}
 
 		if isAnthropic {
-			requestBody, err := vertexAnthropicBatchInstance(ctx, body, model)
+			requestBody, err := vertexAnthropicBatchInstance(ctx, item, body, model, batchEndpoint)
 			if err != nil {
+				var lineErr *schemas.BatchLineError
+				if errors.As(err, &lineErr) {
+					return nil, withBatchLineIndex(err, i)
+				}
 				return nil, fmt.Errorf("failed to convert batch request item %d (custom_id %q): %w", i, item.CustomID, err)
 			}
 			// Claude-on-Vertex batch has a native top-level custom_id, not Gemini labels.
@@ -434,7 +437,7 @@ func vertexConvertRequestsToJSONL(ctx *schemas.BifrostContext, key schemas.Key, 
 		_, hasMessages := body["messages"]
 		_, hasPrompt := body["prompt"]
 		if hasMessages || hasPrompt {
-			if err := gemini.CheckBatchLineModel(item, schemas.Vertex, model, key.Aliases.Resolve); err != nil {
+			if err := providerUtils.CheckBatchLineModel(item, schemas.Vertex, model, key.Aliases.Resolve); err != nil {
 				return nil, withBatchLineIndex(err, i)
 			}
 			lineBody, endpoint, err := gemini.ConvertBatchLine(ctx, item, schemas.Vertex, model, batchEndpoint, gemini.BatchLineConverters{
@@ -549,49 +552,21 @@ func vertexBatchOutputLineToResultItem(rawLine []byte, isAnthropic bool, include
 }
 
 // vertexAnthropicBatchInstance builds the per-line "request" body for a Claude-on-Vertex batch
-// instance. OpenAI-shaped bodies are converted to the Anthropic Messages shape via the shared
-// converters; bodies already in Anthropic shape pass through with the job-level model dropped
-// and anthropic_version ensured.
-func vertexAnthropicBatchInstance(ctx *schemas.BifrostContext, body map[string]interface{}, model string) (map[string]interface{}, error) {
-	if bodyLooksLikeOpenAIChat(body) {
-		reqBytes, err := sonic.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		var oaiReq openai.OpenAIChatRequest
-		if err := sonic.Unmarshal(reqBytes, &oaiReq); err != nil {
-			return nil, err
-		}
-		bifrostReq := oaiReq.ToBifrostChatRequest(ctx)
-		if bifrostReq == nil {
-			return nil, fmt.Errorf("could not parse OpenAI-style batch body")
-		}
-		if model != "" {
-			bifrostReq.Model = model
-		}
+// instance. An OpenAI chat completion line (its url says so, or its body has OpenAI-only
+// markers) is converted with anthropic.BatchChatLineParams, the converter the Anthropic
+// provider's batches use; bodies already in Anthropic shape pass through with the job-level
+// model dropped and anthropic_version ensured.
+func vertexAnthropicBatchInstance(ctx *schemas.BifrostContext, item schemas.BatchRequestItem, body map[string]interface{}, model string, batchEndpoint schemas.BatchEndpoint) (map[string]interface{}, error) {
+	if anthropic.BatchLineIsOpenAIChat(item, batchEndpoint) || bodyLooksLikeOpenAIChat(body) {
 		// The Vertex build config injects anthropic_version, strips the model field (model is at
 		// the job level), remaps tool versions and strips cache_control scope — same shaping the
 		// chat path uses for Claude-on-Vertex.
-		anthropicBytes, bErr := anthropic.BuildAnthropicChatRequestBody(ctx, bifrostReq, anthropic.AnthropicRequestBuildConfig{
+		lineItem := item
+		lineItem.Body, lineItem.Params = body, nil
+		return anthropic.BatchChatLineParams(ctx, lineItem, schemas.Vertex, model, anthropic.AnthropicRequestBuildConfig{
 			Provider: schemas.Vertex,
 			Model:    model,
 		})
-		if bErr != nil {
-			msg := "anthropic request build failed"
-			if bErr.Error != nil && bErr.Error.Message != "" {
-				msg = bErr.Error.Message
-			}
-			return nil, fmt.Errorf("%s", msg)
-		}
-		if len(anthropicBytes) == 0 {
-			// The builder short-circuits to a nil body under large-payload passthrough.
-			return nil, fmt.Errorf("anthropic request build produced an empty body")
-		}
-		out := map[string]interface{}{}
-		if err := sonic.Unmarshal(anthropicBytes, &out); err != nil {
-			return nil, err
-		}
-		return out, nil
 	}
 
 	// Already Anthropic-shaped: shallow-copy, drop the job-level model, ensure anthropic_version.

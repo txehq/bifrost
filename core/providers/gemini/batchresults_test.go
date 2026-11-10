@@ -772,26 +772,6 @@ func TestGeminiBatchCreateRefusesWhatItCannotRun(t *testing.T) {
 		assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
 		assert.Empty(t, vendor.calls)
 	})
-	t.Run("a line may name the batch's model in another spelling", func(t *testing.T) {
-		for _, tc := range []struct{ line, batch string }{
-			{"gemini-2.5-flash", "publishers/google/models/gemini-2.5-flash"},
-			{"models/gemini-2.5-flash", "gemini-2.5-flash"},
-			{"gemini/gemini-2.5-flash", "gemini-2.5-flash"},
-			{"publishers/google/models/gemini-2.5-flash", "gemini-2.5-flash"},
-		} {
-			item := schemas.BatchRequestItem{CustomID: "l", Body: map[string]interface{}{"model": tc.line}}
-			assert.NoError(t, CheckBatchLineModel(item, schemas.Gemini, tc.batch, nil), "%s vs %s", tc.line, tc.batch)
-		}
-		aliased := schemas.BatchRequestItem{CustomID: "l", Body: map[string]interface{}{"model": "fast"}}
-		resolve := func(model string) string {
-			if model == "fast" {
-				return "gemini-2.5-flash"
-			}
-			return model
-		}
-		assert.NoError(t, CheckBatchLineModel(aliased, schemas.Gemini, "publishers/google/models/gemini-2.5-flash", resolve))
-		assert.Error(t, CheckBatchLineModel(aliased, schemas.Gemini, "gemini-2.5-pro", resolve))
-	})
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			vendor := newGeminiBatchVendor(t)
@@ -1017,21 +997,5 @@ func TestGeminiBatchListReturnsDisplayNameAndBothStateSpellings(t *testing.T) {
 		"JOB_STATE_PAUSED":              schemas.BatchStatus("JOB_STATE_PAUSED"),
 	} {
 		assert.Equal(t, want, ToBifrostBatchStatus(state), state)
-	}
-}
-
-// BenchmarkNewBatchLineBadRequestError measures the 400 built for a refused batch line, for
-// both classifications: a field the batch cannot take and a malformed line.
-func BenchmarkNewBatchLineBadRequestError(b *testing.B) {
-	for name, unsupported := range map[string]bool{"unsupported_parameter": true, "invalid_request": false} {
-		b.Run(name, func(b *testing.B) {
-			b.ReportAllocs()
-			for i := 0; i < b.N; i++ {
-				lineErr := &schemas.BatchLineError{CustomID: "line-1", Param: "url", Unsupported: unsupported, Message: "url /v1/embeddings cannot run in a generateContent batch"}
-				if bifrostErr := NewBatchLineBadRequestError(1, lineErr); bifrostErr.StatusCode == nil {
-					b.Fatal("no status code")
-				}
-			}
-		})
 	}
 }
