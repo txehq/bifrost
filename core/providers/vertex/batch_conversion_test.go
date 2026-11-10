@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
+	"github.com/capsohq/bifrost/core/providers/anthropic"
 	"github.com/capsohq/bifrost/core/providers/gemini"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -920,4 +921,73 @@ func BenchmarkVertexLabelErrorBifrostError(b *testing.B) {
 			}
 		})
 	}
+}
+
+// A Claude-on-Vertex line the url names a chat completion is converted with the shared
+// anthropic.BatchChatLineParams even when its body carries none of the OpenAI-only
+// markers, and reaches Vertex as the body the sync Vertex Claude route builds (TXE-6597).
+// The same body with no url, and no batch endpoint, is a native line and passes through.
+func TestVertexClaudeBatchConvertsLinesTheURLNamesChat(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	plain := func() map[string]interface{} {
+		return map[string]interface{}{
+			"messages":    []interface{}{map[string]interface{}{"role": "user", "content": "Hello"}},
+			"max_tokens":  64,
+			"temperature": 0.2,
+		}
+	}
+
+	t.Run("a url-named chat line equals the sync Vertex Claude body", func(t *testing.T) {
+		item := schemas.BatchRequestItem{CustomID: "req-url", URL: "/v1/chat/completions", Body: plain()}
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{item}, "claude-3-5-haiku", "")
+		require.NoError(t, err)
+		lines := parseVertexJSONLLines(t, data)
+		require.Len(t, lines, 1)
+		assert.Equal(t, "req-url", lines[0]["custom_id"])
+		got, err := sonic.Marshal(lines[0]["request"])
+		require.NoError(t, err)
+
+		chatRequest, err := item.ToBifrostChatRequest(schemas.Vertex, "claude-3-5-haiku")
+		require.NoError(t, err)
+		want, bifrostErr := anthropic.BuildAnthropicChatRequestBody(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), chatRequest, anthropic.AnthropicRequestBuildConfig{
+			Provider: schemas.Vertex,
+			Model:    "claude-3-5-haiku",
+		})
+		require.Nil(t, bifrostErr)
+		assert.JSONEq(t, string(want), string(got))
+		assert.Equal(t, "vertex-2023-10-16", gjson.GetBytes(got, "anthropic_version").String())
+		assert.False(t, gjson.GetBytes(got, "model").Exists(), "model lives at the job level")
+	})
+
+	t.Run("the batch endpoint names a chat line that has no url of its own", func(t *testing.T) {
+		item := schemas.BatchRequestItem{CustomID: "req-endpoint", Body: plain()}
+		viaEndpoint, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{item}, "claude-3-5-haiku", schemas.BatchEndpointChatCompletions)
+		require.NoError(t, err)
+		item.URL = "/v1/chat/completions"
+		viaURL, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{item}, "claude-3-5-haiku", "")
+		require.NoError(t, err)
+		assert.JSONEq(t,
+			gjson.GetBytes(bytes.TrimSpace(viaURL), "request").Raw,
+			gjson.GetBytes(bytes.TrimSpace(viaEndpoint), "request").Raw)
+	})
+
+	t.Run("the same body with no url is native and passes through", func(t *testing.T) {
+		item := schemas.BatchRequestItem{CustomID: "req-native", Body: plain()}
+		data, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{item}, "claude-3-5-haiku", "")
+		require.NoError(t, err)
+		lines := parseVertexJSONLLines(t, data)
+		require.Len(t, lines, 1)
+		request := lines[0]["request"].(map[string]interface{})
+		assert.Equal(t, plain()["messages"], request["messages"], "a native body is not rewritten")
+		assert.EqualValues(t, 0.2, request["temperature"])
+	})
+
+	t.Run("a url-named chat line the caller got wrong is a line error", func(t *testing.T) {
+		item := schemas.BatchRequestItem{CustomID: "req-bad", URL: "/v1/chat/completions", Body: map[string]interface{}{"max_tokens": 5}}
+		_, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{item}, "claude-3-5-haiku", "")
+		var lineErr *schemas.BatchLineError
+		require.ErrorAs(t, err, &lineErr)
+		assert.Equal(t, "body", lineErr.Param)
+		assert.Equal(t, 0, lineErr.Index)
+	})
 }

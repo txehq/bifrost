@@ -422,3 +422,53 @@ func TestAnthropicBatchRetrieveReportsEndedAsCompleted(t *testing.T) {
 	require.NotNil(t, resp.CompletedAt)
 	require.Equal(t, 4, resp.RequestCounts.Total)
 }
+
+// Batch line conversion cost (TXE-6597). "native" is the path every line took before:
+// the body sent unchanged on create, the Messages result kept on results. "openai" is the
+// new conversion an OpenAI-shape line takes. Run with -benchmem.
+func BenchmarkAnthropicBatchLineConversion(b *testing.B) {
+	var chatBody map[string]any
+	if err := json.Unmarshal([]byte(`{"model":"claude-haiku-4-5","messages":[{"role":"system","content":"Be brief."},{"role":"user","content":"What is the weather in Paris?"}],"max_tokens":64,"temperature":0.2,"tools":[{"type":"function","function":{"name":"get_weather","description":"Weather for a city","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}],"tool_choice":"auto"}`), &chatBody); err != nil {
+		b.Fatal(err)
+	}
+	item := schemas.BatchRequestItem{CustomID: "line-1", URL: "/v1/chat/completions", Body: chatBody}
+	resultLine := []byte(strings.SplitN(anthropicBatchResultsFile, "\n", 2)[0])
+	cfg := anthropic.AnthropicRequestBuildConfig{Provider: schemas.Anthropic}
+
+	b.Run("create/native", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			_ = anthropic.AnthropicBatchRequestItem{CustomID: item.CustomID, Params: item.RequestBody()}
+		}
+	})
+	b.Run("create/openai", func(b *testing.B) {
+		ctx := batchTestContext()
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := anthropic.BatchChatLineParams(ctx, item, schemas.Anthropic, "claude-haiku-4-5", cfg); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("results/native", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			var line anthropic.AnthropicBatchResultItem
+			if err := json.Unmarshal(resultLine, &line); err != nil {
+				b.Fatal(err)
+			}
+			_ = anthropic.BatchResultLineToNative(line)
+		}
+	})
+	b.Run("results/openai", func(b *testing.B) {
+		ctx := batchTestContext()
+		b.ReportAllocs()
+		for b.Loop() {
+			var line anthropic.AnthropicBatchResultItem
+			if err := json.Unmarshal(resultLine, &line); err != nil {
+				b.Fatal(err)
+			}
+			_ = anthropic.BatchResultLineToOpenAI(ctx, line, false)
+		}
+	})
+}
