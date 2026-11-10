@@ -189,25 +189,11 @@ func AcceptsTranscriptionURLInput(provider any) bool {
 	return ok && p.AcceptsTranscriptionURLInput()
 }
 
-// errorTypeCallerUnsupportedParameter is the contract C6 value for this refusal.
-// TODO(TXE-6517): replace with ErrorTypeCallerUnsupportedParameter and
-// NewUnsupportedParameterError once that vocabulary change is on main.
-const errorTypeCallerUnsupportedParameter ErrorType = "caller_unsupported_parameter"
-
 // NewTranscriptionURLUnsupportedError is the 400 for a URL-only transcription routed to a
 // provider that takes only a file: error_type caller_unsupported_parameter, error.param "url"
 // (contract C4, agreement three). No upstream call is made.
 func NewTranscriptionURLUnsupportedError() *BifrostError {
-	return &BifrostError{
-		StatusCode: Ptr(400),
-		Error: &ErrorField{
-			Type:    Ptr("invalid_request_error"),
-			Code:    Ptr(string(errorTypeCallerUnsupportedParameter)),
-			Message: "this provider does not take an audio url for transcription; send the audio as file",
-			Param:   TranscriptionURLParam,
-		},
-		ExtraFields: BifrostErrorExtraFields{ErrorType: errorTypeCallerUnsupportedParameter},
-	}
+	return NewUnsupportedParameterError(TranscriptionURLParam, "this provider does not take an audio url for transcription; send the audio as file")
 }
 
 type TranscriptionParameters struct {

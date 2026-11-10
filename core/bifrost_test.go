@@ -10493,7 +10493,7 @@ func TestTranscriptionURLOnlyReachesOnlyProvidersThatTakeAURL(t *testing.T) {
 	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %v, want 400", bifrostErr.StatusCode)
 	}
-	if bifrostErr.ExtraFields.ErrorType != "caller_unsupported_parameter" || bifrostErr.Error == nil || bifrostErr.Error.Param != "url" {
+	if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error == nil || bifrostErr.Error.Param != "url" {
 		t.Fatalf("error = %+v / %+v, want caller_unsupported_parameter with param url", bifrostErr.ExtraFields, bifrostErr.Error)
 	}
 	if bifrostErr.ExtraFields.Provider != schemas.OpenAI {

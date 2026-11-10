@@ -318,7 +318,7 @@ func TestTranscriptionURLOnly(t *testing.T) {
 	if AcceptsTranscriptionURLInput(struct{}{}) {
 		t.Error("a provider that does not opt in must not take a URL")
 	}
-	if err := NewTranscriptionURLUnsupportedError(); *err.StatusCode != 400 || err.Error.Param != TranscriptionURLParam || err.ExtraFields.ErrorType != "caller_unsupported_parameter" {
+	if err := NewTranscriptionURLUnsupportedError(); *err.StatusCode != 400 || err.Error.Param != TranscriptionURLParam || err.ExtraFields.ErrorType != ErrorTypeCallerUnsupportedParameter || ClassifyErrorType(err, TranscriptionRequest) != ErrorTypeCallerUnsupportedParameter {
 		t.Errorf("refusal = %+v / %+v", err.Error, err.ExtraFields)
 	}
 }
