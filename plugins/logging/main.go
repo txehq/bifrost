@@ -546,6 +546,13 @@ func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.
 		attachBatchResultsDisplay(entry, batchResp, nil)
 		return
 	}
+	// A page of the results is not the batch. Settling from it would price only that
+	// page and mark the whole job accounted, and an accounted job is never claimed again,
+	// so the rest of the batch would never be billed. A paged read settles nothing; the
+	// sweeper, or a read of the whole result set, settles the batch.
+	if batchResp.Partial {
+		return
+	}
 
 	// This runs inline on the /results response path, and settlement touches the
 	// config store, the log store and the governance reporter. p.ctx is the

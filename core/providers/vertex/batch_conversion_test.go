@@ -652,6 +652,33 @@ func TestVertexBatchMetadataBecomesJobLabels(t *testing.T) {
 		assert.NotContains(t, body, "modelParameters", "other extra params still need the passthrough switch")
 	})
 
+	t.Run("labels supplied as a typed string map are accepted", func(t *testing.T) {
+		// The Go SDK and the genai integration's own converter supply map[string]string.
+		job := &VertexBatchPredictionJob{
+			DisplayName: "round trip",
+			Model:       "publishers/google/models/gemini-2.5-flash",
+			InputConfig: VertexBatchInputConfig{InstancesFormat: "jsonl", GcsSource: &VertexGcsSource{Uris: []string{"gs://in/input.jsonl"}}},
+			OutputConfig: VertexBatchOutputConfig{
+				PredictionsFormat: "jsonl",
+				GcsDestination:    &VertexGcsDestination{OutputUriPrefix: "gs://out/"},
+			},
+			Labels: map[string]string{"team": "tokun", "tokun_batch_id": "batch_tk_1"},
+		}
+		inbound := ToBifrostBatchCreateRequest(job)
+		require.NotNil(t, inbound)
+		outbound, err := ToVertexBatchCreateRequest(ctx, inbound, "round trip", "gs://in/input.jsonl", "gs://out/")
+		require.NoError(t, err, "the labels the inbound converter produced must convert back")
+		assert.Equal(t, map[string]string{"team": "tokun", "tokun_batch_id": "batch_tk_1"}, outbound.Labels)
+
+		_, err = ToVertexBatchCreateRequest(ctx, &schemas.BifrostBatchCreateRequest{
+			Model:       schemas.Ptr("gemini-2.5-flash"),
+			ExtraParams: map[string]interface{}{"labels": map[string]string{"team": "Not A Label"}},
+		}, "job", "gs://in/input.jsonl", "gs://out/")
+		var labelErr *vertexLabelError
+		require.ErrorAs(t, err, &labelErr)
+		assert.Equal(t, "labels.team", labelErr.Param)
+	})
+
 	t.Run("no metadata is no labels field", func(t *testing.T) {
 		job, err := ToVertexBatchCreateRequest(ctx, &schemas.BifrostBatchCreateRequest{Model: schemas.Ptr("gemini-2.5-flash")}, "job", "gs://in/input.jsonl", "gs://out/")
 		require.NoError(t, err)

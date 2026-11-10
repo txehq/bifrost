@@ -255,15 +255,26 @@ func vertexBatchJobLabels(request *schemas.BifrostBatchCreateRequest) (map[strin
 				extraParams[key] = value
 			}
 		}
-		labelMap, isMap := rawLabels.(map[string]interface{})
-		if !isMap {
+		// A JSON body decodes labels as map[string]interface{}; the Go SDK and the genai
+		// integration's converter (ToBifrostBatchCreateRequest) supply map[string]string.
+		callerLabels := map[string]string{}
+		switch typed := rawLabels.(type) {
+		case map[string]string:
+			for key, value := range typed {
+				callerLabels[key] = value
+			}
+		case map[string]interface{}:
+			for key, rawValue := range typed {
+				value, isString := rawValue.(string)
+				if !isString {
+					return nil, nil, &vertexLabelError{Param: "labels." + key, Err: fmt.Errorf("label value must be a string")}
+				}
+				callerLabels[key] = value
+			}
+		default:
 			return nil, nil, &vertexLabelError{Param: "labels", Err: fmt.Errorf("labels must be an object of string values")}
 		}
-		for key, rawValue := range labelMap {
-			value, isString := rawValue.(string)
-			if !isString {
-				return nil, nil, &vertexLabelError{Param: "labels." + key, Err: fmt.Errorf("label value must be a string")}
-			}
+		for key, value := range callerLabels {
 			if err := validateVertexLabel(key, value); err != nil {
 				return nil, nil, &vertexLabelError{Param: "labels." + key, Err: err}
 			}

@@ -10222,6 +10222,16 @@ func TestBatchFollowUpsHonourNamedKey(t *testing.T) {
 			if len(resp.Results) != 1 || resp.Results[0].CustomID != "line-1" {
 				t.Fatalf("results = %+v, want the one line of the output file", resp.Results)
 			}
+			if resp.Partial {
+				t.Fatal("the whole result set was marked partial")
+			}
+			paged, bErr := bifrost.BatchResultsRequest(named(pin.contextKey, pin.value), &schemas.BifrostBatchResultsRequest{Provider: schemas.OpenAI, BatchID: "batch_1", Limit: 50})
+			if bErr != nil {
+				t.Fatalf("paged BatchResultsRequest: %v", bErr.Error.Message)
+			}
+			if !paged.Partial {
+				t.Fatal("a paged read was not marked partial, so batch accounting would settle the batch from one page")
+			}
 		})
 	}
 
@@ -10324,5 +10334,31 @@ func BenchmarkGetKeysForBatchAndFileOps(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+// A results response is partial when the caller asked for a page or more lines follow; the
+// last page of a paged read is partial too, though nothing follows it.
+func TestIsPartialBatchResults(t *testing.T) {
+	cursor := "djE6MDoxMDI0"
+	blank := "  "
+	cases := []struct {
+		name     string
+		request  *schemas.BifrostBatchResultsRequest
+		response *schemas.BifrostBatchResultsResponse
+		want     bool
+	}{
+		{"whole result set", &schemas.BifrostBatchResultsRequest{}, &schemas.BifrostBatchResultsResponse{}, false},
+		{"a blank cursor is no cursor", &schemas.BifrostBatchResultsRequest{After: &blank}, &schemas.BifrostBatchResultsResponse{}, false},
+		{"first page", &schemas.BifrostBatchResultsRequest{Limit: 100}, &schemas.BifrostBatchResultsResponse{HasMore: true}, true},
+		{"a limit larger than the batch", &schemas.BifrostBatchResultsRequest{Limit: 100}, &schemas.BifrostBatchResultsResponse{}, true},
+		{"last page", &schemas.BifrostBatchResultsRequest{After: &cursor}, &schemas.BifrostBatchResultsResponse{}, true},
+		{"a provider that pages on its own", &schemas.BifrostBatchResultsRequest{}, &schemas.BifrostBatchResultsResponse{HasMore: true}, true},
+		{"no request", nil, &schemas.BifrostBatchResultsResponse{}, false},
+	}
+	for _, tc := range cases {
+		if got := isPartialBatchResults(tc.request, tc.response); got != tc.want {
+			t.Errorf("%s: partial = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

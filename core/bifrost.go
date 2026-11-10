@@ -9470,6 +9470,11 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
+		// Marked here, for every provider, before any plugin sees the response: batch
+		// accounting settles a batch from the results it is shown, and a page is not the batch.
+		if batchResultsResponse != nil {
+			batchResultsResponse.Partial = isPartialBatchResults(req.BifrostRequest.BatchResultsRequest, batchResultsResponse)
+		}
 		response.BatchResultsResponse = batchResultsResponse
 	case schemas.ContainerCreateRequest:
 		containerCreateResponse, bifrostError := provider.ContainerCreate(req.Context, key, req.BifrostRequest.ContainerCreateRequest)
@@ -10831,6 +10836,19 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 	})
 
 	return filteredKeys, nil
+}
+
+// isPartialBatchResults reports whether a batch results response holds one page of the
+// batch's result lines rather than all of them: the caller asked for a page (a limit, or a
+// cursor continuing an earlier page), or the provider says more lines follow.
+func isPartialBatchResults(request *schemas.BifrostBatchResultsRequest, response *schemas.BifrostBatchResultsResponse) bool {
+	if response.HasMore {
+		return true
+	}
+	if request == nil {
+		return false
+	}
+	return request.Limit > 0 || (request.After != nil && strings.TrimSpace(*request.After) != "")
 }
 
 // errNamedKeyNotEligible marks a batch or file operation whose caller named a key

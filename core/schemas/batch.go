@@ -491,6 +491,12 @@ type BifrostBatchResultsResponse struct {
 	HasMore    bool    `json:"has_more,omitempty"`
 	NextCursor *string `json:"next_cursor,omitempty"`
 
+	// Partial marks a response that holds one page of the batch's result lines, not all of
+	// them: the caller asked for a page (Limit or After), or more lines follow. Whatever
+	// sums or settles a batch from its results must not treat a partial response as the
+	// batch. Set by core on every provider's response, so a provider cannot forget it.
+	Partial bool `json:"-"`
+
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
