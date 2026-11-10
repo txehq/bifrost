@@ -298900,6 +298900,174 @@
           }
         }
       ]
+    },
+    {
+      "name": "321. Embeddings on DeepInfra and Vercel AI Gateway custom providers (custom-provider embeddings)",
+      "description": "Contract C12: MVP embedding models sold through OpenAI-compatible custom providers that the Tokun reconciler writes into Bifrost. The profile entries deepinfra and vercel_ai_gateway are configured as the reconciler writes them: base_provider_type openai, max_retries 0 (C3), allowed_requests embedding only; DeepInfra at https://api.deepinfra.com with request_path_overrides embedding -> /v1/openai/embeddings, Vercel AI Gateway at https://ai-gateway.vercel.sh. Each case sends what Tokun sends (provider/model on /v1/embeddings with x-bf-passthrough-extra-params: true) and pins that usage.prompt_tokens comes through the custom provider as on a built-in one. Keys come from DEEPINFRA_API_KEY and VERCEL_AI_GATEWAY_API_KEY; while a key is unset its cases are skipped with a \"skipped: no key\" assertion (runners/lib/keyless-providers.mjs) instead of failing. Pending: Vercel's single-upstream constraint field is not known yet, so the case proving it reaches Vercel through the extra-field channel is not written; Perplexity's Vercel embedding model id is likewise not pinned here.",
+      "item": [
+        {
+          "name": "321.1 /v1/embeddings - BAAI bge-m3 on the DeepInfra custom provider returns usage.prompt_tokens - deepinfra/BAAI/bge-m3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('embedding returned through the deepinfra custom provider', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect((j.data || []).length, 'no embedding returned: ' + pm.response.text().slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(Array.isArray(j.data[0].embedding) && j.data[0].embedding.length > 0, 'embedding is not a non-empty array').to.be.true;",
+                  "});",
+                  "pm.test('usage.prompt_tokens is reported, as on a built-in provider', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.usage, 'usage missing: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(j.usage.prompt_tokens, 'usage.prompt_tokens: ' + JSON.stringify(j.usage)).to.be.a('number').and.above(0);",
+                  "});",
+                  "pm.test('the deepinfra provider served it', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'routing header').to.eql('deepinfra');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepinfra/BAAI/bge-m3\",\n  \"input\": \"The quick brown fox jumps over the lazy dog\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "321.2 /v1/embeddings - Alibaba Qwen3 Embedding on the DeepInfra custom provider returns usage.prompt_tokens - deepinfra/Qwen/Qwen3-Embedding-8B",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('embedding returned through the deepinfra custom provider', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect((j.data || []).length, 'no embedding returned: ' + pm.response.text().slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(Array.isArray(j.data[0].embedding) && j.data[0].embedding.length > 0, 'embedding is not a non-empty array').to.be.true;",
+                  "});",
+                  "pm.test('usage.prompt_tokens is reported, as on a built-in provider', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.usage, 'usage missing: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(j.usage.prompt_tokens, 'usage.prompt_tokens: ' + JSON.stringify(j.usage)).to.be.a('number').and.above(0);",
+                  "});",
+                  "pm.test('the deepinfra provider served it', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'routing header').to.eql('deepinfra');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepinfra/Qwen/Qwen3-Embedding-8B\",\n  \"input\": \"The quick brown fox jumps over the lazy dog\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "321.3 /v1/embeddings - Cohere embed v4 on the Vercel AI Gateway custom provider returns usage.prompt_tokens - vercel_ai_gateway/cohere/embed-v4.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('embedding returned through the vercel_ai_gateway custom provider', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect((j.data || []).length, 'no embedding returned: ' + pm.response.text().slice(0, 300)).to.be.above(0);",
+                  "  pm.expect(Array.isArray(j.data[0].embedding) && j.data[0].embedding.length > 0, 'embedding is not a non-empty array').to.be.true;",
+                  "});",
+                  "pm.test('usage.prompt_tokens is reported, as on a built-in provider', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.usage, 'usage missing: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(j.usage.prompt_tokens, 'usage.prompt_tokens: ' + JSON.stringify(j.usage)).to.be.a('number').and.above(0);",
+                  "});",
+                  "pm.test('the vercel_ai_gateway provider served it', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'routing header').to.eql('vercel_ai_gateway');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vercel_ai_gateway/cohere/embed-v4.0\",\n  \"input\": \"The quick brown fox jumps over the lazy dog\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
