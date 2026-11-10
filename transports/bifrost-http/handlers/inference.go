@@ -1949,10 +1949,11 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 }
 
 // writeSpeechAudio writes a buffered speech response's audio. A vendor 200 with no audio
-// and no error object is the vendor's fault, not the caller's: 502 provider_empty_result
-// (contract C6), keeping the vendor's response headers the caller already forwarded.
+// (an empty body included) and no error object is the vendor's fault, not the caller's:
+// 502 provider_empty_result (contract C6), keeping the vendor's response headers the
+// caller already forwarded.
 func writeSpeechAudio(ctx *fasthttp.RequestCtx, resp *schemas.BifrostSpeechResponse, attachmentFilename string) {
-	if resp == nil || resp.Audio == nil {
+	if resp == nil || len(resp.Audio) == 0 {
 		emptyErr := schemas.NewProviderEmptyResultError("Speech response is missing audio data")
 		if resp != nil {
 			emptyErr.ExtraFields = schemas.ErrorExtraFieldsFromResponse(resp.ExtraFields, schemas.ErrorTypeProviderEmptyResult)

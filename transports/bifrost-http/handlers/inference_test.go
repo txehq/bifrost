@@ -260,6 +260,13 @@ func TestWriteSpeechAudioMissingAudioIsProviderEmptyResult(t *testing.T) {
 		t.Fatalf("provider header = %q", got)
 	}
 
+	// An empty body is no audio too: a vendor 200 whose body is empty.
+	empty := &fasthttp.RequestCtx{}
+	writeSpeechAudio(empty, &schemas.BifrostSpeechResponse{Audio: []byte{}}, "speech.mp3")
+	if got := empty.Response.StatusCode(); got != fasthttp.StatusBadGateway {
+		t.Fatalf("empty audio: status = %d, want 502", got)
+	}
+
 	ok := &fasthttp.RequestCtx{}
 	writeSpeechAudio(ok, &schemas.BifrostSpeechResponse{Audio: []byte("ID3")}, "speech.mp3")
 	if ok.Response.StatusCode() != fasthttp.StatusOK || string(ok.Response.Body()) != "ID3" {

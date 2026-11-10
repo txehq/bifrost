@@ -81,3 +81,18 @@ func TestPreLLMHookRefusalsCarryPolicyErrorTypes(t *testing.T) {
 		assert.Equal(t, schemas.ErrorTypePolicyAccessDenied, bifrostErr.ExtraFields.ErrorType)
 	})
 }
+
+// A refusal now passes through declarePolicyErrorType on its way out of the hook.
+func BenchmarkPreLLMHookRefusal(b *testing.B) {
+	plugin := refusalTestPlugin(b, func(vk *configstoreTables.TableVirtualKey) {
+		inactive := false
+		vk.IsActive = &inactive
+	})
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, shortCircuit, _ := plugin.PreLLMHook(newPreRequestCtx(nil, nil), newChatRequest())
+		if shortCircuit == nil {
+			b.Fatal("an inactive key was not refused")
+		}
+	}
+}

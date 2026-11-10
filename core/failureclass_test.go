@@ -489,3 +489,25 @@ func declaredFailure(err *schemas.BifrostError, errorType schemas.ErrorType) *sc
 	err.ExtraFields.ErrorType = errorType
 	return err
 }
+
+// ClassifyFailure runs on every failed attempt; the declared-type switch and the
+// content-block check sit in front of the status rules.
+func BenchmarkClassifyFailure(b *testing.B) {
+	cases := []struct {
+		name string
+		err  *schemas.BifrostError
+	}{
+		{"429", providerError(429, "requests", "rate_limit_exceeded", "Rate limit reached for requests")},
+		{"401", providerError(401, "invalid_request_error", "invalid_api_key", "Incorrect API key provided")},
+		{"400", providerError(400, "invalid_request_error", "", "Invalid value for 'temperature'")},
+		{"403_content_block", providerError(403, "invalid_request_error", "content_policy_violation", "Your request was rejected as a result of our safety system.")},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = ClassifyFailure(tc.err)
+			}
+		})
+	}
+}

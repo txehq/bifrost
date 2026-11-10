@@ -111,3 +111,27 @@ func TestVendor200Errors(t *testing.T) {
 		}
 	}
 }
+
+// The request worker runs CheckDeclaredUnifiedFields on every request. A provider that
+// declares nothing (every provider today) must cost only the interface check.
+func BenchmarkCheckDeclaredUnifiedFields(b *testing.B) {
+	req := imageReq(&ImageGenerationParameters{N: Ptr(2), Size: Ptr("1024x1024"), Quality: Ptr("high")})
+	declarer := declaringProvider{declares: true, fields: map[RequestType][]string{ImageGenerationRequest: {"n", "size", "quality"}}}
+	rejecting := declaringProvider{declares: true, fields: map[RequestType][]string{ImageGenerationRequest: {"size"}}}
+	cases := []struct {
+		name     string
+		provider any
+	}{
+		{"non_declarer", struct{}{}},
+		{"declarer_accepts", declarer},
+		{"declarer_rejects", rejecting},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = CheckDeclaredUnifiedFields(tc.provider, req)
+			}
+		})
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // A field that cannot be delivered is an error (contract C4, work item BF4). When a
@@ -88,8 +89,15 @@ func (br *BifrostRequest) UnifiedFieldsPresent() []string {
 	if !params.IsValid() {
 		return nil
 	}
-	var fields []string
-	collectSetFields(params, &fields)
+	list := unifiedParamFields(params.Type())
+	fields := make([]string, 0, len(list))
+	for _, f := range list {
+		fv, ok := fieldByIndex(params, f.index)
+		if !ok || fieldIsUnset(fv) {
+			continue
+		}
+		fields = append(fields, f.name)
+	}
 	slices.Sort(fields)
 	return fields
 }
@@ -124,37 +132,71 @@ func (br *BifrostRequest) paramsValue() reflect.Value {
 	return reflect.Value{}
 }
 
-// collectSetFields appends the JSON names of the set fields of struct v, descending into
+// unifiedParamField is one serialized field of a Params struct: its JSON name and its
+// index path (through embedded structs, as encoding/json flattens them).
+type unifiedParamField struct {
+	name  string
+	index []int
+}
+
+// unifiedParamFieldsByType caches unifiedParamFields per Params type, so the tags are read
+// once per type, not once per request. Bounded by the number of Params types (one per
+// operation).
+var unifiedParamFieldsByType sync.Map // reflect.Type -> []unifiedParamField
+
+// unifiedParamFields lists the serialized fields of Params struct type t.
+func unifiedParamFields(t reflect.Type) []unifiedParamField {
+	if cached, ok := unifiedParamFieldsByType.Load(t); ok {
+		return cached.([]unifiedParamField)
+	}
+	var fields []unifiedParamField
+	collectParamFields(t, nil, &fields)
+	actual, _ := unifiedParamFieldsByType.LoadOrStore(t, fields)
+	return actual.([]unifiedParamField)
+}
+
+// collectParamFields appends the serialized fields of struct type t, descending into
 // embedded structs the way encoding/json flattens them.
-func collectSetFields(v reflect.Value, out *[]string) {
-	t := v.Type()
+func collectParamFields(t reflect.Type, prefix []int, out *[]unifiedParamField) {
 	for i := 0; i < t.NumField(); i++ {
 		sf := t.Field(i)
-		fv := v.Field(i)
 		name, skip := jsonFieldName(sf)
 		if skip {
 			continue
 		}
+		index := append(append([]int(nil), prefix...), i)
 		if sf.Anonymous && name == "" {
-			if fv.Kind() == reflect.Pointer {
-				if fv.IsNil() {
-					continue
-				}
-				fv = fv.Elem()
+			ft := sf.Type
+			if ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
 			}
-			if fv.Kind() == reflect.Struct {
-				collectSetFields(fv, out)
+			if ft.Kind() == reflect.Struct {
+				collectParamFields(ft, index, out)
 			}
 			continue
 		}
-		if !sf.IsExported() || fieldIsUnset(fv) {
+		if !sf.IsExported() {
 			continue
 		}
 		if name == "" {
 			name = sf.Name
 		}
-		*out = append(*out, name)
+		*out = append(*out, unifiedParamField{name: name, index: index})
 	}
+}
+
+// fieldByIndex follows index from v, reporting false when it passes a nil embedded pointer.
+func fieldByIndex(v reflect.Value, index []int) (reflect.Value, bool) {
+	for n, i := range index {
+		if n > 0 && v.Kind() == reflect.Pointer {
+			if v.IsNil() {
+				return reflect.Value{}, false
+			}
+			v = v.Elem()
+		}
+		v = v.Field(i)
+	}
+	return v, true
 }
 
 // jsonFieldName returns the field's JSON name ("" when the tag names none) and whether

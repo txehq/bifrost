@@ -738,3 +738,24 @@ func TestResolveErrorTypeWritesEveryFamily(t *testing.T) {
 		t.Fatalf("nil error resolved to %q", got)
 	}
 }
+
+// ResolveErrorType runs once per error a client receives.
+func BenchmarkResolveErrorType(b *testing.B) {
+	cases := []struct {
+		name string
+		err  BifrostError
+	}{
+		{"declared", *declared(ErrorTypePolicyModelBlocked, statusPtr(403))},
+		{"inferred_status", BifrostError{StatusCode: statusPtr(429), Error: &ErrorField{Message: "slow down"}}},
+		{"content_filter_code", BifrostError{StatusCode: statusPtr(403), Error: &ErrorField{Code: Ptr("content_policy_violation")}}},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				e := tc.err
+				_ = e.ResolveErrorType()
+			}
+		})
+	}
+}
