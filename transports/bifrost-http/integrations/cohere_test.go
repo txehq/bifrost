@@ -12,6 +12,7 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestCreateCohereRouteConfigsIncludesRerank(t *testing.T) {
@@ -422,5 +423,51 @@ func TestGenAIRoutesToCohereMapTaskTypeAndRefuseAMissingOne(t *testing.T) {
 				assert.Equal(t, "task_type", bifrostErr.Error.Param)
 			})
 		}
+	}
+}
+
+// OpenAI-shaped ingress to Cohere (TXE-6546): /openai/v1/embeddings, and the same route
+// under the alias prefixes such as /litellm, decodes task_type from the body into the
+// unified parameters, so it reaches Cohere as input_type; without one the request is
+// refused, and the unified response returns input_images as reported.
+func TestOpenAIEmbeddingsRouteToCohereCarriesTaskType(t *testing.T) {
+	for _, prefix := range []string{"/openai", "/litellm"} {
+		t.Run(prefix, func(t *testing.T) {
+			var route *RouteConfig
+			routes := CreateOpenAIRouteConfigs(prefix, nil)
+			for i := range routes {
+				if routes[i].Path == prefix+"/v1/embeddings" {
+					route = &routes[i]
+				}
+			}
+			require.NotNil(t, route)
+			toEgress := func(body string) (*cohere.CohereEmbeddingRequest, error) {
+				native := route.GetRequestTypeInstance(context.Background())
+				require.NoError(t, sonic.Unmarshal([]byte(body), native))
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				bifrostReq, err := route.RequestConverter(ctx, native)
+				require.NoError(t, err)
+				require.Equal(t, schemas.Cohere, bifrostReq.EmbeddingRequest.Provider)
+				return cohere.ToCohereEmbeddingRequest(bifrostReq.EmbeddingRequest)
+			}
+
+			egress, err := toEgress(`{"model":"cohere/embed-v4.0","input":"hi","task_type":"search_query"}`)
+			require.NoError(t, err)
+			assert.Equal(t, "search_query", egress.InputType)
+
+			_, err = toEgress(`{"model":"cohere/embed-v4.0","input":"hi"}`)
+			bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+			require.True(t, ok, "want a caller error, got %v", err)
+			assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp := &schemas.BifrostEmbeddingResponse{Usage: &schemas.BifrostLLMUsage{PromptTokens: 3, TotalTokens: 3, InputImages: schemas.Ptr(1)}}
+			resp.ExtraFields.Provider = schemas.Cohere
+			out, err := route.EmbeddingResponseConverter(ctx, resp)
+			require.NoError(t, err)
+			body, err := sonic.Marshal(out)
+			require.NoError(t, err)
+			assert.Equal(t, int64(1), gjson.GetBytes(body, "usage.input_images").Int(), "%s", body)
+		})
 	}
 }
