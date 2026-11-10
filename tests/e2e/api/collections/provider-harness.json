@@ -292346,6 +292346,164 @@
       ]
     },
     {
+      "name": "322. Anthropic server tool request counts in unified usage (anthropic server tool usage)",
+      "description": "TXE-6534. Anthropic reports usage.server_tool_use.{web_search_requests, web_fetch_requests, code_execution_requests}. Chat and Responses converted to Messages carry each non-zero count as usage.tool_usage.<tool>.num_requests (web_search, web_fetch, code_execution); a count the vendor did not report stays absent. /anthropic/v1/messages passes the vendor body through unchanged, so it needs no case here. The Responses converter drops code_interpreter when web_fetch is present (web_fetch_20250910 does not auto-inject code execution), so Responses checks each tool in its own request.",
+      "item": [
+        {
+          "name": "/v1/chat/completions - web_fetch and code execution counts reach usage.tool_usage - anthropic/claude-sonnet-4-5 - TXE-6534",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var j = pm.response.json();",
+                  "var tu = j.usage && j.usage.tool_usage;",
+                  "pm.test('usage.tool_usage reports the web_fetch and code_execution request counts (TXE-6534)', function () {",
+                  "  pm.expect(tu, 'tool_usage missing: ' + JSON.stringify(j.usage)).to.be.an('object');",
+                  "  pm.expect(tu.web_fetch && tu.web_fetch.num_requests, 'web_fetch: ' + JSON.stringify(tu)).to.be.above(0);",
+                  "  pm.expect(tu.code_execution && tu.code_execution.num_requests, 'code_execution: ' + JSON.stringify(tu)).to.be.above(0);",
+                  "});",
+                  "pm.test('a tool the vendor did not use stays absent, never zero', function () {",
+                  "  Object.keys(tu || {}).forEach(function (k) {",
+                  "    pm.expect(tu[k].num_requests, k + ': ' + JSON.stringify(tu)).to.be.above(0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"max_tokens\": 2048,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use the web_fetch tool to fetch https://example.com, then use code execution to count the characters in that page's <title> text. Reply with the title and the count.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"web_fetch_20250910\",\n      \"name\": \"web_fetch\",\n      \"max_uses\": 2\n    },\n    {\n      \"type\": \"code_execution_20250825\",\n      \"name\": \"code_execution\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses - web_fetch count reaches usage.tool_usage - anthropic/claude-sonnet-4-5 - TXE-6534",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var j = pm.response.json();",
+                  "var tu = (j.usage && j.usage.tool_usage) || j.tool_usage;",
+                  "pm.test('usage.tool_usage reports the web_fetch request count (TXE-6534)', function () {",
+                  "  pm.expect(tu, 'tool_usage missing: ' + JSON.stringify(j.usage)).to.be.an('object');",
+                  "  pm.expect(tu.web_fetch && tu.web_fetch.num_requests, 'web_fetch: ' + JSON.stringify(tu)).to.be.above(0);",
+                  "});",
+                  "pm.test('a tool the vendor did not use stays absent, never zero', function () {",
+                  "  Object.keys(tu || {}).forEach(function (k) {",
+                  "    pm.expect(tu[k].num_requests, k + ': ' + JSON.stringify(tu)).to.be.above(0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"max_output_tokens\": 1024,\n  \"input\": \"Use the web_fetch tool to fetch https://example.com and reply with that page's <title> text.\",\n  \"tools\": [\n    {\n      \"type\": \"web_fetch\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses - code execution count reaches usage.tool_usage - anthropic/claude-sonnet-4-5 - TXE-6534",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var j = pm.response.json();",
+                  "var tu = (j.usage && j.usage.tool_usage) || j.tool_usage;",
+                  "pm.test('usage.tool_usage reports the code execution request count (TXE-6534)', function () {",
+                  "  pm.expect(tu, 'tool_usage missing: ' + JSON.stringify(j.usage)).to.be.an('object');",
+                  "  pm.expect(tu.code_execution && tu.code_execution.num_requests, 'code_execution: ' + JSON.stringify(tu)).to.be.above(0);",
+                  "});",
+                  "pm.test('a tool the vendor did not use stays absent, never zero', function () {",
+                  "  Object.keys(tu || {}).forEach(function (k) {",
+                  "    pm.expect(tu[k].num_requests, k + ': ' + JSON.stringify(tu)).to.be.above(0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"max_output_tokens\": 1024,\n  \"input\": \"Use code execution to compute 2**100 and reply with the exact number.\",\n  \"tools\": [\n    {\n      \"type\": \"code_interpreter\",\n      \"container\": {\n        \"type\": \"auto\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "284. MiniMax provider (minimax provider)",
       "description": "MiniMax is reached through its OpenAI-compatible chat API, its /v1/image_generation API its /v2/video_generation task API, /v1/t2a_v2 for speech and /v1/speech_to_text for transcription. Bifrost sends reasoning_split true on chat so thinking comes back in reasoning_content instead of <think> tags inside the answer, maps reasoning_effort none to thinking disabled (dropped on M3.1, which always thinks), and turns a non-zero base_resp.status_code on a 200 into an error. Video generation is billed per output second, so it is covered by Go tests and not by a live case here. Speech audio comes back hex-encoded and Bifrost decodes it; an unknown voice is a 200 with base_resp 2054 that Bifrost turns into a 400.",
       "item": [

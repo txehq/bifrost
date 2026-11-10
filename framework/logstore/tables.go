@@ -1174,8 +1174,13 @@ func (l *Log) DeserializeFields() error {
 			// billing would skip a row it can now price correctly.
 			l.usageRebuiltFromColumns = false
 			// Logs stores web search count in num_search_queries (legacy behaviour), we map it to tool_usage so that repricing bills it.
+			// Other tool counters (web_fetch, code_execution) are stored in tool_usage itself
+			// and kept; only web_search is rebuilt.
 			if u := l.TokenUsageParsed; u != nil && u.CompletionTokensDetails != nil && u.CompletionTokensDetails.NumSearchQueries != nil && *u.CompletionTokensDetails.NumSearchQueries > 0 {
-				u.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *u.CompletionTokensDetails.NumSearchQueries}}
+				if u.ToolUsage == nil {
+					u.ToolUsage = &schemas.ToolUsage{}
+				}
+				u.ToolUsage.WebSearch = &schemas.WebSearchToolUsage{NumRequests: *u.CompletionTokensDetails.NumSearchQueries}
 			}
 		}
 	}
@@ -3225,14 +3230,18 @@ type NodeUsageAggregate struct {
 	NextCursor        NodeUsageCursor    `json:"next_cursor"`         // stable cursor for the next incremental query
 }
 
-// serializeTokenUsage converts the new tool_usage block back to completion_tokens_details.num_search_queries
-// field (which is how existing logs store it)
+// serializeTokenUsage stores the web search count as completion_tokens_details.num_search_queries
+// (which is how existing logs store it); every other tool counter stays in tool_usage.
 func serializeTokenUsage(u *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage {
 	if u.ToolUsage == nil {
 		return u
 	}
 	stored := *u
 	stored.ToolUsage = nil
+	if rest := *u.ToolUsage; rest.WebFetch != nil || rest.CodeExecution != nil {
+		rest.WebSearch = nil
+		stored.ToolUsage = &rest
+	}
 	if ws := u.ToolUsage.WebSearch; ws != nil && ws.NumRequests > 0 {
 		details := schemas.ChatCompletionTokensDetails{}
 		if u.CompletionTokensDetails != nil {

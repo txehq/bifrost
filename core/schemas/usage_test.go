@@ -470,3 +470,91 @@ func BenchmarkMergeStreamFrame(b *testing.B) {
 		})
 	}
 }
+
+// TestToolUsageAddDeepCopyCoverEveryField fails when a new ToolUsage counter is
+// added without being summed by Add or owned by DeepCopy.
+func TestToolUsageAddDeepCopyCoverEveryField(t *testing.T) {
+	var tu ToolUsage
+	v := reflect.ValueOf(&tu).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		if v.Field(i).Type() != reflect.TypeOf(&ToolRequestUsage{}) {
+			t.Fatalf("ToolUsage.%s is not a *ToolRequestUsage; extend this test", v.Type().Field(i).Name)
+		}
+		v.Field(i).Set(reflect.ValueOf(&ToolRequestUsage{NumRequests: i + 1}))
+	}
+	sum := reflect.ValueOf(tu.Add(&tu)).Elem()
+	cp := reflect.ValueOf(tu.DeepCopy()).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		name := v.Type().Field(i).Name
+		if s := sum.Field(i).Interface().(*ToolRequestUsage); s == nil || s.NumRequests != 2*(i+1) {
+			t.Fatalf("Add drops or mis-sums ToolUsage.%s: %+v", name, s)
+		}
+		orig := v.Field(i).Interface().(*ToolRequestUsage)
+		if c := cp.Field(i).Interface().(*ToolRequestUsage); c == nil || c == orig || c.NumRequests != orig.NumRequests {
+			t.Fatalf("DeepCopy does not own ToolUsage.%s", name)
+		}
+	}
+}
+
+func TestToolUsageAddDeepCopyCarryEveryCounter(t *testing.T) {
+	a := &ToolUsage{WebSearch: &ToolRequestUsage{NumRequests: 1}, WebFetch: &ToolRequestUsage{NumRequests: 2}, CodeExecution: &ToolRequestUsage{NumRequests: 5}}
+	b := &ToolUsage{WebFetch: &ToolRequestUsage{NumRequests: 3}, CodeExecution: &ToolRequestUsage{NumRequests: 1}}
+
+	sum := a.Add(b)
+	if sum.WebSearch.NumRequests != 1 || sum.WebFetch.NumRequests != 5 || sum.CodeExecution.NumRequests != 6 {
+		t.Fatalf("Add = %+v/%+v/%+v, want 1/5/6", *sum.WebSearch, *sum.WebFetch, *sum.CodeExecution)
+	}
+	if b.Add(nil).WebSearch != nil {
+		t.Fatal("a tool absent on both sides must stay absent")
+	}
+	cp := a.DeepCopy()
+	if cp.WebFetch == a.WebFetch || cp.CodeExecution == a.CodeExecution || cp.WebFetch.NumRequests != 2 || cp.CodeExecution.NumRequests != 5 {
+		t.Fatalf("DeepCopy must own every counter, got %+v", cp)
+	}
+	out, err := Marshal(&ToolUsage{WebFetch: &ToolRequestUsage{NumRequests: 2}, CodeExecution: &ToolRequestUsage{NumRequests: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"web_fetch":{"num_requests":2},"code_execution":{"num_requests":1}}`; string(out) != want {
+		t.Fatalf("json = %s, want %s", out, want)
+	}
+}
+
+// toolUsageSink keeps benchmark results on the heap, as real callers that store them do.
+var toolUsageSink *ToolUsage
+
+// Request-path cost of the tool_usage merge (TXE-6534): nil operands, the existing
+// web-search-only shape, and copies.
+func BenchmarkToolUsageAdd_NilNil(b *testing.B) {
+	var x, y *ToolUsage
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		toolUsageSink = x.Add(y)
+	}
+}
+
+func BenchmarkToolUsageAdd_WebSearch(b *testing.B) {
+	x := &ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 1}}
+	y := &ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 2}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		toolUsageSink = x.Add(y)
+	}
+}
+
+func BenchmarkToolUsageDeepCopy_WebSearch(b *testing.B) {
+	x := &ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 1}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		toolUsageSink = x.DeepCopy()
+	}
+}
+
+func BenchmarkToolUsageAdd_AllTools(b *testing.B) {
+	x := &ToolUsage{WebSearch: &ToolRequestUsage{NumRequests: 1}, WebFetch: &ToolRequestUsage{NumRequests: 2}, CodeExecution: &ToolRequestUsage{NumRequests: 1}}
+	y := &ToolUsage{WebFetch: &ToolRequestUsage{NumRequests: 1}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		toolUsageSink = x.Add(y)
+	}
+}

@@ -2259,31 +2259,55 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 	return merged
 }
 
+// ToolUsage counts provider-hosted (server-side) tool calls billed per call.
+// Every counter is filled only when the vendor reports a non-zero count (contract C5).
+// A new counter must also be handled in Add and DeepCopy;
+// TestToolUsageAddDeepCopyCoverEveryField fails when it is not.
 type ToolUsage struct {
-	WebSearch *WebSearchToolUsage `json:"web_search,omitempty"`
+	WebSearch     *WebSearchToolUsage `json:"web_search,omitempty"`
+	WebFetch      *ToolRequestUsage   `json:"web_fetch,omitempty"`      // Anthropic server_tool_use.web_fetch_requests
+	CodeExecution *ToolRequestUsage   `json:"code_execution,omitempty"` // Anthropic server_tool_use.code_execution_requests
+}
+
+// ToolRequestUsage counts billable calls of one server-side tool.
+type ToolRequestUsage struct {
+	NumRequests int `json:"num_requests"`
 }
 
 // WebSearchToolUsage counts billable web search calls.
-type WebSearchToolUsage struct {
-	NumRequests int `json:"num_requests"`
-}
+type WebSearchToolUsage = ToolRequestUsage
 
 // Add returns the per-tool sum of t and o; nil when both are nil.
 func (t *ToolUsage) Add(o *ToolUsage) *ToolUsage {
 	if t == nil && o == nil {
 		return nil
 	}
-	sum := &ToolUsage{}
-	if t != nil && t.WebSearch != nil {
-		sum.WebSearch = &WebSearchToolUsage{NumRequests: t.WebSearch.NumRequests}
+	if t == nil {
+		t = &ToolUsage{}
 	}
-	if o != nil && o.WebSearch != nil {
-		if sum.WebSearch == nil {
-			sum.WebSearch = &WebSearchToolUsage{}
-		}
-		sum.WebSearch.NumRequests += o.WebSearch.NumRequests
+	if o == nil {
+		o = &ToolUsage{}
 	}
-	return sum
+	return &ToolUsage{
+		WebSearch:     addToolRequestUsage(t.WebSearch, o.WebSearch),
+		WebFetch:      addToolRequestUsage(t.WebFetch, o.WebFetch),
+		CodeExecution: addToolRequestUsage(t.CodeExecution, o.CodeExecution),
+	}
+}
+
+// addToolRequestUsage returns an owned sum; nil when the tool is absent on both sides.
+func addToolRequestUsage(a, b *ToolRequestUsage) *ToolRequestUsage {
+	if a == nil && b == nil {
+		return nil
+	}
+	n := 0
+	if a != nil {
+		n += a.NumRequests
+	}
+	if b != nil {
+		n += b.NumRequests
+	}
+	return &ToolRequestUsage{NumRequests: n}
 }
 
 // DeepCopy returns an owned copy of t.
@@ -2292,9 +2316,11 @@ func (t *ToolUsage) DeepCopy() *ToolUsage {
 		return nil
 	}
 	c := *t
-	if t.WebSearch != nil {
-		ws := *t.WebSearch
-		c.WebSearch = &ws
+	for _, p := range []**ToolRequestUsage{&c.WebSearch, &c.WebFetch, &c.CodeExecution} {
+		if *p != nil {
+			v := **p
+			*p = &v
+		}
 	}
 	return &c
 }

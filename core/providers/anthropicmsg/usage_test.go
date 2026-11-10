@@ -23,3 +23,22 @@ func TestExtractUsageBillsCompactionWithoutDeclinedFallback(t *testing.T) {
 		t.Fatal("usage extraction changed the native response")
 	}
 }
+
+func TestExtractUsageCarriesServerToolCounts(t *testing.T) {
+	body := []byte(`{"usage":{"input_tokens":10,"output_tokens":20,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":2,"code_execution_requests":1}}}`)
+	got := ExtractUsage("/v1/messages", nil, body)
+	if got == nil || got.LLMUsage == nil || got.LLMUsage.ToolUsage == nil {
+		t.Fatal("missing tool usage")
+	}
+	tu := got.LLMUsage.ToolUsage
+	if tu.WebSearch != nil || tu.WebFetch == nil || tu.WebFetch.NumRequests != 2 || tu.CodeExecution == nil || tu.CodeExecution.NumRequests != 1 {
+		t.Fatalf("tool usage = %+v, want web_fetch 2 and code_execution 1", tu)
+	}
+
+	var s StreamUsage
+	s.ObserveEvent([]byte(`{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":1,"server_tool_use":{"web_fetch_requests":1}}}}`))
+	final := s.ObserveEvent([]byte(`{"type":"message_delta","usage":{"output_tokens":20,"server_tool_use":{"web_fetch_requests":2,"code_execution_requests":1}}}`))
+	if final == nil || final.LLMUsage.ToolUsage == nil || final.LLMUsage.ToolUsage.WebFetch.NumRequests != 2 || final.LLMUsage.ToolUsage.CodeExecution.NumRequests != 1 {
+		t.Fatalf("stream tool usage = %+v", final)
+	}
+}

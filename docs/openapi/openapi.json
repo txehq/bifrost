@@ -113153,6 +113153,26 @@
                     "description": "Number of billable web search calls."
                   }
                 }
+              },
+              "web_fetch": {
+                "type": "object",
+                "description": "Present only when the provider reported a non-zero count (Anthropic server_tool_use.web_fetch_requests).",
+                "properties": {
+                  "num_requests": {
+                    "type": "integer",
+                    "description": "Number of billable web fetch calls."
+                  }
+                }
+              },
+              "code_execution": {
+                "type": "object",
+                "description": "Present only when the provider reported a non-zero count (Anthropic server_tool_use.code_execution_requests).",
+                "properties": {
+                  "num_requests": {
+                    "type": "integer",
+                    "description": "Number of billable code execution calls."
+                  }
+                }
               }
             }
           },
@@ -117369,6 +117389,26 @@
                   "num_requests": {
                     "type": "integer",
                     "description": "Number of billable web search calls."
+                  }
+                }
+              },
+              "web_fetch": {
+                "type": "object",
+                "description": "Present only when the provider reported a non-zero count (Anthropic server_tool_use.web_fetch_requests).",
+                "properties": {
+                  "num_requests": {
+                    "type": "integer",
+                    "description": "Number of billable web fetch calls."
+                  }
+                }
+              },
+              "code_execution": {
+                "type": "object",
+                "description": "Present only when the provider reported a non-zero count (Anthropic server_tool_use.code_execution_requests).",
+                "properties": {
+                  "num_requests": {
+                    "type": "integer",
+                    "description": "Number of billable code execution calls."
                   }
                 }
               }
