@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -3780,16 +3779,28 @@ func (h *CompletionHandler) videoList(ctx *fasthttp.RequestCtx) {
 func videoListFilters(args *fasthttp.Args) map[string][]string {
 	var filters map[string][]string
 	for name, value := range args.All() {
-		key := string(name)
-		if slices.Contains(schemas.VideoListReservedParams, key) {
+		if isVideoListReservedParam(name) {
 			continue
 		}
 		if filters == nil {
 			filters = make(map[string][]string)
 		}
+		key := string(name)
 		filters[key] = append(filters[key], string(value))
 	}
 	return filters
+}
+
+// isVideoListReservedParam reports whether name is a query parameter of GET /v1/videos that
+// Bifrost reads itself. The comparison does not allocate, so a list request that sends no
+// vendor filter pays nothing for the pass-through.
+func isVideoListReservedParam(name []byte) bool {
+	for _, reserved := range schemas.VideoListReservedParams {
+		if string(name) == reserved {
+			return true
+		}
+	}
+	return false
 }
 
 // videoDelete handles DELETE /v1/videos/{video_id} - Delete a video generation job

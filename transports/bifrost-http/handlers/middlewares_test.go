@@ -5519,3 +5519,28 @@ func TestApplyHTTPRequestToCtxKeepsRepeatedVideoListFilters(t *testing.T) {
 		t.Fatalf("another route's query = %s", got)
 	}
 }
+
+// BenchmarkApplyHTTPRequestToCtx is the per-request cost of writing a plugin-visible request back
+// (it runs on every request once a transport plugin is loaded): a chat request with a query, which
+// the video list exception must not slow, and the video list with a repeated filter.
+func BenchmarkApplyHTTPRequestToCtx(b *testing.B) {
+	for name, uri := range map[string]string{
+		"chat":       "/v1/chat/completions?api-version=2025-04-01-preview&trace=1",
+		"video_list": "/v1/videos?provider=azure&status=completed&status=failed&limit=2",
+	} {
+		b.Run(name, func(b *testing.B) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+			ctx.Request.SetRequestURI(uri)
+			req := schemas.AcquireHTTPRequest()
+			defer schemas.ReleaseHTTPRequest(req)
+			fasthttpToHTTPRequest(&ctx, req)
+			b.ReportAllocs()
+			for b.Loop() {
+				if !applyHTTPRequestToCtx(&ctx, req) {
+					b.Fatal("did not apply")
+				}
+			}
+		})
+	}
+}

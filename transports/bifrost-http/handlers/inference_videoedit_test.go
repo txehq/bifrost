@@ -735,3 +735,21 @@ func TestVideoListForwardsVendorFiltersWithTheNamedKey(t *testing.T) {
 		t.Fatalf("filters = %v, want %v", got, want)
 	}
 }
+
+// BenchmarkVideoListFilters is what collecting the vendor filters adds to GET /v1/videos: no
+// allocation for a request that sends none.
+func BenchmarkVideoListFilters(b *testing.B) {
+	for name, query := range map[string]string{
+		"none":  "provider=azure&limit=2&order=desc",
+		"three": "provider=azure&limit=2&status=completed&status=failed&created_after=1762700000",
+	} {
+		b.Run(name, func(b *testing.B) {
+			var args fasthttp.Args
+			args.Parse(query)
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = videoListFilters(&args)
+			}
+		})
+	}
+}

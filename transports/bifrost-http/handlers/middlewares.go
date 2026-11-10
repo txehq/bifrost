@@ -1146,10 +1146,10 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 	}
 }
 
-// isVideoListVendorFilter reports whether key is a vendor filter of GET /v1/videos: a query
-// parameter of that route that Bifrost does not read itself.
-func isVideoListVendorFilter(ctx *fasthttp.RequestCtx, key string) bool {
-	return ctx.IsGet() && string(ctx.Path()) == "/v1/videos" && !slices.Contains(schemas.VideoListReservedParams, key)
+// isVideoListRequest reports whether the request is GET /v1/videos, the one route whose
+// other query parameters are vendor filters Bifrost does not read itself.
+func isVideoListRequest(ctx *fasthttp.RequestCtx) bool {
+	return ctx.IsGet() && string(ctx.Path()) == "/v1/videos"
 }
 
 // applyHTTPRequestToCtx applies modifications from HTTPRequest back to fasthttp context.
@@ -1175,8 +1175,9 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) b
 	// reached the vendor as status=failed&status=failed), so a filter the plugins left as it
 	// was keeps every value (fork, TXE-6587, contract C7 / BF15).
 	args := ctx.Request.URI().QueryArgs()
+	videoList := isVideoListRequest(ctx)
 	for key, value := range req.Query {
-		if isVideoListVendorFilter(ctx, key) {
+		if videoList && !slices.Contains(schemas.VideoListReservedParams, key) {
 			if values := args.PeekMulti(key); len(values) > 0 && string(values[len(values)-1]) == value {
 				continue
 			}
