@@ -101,6 +101,6 @@ DashScope returns `{"request_id": "...", "code": "...", "message": "..."}` with 
 | `Throttling`, `Throttling.*` | 429 | `provider_rate_limited` |
 | `InternalError`, `InternalError.*` | 500 | `provider_server_error` |
 | `ServiceUnavailable` | 503 | `provider_overloaded` |
-| `DataInspectionFailed` (content moderation) | 400 | `caller_invalid_request` for now |
+| `DataInspectionFailed`, `data_inspection_failed` (content moderation) | 400 | `caller_content_filtered` |
 
 Any other code is classified from its status.

@@ -43,12 +43,15 @@ func parseDashScopeError(resp *fasthttp.Response) *schemas.BifrostError {
 //   - InvalidApiKey and AccessDenied* are key problems.
 //   - ModelNotFound names the model, which a 404 on a task route would not say.
 //   - InternalError* and ServiceUnavailable are the vendor's own failures.
+//   - DataInspectionFailed (data_inspection_failed in compatible mode) is DashScope's
+//     content moderation refusing the caller's input or output, whatever its status
+//     (contract C6, BF9).
 //
-// "" leaves the error to ClassifyErrorType's status rules. DataInspectionFailed (content
-// moderation) is one of those for now: it classifies as caller_invalid_request from its
-// 400 until the vocabulary gains caller_content_filtered (TXE-6517).
+// "" leaves the error to ClassifyErrorType's status rules.
 func dashScopeErrorType(code string) schemas.ErrorType {
 	switch {
+	case code == "DataInspectionFailed", code == "data_inspection_failed":
+		return schemas.ErrorTypeCallerContentFiltered
 	case code == "Arrearage", code == "AllocationQuota.FreeTierOnly":
 		return schemas.ErrorTypeProviderBilling
 	case code == "Throttling", strings.HasPrefix(code, "Throttling."):

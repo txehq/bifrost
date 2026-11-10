@@ -133,9 +133,8 @@ func TestDashScopeErrorParsing(t *testing.T) {
 		{429, "Throttling.AllocationQuota", schemas.VideoGenerationRequest, schemas.ErrorTypeProviderRateLimited},
 		{500, "InternalError.Algo", schemas.SpeechRequest, schemas.ErrorTypeProviderServerError},
 		{503, "ServiceUnavailable", schemas.SpeechRequest, schemas.ErrorTypeProviderOverloaded},
-		// Content moderation: caller_invalid_request from its 400 until TXE-6517 adds
-		// caller_content_filtered.
-		{400, "DataInspectionFailed", schemas.ImageGenerationRequest, schemas.ErrorTypeCallerInvalidRequest},
+		{400, "DataInspectionFailed", schemas.ImageGenerationRequest, schemas.ErrorTypeCallerContentFiltered},
+		{400, "data_inspection_failed", schemas.SpeechRequest, schemas.ErrorTypeCallerContentFiltered},
 	}
 	for _, tc := range cases {
 		t.Run(tc.code, func(t *testing.T) {
