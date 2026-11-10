@@ -1035,6 +1035,25 @@ const xaiResponsesAnswer = (body) => {
 	return { status: 200, body: JSON.stringify(response) };
 };
 
+// BytePlus Seedream image results, TXE-6605 (contract C6), served on /pp/byteplus/api/v3/images/generations. Ark
+// answers a sequential generation with a 200 whose data[] mixes delivered images with per-image error objects; the
+// codes and shape are the ones core/providers/byteplus/byteplus_test.go pins. The model selects the answer:
+// seedream-partly-filtered delivers two images and refuses one, seedream-all-filtered refuses its only image, and
+// seedream-empty delivers nothing and refuses nothing.
+const seedreamRefusal = { error: { code: "OutputImageSensitiveContentDetected", message: "The request failed because the output image may contain sensitive information." } };
+const seedreamImage = (i) => ({ url: `https://fixture.invalid/seedream/${i}.png`, size: "2048x2048" });
+const seedreamUsage = (n) => ({ generated_images: n, output_tokens: 16384 * n, total_tokens: 16384 * n });
+const seedreamAnswers = {
+	"seedream-partly-filtered": () => ({ data: [seedreamImage(0), seedreamRefusal, seedreamImage(2)], usage: seedreamUsage(2) }),
+	"seedream-all-filtered": () => ({ data: [seedreamRefusal], usage: seedreamUsage(0) }),
+	"seedream-empty": () => ({ data: [], usage: seedreamUsage(0) }),
+};
+const seedreamAnswer = (body) => {
+	const answer = seedreamAnswers[body.model];
+	if (!answer) return { status: 404, body: errorBody(`unknown fixture model ${body.model}`, "invalid_request_error", "model_not_found") };
+	return { status: 200, body: JSON.stringify({ model: body.model, created: 1, ...answer() }) };
+};
+
 const wireAnswer = (path, body, bytes) => {
 	if (isBedrockConversePath(path)) return bedrockConverseAnswer(path);
 	if (path.startsWith("/pp/storage/")) return storageAnswer(path, body);
@@ -1093,6 +1112,7 @@ const wireAnswer = (path, body, bytes) => {
 	}
 	if (path === "/pp/vercel/v1/images/generations") return { status: 200, body: JSON.stringify(vercelImageAnswer(body)) };
 	if (path === "/pp/google-cloud-tts/v1/text:synthesize") return cloudTTSAnswer(body);
+	if (path === "/pp/byteplus/api/v3/images/generations") return seedreamAnswer(body);
 	if (path === "/pp/cp/v1/responses") return cpResponsesAnswerFor(body);
 	if (path === "/pp/cloudflare/accounts/acct-1/ai/v1/chat/completions") return cpCloudflareChat(body);
 	// TXE-6967: xAI reports its charge as cost_in_usd_ticks; upstream-usage-extended answers with it on chat and

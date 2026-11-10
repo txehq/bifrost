@@ -947,3 +947,19 @@ test("xAI chat reports server-side tool usage and Responses records its request 
   calls = calls.slice(0, -1);
   assert.equal(JSON.parse(calls.at(-1).body).max_turns, 3);
 });
+
+// Seedream image results for provider-harness folder 312 (TXE-6605): Ark's 200 with per-image error objects.
+test("seedream answers a 200 that mixes delivered images with per-image refusals", async (t) => {
+  const post = await startFixture(t);
+  const path = "/pp/byteplus/api/v3/images/generations";
+  const partly = await (await post({ model: "seedream-partly-filtered", prompt: "p" }, path)).json();
+  assert.equal(partly.data.length, 3);
+  assert.equal(partly.data[1].error.code, "OutputImageSensitiveContentDetected");
+  assert.equal(partly.usage.generated_images, 2);
+  const all = await (await post({ model: "seedream-all-filtered", prompt: "p" }, path)).json();
+  assert.deepEqual(all.data.map((d) => d.error.code), ["OutputImageSensitiveContentDetected"]);
+  assert.equal(all.usage.generated_images, 0);
+  const empty = await (await post({ model: "seedream-empty", prompt: "p" }, path)).json();
+  assert.deepEqual(empty.data, []);
+  assert.equal((await post({ model: "seedream-unknown", prompt: "p" }, path)).status, 404);
+});
