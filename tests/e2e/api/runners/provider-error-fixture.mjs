@@ -1024,6 +1024,39 @@ const deepgramAnswer = (req, res, raw) => {
 	return answer(200, { metadata: deepgramMetadata(25.933313, 1), results: { channels: [deepgramChannel("Yeah. As as much as, it's worth celebrating, the first, spacewalk.")] } });
 };
 
+// Folder 405 (TXE-6587, contract C7 / BF15 and C9 / BF20). GET /v1/videos is an OpenAI-shaped list recorded in
+// two pages (the page after video_b is the last), and GET /v1/videos/video_gapped_*/content sends a file in two
+// halves VIDEO_GAP_MS apart. Both are counted per caller key and, for the list, per query
+// ("video.list@<bearer token>?<sorted query>", "video.content@<bearer token>"), so a case can prove which key
+// reached the vendor, how often, and with which filters.
+const VIDEO_GAP_MS = 1500;
+const VIDEO_HALF = Buffer.alloc(256 * 1024, 0x1a);
+const videoGapSends = [];
+const bearerOf = (req) => String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+const listedVideo = (id, status, created_at) => ({ id, object: "video", model: "sora-fixture", status, created_at });
+const videoListPage = (after) => after === "video_b"
+	? { object: "list", data: [listedVideo("video_c", "failed", 1762700200)], first_id: "video_c", last_id: "video_c", has_more: false }
+	: { object: "list", data: [listedVideo("video_a", "completed", 1762700000), listedVideo("video_b", "in_progress", 1762700100)], first_id: "video_a", last_id: "video_b", has_more: true };
+// The download probe: {base_url, path, headers?}. It GETs the gateway and answers {data: [{status, content_type,
+// bytes, first_byte_ms, end_ms, sends, gap_ms}]}: when the first byte and the last reached the probe, and when
+// the fixture wrote each half of the latest gapped file, all in ms from the moment the probe sent.
+const probeDownload = (spec, reply) => {
+	const t0 = performance.now();
+	const ms = (t) => Math.round((t - t0) * 10) / 10;
+	const target = new URL(String(spec.path || ""), String(spec.base_url || ""));
+	const upstream = http.request(target, { method: "GET", headers: { ...(spec.headers || {}) } }, (gw) => {
+		let bytes = 0;
+		let firstByte = null;
+		gw.on("data", (c) => {
+			if (firstByte === null) firstByte = ms(performance.now());
+			bytes += c.length;
+		});
+		gw.on("end", () => reply(200, { data: [{ status: gw.statusCode, content_type: gw.headers["content-type"] || "", bytes, first_byte_ms: firstByte, end_ms: ms(performance.now()), sends: videoGapSends.map(ms), gap_ms: VIDEO_GAP_MS }] }));
+	});
+	upstream.on("error", (err) => reply(502, { error: { message: `probe could not reach the gateway: ${err.message}`, type: "probe_error" } }));
+	upstream.end();
+};
+
 // Hit counters are keyed by the request body's model, so they must not inherit Object.prototype names.
 const hits = Object.create(null);
 // The exact bytes the last streamed answer for a model wrote, keyed by the request's model; GET /__sent?model=
@@ -1350,6 +1383,17 @@ const server = http.createServer((req, res) => {
 		});
 		return undefined;
 	}
+	if (req.method === "POST" && path === "/__probe/download") {
+		const body = [];
+		req.on("data", (c) => body.push(c));
+		req.on("end", () => {
+			let spec;
+			try { spec = JSON.parse(Buffer.concat(body).toString("utf8")); }
+			catch { return send(400, {}, errorBody("invalid JSON", "invalid_request_error", "invalid_json")); }
+			probeDownload(spec, (status, answer) => send(status, {}, JSON.stringify(answer)));
+		});
+		return undefined;
+	}
 	if (req.method === "GET" && path === "/__hits") {
 		return send(200, {}, JSON.stringify({ data: [{ hits: { ...hits } }] }));
 	}
@@ -1406,6 +1450,24 @@ const server = http.createServer((req, res) => {
 			countHit("video.create");
 			send(200, {}, JSON.stringify(fixtureVideo("queued", 0)));
 		});
+	}
+	if (req.method === "GET" && path === "/v1/videos") {
+		const query = new URL(req.url, "http://localhost").searchParams;
+		query.sort();
+		countHit(`video.list@${bearerOf(req)}?${query.toString()}`);
+		return send(200, {}, JSON.stringify(videoListPage(query.get("after"))));
+	}
+	if (req.method === "GET" && videoMatch && videoMatch[2] && videoMatch[1].startsWith("video_gapped_")) {
+		countHit(`video.content@${bearerOf(req)}`);
+		videoGapSends.length = 0;
+		res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": 2 * VIDEO_HALF.length });
+		videoGapSends.push(performance.now());
+		res.write(VIDEO_HALF);
+		setTimeout(() => {
+			videoGapSends.push(performance.now());
+			res.end(VIDEO_HALF);
+		}, VIDEO_GAP_MS);
+		return undefined;
 	}
 	if (req.method === "GET" && videoMatch && videoMatch[2]) {
 		countHit("video.content");
