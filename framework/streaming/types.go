@@ -103,40 +103,65 @@ type ChatContentSafety struct {
 	OutputSensitiveType *int
 }
 
+// chatContentSafetyBlock backs one chunk's copy of the flags, so a flagged chunk costs a single
+// allocation and an unflagged one none.
+type chatContentSafetyBlock struct {
+	ChatContentSafety
+	inputSensitive, outputSensitive bool
+	inputType, outputType           int
+}
+
 // chatContentSafetyFrom copies the flags off a chat response, or returns nil when it carries none.
 func chatContentSafetyFrom(r *schemas.BifrostChatResponse) *ChatContentSafety {
 	if r == nil || (r.InputSensitive == nil && r.OutputSensitive == nil && r.InputSensitiveType == nil && r.OutputSensitiveType == nil) {
 		return nil
 	}
-	c := &ChatContentSafety{}
+	b := &chatContentSafetyBlock{}
 	if r.InputSensitive != nil {
-		c.InputSensitive = new(bool(*r.InputSensitive))
+		b.inputSensitive = *r.InputSensitive
+		b.InputSensitive = &b.inputSensitive
 	}
 	if r.OutputSensitive != nil {
-		c.OutputSensitive = new(bool(*r.OutputSensitive))
+		b.outputSensitive = *r.OutputSensitive
+		b.OutputSensitive = &b.outputSensitive
 	}
 	if r.InputSensitiveType != nil {
-		c.InputSensitiveType = new(int(*r.InputSensitiveType))
+		b.inputType = *r.InputSensitiveType
+		b.InputSensitiveType = &b.inputType
 	}
 	if r.OutputSensitiveType != nil {
-		c.OutputSensitiveType = new(int(*r.OutputSensitiveType))
+		b.outputType = *r.OutputSensitiveType
+		b.OutputSensitiveType = &b.outputType
 	}
-	return c
+	return &b.ChatContentSafety
 }
 
-// mergeNewer overlays the non-nil fields of newer onto c.
-func (c *ChatContentSafety) mergeNewer(newer *ChatContentSafety) {
-	if newer.InputSensitive != nil {
-		c.InputSensitive = newer.InputSensitive
+// chatContentSafetyAccumulator keeps, for each flag, the value from the highest-index chunk that
+// carried it. Chunks can be stored out of index order, so each field tracks its own index.
+type chatContentSafetyAccumulator struct {
+	merged                               *ChatContentSafety
+	inIdx, outIdx, inTypeIdx, outTypeIdx int
+}
+
+func (a *chatContentSafetyAccumulator) add(c *ChatContentSafety, index int) {
+	if c == nil {
+		return
 	}
-	if newer.OutputSensitive != nil {
-		c.OutputSensitive = newer.OutputSensitive
+	if a.merged == nil {
+		a.merged = &ChatContentSafety{}
+		a.inIdx, a.outIdx, a.inTypeIdx, a.outTypeIdx = -1, -1, -1, -1
 	}
-	if newer.InputSensitiveType != nil {
-		c.InputSensitiveType = newer.InputSensitiveType
+	if c.InputSensitive != nil && index > a.inIdx {
+		a.merged.InputSensitive, a.inIdx = c.InputSensitive, index
 	}
-	if newer.OutputSensitiveType != nil {
-		c.OutputSensitiveType = newer.OutputSensitiveType
+	if c.OutputSensitive != nil && index > a.outIdx {
+		a.merged.OutputSensitive, a.outIdx = c.OutputSensitive, index
+	}
+	if c.InputSensitiveType != nil && index > a.inTypeIdx {
+		a.merged.InputSensitiveType, a.inTypeIdx = c.InputSensitiveType, index
+	}
+	if c.OutputSensitiveType != nil && index > a.outTypeIdx {
+		a.merged.OutputSensitiveType, a.outTypeIdx = c.OutputSensitiveType, index
 	}
 }
 
