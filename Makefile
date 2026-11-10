@@ -2665,8 +2665,12 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	: "direct legs when gcloud could not mint a token, instead of emitting cells that post an"; \
 	: "unresolved {{vertexAccessToken}} placeholder and 401 en masse."; \
 	export VERTEX_ACCESS_TOKEN_VAL; \
+	: "--profile is the config Bifrost runs with: a provider there whose key env vars are all"; \
+	: "unset has its requests skipped with a 'skipped: no key' assertion instead of failing on"; \
+	: "credentials (tests/e2e/api/runners/lib/keyless-providers.mjs)."; \
 	$(USE_NODE); run_quiet node tests/e2e/api/runners/augment-provider-harness.mjs \
 		--source tests/e2e/api/collections/provider-harness.json \
+		--profile "$$APP_DIR_VAL/config.json" \
 		--out tmp/harness-augmented.json || { say "$(RED)Harness augmentation failed$(NC)"; exit 1; }; \
 	COLLECTION_FILE="tmp/harness-augmented.json"; \
 	: "SMOKE_MANIFEST alone carries smoke mode: it is both the truth test and the flag value."; \
