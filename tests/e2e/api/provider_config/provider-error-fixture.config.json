@@ -1,6 +1,7 @@
 {
   "client": {
-    "allow_per_request_raw_override": true
+    "allow_per_request_raw_override": true,
+    "enforce_auth_on_inference": false
   },
   "framework": {
     "pricing": {
@@ -46,6 +47,7 @@
             "upstream-429",
             "upstream-429-ms",
             "upstream-ok",
+            "upstream-gapped",
             "upstream-cached-tokens",
             "upstream-slow",
             "upstream-fixed-length-short",
