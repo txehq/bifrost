@@ -827,6 +827,10 @@ const server = http.createServer((req, res) => {
 			"pp-custom-legacy": { provider: "openai", mode: "responses", supported_endpoints: ["/v1/responses"], supports_custom_tools: false, supports_function_calling: true },
 			// TXE-6527: a model whose capability record lists its service tiers, so a tier outside the list is refused.
 			"oc-tiered": { provider: "moonshot", mode: "chat", service_tiers: ["default", "priority"] },
+			// TXE-7026: two models with a record that lists no parameters and a low output limit, so anything the compat
+			// plugin would drop or lower for them shows in the request the fixture records.
+			"cp-capped": { provider: "cp_plain", mode: "chat", max_output_tokens: 64, supported_endpoints: ["/v1/chat/completions", "/v1/responses"] },
+			"oc-capped": { provider: "moonshot", mode: "chat", max_output_tokens: 64 },
 		}));
 	}
 	if (req.method === "POST" && path === "/__reset") {

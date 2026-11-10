@@ -196,35 +196,15 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 					ctx.SetValue(schemas.BifrostContextKeyCompatDroppedParams, droppedParams)
 					p.logger.Debug("compat: dropped unsupported params for model %s: %v", model, droppedParams)
 					ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("dropped %d unsupported param(s) for model %s: %s", len(droppedParams), model, strings.Join(droppedParams, ", ")))
-					// service_tier decides what the caller is billed. Dropping it
-					// downgrades the request to the provider's default tier with no
-					// upstream error and no difference in the response body, so it
-					// is worth surfacing above Debug.
-					if slices.Contains(droppedParams, "service_tier") {
-						msg := fmt.Sprintf("dropped service_tier for model %s - the model catalog does not list service_tier support for this model, so the request will be served and billed at the provider's default tier", model)
-						p.logger.Warn("compat: " + msg)
-						ctx.Log(schemas.LogLevelWarn, msg)
-					}
 				}
 			}
 		}
 	}
 
-	// Convert param values the model cannot accept. Runs after the drop above so a
-	// dropped param is never converted. Fallbacks rerun this hook, so each attempt
-	// is fitted to its own model. Namespace-tool flattening used to live under
-	// this flag too; it moved to core dispatch (prepareResponsesRequest).
-	if ((shouldConvertParamsOverrideEnabled && shouldConvertParamsOverride) || p.config.ShouldConvertParams) && p.modelCatalog != nil {
-		provider, model, _ := modifiedReq.GetRequestFields()
-		if model != "" {
-			if changes := p.convertUnsupportedParamValues(modifiedReq, provider, model); len(changes) > 0 {
-				p.logger.Debug("compat: converted param values for model %s: %v", model, changes)
-				ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("converted %d param value(s) for model %s: %s", len(changes), model, strings.Join(changes, ", ")))
-			} else {
-				ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("no param values converted for model %s (%s)", model, provider))
-			}
-		}
-	}
+	// should_convert_params used to lower an output cap or thinking budget above the
+	// model's limit to that limit. Both decide what the caller is billed, so they now go
+	// on as sent and the provider delivers or refuses them (contract C4). The switch is
+	// still read from configuration and the x-bf-compat header, and converts nothing.
 
 	return modifiedReq, nil, nil
 }

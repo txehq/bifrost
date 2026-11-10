@@ -2,25 +2,21 @@ package compat
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
-// keepReasoningForResponses reports whether a chat request's reasoning must survive the
-// tools rewrite because core may serve it on the Responses API, where reasoning and tools
-// coexist. Core picks the wire at dispatch from the attempt's base provider, which is only
-// stamped after pre-hooks run, so a custom key (whose base may be OpenAI or Azure) is kept
-// and core reports reasoning.mode as dropped if its base turns out not to need Responses.
-func keepReasoningForResponses(reasoning *schemas.ChatReasoning, provider schemas.ModelProvider) bool {
-	if reasoning == nil || reasoning.Mode == nil {
-		return false
-	}
-	return schemas.ChatReasoningModeRequiresResponses(provider) || !slices.Contains(schemas.StandardProviders, provider)
-}
-
 // dropUnsupportedParams removes unsupported model parameters from a request in place.
+//
+// A price-affecting field the caller sent is never dropped or rewritten, whatever the
+// catalog lists: the output cap (max_completion_tokens, max_output_tokens, max_tokens),
+// service_tier, prompt_cache_key, prompt_cache_retention and reasoning (effort and
+// budget). They decide what the caller is billed, so the request goes on with them as
+// sent and the provider delivers or refuses them (contract C4). Dropping one would serve
+// and bill a different request than the caller sent, with only
+// extra_fields.dropped_compat_plugin_params to say so. reasoning.summary is a
+// presentation option, not one of them, and is still fitted.
 func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, supportedParams []string) []string {
 	if req == nil {
 		return nil
@@ -53,13 +49,6 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 			params.LogProbs = nil
 			dropped = append(dropped, "logprobs")
 		}
-		// max_completion_tokens and service_tier (below) are never dropped from a chat
-		// request, whatever the catalog lists: they decide what the caller is billed
-		// (output size, tier), so the request goes on with them as sent and the provider
-		// delivers or refuses them (openai.ChatServiceTierError returns 400
-		// caller_unsupported_parameter for a tier the model's record does not list).
-		// Dropping one here would serve and bill a different request than the caller
-		// sent, with only extra_fields.dropped_compat_plugin_params to say so.
 		if params.Metadata != nil && !isSupported["metadata"] {
 			params.Metadata = nil
 			dropped = append(dropped, "metadata")
@@ -76,33 +65,10 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 			params.PresencePenalty = nil
 			dropped = append(dropped, "presence_penalty")
 		}
-		if params.PromptCacheKey != nil && !isSupported["prompt_cache_key"] {
-			params.PromptCacheKey = nil
-			dropped = append(dropped, "prompt_cache_key")
-		}
-		if params.PromptCacheRetention != nil && !isSupported["prompt_cache_retention"] {
-			params.PromptCacheRetention = nil
-			dropped = append(dropped, "prompt_cache_retention")
-		}
-		if params.Reasoning != nil {
-			// for chat completions, some models do not support reasoning_effort
-			// with tools
-			if !isSupported["reasoning"] {
-				params.Reasoning = nil
-				dropped = append(dropped, "reasoning")
-			} else if hasSupportedTools && !isSupported["reasoning_with_tool_calls"] &&
-				!keepReasoningForResponses(params.Reasoning, req.ChatRequest.Provider) && !isConvertedToResponses(ctx) {
-				// models like gpt-5.6 series models defaults to reasoning, even when
-				// reasoning_effort is not set.
-				if isSupported["supports_none_reasoning_effort"] {
-					params.Reasoning = &schemas.ChatReasoning{Effort: new("none")}
-					dropped = append(dropped, "reasoning")
-				} else {
-					params.Reasoning = nil
-					dropped = append(dropped, "reasoning")
-				}
-			}
-		} else if isSupported["reasoning"] && isSupported["supports_none_reasoning_effort"] && hasSupportedTools && !isSupported["reasoning_with_tool_calls"] && !isConvertedToResponses(ctx) {
+		// Reasoning the caller sent stays as sent. When the caller sent none, a model that
+		// reasons by default but rejects reasoning alongside tools gets effort "none", so
+		// the tools request is accepted; nothing the caller sent is changed by that.
+		if params.Reasoning == nil && isSupported["reasoning"] && isSupported["supports_none_reasoning_effort"] && hasSupportedTools && !isSupported["reasoning_with_tool_calls"] && !isConvertedToResponses(ctx) {
 			params.Reasoning = &schemas.ChatReasoning{Effort: new("none")}
 			dropped = append(dropped, "reasoning")
 		}
@@ -158,15 +124,6 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 	if req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
 		params := req.ResponsesRequest.Params
 
-		// max_output_tokens is the Responses-API equivalent of chat max_tokens / max_completion_tokens.
-		// so if any of those token-cap spellings is supported, we let max_output_tokens pass through.
-		if params.MaxOutputTokens != nil &&
-			!isSupported["max_output_tokens"] &&
-			!isSupported["max_tokens"] &&
-			!isSupported["max_completion_tokens"] {
-			params.MaxOutputTokens = nil
-			dropped = append(dropped, "max_output_tokens")
-		}
 		if params.MaxToolCalls != nil && !isSupported["max_tool_calls"] {
 			params.MaxToolCalls = nil
 			dropped = append(dropped, "max_tool_calls")
@@ -179,30 +136,13 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 			params.ParallelToolCalls = nil
 			dropped = append(dropped, "parallel_tool_calls")
 		}
-		if params.PromptCacheKey != nil && !isSupported["prompt_cache_key"] {
-			params.PromptCacheKey = nil
-			dropped = append(dropped, "prompt_cache_key")
-		}
 		if params.Reasoning != nil {
-			if !isSupported["reasoning"] {
-				params.Reasoning = nil
-				dropped = append(dropped, "reasoning")
-			} else if isAzureDeepSeekResponsesRequest(req) && !isConvertedToChatCompletions(ctx) {
-				// Azure's Responses endpoint rejects reasoning.effort for DeepSeek.
-				params.Reasoning = nil
-				dropped = append(dropped, "reasoning")
-			} else {
-				var droppedSummary, droppedGenerate bool
-				params.Reasoning.Summary, droppedSummary = fitReasoningSummary(ctx, params.Reasoning.Summary, isSupported)
-				params.Reasoning.GenerateSummary, droppedGenerate = fitReasoningSummary(ctx, params.Reasoning.GenerateSummary, isSupported)
-				if droppedSummary || droppedGenerate {
-					dropped = append(dropped, "reasoning.summary")
-				}
+			var droppedSummary, droppedGenerate bool
+			params.Reasoning.Summary, droppedSummary = fitReasoningSummary(ctx, params.Reasoning.Summary, isSupported)
+			params.Reasoning.GenerateSummary, droppedGenerate = fitReasoningSummary(ctx, params.Reasoning.GenerateSummary, isSupported)
+			if droppedSummary || droppedGenerate {
+				dropped = append(dropped, "reasoning.summary")
 			}
-		}
-		if params.ServiceTier != nil && !isSupported["service_tier"] {
-			params.ServiceTier = nil
-			dropped = append(dropped, "service_tier")
 		}
 		if params.Temperature != nil && !isSupported["temperature"] {
 			params.Temperature = nil
@@ -251,10 +191,6 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 		if params.LogProbs != nil && !isSupported["logprobs"] {
 			params.LogProbs = nil
 			dropped = append(dropped, "logprobs")
-		}
-		if params.MaxTokens != nil && !isSupported["max_tokens"] {
-			params.MaxTokens = nil
-			dropped = append(dropped, "max_tokens")
 		}
 		if params.N != nil && !isSupported["n"] {
 			params.N = nil

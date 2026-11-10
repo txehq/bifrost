@@ -21,10 +21,8 @@ func newResponsesRequest(provider schemas.ModelProvider, model string, params *s
 }
 
 // TestDropUnsupportedParams_MaxOutputTokens verifies that the Responses-API
-// max_output_tokens cap is preserved whenever the (chat-named) model parameter
-// catalog authorizes the token cap under any spelling
-// (max_output_tokens / max_tokens / max_completion_tokens), and dropped only
-// when none of them is supported.
+// max_output_tokens cap is never dropped, whatever the catalog lists: it bounds what
+// the caller is billed for, so it goes on as sent.
 func TestDropUnsupportedParams_MaxOutputTokens(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -69,18 +67,18 @@ func TestDropUnsupportedParams_MaxOutputTokens(t *testing.T) {
 			wantPreserved: true,
 		},
 		{
-			name:          "no token cap supported drops max_output_tokens",
+			name:          "no token cap listed",
 			provider:      schemas.OpenAI,
 			model:         "no-token-cap-model",
 			supported:     []string{"temperature", "top_p"},
-			wantPreserved: false,
+			wantPreserved: true,
 		},
 		{
-			name:          "unknown model with empty catalog drops max_output_tokens",
+			name:          "empty list",
 			provider:      schemas.OpenAI,
 			model:         "unknown-model",
 			supported:     []string{},
-			wantPreserved: false,
+			wantPreserved: true,
 		},
 	}
 
@@ -177,29 +175,24 @@ func TestDropUnsupportedParams_ChatMaxCompletionTokensIsNeverDropped(t *testing.
 }
 
 // TestDropUnsupportedParams_ServiceTier pins service_tier on both request paths.
-// service_tier decides what the caller is billed. On chat it is never dropped: the
-// provider delivers it or refuses it with 400 caller_unsupported_parameter. On
-// Responses it survives whenever the catalog allowlists it and is dropped otherwise.
+// service_tier decides what the caller is billed, so it is never dropped: the provider
+// delivers it or refuses it with 400 caller_unsupported_parameter.
 func TestDropUnsupportedParams_ServiceTier(t *testing.T) {
 	tests := []struct {
-		name          string
-		supported     []string
-		wantPreserved bool
+		name      string
+		supported []string
 	}{
 		{
-			name:          "catalog lists service_tier",
-			supported:     []string{"temperature", "service_tier"},
-			wantPreserved: true,
+			name:      "catalog lists service_tier",
+			supported: []string{"temperature", "service_tier"},
 		},
 		{
-			name:          "catalog omits service_tier",
-			supported:     []string{"temperature"},
-			wantPreserved: false,
+			name:      "catalog omits service_tier",
+			supported: []string{"temperature"},
 		},
 		{
-			name:          "empty catalog",
-			supported:     []string{},
-			wantPreserved: false,
+			name:      "empty catalog",
+			supported: []string{},
 		},
 	}
 
@@ -228,7 +221,7 @@ func TestDropUnsupportedParams_ServiceTier(t *testing.T) {
 			})
 
 			dropped := dropUnsupportedParams(newTestContext(), req, tt.supported)
-			assertServiceTier(t, req.ResponsesRequest.Params.ServiceTier, dropped, tt.wantPreserved, tt.supported)
+			assertServiceTier(t, req.ResponsesRequest.Params.ServiceTier, dropped, true, tt.supported)
 		})
 	}
 }
@@ -257,110 +250,109 @@ func assertServiceTier(t *testing.T, got *schemas.BifrostServiceTier, dropped []
 	}
 }
 
-func TestDropUnsupportedParams_ChatReasoningWithUnsupportedTools(t *testing.T) {
-	newChat := func() *schemas.BifrostRequest {
-		return &schemas.BifrostRequest{
-			RequestType: schemas.ChatCompletionRequest,
-			ChatRequest: &schemas.BifrostChatRequest{
-				Provider: schemas.OpenAI,
-				Model:    "reasoning-no-tools-model",
-				Params: &schemas.ChatParameters{
-					Reasoning: &schemas.ChatReasoning{},
-					Tools: []schemas.ChatTool{{
-						Type: schemas.ChatToolTypeFunction,
-						Function: &schemas.ChatToolFunction{
-							Name:        "get_weather",
-							Description: schemas.Ptr("Returns weather"),
+// Reasoning the caller sent decides what it is billed, so the plugin never drops it or
+// turns it off: not when the model's list has no reasoning, and not when the model
+// rejects reasoning alongside tools (the provider refuses that request, or core serves
+// it on the Responses API). Tools the model does not list are still dropped.
+func TestDropUnsupportedParams_ChatReasoningIsNeverDroppedOrRewritten(t *testing.T) {
+	for name, supported := range map[string][]string{
+		"reasoning not listed":               {"tools"},
+		"tools not listed":                   {"reasoning"},
+		"reasoning with tools not supported": {"reasoning", "tools"},
+		"same, model takes effort none":      {"reasoning", "tools", "supports_none_reasoning_effort"},
+		"reasoning with tools supported":     {"reasoning", "tools", "reasoning_with_tool_calls"},
+		"empty list":                         {},
+	} {
+		for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure, schemas.Groq, "my-openai"} {
+			t.Run(name+"/"+string(provider), func(t *testing.T) {
+				req := &schemas.BifrostRequest{
+					RequestType: schemas.ChatCompletionRequest,
+					ChatRequest: &schemas.BifrostChatRequest{
+						Provider: provider,
+						Model:    "reasoning-model",
+						Params: &schemas.ChatParameters{
+							Reasoning: &schemas.ChatReasoning{Effort: new("high"), Mode: new("pro"), MaxTokens: schemas.Ptr(2048)},
+							Tools: []schemas.ChatTool{{
+								Type:     schemas.ChatToolTypeFunction,
+								Function: &schemas.ChatToolFunction{Name: "get_weather"},
+							}},
 						},
-					}},
-				},
-			},
+					},
+				}
+				dropped := dropUnsupportedParams(newTestContext(), req, supported)
+				got := req.ChatRequest.Params.Reasoning
+				if got == nil || got.Effort == nil || *got.Effort != "high" || got.Mode == nil || *got.Mode != "pro" || got.MaxTokens == nil || *got.MaxTokens != 2048 {
+					t.Fatalf("reasoning = %+v, want effort=high mode=pro max_tokens=2048 as sent", got)
+				}
+				if slices.Contains(dropped, "reasoning") {
+					t.Fatalf("dropped = %v, must not name reasoning", dropped)
+				}
+				if wantTools := slices.Contains(supported, "tools"); (req.ChatRequest.Params.Tools != nil) != wantTools {
+					t.Fatalf("tools kept = %v, want %v", req.ChatRequest.Params.Tools != nil, wantTools)
+				}
+			})
 		}
-	}
-
-	preserveReasoning := newChat()
-	dropped := dropUnsupportedParams(newTestContext(), preserveReasoning, []string{"reasoning"})
-	if preserveReasoning.ChatRequest.Params.Reasoning == nil {
-		t.Fatalf("reasoning = dropped, want preserved when tools are also dropped")
-	}
-	if preserveReasoning.ChatRequest.Params.Tools != nil {
-		t.Fatalf("tools = preserved, want dropped")
-	}
-	if slices.Contains(dropped, "reasoning") {
-		t.Errorf("reasoning reported in dropped=%v, want absent", dropped)
-	}
-	if !slices.Contains(dropped, "tools") {
-		t.Errorf("tools not reported in dropped=%v, want present", dropped)
-	}
-
-	dropReasoning := newChat()
-	dropped = dropUnsupportedParams(newTestContext(), dropReasoning, []string{"reasoning", "tools", "supports_none_reasoning_effort"})
-	if dropReasoning.ChatRequest.Params.Reasoning == nil {
-		t.Fatalf("reasoning = nil, want forced to effort=none when tools survive without reasoning_with_tool_calls")
-	}
-	if got := dropReasoning.ChatRequest.Params.Reasoning.Effort; got == nil || *got != "none" {
-		t.Fatalf("reasoning.effort = %v, want \"none\"", got)
-	}
-	if dropReasoning.ChatRequest.Params.Tools == nil {
-		t.Fatalf("tools = dropped, want preserved")
-	}
-	if !slices.Contains(dropped, "reasoning") {
-		t.Errorf("reasoning not reported in dropped=%v, want present", dropped)
-	}
-
-	dropReasoningNoNoneSupport := newChat()
-	dropped = dropUnsupportedParams(newTestContext(), dropReasoningNoNoneSupport, []string{"reasoning", "tools"})
-	if dropReasoningNoNoneSupport.ChatRequest.Params.Reasoning != nil {
-		t.Fatalf("reasoning = %v, want dropped to nil when model doesn't support effort=none", dropReasoningNoNoneSupport.ChatRequest.Params.Reasoning)
-	}
-	if !slices.Contains(dropped, "reasoning") {
-		t.Errorf("reasoning not reported in dropped=%v, want present", dropped)
 	}
 }
 
-// A chat request that sets reasoning.mode on OpenAI/Azure is routed to the Responses
-// API by core, where reasoning and tools coexist, so the chat-only tools rewrite must
-// not erase it. Other providers keep the existing rewrite.
-func TestDropUnsupportedParams_ChatReasoningModeSurvivesUnsupportedTools(t *testing.T) {
-	newChat := func(provider schemas.ModelProvider) *schemas.BifrostRequest {
-		return &schemas.BifrostRequest{
-			RequestType: schemas.ChatCompletionRequest,
-			ChatRequest: &schemas.BifrostChatRequest{
-				Provider: provider,
-				Model:    "reasoning-no-tools-model",
-				Params: &schemas.ChatParameters{
-					Reasoning: &schemas.ChatReasoning{Effort: new("high"), Mode: new("pro")},
-					Tools: []schemas.ChatTool{{
-						Type:     schemas.ChatToolTypeFunction,
-						Function: &schemas.ChatToolFunction{Name: "get_weather"},
-					}},
-				},
-			},
-		}
-	}
-	supported := []string{"reasoning", "tools", "supports_none_reasoning_effort"}
-
-	// "my-openai" is a custom key: its base is only known at dispatch, so compat keeps
-	// reasoning and lets core route it or report the drop.
-	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure, "my-openai"} {
-		req := newChat(provider)
-		dropped := dropUnsupportedParams(newTestContext(), req, supported)
-		reasoning := req.ChatRequest.Params.Reasoning
-		if reasoning == nil || reasoning.Mode == nil || *reasoning.Mode != "pro" || reasoning.Effort == nil || *reasoning.Effort != "high" {
-			t.Fatalf("%s: reasoning = %+v, want effort=high mode=pro preserved for Responses routing", provider, reasoning)
-		}
-		if slices.Contains(dropped, "reasoning") {
-			t.Errorf("%s: reasoning reported in dropped=%v, want absent", provider, dropped)
-		}
-	}
-
-	other := newChat(schemas.Groq)
-	dropped := dropUnsupportedParams(newTestContext(), other, supported)
-	if got := other.ChatRequest.Params.Reasoning; got == nil || got.Effort == nil || *got.Effort != "none" || got.Mode != nil {
-		t.Fatalf("groq: reasoning = %+v, want forced to effort=none", got)
-	}
-	if !slices.Contains(dropped, "reasoning") {
-		t.Errorf("groq: reasoning not reported in dropped=%v, want present", dropped)
+// The other price-affecting fields are never dropped either, on any request shape,
+// while a field that does not affect the price is still dropped next to them.
+func TestDropUnsupportedParams_PriceAffectingFieldsAreNeverDropped(t *testing.T) {
+	for name, supported := range map[string][]string{"nothing listed": {}, "only temperature listed": {"temperature"}} {
+		t.Run(name+"/chat", func(t *testing.T) {
+			req := &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "m", Params: &schemas.ChatParameters{
+					MaxCompletionTokens:  schemas.Ptr(1),
+					ServiceTier:          schemas.Ptr(schemas.BifrostServiceTierFlex),
+					PromptCacheKey:       schemas.Ptr("tenant-42"),
+					PromptCacheRetention: schemas.Ptr("24h"),
+					Reasoning:            &schemas.ChatReasoning{Effort: new("high")},
+					TopP:                 schemas.Ptr(0.5),
+				}},
+			}
+			dropped := dropUnsupportedParams(newTestContext(), req, supported)
+			p := req.ChatRequest.Params
+			if p.MaxCompletionTokens == nil || p.ServiceTier == nil || p.PromptCacheKey == nil || p.PromptCacheRetention == nil || p.Reasoning == nil {
+				t.Fatalf("a price-affecting chat field was dropped: %+v", p)
+			}
+			if !slices.Equal(dropped, []string{"top_p"}) {
+				t.Fatalf("dropped = %v, want [top_p]", dropped)
+			}
+		})
+		t.Run(name+"/responses", func(t *testing.T) {
+			req := newResponsesRequest(schemas.OpenAI, "m", &schemas.ResponsesParameters{
+				MaxOutputTokens: schemas.Ptr(1),
+				ServiceTier:     schemas.Ptr(schemas.BifrostServiceTierFlex),
+				PromptCacheKey:  schemas.Ptr("tenant-42"),
+				Reasoning:       &schemas.ResponsesParametersReasoning{Effort: new("high")},
+				TopP:            schemas.Ptr(0.5),
+			})
+			dropped := dropUnsupportedParams(newTestContext(), req, supported)
+			p := req.ResponsesRequest.Params
+			if p.MaxOutputTokens == nil || p.ServiceTier == nil || p.PromptCacheKey == nil || p.Reasoning == nil || p.Reasoning.Effort == nil {
+				t.Fatalf("a price-affecting Responses field was dropped: %+v", p)
+			}
+			if !slices.Equal(dropped, []string{"top_p"}) {
+				t.Fatalf("dropped = %v, want [top_p]", dropped)
+			}
+		})
+		t.Run(name+"/text", func(t *testing.T) {
+			req := &schemas.BifrostRequest{
+				RequestType: schemas.TextCompletionRequest,
+				TextCompletionRequest: &schemas.BifrostTextCompletionRequest{Provider: schemas.OpenAI, Model: "m", Params: &schemas.TextCompletionParameters{
+					MaxTokens: schemas.Ptr(1),
+					TopP:      schemas.Ptr(0.5),
+				}},
+			}
+			dropped := dropUnsupportedParams(newTestContext(), req, supported)
+			if req.TextCompletionRequest.Params.MaxTokens == nil {
+				t.Fatal("max_tokens was dropped from a text completion")
+			}
+			if !slices.Equal(dropped, []string{"top_p"}) {
+				t.Fatalf("dropped = %v, want [top_p]", dropped)
+			}
+		})
 	}
 }
 

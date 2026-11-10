@@ -175,7 +175,7 @@ func TestPluginDroppedParamsClearedBetweenAttempts(t *testing.T) {
 
 // TestReasoningWithToolsResponsesRouting covers routing chat requests to
 // Responses for models whose datasheet sets supports_reasoning_with_tool_calls false,
-// and the reasoning-off fallback when the toggle is off.
+// and that reasoning the caller sent stays on the request when the toggle is off.
 func TestReasoningWithToolsResponsesRouting(t *testing.T) {
 	newPlugin := func(t *testing.T, enabled bool) *CompatPlugin {
 		t.Helper()
@@ -216,7 +216,7 @@ func TestReasoningWithToolsResponsesRouting(t *testing.T) {
 		{name: "flag false without tools", enabled: true, model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionRequest, wantConverted: true, wantReasoning: true},
 		{name: "reasoning with tools supported", enabled: true, model: "reasoning-with-tools", requestType: schemas.ChatCompletionRequest, withTools: true, wantReasoning: true},
 		{name: "no datasheet entry", enabled: true, model: "unknown", requestType: schemas.ChatCompletionRequest, withTools: true, wantReasoning: true},
-		{name: "toggle off forces reasoning off", model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionRequest, withTools: true},
+		{name: "toggle off keeps the reasoning the caller sent", model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionRequest, withTools: true, wantReasoning: true},
 		{name: "header override", override: true, model: "no-reasoning-with-tools", requestType: schemas.ChatCompletionRequest, withTools: true, wantConverted: true, wantReasoning: true},
 	}
 	for _, tt := range tests {

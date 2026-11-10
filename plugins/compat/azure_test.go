@@ -27,7 +27,7 @@ func newDeepSeekResponsesRequest(provider schemas.ModelProvider, model string, r
 // TestAzureDeepSeekResponsesRouting covers the split between Azure's two DeepSeek
 // endpoints: /v1/responses has web search but rejects reasoning.effort, and
 // /v1/chat/completions is the reverse. Coding harnesses are routed to chat with
-// their reasoning intact; every other caller keeps Responses minus reasoning.
+// their reasoning intact; every other caller keeps Responses with the reasoning it sent.
 func TestAzureDeepSeekResponsesRouting(t *testing.T) {
 	const model = "DeepSeek-V3.1"
 
@@ -60,14 +60,15 @@ func TestAzureDeepSeekResponsesRouting(t *testing.T) {
 			wantReasoning: true,
 		},
 		{
-			name:            "other callers keep responses and lose the reasoning azure rejects",
-			provider:        schemas.Azure,
-			model:           model,
-			requestType:     schemas.ResponsesRequest,
-			userAgent:       "python-httpx/0.27.0",
-			wantConverted:   false,
-			wantReasoning:   false,
-			wantDropListHas: true,
+			// reasoning decides what the caller is billed, so it is never dropped: Azure
+			// answers this request with its own refusal.
+			name:          "other callers keep responses and the reasoning they sent",
+			provider:      schemas.Azure,
+			model:         model,
+			requestType:   schemas.ResponsesRequest,
+			userAgent:     "python-httpx/0.27.0",
+			wantConverted: false,
+			wantReasoning: true,
 		},
 		{
 			name:          "non-deepseek azure model is untouched",
@@ -144,12 +145,12 @@ func TestAzureDeepSeekResponsesRoutingDisabled(t *testing.T) {
 	if _, converted := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); converted {
 		t.Error("request was converted to chat completions with the toggle off")
 	}
-	if got.ResponsesRequest.Params.Reasoning != nil {
-		t.Error("reasoning survived, but Azure's Responses endpoint rejects it")
+	if got.ResponsesRequest.Params.Reasoning == nil {
+		t.Error("reasoning was dropped; it goes on as sent and Azure refuses it")
 	}
 	dropped, _ := ctx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string)
-	if !slices.Contains(dropped, "reasoning") {
-		t.Errorf("dropped params %v does not contain reasoning", dropped)
+	if slices.Contains(dropped, "reasoning") {
+		t.Errorf("dropped params %v contains reasoning", dropped)
 	}
 }
 
