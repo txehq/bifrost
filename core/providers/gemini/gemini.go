@@ -2720,7 +2720,7 @@ func (provider *GeminiProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.
 
 // BatchCreate creates a new batch job for Gemini.
 // Uses the asynchronous batchGenerateContent endpoint as per official documentation, or
-// asyncBatchEmbedContent for a batch of /v1/embeddings lines (see batch_embedding.go).
+// asyncBatchEmbedContent for a batch of /v1/embeddings lines (see batchembedding.go).
 // Supports both inline requests and file-based input (via InputFileID).
 func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.BatchCreateRequest); err != nil {
@@ -3651,6 +3651,9 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 
 	// Results are in a responses file (file-based batches) or inline in the batch object.
 	outputFile, inlinedResponses := geminiBatchOutput(&geminiResp)
+	if err := sniffGeminiEmbeddingResponses(body, inlinedResponses); err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+	}
 	if outputFile != "" {
 		// File-based results: read the file as a stream, a page at a time when a limit is set.
 		provider.logger.Debug("gemini batch results in file: " + outputFile)

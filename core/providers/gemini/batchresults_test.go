@@ -1459,47 +1459,38 @@ func BenchmarkGeminiEmbeddingBatchLineConversion(b *testing.B) {
 	var line schemas.BatchRequestItem
 	require.NoError(b, sonic.UnmarshalString(`{"custom_id":"emb-2","url":"/v1/embeddings","body":{"model":"gemini-embedding-001","input":["Paris is in France.","Berlin is in Germany.","Rome is in Italy."],"task_type":"RETRIEVAL_DOCUMENT"}}`, &line))
 	var job GeminiBatchJobResponse
-	require.NoError(b, sonic.UnmarshalString(fmt.Sprintf(geminiFinishedEmbeddingBatch, "BATCH_STATE_SUCCEEDED", "inlinedResponses"), &job))
+	embeddingJob := []byte(fmt.Sprintf(geminiFinishedEmbeddingBatch, "BATCH_STATE_SUCCEEDED", "inlinedResponses"))
+	require.NoError(b, sonic.Unmarshal(embeddingJob, &job))
 	_, inlined := geminiBatchOutput(&job)
 	require.Len(b, inlined, 7)
+	require.NoError(b, sniffGeminiEmbeddingResponses(embeddingJob, inlined))
+	require.NotNil(b, inlined[0].EmbedResponse)
 
-	// A generateContent batch's inline responses are decoded through the same type, which now
-	// looks at each response to tell an EmbedContentResponse from a GenerateContentResponse.
-	// "as before" decodes the same job with the plain struct the type was.
-	type plainInlinedResponse struct {
-		Response *GenerateContentResponse `json:"response,omitempty"`
-		Error    *GeminiBatchErrorInfo    `json:"error,omitempty"`
-		Metadata *GeminiBatchMetadata     `json:"metadata,omitempty"`
-	}
-	type plainJob struct {
-		Name     string               `json:"name"`
-		Metadata *GeminiBatchMetadata `json:"metadata,omitempty"`
-		Done     bool                 `json:"done,omitempty"`
-		Response struct {
-			Type             string `json:"@type,omitempty"`
-			InlinedResponses struct {
-				InlinedResponses []plainInlinedResponse `json:"inlinedResponses"`
-			} `json:"inlinedResponses"`
-		} `json:"response"`
-	}
-	b.Run("generateContent job decode, as before", func(b *testing.B) {
-		b.ReportAllocs()
-		for b.Loop() {
-			var decoded plainJob
-			if err := sonic.UnmarshalString(geminiFinishedInlineBatch, &decoded); err != nil || len(decoded.Response.InlinedResponses.InlinedResponses) != 3 {
-				b.Fatalf("decode: %v", err)
-			}
-		}
-	})
-	b.Run("generateContent job decode, now", func(b *testing.B) {
+	// A generateContent job is decoded directly and then only scanned for the embedding key:
+	// the second sub-benchmark must not allocate more than the first.
+	chatJob := []byte(geminiFinishedInlineBatch)
+	b.Run("generateContent job decode", func(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			var decoded GeminiBatchJobResponse
-			if err := sonic.UnmarshalString(geminiFinishedInlineBatch, &decoded); err != nil {
+			if err := sonic.Unmarshal(chatJob, &decoded); err != nil {
 				b.Fatalf("decode: %v", err)
 			}
 			if _, lines := geminiBatchOutput(&decoded); len(lines) != 3 {
 				b.Fatalf("lines=%d", len(lines))
+			}
+		}
+	})
+	b.Run("generateContent job decode and embedding sniff", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			var decoded GeminiBatchJobResponse
+			if err := sonic.Unmarshal(chatJob, &decoded); err != nil {
+				b.Fatalf("decode: %v", err)
+			}
+			_, lines := geminiBatchOutput(&decoded)
+			if err := sniffGeminiEmbeddingResponses(chatJob, lines); err != nil || len(lines) != 3 || lines[0].EmbedResponse != nil {
+				b.Fatalf("sniff: %v", err)
 			}
 		}
 	})
