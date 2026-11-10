@@ -368,18 +368,6 @@ func TestAssemblyAITranscriptionExtraParamsReachConfig(t *testing.T) {
 				"sample_rate":          float64(8000),
 			},
 		},
-		{
-			name: "an extra field wins over the unified field it overlaps",
-			params: &schemas.TranscriptionParameters{
-				Language:    schemas.Ptr("en"),
-				Prompt:      schemas.Ptr("A fable."),
-				ExtraParams: map[string]interface{}{"language_codes": []string{"en", "fr"}},
-			},
-			wantConfig: map[string]interface{}{
-				"prompt":         "A fable.",
-				"language_codes": []interface{}{"en", "fr"},
-			},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -394,6 +382,61 @@ func TestAssemblyAITranscriptionExtraParamsReachConfig(t *testing.T) {
 			}
 			if got := configOf(t, reqs[0]); !reflect.DeepEqual(got, tt.wantConfig) {
 				t.Errorf("config = %v, want %v", got, tt.wantConfig)
+			}
+		})
+	}
+}
+
+// An extra field never replaces a config member the unified fields set (the shared
+// extra-params rule): the request is refused with a 400 naming the extra field, and nothing
+// is sent upstream.
+func TestAssemblyAITranscriptionExtraParamNeverReplacesAUnifiedField(t *testing.T) {
+	tests := []struct {
+		name      string
+		params    *schemas.TranscriptionParameters
+		wantParam string
+	}{
+		{
+			name: "language_codes beside language",
+			params: &schemas.TranscriptionParameters{
+				Language:    schemas.Ptr("en"),
+				ExtraParams: map[string]interface{}{"language_codes": []string{"en", "fr"}},
+			},
+			wantParam: "language_codes",
+		},
+		{
+			name: "prompt inside the config field beside prompt",
+			params: &schemas.TranscriptionParameters{
+				Prompt:      schemas.Ptr("A fable."),
+				ExtraParams: map[string]interface{}{"config": `{"prompt":"Another."}`},
+			},
+			wantParam: "prompt",
+		},
+		{
+			name: "timestamps beside the word granularity",
+			params: &schemas.TranscriptionParameters{
+				TimestampGranularities: []string{"word"},
+				ExtraParams:            map[string]interface{}{"timestamps": "false"},
+			},
+			wantParam: "timestamps",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, captured := newMockAssemblyAI(t, respondWith(http.StatusOK, "application/json", syncTranscriptBody))
+
+			_, bifrostErr := provider.Transcription(testContext(t), testKey(), transcriptionRequest(tt.params))
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected a 400, got %+v", bifrostErr)
+			}
+			if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest {
+				t.Errorf("error_type = %q, want caller_invalid_request", bifrostErr.ExtraFields.ErrorType)
+			}
+			if got, _ := bifrostErr.Error.Param.(string); got != tt.wantParam {
+				t.Errorf("param = %v, want %q", bifrostErr.Error.Param, tt.wantParam)
+			}
+			if n := len(captured()); n != 0 {
+				t.Errorf("upstream calls = %d, want none", n)
 			}
 		})
 	}

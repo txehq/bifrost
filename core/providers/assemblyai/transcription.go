@@ -32,8 +32,9 @@ const assemblyAIConfigExtraParam = "config"
 // segment timings, so any other response_format or granularity is refused rather than
 // dropped (contract C4).
 //
-// Extra fields are merged into the config unchanged and win over the unified fields. A
-// multipart form can only carry strings, so a string is sent as the JSON value it spells
+// Extra fields are merged into the config unchanged. One that names a config member the
+// unified fields already set is refused, never applied over it (the shared extra-params
+// rule, TXE-7018). A multipart form can only carry strings, so a string is sent as the JSON value it spells
 // (see assemblyAIConfigValue); the `config` extra field carries a whole config object.
 func ToAssemblyAITranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRequest) (*AssemblyAITranscriptionRequest, *schemas.BifrostError) {
 	if bifrostReq == nil || bifrostReq.Input == nil || len(bifrostReq.Input.File) == 0 {
@@ -179,6 +180,16 @@ func writeAssemblyAITranscriptionMultipart(writer *multipart.Writer, req *Assemb
 	if filename == "" {
 		filename = "audio"
 	}
+	// The config is built first: an extra field the shared rule refuses ends the request
+	// before the audio is copied.
+	configJSON, err := assemblyAIConfigJSON(&req.Config)
+	if err != nil {
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			return badRequest
+		}
+		return providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+	}
+
 	audioHeader := textproto.MIMEHeader{}
 	audioHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="audio"; filename=%q`, filename))
 	audioHeader.Set("Content-Type", req.AudioContentType)
@@ -190,10 +201,6 @@ func writeAssemblyAITranscriptionMultipart(writer *multipart.Writer, req *Assemb
 		return providerUtils.NewBifrostOperationError("failed to write audio data", err)
 	}
 
-	configJSON, err := assemblyAIConfigJSON(&req.Config)
-	if err != nil {
-		return providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-	}
 	if configJSON == nil {
 		return nil
 	}

@@ -150,7 +150,7 @@ To send a config exactly as written, put the whole object in a `config` form fie
 -F 'config={"timestamps":true,"keyterms_prompt":["Bifrost"],"conversation_context":["Hello.","42"]}'
 ```
 
-When an extra field and a unified field set the same config member, the extra field wins.
+An extra field never replaces a config member a unified field already set: a request that sends both (for example `language` and `language_codes`) is refused with 400 `caller_invalid_request`, and `error.param` names the extra field. Send the value in one place.
 
 ### Response Mapping
 
