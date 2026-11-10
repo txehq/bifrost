@@ -197,14 +197,16 @@ var compactionParamsKnownFields = map[string]bool{
 }
 
 var embeddingParamsKnownFields = map[string]bool{
-	"model":           true,
-	"input":           true,
-	"fallbacks":       true,
-	"encoding_format": true,
-	"dimensions":      true,
-	"task_type":       true,
-	"title":           true,
-	"auto_truncate":   true,
+	"model":            true,
+	"input":            true,
+	"fallbacks":        true,
+	"encoding_format":  true,
+	"dimensions":       true,
+	"task_type":        true,
+	"title":            true,
+	"auto_truncate":    true,
+	"instructions":     true,
+	"sparse_embedding": true,
 }
 
 var rerankParamsKnownFields = map[string]bool{
@@ -1435,6 +1437,9 @@ func (h *CompletionHandler) embeddings(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
 		return
 	}
+	// Contract C4: a field outside the unified schema reaches the vendor's body, as on
+	// the image routes. prepareEmbeddingRequest already parked it in ExtraParams.
+	bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 
 	resp, bifrostErr := h.client.EmbeddingRequest(bifrostCtx, bifrostEmbeddingReq)
 	if bifrostErr != nil {
