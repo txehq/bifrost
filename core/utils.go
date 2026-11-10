@@ -29,6 +29,7 @@ const (
 // Excluding providers that require extra configuration (e.g. Ollama, SGL, vLLM).
 var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Anthropic,
+	schemas.AssemblyAI,
 	schemas.Azure,
 	schemas.AzureSpeech,
 	schemas.Bedrock,

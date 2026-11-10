@@ -76,6 +76,7 @@ jobs:
       BFL_API_KEY: registration-only-no-upstream-call
       AZURE_SPEECH_API_KEY: ${{ secrets.AZURE_SPEECH_API_KEY }}
       AZURE_SPEECH_ENDPOINT: ${{ secrets.AZURE_SPEECH_ENDPOINT }}
+      ASSEMBLYAI_API_KEY: ${{ secrets.ASSEMBLYAI_API_KEY }}
       TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
       DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
       VERCEL_AI_GATEWAY_API_KEY: ${{ secrets.VERCEL_AI_GATEWAY_API_KEY }}
@@ -114,7 +115,7 @@ jobs:
           # (tests/integrations/python/config.json) has its default host here, which
           # check-egress-allowlist.sh enforces from provider-default-hosts.json.
           # api.minimax.io, api.runware.ai, ark.ap-southeast.bytepluses.com,
-          # tokenhub.tencentmaas.com and api.moonshot.ai are listed although this job does not pass those
+          # tokenhub.tencentmaas.com, sync.assemblyai.com and api.moonshot.ai are listed although this job does not pass those
           # providers' keys yet: the harness skips a provider only while its key is
           # absent, so the host must already be here the day a key is added (TXE-6981).
           # dashscope-intl.aliyuncs.com is dialled by no request yet: every dashscope
@@ -151,6 +152,7 @@ jobs:
             api.bfl.ai:443
             tokenhub.tencentmaas.com:443
             dashscope-intl.aliyuncs.com:443
+            sync.assemblyai.com:443
             api.tokenfactory.nebius.com:443
             api.openai.com:443
             api.parasail.io:443

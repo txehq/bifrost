@@ -232,7 +232,7 @@ var narrowedEnumPaths = map[string]struct {
 	// Upstream 132991f05 excuses byteplus, minimax and sagemaker here. This fork keeps minimax
 	// as a custom provider base (it is in the enum) and has no sagemaker provider yet.
 	"/properties/governance/properties/providers/items/properties/custom_provider_config/properties/base_provider_type": {
-		excluded: []string{"byteplus", "azurespeech"},
+		excluded: []string{"byteplus", "azurespeech", "assemblyai"},
 		reason:   "not in schemas.SupportedBaseProviders; IsSupportedBaseProvider rejects it as a custom provider base at load",
 	},
 }

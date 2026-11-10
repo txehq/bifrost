@@ -1063,6 +1063,26 @@ export const ProviderIcons = {
 			</svg>
 		);
 	},
+	// A neutral waveform glyph, not AssemblyAI's logo.
+	assemblyai: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+		return (
+			<svg
+				width={resolvedSize}
+				height={resolvedSize}
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				strokeWidth="2"
+				strokeLinecap="round"
+				xmlns="http://www.w3.org/2000/svg"
+				className={className}
+			>
+				<title>AssemblyAI</title>
+				<path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4" />
+			</svg>
+		);
+	},
 } as const;
 
 // Routing Engine Icons

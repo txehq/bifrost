@@ -22,6 +22,7 @@ import (
 	"github.com/capsohq/bifrost/core/mcp/credstore"
 	"github.com/capsohq/bifrost/core/providers/anthropic"
 	"github.com/capsohq/bifrost/core/providers/anthropicmsg"
+	"github.com/capsohq/bifrost/core/providers/assemblyai"
 	"github.com/capsohq/bifrost/core/providers/azure"
 	"github.com/capsohq/bifrost/core/providers/azurespeech"
 	"github.com/capsohq/bifrost/core/providers/bedrock"
@@ -5282,6 +5283,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return runway.NewRunwayProvider(config, bifrost.logger)
 	case schemas.MiniMax:
 		return minimax.NewMiniMaxProvider(config, bifrost.logger)
+	case schemas.AssemblyAI:
+		return assemblyai.NewAssemblyAIProvider(config, bifrost.logger)
 	case schemas.Moonshot:
 		return moonshot.NewMoonshotProvider(config, bifrost.logger)
 	case schemas.ModelArk:
