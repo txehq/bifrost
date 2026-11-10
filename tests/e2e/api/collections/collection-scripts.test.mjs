@@ -1163,7 +1163,8 @@ test("routing-wiring: a trail check resolves run variables in the lines it expec
 //
 // nativeMessagesProviders is every provider whose Go type implements AnthropicMessagesEndpoint.
 // TestNativeMessagesProvidersMatchHarnessCheck (transports/bifrost-http/integrations) fails when
-// a provider gains or loses that method without this list following (TXE-6548 added deepseek; TXE-6547 brought moonshot).
+// it differs from the Go table of the same name, which the TXE-6965 coverage test ties to the
+// providers implementing that method (TXE-6548 added deepseek; TXE-6547 brought moonshot).
 const nativeMessagesProviders = ["anthropic", "deepseek", "moonshot", "xai"];
 const providerHarness = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8"));
 // On main before the upstream merge that brought the other rows; kept out of this check.

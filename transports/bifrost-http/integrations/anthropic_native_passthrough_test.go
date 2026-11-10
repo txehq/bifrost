@@ -615,6 +615,7 @@ var nativeMessagesProviders = []struct {
 	{schemas.Anthropic, "claude-sonnet-4-5", "/v1/messages"},
 	{schemas.XAI, "grok-4.5", "/v1/messages"},
 	{schemas.Moonshot, "kimi-k3.1-pro", "/anthropic/v1/messages"},
+	{schemas.DeepSeek, "deepseek-v4-flash", "/anthropic/v1/messages"},
 }
 
 const (
@@ -1079,37 +1080,20 @@ func TestAnthropicMessagesRouteDeepSeekForwardsBodyByteExact(t *testing.T) {
 }
 
 // TestNativeMessagesProvidersMatchHarnessCheck keeps the offline harness rule for native
-// Messages rows (nativeMessagesProviders in collection-scripts.test.mjs) equal to the set of
-// providers that implement AnthropicMessagesEndpoint. A provider that gains the method sends
-// its /anthropic/v1/messages rows down the passthrough, where extra_fields.raw_request no
-// longer exists; without its name in that list the harness rule would not see those rows.
+// Messages rows (nativeMessagesProviders in collection-scripts.test.mjs) equal to the Go
+// table nativeMessagesProviders above, which
+// TestAnthropicNativeMessagesRedactionCoversEveryCapableProvider ties to the providers that
+// implement AnthropicMessagesEndpoint. A provider that gains the method sends its
+// /anthropic/v1/messages rows down the passthrough, where extra_fields.raw_request no longer
+// exists; without its name in that list the harness rule would not see those rows.
 func TestNativeMessagesProvidersMatchHarnessCheck(t *testing.T) {
-	root := filepath.Join("..", "..", "..")
-	sources, err := filepath.Glob(filepath.Join(root, "core", "providers", "*", "*.go"))
-	if err != nil {
-		t.Fatalf("glob providers: %v", err)
-	}
-	method := regexp.MustCompile(`(?m)^func \([a-zA-Z_]+ \*[A-Za-z]+Provider\) AnthropicMessagesEndpoint\(\)`)
-	var implementers []string
-	for _, source := range sources {
-		if strings.HasSuffix(source, "_test.go") {
-			continue
-		}
-		data, err := os.ReadFile(source)
-		if err != nil {
-			t.Fatalf("read %s: %v", source, err)
-		}
-		if method.Match(data) {
-			implementers = append(implementers, filepath.Base(filepath.Dir(source)))
-		}
+	implementers := make([]string, 0, len(nativeMessagesProviders))
+	for _, row := range nativeMessagesProviders {
+		implementers = append(implementers, string(row.provider))
 	}
 	sort.Strings(implementers)
-	for _, name := range implementers {
-		if !slices.Contains(schemas.StandardProviders, schemas.ModelProvider(name)) {
-			t.Fatalf("provider package %q implements AnthropicMessagesEndpoint but is not a provider name; map it explicitly here", name)
-		}
-	}
 
+	root := filepath.Join("..", "..", "..")
 	script, err := os.ReadFile(filepath.Join(root, "tests", "e2e", "api", "collections", "collection-scripts.test.mjs"))
 	if err != nil {
 		t.Fatalf("read collection-scripts.test.mjs: %v", err)
@@ -1124,6 +1108,6 @@ func TestNativeMessagesProvidersMatchHarnessCheck(t *testing.T) {
 	}
 	sort.Strings(listed)
 	if !slices.Equal(implementers, listed) {
-		t.Fatalf("nativeMessagesProviders = %v, but the providers implementing AnthropicMessagesEndpoint are %v", listed, implementers)
+		t.Fatalf("collection-scripts.test.mjs nativeMessagesProviders = %v, but the Go table nativeMessagesProviders names %v", listed, implementers)
 	}
 }
