@@ -529,7 +529,11 @@ fixture is the gateway's HTTP proxy: it mints a throwaway CA, terminates TLS for
 gateway CONNECTs to, records the decrypted request, and answers with a canned Gemini or Claude body.
 
 Start the fixture; it writes the gateway config (one Vertex key per region, a service account whose
-`token_uri` points back at the fixture, and the proxy plus the CA the gateway must trust):
+`token_uri` points back at the fixture, and the proxy plus the CA the gateway must trust). Like every
+endpoint fixture it writes that config through `writeFixtureGatewayConfig`
+(`runners/lib/tls-intercept-proxy.mjs`), which turns inference auth off
+(`client.enforce_auth_on_inference: false`): the cases send no virtual key, so with the default the
+gateway would answer each of them with 401 before reaching the provider:
 
 ```bash
 vertex_fixture_dir=${TMPDIR:-/tmp}/bifrost-vertex-fixture
@@ -575,7 +579,8 @@ It overrides every Bedrock service endpoint, and serves empty pricing datasheets
 starts offline.
 
 Start the fixture; it writes the gateway config (one Bedrock key with throwaway credentials in
-`us-west-2`, the endpoint overrides, and the fixture CA as `network_config.ca_cert_pem`):
+`us-west-2`, the endpoint overrides, the fixture CA as `network_config.ca_cert_pem`, and inference
+auth turned off by the shared `writeFixtureGatewayConfig`, as for the Vertex fixture):
 
 ```bash
 bedrock_fixture_dir=${TMPDIR:-/tmp}/bifrost-bedrock-fixture
@@ -607,7 +612,7 @@ newman run tests/e2e/api/collections/provider-harness.json \
 bedrock-agent-runtime, fixture port 8796) and ApplyGuardrail (bedrock-runtime, fixture port 8798). The
 cases assert the request is SigV4 signed by the gateway for the key region, that caller credentials are
 not forwarded, that the upstream body, status, `Content-Type` and `X-Amzn-*` headers return verbatim,
-and that every other path, a traversal and a non-POST method are refused before any request is built. A traversal path is normalized by the HTTP server to a path outside the allow-list, so 162.6 asserts the allow-list refusal; the identifier validators for encoded dots are pinned by the Go tests.
+and that every other path, a traversal and a non-POST method are refused with 400 by the Bedrock passthrough's own operation allow-list before any request is built (the router's 403 route policy is switched off, so the refusal no longer comes from there). A traversal path is normalized by the HTTP server to a path outside the allow-list, so 162.6 asserts the allow-list refusal; the identifier validators for encoded dots are pinned by the Go tests.
 InvokeAgent is streamed: the fixture's `AGENTSLOW001` agent sends five event-stream pieces one second apart, and the fixture gateway sets `default_request_timeout_in_seconds` to 3 seconds. For a streaming request that setting bounds the connection, the request write and the wait for response headers; once headers arrive, `stream_idle_timeout_in_seconds` governs the body. So 162.12 shows that a run longer than 3 seconds is not cut off by a total-duration cap and that every piece arrives. It does not by itself show incremental delivery; the Go tests in `core/providers/bedrock/passthrough_test.go` pin that.
 162.13 pins the other half of that rule: the fixture's `STREAMSLOWKB` knowledge base takes 4 seconds to answer a Retrieve, and because Retrieve is a plain request/response call (even with the word `stream` in its id) the 3 second request timeout cuts it off with a 500 whose error says the deadline was exceeded, instead of streaming the answer through.
 The cases are skipped unless `bedrockEndpointFixture=1`.

@@ -1,6 +1,4 @@
-import fs from "node:fs";
-import path from "node:path";
-import { argValue, createTlsEndpoints } from "./lib/tls-intercept-proxy.mjs";
+import { argValue, createTlsEndpoints, writeFixtureGatewayConfig } from "./lib/tls-intercept-proxy.mjs";
 
 // Local stand-in for the AWS Bedrock services, used to observe what the gateway sends for the
 // operations it forwards through /bedrock_passthrough: InvokeAgent and knowledge-base Retrieve
@@ -72,8 +70,8 @@ const runtimeHost = `localhost:${runtimePort}`;
 // builds https://<bucket>.<value>/<key>, so this resolves to <bucket>.bucket.localhost, covered by the wildcard
 // names on the fixture certificate.
 const s3Host = `bucket.${runtimeHost}`;
-const config = {
-	framework: { pricing: { pricing_url: `http://127.0.0.1:${controlPort}/pricing.json`, model_parameters_url: `http://127.0.0.1:${controlPort}/model-parameters.json`, mcp_library_sync_interval: 0 } },
+const configPath = writeFixtureGatewayConfig(appDir, {
+	datasheetOrigin: `http://127.0.0.1:${controlPort}`,
 	providers: {
 		bedrock: {
 			keys: [
@@ -104,13 +102,11 @@ const config = {
 			network_config: { max_retries: 0, default_request_timeout_in_seconds: 3, ca_cert_pem: endpoints.caPem },
 		},
 	},
-};
-fs.mkdirSync(appDir, { recursive: true });
-fs.writeFileSync(path.join(appDir, "config.json"), JSON.stringify(config, null, 2));
+});
 
 let ready = 0;
 const up = () => {
-	if (++ready === 3) console.log(`bedrock-endpoint-fixture listening: control http://127.0.0.1:${controlPort}, agent-runtime https://${agentHost}, runtime https://${runtimeHost} (config written to ${path.join(appDir, "config.json")})`);
+	if (++ready === 3) console.log(`bedrock-endpoint-fixture listening: control http://127.0.0.1:${controlPort}, agent-runtime https://${agentHost}, runtime https://${runtimeHost} (config written to ${configPath})`);
 };
 endpoints.listenEndpoint(agentPort, up);
 endpoints.listenEndpoint(runtimePort, up);

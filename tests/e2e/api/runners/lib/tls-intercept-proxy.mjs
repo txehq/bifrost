@@ -22,6 +22,9 @@ import { execFileSync } from "node:child_process";
 // request.socket.fixtureHost is the CONNECT target (proxy shape) and request.socket.localPort the
 // endpoint port (direct shape). Control endpoints: GET /__connects returns {connects, requests};
 // POST /__reset clears them.
+//
+// The gateway config a fixture writes comes from writeFixtureGatewayConfig below, never from the
+// fixture itself.
 
 const mintCa = () => {
 	const work = fs.mkdtempSync(path.join(os.tmpdir(), "fixture-ca-"));
@@ -145,6 +148,36 @@ export function createTlsEndpoints({ respond, staticJson }) {
 		},
 		listenControl: (port, cb) => http.createServer(rec.control).listen(port, "127.0.0.1", cb),
 	};
+}
+
+// fixtureGatewayConfig is the one place an endpoint fixture's gateway config starts from, so a
+// setting every fixture gateway needs is written once and no fixture can leave it out:
+//
+//   client.enforce_auth_on_inference: false   inference auth is on by default, and the fixture
+//       cases send no virtual key, so without this the gateway answers every case with
+//       401 "virtual key is required" before it reaches the provider under test (TXE-7039).
+//   framework.pricing                         the datasheets a fresh gateway downloads on first
+//       start, served by the fixture's own control port so the run stays offline.
+//
+// datasheetOrigin is the fixture's plain-HTTP origin (http://127.0.0.1:<port>); providers is the
+// fixture's own provider block. A fixture adds nothing else at the top level.
+export function fixtureGatewayConfig({ datasheetOrigin, providers }) {
+	return {
+		client: { enforce_auth_on_inference: false },
+		framework: { pricing: { pricing_url: `${datasheetOrigin}/pricing.json`, model_parameters_url: `${datasheetOrigin}/model-parameters.json`, mcp_library_sync_interval: 0 } },
+		providers,
+	};
+}
+
+// writeFixtureGatewayConfig writes fixtureGatewayConfig(...) to <appDir>/config.json, the file a
+// gateway started with -app-dir <appDir> reads, and returns its path. Every endpoint fixture writes
+// its config through here; tls-intercept-proxy.test.mjs runs each fixture and fails one whose
+// written config lacks a setting above.
+export function writeFixtureGatewayConfig(appDir, { datasheetOrigin, providers }) {
+	fs.mkdirSync(appDir, { recursive: true });
+	const configPath = path.join(appDir, "config.json");
+	fs.writeFileSync(configPath, JSON.stringify(fixtureGatewayConfig({ datasheetOrigin, providers }), null, 2));
+	return configPath;
 }
 
 export const argValue = (args, name, fallback) => {
