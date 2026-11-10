@@ -12943,7 +12943,8 @@
             "typesafe",
             "dashscope",
             "bfl",
-            "google-cloud-tts"
+            "google-cloud-tts",
+            "kling"
           ],
           "description": "Base provider type to extend"
         },
