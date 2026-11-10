@@ -1551,6 +1551,16 @@ func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schem
 		return nil, providerUtils.NewBifrostOperationError("failed to write purpose field", err)
 	}
 
+	// Add expiry, in the same bracketed form fields as OpenAI's files API
+	if request.ExpiresAfter != nil {
+		if err := writer.WriteField("expires_after[anchor]", request.ExpiresAfter.Anchor); err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to write expires_after[anchor] field", err)
+		}
+		if err := writer.WriteField("expires_after[seconds]", fmt.Sprintf("%d", request.ExpiresAfter.Seconds)); err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to write expires_after[seconds] field", err)
+		}
+	}
+
 	// Add file field
 	filename := request.Filename
 	if filename == "" {
@@ -2076,8 +2086,9 @@ func (provider *AzureProvider) BatchCreate(ctx *schemas.BifrostContext, key sche
 
 	// If no file_id provided but inline requests are available, upload them first
 	if inputFileID == "" && len(request.Requests) > 0 {
-		// Convert inline requests to JSONL format
-		jsonlData, err := openai.ConvertRequestsToJSONL(request.Requests)
+		// Convert inline requests to JSONL format. Azure reads the deployment from each
+		// line's body.model, so the caller's model name is replaced by the key's deployment.
+		jsonlData, err := openai.ConvertRequestsToJSONL(batchRequestsWithDeploymentNames(request.Requests, key))
 		if err != nil {
 			return nil, providerUtils.NewBifrostOperationError("failed to convert requests to JSONL", err)
 		}
@@ -2122,9 +2133,10 @@ func (provider *AzureProvider) BatchCreate(ctx *schemas.BifrostContext, key sche
 
 	// Build request body
 	openAIReq := &openai.OpenAIBatchRequest{
-		Endpoint:         string(request.Endpoint),
-		CompletionWindow: request.CompletionWindow,
-		Metadata:         request.Metadata,
+		Endpoint:           string(request.Endpoint),
+		CompletionWindow:   request.CompletionWindow,
+		Metadata:           request.Metadata,
+		OutputExpiresAfter: request.OutputExpiresAfter,
 	}
 
 	// Azure requires either input_file_id OR (input_blob + output_folder), not both.
@@ -2627,9 +2639,11 @@ func (provider *AzureProvider) doGetBlob(ctx *schemas.BifrostContext, blobURL st
 	return append([]byte(nil), body...), latency.Milliseconds(), nil
 }
 
-// BatchResults retrieves batch results from Azure OpenAI.
-// For file-based batches it downloads via output_file_id using the Files API.
-// For blob-based batches it fetches the output_blob URL directly using Azure Storage credentials.
+// BatchResults returns a batch's result lines, one per input line Azure wrote: the lines of
+// the output, then those of the error output, each with its status, the vendor's line id
+// and the unified usage, as the OpenAI provider does. File-based batches are read through
+// the Files API as a streamed download, a page at a time when request.Limit is set;
+// blob-based batches fetch the blob URL with Azure Storage credentials.
 func (provider *AzureProvider) BatchResults(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	batchResp, bifrostErr := provider.BatchRetrieve(ctx, keys, &schemas.BifrostBatchRetrieveRequest{
 		Provider: request.Provider,
@@ -2639,61 +2653,126 @@ func (provider *AzureProvider) BatchResults(ctx *schemas.BifrostContext, keys []
 		return nil, bifrostErr
 	}
 
-	var content []byte
-	var latencyMs int64
-
-	switch {
-	case batchResp.OutputFileID != nil && *batchResp.OutputFileID != "":
-		fileContentResp, err := provider.FileContent(ctx, keys, &schemas.BifrostFileContentRequest{
-			Provider: request.Provider,
-			FileID:   *batchResp.OutputFileID,
-		})
-		if err != nil {
-			return nil, err
+	// The lines are in two places: the output (answered lines) and the error output (failed
+	// and expired lines), each a file of the Files API or a blob. A batch whose every line
+	// failed has only the latter.
+	deref := func(value *string) string {
+		if value == nil {
+			return ""
 		}
-		content = fileContentResp.Content
-		latencyMs = fileContentResp.ExtraFields.Latency
-
-	case batchResp.OutputBlob != nil && *batchResp.OutputBlob != "":
-		blobContent, blobLatency, err := provider.downloadBlobURL(ctx, *batchResp.OutputBlob, keys)
-		if err != nil {
-			return nil, err
+		return *value
+	}
+	outputs := []struct{ fileID, blobURL, field string }{
+		{deref(batchResp.OutputFileID), deref(batchResp.OutputBlob), "output_file_id"},
+		{deref(batchResp.ErrorFileID), deref(batchResp.ErrorBlob), "error_file_id"},
+	}
+	sources := make([]providerUtils.BatchResultsSource, 0, len(outputs))
+	available := false
+	for _, output := range outputs {
+		switch {
+		case output.fileID != "":
+			escapedFileID, idErr := providerUtils.EscapeResourceID(output.fileID, output.field)
+			if idErr != nil {
+				return nil, providerUtils.NewBifrostOperationError("provider returned an invalid "+output.field, nil)
+			}
+			sources = append(sources, provider.batchResultFileSource(ctx, keys, escapedFileID))
+			available = true
+		case output.blobURL != "":
+			sources = append(sources, provider.batchResultBlobSource(ctx, keys, output.blobURL))
+			available = true
+		default:
+			sources = append(sources, func(int64) (*providerUtils.ResultStream, *schemas.BifrostError) { return nil, nil })
 		}
-		content = blobContent
-		latencyMs = blobLatency
-
-	default:
-		return nil, providerUtils.NewBifrostOperationError("batch results not available: neither output_file_id nor output_blob is set (batch may not be completed yet)", nil)
+	}
+	if !available {
+		return nil, providerUtils.NewBifrostOperationError("batch results not available: no output or error file or blob is set (batch may not be completed yet)", nil)
 	}
 
-	var results []schemas.BatchResultItem
-	parseResult := providerUtils.ParseJSONL(content, func(line []byte) error {
-		var resultItem schemas.BatchResultItem
-		if err := sonic.Unmarshal(line, &resultItem); err != nil {
-			provider.logger.Warn("failed to parse batch result line: %v", err)
-			return err
-		}
-		results = append(results, resultItem)
-		return nil
-	})
-
-	batchResultsResp := &schemas.BifrostBatchResultsResponse{
-		BatchID: request.BatchID,
-		Results: results,
-		ExtraFields: schemas.BifrostResponseExtraFields{
-			Latency: latencyMs,
-		},
+	batchResultsResp, bifrostErr := openai.ReadBatchResults(sources, request, schemas.BatchEndpoint(batchResp.Endpoint), provider.logger)
+	if bifrostErr != nil {
+		return nil, bifrostErr
 	}
-
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		batchResultsResp.ExtraFields.RawResponse = results
+		batchResultsResp.ExtraFields.RawResponse = batchResultsResp.Results
 	}
-
-	if len(parseResult.Errors) > 0 {
-		batchResultsResp.ExtraFields.ParseErrors = parseResult.Errors
-	}
-
 	return batchResultsResp, nil
+}
+
+// batchRequestsWithDeploymentNames returns the inline batch lines with each body's model
+// replaced by the deployment the key maps it to (the key's aliases, the same map the sync
+// route resolves a model through). A model the key has no alias for is sent as it is. The
+// caller's maps are not modified.
+func batchRequestsWithDeploymentNames(requests []schemas.BatchRequestItem, key schemas.Key) []schemas.BatchRequestItem {
+	out := make([]schemas.BatchRequestItem, len(requests))
+	for i, item := range requests {
+		out[i] = item
+		model, ok := item.Body["model"].(string)
+		if !ok || model == "" {
+			continue
+		}
+		_, bare := schemas.ParseModelString(model, schemas.Azure)
+		deployment := key.Aliases.Resolve(bare)
+		if deployment == model {
+			continue
+		}
+		body := make(map[string]any, len(item.Body))
+		for k, v := range item.Body {
+			body[k] = v
+		}
+		body["model"] = deployment
+		out[i].Body = body
+	}
+	return out
+}
+
+// batchResultFileSource opens a batch output or error file as a streamed download, trying
+// each key until one can read it. With a key the caller named, keys holds only that key.
+func (provider *AzureProvider) batchResultFileSource(ctx *schemas.BifrostContext, keys []schemas.Key, escapedFileID string) providerUtils.BatchResultsSource {
+	return func(offset int64) (*providerUtils.ResultStream, *schemas.BifrostError) {
+		lastErr := providerUtils.NewConfigurationError("no Azure keys available for batch results")
+		for _, key := range keys {
+			endpoint := resolveAzureEndpoint(ctx, key)
+			if endpoint == "" {
+				lastErr = providerUtils.NewConfigurationError("endpoint not set")
+				continue
+			}
+			authHeaders, authErr := provider.getAzureAuthHeaders(ctx, key, false)
+			if authErr != nil {
+				lastErr = authErr
+				continue
+			}
+			stream, bifrostErr := providerUtils.OpenResultStream(ctx, provider.streamingClient, offset, func(req *fasthttp.Request) {
+				providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+				req.SetRequestURI(fmt.Sprintf("%s/openai/v1/files/%s/content", endpoint, escapedFileID))
+				req.Header.SetMethod(http.MethodGet)
+				for name, value := range authHeaders {
+					req.Header.Set(name, value)
+				}
+			}, openai.ParseOpenAIError)
+			if bifrostErr != nil {
+				lastErr = bifrostErr
+				continue
+			}
+			return stream, nil
+		}
+		return nil, lastErr
+	}
+}
+
+// batchResultBlobSource serves a batch output or error blob as a result source. A blob is
+// downloaded whole (downloadBlobURL has no ranged read), so paging a blob-backed batch
+// bounds the response, not the download.
+func (provider *AzureProvider) batchResultBlobSource(ctx *schemas.BifrostContext, keys []schemas.Key, blobURL string) providerUtils.BatchResultsSource {
+	return func(offset int64) (*providerUtils.ResultStream, *schemas.BifrostError) {
+		content, latencyMs, bifrostErr := provider.downloadBlobURL(ctx, blobURL, keys)
+		if bifrostErr != nil {
+			return nil, bifrostErr
+		}
+		return &providerUtils.ResultStream{
+			Reader:  bytes.NewReader(content[min(offset, int64(len(content))):]),
+			Latency: time.Duration(latencyMs) * time.Millisecond,
+		}, nil
+	}
 }
 
 // CountTokens is not supported by the Azure provider.
