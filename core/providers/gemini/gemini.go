@@ -2719,7 +2719,8 @@ func (provider *GeminiProvider) VideoRemix(_ *schemas.BifrostContext, _ schemas.
 // ==================== BATCH OPERATIONS ====================
 
 // BatchCreate creates a new batch job for Gemini.
-// Uses the asynchronous batchGenerateContent endpoint as per official documentation.
+// Uses the asynchronous batchGenerateContent endpoint as per official documentation, or
+// asyncBatchEmbedContent for a batch of /v1/embeddings lines (see batch_embedding.go).
 // Supports both inline requests and file-based input (via InputFileID).
 func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.BatchCreateRequest); err != nil {
@@ -2742,6 +2743,15 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	if hasFileInput && hasInlineRequests {
 		return nil, providerUtils.NewBifrostOperationError("cannot specify both input_file_id and requests", nil)
 	}
+
+	// A batch of /v1/embeddings lines is a different vendor method with the same job object.
+	embeddingBatch := IsEmbeddingBatch(request)
+	batchMethod := "batchGenerateContent"
+	if embeddingBatch {
+		batchMethod = "asyncBatchEmbedContent"
+	}
+	// The number of requests sent inline, for a create response that reports no stats.
+	sentRequests := 0
 
 	// The model is part of the URL (models/{model}:batchGenerateContent). A batch with no
 	// model is refused: running it on a default model would bill the caller for a model
@@ -2779,6 +2789,19 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 			batchReq.Batch.InputConfig = GeminiBatchInputConfig{
 				FileName: fileID,
 			}
+		} else if embeddingBatch {
+			// Inline embedding lines: each is converted with the sync embedding converter;
+			// a line with several inputs is sent as one request per input.
+			geminiRequests, bifrostErr := geminiEmbeddingBatchRequestItems(request, model, key.Aliases.Resolve)
+			if bifrostErr != nil {
+				return nil, bifrostErr
+			}
+			sentRequests = len(geminiRequests)
+			batchReq.Batch.InputConfig = GeminiBatchInputConfig{
+				Requests: &GeminiBatchRequestsWrapper{
+					Requests: geminiRequests,
+				},
+			}
 		} else {
 			// Inline requests: each line is converted with the sync operation's converter,
 			// so it reaches Gemini with the parameters a sync request with the same body does.
@@ -2809,6 +2832,7 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 				}
 			}
 
+			sentRequests = len(geminiRequests)
 			batchReq.Batch.InputConfig = GeminiBatchInputConfig{
 				Requests: &GeminiBatchRequestsWrapper{
 					Requests: geminiRequests,
@@ -2833,8 +2857,8 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	// Build URL - use batchGenerateContent endpoint
-	url := fmt.Sprintf("%s/models/%s:batchGenerateContent", provider.networkConfig.BaseURL, model)
+	// Build URL - batchGenerateContent, or asyncBatchEmbedContent for an embedding batch
+	url := fmt.Sprintf("%s/models/%s:%s", provider.networkConfig.BaseURL, model, batchMethod)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(url)
@@ -2871,9 +2895,17 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	if geminiResp.Metadata == nil {
 		return nil, providerUtils.NewBifrostOperationError("gemini batch response missing metadata", nil)
 	}
-	// Check for batch stats
+	// Check for batch stats. The reference does not name asyncBatchEmbedContent's response
+	// type, so an embedding job the vendor accepted is not turned into an error for a stats
+	// block that is not there: its counts are what was sent, all still pending.
 	if geminiResp.Metadata.BatchStats == nil {
-		return nil, providerUtils.NewBifrostOperationError("gemini batch response missing batch stats", nil)
+		if !embeddingBatch {
+			return nil, providerUtils.NewBifrostOperationError("gemini batch response missing batch stats", nil)
+		}
+		geminiResp.Metadata.BatchStats = &GeminiBatchStats{RequestCount: sentRequests, PendingRequestCount: sentRequests}
+	}
+	if geminiResp.Metadata.Name == "" {
+		geminiResp.Metadata.Name = geminiResp.Name
 	}
 	// Calculate request counts based on response
 	totalRequests := geminiResp.Metadata.BatchStats.RequestCount
@@ -2886,7 +2918,7 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		for _, inlineResp := range inlinedResponses {
 			if inlineResp.Error != nil {
 				failedCount++
-			} else if inlineResp.Response != nil {
+			} else if inlineResp.Response != nil || inlineResp.EmbedResponse != nil {
 				completedCount++
 			}
 		}
@@ -3621,6 +3653,11 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		// known when the file is read from its start.
 		cursor, _ := providerUtils.DecodeBatchResultsCursor(request.After)
 		lineIndex := 0
+		model := geminiBatchModelName(geminiResp.Metadata)
+		// The operation of the page's lines, read from the lines that say (a failed line does
+		// not): embeddings for an embedding batch's file, chat otherwise. Lines that disagree
+		// are reported as image generation, which leaves the batch unpriced.
+		pageEndpoint := schemas.BatchEndpoint("")
 		var parseErrors []schemas.BatchError
 		page, pageErr := providerUtils.ReadBatchResultsPage([]providerUtils.BatchResultsSource{source}, request.After, request.Limit, func(_ int, line []byte) {
 			fallbackID := fmt.Sprintf("request-%d", lineIndex)
@@ -3628,16 +3665,28 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 				fallbackID = fmt.Sprintf("request-at-%d-%d", cursor.Offset, lineIndex)
 			}
 			lineIndex++
-			item, parseErr := parseGeminiBatchResultsFileLine(line, fallbackID, includeRaw)
+			var resultLine GeminiBatchFileResultLine
+			var item schemas.BatchResultItem
+			var lineEndpoint schemas.BatchEndpoint
+			parseErr := sonic.Unmarshal(line, &resultLine)
+			if parseErr == nil {
+				item, lineEndpoint, parseErr = geminiFileResultLineToBatchResultItem(resultLine, fallbackID, model, includeRaw)
+			}
 			if parseErr != nil {
 				provider.logger.Warn("gemini batch results file parse error: %s", strconv.QuoteToASCII(parseErr.Error()))
 				parseErrors = append(parseErrors, schemas.BatchError{Code: "parse_error", Message: parseErr.Error()})
 				return
 			}
+			if lineEndpoint != "" {
+				pageEndpoint = AccumulateBatchResultsEndpoint(pageEndpoint, lineEndpoint)
+			}
 			batchResultsResp.Results = append(batchResultsResp.Results, item)
 		})
 		if pageErr != nil {
 			return nil, pageErr
+		}
+		if pageEndpoint != "" {
+			batchResultsResp.Endpoint = pageEndpoint
 		}
 		batchResultsResp.HasMore = page.HasMore
 		batchResultsResp.NextCursor = page.NextCursor
@@ -3646,12 +3695,17 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		}
 	} else if len(inlinedResponses) > 0 {
 		// Inline results arrive whole inside the batch object; a page is a slice of them.
-		start, end, nextCursor, pageErr := providerUtils.PageBatchResultItems(len(inlinedResponses), request.After, request.Limit)
+		// An embedding line with several inputs was sent as several requests; its responses
+		// are one line again here, so a page is counted in lines, not vendor responses.
+		lines := groupGeminiInlinedResponses(inlinedResponses)
+		start, end, nextCursor, pageErr := providerUtils.PageBatchResultItems(len(lines), request.After, request.Limit)
 		if pageErr != nil {
 			return nil, providerUtils.NewInvalidResultsCursorError(pageErr)
 		}
+		model := geminiBatchModelName(geminiResp.Metadata)
 		for i := start; i < end; i++ {
-			batchResultsResp.Results = append(batchResultsResp.Results, geminiInlineResponseToBatchResultItem(inlinedResponses[i], fmt.Sprintf("request-%d", i), includeRaw))
+			line := lines[i]
+			batchResultsResp.Results = append(batchResultsResp.Results, geminiInlinedLineToBatchResultItem(inlinedResponses[line.start:line.end], fmt.Sprintf("request-%d", line.start), model, includeRaw))
 		}
 		batchResultsResp.HasMore = nextCursor != nil
 		batchResultsResp.NextCursor = nextCursor
@@ -3659,11 +3713,16 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		// batch (not only this page), so a page of chat lines cannot hide an image line.
 		endpoint := schemas.BatchEndpoint("")
 		for _, inlined := range inlinedResponses {
-			lineEndpoint := schemas.BatchEndpoint("")
-			if inlined.Metadata != nil {
-				lineEndpoint = schemas.BatchEndpoint(inlined.Metadata.Endpoint)
+			// A failed line of a batch created elsewhere does not say what it ran, and does
+			// not decide the batch's operation.
+			lineEndpoint, known := geminiInlinedLineEndpoint(inlined)
+			if !known {
+				continue
 			}
 			endpoint = AccumulateBatchResultsEndpoint(endpoint, lineEndpoint)
+		}
+		if endpoint == "" {
+			endpoint = schemas.BatchEndpointChatCompletions
 		}
 		batchResultsResp.Endpoint = endpoint
 	}

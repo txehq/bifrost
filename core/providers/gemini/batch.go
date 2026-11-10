@@ -371,6 +371,38 @@ func parseGeminiBatchResultsFileLine(line []byte, fallbackID string, includeRaw 
 }
 
 func geminiFileResultToBatchResultItem(resultLine GeminiBatchFileResultLine, fallbackID string, includeRaw ...bool) (schemas.BatchResultItem, error) {
+	item, _, err := geminiFileResultLineToBatchResultItem(resultLine, fallbackID, "", len(includeRaw) > 0 && includeRaw[0])
+	return item, err
+}
+
+// geminiFileResultLineToBatchResultItem converts one line of a responses file into a result
+// item, and returns the operation the line ran when the line says: /v1/embeddings for an
+// EmbedContentResponse, chat for a GenerateContentResponse, nothing for a failed line or a
+// body already in OpenAI shape. model is the batch's model, which an embeddings body names.
+func geminiFileResultLineToBatchResultItem(resultLine GeminiBatchFileResultLine, fallbackID string, model string, includeRaw bool) (schemas.BatchResultItem, schemas.BatchEndpoint, error) {
+	if resultLine.Error == nil && isGeminiEmbedContentResponse(resultLine.Response) {
+		customID := resultLine.CustomID
+		if customID == "" {
+			customID = resultLine.Key
+		}
+		if customID == "" {
+			customID = fallbackID
+		}
+		var native GeminiEmbeddingResponse
+		if err := sonic.Unmarshal(resultLine.Response, &native); err != nil {
+			return schemas.BatchResultItem{CustomID: customID}, "", err
+		}
+		return BatchResultItemFromGeminiEmbedResponses(customID, model, []*GeminiEmbeddingResponse{&native}, nil, includeRaw), schemas.BatchEndpointEmbeddings, nil
+	}
+	item, err := geminiGenerateFileResultToBatchResultItem(resultLine, fallbackID, includeRaw)
+	endpoint := schemas.BatchEndpoint("")
+	if err == nil && item.Status == schemas.BatchResultStatusSucceeded && item.Response != nil && item.Response.Body["object"] == "chat.completion" {
+		endpoint = schemas.BatchEndpointChatCompletions
+	}
+	return item, endpoint, err
+}
+
+func geminiGenerateFileResultToBatchResultItem(resultLine GeminiBatchFileResultLine, fallbackID string, includeRaw ...bool) (schemas.BatchResultItem, error) {
 	customID := resultLine.CustomID
 	if customID == "" {
 		customID = resultLine.Key
@@ -423,17 +455,24 @@ func geminiBatchOutput(resp *GeminiBatchJobResponse) (fileName string, inlined [
 	if resp == nil {
 		return "", nil
 	}
+	// An embedding batch's inline responses are documented under inlinedResponses and read
+	// by Google's SDKs from inlinedEmbedContentResponses; whichever is present is used.
+	pick := func(responses, embedResponses *GeminiInlinedResponses) []GeminiInlinedResponse {
+		if responses != nil && len(responses.InlinedResponses) > 0 {
+			return responses.InlinedResponses
+		}
+		if embedResponses != nil {
+			return embedResponses.InlinedResponses
+		}
+		return nil
+	}
 	if resp.Response != nil {
 		fileName = resp.Response.ResponsesFile
-		if resp.Response.InlinedResponses != nil {
-			inlined = resp.Response.InlinedResponses.InlinedResponses
-		}
+		inlined = pick(resp.Response.InlinedResponses, resp.Response.InlinedEmbedContentResponses)
 	}
 	if fileName == "" && len(inlined) == 0 && resp.Metadata != nil && resp.Metadata.Output != nil {
 		fileName = resp.Metadata.Output.ResponsesFile
-		if resp.Metadata.Output.InlinedResponses != nil {
-			inlined = resp.Metadata.Output.InlinedResponses.InlinedResponses
-		}
+		inlined = pick(resp.Metadata.Output.InlinedResponses, resp.Metadata.Output.InlinedEmbedContentResponses)
 	}
 	return fileName, inlined
 }

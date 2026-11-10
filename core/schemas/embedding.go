@@ -521,3 +521,128 @@ func (be *EmbeddingStruct) UnmarshalJSON(data []byte) error {
 
 	return fmt.Errorf("embedding field is neither a string, []float64, [][]float64, []int8, nor []int32")
 }
+
+// EmbeddingRequestKnownFields are the top-level fields of an OpenAI-shape embeddings body
+// that are not extra params.
+var EmbeddingRequestKnownFields = map[string]bool{
+	"model":            true,
+	"input":            true,
+	"fallbacks":        true,
+	"encoding_format":  true,
+	"dimensions":       true,
+	"task_type":        true,
+	"title":            true,
+	"auto_truncate":    true,
+	"instructions":     true,
+	"sparse_embedding": true,
+}
+
+// EmbeddingRequestInput is a union of the input shapes /v1/embeddings accepts:
+//
+//	Str    → "input": "text"                              (single text shorthand)
+//	Strs   → "input": ["text1", "text2"]                   (multi-text shorthand)
+//	Tokens → "input": [15339, 1917]                        (single pre-tokenized input)
+//	TokenB → "input": [[15339, 1917], [9906]]               (several pre-tokenized inputs)
+//	Items  → "input": [[{"type":"text",...}], ...]         (multimodal parts)
+//	         "input": [{"content": [...], "params": {...}}] (per-item parameter overrides)
+//	         "input": [{"type":"text","text":...},{"type":"image_url","image_url":{"url":...}}]
+//	                                                          (the fork's flat multimodal list: one item)
+//
+// The middle two are both handled by EmbeddingInputItem, which accepts either shape per entry,
+// so one array may mix plain content entries and entries carrying their own params. The flat
+// list predates upstream's content parts; it is kept so existing clients (Volcengine
+// multimodal embeddings) keep working, and becomes one item whose parts are its entries.
+//
+// The sync /v1/embeddings route and an inline batch line read their input through this one
+// type, so the two cannot disagree about what an input means.
+type EmbeddingRequestInput struct {
+	Str          *string
+	Strs         []string
+	Tokens       []int
+	TokenBatches [][]int
+	Items        []EmbeddingInputItem
+}
+
+func (e *EmbeddingRequestInput) UnmarshalJSON(data []byte) error {
+	// A body repeating "input" decodes into the same receiver again: start clean, so
+	// the last value is the one embedded, as every other field reads it, rather than
+	// an earlier shape that ToEmbeddingInput would check first.
+	*e = EmbeddingRequestInput{}
+	var str string
+	if err := Unmarshal(data, &str); err == nil {
+		e.Str = &str
+		return nil
+	}
+	var strs []string
+	if err := Unmarshal(data, &strs); err == nil {
+		e.Strs = strs
+		return nil
+	}
+	// Both token forms must precede Items: a bare number array would otherwise be read as
+	// an item list and fail to decode.
+	var tokens []int
+	if err := Unmarshal(data, &tokens); err == nil {
+		e.Tokens = tokens
+		return nil
+	}
+	var tokenBatches [][]int
+	if err := Unmarshal(data, &tokenBatches); err == nil {
+		e.TokenBatches = tokenBatches
+		return nil
+	}
+	// The flat list's entries are objects with a "type"; upstream's item objects carry
+	// "content" instead and have none, so they fall through to Items.
+	var flat []MultiModalEmbeddingInput
+	if err := Unmarshal(data, &flat); err == nil && isFlatMultiModalEmbeddingInput(flat) {
+		content := make(EmbeddingContent, len(flat))
+		for i, entry := range flat {
+			part, err := entry.ToEmbeddingContentPart()
+			if err != nil {
+				return err
+			}
+			content[i] = part
+		}
+		e.Items = []EmbeddingInputItem{{Content: content}}
+		return nil
+	}
+	return Unmarshal(data, &e.Items)
+}
+
+// isFlatMultiModalEmbeddingInput reports whether every entry names its type, which is what
+// separates the fork's flat multimodal list from upstream's item objects.
+func isFlatMultiModalEmbeddingInput(entries []MultiModalEmbeddingInput) bool {
+	if len(entries) == 0 {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.Type == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// ToEmbeddingInput normalises every input variant into []EmbeddingInputItem.
+func (e *EmbeddingRequestInput) ToEmbeddingInput() []EmbeddingInputItem {
+	switch {
+	case e.Str != nil:
+		t := *e.Str
+		return []EmbeddingInputItem{{Content: EmbeddingContent{{Type: EmbeddingContentPartTypeText, Text: &t}}}}
+	case len(e.Strs) > 0:
+		items := make([]EmbeddingInputItem, len(e.Strs))
+		for i, str := range e.Strs {
+			sc := str
+			items[i] = EmbeddingInputItem{Content: EmbeddingContent{{Type: EmbeddingContentPartTypeText, Text: &sc}}}
+		}
+		return items
+	case len(e.Tokens) > 0:
+		return []EmbeddingInputItem{{Content: EmbeddingContent{{Type: EmbeddingContentPartTypeTokens, Tokens: e.Tokens}}}}
+	case len(e.TokenBatches) > 0:
+		items := make([]EmbeddingInputItem, len(e.TokenBatches))
+		for i, tokens := range e.TokenBatches {
+			items[i] = EmbeddingInputItem{Content: EmbeddingContent{{Type: EmbeddingContentPartTypeTokens, Tokens: tokens}}}
+		}
+		return items
+	}
+	return e.Items
+}
