@@ -170,3 +170,48 @@ func TestToOpenAIImageGenerationRequestDropsUnifiedResolution(t *testing.T) {
 		t.Fatalf("the caller's request was mutated")
 	}
 }
+
+func benchImageEditRequest(extras map[string]interface{}) *OpenAIImageEditRequest {
+	return &OpenAIImageEditRequest{
+		Model: "gpt-image-1",
+		Input: &schemas.ImageEditInput{
+			Prompt: "add a hat",
+			Images: []schemas.ImageInput{{Image: bytes.Repeat([]byte{0x89, 'P', 'N', 'G'}, 1024)}},
+		},
+		ImageEditParameters: schemas.ImageEditParameters{
+			N:    schemas.Ptr(1),
+			Size: schemas.Ptr("1024x1024"),
+		},
+		ExtraParams: extras,
+	}
+}
+
+// BenchmarkImageEditMultipartWrite measures the multipart image edit body (TXE-6518 BF5). The
+// /v1/images/edits handler turns passthrough on for every request, so "no extras" is the common
+// case and must cost only the empty-map check.
+func BenchmarkImageEditMultipartWrite(b *testing.B) {
+	cases := []struct {
+		name        string
+		passthrough bool
+		extras      map[string]interface{}
+	}{
+		{"passthrough off", false, map[string]interface{}{"watermark": "false", "camera": "fixed", "seed_mode": "fixed"}},
+		{"no extras", true, nil},
+		{"three string extras", true, map[string]interface{}{"watermark": "false", "camera": "fixed", "seed_mode": "fixed"}},
+		{"string and object extras", true, map[string]interface{}{"camera": "fixed", "strength": 0.35, "style_ref": map[string]interface{}{"a": 1, "b": "x"}}},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			req := benchImageEditRequest(tc.extras)
+			var body bytes.Buffer
+			b.ReportAllocs()
+			for b.Loop() {
+				body.Reset()
+				writer := multipart.NewWriter(&body)
+				if err := parseImageEditFormDataBodyFromRequest(writer, req, schemas.OpenAI, tc.passthrough); err != nil {
+					b.Fatal(err.Error)
+				}
+			}
+		})
+	}
+}
