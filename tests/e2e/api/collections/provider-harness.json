@@ -264694,7 +264694,7 @@
     },
     {
       "name": "428. xAI image generation refuses size and every field xAI does not take (xai image generation fields)",
-      "description": "Pins TXE-6960 (contract C4) for xai on /v1/images/generations and /openai/v1/images/generations. Before the change, size, style and output_compression were dropped silently and output_format, background, moderation, partial_images and input_images were forwarded to xAI, whose REST reference documents none of them. xAI generation now takes only n, response_format, aspect_ratio, resolution, quality and user (with seed and negative_prompt exempt as unpriced), and refuses every other unified field with 400 caller_unsupported_parameter naming it in error.param, before any upstream call. size is refused rather than mapped: xAI sizes an image by aspect_ratio and resolution, and a pixel size does not map onto one documented pair. style and output_compression are not price-affecting under C4, but they are refused too so the caller is told. Every case makes no upstream call and costs nothing. Unit tests in core/providers/xai/xai_test.go pin each refused field and the exempt fields.",
+      "description": "Pins TXE-6960 (contract C4) for xai on /v1/images/generations, /openai/v1/images/generations and /v1/async/images/generations (submitted, then polled: a refused job is failed with the 400 and the full error; the GET polls 202 until the job is terminal, up to 40 lookups). Before the change, size, style and output_compression were dropped silently and output_format, background, moderation, partial_images and input_images were forwarded to xAI, whose REST reference documents none of them. xAI generation now takes only n, response_format, aspect_ratio, resolution, quality and user (with seed and negative_prompt exempt as unpriced), and refuses every other unified field with 400 caller_unsupported_parameter naming it in error.param, before any upstream call. size is refused rather than mapped: xAI sizes an image by aspect_ratio and resolution, and a pixel size does not map onto one documented pair. style and output_compression are not price-affecting under C4, but they are refused too so the caller is told. Every case makes no upstream call and costs nothing. Unit tests in core/providers/xai/xai_test.go pin each refused field and the exempt fields.",
       "item": [
         {
           "name": "[EXPECT-400] /v1/images/generations - xai/grok-imagine-image-2.0 with size is refused, xAI takes aspect_ratio and resolution (xai image generation fields)",
@@ -264889,6 +264889,113 @@
                 "v1",
                 "images",
                 "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-202] /v1/async/images/generations - xai/grok-imagine-image-2.0 with size submit (xai image generation fields)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an async generation with size is accepted for async execution', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.equal(202);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.id, 'no job id: ' + pm.response.text().slice(0, 400)).to.be.a('string').that.is.not.empty;",
+                  "  pm.collectionVariables.set('xaiAsyncImageSizeJobId', j.id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-imagine-image-2.0\",\n  \"prompt\": \"a red apple on a white table\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/async/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "async",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /v1/async/images/generations/{job_id} - xai/grok-imagine-image-2.0 with size: the job fails with caller_unsupported_parameter (xai image generation fields)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var id = pm.collectionVariables.get('xaiAsyncImageSizeJobId');",
+                  "pm.test('the submit case produced a job id', function () { pm.expect(id, 'no async job id: the submit case failed or was filtered out').to.be.a('string').that.is.not.empty; });",
+                  "if (!id) { return; }",
+                  "// GET /v1/async/... answers 202 while the job is pending or processing and 200 once it is completed or failed.",
+                  "pm.test('job lookup succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.be.oneOf([200, 202]);",
+                  "});",
+                  "if (pm.response.code !== 200 && pm.response.code !== 202) { pm.collectionVariables.unset('xaiAsyncImageSizeJobIdPolls'); return; }",
+                  "var j = pm.response.json();",
+                  "var polls = Number(pm.collectionVariables.get('xaiAsyncImageSizeJobIdPolls') || 0);",
+                  "if (j.status !== 'completed' && j.status !== 'failed' && polls < 40) {",
+                  "  // Poll the job until it is terminal, up to 40 lookups about 3 s apart (about 2 minutes).",
+                  "  // The pending timer holds the sandbox open, which delays the next request.",
+                  "  pm.collectionVariables.set('xaiAsyncImageSizeJobIdPolls', polls + 1);",
+                  "  setTimeout(function () {}, 3000);",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "  return;",
+                  "}",
+                  "pm.collectionVariables.unset('xaiAsyncImageSizeJobIdPolls');",
+                  "pm.test('the job reaches a terminal state within the poll budget', function () {",
+                  "  pm.expect(j.status, 'still ' + j.status + ' after ' + polls + ' polls: ' + JSON.stringify(j).slice(0, 400)).to.be.oneOf(['completed', 'failed']);",
+                  "});",
+                  "pm.test('size fails the job with caller_unsupported_parameter, before any upstream call', function () {",
+                  "  pm.expect(j.status, 'job: ' + JSON.stringify(j).slice(0, 400)).to.equal('failed');",
+                  "  pm.expect(j.status_code).to.equal(400);",
+                  "  pm.expect(j.error && j.error.extra_fields && j.error.extra_fields.error_type, 'error: ' + JSON.stringify(j.error)).to.equal('caller_unsupported_parameter');",
+                  "  pm.expect(j.error.error && j.error.error.param).to.equal('size');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/async/images/generations/{{xaiAsyncImageSizeJobId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "async",
+                "images",
+                "generations",
+                "{{xaiAsyncImageSizeJobId}}"
               ]
             }
           }
