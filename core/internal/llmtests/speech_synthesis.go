@@ -188,8 +188,9 @@ func RunSpeechSynthesisAdvancedTest(t *testing.T, client *bifrost.Bifrost, ctx c
 				Fallbacks: testConfig.SpeechSynthesisFallbacks,
 			}
 
-			// Groq doesn't support instructions
-			if testConfig.Provider == schemas.Groq {
+			// Groq doesn't support instructions. Gemini has no field for them and refuses the
+			// request with caller_unsupported_parameter instead of dropping them.
+			if testConfig.Provider == schemas.Groq || testConfig.Provider == schemas.Gemini {
 				request.Params.Instructions = ""
 			}
 

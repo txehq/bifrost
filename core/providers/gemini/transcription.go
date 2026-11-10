@@ -104,6 +104,26 @@ func (request *GeminiGenerationRequest) ToBifrostTranscriptionRequest(ctx *schem
 	return bifrostReq, nil
 }
 
+// TranscriptionResponseFormatJSON is the one response_format a Gemini transcription is
+// returned in: the transcript as JSON text, with no timestamps.
+const TranscriptionResponseFormatJSON = "json"
+
+// ValidateTranscriptionRequest returns the caller_unsupported_parameter error for a value
+// of a declared transcription field that generateContent cannot deliver, and nil otherwise:
+// a response_format other than json. The fields themselves (language,
+// timestamp_granularities, ...) are checked against TranscriptionUnifiedFields by core
+// (contract C4). It allocates only when it refuses.
+func ValidateTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRequest) *schemas.BifrostError {
+	if bifrostReq == nil || bifrostReq.Params == nil || bifrostReq.Params.ResponseFormat == nil {
+		return nil
+	}
+	if format := *bifrostReq.Params.ResponseFormat; format != "" && format != TranscriptionResponseFormatJSON {
+		return schemas.NewUnsupportedParameterError("response_format",
+			fmt.Sprintf("response_format %q is not supported for Gemini transcription; the transcript is returned as json", format))
+	}
+	return nil
+}
+
 func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRequest) *GeminiGenerationRequest {
 	if bifrostReq == nil {
 		return nil
@@ -116,7 +136,16 @@ func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
+		// The sampling temperature, sent as given.
+		geminiReq.GenerationConfig.Temperature = bifrostReq.Params.Temperature
 		geminiReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
+		// The neutral multipart route carries temperature as an untyped form field.
+		if geminiReq.GenerationConfig.Temperature == nil {
+			if temperature, ok := schemas.SafeExtractFloat64Pointer(geminiReq.ExtraParams["temperature"]); ok {
+				geminiReq.GenerationConfig.Temperature = temperature
+			}
+		}
+		delete(geminiReq.ExtraParams, "temperature")
 		// Handle extra parameters
 		if bifrostReq.Params.ExtraParams != nil {
 			// Safety settings

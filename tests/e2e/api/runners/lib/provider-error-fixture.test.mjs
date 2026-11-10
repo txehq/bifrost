@@ -159,6 +159,28 @@ test("decision routes reject their answers but report usage", async (t) => {
   assert.equal(routed.usage.cost, 0.25);
 });
 
+test("the Gemini audio models answer in the generateContent shape, streamed or not", async (t) => {
+  const post = await startFixture(t);
+  const call = (model, method) => post({}, `/pp/gemini/models/${model}:${method}`);
+  const ok = await (await call("pp-tts-ok", "generateContent")).json();
+  assert.equal(ok.candidates[0].finishReason, "STOP");
+  assert.equal(ok.usageMetadata.thoughtsTokenCount, 12);
+  assert.deepEqual(ok.usageMetadata.candidatesTokensDetails, [{ modality: "AUDIO", tokenCount: 50 }]);
+  const okStream = await (await call("pp-tts-ok", "streamGenerateContent")).text();
+  assert.equal(okStream.match(/^data: /gm).length, 2);
+  assert.match(okStream, /"finishReason":"STOP"/);
+  const blocked = await (await call("pp-tts-blocked", "generateContent")).json();
+  assert.equal(blocked.candidates, undefined);
+  assert.equal(blocked.promptFeedback.blockReason, "SAFETY");
+  const truncated = await (await call("pp-tts-truncated", "streamGenerateContent")).text();
+  assert.equal(truncated.match(/^data: /gm).length, 1);
+  assert.doesNotMatch(truncated, /finishReason/, "the truncated stream must end without the vendor's end marker");
+  const transcript = await (await call("pp-stt-ok", "generateContent")).json();
+  assert.equal(transcript.candidates[0].content.parts[0].text, "hello from the fixture");
+  const other = await (await call("pp-gemini", "generateContent")).json();
+  assert.equal(other.modelVersion, "pp-gemini", "any other Gemini model keeps its existing answer");
+});
+
 test("a /pp/ provider call is kept byte for byte until a reset", async (t) => {
   const post = await startFixture(t);
   const base = `http://127.0.0.1:${post.port}`;

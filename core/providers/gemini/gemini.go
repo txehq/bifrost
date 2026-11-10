@@ -1450,10 +1450,29 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	return bifrostResponse, nil
 }
 
+// SupportedUnifiedFields implements schemas.UnifiedFieldDeclarer for the operations whose
+// vendor sheet is wired up: speech and transcription, streamed or not. Core refuses a
+// request carrying any other unified field of those operations with
+// caller_unsupported_parameter before a key is chosen (contract C4). Every other operation
+// is undeclared and stays unchecked.
+func (provider *GeminiProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
+	switch requestType {
+	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+		return SpeechUnifiedFields, true
+	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
+		return TranscriptionUnifiedFields, true
+	}
+	return nil, false
+}
+
 // Speech performs a speech synthesis request to the Gemini API.
 func (provider *GeminiProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	// Check if speech is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.SpeechRequest); err != nil {
+		return nil, err
+	}
+	// A value Gemini cannot take as given is refused before anything is sent (contract C4).
+	if err := ValidateSpeechRequest(request); err != nil {
 		return nil, err
 	}
 
@@ -1487,9 +1506,18 @@ func (provider *GeminiProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 		}, nil
 	}
 
-	if request.Params != nil {
-		ctx.SetValue(BifrostContextKeyResponseFormat, request.Params.ResponseFormat)
+	// A blocked speech is the caller's content block, not an empty audio (contract C6).
+	if blockErr := geminiResponse.SpeechBlockError(); blockErr != nil {
+		blockErr = providerUtils.EnrichError(ctx, blockErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		// Tokens the vendor counted before it blocked are still billed to the caller's budget.
+		blockErr.ExtraFields.BilledUsage = speechBilledUsage(geminiResponse.UsageMetadata)
+		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+			blockErr.ExtraFields.RawResponse = rawResponse
+		}
+		return nil, blockErr
 	}
+
+	ctx.SetValue(BifrostContextKeyResponseFormat, ResolveSpeechResponseFormat(request.Params))
 	response, convErr := geminiResponse.ToBifrostSpeechResponse(ctx)
 	if convErr != nil {
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, convErr), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -1529,6 +1557,10 @@ func (provider *GeminiProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key
 func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Check if speech stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.SpeechStreamRequest); err != nil {
+		return nil, err
+	}
+	// A value Gemini cannot take as given is refused before anything is sent (contract C4).
+	if err := ValidateSpeechRequest(request); err != nil {
 		return nil, err
 	}
 
@@ -1642,8 +1674,15 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 		chunkIndex := -1
-		usage := &schemas.SpeechUsage{}
+		// usageMetadata is cumulative: the last one the vendor sent is the stream's usage. It is
+		// kept as it arrived and converted once, for the done frame.
+		var lastUsageMetadata *GenerateContentResponseUsageMetadata
+		// The running usage a cancelled, timed-out or truncated stream is billed from.
+		streamUsage := &schemas.BifrostLLMUsage{}
+		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, streamUsage)
 		lastChunkTime := startTime
+		// sawFinish records the vendor's end marker: a candidate carrying a finishReason.
+		sawFinish := false
 
 		for {
 			// If context was cancelled/timed out, let defer handle it
@@ -1684,6 +1723,21 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 				continue
 			}
 
+			// A blocked speech ends the stream with the caller's content block instead of a
+			// done frame (contract C6). As the first chunk it becomes the request's HTTP error.
+			if blockErr := geminiResponse.SpeechBlockError(); blockErr != nil {
+				blockErr = providerUtils.EnrichError(ctx, blockErr, jsonBody, []byte(jsonData), provider.sendBackRawRequest, provider.sendBackRawResponse)
+				// usageMetadata is cumulative: the blocking frame's, or the last one before it, is
+				// what the vendor counted, and it is still billed to the caller's budget.
+				if geminiResponse.UsageMetadata != nil {
+					lastUsageMetadata = geminiResponse.UsageMetadata
+				}
+				blockErr.ExtraFields.BilledUsage = speechBilledUsage(lastUsageMetadata)
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, blockErr, responseChan, provider.logger, postHookSpanFinalizer)
+				return
+			}
+
 			// Extract audio data from Gemini response for regular chunks
 			var audioChunk []byte
 			if len(geminiResponse.Candidates) > 0 {
@@ -1707,13 +1761,17 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 				}
 			}
 
-			// Check if this is the final chunk (has finishReason)
-			if len(geminiResponse.Candidates) > 0 && (geminiResponse.Candidates[0].FinishReason != "" || geminiResponse.UsageMetadata != nil) {
-				// Extract usage metadata using shared function
-				inputTokens, outputTokens, totalTokens := extractGeminiUsageMetadata(geminiResponse)
-				usage.InputTokens = inputTokens
-				usage.OutputTokens = outputTokens
-				usage.TotalTokens = totalTokens
+			// The vendor's end marker is a candidate with a finishReason.
+			for _, candidate := range geminiResponse.Candidates {
+				if candidate != nil && candidate.FinishReason != "" {
+					sawFinish = true
+				}
+			}
+			if geminiResponse.UsageMetadata != nil {
+				lastUsageMetadata = geminiResponse.UsageMetadata
+				if billed := speechBilledUsage(lastUsageMetadata); billed != nil {
+					*streamUsage = *billed
+				}
 			}
 
 			// Only send response if we have actual audio content
@@ -1739,6 +1797,17 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, response, nil, nil), responseChan, postHookSpanFinalizer)
 			}
 		}
+		// The body ended without the vendor's end marker: the audio already forwarded is a
+		// truncated clip, so the stream ends on an error, never on a done frame (contract C10).
+		if !sawFinish {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
+			return
+		}
+		// The usage of the done frame, with every token detail the vendor gave (contract C5).
+		usage := convertGeminiUsageMetadataToSpeechUsage(lastUsageMetadata)
+		if usage == nil {
+			usage = &schemas.SpeechUsage{}
+		}
 		response := &schemas.BifrostSpeechStreamResponse{
 			Type:  schemas.SpeechStreamResponseTypeDone,
 			Usage: usage,
@@ -1763,6 +1832,10 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 func (provider *GeminiProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
 	// Check if transcription is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.TranscriptionRequest); err != nil {
+		return nil, err
+	}
+	// A value Gemini cannot deliver is refused before anything is sent (contract C4).
+	if err := ValidateTranscriptionRequest(request); err != nil {
 		return nil, err
 	}
 
@@ -1817,6 +1890,10 @@ func (provider *GeminiProvider) Transcription(ctx *schemas.BifrostContext, key s
 func (provider *GeminiProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	// Check if transcription stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.Gemini, provider.customProviderConfig, schemas.TranscriptionStreamRequest); err != nil {
+		return nil, err
+	}
+	// A value Gemini cannot deliver is refused before anything is sent (contract C4).
+	if err := ValidateTranscriptionRequest(request); err != nil {
 		return nil, err
 	}
 

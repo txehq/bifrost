@@ -63,6 +63,8 @@ type SpeechParameters struct {
 	OptimizeStreamingLatency        *bool                                  `json:"optimize_streaming_latency,omitempty"`
 	WithTimestamps                  *bool                                  `json:"with_timestamps,omitempty"` // Returns character-level timing information
 
+	MaxOutputTokens *int `json:"max_output_tokens,omitempty"` // Fork (TXE-6539): output-token bound, sent as given
+
 	// Dynamic parameters that can be provider-specific, they are directly
 	// added to the request as is.
 	ExtraParams map[string]interface{} `json:"-"`
@@ -173,12 +175,24 @@ type SpeechUsageInputTokenDetails struct {
 	TextTokens  int `json:"text_tokens,omitempty"`
 	AudioTokens int `json:"audio_tokens,omitempty"`
 }
+
+// SpeechUsageOutputTokenDetails is the vendor's breakdown of the output tokens of a speech
+// (fork, TXE-6539, contract C5): Gemini candidatesTokensDetails by modality, and
+// thoughtsTokenCount as ReasoningTokens. Reasoning tokens are reported beside OutputTokens,
+// never added into it.
+type SpeechUsageOutputTokenDetails struct {
+	TextTokens      int `json:"text_tokens,omitempty"`
+	AudioTokens     int `json:"audio_tokens,omitempty"`
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+}
+
 type SpeechUsage struct {
-	InputTokens       int                           `json:"input_tokens"`
-	InputChars        int                           `json:"input_chars,omitempty"`
-	InputTokenDetails *SpeechUsageInputTokenDetails `json:"input_token_details,omitempty"`
-	OutputTokens      int                           `json:"output_tokens"`
-	TotalTokens       int                           `json:"total_tokens"`
+	InputTokens        int                            `json:"input_tokens"`
+	InputChars         int                            `json:"input_chars,omitempty"`
+	InputTokenDetails  *SpeechUsageInputTokenDetails  `json:"input_token_details,omitempty"`
+	OutputTokens       int                            `json:"output_tokens"`
+	OutputTokenDetails *SpeechUsageOutputTokenDetails `json:"output_token_details,omitempty"` // Fork (TXE-6539): nil when the vendor reported none
+	TotalTokens        int                            `json:"total_tokens"`
 	// AudioSeconds is the generated audio duration in seconds. Populated for
 	// duration-based audio models (e.g. ElevenLabs sound effects) so per-second
 	// pricing can be applied; zero for token/character-billed TTS.

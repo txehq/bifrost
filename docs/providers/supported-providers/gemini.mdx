@@ -362,7 +362,10 @@ Speech synthesis uses the underlying chat generation endpoint with audio respons
 |-----------|----------------|
 | `input` | Text to synthesize → `contents[0].parts[0].text` |
 | `voice` | Voice name → `generationConfig.speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName` |
-| `response_format` | Only "wav" supported (default); auto-converted from PCM |
+| `response_format` | `wav` (default, also when omitted) or `pcm`; Gemini returns PCM and `wav` is converted from it |
+| `max_output_tokens` | Output-token bound → `generationConfig.maxOutputTokens`, sent as given (never clamped) |
+
+Gemini's `generateContent` has no counterpart for any other speech field. A request that carries `speed`, `instructions`, `language_code` (or any other speech parameter not listed above), a `response_format` other than `wav`/`pcm`, or a `max_output_tokens` below 1 is rejected with HTTP 400, `extra_fields.error_type: "caller_unsupported_parameter"` and the field name in `error.param`. Nothing is sent to Gemini; the field is never dropped silently.
 
 ### Voice Configuration
 
@@ -409,8 +412,15 @@ Speech synthesis uses the underlying chat generation endpoint with audio respons
 
 - Audio data extracted from `candidates[0].content.parts[].inlineData`
 - **Format conversion**: Gemini returns PCM audio (s16le, 24kHz, mono)
-- **Auto-conversion**: PCM → WAV when `response_format: "wav"` (default)
-- Raw audio returned if `response_format` is omitted or empty string
+- **Auto-conversion**: PCM → WAV when `response_format` is `"wav"`, omitted or an empty string
+- Raw PCM returned when `response_format` is `"pcm"`. Streamed chunks (`stream_format: "sse"`) are always the raw PCM
+- The native GenAI route (`/genai/v1beta/models/{model}:generateContent`) always returns the raw PCM as `inlineData` with `mimeType: "audio/L16;codec=pcm;rate=24000"`, as Gemini itself does
+- **Usage**: `promptTokenCount` → `input_tokens`, `candidatesTokenCount` → `output_tokens`, `totalTokenCount` → `total_tokens`, `promptTokensDetails` → `input_token_details`, `candidatesTokensDetails` and `thoughtsTokenCount` → `output_token_details` (`text_tokens`, `audio_tokens`, `reasoning_tokens`). Thought tokens are reported beside `output_tokens`, not added into it. When streaming, usage is on the `speech.audio.done` event
+
+### Blocked and truncated responses
+
+- **Blocked content**: when Gemini answers 200 with `promptFeedback.blockReason` and no candidates, or a candidate ends on a safety `finishReason` (`SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`), Bifrost returns HTTP 400 with `extra_fields.error_type: "caller_content_filtered"` and Gemini's reason verbatim in `error.code`. On a stream the error replaces the `speech.audio.done` event
+- **Truncated stream**: a stream that ends before Gemini sends a `finishReason` ends on an error event (502, `provider closed the stream before sending a completion marker`), never on `speech.audio.done`
 
 ### Supported Voices
 
@@ -433,7 +443,10 @@ Transcriptions are implemented as chat completions with audio content and text p
 |-----------|----------------|
 | `file` | Audio bytes → `contents[].parts[].inlineData` |
 | `prompt` | Instructions → `contents[0].parts[0].text` (defaults to "Generate a transcript of the speech.") |
-| `language` | Via `extra_params` (if supported by model) |
+| `temperature` | Sampling temperature → `generationConfig.temperature` |
+| `response_format` | Only `json` (default); the transcript is returned as JSON text |
+
+Gemini's `generateContent` has no language, timestamp or output-format field. A request that carries `language`, `timestamp_granularities` (or any other transcription parameter not listed above) or a `response_format` other than `json` is rejected with HTTP 400, `extra_fields.error_type: "caller_unsupported_parameter"` and the field name in `error.param`. Nothing is sent to Gemini. To steer the language, say so in `prompt`.
 
 ### Audio Input Handling
 

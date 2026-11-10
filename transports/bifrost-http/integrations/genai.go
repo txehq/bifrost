@@ -117,8 +117,10 @@ func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 						EmbeddingRequest: geminiReq.ToBifrostEmbeddingRequest(ctx),
 					}, nil
 				} else if geminiReq.IsSpeech {
+					speechReq := geminiReq.ToBifrostSpeechRequest(ctx)
+					keepGeminiNativeSpeechPCM(ctx, geminiReq.Model, speechReq)
 					return &schemas.BifrostRequest{
-						SpeechRequest: geminiReq.ToBifrostSpeechRequest(ctx),
+						SpeechRequest: speechReq,
 					}, nil
 				} else if geminiReq.IsTranscription {
 					transcriptionReq, err := geminiReq.ToBifrostTranscriptionRequest(ctx)
@@ -1415,6 +1417,28 @@ func getLargeRequestTypeDetectionThreshold(ctx *fasthttp.RequestCtx) int64 {
 		}
 	}
 	return schemas.DefaultLargePayloadRequestThresholdBytes
+}
+
+// keepGeminiNativeSpeechPCM names the pcm response format on a native speech request that goes
+// to Gemini or Vertex. The native API answers bare PCM (audio/L16, 24 kHz) and a GenAI client
+// reads the inlineData as that, while the unified speech route answers WAV when no format is
+// named; without this the native client would be handed a WAV file as if it were PCM samples.
+// A request routed to another provider is left as it was.
+func keepGeminiNativeSpeechPCM(ctx *schemas.BifrostContext, model string, speechReq *schemas.BifrostSpeechRequest) {
+	if speechReq == nil {
+		return
+	}
+	routeProvider, _ := ctx.Value(bifrostContextKeyProvider).(schemas.ModelProvider)
+	provider, _ := schemas.ParseModelString(model, routeProvider)
+	if provider != schemas.Gemini && provider != schemas.Vertex {
+		return
+	}
+	if speechReq.Params == nil {
+		speechReq.Params = &schemas.SpeechParameters{}
+	}
+	if speechReq.Params.ResponseFormat == "" {
+		speechReq.Params.ResponseFormat = gemini.SpeechResponseFormatPCM
+	}
 }
 
 // extractAndSetModelAndRequestType derives GenAI routing flags and configures native Gemini passthrough.

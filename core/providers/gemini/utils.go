@@ -978,6 +978,26 @@ func convertGeminiUsageMetadataToSpeechUsage(metadata *GenerateContentResponseUs
 		usage.InputTokenDetails = inputDetails
 	}
 
+	// Output token details: the modality breakdown of the candidates and the thought tokens,
+	// both as the vendor reported them (contract C5). OutputTokens stays candidatesTokenCount.
+	if len(metadata.CandidatesTokensDetails) > 0 || metadata.ThoughtsTokenCount > 0 {
+		outputDetails := &schemas.SpeechUsageOutputTokenDetails{
+			ReasoningTokens: int(metadata.ThoughtsTokenCount),
+		}
+		for _, detail := range metadata.CandidatesTokensDetails {
+			if detail == nil {
+				continue
+			}
+			switch detail.Modality {
+			case ModalityText:
+				outputDetails.TextTokens = int(detail.TokenCount)
+			case ModalityAudio:
+				outputDetails.AudioTokens = int(detail.TokenCount)
+			}
+		}
+		usage.OutputTokenDetails = outputDetails
+	}
+
 	return usage
 }
 
@@ -1007,6 +1027,23 @@ func convertBifrostSpeechUsageToGeminiUsageMetadata(usage *schemas.SpeechUsage) 
 				TokenCount: int32(usage.InputTokenDetails.AudioTokens),
 			})
 		}
+	}
+
+	// Output token details back to CandidatesTokensDetails and ThoughtsTokenCount
+	if usage.OutputTokenDetails != nil {
+		if usage.OutputTokenDetails.TextTokens > 0 {
+			metadata.CandidatesTokensDetails = append(metadata.CandidatesTokensDetails, &ModalityTokenCount{
+				Modality:   ModalityText,
+				TokenCount: int32(usage.OutputTokenDetails.TextTokens),
+			})
+		}
+		if usage.OutputTokenDetails.AudioTokens > 0 {
+			metadata.CandidatesTokensDetails = append(metadata.CandidatesTokensDetails, &ModalityTokenCount{
+				Modality:   ModalityAudio,
+				TokenCount: int32(usage.OutputTokenDetails.AudioTokens),
+			})
+		}
+		metadata.ThoughtsTokenCount = int32(usage.OutputTokenDetails.ReasoningTokens)
 	}
 
 	return metadata
