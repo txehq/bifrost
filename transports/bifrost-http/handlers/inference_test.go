@@ -798,16 +798,24 @@ func TestTranscriptionRouteReturnsDeepgramErrors(t *testing.T) {
 	}
 	upstream.only(t)
 
-	ctx = multipartTranscriptionCtx(t, [][2]string{{"model", "deepgram/nova-3"}, {"response_format", "srt"}})
-	h.transcription(ctx)
-	var refused errorBody
-	if err := json.Unmarshal(ctx.Response.Body(), &refused); err != nil {
-		t.Fatalf("error response is not JSON: %v: %s", err, ctx.Response.Body())
+	// The native route parses response_format into the unified field and leaves temperature and
+	// include[] in the extra params; each is refused the same way, and none reaches Deepgram.
+	for field, param := range map[[2]string]string{
+		{"response_format", "srt"}: "response_format",
+		{"temperature", "0.2"}:     "temperature",
+		{"include[]", "logprobs"}:  "include",
+	} {
+		ctx = multipartTranscriptionCtx(t, [][2]string{{"model", "deepgram/nova-3"}, field})
+		h.transcription(ctx)
+		var refused errorBody
+		if err := json.Unmarshal(ctx.Response.Body(), &refused); err != nil {
+			t.Fatalf("error response is not JSON: %v: %s", err, ctx.Response.Body())
+		}
+		if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || refused.ExtraFields.ErrorType != string(schemas.ErrorTypeCallerUnsupportedParameter) || refused.Error.Param != param {
+			t.Fatalf("%s: status %d, body %s; want 400 caller_unsupported_parameter naming %s", field[0], ctx.Response.StatusCode(), ctx.Response.Body(), param)
+		}
+		upstream.only(t)
 	}
-	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || refused.ExtraFields.ErrorType != string(schemas.ErrorTypeCallerUnsupportedParameter) || refused.Error.Param != "response_format" {
-		t.Fatalf("status %d, body %s; want 400 caller_unsupported_parameter naming response_format", ctx.Response.StatusCode(), ctx.Response.Body())
-	}
-	upstream.only(t)
 }
 
 func speechCtx(body string) *fasthttp.RequestCtx {

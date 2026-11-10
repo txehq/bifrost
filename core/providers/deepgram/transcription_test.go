@@ -499,6 +499,16 @@ func TestTranscriptionRefusesWhatItCannotDeliver(t *testing.T) {
 		{"callback_method", func(r *schemas.BifrostTranscriptionRequest) { r.Params.ExtraParams["callback_method"] = "PUT" }, "callback_method"},
 		{"model as an extra param", func(r *schemas.BifrostTranscriptionRequest) { r.Params.ExtraParams["model"] = "nova-2" }, "model"},
 		{"language as an extra param", func(r *schemas.BifrostTranscriptionRequest) { r.Params.ExtraParams["language"] = "fr" }, "language"},
+		{"temperature as an extra param", func(r *schemas.BifrostTranscriptionRequest) { r.Params.ExtraParams["temperature"] = "0.2" }, "temperature"},
+		{"include[] as an extra param", func(r *schemas.BifrostTranscriptionRequest) {
+			r.Params.ExtraParams["include[]"] = []string{"logprobs"}
+		}, "include"},
+		{"timestamp_granularities as an extra param", func(r *schemas.BifrostTranscriptionRequest) {
+			r.Params.ExtraParams["timestamp_granularities"] = []interface{}{"word"}
+		}, "timestamp_granularities"},
+		{"response_format as an extra param", func(r *schemas.BifrostTranscriptionRequest) {
+			r.Params.ExtraParams["response_format"] = "srt"
+		}, "response_format"},
 		{"file and url", func(r *schemas.BifrostTranscriptionRequest) {
 			r.Params.ExtraParams[schemas.TranscriptionURLParam] = "https://example.com/a.wav"
 		}, "url"},

@@ -51,8 +51,11 @@ var deepgramAudioTypesByExtension = map[string]string{
 // Refused with 400 caller_unsupported_parameter, never dropped or rewritten: a
 // response_format other than json; callback and callback_method (Deepgram would answer
 // with a request id and deliver the transcript elsewhere, so there would be no usage to
-// report); model and language as extra params (they are unified fields); a url next to a
-// file; an extra param whose value is not a string, number, boolean or a list of them.
+// report); model and language as extra params (they are unified fields); the other unified
+// transcription fields when they arrive as extra params (temperature, include,
+// timestamp_granularities, response_format, prompt), which is how the native route delivers
+// the ones it does not parse; a url next to a file; an extra param whose value is not a
+// string, number, boolean or a list of them.
 func ToDeepgramTranscriptionRequest(request *schemas.BifrostTranscriptionRequest) (*DeepgramTranscriptionRequest, *schemas.BifrostError) {
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("transcription request is nil", nil)
@@ -94,6 +97,13 @@ func ToDeepgramTranscriptionRequest(request *schemas.BifrostTranscriptionRequest
 		case "model", "language":
 			return nil, schemas.NewUnsupportedParameterError(key,
 				fmt.Sprintf("%s is a unified field; send it as %s, not as an extra param", key, key))
+		case "temperature", "include", "include[]", "timestamp_granularities", "timestamp_granularities[]", "response_format", "prompt":
+			// The native route reads only some unified fields from the form and leaves the
+			// rest in the extra params; they are the same fields under the same names, and
+			// Deepgram takes none of them, so they are refused here as the declaration
+			// refuses their unified form.
+			return nil, schemas.NewUnsupportedParameterError(strings.TrimSuffix(key, "[]"),
+				fmt.Sprintf("%s is an OpenAI transcription field that deepgram does not take", strings.TrimSuffix(key, "[]")))
 		case "callback", "callback_method":
 			return nil, schemas.NewUnsupportedParameterError(key,
 				"deepgram callbacks are not supported: the transcript must come back on this request")
