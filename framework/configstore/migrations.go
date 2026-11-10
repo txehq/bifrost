@@ -572,6 +572,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_rss_feeds_icon_url_column"}, run: migrationAddRSSFeedsIconURLColumn},
 	{IDs: []string{"add_agent_push_delivery_registration_hash_column"}, run: migrationAddAgentPushDeliveryRegistrationHashColumn},
 	{IDs: []string{"add_client_config_fork_deployment_switch_columns"}, run: migrationAddClientConfigForkDeploymentSwitchColumns},
+	{IDs: []string{"add_client_config_disable_encrypted_reasoning_retry_column"}, run: migrationAddClientConfigDisableEncryptedReasoningRetryColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -12261,6 +12262,34 @@ func migrationAddClientConfigForkDeploymentSwitchColumns(ctx context.Context, db
 				return err
 			}
 			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "disable_provider_job_accounting")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddClientConfigDisableEncryptedReasoningRetryColumn adds
+// disable_encrypted_reasoning_retry to config_client (fork, TXE-6527). It defaults to false, so
+// an upgrade keeps the one stripped retry after a rejected encrypted-reasoning replay, as before
+// the switch existed.
+func migrationAddClientConfigDisableEncryptedReasoningRetryColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_disable_encrypted_reasoning_retry_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "disable_encrypted_reasoning_retry"); err != nil {
+				return err
+			}
+			return tx.Exec("UPDATE config_client SET disable_encrypted_reasoning_retry = ? WHERE disable_encrypted_reasoning_retry IS NULL", false).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "disable_encrypted_reasoning_retry")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

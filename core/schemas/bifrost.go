@@ -40,6 +40,11 @@ type BifrostConfig struct {
 	KVStore            KVStore         // shared KV store for clustering/session stickiness; nil = disabled
 	SessionAffinity    SessionAffinity // Decides which key a session stays on; nil = Bifrost's own default, which needs KVStore to bind anything
 	ModelCatalog       ModelInfoProvider
+
+	// Fork (TXE-6527): when true, a 400 on a request that replays encrypted reasoning is
+	// returned to the caller as is. When false (the default), Bifrost strips the encrypted
+	// content and calls the upstream a second time on the same key.
+	DisableEncryptedReasoningRetry bool
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.
@@ -393,6 +398,7 @@ const (
 	BifrostContextKeyShouldStoreRawInLogs                BifrostContextKey = "bifrost-should-store-raw-in-logs"                 // bool (set by bifrost - DO NOT SET THIS MANUALLY) — true when raw request/response should be persisted in log records
 	BifrostContextKeyRetryDBFetch                        BifrostContextKey = "bifrost-retry-db-fetch"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyIsCustomProvider                    BifrostContextKey = "bifrost-is-custom-provider"                       // bool (set by bifrost - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyDisableEncryptedReasoningRetry      BifrostContextKey = "bifrost-disable-encrypted-reasoning-retry"        // bool (set by bifrost from BifrostConfig.DisableEncryptedReasoningRetry - DO NOT SET THIS MANUALLY) — true when a 400 on a request that replays encrypted reasoning is returned as is instead of retried once without the token
 	BifrostContextKeyBaseProviderType                    BifrostContextKey = "bifrost-base-provider-type"                       // ModelProvider (set by bifrost - DO NOT SET THIS MANUALLY) — built-in provider backing this attempt (custom providers resolve to their BaseProviderType)
 	BifrostContextKeyDoesNotSendDoneMarker               BifrostContextKey = "bifrost-does-not-send-done-marker"                // bool (set by bifrost from custom_provider_config.does_not_send_done_marker - DO NOT SET THIS MANUALLY) — ends the SSE read loop on finish_reason instead of waiting for [DONE]
 	BifrostContextKeyWaitForUsage                        BifrostContextKey = "bifrost-wait-for-usage"                           // bool (set by bifrost from custom_provider_config.wait_for_usage - DO NOT SET THIS MANUALLY) — keeps the SSE read loop open past finish_reason until the trailing usage-only chunk arrives

@@ -148,6 +148,17 @@ var reasoningConfigParams = []string{
 	"includethoughts",
 }
 
+// encryptedReasoningRetryDisabled reports whether the deployment turned the fail-soft
+// retry off (BifrostConfig.DisableEncryptedReasoningRetry, carried on the request context
+// by the worker). A nil context, or one the worker never touched, keeps the retry.
+func encryptedReasoningRetryDisabled(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	disabled, _ := ctx.Value(schemas.BifrostContextKeyDisableEncryptedReasoningRetry).(bool)
+	return disabled
+}
+
 // shouldStripReasoningAfterClientError reports whether a failed attempt earns one more
 // try with the request's replayed reasoning tokens removed.
 //

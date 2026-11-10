@@ -1092,6 +1092,10 @@ func HandleOpenAIChatCompletionRequest(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			// Refused here, before anything is sent: see ChatServiceTierError.
+			if tierErr := ChatServiceTierError(ctx, request); tierErr != nil {
+				return nil, providerUtils.ConverterBifrostError(tierErr)
+			}
 			reqBody := ToOpenAIChatRequest(ctx, request)
 			// Resolved here rather than inside the converter, so a failed document fetch surfaces
 			// as itself instead of as a provider 400 about a missing file_id.
@@ -1301,6 +1305,10 @@ func HandleOpenAIChatCompletionStreaming(
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			if customRequestConverter != nil {
 				return customRequestConverter(request)
+			}
+			// Refused here, before the stream is opened: see ChatServiceTierError.
+			if tierErr := ChatServiceTierError(ctx, request); tierErr != nil {
+				return nil, providerUtils.ConverterBifrostError(tierErr)
 			}
 			reqBody := ToOpenAIChatRequest(ctx, request)
 			// Same resolution the non-streaming path does: streaming rejects file_url just as

@@ -159,6 +159,23 @@ func BenchmarkToOpenAIChatRequestGroq(b *testing.B) {
 	}
 }
 
+// BenchmarkToOpenAIChatRequestMoonshot exercises Moonshot's case: the compatibility filter
+// plus the two prompt-cache fields it puts back.
+func BenchmarkToOpenAIChatRequestMoonshot(b *testing.B) {
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifrostReq := benchOpenAIChatRequest(b).ToBifrostChatRequest(ctx)
+	bifrostReq.Provider = schemas.Moonshot
+	bifrostReq.Model = "kimi-k2.6"
+	bifrostReq.Params.PromptCacheKey = schemas.Ptr("tenant-42")
+	bifrostReq.Params.PromptCacheOptions = &schemas.PromptCacheOptions{TTL: schemas.Ptr("1h")}
+	b.ReportAllocs()
+	for b.Loop() {
+		if out := ToOpenAIChatRequest(ctx, bifrostReq); out == nil {
+			b.Fatal("nil OpenAI request")
+		}
+	}
+}
+
 // BenchmarkOpenAIChatRequestMarshal measures serializing the outbound payload.
 // OpenAIChatRequest has a hand-written marshaller that preserves key order for
 // provider-side prompt caching, so this is not plain reflection cost.

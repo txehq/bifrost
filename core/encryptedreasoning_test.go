@@ -140,6 +140,131 @@ func TestExecuteRequestWithRetries_StripsEncryptedContentAndRetries(t *testing.T
 	}
 }
 
+// TestExecuteRequestWithRetries_SwitchOffReturnsTheRejectionAfterOneCall pins the fork's
+// switch (TXE-6527): with BifrostConfig.DisableEncryptedReasoningRetry on, the worker marks
+// the request context and a rejected replay goes back as the vendor sent it, after exactly
+// one upstream call and with the request untouched. Without the mark the same request heals
+// on a second call, as before the switch existed.
+func TestExecuteRequestWithRetries_SwitchOffReturnsTheRejectionAfterOneCall(t *testing.T) {
+	const ciphertext = "gAAAAABqc9R3ciphertext.eyJlbmRwb2ludF9zbHVnIjoieCJ9"
+	cases := []struct {
+		name        string
+		requestType schemas.RequestType
+		provider    schemas.ModelProvider
+		model       string
+		req         func() *schemas.BifrostRequest
+		rejection   func() *schemas.BifrostError
+		stillThere  func(*schemas.BifrostRequest) bool
+	}{
+		{
+			name: "responses encrypted_content", requestType: schemas.ResponsesRequest, provider: schemas.OpenAI, model: "gpt-5.6-sol",
+			req:       func() *schemas.BifrostRequest { return newEncryptedReasoningRequest(ciphertext) },
+			rejection: encryptedContentError,
+			stillThere: func(r *schemas.BifrostRequest) bool {
+				reasoning := r.ResponsesRequest.Input[1].ResponsesReasoning
+				return reasoning != nil && reasoning.EncryptedContent != nil && *reasoning.EncryptedContent == ciphertext
+			},
+		},
+		{
+			name: "chat thinking signature", requestType: schemas.ChatCompletionRequest, provider: schemas.Anthropic, model: "claude-sonnet-5",
+			req:       func() *schemas.BifrostRequest { return newThinkingSignatureChatRequest("ErUBCkYIBRgCKkD...") },
+			rejection: thinkingSignatureError,
+			stillThere: func(r *schemas.BifrostRequest) bool {
+				return len(r.ChatRequest.Input[1].ChatAssistantMessage.ReasoningDetails) > 0
+			},
+		},
+	}
+	for _, tc := range cases {
+		for _, disabled := range []bool{true, false} {
+			name := tc.name + "/retry on"
+			if disabled {
+				name = tc.name + "/retry off"
+			}
+			t.Run(name, func(t *testing.T) {
+				config := createTestConfig(0, time.Millisecond, time.Millisecond)
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+				if disabled {
+					ctx.SetValue(schemas.BifrostContextKeyDisableEncryptedReasoningRetry, true)
+				}
+				req := tc.req()
+				callCount := 0
+				handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+					callCount++
+					if callCount == 1 {
+						return "", tc.rejection()
+					}
+					return "success", nil
+				}
+
+				result, err := executeRequestWithRetries(ctx, config, handler, nil,
+					tc.requestType, tc.provider, tc.model, req, NewDefaultLogger(schemas.LogLevelError))
+
+				if !disabled {
+					if err != nil || result != "success" || callCount != 2 {
+						t.Fatalf("retry on: result=%q err=%v calls=%d, want the stripped second call to succeed", result, err, callCount)
+					}
+					return
+				}
+				if callCount != 1 {
+					t.Fatalf("retry off: %d upstream calls, want exactly 1", callCount)
+				}
+				want := tc.rejection()
+				if err == nil || err.StatusCode == nil || *err.StatusCode != 400 || err.Error == nil || err.Error.Message != want.Error.Message {
+					t.Fatalf("retry off: err = %+v, want the vendor's 400 unchanged", err)
+				}
+				if !tc.stillThere(req) {
+					t.Fatal("retry off: the request's encrypted reasoning was stripped although no retry ran")
+				}
+			})
+		}
+	}
+}
+
+// TestDisableEncryptedReasoningRetrySwitch pins how the switch reaches the retry loop: Init
+// and ReloadConfig store BifrostConfig.DisableEncryptedReasoningRetry, the update method
+// flips it at runtime, and a context the worker never marked keeps the retry.
+func TestDisableEncryptedReasoningRetrySwitch(t *testing.T) {
+	b := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	if b.GetDisableEncryptedReasoningRetry() {
+		t.Fatal("the switch is off until a deployment turns it on")
+	}
+	if err := b.ReloadConfig(schemas.BifrostConfig{DisableEncryptedReasoningRetry: true}); err != nil {
+		t.Fatalf("ReloadConfig: %v", err)
+	}
+	if !b.GetDisableEncryptedReasoningRetry() {
+		t.Fatal("ReloadConfig did not store the switch")
+	}
+	b.UpdateDisableEncryptedReasoningRetry(false)
+	if b.GetDisableEncryptedReasoningRetry() {
+		t.Fatal("UpdateDisableEncryptedReasoningRetry(false) did not turn the switch off")
+	}
+
+	if encryptedReasoningRetryDisabled(nil) {
+		t.Fatal("a nil context keeps the retry")
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if encryptedReasoningRetryDisabled(ctx) {
+		t.Fatal("an unmarked context keeps the retry")
+	}
+	ctx.SetValue(schemas.BifrostContextKeyDisableEncryptedReasoningRetry, true)
+	if !encryptedReasoningRetryDisabled(ctx) {
+		t.Fatal("a marked context turns the retry off")
+	}
+}
+
+// BenchmarkEncryptedReasoningRetryDisabled is the read the retry loop makes when an attempt
+// fails without a retry: one context lookup, on the failure path only.
+func BenchmarkEncryptedReasoningRetryDisabled(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	b.ReportAllocs()
+	for b.Loop() {
+		if encryptedReasoningRetryDisabled(ctx) {
+			b.Fatal("an unmarked context keeps the retry")
+		}
+	}
+}
+
 // TestExecuteRequestWithRetries_HealsOnEveryProviderRejection runs the whole fail-soft
 // loop once per provider that can refuse a replayed payload, with the refusal that
 // provider actually returns.

@@ -132,6 +132,7 @@ type ClientConfig struct {
 	EnforceVKObjectOwnership              bool                                  `json:"enforce_vk_object_ownership"`                 // Restrict provider objects (files, batches, containers, ...) to the virtual key that created them
 	DisableProviderJobAccounting          bool                                  `json:"disable_provider_job_accounting"`             // Fork (TXE-6519): no video or batch accounting sweeper, and no provider job row when a video or batch is created
 	DisablePassthroughSSEHeartbeat        bool                                  `json:"disable_passthrough_sse_heartbeat"`           // Fork (TXE-6519): no SSE comment heartbeat on an idle passthrough stream; the caller gets the vendor's bytes only
+	DisableEncryptedReasoningRetry        bool                                  `json:"disable_encrypted_reasoning_retry"`           // Fork (TXE-6527): a 400 on a request that replays encrypted reasoning is returned as is, not retried once without the token
 	HiddenRequestTypes                    []string                              `json:"hidden_request_types,omitempty"`              // Request types excluded from dashboard and log API reads; logs are still written
 	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
@@ -313,6 +314,10 @@ func (c *ClientConfig) generateClientConfigHashes(prior bool) (string, string, e
 	}
 	if c.DisablePassthroughSSEHeartbeat {
 		added.Write([]byte("disablePassthroughSSEHeartbeat:true"))
+	}
+	// TXE-6527, hashed the same way: only the opt-in.
+	if c.DisableEncryptedReasoningRetry {
+		added.Write([]byte("disableEncryptedReasoningRetry:true"))
 	}
 
 	// Always hash when non-zero — explicitly setting the default (10) is a meaningful

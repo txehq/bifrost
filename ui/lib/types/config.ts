@@ -875,6 +875,9 @@ export interface CoreConfig {
 	// Restrict provider objects (files, batches, containers, live sessions, ...) to the
 	// virtual key that created them.
 	enforce_vk_object_ownership: boolean;
+	// Fork (TXE-6527): a 400 on a request that replays encrypted reasoning is returned as is,
+	// not retried once without the token. Optional: the dashboard sends it only when the API did.
+	disable_encrypted_reasoning_retry?: boolean;
 	// Request types excluded from Logs and Dashboard reads. Logs are still stored.
 	hidden_request_types: string[];
 	// Fork (TXE-6519): no video or batch accounting sweeper and no provider job rows; the
