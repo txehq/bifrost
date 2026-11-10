@@ -61,6 +61,13 @@ test("literal keys, is_key_less providers and providers without keys are never k
   for (const name of ["literal", "keyless_by_design", "nokeys"]) assert.equal(keyless.has(name), false, name);
 });
 
+test("a provider with a literal key alongside an unset env key keeps running", () => {
+  const mixed = { providers: { openai: { keys: [{ value: "env.OPENAI_API_KEY" }, { value: "sk-valid-literal-key" }] } } };
+  assert.equal(findKeylessProviders(mixed, {}).has("openai"), false);
+  const vaultOnly = { providers: { openai: { keys: [{ value: "env.OPENAI_API_KEY" }, { value: "vault.secret/openai" }] } } };
+  assert.equal(findKeylessProviders(vaultOnly, {}).has("openai"), true, "a vault reference is not a literal credential");
+});
+
 test("the request's provider comes from the body's provider/model, or is empty", () => {
   assert.equal(bodyModelProvider(request("a", "deepinfra/BAAI/bge-m3")), "deepinfra");
   assert.equal(bodyModelProvider(request("b", "text-embedding-3-small")), "");

@@ -38,6 +38,10 @@ export const MATCH_ORDER = [
   "openrouter",
   "huggingface",
   "replicate",
+  // Custom providers that resell other vendors' models: their rows name that vendor too
+  // ("vercel_ai_gateway/cohere/..."), so they must claim the row before the vendor does.
+  "deepinfra",
+  "vercel_ai_gateway",
   "vertex",
   "azure",
   "bedrock_mantle",

@@ -39,15 +39,24 @@ export function keyEnvRefs(provider) {
   return refs;
 }
 
-// Map of provider name -> the env var names it needs, for every keyless provider in the profile.
+// A key is usable when its value is a literal credential, or when any env var it references is set.
+// Only `value` is checked for a literal: provider-specific configs also carry literal non-secret
+// fields (a region, a deployment name) that are not credentials on their own.
+function keyIsUsable(key, env) {
+  const value = typeof key?.value === "string" ? key.value.trim() : "";
+  if (value !== "" && !value.startsWith("env.") && !value.startsWith("vault.")) return true;
+  return keyEnvRefs({ keys: [key] }).some((ref) => typeof env[ref] === "string" && env[ref].trim() !== "");
+}
+
+// Map of provider name -> the env var names it needs, for every keyless provider in the profile:
+// one that references at least one env var and has no usable key.
 export function findKeylessProviders(profile, env = process.env) {
   const keyless = new Map();
   for (const [name, provider] of Object.entries(profile?.providers || {})) {
     if (provider?.custom_provider_config?.is_key_less) continue;
     const refs = keyEnvRefs(provider);
     if (refs.length === 0) continue;
-    const anySet = refs.some((ref) => typeof env[ref] === "string" && env[ref].trim() !== "");
-    if (!anySet) keyless.set(name, refs);
+    if (!(provider.keys || []).some((key) => keyIsUsable(key, env))) keyless.set(name, refs);
   }
   return keyless;
 }
