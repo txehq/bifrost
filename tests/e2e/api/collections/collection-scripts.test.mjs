@@ -1317,5 +1317,76 @@ test("every prerequest and test script of every collection parses", () => {
   assert.strictEqual(broken.length, 0, `${broken.length} script(s) do not parse:\n    ${broken.slice(0, 10).join("\n    ")}`);
 });
 
+// The provider error fixture listens wherever PROVIDER_ERROR_FIXTURE_PORT and
+// PROVIDER_ERROR_FIXTURE_STALL_PORT put it, and workers run it on random ports. A row that calls it at
+// a literal 127.0.0.1:8791 (or the stall proxy at :8799) fails against any other port, so the address
+// may appear only as a collection variable's default, which --env-var overrides: the harness's
+// providerErrorFixtureUrl and providerErrorFixtureStallProxyUrl (TXE-7074). Scripts at every level,
+// request URLs, bodies and headers are checked; descriptions are documentation and are not.
+const FIXTURE_ADDRESS = /(?:127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\]):(?:8791|8799)\b/;
+
+function hardCodedFixtureAddresses(coll) {
+  const found = [];
+  const scanEvents = (events, where) => {
+    for (const e of events || []) {
+      for (const line of e.script?.exec || []) {
+        if (FIXTURE_ADDRESS.test(line)) found.push(`${where} [${e.listen}]: ${line.trim().slice(0, 120)}`);
+      }
+    }
+  };
+  scanEvents(coll.event, "(collection)");
+  (function walk(items, trail) {
+    for (const item of items || []) {
+      const where = [...trail, item.name].join(" / ").slice(0, 140);
+      scanEvents(item.event, where);
+      if (item.item) { walk(item.item, [...trail, item.name]); continue; }
+      const { url, body, header } = item.request || {};
+      for (const [part, value] of Object.entries({ url, body, header })) {
+        const text = JSON.stringify(value ?? "");
+        const m = FIXTURE_ADDRESS.exec(text);
+        if (m) found.push(`${where} [request ${part}]: ...${text.slice(Math.max(0, m.index - 40), m.index + 30)}...`);
+      }
+    }
+  })(coll.item, []);
+  return found;
+}
+
+test("every collection reaches the provider error fixture through a variable, never a literal address", () => {
+  const files = readdirSync(here).filter((f) => f.endsWith(".json"));
+  let scanned = 0;
+  const found = [];
+  for (const file of files) {
+    const coll = JSON.parse(readFileSync(join(here, file), "utf8"));
+    if (!Array.isArray(coll.item)) continue;
+    scanned++;
+    for (const f of hardCodedFixtureAddresses(coll)) found.push(`${file}: ${f}`);
+  }
+  assert.ok(scanned >= 2, "found fewer than two collections; the directory scan is broken");
+  assert.deepStrictEqual(found, [], "use pm.variables.get('providerErrorFixtureUrl') or {{providerErrorFixtureUrl}} (stall proxy: providerErrorFixtureStallProxyUrl)");
+});
+
+test("the harness declares the fixture variables' defaults once, and the check sees every place a literal can hide", () => {
+  const vars = Object.fromEntries((providerHarness.variable || []).map((v) => [v.key, v.value]));
+  assert.strictEqual(vars.providerErrorFixtureUrl, "http://127.0.0.1:8791");
+  assert.strictEqual(vars.providerErrorFixtureStallProxyUrl, "http://127.0.0.1:8799");
+  const script = (exec) => [{ listen: "test", script: { exec } }];
+  const planted = {
+    event: script(["pm.sendRequest('http://127.0.0.1:8791/__reset');"]),
+    item: [{
+      name: "folder",
+      event: script(["var STALL = 'http://localhost:8799';"]),
+      item: [
+        { name: "url", request: { url: "http://127.0.0.1:8791/__hits" } },
+        { name: "url object", request: { url: { raw: "http://[::1]:8791/__wire", host: ["http://[::1]:8791"] } } },
+        { name: "body", request: { url: "{{baseUrl}}/api/providers", body: { mode: "raw", raw: "{\"base_url\": \"http://0.0.0.0:8791\"}" } } },
+        { name: "header", request: { url: "{{baseUrl}}/x", header: [{ key: "x-upstream", value: "127.0.0.1:8791" }] } },
+        { name: "clean", description: "documented: the fixture defaults to http://127.0.0.1:8791", request: { url: "{{providerErrorFixtureUrl}}/__hits" }, event: script(["var FX = pm.variables.get('providerErrorFixtureUrl');", "var sha = 'abc8791f';"]) },
+      ],
+    }],
+  };
+  const where = hardCodedFixtureAddresses(planted).map((f) => f.split(":")[0]);
+  assert.deepStrictEqual(where, ["(collection) [test]", "folder [test]", "folder / url [request url]", "folder / url object [request url]", "folder / body [request body]", "folder / header [request header]"]);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
