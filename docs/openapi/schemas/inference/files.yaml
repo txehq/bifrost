@@ -71,6 +71,14 @@ FileUploadRequest:
       $ref: '#/FilePurpose'
     provider:
       $ref: './common.yaml#/ModelProvider'
+    expires_after[anchor]:
+      type: string
+      description: |
+        With `expires_after[seconds]`, when the vendor deletes the file (`openai`, `azure`),
+        e.g. "created_at". Sending one of the two without the other is a 400.
+    expires_after[seconds]:
+      type: integer
+      description: Seconds after the anchor at which the file expires (3600 to 2592000).
 
 FileUploadResponse:
   type: object

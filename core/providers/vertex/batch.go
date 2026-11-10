@@ -2,7 +2,9 @@ package vertex
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +22,32 @@ import (
 // through a batch prediction job (Vertex JSONL has no native custom_id field; the
 // request — labels included — is echoed back in each output line).
 const vertexBatchCustomIDLabel = "bifrost_custom_id"
+
+// vertexBatchEndpointLabel is the request label that carries a line's url through a batch
+// prediction job, so its result can be converted back to the OpenAI shape of that operation
+// without the gateway storing anything about the batch. Label values cannot hold a slash,
+// so the url travels as a token.
+const vertexBatchEndpointLabel = "bifrost_endpoint"
+
+var vertexBatchEndpointLabelValues = map[schemas.BatchEndpoint]string{
+	schemas.BatchEndpointChatCompletions: "chat_completions",
+	schemas.BatchEndpointImageGeneration: "images_generations",
+}
+
+// vertexBatchEndpointFromLabel is the inverse of vertexBatchEndpointLabelValues. An
+// unknown or absent label is no endpoint, which results read as a chat line.
+func vertexBatchEndpointFromLabel(value string) schemas.BatchEndpoint {
+	for endpoint, label := range vertexBatchEndpointLabelValues {
+		if label == value {
+			return endpoint
+		}
+	}
+	return ""
+}
+
+// vertexBatchJobNameMetadataKey is the metadata key OpenAI-compatible clients may name the
+// job with; it becomes the display name, not a label.
+const vertexBatchJobNameMetadataKey = "job_name"
 
 // vertexAnthropicBatchVersion is the anthropic_version required by Claude-on-Vertex
 // batch instances (same value the chat path injects via the Vertex build config).
@@ -97,6 +125,10 @@ func vertexBatchJobToBifrost(job *VertexBatchPredictionJob) schemas.BifrostBatch
 	if job.DisplayName != "" {
 		resp.DisplayName = schemas.Ptr(job.DisplayName)
 	}
+	// The job's labels are the metadata the batch was created with.
+	if len(job.Labels) > 0 {
+		resp.Metadata = job.Labels
+	}
 	if job.InputConfig.GcsSource != nil && len(job.InputConfig.GcsSource.Uris) > 0 {
 		resp.InputFileID = job.InputConfig.GcsSource.Uris[0]
 	}
@@ -153,10 +185,15 @@ func parseVertexJobAPIError(resp *fasthttp.Response, op string) *schemas.Bifrost
 }
 
 // ToVertexBatchCreateRequest maps a Bifrost batch create request to a Vertex
-// BatchPredictionJob request. The model, display name and input/output GCS config are
-// mapped explicitly; every other field is taken from extra_params (e.g. modelParameters,
-// labels, modelVersionId, encryptionSpec) and merged verbatim into the job body.
-func ToVertexBatchCreateRequest(ctx *schemas.BifrostContext, request *schemas.BifrostBatchCreateRequest, displayName, inputURI, outputURI string) *VertexBatchCreateRequest {
+// BatchPredictionJob request. The model, display name, input/output GCS config and labels
+// are mapped explicitly; every other field is taken from extra_params (e.g. modelParameters,
+// modelVersionId, encryptionSpec) and merged verbatim into the job body when the caller
+// asked for extra params to be passed through.
+//
+// Labels are the batch's metadata plus any labels the caller sent as a field. A metadata
+// entry Vertex cannot hold as a label is an error: dropping it would lose the id a caller
+// finds its batch by.
+func ToVertexBatchCreateRequest(ctx *schemas.BifrostContext, request *schemas.BifrostBatchCreateRequest, displayName, inputURI, outputURI string) (*VertexBatchCreateRequest, error) {
 	model := ""
 	if request.Model != nil {
 		model = *request.Model
@@ -171,6 +208,11 @@ func ToVertexBatchCreateRequest(ctx *schemas.BifrostContext, request *schemas.Bi
 		model = "publishers/" + publisher + "/models/" + model
 	}
 
+	labels, extraParams, err := vertexBatchJobLabels(request)
+	if err != nil {
+		return nil, err
+	}
+
 	req := &VertexBatchCreateRequest{
 		DisplayName: displayName,
 		Model:       model,
@@ -182,10 +224,115 @@ func ToVertexBatchCreateRequest(ctx *schemas.BifrostContext, request *schemas.Bi
 			PredictionsFormat: "jsonl",
 			GcsDestination:    &VertexGcsDestination{OutputUriPrefix: outputURI},
 		},
-		ExtraParams: request.ExtraParams,
+		Labels:      labels,
+		ExtraParams: extraParams,
 	}
 
-	return req
+	return req, nil
+}
+
+// vertexBatchJobLabels builds the job's labels from the batch's metadata and from a labels
+// field among the extra params, and returns the extra params without that field. Labels
+// the caller sent as a field win over metadata of the same key.
+func vertexBatchJobLabels(request *schemas.BifrostBatchCreateRequest) (map[string]string, map[string]interface{}, error) {
+	labels := map[string]string{}
+	for key, value := range request.Metadata {
+		if key == vertexBatchJobNameMetadataKey {
+			continue
+		}
+		if err := validateVertexLabel(key, value); err != nil {
+			return nil, nil, &vertexLabelError{Param: "metadata." + key, Err: err}
+		}
+		labels[key] = value
+	}
+
+	extraParams := request.ExtraParams
+	if rawLabels, ok := request.ExtraParams["labels"]; ok {
+		// Copy: the labels field moves out of the map the caller's request holds.
+		extraParams = make(map[string]interface{}, len(request.ExtraParams))
+		for key, value := range request.ExtraParams {
+			if key != "labels" {
+				extraParams[key] = value
+			}
+		}
+		// A JSON body decodes labels as map[string]interface{}; the Go SDK and the genai
+		// integration's converter (ToBifrostBatchCreateRequest) supply map[string]string.
+		callerLabels := map[string]string{}
+		switch typed := rawLabels.(type) {
+		case map[string]string:
+			for key, value := range typed {
+				callerLabels[key] = value
+			}
+		case map[string]interface{}:
+			for key, rawValue := range typed {
+				value, isString := rawValue.(string)
+				if !isString {
+					return nil, nil, &vertexLabelError{Param: "labels." + key, Err: fmt.Errorf("label value must be a string")}
+				}
+				callerLabels[key] = value
+			}
+		default:
+			return nil, nil, &vertexLabelError{Param: "labels", Err: fmt.Errorf("labels must be an object of string values")}
+		}
+		for key, value := range callerLabels {
+			if err := validateVertexLabel(key, value); err != nil {
+				return nil, nil, &vertexLabelError{Param: "labels." + key, Err: err}
+			}
+			labels[key] = value
+		}
+	}
+	if len(labels) == 0 {
+		labels = nil
+	}
+	return labels, extraParams, nil
+}
+
+// vertexLabelError is a batch metadata or label entry Vertex cannot hold, naming the field.
+type vertexLabelError struct {
+	Param string
+	Err   error
+}
+
+func (e *vertexLabelError) Error() string {
+	return fmt.Sprintf("%s cannot be a Vertex label: %v", e.Param, e.Err)
+}
+
+// validateVertexLabel checks a key and value against the label rules of Google Cloud
+// resources: at most 63 characters each, lowercase letters, digits, underscores and dashes,
+// and a key that starts with a lowercase letter.
+func validateVertexLabel(key, value string) error {
+	isLabelChar := func(c rune) bool {
+		return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-'
+	}
+	if key == "" || len(key) > 63 || key[0] < 'a' || key[0] > 'z' || strings.IndexFunc(key, func(c rune) bool { return !isLabelChar(c) }) >= 0 {
+		return fmt.Errorf("the key must start with a lowercase letter and hold at most 63 lowercase letters, digits, underscores or dashes")
+	}
+	if len(value) > 63 || strings.IndexFunc(value, func(c rune) bool { return !isLabelChar(c) }) >= 0 {
+		return fmt.Errorf("the value %q must hold at most 63 lowercase letters, digits, underscores or dashes", value)
+	}
+	return nil
+}
+
+// vertexBatchListQuery builds the query of batchPredictionJobs.list: the page size, the
+// page token and the caller's filter, sent as Vertex's own filter expression (for example
+// labels.tokun_batch_id=batch_1).
+func vertexBatchListQuery(request *schemas.BifrostBatchListRequest) url.Values {
+	params := url.Values{}
+	pageSize := request.PageSize
+	if pageSize <= 0 {
+		pageSize = request.Limit
+	}
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	params.Set("pageSize", fmt.Sprintf("%d", pageSize))
+	if request.PageToken != nil && *request.PageToken != "" {
+		params.Set("pageToken", *request.PageToken)
+	}
+	if request.Filter != nil && strings.TrimSpace(*request.Filter) != "" {
+		params.Set("filter", strings.TrimSpace(*request.Filter))
+	}
+	return params
 }
 
 // stripVertexPublisherModelPath reduces a publishers/{publisher}/models/{id} model path to its
@@ -202,22 +349,25 @@ func stripVertexPublisherModelPath(model string) (string, bool) {
 // vertexConvertRequestsToJSONL converts inline batch request items to Vertex batch JSONL.
 // The instance shape depends on the model family (batchPredictionJobs always wraps it under
 // "request"):
-//   - Gemini/Google: bodies are converted to the native GenerateContentRequest shape (OpenAI
-//     "messages" become "contents"), and each custom_id is carried in the request labels.
+//   - Gemini/Google: an OpenAI-shape body is converted with the Vertex sync route's own
+//     request builder (chat and image generation), so the line is the request the sync
+//     route sends; a body already in Gemini shape passes through verbatim. Each custom_id,
+//     and the line's url, is carried in the request labels, which the output echoes.
 //   - Anthropic/Claude: the instance is an Anthropic Messages body with a native top-level
 //     "custom_id"; OpenAI-style bodies are converted to Anthropic shape, Anthropic-native
 //     bodies pass through with "anthropic_version" ensured.
-func vertexConvertRequestsToJSONL(ctx *schemas.BifrostContext, requests []schemas.BatchRequestItem, model string) ([]byte, error) {
+func vertexConvertRequestsToJSONL(ctx *schemas.BifrostContext, key schemas.Key, requests []schemas.BatchRequestItem, model string, batchEndpoint schemas.BatchEndpoint) ([]byte, error) {
 	isAnthropic := schemas.IsAnthropicModelFamily(ctx, model)
 
 	var buf bytes.Buffer
+	var batchOperation schemas.BatchEndpoint
 	for i, item := range requests {
 		body := item.Body
 		if body == nil {
 			body = item.Params
 		}
 		if body == nil {
-			return nil, fmt.Errorf("batch request item %d (custom_id %q) has no body", i, item.CustomID)
+			return nil, &schemas.BatchLineError{Index: i, CustomID: item.CustomID, Param: "body", Message: "body is required"}
 		}
 
 		if isAnthropic {
@@ -239,26 +389,40 @@ func vertexConvertRequestsToJSONL(ctx *schemas.BifrostContext, requests []schema
 			continue
 		}
 
-		// OpenAI-style bodies (with "messages") are converted to Gemini's request shape; native
-		// Gemini/Vertex bodies pass through verbatim so caller-supplied fields (tools, toolConfig,
-		// labels, cachedContent, ...) are not dropped by the lossy struct conversion.
-		if _, isOpenAI := body["messages"]; isOpenAI {
-			geminiReq, err := gemini.ToGeminiBatchGenerateContentRequest(body)
-			if err != nil {
-				return nil, fmt.Errorf("failed to convert batch request item %d (custom_id %q): %w", i, item.CustomID, err)
+		// OpenAI-shape bodies (chat "messages", image "prompt") are converted with the sync
+		// route's builder; native Gemini/Vertex bodies pass through verbatim so caller-supplied
+		// fields (tools, toolConfig, labels, cachedContent, ...) are not dropped.
+		var lineEndpoint schemas.BatchEndpoint
+		_, hasMessages := body["messages"]
+		_, hasPrompt := body["prompt"]
+		if hasMessages || hasPrompt {
+			if err := gemini.CheckBatchLineModel(item, schemas.Vertex, model, key.Aliases.Resolve); err != nil {
+				return nil, withBatchLineIndex(err, i)
 			}
-			reqBytes, err := providerUtils.MarshalSorted(geminiReq)
+			lineBody, endpoint, err := gemini.ConvertBatchLine(ctx, item, schemas.Vertex, model, batchEndpoint, gemini.BatchLineConverters{
+				Chat: func(request *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error) {
+					return vertexGeminiChatRequestBody(ctx, key, request)
+				},
+				ImageGeneration: func(request *schemas.BifrostImageGenerationRequest) (providerUtils.RequestBodyWithExtraParams, error) {
+					return vertexGeminiImageGenerationRequestBody(request)
+				},
+			})
 			if err != nil {
-				return nil, fmt.Errorf("failed to marshal batch request item %d (custom_id %q): %w", i, item.CustomID, err)
+				return nil, withBatchLineIndex(err, i)
 			}
 			converted := map[string]interface{}{}
-			if err := sonic.Unmarshal(reqBytes, &converted); err != nil {
+			if err := sonic.Unmarshal(lineBody, &converted); err != nil {
 				return nil, fmt.Errorf("failed to unmarshal batch request item %d (custom_id %q): %w", i, item.CustomID, err)
 			}
 			body = converted
+			lineEndpoint = endpoint
+		}
+		if err := gemini.CheckBatchLineOperation(&batchOperation, item, lineEndpoint); err != nil {
+			return nil, withBatchLineIndex(err, i)
 		}
 
-		if item.CustomID != "" {
+		endpointLabel := vertexBatchEndpointLabelValues[lineEndpoint]
+		if item.CustomID != "" || endpointLabel != "" {
 			// Shallow-copy before injecting labels so the caller's map is not mutated.
 			withLabels := make(map[string]interface{}, len(body)+1)
 			for k, v := range body {
@@ -270,7 +434,12 @@ func vertexConvertRequestsToJSONL(ctx *schemas.BifrostContext, requests []schema
 					labels[k] = v
 				}
 			}
-			labels[vertexBatchCustomIDLabel] = item.CustomID
+			if item.CustomID != "" {
+				labels[vertexBatchCustomIDLabel] = item.CustomID
+			}
+			if endpointLabel != "" {
+				labels[vertexBatchEndpointLabel] = endpointLabel
+			}
 			withLabels["labels"] = labels
 			body = withLabels
 		}
@@ -283,6 +452,62 @@ func vertexConvertRequestsToJSONL(ctx *schemas.BifrostContext, requests []schema
 		buf.WriteByte('\n')
 	}
 	return buf.Bytes(), nil
+}
+
+// withBatchLineIndex stamps a line error with the line's position in requests.
+func withBatchLineIndex(err error, index int) error {
+	var lineErr *schemas.BatchLineError
+	if errors.As(err, &lineErr) {
+		lineErr.Index = index
+	}
+	return err
+}
+
+// vertexBatchOutputLineToResultItem converts one line of a predictions file into a result
+// item and returns the line's endpoint. A Gemini line's response becomes the sync
+// operation's response for it (a chat completion, or an image generation response with
+// its artifacts) with the unified usage; a Claude line keeps its native response with
+// OpenAI-compatible usage added. A line with no response carries Vertex's status string as
+// the error. includeRaw puts the native response in body.extra_fields.raw_response.
+func vertexBatchOutputLineToResultItem(rawLine []byte, isAnthropic bool, includeRaw bool) (schemas.BatchResultItem, schemas.BatchEndpoint, error) {
+	var line VertexBatchOutputLine
+	if err := sonic.Unmarshal(rawLine, &line); err != nil {
+		return schemas.BatchResultItem{}, "", err
+	}
+	// Anthropic/Claude jobs echo a native top-level custom_id; Gemini jobs carry it in labels.
+	customID := line.CustomID
+	if customID == "" {
+		customID = line.Request.Labels[vertexBatchCustomIDLabel]
+	}
+	endpoint := vertexBatchEndpointFromLabel(line.Request.Labels[vertexBatchEndpointLabel])
+
+	// A failed record carries Vertex's error in status, beside no response or an empty one.
+	response := strings.TrimSpace(string(line.Response))
+	if line.Status != "" || response == "" || response == "null" || response == "{}" {
+		return schemas.BatchResultItem{
+			CustomID: customID,
+			Status:   schemas.BatchResultStatusFailed,
+			Error:    &schemas.BatchResultError{Message: line.Status},
+		}, endpoint, nil
+	}
+
+	if isAnthropic {
+		body := map[string]interface{}{}
+		if err := sonic.Unmarshal(line.Response, &body); err != nil {
+			return schemas.BatchResultItem{}, "", err
+		}
+		return schemas.BatchResultItem{
+			CustomID: customID,
+			Status:   schemas.BatchResultStatusSucceeded,
+			Response: &schemas.BatchResultResponse{StatusCode: 200, Body: vertexNormalizeBatchUsage(body)},
+		}, endpoint, nil
+	}
+
+	var native gemini.GenerateContentResponse
+	if err := sonic.Unmarshal(line.Response, &native); err != nil {
+		return schemas.BatchResultItem{}, "", err
+	}
+	return gemini.BatchResultItemFromGeminiResponse(customID, endpoint, &native, nil, includeRaw), endpoint, nil
 }
 
 // vertexAnthropicBatchInstance builds the per-line "request" body for a Claude-on-Vertex batch

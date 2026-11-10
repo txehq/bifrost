@@ -572,3 +572,241 @@ func TestAzureDecisionPassesAzureErrorsThrough(t *testing.T) {
 		})
 	}
 }
+
+// azureBatchVendor is a stand-in for the Azure OpenAI files and batches API.
+type azureBatchVendor struct {
+	*httptest.Server
+	mu          sync.Mutex
+	calls       []string
+	uploads     []string
+	uploadForms []map[string]string
+	creates     []string
+}
+
+func newAzureBatchVendor(t *testing.T, batch string, files map[string]string) *azureBatchVendor {
+	t.Helper()
+	v := &azureBatchVendor{}
+	v.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		v.mu.Lock()
+		v.calls = append(v.calls, r.Method+" "+r.URL.Path)
+		v.mu.Unlock()
+		if r.Header.Get("api-key") != "test-key" {
+			t.Errorf("%s %s: api-key = %q, want the key's", r.Method, r.URL.Path, r.Header.Get("api-key"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/openai/v1/files":
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Errorf("upload form: %v", err)
+			}
+			fields := map[string]string{}
+			for name, values := range r.MultipartForm.Value {
+				fields[name] = values[0]
+			}
+			file, _, err := r.FormFile("file")
+			if err != nil {
+				t.Errorf("upload file part: %v", err)
+			}
+			content, _ := io.ReadAll(file)
+			v.mu.Lock()
+			v.uploads = append(v.uploads, string(content))
+			v.uploadForms = append(v.uploadForms, fields)
+			v.mu.Unlock()
+			_, _ = io.WriteString(w, `{"id":"file-in","object":"file","bytes":1,"created_at":1,"filename":"batch_requests.jsonl","purpose":"batch"}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/openai/v1/batches":
+			body, _ := io.ReadAll(r.Body)
+			v.mu.Lock()
+			v.creates = append(v.creates, string(body))
+			v.mu.Unlock()
+			_, _ = io.WriteString(w, `{"id":"batch_az1","object":"batch","endpoint":"/chat/completions","input_file_id":"file-in","completion_window":"24h","status":"validating","created_at":1711471533}`)
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/openai/v1/batches/"):
+			_, _ = io.WriteString(w, batch)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/content"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/openai/v1/files/"), "/content")
+			content, ok := files[id]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = io.WriteString(w, `{"error":{"message":"file not found","code":"NotFound"}}`)
+				return
+			}
+			_, _ = io.WriteString(w, content)
+		default:
+			t.Errorf("unexpected upstream call %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(v.Close)
+	return v
+}
+
+// Azure reads the deployment from each line's body.model. Inline lines carry the caller's
+// model name, so each is rewritten to the deployment the key maps that model to, and the
+// rest of the line reaches Azure unchanged; output_expires_after and metadata reach the
+// batch create (contract C4, C8).
+func TestAzureBatchCreateInlineRewritesModelsToDeployments(t *testing.T) {
+	vendor := newAzureBatchVendor(t, "", nil)
+	key := newAzureDecisionKey(vendor.URL)
+	key.Aliases = schemas.KeyAliases{
+		"gpt-4o-mini": {ModelID: "prod-gpt-4o-mini"},
+		"gpt-4o":      {ModelID: "prod-gpt-4o"},
+	}
+
+	lines := []string{
+		`{"custom_id":"line-1","method":"POST","url":"/v1/chat/completions","body":{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hello"}],"max_completion_tokens":64,"temperature":0.2,"response_format":{"type":"json_object"}}}`,
+		`{"custom_id":"line-2","method":"POST","url":"/v1/chat/completions","body":{"model":"azure/gpt-4o","messages":[{"role":"user","content":"Bye"}],"seed":7}}`,
+		`{"custom_id":"line-3","method":"POST","url":"/v1/chat/completions","body":{"model":"already-a-deployment","messages":[{"role":"user","content":"Hi"}]}}`,
+	}
+	var requests []schemas.BatchRequestItem
+	for _, line := range lines {
+		var item schemas.BatchRequestItem
+		if err := json.Unmarshal([]byte(line), &item); err != nil {
+			t.Fatal(err)
+		}
+		requests = append(requests, item)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := newAzureDecisionProvider(t).BatchCreate(ctx, key, &schemas.BifrostBatchCreateRequest{
+		Provider:           schemas.Azure,
+		Model:              schemas.Ptr("prod-gpt-4o-mini"),
+		Endpoint:           schemas.BatchEndpointChatCompletions,
+		CompletionWindow:   "24h",
+		Metadata:           map[string]string{"tokun_batch_id": "batch_tk_1"},
+		OutputExpiresAfter: &schemas.BatchExpiresAfter{Anchor: "created_at", Seconds: 86400},
+		Requests:           requests,
+	})
+	if bifrostErr != nil {
+		t.Fatalf("BatchCreate: %+v", bifrostErr.Error)
+	}
+	if resp.ID != "batch_az1" {
+		t.Errorf("id = %q, want the vendor's batch_az1", resp.ID)
+	}
+	if want := []string{"POST /openai/v1/files", "POST /openai/v1/batches"}; !reflect.DeepEqual(vendor.calls, want) {
+		t.Errorf("upstream calls = %v, want %v", vendor.calls, want)
+	}
+
+	wantLines := []string{
+		strings.Replace(lines[0], `"model":"gpt-4o-mini"`, `"model":"prod-gpt-4o-mini"`, 1),
+		strings.Replace(lines[1], `"model":"azure/gpt-4o"`, `"model":"prod-gpt-4o"`, 1),
+		lines[2],
+	}
+	uploaded := strings.Split(strings.TrimSpace(vendor.uploads[0]), "\n")
+	if len(uploaded) != len(wantLines) {
+		t.Fatalf("uploaded %d lines, want %d: %s", len(uploaded), len(wantLines), vendor.uploads[0])
+	}
+	for i := range wantLines {
+		var got, want any
+		if err := json.Unmarshal([]byte(uploaded[i]), &got); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(wantLines[i]), &want); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("line %d = %s, want %s", i+1, uploaded[i], wantLines[i])
+		}
+	}
+	if model := requests[0].Body["model"]; model != "gpt-4o-mini" {
+		t.Errorf("the caller's request was modified: body.model = %v", model)
+	}
+
+	var create map[string]any
+	if err := json.Unmarshal([]byte(vendor.creates[0]), &create); err != nil {
+		t.Fatal(err)
+	}
+	wantCreate := map[string]any{
+		"input_file_id":        "file-in",
+		"endpoint":             "/v1/chat/completions",
+		"completion_window":    "24h",
+		"metadata":             map[string]any{"tokun_batch_id": "batch_tk_1"},
+		"output_expires_after": map[string]any{"anchor": "created_at", "seconds": float64(86400)},
+	}
+	if !reflect.DeepEqual(create, wantCreate) {
+		t.Errorf("batch create body = %s, want %v", vendor.creates[0], wantCreate)
+	}
+}
+
+// A file upload's expiry reaches Azure in the files API's bracketed form fields.
+func TestAzureFileUploadSendsExpiresAfter(t *testing.T) {
+	vendor := newAzureBatchVendor(t, "", nil)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := newAzureDecisionProvider(t).FileUpload(ctx, newAzureDecisionKey(vendor.URL), &schemas.BifrostFileUploadRequest{
+		Provider:     schemas.Azure,
+		File:         []byte("{}\n"),
+		Filename:     "in.jsonl",
+		Purpose:      schemas.FilePurposeBatch,
+		ExpiresAfter: &schemas.FileExpiresAfter{Anchor: "created_at", Seconds: 1209600},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("FileUpload: %+v", bifrostErr.Error)
+	}
+	form := vendor.uploadForms[0]
+	if form["expires_after[anchor]"] != "created_at" || form["expires_after[seconds]"] != "1209600" || form["purpose"] != "batch" {
+		t.Errorf("upload form = %v, want expires_after[anchor]=created_at, expires_after[seconds]=1209600, purpose=batch", form)
+	}
+}
+
+// Azure results read the error file as well as the output file, with the line status, the
+// vendor's line id, the unified usage and the batch's endpoint, and page by cursor.
+func TestAzureBatchResultsMergeTheErrorFileAndPage(t *testing.T) {
+	const batch = `{"id":"batch_az1","object":"batch","endpoint":"/chat/completions","status":"completed","output_file_id":"file-out","error_file_id":"file-err","created_at":1711471533}`
+	output := `{"id":"batch_req_1","custom_id":"line-1","response":{"status_code":200,"request_id":"r1","body":{"id":"chatcmpl-1","object":"chat.completion","model":"gpt-4o-mini","choices":[{"index":0,"message":{"role":"assistant","content":"Hello."},"finish_reason":"stop","content_filter_results":{"hate":{"filtered":false,"severity":"safe"}}}],"usage":{"prompt_tokens":40,"completion_tokens":3,"total_tokens":43,"prompt_tokens_details":{"cached_tokens":32}}}},"error":null}` + "\n" +
+		`{"id":"batch_req_2","custom_id":"line-2","response":{"status_code":200,"request_id":"r2","body":{"id":"chatcmpl-2","object":"chat.completion","model":"gpt-4o-mini","choices":[],"usage":{"prompt_tokens":4,"completion_tokens":1,"total_tokens":5}}},"error":null}` + "\n"
+	errorFile := `{"id":"batch_req_3","custom_id":"line-3","response":{"status_code":400,"request_id":"r3","body":{"error":{"message":"The response was filtered due to the prompt triggering Azure OpenAI's content management policy.","type":null,"param":"prompt","code":"content_filter"}}},"error":null}` + "\n" +
+		`{"id":"batch_req_4","custom_id":"line-4","response":null,"error":{"code":"batch_expired","message":"This request could not be executed before the completion window expired."}}` + "\n"
+	vendor := newAzureBatchVendor(t, batch, map[string]string{"file-out": output, "file-err": errorFile})
+	provider := newAzureDecisionProvider(t)
+	keys := []schemas.Key{newAzureDecisionKey(vendor.URL)}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	resp, bifrostErr := provider.BatchResults(ctx, keys, &schemas.BifrostBatchResultsRequest{Provider: schemas.Azure, BatchID: "batch_az1"})
+	if bifrostErr != nil {
+		t.Fatalf("BatchResults: %+v", bifrostErr.Error)
+	}
+	if resp.Endpoint != "/chat/completions" {
+		t.Errorf("Endpoint = %q, want the batch's own endpoint", resp.Endpoint)
+	}
+	var got []string
+	for _, item := range resp.Results {
+		got = append(got, item.ID+" "+item.CustomID+" "+string(item.Status))
+	}
+	want := []string{"batch_req_1 line-1 succeeded", "batch_req_2 line-2 succeeded", "batch_req_3 line-3 failed", "batch_req_4 line-4 expired"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("lines = %v, want %v", got, want)
+	}
+	if code := resp.Results[2].Error.Code; code != "content_filter" {
+		t.Errorf("failed line error code = %q, want the vendor's content_filter", code)
+	}
+	if code := resp.Results[3].Error.Code; code != "batch_expired" {
+		t.Errorf("expired line error code = %q, want batch_expired", code)
+	}
+	choice := resp.Results[0].Response.Body["choices"].([]any)[0].(map[string]any)
+	if _, ok := choice["content_filter_results"]; !ok {
+		t.Errorf("Azure's content_filter_results was dropped from the line body: %v", choice)
+	}
+	if want := []string{"GET /openai/v1/batches/batch_az1", "GET /openai/v1/files/file-out/content", "GET /openai/v1/files/file-err/content"}; !reflect.DeepEqual(vendor.calls, want) {
+		t.Errorf("upstream calls = %v, want %v", vendor.calls, want)
+	}
+
+	var paged []string
+	var after *string
+	for page := 0; ; page++ {
+		if page > 10 {
+			t.Fatal("paging did not terminate")
+		}
+		pageResp, pageErr := provider.BatchResults(ctx, keys, &schemas.BifrostBatchResultsRequest{Provider: schemas.Azure, BatchID: "batch_az1", Limit: 3, After: after})
+		if pageErr != nil {
+			t.Fatalf("BatchResults page %d: %+v", page, pageErr.Error)
+		}
+		for _, item := range pageResp.Results {
+			paged = append(paged, item.ID+" "+item.CustomID+" "+string(item.Status))
+		}
+		if !pageResp.HasMore {
+			break
+		}
+		after = pageResp.NextCursor
+	}
+	if !reflect.DeepEqual(paged, want) {
+		t.Errorf("paged lines = %v, want %v", paged, want)
+	}
+}

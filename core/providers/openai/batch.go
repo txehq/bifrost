@@ -3,6 +3,8 @@ package openai
 import (
 	"time"
 
+	"github.com/bytedance/sonic"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -183,4 +185,118 @@ func (r *OpenAIBatchResponse) ToBifrostBatchRetrieveResponse(latency time.Durati
 	}
 
 	return resp
+}
+
+// OpenAI writes a batch's lines into two files: the output file holds the lines the model
+// answered, the error file the lines that failed or expired. Both use one line shape:
+//
+//	{"id": "batch_req_...", "custom_id": "...", "response": {"status_code", "request_id", "body"}, "error": {"code", "message"}}
+
+// batchErrorCodeExpired is the error code of a line the batch did not reach before its
+// completion window ended.
+const batchErrorCodeExpired = "batch_expired"
+
+// openAIBatchResultLine is one line of an output or error file.
+type openAIBatchResultLine struct {
+	ID       string                       `json:"id"`
+	CustomID string                       `json:"custom_id"`
+	Response *schemas.BatchResultResponse `json:"response"`
+	Error    *schemas.BatchResultError    `json:"error"`
+}
+
+// ParseBatchResultLine converts one line of an OpenAI or Azure batch output or error file
+// into a result item: the vendor's line id is kept, status is one of succeeded, failed or
+// expired, and a succeeded line's usage is the unified usage of the batch's endpoint. A
+// line that failed with an HTTP error response keeps that response and also carries the
+// vendor's error code and message in Error.
+func ParseBatchResultLine(line []byte, endpoint schemas.BatchEndpoint) (schemas.BatchResultItem, error) {
+	var parsed openAIBatchResultLine
+	if err := sonic.Unmarshal(line, &parsed); err != nil {
+		return schemas.BatchResultItem{}, err
+	}
+	item := schemas.BatchResultItem{
+		ID:       parsed.ID,
+		CustomID: parsed.CustomID,
+		Response: parsed.Response,
+		Error:    parsed.Error,
+	}
+	switch {
+	case parsed.Error != nil:
+		item.Status = schemas.BatchResultStatusFailed
+		if parsed.Error.Code == batchErrorCodeExpired {
+			item.Status = schemas.BatchResultStatusExpired
+		}
+	case parsed.Response != nil && parsed.Response.StatusCode >= 200 && parsed.Response.StatusCode < 300:
+		item.Status = schemas.BatchResultStatusSucceeded
+		if parsed.Response.Body != nil {
+			schemas.UnifyBatchResultUsage(endpoint, parsed.Response.Body)
+		}
+	default:
+		item.Status = schemas.BatchResultStatusFailed
+		if parsed.Response != nil {
+			item.Error = batchResultErrorFromBody(parsed.Response.Body)
+		}
+	}
+	return item, nil
+}
+
+// batchResultErrorFromBody lifts the vendor's error out of a failed line's response body
+// ({"error": {"code", "message", "type"}}). The code falls back to the error type, which
+// is what OpenAI fills when a request error has no code.
+func batchResultErrorFromBody(body map[string]any) *schemas.BatchResultError {
+	vendorError, ok := body["error"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	resultError := &schemas.BatchResultError{}
+	if message, ok := vendorError["message"].(string); ok {
+		resultError.Message = message
+	}
+	for _, field := range []string{"code", "type"} {
+		if code, ok := vendorError[field].(string); ok && code != "" {
+			resultError.Code = code
+			break
+		}
+	}
+	if resultError.Code == "" && resultError.Message == "" {
+		return nil
+	}
+	return resultError
+}
+
+// ReadBatchResults reads one page of a batch's result lines from its ordered sources (the
+// output file, then the error file) and converts each with ParseBatchResultLine. With
+// request.Limit unset it reads both files to the end. Shared by the OpenAI and Azure
+// providers, which differ only in how a file is opened.
+func ReadBatchResults(sources []providerUtils.BatchResultsSource, request *schemas.BifrostBatchResultsRequest, endpoint schemas.BatchEndpoint, logger schemas.Logger) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+	results := []schemas.BatchResultItem{}
+	var parseErrors []schemas.BatchError
+	page, bifrostErr := providerUtils.ReadBatchResultsPage(sources, request.After, request.Limit, func(_ int, line []byte) {
+		item, err := ParseBatchResultLine(line, endpoint)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("failed to parse batch result line: %v", err)
+			}
+			parseErrors = append(parseErrors, schemas.BatchError{Code: "parse_error", Message: err.Error()})
+			return
+		}
+		results = append(results, item)
+	})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	response := &schemas.BifrostBatchResultsResponse{
+		BatchID:    request.BatchID,
+		Endpoint:   endpoint,
+		Results:    results,
+		HasMore:    page.HasMore,
+		NextCursor: page.NextCursor,
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			Latency: page.Latency.Milliseconds(),
+		},
+	}
+	if len(parseErrors) > 0 {
+		response.ExtraFields.ParseErrors = parseErrors
+	}
+	return response, nil
 }

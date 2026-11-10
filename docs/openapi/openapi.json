@@ -8840,6 +8840,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "filter",
+            "in": "query",
+            "description": "The vendor's own list filter, sent unchanged. On `vertex` it is the\nbatchPredictionJobs filter, e.g. `labels.tokun_batch_id=batch_1` finds a batch by\nthe metadata it was created with. Providers with no list filter ignore it.\n",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -9096,7 +9104,7 @@
       "get": {
         "operationId": "getBatchResults",
         "summary": "Get batch results",
-        "description": "Retrieves results from a completed batch job.\n",
+        "description": "Retrieves the result lines of a batch job, one per input line the vendor wrote. On\n`openai` and `azure` the lines of the error file (failed and expired lines) follow\nthose of the output file.\n\nWith `limit` the response is one page, read from a streamed download so a result\nfile is never held whole; `has_more` and `next_cursor` say whether and where to\ncontinue. Without `limit` every line is returned in one response.\n\nSend `x-bf-api-key` (key name) or `x-bf-api-key-id` to use only the key the batch was\ncreated with: retrieve, cancel and results then make their upstream calls with that\nkey alone and report it in `x-bifrost-routing-info-key`. Without it the provider's\nbatch-enabled keys are tried in turn.\n",
         "tags": [
           "Batch"
         ],
@@ -9118,6 +9126,23 @@
             "schema": {
               "$ref": "#/components/schemas/ModelProvider"
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size in result lines. Omit to return every line in one response.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "The `next_cursor` of the previous page.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -9136,8 +9161,22 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "id": {
+                            "type": "string",
+                            "description": "The vendor's own id for the line (`openai`, `azure`), unchanged."
+                          },
                           "custom_id": {
                             "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "succeeded",
+                              "failed",
+                              "expired",
+                              "cancelled"
+                            ],
+                            "description": "The line's outcome. A succeeded line carries `response`, whose `body` is the OpenAI\nshape of the line's `url` with the sync operation's unified `usage`. A failed,\nexpired or cancelled line carries the vendor's `error`. Set by `openai`, `azure`,\n`gemini` and `vertex`.\n"
                           },
                           "response": {
                             "type": "object",
@@ -9179,10 +9218,12 @@
                       }
                     },
                     "has_more": {
-                      "type": "boolean"
+                      "type": "boolean",
+                      "description": "True when more result lines follow this page."
                     },
                     "next_cursor": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Pass as `after` to read the next page. Present when `has_more` is true."
                     },
                     "extra_fields": {
                       "$ref": "#/components/schemas/BifrostResponseExtraFields"
@@ -121274,17 +121315,19 @@
                   "type": "string"
                 },
                 "url": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "The operation the line runs, e.g. `/v1/chat/completions`. Defaults to the batch's\n`endpoint`. On `gemini` and `vertex` (Gemini models) the supported urls are\n`/v1/chat/completions` and `/v1/images/generations`; any other is a 400 naming\nthe line.\n"
                 },
                 "body": {
-                  "type": "object"
+                  "type": "object",
+                  "description": "The request body in the OpenAI shape of the line's `url`, the same body the sync\nroute takes. A `model` here must be the batch's model: a batch runs one model.\n"
                 },
                 "params": {
                   "type": "object"
                 }
               }
             },
-            "description": "Anthropic-style inline requests"
+            "description": "Inline requests, one per line of the batch. On `openai` and `azure` the lines are\nuploaded as a JSONL file and the batch is created from it (two upstream calls for\none batch create); on `azure` each line's `body.model` is replaced by the\ndeployment the key maps that model to. On `gemini` and `vertex` each line whose\n`body` is in OpenAI shape is converted with the sync operation's converter, so it\nreaches the vendor with the parameters a sync request with the same body does.\n"
           },
           "endpoint": {
             "type": "string",
@@ -121293,7 +121336,9 @@
               "/v1/embeddings",
               "/v1/completions",
               "/v1/responses",
-              "/v1/messages"
+              "/v1/messages",
+              "/v1/images/generations",
+              "/v1/images/edits"
             ]
           },
           "completion_window": {
@@ -121304,6 +121349,25 @@
             "type": "object",
             "additionalProperties": {
               "type": "string"
+            },
+            "description": "Sent to the vendor's own metadata or label field where it has one: the batch\nmetadata on `openai` and `azure`, the job's labels on `vertex` (keys and values\nmust be valid labels: at most 63 lowercase letters, digits, underscores or dashes;\nan entry that is not is a 400 naming it). `gemini` has no such field; use\n`display_name`, which the batch object and the list return.\n"
+          },
+          "output_expires_after": {
+            "type": "object",
+            "description": "When the vendor expires the batch's output and error files (`openai`, `azure`).",
+            "required": [
+              "anchor",
+              "seconds"
+            ],
+            "properties": {
+              "anchor": {
+                "type": "string",
+                "description": "e.g., \"created_at\""
+              },
+              "seconds": {
+                "type": "integer",
+                "description": "3600 to 2592000"
+              }
             }
           }
         }
@@ -121613,6 +121677,14 @@
           },
           "provider": {
             "$ref": "#/components/schemas/ModelProvider"
+          },
+          "expires_after[anchor]": {
+            "type": "string",
+            "description": "With `expires_after[seconds]`, when the vendor deletes the file (`openai`, `azure`),\ne.g. \"created_at\". Sending one of the two without the other is a 400.\n"
+          },
+          "expires_after[seconds]": {
+            "type": "integer",
+            "description": "Seconds after the anchor at which the file expires (3600 to 2592000)."
           }
         }
       },

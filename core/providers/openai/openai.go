@@ -7241,9 +7241,14 @@ func (provider *OpenAIProvider) BatchDelete(ctx *schemas.BifrostContext, keys []
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.BatchDeleteRequest, provider.GetProviderKey())
 }
 
-// BatchResults retrieves batch results by trying each key until successful.
-// Note: For OpenAI, batch results are obtained by downloading the output_file_id.
-// This method returns the file content parsed as batch results.
+// BatchResults returns a batch's result lines, one per input line the vendor wrote: the
+// lines of the output file, then those of the error file, each with its status, the
+// vendor's line id and the unified usage. With request.Limit set it returns one page read
+// from a streamed download and never holds a whole file; request.After continues from the
+// previous page's NextCursor.
+//
+// One call is a batch retrieve (for the two file ids) plus one file download, or two when
+// the page crosses from the output file into the error file.
 func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.BatchResultsRequest); err != nil {
 		return nil, err
@@ -7262,99 +7267,72 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 		return nil, bifrostErr
 	}
 
-	if batchResp.OutputFileID == nil || *batchResp.OutputFileID == "" {
-		return nil, providerUtils.NewBifrostOperationError("batch results not available: output_file_id is empty (batch may not be completed)", nil)
+	// The lines are in two files: the output file (answered lines) and the error file
+	// (failed and expired lines). A batch whose every line failed has only the latter.
+	var outputFileID, errorFileID string
+	if batchResp.OutputFileID != nil {
+		outputFileID = *batchResp.OutputFileID
 	}
-	escapedOutputFileID, idErr := providerUtils.EscapeResourceID(*batchResp.OutputFileID, "output_file_id")
-	if idErr != nil {
-		return nil, providerUtils.NewBifrostOperationError("provider returned an invalid output_file_id", nil)
+	if batchResp.ErrorFileID != nil {
+		errorFileID = *batchResp.ErrorFileID
+	}
+	if outputFileID == "" && errorFileID == "" {
+		return nil, providerUtils.NewBifrostOperationError("batch results not available: neither output_file_id nor error_file_id is set (batch may not be completed)", nil)
+	}
+	sources := make([]providerUtils.BatchResultsSource, 0, 2)
+	for _, file := range []struct{ id, field string }{{outputFileID, "output_file_id"}, {errorFileID, "error_file_id"}} {
+		if file.id == "" {
+			sources = append(sources, func(int64) (*providerUtils.ResultStream, *schemas.BifrostError) { return nil, nil })
+			continue
+		}
+		escapedFileID, idErr := providerUtils.EscapeResourceID(file.id, file.field)
+		if idErr != nil {
+			return nil, providerUtils.NewBifrostOperationError("provider returned an invalid "+file.field, nil)
+		}
+		sources = append(sources, provider.batchResultFileSource(ctx, keys, escapedFileID))
 	}
 
-	// Download the output file - try each key
-	var lastErr *schemas.BifrostError
-	for _, key := range keys {
-		// Minted only when the loop reaches it, so a working earlier key never waits on this
-		// key's token endpoint; a mint failure is this key's error and the next key is tried.
-		key, keyErr := provider.resolveKey(ctx, key)
-		if keyErr != nil {
-			lastErr = keyErr
-			continue
-		}
-		req := fasthttp.AcquireRequest()
-		resp := fasthttp.AcquireResponse()
+	batchResultsResp, bifrostErr := ReadBatchResults(sources, request, schemas.BatchEndpoint(batchResp.Endpoint), provider.logger)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		batchResultsResp.ExtraFields.RawResponse = batchResultsResp.Results
+	}
+	return batchResultsResp, nil
+}
 
-		// Set headers
-		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedOutputFileID + "/content")
-		req.Header.SetMethod(http.MethodGet)
-
-		if key.Value.GetValue() != "" {
-			req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
-		}
-
-		// Make request
-		latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-		wait()
-		if bifrostErr != nil {
-			fasthttp.ReleaseRequest(req)
-			fasthttp.ReleaseResponse(resp)
-			lastErr = bifrostErr
-			continue
-		}
-
-		// Handle error response
-		if resp.StatusCode() != fasthttp.StatusOK {
-			lastErr = ParseOpenAIError(resp)
-			fasthttp.ReleaseRequest(req)
-			fasthttp.ReleaseResponse(resp)
-			continue
-		}
-
-		body, err := providerUtils.CheckAndDecodeBody(resp)
-		if err != nil {
-			fasthttp.ReleaseRequest(req)
-			fasthttp.ReleaseResponse(resp)
-			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
-			continue
-		}
-
-		fasthttp.ReleaseRequest(req)
-		fasthttp.ReleaseResponse(resp)
-
-		// Parse JSONL content - each line is a separate result
-		var results []schemas.BatchResultItem
-
-		parseResult := providerUtils.ParseJSONL(body, func(line []byte) error {
-			var resultItem schemas.BatchResultItem
-			if err := sonic.Unmarshal(line, &resultItem); err != nil {
-				provider.logger.Warn("failed to parse batch result line: %v", err)
-				return err
+// batchResultFileSource opens a batch output or error file as a streamed download, trying
+// each key until one can read it: a file belongs to the key that created the batch. With a
+// key the caller named, keys holds only that key.
+func (provider *OpenAIProvider) batchResultFileSource(ctx *schemas.BifrostContext, keys []schemas.Key, escapedFileID string) providerUtils.BatchResultsSource {
+	return func(offset int64) (*providerUtils.ResultStream, *schemas.BifrostError) {
+		var lastErr *schemas.BifrostError
+		for _, key := range keys {
+			// Minted only when the loop reaches it, so a working earlier key never waits on
+			// this key's token endpoint; a mint failure is this key's error and the next key
+			// is tried.
+			key, keyErr := provider.resolveKey(ctx, key)
+			if keyErr != nil {
+				lastErr = keyErr
+				continue
 			}
-			results = append(results, resultItem)
-			return nil
-		})
-
-		batchResultsResp := &schemas.BifrostBatchResultsResponse{
-			BatchID:  request.BatchID,
-			Endpoint: schemas.BatchEndpoint(batchResp.Endpoint),
-			Results:  results,
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				Latency: latency.Milliseconds(),
-			},
+			stream, bifrostErr := providerUtils.OpenResultStream(ctx, provider.streamingClient, offset, func(req *fasthttp.Request) {
+				providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+				req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID + "/content")
+				req.Header.SetMethod(http.MethodGet)
+				if key.Value.GetValue() != "" {
+					req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+				}
+			}, ParseOpenAIError)
+			if bifrostErr != nil {
+				lastErr = bifrostErr
+				continue
+			}
+			return stream, nil
 		}
-
-		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-			batchResultsResp.ExtraFields.RawResponse = results
-		}
-
-		if len(parseResult.Errors) > 0 {
-			batchResultsResp.ExtraFields.ParseErrors = parseResult.Errors
-		}
-
-		return batchResultsResp, nil
+		return nil, lastErr
 	}
-
-	return nil, lastErr
 }
 
 // ContainerCreate creates a new container via OpenAI's API.

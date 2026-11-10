@@ -8166,8 +8166,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					keys, err = bifrost.getKeysForBatchAndFileOps(req.Context, provider.GetProviderKey(), baseProvider, modelPtr, isMultiKeyBatchOp)
 					if err != nil {
 						bifrost.logger.Debug("error getting keys for batch/file operation: %v", err)
+						// A key the caller named that is not eligible is the caller's mistake,
+						// as it is on the single-key path.
+						var statusCode *int
+						if errors.Is(err, errNamedKeyNotEligible) {
+							statusCode = schemas.Ptr(400)
+						}
 						bifrost.sendWorkerError(req, schemas.BifrostError{
 							IsBifrostError: false,
+							StatusCode:     statusCode,
 							Error: &schemas.ErrorField{
 								Message: err.Error(),
 								Error:   err,
@@ -8454,7 +8461,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				injectedTools = clearAnthropicPassthroughForInjectedTools(req.Context, injectedTools, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
 				applyProviderProxySignal(req.Context, config)
-				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
+				// A multi-key operation (batch, file, container, cached content follow-ups)
+				// has no selected key: the provider walks keys itself. When the pool is one
+				// key, because the caller named it or the provider has only one, that key is
+				// the one that serves, so the routing info reports it.
+				routingKey := k
+				if routingKey.ID == "" && routingKey.Name == "" && len(keys) == 1 {
+					routingKey = keys[0]
+				}
+				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, routingKey)
 				if injectedTools != nil {
 					return bifrost.runInjectedTools(provider, config, req, k, injectedTools)
 				}
@@ -9454,6 +9469,11 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		batchResultsResponse, bifrostError := provider.BatchResults(req.Context, keys, req.BifrostRequest.BatchResultsRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
+		}
+		// Marked here, for every provider, before any plugin sees the response: batch
+		// accounting settles a batch from the results it is shown, and a page is not the batch.
+		if batchResultsResponse != nil {
+			batchResultsResponse.Partial = isPartialBatchResults(req.BifrostRequest.BatchResultsRequest, batchResultsResponse)
 		}
 		response.BatchResultsResponse = batchResultsResponse
 	case schemas.ContainerCreateRequest:
@@ -10799,12 +10819,75 @@ func (bifrost *Bifrost) getKeysForBatchAndFileOps(ctx *schemas.BifrostContext, p
 		return nil, fmt.Errorf("no keys found for provider: %v and model: %s", providerKey, modelStr)
 	}
 
+	// A key the caller named (x-bf-api-key-id, then x-bf-api-key) is the only key the
+	// operation may use: a batch, file, container or cached content belongs to the key
+	// that created it, and trying the provider's other keys in turn sends the caller's
+	// request upstream once per key. The named key must still pass the filters above.
+	if pinned, named, err := pinnedKeyForBatchAndFileOps(ctx, filteredKeys, providerKey, isBatchOp); named {
+		if err != nil {
+			return nil, err
+		}
+		return []schemas.Key{pinned}, nil
+	}
+
 	// Sort keys by ID for deterministic pagination order across requests
 	sort.Slice(filteredKeys, func(i, j int) bool {
 		return filteredKeys[i].ID < filteredKeys[j].ID
 	})
 
 	return filteredKeys, nil
+}
+
+// isPartialBatchResults reports whether a batch results response holds one page of the
+// batch's result lines rather than all of them: the caller asked for a page (a limit, or a
+// cursor continuing an earlier page), or the provider says more lines follow.
+func isPartialBatchResults(request *schemas.BifrostBatchResultsRequest, response *schemas.BifrostBatchResultsResponse) bool {
+	if response.HasMore {
+		return true
+	}
+	if request == nil {
+		return false
+	}
+	return request.Limit > 0 || (request.After != nil && strings.TrimSpace(*request.After) != "")
+}
+
+// errNamedKeyNotEligible marks a batch or file operation whose caller named a key
+// (x-bf-api-key-id, x-bf-api-key) that is not among the provider's eligible keys.
+var errNamedKeyNotEligible = errors.New("named key not eligible")
+
+// pinnedKeyForBatchAndFileOps returns the key the caller named with x-bf-api-key-id or
+// x-bf-api-key among the eligible keys. named is false when the caller named none; an
+// error is returned when the named key is not eligible. The id takes priority over the
+// name, as in selectKeyFromProviderForModelWithPool.
+func pinnedKeyForBatchAndFileOps(ctx *schemas.BifrostContext, eligible []schemas.Key, providerKey schemas.ModelProvider, isBatchOp bool) (schemas.Key, bool, error) {
+	if ctx == nil {
+		return schemas.Key{}, false, nil
+	}
+	kind := "supported"
+	if isBatchOp {
+		kind = "batch-enabled"
+	}
+	if keyID, ok := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string); ok {
+		if keyID = strings.TrimSpace(keyID); keyID != "" {
+			for _, key := range eligible {
+				if key.ID == keyID {
+					return key, true, nil
+				}
+			}
+			return schemas.Key{}, true, fmt.Errorf("%w: no %s key found with id %q for provider: %v", errNamedKeyNotEligible, kind, keyID, providerKey)
+		}
+	}
+	if keyName, ok := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string); ok {
+		if keyName = strings.TrimSpace(keyName); keyName != "" {
+			for _, key := range eligible {
+				if key.Name == keyName {
+					return key, true, nil
+				}
+			}
+			return schemas.Key{}, true, fmt.Errorf("%w: no %s key found with name %q for provider: %v", errNamedKeyNotEligible, kind, keyName, providerKey)
+		}
+	}
+	return schemas.Key{}, false, nil
 }
 
 // selectKeyFromProviderForModelWithPool returns the filtered pool of eligible keys for the given

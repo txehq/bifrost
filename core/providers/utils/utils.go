@@ -2724,28 +2724,14 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 		}
 
 		mt, mhdl := startPhaseSpan(ctx, "request-marshal")
-		// Indenting is removed to reduce data on wire
-		jsonBody, err := MarshalProviderRequest(convertedBody)
+		// Merge ExtraParams into the JSON if passthrough is enabled
+		mergeExtraParams := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true
+		jsonBody, err := MarshalConvertedRequestBody(convertedBody, mergeExtraParams)
 		if err != nil {
 			if mt != nil {
 				mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
 			}
 			return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-		}
-		// Merge ExtraParams into the JSON if passthrough is enabled
-		if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
-			extraParams := convertedBody.GetExtraParams()
-			if len(extraParams) > 0 {
-				// Use order-preserving merge to avoid destroying key ordering in
-				// tool schemas and other order-sensitive JSON structures.
-				jsonBody, err = MergeExtraParamsIntoJSON(jsonBody, extraParams)
-				if err != nil {
-					if mt != nil {
-						mt.EndSpan(mhdl, schemas.SpanStatusError, err.Error())
-					}
-					return nil, NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
-				}
-			}
 		}
 		if mt != nil {
 			mt.EndSpan(mhdl, schemas.SpanStatusOk, "")
@@ -2754,6 +2740,30 @@ func CheckContextAndGetRequestBody(ctx context.Context, request RequestBodyGette
 	} else {
 		return rawBody, nil
 	}
+}
+
+// MarshalConvertedRequestBody encodes a converted provider request as the JSON sent to the
+// vendor, and merges the request's extra params into it when mergeExtraParams is set. It
+// is the encoding step of CheckContextAndGetRequestBody, shared with the batch path so an
+// inline batch line is encoded exactly as the sync request is.
+func MarshalConvertedRequestBody(convertedBody RequestBodyWithExtraParams, mergeExtraParams bool) ([]byte, error) {
+	// Indenting is removed to reduce data on wire
+	jsonBody, err := MarshalProviderRequest(convertedBody)
+	if err != nil {
+		return nil, err
+	}
+	if mergeExtraParams {
+		extraParams := convertedBody.GetExtraParams()
+		if len(extraParams) > 0 {
+			// Use order-preserving merge to avoid destroying key ordering in
+			// tool schemas and other order-sensitive JSON structures.
+			jsonBody, err = MergeExtraParamsIntoJSON(jsonBody, extraParams)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return jsonBody, nil
 }
 
 // SetExtraHeadersHTTP sets additional headers from NetworkConfig to the standard HTTP request.

@@ -10106,3 +10106,259 @@ func TestRequestWorkerRejectsUndeclaredUnifiedFieldBeforeUpstream(t *testing.T) 
 		t.Fatalf("the declared-only request reached the provider %d times, want 1", got)
 	}
 }
+
+// TestBatchFollowUpsHonourNamedKey pins contract C3 for batch follow-up operations: once the
+// caller names a key (x-bf-api-key, x-bf-api-key-id), retrieve, cancel and results send
+// upstream with that key only, and the response reports it. The batch belongs to key B, so
+// walking the provider's keys in id order would call key A first.
+func TestBatchFollowUpsHonourNamedKey(t *testing.T) {
+	var mu sync.Mutex
+	callsByAuth := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		mu.Lock()
+		callsByAuth[auth]++
+		mu.Unlock()
+		if auth != "Bearer sk-b" {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"error":{"message":"No batch found","type":"invalid_request_error","code":"not_found"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/content"):
+			fmt.Fprint(w, `{"id":"batch_req_1","custom_id":"line-1","response":{"status_code":200,"request_id":"req_1","body":{"id":"chatcmpl-1","object":"chat.completion","model":"gpt-4o-mini","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}},"error":null}`+"\n")
+		case strings.HasSuffix(r.URL.Path, "/cancel"):
+			fmt.Fprint(w, `{"id":"batch_1","object":"batch","status":"cancelling"}`)
+		default:
+			fmt.Fprint(w, `{"id":"batch_1","object":"batch","endpoint":"/v1/chat/completions","status":"completed","output_file_id":"file-out"}`)
+		}
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, server.URL)
+	batchKey := func(id, name, value string, batch bool) schemas.Key {
+		return schemas.Key{ID: id, Name: name, Value: *schemas.NewSecretVar(value), Models: schemas.WhiteList{"*"}, Weight: 1, UseForBatchAPI: schemas.Ptr(batch)}
+	}
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		batchKey("key-a", "tk-key-a", "sk-a", true),
+		batchKey("key-b", "tk-key-b", "sk-b", true),
+		batchKey("key-c", "tk-key-c", "sk-c", false),
+	})
+	bifrost, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewDefaultLogger(schemas.LogLevelError)})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer bifrost.Shutdown()
+
+	reset := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		callsByAuth = map[string]int{}
+	}
+	snapshot := func() map[string]int {
+		mu.Lock()
+		defer mu.Unlock()
+		out := map[string]int{}
+		for k, v := range callsByAuth {
+			out[k] = v
+		}
+		return out
+	}
+	named := func(contextKey schemas.BifrostContextKey, value string) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(contextKey, value)
+		return ctx
+	}
+
+	for _, pin := range []struct {
+		name       string
+		contextKey schemas.BifrostContextKey
+		value      string
+	}{
+		{"by name", schemas.BifrostContextKeyAPIKeyName, "tk-key-b"},
+		{"by id", schemas.BifrostContextKeyAPIKeyID, "key-b"},
+	} {
+		t.Run("retrieve "+pin.name, func(t *testing.T) {
+			reset()
+			resp, bErr := bifrost.BatchRetrieveRequest(named(pin.contextKey, pin.value), &schemas.BifrostBatchRetrieveRequest{Provider: schemas.OpenAI, BatchID: "batch_1"})
+			if bErr != nil {
+				t.Fatalf("BatchRetrieveRequest: %v", bErr.Error.Message)
+			}
+			if got := snapshot(); len(got) != 1 || got["Bearer sk-b"] != 1 {
+				t.Fatalf("upstream calls by key = %v, want exactly one call with key B", got)
+			}
+			if resp.ExtraFields.RoutingInfo.Key != "tk-key-b" {
+				t.Fatalf("routing_info.key = %q, want tk-key-b", resp.ExtraFields.RoutingInfo.Key)
+			}
+		})
+		t.Run("cancel "+pin.name, func(t *testing.T) {
+			reset()
+			resp, bErr := bifrost.BatchCancelRequest(named(pin.contextKey, pin.value), &schemas.BifrostBatchCancelRequest{Provider: schemas.OpenAI, BatchID: "batch_1"})
+			if bErr != nil {
+				t.Fatalf("BatchCancelRequest: %v", bErr.Error.Message)
+			}
+			if got := snapshot(); len(got) != 1 || got["Bearer sk-b"] != 1 {
+				t.Fatalf("upstream calls by key = %v, want exactly one call with key B", got)
+			}
+			if resp.ExtraFields.RoutingInfo.Key != "tk-key-b" {
+				t.Fatalf("routing_info.key = %q, want tk-key-b", resp.ExtraFields.RoutingInfo.Key)
+			}
+		})
+		t.Run("results "+pin.name, func(t *testing.T) {
+			reset()
+			resp, bErr := bifrost.BatchResultsRequest(named(pin.contextKey, pin.value), &schemas.BifrostBatchResultsRequest{Provider: schemas.OpenAI, BatchID: "batch_1"})
+			if bErr != nil {
+				t.Fatalf("BatchResultsRequest: %v", bErr.Error.Message)
+			}
+			// Results are a retrieve plus the output file download: two calls, both with key B.
+			if got := snapshot(); len(got) != 1 || got["Bearer sk-b"] != 2 {
+				t.Fatalf("upstream calls by key = %v, want two calls, both with key B", got)
+			}
+			if resp.ExtraFields.RoutingInfo.Key != "tk-key-b" {
+				t.Fatalf("routing_info.key = %q, want tk-key-b", resp.ExtraFields.RoutingInfo.Key)
+			}
+			if len(resp.Results) != 1 || resp.Results[0].CustomID != "line-1" {
+				t.Fatalf("results = %+v, want the one line of the output file", resp.Results)
+			}
+			if resp.Partial {
+				t.Fatal("the whole result set was marked partial")
+			}
+			paged, bErr := bifrost.BatchResultsRequest(named(pin.contextKey, pin.value), &schemas.BifrostBatchResultsRequest{Provider: schemas.OpenAI, BatchID: "batch_1", Limit: 50})
+			if bErr != nil {
+				t.Fatalf("paged BatchResultsRequest: %v", bErr.Error.Message)
+			}
+			if !paged.Partial {
+				t.Fatal("a paged read was not marked partial, so batch accounting would settle the batch from one page")
+			}
+		})
+	}
+
+	t.Run("a named key's vendor error comes back without trying another key", func(t *testing.T) {
+		reset()
+		_, bErr := bifrost.BatchRetrieveRequest(named(schemas.BifrostContextKeyAPIKeyName, "tk-key-a"), &schemas.BifrostBatchRetrieveRequest{Provider: schemas.OpenAI, BatchID: "batch_1"})
+		if bErr == nil || bErr.StatusCode == nil || *bErr.StatusCode != http.StatusNotFound {
+			t.Fatalf("error = %+v, want the vendor's 404", bErr)
+		}
+		if got := snapshot(); len(got) != 1 || got["Bearer sk-a"] != 1 {
+			t.Fatalf("upstream calls by key = %v, want exactly one call with key A", got)
+		}
+		if bErr.ExtraFields.RoutingInfo.Key != "tk-key-a" {
+			t.Fatalf("error routing_info.key = %q, want tk-key-a", bErr.ExtraFields.RoutingInfo.Key)
+		}
+	})
+
+	for _, tc := range []struct {
+		name       string
+		contextKey schemas.BifrostContextKey
+		value      string
+	}{
+		{"unknown name", schemas.BifrostContextKeyAPIKeyName, "tk-key-missing"},
+		{"unknown id", schemas.BifrostContextKeyAPIKeyID, "key-missing"},
+		{"key not enabled for batch", schemas.BifrostContextKeyAPIKeyName, "tk-key-c"},
+	} {
+		t.Run("a named key that is not eligible is a 400 with no upstream call: "+tc.name, func(t *testing.T) {
+			reset()
+			_, bErr := bifrost.BatchRetrieveRequest(named(tc.contextKey, tc.value), &schemas.BifrostBatchRetrieveRequest{Provider: schemas.OpenAI, BatchID: "batch_1"})
+			if bErr == nil || bErr.StatusCode == nil || *bErr.StatusCode != http.StatusBadRequest {
+				t.Fatalf("error = %+v, want a 400", bErr)
+			}
+			if !strings.Contains(bErr.Error.Message, tc.value) {
+				t.Fatalf("error message %q does not name the key %q", bErr.Error.Message, tc.value)
+			}
+			if got := snapshot(); len(got) != 0 {
+				t.Fatalf("upstream calls by key = %v, want none", got)
+			}
+		})
+	}
+
+	t.Run("no named key keeps walking the batch-enabled keys", func(t *testing.T) {
+		reset()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bErr := bifrost.BatchRetrieveRequest(ctx, &schemas.BifrostBatchRetrieveRequest{Provider: schemas.OpenAI, BatchID: "batch_1"})
+		if bErr != nil {
+			t.Fatalf("BatchRetrieveRequest: %v", bErr.Error.Message)
+		}
+		if got := snapshot(); got["Bearer sk-a"] != 1 || got["Bearer sk-b"] != 1 || got["Bearer sk-c"] != 0 {
+			t.Fatalf("upstream calls by key = %v, want key A then key B", got)
+		}
+		if resp.ExtraFields.RoutingInfo.Key != "" {
+			t.Fatalf("routing_info.key = %q, want empty: core does not know which of several keys served", resp.ExtraFields.RoutingInfo.Key)
+		}
+	})
+}
+
+// BenchmarkGetKeysForBatchAndFileOps measures the key pool a batch or file follow-up
+// operation (retrieve, cancel, results) is given: every eligible key when the caller names
+// none, and the one key the caller named by name or by id. The named-key lookup runs after
+// the existing filter over the provider's keys, so the unnamed case pays two context reads
+// and no allocation beyond what it paid before.
+func BenchmarkGetKeysForBatchAndFileOps(b *testing.B) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 10)
+	keys := make([]schemas.Key, 0, 8)
+	for i := range 8 {
+		keys = append(keys, schemas.Key{
+			ID:             fmt.Sprintf("key-%d", i),
+			Name:           fmt.Sprintf("tk-key-%d", i),
+			Value:          *schemas.NewSecretVar(fmt.Sprintf("sk-%d", i)),
+			Models:         schemas.WhiteList{"*"},
+			Weight:         1,
+			UseForBatchAPI: schemas.Ptr(true),
+		})
+	}
+	account.SetKeysForProvider(schemas.OpenAI, keys)
+	bifrost := &Bifrost{account: account, logger: NewDefaultLogger(schemas.LogLevelError), keySelector: keyselectors.WeightedRandom}
+
+	for _, bc := range []struct {
+		name       string
+		contextKey schemas.BifrostContextKey
+		value      string
+		wantKeys   int
+	}{
+		{"no named key", "", "", 8},
+		{"named by name", schemas.BifrostContextKeyAPIKeyName, "tk-key-7", 1},
+		{"named by id", schemas.BifrostContextKeyAPIKeyID, "key-7", 1},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if bc.contextKey != "" {
+				ctx.SetValue(bc.contextKey, bc.value)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				pool, err := bifrost.getKeysForBatchAndFileOps(ctx, schemas.OpenAI, schemas.OpenAI, nil, true)
+				if err != nil || len(pool) != bc.wantKeys {
+					b.Fatalf("pool = %d keys, err %v, want %d", len(pool), err, bc.wantKeys)
+				}
+			}
+		})
+	}
+}
+
+// A results response is partial when the caller asked for a page or more lines follow; the
+// last page of a paged read is partial too, though nothing follows it.
+func TestIsPartialBatchResults(t *testing.T) {
+	cursor := "djE6MDoxMDI0"
+	blank := "  "
+	cases := []struct {
+		name     string
+		request  *schemas.BifrostBatchResultsRequest
+		response *schemas.BifrostBatchResultsResponse
+		want     bool
+	}{
+		{"whole result set", &schemas.BifrostBatchResultsRequest{}, &schemas.BifrostBatchResultsResponse{}, false},
+		{"a blank cursor is no cursor", &schemas.BifrostBatchResultsRequest{After: &blank}, &schemas.BifrostBatchResultsResponse{}, false},
+		{"first page", &schemas.BifrostBatchResultsRequest{Limit: 100}, &schemas.BifrostBatchResultsResponse{HasMore: true}, true},
+		{"a limit larger than the batch", &schemas.BifrostBatchResultsRequest{Limit: 100}, &schemas.BifrostBatchResultsResponse{}, true},
+		{"last page", &schemas.BifrostBatchResultsRequest{After: &cursor}, &schemas.BifrostBatchResultsResponse{}, true},
+		{"a provider that pages on its own", &schemas.BifrostBatchResultsRequest{}, &schemas.BifrostBatchResultsResponse{HasMore: true}, true},
+		{"no request", nil, &schemas.BifrostBatchResultsResponse{}, false},
+	}
+	for _, tc := range cases {
+		if got := isPartialBatchResults(tc.request, tc.response); got != tc.want {
+			t.Errorf("%s: partial = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

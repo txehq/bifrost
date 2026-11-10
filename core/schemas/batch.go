@@ -26,6 +26,8 @@ const (
 	BatchEndpointCompletions     BatchEndpoint = "/v1/completions"
 	BatchEndpointResponses       BatchEndpoint = "/v1/responses"
 	BatchEndpointMessages        BatchEndpoint = "/v1/messages" // Anthropic
+	BatchEndpointImageGeneration BatchEndpoint = "/v1/images/generations"
+	BatchEndpointImageEdit       BatchEndpoint = "/v1/images/edits"
 )
 
 // BatchRequestItem represents a single request in a batch (for inline requests).
@@ -233,6 +235,10 @@ type BifrostBatchListRequest struct {
 	PageSize   int     `json:"page_size,omitempty"`   // For Gemini pagination
 	NextCursor *string `json:"next_cursor,omitempty"` // For Gemini pagination
 
+	// Filter is the vendor's own list filter, sent unchanged where the vendor has one
+	// (Vertex: `labels.key=value`). Providers without a list filter ignore it.
+	Filter *string `json:"filter,omitempty"`
+
 	// Extra parameters for provider-specific features
 	ExtraParams map[string]any `json:"-"`
 }
@@ -374,6 +380,12 @@ type BifrostBatchResultsRequest struct {
 	Model    *string       `json:"model"`
 	BatchID  string        `json:"batch_id"` // ID of the batch to get results for
 
+	// Limit is the page size in result lines. Zero returns the whole result set in one
+	// response, as before paging existed; a caller that must not hold a whole result file
+	// in memory sets it. After is the NextCursor of the previous page.
+	Limit int     `json:"limit,omitempty"`
+	After *string `json:"after,omitempty"`
+
 	RawRequestBody []byte `json:"-"` // Raw request body (not serialized)
 
 	// For OpenAI, results are retrieved via output_file_id (file download)
@@ -388,9 +400,26 @@ func (request *BifrostBatchResultsRequest) GetRawRequestBody() []byte {
 	return request.RawRequestBody
 }
 
+// BatchResultStatus is the outcome of one batch line, the same four values for every
+// provider.
+type BatchResultStatus string
+
+const (
+	BatchResultStatusSucceeded BatchResultStatus = "succeeded"
+	BatchResultStatusFailed    BatchResultStatus = "failed"
+	BatchResultStatusExpired   BatchResultStatus = "expired"
+	BatchResultStatusCancelled BatchResultStatus = "cancelled"
+)
+
 // BatchResultItem represents a single result from a batch request.
 type BatchResultItem struct {
+	// ID is the vendor's own id for the line (OpenAI and Azure: batch_req_...), unchanged.
+	ID       string `json:"id,omitempty"`
 	CustomID string `json:"custom_id"`
+
+	// Status is the line's outcome. A succeeded line carries Response; a failed, expired
+	// or cancelled one carries the vendor's Error. Empty on providers that do not set it.
+	Status BatchResultStatus `json:"status,omitempty"`
 
 	// Result data (varies by request type)
 	Response *BatchResultResponse `json:"response,omitempty"` // OpenAI format
@@ -402,6 +431,9 @@ type BatchResultItem struct {
 
 // Failed reports whether the result item represents a failed per-request batch result.
 func (i BatchResultItem) Failed() bool {
+	if i.Status != "" && i.Status != BatchResultStatusSucceeded {
+		return true
+	}
 	if i.Error != nil {
 		return true
 	}
@@ -459,5 +491,51 @@ type BifrostBatchResultsResponse struct {
 	HasMore    bool    `json:"has_more,omitempty"`
 	NextCursor *string `json:"next_cursor,omitempty"`
 
+	// Partial marks a response that holds one page of the batch's result lines, not all of
+	// them: the caller asked for a page (Limit or After), or more lines follow. Whatever
+	// sums or settles a batch from its results must not treat a partial response as the
+	// batch. Set by core on every provider's response, so a provider cannot forget it.
+	Partial bool `json:"-"`
+
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+}
+
+// UnifyBatchResultUsage rewrites body["usage"] of a succeeded batch line into the unified
+// usage of the line's operation, the shape the sync route returns for the same request, so
+// one billing map reads both. The vendor's usage is decoded into the operation's unified
+// type and encoded back; a body without usage, or an endpoint with no unified usage type,
+// is left as it is. The body is modified in place and returned.
+func UnifyBatchResultUsage(endpoint BatchEndpoint, body map[string]any) map[string]any {
+	raw, ok := body["usage"]
+	if !ok || raw == nil {
+		return body
+	}
+	var unified any
+	switch endpoint {
+	case BatchEndpointChatCompletions, BatchEndpointCompletions, BatchEndpointEmbeddings:
+		unified = &BifrostLLMUsage{}
+	case BatchEndpointResponses:
+		unified = &ResponsesResponseUsage{}
+	case BatchEndpointImageGeneration, BatchEndpointImageEdit:
+		unified = &ImageUsage{}
+	default:
+		return body
+	}
+	encoded, err := Marshal(raw)
+	if err != nil {
+		return body
+	}
+	if err := Unmarshal(encoded, unified); err != nil {
+		return body
+	}
+	encoded, err = Marshal(unified)
+	if err != nil {
+		return body
+	}
+	var usage map[string]any
+	if err := Unmarshal(encoded, &usage); err != nil {
+		return body
+	}
+	body["usage"] = usage
+	return body
 }

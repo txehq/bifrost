@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -2650,6 +2651,19 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		return nil, providerUtils.NewBifrostOperationError("cannot specify both input_file_id and requests", nil)
 	}
 
+	// The model is part of the URL (models/{model}:batchGenerateContent). A batch with no
+	// model is refused: running it on a default model would bill the caller for a model
+	// it never named.
+	var model string
+	if request.Model != nil {
+		_, model = schemas.ParseModelString(*request.Model, schemas.Gemini)
+	}
+	if model == "" {
+		bifrostErr := providerUtils.NewBifrostBadRequestError("model is required for a Gemini batch: the batch runs one model, named in the request's model field")
+		bifrostErr.Error.Param = "model"
+		return nil, bifrostErr
+	}
+
 	if len(jsonData) == 0 {
 		// Build the batch request with proper nested structure. Honor a caller-supplied
 		// display name (e.g. genai config.display_name), falling back to a generated one.
@@ -2674,20 +2688,31 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 				FileName: fileID,
 			}
 		} else {
-			// Inline requests: convert Bifrost requests to Gemini format
+			// Inline requests: each line is converted with the sync operation's converter,
+			// so it reaches Gemini with the parameters a sync request with the same body does.
 			geminiRequests := make([]GeminiBatchRequestItem, len(request.Requests))
+			var batchOperation schemas.BatchEndpoint
 			for i, bifrostItem := range request.Requests {
-				geminiReq, err := ToGeminiBatchGenerateContentRequest(bifrostItem.Body)
+				if err := CheckBatchLineModel(bifrostItem, schemas.Gemini, model, key.Aliases.Resolve); err != nil {
+					return nil, NewBatchLineBadRequestError(i, err)
+				}
+				lineBody, lineEndpoint, err := ToGeminiBatchLineRequest(ctx, bifrostItem, schemas.Gemini, model, request.Endpoint)
 				if err != nil {
-					return nil, providerUtils.NewBifrostOperationError("failed to convert batch request to gemini format", err)
+					return nil, NewBatchLineBadRequestError(i, err)
+				}
+				if err := CheckBatchLineOperation(&batchOperation, bifrostItem, lineEndpoint); err != nil {
+					return nil, NewBatchLineBadRequestError(i, err)
 				}
 
 				geminiRequests[i] = GeminiBatchRequestItem{
-					Request: geminiReq,
+					Request: lineBody,
 				}
-				if bifrostItem.CustomID != "" {
-					geminiRequests[i].Metadata = &GeminiBatchMetadata{
-						Key: bifrostItem.CustomID,
+				// The metadata is echoed on the line's response: the key is the custom_id,
+				// and the endpoint says which OpenAI shape the result is converted back to.
+				if bifrostItem.CustomID != "" || lineEndpoint != "" {
+					geminiRequests[i].Metadata = &GeminiBatchRequestMetadata{
+						Key:      bifrostItem.CustomID,
+						Endpoint: string(lineEndpoint),
 					}
 				}
 			}
@@ -2717,14 +2742,6 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	defer fasthttp.ReleaseResponse(resp)
 
 	// Build URL - use batchGenerateContent endpoint
-	var model string
-	if request.Model != nil {
-		_, model = schemas.ParseModelString(*request.Model, schemas.Gemini)
-	}
-	// We default gemini 2.5 flash
-	if model == "" {
-		model = "gemini-2.5-flash"
-	}
 	url := fmt.Sprintf("%s/models/%s:batchGenerateContent", provider.networkConfig.BaseURL, model)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
@@ -2802,6 +2819,9 @@ func (provider *GeminiProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 		Status:        status,
 		CreatedAt:     parseGeminiTimestamp(geminiResp.Metadata.CreateTime),
 		OperationName: &geminiResp.Metadata.Name,
+		// Gemini has no batch metadata field; the display name is what a caller can find
+		// a batch by in the list, so it is returned as the vendor recorded it.
+		DisplayName: geminiDisplayName(geminiResp.Metadata),
 		RequestCounts: schemas.BatchRequestCounts{
 			Total:     totalRequests,
 			Completed: completedCount,
@@ -2902,6 +2922,7 @@ func (provider *GeminiProvider) batchListByKey(ctx *schemas.BifrostContext, key 
 			// Full name (batches/<id>), matching create/retrieve so the id is stable.
 			ID:            batch.Name,
 			Object:        "batch",
+			DisplayName:   geminiDisplayName(batch.Metadata),
 			Status:        ToBifrostBatchStatus(state),
 			CreatedAt:     parseGeminiTimestamp(createTime),
 			OperationName: &batch.Name,
@@ -2994,6 +3015,14 @@ func (provider *GeminiProvider) BatchList(ctx *schemas.BifrostContext, keys []sc
 	return result, nil
 }
 
+// geminiDisplayName returns the display name the vendor recorded for a batch, or nil.
+func geminiDisplayName(metadata *GeminiBatchMetadata) *string {
+	if metadata == nil || metadata.DisplayName == "" {
+		return nil
+	}
+	return schemas.Ptr(metadata.DisplayName)
+}
+
 // geminiResourcePath accepts a bare ID or its "{collection}/{id}" resource name and returns the escaped path.
 func geminiResourcePath(resourceID, collection, field string) (string, *schemas.BifrostError) {
 	resourceID = strings.TrimPrefix(resourceID, collection+"/")
@@ -3062,14 +3091,12 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 	failedCount = completedCount - batchStats.SuccessfulRequestCount
 
 	// Determine if job is done
-	isDone := geminiResp.Metadata.State == GeminiBatchStateSucceeded ||
-		geminiResp.Metadata.State == GeminiBatchStateFailed ||
-		geminiResp.Metadata.State == GeminiBatchStateCancelled ||
-		geminiResp.Metadata.State == GeminiBatchStateExpired
+	isDone := isGeminiBatchStateDone(geminiResp.Metadata.State)
 
 	result := &schemas.BifrostBatchRetrieveResponse{
 		ID:            geminiResp.Metadata.Name,
 		Object:        "batch",
+		DisplayName:   geminiDisplayName(geminiResp.Metadata),
 		Status:        ToBifrostBatchStatus(geminiResp.Metadata.State),
 		CreatedAt:     parseGeminiTimestamp(geminiResp.Metadata.CreateTime),
 		OperationName: &geminiResp.Metadata.Name,
@@ -3085,6 +3112,20 @@ func (provider *GeminiProvider) batchRetrieveByKey(ctx *schemas.BifrostContext, 
 			Latency:     latency.Milliseconds(),
 			RawResponse: rawResponse,
 		},
+	}
+
+	// The end time is the time of the terminal phase the batch reached.
+	if endTime := parseGeminiTimestamp(geminiResp.Metadata.EndTime); endTime > 0 {
+		switch result.Status {
+		case schemas.BatchStatusCompleted:
+			result.CompletedAt = &endTime
+		case schemas.BatchStatusFailed:
+			result.FailedAt = &endTime
+		case schemas.BatchStatusCancelled:
+			result.CancelledAt = &endTime
+		case schemas.BatchStatusExpired:
+			result.ExpiredAt = &endTime
+		}
 	}
 
 	// Surface the output file id for file-based batches so callers can download the
@@ -3458,62 +3499,85 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	}
 
 	// Check if batch is still processing
-	if geminiResp.Metadata.State == GeminiBatchStatePending || geminiResp.Metadata.State == GeminiBatchStateRunning {
+	if isGeminiBatchStateProcessing(geminiResp.Metadata.State) {
 		return nil, providerUtils.NewBifrostOperationError(
 			fmt.Sprintf("batch %s is still processing (state: %s), results not yet available", request.BatchID, geminiResp.Metadata.State),
 			nil,
 		)
 	}
 
-	// Extract results - check for file-based results first, then inline responses
-	var results []schemas.BatchResultItem
-	var parseErrors []schemas.BatchError
-
-	outputFile, inlinedResponses := geminiBatchOutput(&geminiResp)
-	if outputFile != "" {
-		// File-based results: download and parse the results file
-		provider.logger.Debug("gemini batch results in file: " + outputFile)
-		fileResults, fileParseErrors, bifrostErr := provider.downloadBatchResultsFile(ctx, key, outputFile)
-		if bifrostErr != nil {
-			return nil, bifrostErr
-		}
-		results = fileResults
-		parseErrors = fileParseErrors
-	} else if len(inlinedResponses) > 0 {
-		// Inline results: extract from response.inlinedResponses
-		results = make([]schemas.BatchResultItem, 0, len(inlinedResponses))
-		for i, inlineResp := range inlinedResponses {
-			results = append(results, geminiInlineResponseToBatchResultItem(inlineResp, fmt.Sprintf("request-%d", i)))
-		}
-	}
-
-	// If no results found but job is complete, return info message
-	if len(results) == 0 && (geminiResp.Metadata.State == GeminiBatchStateSucceeded || geminiResp.Metadata.State == GeminiBatchStateFailed) {
-		results = []schemas.BatchResultItem{{
-			CustomID: "info",
-			Response: &schemas.BatchResultResponse{
-				StatusCode: 200,
-				Body: map[string]interface{}{
-					"message": fmt.Sprintf("Batch completed with state: %s. No results available.", geminiResp.Metadata.State),
-				},
-			},
-		}}
-	}
-
+	includeRaw := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	batchResultsResp := &schemas.BifrostBatchResultsResponse{
 		BatchID:  request.BatchID,
 		Endpoint: schemas.BatchEndpointChatCompletions,
-		Results:  results,
+		Results:  []schemas.BatchResultItem{},
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: latency.Milliseconds(),
 		},
 	}
 
-	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-		batchResultsResp.ExtraFields.RawResponse = results
+	// Results are in a responses file (file-based batches) or inline in the batch object.
+	outputFile, inlinedResponses := geminiBatchOutput(&geminiResp)
+	if outputFile != "" {
+		// File-based results: read the file as a stream, a page at a time when a limit is set.
+		provider.logger.Debug("gemini batch results in file: " + outputFile)
+		source, sourceErr := provider.batchResultsFileSource(ctx, key, outputFile)
+		if sourceErr != nil {
+			return nil, sourceErr
+		}
+		// A line with no key is named by its position in the file; the position is only
+		// known when the file is read from its start.
+		cursor, _ := providerUtils.DecodeBatchResultsCursor(request.After)
+		lineIndex := 0
+		var parseErrors []schemas.BatchError
+		page, pageErr := providerUtils.ReadBatchResultsPage([]providerUtils.BatchResultsSource{source}, request.After, request.Limit, func(_ int, line []byte) {
+			fallbackID := fmt.Sprintf("request-%d", lineIndex)
+			if cursor.Offset > 0 {
+				fallbackID = fmt.Sprintf("request-at-%d-%d", cursor.Offset, lineIndex)
+			}
+			lineIndex++
+			item, parseErr := parseGeminiBatchResultsFileLine(line, fallbackID, includeRaw)
+			if parseErr != nil {
+				provider.logger.Warn("gemini batch results file parse error: %s", strconv.QuoteToASCII(parseErr.Error()))
+				parseErrors = append(parseErrors, schemas.BatchError{Code: "parse_error", Message: parseErr.Error()})
+				return
+			}
+			batchResultsResp.Results = append(batchResultsResp.Results, item)
+		})
+		if pageErr != nil {
+			return nil, pageErr
+		}
+		batchResultsResp.HasMore = page.HasMore
+		batchResultsResp.NextCursor = page.NextCursor
+		if len(parseErrors) > 0 {
+			batchResultsResp.ExtraFields.ParseErrors = parseErrors
+		}
+	} else if len(inlinedResponses) > 0 {
+		// Inline results arrive whole inside the batch object; a page is a slice of them.
+		start, end, nextCursor, pageErr := providerUtils.PageBatchResultItems(len(inlinedResponses), request.After, request.Limit)
+		if pageErr != nil {
+			return nil, providerUtils.NewInvalidResultsCursorError(pageErr)
+		}
+		for i := start; i < end; i++ {
+			batchResultsResp.Results = append(batchResultsResp.Results, geminiInlineResponseToBatchResultItem(inlinedResponses[i], fmt.Sprintf("request-%d", i), includeRaw))
+		}
+		batchResultsResp.HasMore = nextCursor != nil
+		batchResultsResp.NextCursor = nextCursor
+		// The batch's endpoint is the operation of its lines, read from every line of the
+		// batch (not only this page), so a page of chat lines cannot hide an image line.
+		endpoint := schemas.BatchEndpoint("")
+		for _, inlined := range inlinedResponses {
+			lineEndpoint := schemas.BatchEndpoint("")
+			if inlined.Metadata != nil {
+				lineEndpoint = schemas.BatchEndpoint(inlined.Metadata.Endpoint)
+			}
+			endpoint = AccumulateBatchResultsEndpoint(endpoint, lineEndpoint)
+		}
+		batchResultsResp.Endpoint = endpoint
 	}
-	if len(parseErrors) > 0 {
-		batchResultsResp.ExtraFields.ParseErrors = parseErrors
+
+	if includeRaw {
+		batchResultsResp.ExtraFields.RawResponse = batchResultsResp.Results
 	}
 
 	return batchResultsResp, nil

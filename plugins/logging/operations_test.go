@@ -5176,3 +5176,62 @@ func BenchmarkProviderJobAccountingEnabled(b *testing.B) {
 		}
 	}
 }
+
+// A page of a batch's results is not the batch. Settling from one would price only that
+// page and mark the job accounted for good, so the lines of every other page would never be
+// billed. A partial response settles nothing and leaves no job record; the whole result set
+// that follows settles the batch once.
+func TestAccountBatchResultsDoesNotSettleFromAPartialPage(t *testing.T) {
+	store := newTestStore(t)
+	bs := newFakeBatchStore()
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, bs, newTestPricingManager(t), nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	line := func(customID string) schemas.BatchResultItem {
+		return schemas.BatchResultItem{
+			CustomID: customID,
+			Status:   schemas.BatchResultStatusSucceeded,
+			Response: &schemas.BatchResultResponse{
+				StatusCode: 200,
+				Body: map[string]interface{}{
+					"model": "gpt-4o",
+					"usage": map[string]interface{}{"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+				},
+			},
+		}
+	}
+	const batchID = "batch-paged-results"
+	jobID := cstables.ProviderJobID(cstables.ProviderJobKindBatch, "openai", batchID)
+
+	// The first page, a middle page and the last page are all partial: the last one has no
+	// more lines after it, but it is still not the whole batch.
+	for name, page := range map[string]*schemas.BifrostBatchResultsResponse{
+		"first page": {BatchID: batchID, Results: []schemas.BatchResultItem{line("line-1")}, HasMore: true, NextCursor: schemas.Ptr("c1"), Partial: true},
+		"last page":  {BatchID: batchID, Results: []schemas.BatchResultItem{line("line-2")}, Partial: true},
+	} {
+		entry := &logstore.Log{ID: "req-" + name, Provider: string(schemas.OpenAI), Model: "gpt-4o"}
+		plugin.accountBatchResults(entry, &schemas.BifrostResponse{BatchResultsResponse: page}, nil)
+		if entry.BatchDebugParsed != nil {
+			t.Fatalf("%s: a partial page attached batch accounting to its row: %#v", name, entry.BatchDebugParsed)
+		}
+		if job, err := bs.GetProviderJob(context.Background(), jobID); err == nil && job != nil {
+			t.Fatalf("%s: a partial page created or settled the job: %#v", name, job)
+		}
+	}
+
+	// The whole result set settles the batch, with both lines.
+	whole := &logstore.Log{ID: "req-whole", Provider: string(schemas.OpenAI), Model: "gpt-4o"}
+	plugin.accountBatchResults(whole, &schemas.BifrostResponse{BatchResultsResponse: &schemas.BifrostBatchResultsResponse{
+		BatchID: batchID,
+		Results: []schemas.BatchResultItem{line("line-1"), line("line-2")},
+	}}, nil)
+	if whole.BatchDebugParsed == nil || whole.BatchDebugParsed.Accounting == nil || whole.BatchDebugParsed.Accounting.Cost == nil {
+		t.Fatalf("the whole result set did not settle the batch: %#v", whole.BatchDebugParsed)
+	}
+	breakdown := whole.BatchDebugParsed.Accounting.ModelBreakdowns["gpt-4o"]
+	if breakdown.RequestCount != 2 || breakdown.Usage.TotalTokens != 300 {
+		t.Fatalf("settled %d requests and %d tokens, want both lines: 2 requests and 300 tokens", breakdown.RequestCount, breakdown.Usage.TotalTokens)
+	}
+}

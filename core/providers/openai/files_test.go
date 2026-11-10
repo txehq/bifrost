@@ -37,3 +37,35 @@ func TestConvertRequestsToJSONLPreservesCustomID(t *testing.T) {
 	require.NoError(t, sonic.UnmarshalString(line, &decoded))
 	assert.Equal(t, "request-1", decoded.CustomID)
 }
+
+// A file upload's expiry reaches OpenAI in the files API's bracketed form fields, and the
+// expiry the vendor sets comes back on the upload and retrieve responses (contract C4).
+func TestFileUploadSendsExpiresAfterAndReturnsExpiresAt(t *testing.T) {
+	vendor := newBatchVendor(t, "", nil)
+	provider, ctx, keys := newBatchTestProvider(vendor)
+
+	_, bifrostErr := provider.FileUpload(ctx, keys[0], &schemas.BifrostFileUploadRequest{
+		Provider:     schemas.OpenAI,
+		File:         []byte("{}\n"),
+		Filename:     "in.jsonl",
+		Purpose:      schemas.FilePurposeBatch,
+		ExpiresAfter: &schemas.FileExpiresAfter{Anchor: "created_at", Seconds: 1209600},
+	})
+	require.Nil(t, bifrostErr)
+	require.Len(t, vendor.uploadForms, 1)
+	assert.Equal(t, map[string]string{"purpose": "batch", "expires_after[anchor]": "created_at", "expires_after[seconds]": "1209600"}, vendor.uploadForms[0])
+
+	var file OpenAIFileResponse
+	require.NoError(t, sonic.UnmarshalString(`{"id":"file-1","object":"file","bytes":3,"created_at":1711471533,"expires_at":1712681133,"filename":"in.jsonl","purpose":"batch"}`, &file))
+	uploaded := file.ToBifrostFileUploadResponse(0, false, false, nil, nil)
+	require.NotNil(t, uploaded.ExpiresAt)
+	assert.EqualValues(t, 1712681133, *uploaded.ExpiresAt)
+	retrieved := file.ToBifrostFileRetrieveResponse(schemas.OpenAI, 0, false, false, nil, nil)
+	require.NotNil(t, retrieved.ExpiresAt)
+	assert.EqualValues(t, 1712681133, *retrieved.ExpiresAt)
+
+	// A file with no expiry reports none.
+	require.NoError(t, sonic.UnmarshalString(`{"id":"file-2","object":"file","bytes":3,"created_at":1711471533,"filename":"in.jsonl","purpose":"batch"}`, &file))
+	file.ExpiresAt = nil
+	assert.Nil(t, file.ToBifrostFileUploadResponse(0, false, false, nil, nil).ExpiresAt)
+}

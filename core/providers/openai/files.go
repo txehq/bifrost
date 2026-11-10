@@ -22,6 +22,8 @@ type OpenAIFileResponse struct {
 	Purpose       schemas.FilePurpose `json:"purpose"`
 	Status        string              `json:"status,omitempty"`
 	StatusDetails *string             `json:"status_details,omitempty"`
+	// ExpiresAt is when the vendor deletes the file, set when the upload carried expires_after.
+	ExpiresAt *int64 `json:"expires_at,omitempty"`
 }
 
 // OpenAIFileListResponse represents the response from listing files.
@@ -67,6 +69,7 @@ func (r *OpenAIFileResponse) ToBifrostFileUploadResponse(latency time.Duration, 
 		Purpose:        r.Purpose,
 		Status:         ToBifrostFileStatus(r.Status),
 		StatusDetails:  r.StatusDetails,
+		ExpiresAt:      r.ExpiresAt,
 		StorageBackend: schemas.FileStorageAPI,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: latency.Milliseconds(),
@@ -95,6 +98,7 @@ func (r *OpenAIFileResponse) ToBifrostFileRetrieveResponse(providerName schemas.
 		Purpose:        r.Purpose,
 		Status:         ToBifrostFileStatus(r.Status),
 		StatusDetails:  r.StatusDetails,
+		ExpiresAt:      r.ExpiresAt,
 		StorageBackend: schemas.FileStorageAPI,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency: latency.Milliseconds(),
