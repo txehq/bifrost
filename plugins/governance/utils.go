@@ -160,7 +160,7 @@ func (p *GovernancePlugin) validateRequiredHeaders(ctx *schemas.BifrostContext) 
 	}
 	if len(missing) > 0 {
 		return &schemas.BifrostError{
-			Type:       bifrost.Ptr("missing_required_headers"),
+			Type:       bifrost.Ptr(missingRequiredHeadersType),
 			StatusCode: bifrost.Ptr(400),
 			Error: &schemas.ErrorField{
 				Message: fmt.Sprintf("missing required headers: %s", strings.Join(missing, ", ")),

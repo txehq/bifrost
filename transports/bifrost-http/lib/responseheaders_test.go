@@ -592,12 +592,13 @@ func TestExtraFieldsPlacementHeaders(t *testing.T) {
 		assert.Equal(t, "rate_limit", string(ctx.Response.Header.Peek(HeaderBifrostErrorType)))
 	})
 
-	t.Run("body mode omits error scalars", func(t *testing.T) {
+	t.Run("body mode omits error scalars but always writes the error type", func(t *testing.T) {
 		ctx := &fasthttp.RequestCtx{}
 		ApplyBifrostErrorResponseHeaders(ctx, nil, schemas.BifrostErrorExtraFields{Latency: 7, RetryAfter: 1500, ErrorType: schemas.ErrorType("rate_limit")})
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostLatency)))
 		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostRetryAfterMs)))
-		assert.Empty(t, string(ctx.Response.Header.Peek(HeaderBifrostErrorType)))
+		// A native-envelope route has no extra_fields; the header carries the type (BF8).
+		assert.Equal(t, "rate_limit", string(ctx.Response.Header.Peek(HeaderBifrostErrorType)))
 	})
 
 	t.Run("stream headers carry compat dropped params from ctx in headers mode only", func(t *testing.T) {

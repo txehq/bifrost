@@ -1945,8 +1945,19 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if resp.Audio == nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Speech response is missing audio data")
+	writeSpeechAudio(ctx, resp, attachmentFilename)
+}
+
+// writeSpeechAudio writes a buffered speech response's audio. A vendor 200 with no audio
+// and no error object is the vendor's fault, not the caller's: 502 provider_empty_result
+// (contract C6), keeping the vendor's response headers the caller already forwarded.
+func writeSpeechAudio(ctx *fasthttp.RequestCtx, resp *schemas.BifrostSpeechResponse, attachmentFilename string) {
+	if resp == nil || resp.Audio == nil {
+		emptyErr := schemas.NewProviderEmptyResultError("Speech response is missing audio data")
+		if resp != nil {
+			emptyErr.ExtraFields = schemas.ErrorExtraFieldsFromResponse(resp.ExtraFields, schemas.ErrorTypeProviderEmptyResult)
+		}
+		SendBifrostError(ctx, emptyErr)
 		return
 	}
 
@@ -2639,6 +2650,11 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 					// Skip chunk if plugin wants to skip it
 					continue
 				}
+			}
+
+			// An error frame carries its classification like any other error (contract C6).
+			if chunk.BifrostError != nil {
+				chunk.BifrostError.ResolveErrorType()
 			}
 
 			// Convert response to JSON (transport-goroutine CPU).

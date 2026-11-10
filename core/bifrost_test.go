@@ -22,6 +22,7 @@ import (
 	"github.com/capsohq/bifrost/core/keyselectors"
 	"github.com/capsohq/bifrost/core/mcp"
 	mistralprovider "github.com/capsohq/bifrost/core/providers/mistral"
+	openaiprovider "github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
 	"github.com/mark3labs/mcp-go/server"
@@ -10004,5 +10005,104 @@ func TestVideoGenerationKeepsProviderNormalizedSeconds(t *testing.T) {
 	}
 	if resp.Status != schemas.VideoStatusQueued {
 		t.Errorf("status = %s, want queued", resp.Status)
+	}
+}
+
+// declaringImageProvider declares that it takes only size for image generation, and
+// counts the image generation calls that reach it.
+type declaringImageProvider struct {
+	schemas.Provider
+	calls atomic.Int32
+}
+
+func (p *declaringImageProvider) SupportedUnifiedFields(rt schemas.RequestType) ([]string, bool) {
+	if rt == schemas.ImageGenerationRequest {
+		return []string{"size"}, true
+	}
+	return nil, false
+}
+
+func (p *declaringImageProvider) ImageGeneration(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	p.calls.Add(1)
+	return &schemas.BifrostImageGenerationResponse{Data: []schemas.ImageData{{URL: "https://example.invalid/a.png"}}}, nil
+}
+
+// BF4 through the real request worker: a unified field the provider did not declare is a
+// 400 caller_unsupported_parameter naming the field, and the provider is never called.
+// The declared-only request is the control: it reaches the provider.
+func TestRequestWorkerRejectsUndeclaredUnifiedFieldBeforeUpstream(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 4)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID: "k", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100,
+	}})
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	cfg, err := account.GetConfigForProvider(schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetConfigForProvider: %v", err)
+	}
+	cfg.NetworkConfig.MaxRetries = 0
+
+	upstream := &declaringImageProvider{Provider: openaiprovider.NewOpenAIProvider(cfg, NewNoOpLogger())}
+	pq := &ProviderQueue{queue: make(chan *ChannelMessage, 2), done: make(chan struct{})}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go client.requestWorker(upstream, cfg, pq, &wg)
+	t.Cleanup(func() { pq.signalClosing(); wg.Wait() })
+
+	send := func(params *schemas.ImageGenerationParameters) *schemas.BifrostError {
+		t.Helper()
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		tracer := client.getTracer()
+		ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, tracer.CreateTrace(""))
+		msg := client.getChannelMessage(schemas.BifrostRequest{
+			RequestType: schemas.ImageGenerationRequest,
+			ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.OpenAI, Model: "gpt-image-1",
+				Input:  &schemas.ImageGenerationInput{Prompt: "a cat"},
+				Params: params,
+			},
+		})
+		msg.Context = ctx
+		pq.queue <- msg
+		select {
+		case <-msg.Response:
+			return nil
+		case e := <-msg.Err:
+			return &e
+		case <-time.After(5 * time.Second):
+			t.Fatal("worker never answered")
+		}
+		return nil
+	}
+
+	bErr := send(&schemas.ImageGenerationParameters{N: schemas.Ptr(2), Size: schemas.Ptr("1024x1024")})
+	if bErr == nil {
+		t.Fatal("a request carrying the undeclared field n was served")
+	}
+	if bErr.StatusCode == nil || *bErr.StatusCode != 400 {
+		t.Fatalf("status = %v, want 400", bErr.StatusCode)
+	}
+	if bErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter {
+		t.Fatalf("error_type = %q, want %q", bErr.ExtraFields.ErrorType, schemas.ErrorTypeCallerUnsupportedParameter)
+	}
+	if bErr.Error == nil || bErr.Error.Param != "n" {
+		t.Fatalf("error.param = %+v, want n", bErr.Error)
+	}
+	if got := upstream.calls.Load(); got != 0 {
+		t.Fatalf("the provider was called %d times for a rejected request, want 0", got)
+	}
+
+	if bErr := send(&schemas.ImageGenerationParameters{Size: schemas.Ptr("1024x1024")}); bErr != nil {
+		t.Fatalf("a declared-only request was refused: %+v", bErr.Error)
+	}
+	if got := upstream.calls.Load(); got != 1 {
+		t.Fatalf("the declared-only request reached the provider %d times, want 1", got)
 	}
 }

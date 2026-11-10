@@ -26,6 +26,8 @@ const behaviours = {
 	"upstream-503": () => ({ status: 503, headers: {}, body: errorBody("service unavailable", "server_error", "service_unavailable") }),
 	"upstream-429": () => ({ status: 429, headers: { "Retry-After": "7" }, body: errorBody("rate limit exceeded", "rate_limit_error", "rate_limit_exceeded") }),
 	"upstream-429-ms": () => ({ status: 429, headers: { "retry-after-ms": "2500" }, body: errorBody("rate limit exceeded", "rate_limit_error", "rate_limit_exceeded") }),
+	// A content block under a 403, OpenAI's shape: the caller's content, not the key (contract C6).
+	"upstream-403-content-block": () => ({ status: 403, headers: {}, body: errorBody("Your request was rejected as a result of our safety system.", "invalid_request_error", "content_policy_violation") }),
 	"upstream-ok": () => ({
 		status: 200,
 		headers: {},

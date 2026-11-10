@@ -282,6 +282,8 @@ The set is closed, so this list is exhaustive. **Declared** values are stated by
 | `caller_model_unknown` | The provider rejected the model name | Inferred |
 | `caller_invalid_request` | Malformed or unsatisfiable request (4xx) | Inferred |
 | `caller_cancelled` | The caller hung up before the response completed | Declared or Inferred (status 499) |
+| `caller_content_filtered` | The provider blocked the caller's content (moderation or safety), whatever status it used; never a key failure | Declared or Inferred (error code `content_policy_violation`, `moderation_blocked`, `content_filter`) |
+| `caller_unsupported_parameter` | The request carries a unified field the provider does not take, or a value it cannot send as given; `error.param` names it | Declared |
 | `policy_model_blocked` | The grant does not permit this model on this provider | Declared |
 | `policy_provider_blocked` | The grant does not permit this provider | Declared |
 | `policy_access_denied` | The credential did not resolve, or the grant refuses the caller | Declared |
@@ -296,6 +298,8 @@ The set is closed, so this list is exhaustive. **Declared** values are stated by
 | `provider_timeout` | The upstream did not answer in time | Declared or Inferred (status 504) |
 | `provider_connection_failed` | The connection never established (DNS, refused, TLS) | Declared |
 | `provider_credentials_exhausted` | Every key in the pool returned a permanent per-key error | Declared |
+| `provider_empty_result` | The provider answered 200 with no output and no error object (Bifrost returns 502) | Declared |
+| `provider_cancel_unsupported` | The provider does not allow cancelling this task (cancel routes only) | Declared |
 | `bifrost_dropped` | Request shed because the provider queue was full | Declared |
 | `bifrost_internal` | Bifrost failed for a reason of its own | Declared or Inferred (fallback) |
 | `_OTHER` | No rule matched | — |
@@ -313,6 +317,8 @@ The same status code means different things depending on who produced it, and `e
 - A **503** is `bifrost_dropped` when Bifrost shed the request under queue pressure and `provider_overloaded` when the upstream is at capacity.
 
 Classification always prefers what Bifrost knows over what a status code suggests, so a decision Bifrost made itself is never re-attributed to the provider.
+
+Every error response carries the same value in `extra_fields.error_type`, and in the `x-bifrost-error-type` response header whatever `client.extra_fields_placement` is set to. A route that answers in a provider's native error envelope (`/anthropic/v1/messages`, `/genai/...`) has no `extra_fields`, so the header is where the classification reaches the client there.
 
 The same value is stamped on the provider-attempt span as `bifrost.error.type`, so trace-based exporters (OpenTelemetry, Datadog) classify identically instead of re-deriving from the raw provider `error.type`. Pre-dispatch refusals produce no attempt span, so they reach the metrics but not the span.
 

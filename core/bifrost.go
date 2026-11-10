@@ -8091,6 +8091,14 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 
 		bifrost.endCoreSpan(workerSetupSpan)
 
+		// A unified field this provider declared it does not take is refused here, before a
+		// key is chosen, so the request makes no upstream call (contract C4, BF4).
+		if fieldErr := schemas.CheckDeclaredUnifiedFields(provider, &req.BifrostRequest); fieldErr != nil {
+			fieldErr.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), model, model)
+			bifrost.sendWorkerError(req, *fieldErr)
+			continue
+		}
+
 		var keys []schemas.Key
 		// keyProvider is passed to executeRequestWithRetries to manage key selection and rotation.
 		// It is nil when no key is required (e.g. providerRequiresKey=false) or for multi-key

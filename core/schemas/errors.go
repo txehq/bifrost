@@ -1,5 +1,7 @@
 package schemas
 
+import "slices"
+
 // Wire-level values Bifrost stamps on BifrostError.Type. These are the client-visible
 // error contract, separate from the ErrorType vocabulary below.
 const (
@@ -24,6 +26,13 @@ const (
 	ErrorTypeCallerModelUnknown      ErrorType = "caller_model_unknown"       // provider rejected the name
 	ErrorTypeCallerInvalidRequest    ErrorType = "caller_invalid_request"
 	ErrorTypeCallerCancelled         ErrorType = "caller_cancelled"
+	// The vendor refused the caller's content (a moderation or safety block), whatever
+	// status it used. A 403 block is about the content, not the key: never rotated on.
+	ErrorTypeCallerContentFiltered ErrorType = "caller_content_filtered"
+	// The request carries a unified field this provider does not take, or a value it
+	// cannot send as given. Bifrost rejects it rather than dropping, rewriting or
+	// clamping the field; error.param names the field (see NewUnsupportedParameterError).
+	ErrorTypeCallerUnsupportedParameter ErrorType = "caller_unsupported_parameter"
 
 	// policy: Bifrost's configuration refused it before dispatch.
 	ErrorTypePolicyModelBlocked    ErrorType = "policy_model_blocked"
@@ -42,6 +51,11 @@ const (
 	ErrorTypeProviderTimeout              ErrorType = "provider_timeout"
 	ErrorTypeProviderConnectionFailed     ErrorType = "provider_connection_failed"
 	ErrorTypeProviderCredentialsExhausted ErrorType = "provider_credentials_exhausted" // every key in the pool was dead
+	// The vendor answered 200 with no output and no error object (an ElevenLabs 200
+	// with no audio). Bifrost returns 502.
+	ErrorTypeProviderEmptyResult ErrorType = "provider_empty_result"
+	// The vendor does not allow cancelling this task. Only the cancel routes return it.
+	ErrorTypeProviderCancelUnsupported ErrorType = "provider_cancel_unsupported"
 
 	// bifrost: Bifrost itself failed.
 	ErrorTypeBifrostDropped  ErrorType = "bifrost_dropped" // queue full, request shed
@@ -67,6 +81,8 @@ var ErrorTypes = []ErrorType{
 	ErrorTypeCallerModelUnknown,
 	ErrorTypeCallerInvalidRequest,
 	ErrorTypeCallerCancelled,
+	ErrorTypeCallerContentFiltered,
+	ErrorTypeCallerUnsupportedParameter,
 	ErrorTypePolicyModelBlocked,
 	ErrorTypePolicyProviderBlocked,
 	ErrorTypePolicyAccessDenied,
@@ -81,6 +97,8 @@ var ErrorTypes = []ErrorType{
 	ErrorTypeProviderTimeout,
 	ErrorTypeProviderConnectionFailed,
 	ErrorTypeProviderCredentialsExhausted,
+	ErrorTypeProviderEmptyResult,
+	ErrorTypeProviderCancelUnsupported,
 	ErrorTypeBifrostDropped,
 	ErrorTypeBifrostInternal,
 	ErrorTypeOther,
@@ -154,6 +172,10 @@ func ClassifyErrorType(err *BifrostError, requestType RequestType) ErrorType {
 		}
 	}
 
+	if IsContentFilterError(err) {
+		return ErrorTypeCallerContentFiltered
+	}
+
 	if err.StatusCode != nil {
 		if classified, ok := classifyProviderStatus(*err.StatusCode, requestType); ok {
 			return classified
@@ -165,6 +187,43 @@ func ClassifyErrorType(err *BifrostError, requestType RequestType) ErrorType {
 	}
 
 	return ErrorTypeOther
+}
+
+// ResolveErrorType writes the error's classification into ExtraFields.ErrorType and
+// returns it: the producer's declaration when it is in the vocabulary, else what
+// ClassifyErrorType infers. An invalid declaration is replaced by ErrorTypeOther, so
+// what a client reads is always a published value. The transport calls it on the copy
+// it sends, so every error response carries extra_fields.error_type (contract C6).
+func (e *BifrostError) ResolveErrorType() ErrorType {
+	if e == nil {
+		return ""
+	}
+	resolved := ClassifyErrorType(e, e.ExtraFields.RequestType)
+	e.ExtraFields.ErrorType = resolved
+	return resolved
+}
+
+// contentFilterCodes are the error codes vendors use for a moderation or safety block of
+// the caller's content: OpenAI's content_policy_violation (images, Sora) and
+// moderation_blocked (gpt-image), and Azure OpenAI's content_filter. A provider whose
+// block arrives under any other code declares ErrorTypeCallerContentFiltered itself, in
+// its own error parsing.
+var contentFilterCodes = []string{"content_policy_violation", "moderation_blocked", "content_filter"}
+
+// IsContentFilterError reports whether a vendor error says the caller's content was
+// blocked: a declared ErrorTypeCallerContentFiltered, or one of contentFilterCodes as the
+// error's code. A Bifrost-built error is never one, whatever its code.
+func IsContentFilterError(err *BifrostError) bool {
+	if err == nil {
+		return false
+	}
+	if err.ExtraFields.ErrorType == ErrorTypeCallerContentFiltered {
+		return true
+	}
+	if err.IsBifrostError || err.Error == nil || err.Error.Code == nil {
+		return false
+	}
+	return slices.Contains(contentFilterCodes, *err.Error.Code)
 }
 
 // nestedErrorType returns err.Error.Type without dereferencing a nil Error.
