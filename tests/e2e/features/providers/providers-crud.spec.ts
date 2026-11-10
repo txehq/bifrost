@@ -3,6 +3,7 @@ import { expect, test } from "../../core/fixtures/base.fixture";
 import {
   createCustomProviderData,
   createProviderKeyData,
+  REGISTRATION_ONLY_PROVIDERS,
 } from "./providers.data";
 
 // Track created resources for cleanup
@@ -328,6 +329,43 @@ test.describe("Providers", () => {
       expect(saved?.cloudflare_key_config?.account_id?.value).toBe(accountId);
     });
   });
+
+  for (const { name, label } of REGISTRATION_ONLY_PROVIDERS) {
+    test(`should add the ${label} provider from the dropdown and save an API key`, async ({
+      providersPage,
+      page,
+    }) => {
+      if (!(await providersPage.providerExists(name))) {
+        await providersPage.addKnownProviderFromDropdown(name);
+        createdProviders.push(name);
+      }
+      const item = providersPage.getProviderItem(name);
+      await expect(item).toBeVisible({ timeout: 15000 });
+      await expect(item).toContainText(label);
+      await providersPage.selectProvider(name);
+      await expect(providersPage.page).toHaveURL(new RegExp(`provider=${name}`));
+
+      const keyName = `${name}-Key-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      createdKeys.push({ provider: name, keyName });
+
+      await providersPage.dismissToasts();
+      await providersPage.addKeyBtn.click();
+      await expect(providersPage.keyForm).toBeVisible();
+      await page.getByLabel("Name").fill(keyName);
+      await page.getByLabel("API Key").fill(`e2e-${name}-api-key`);
+
+      // The provider lists no models yet, so model discovery on save fails; the key must still save.
+      await providersPage.keySaveBtn.click();
+      await providersPage.waitForSuccessToast();
+      await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+      expect(await providersPage.keyExists(keyName)).toBe(true);
+
+      const keysResponse = await page.request.get(`/api/providers/${name}/keys`);
+      expect(keysResponse.ok()).toBe(true);
+      const saved = ((await keysResponse.json()) as { keys: { name: string }[] }).keys.find((k) => k.name === keyName);
+      expect(saved, "saved key must be listed").toBeTruthy();
+    });
+  }
 
   test.describe("Custom Providers", () => {
     test("should open custom provider creation sheet", async ({

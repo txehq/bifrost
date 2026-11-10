@@ -72,6 +72,14 @@ export const SAMPLE_MODELS = {
 export const NEWLY_ADDED_PROVIDERS = ['glm', 'minimax', 'moonshot', 'volcengine', 'deepseek', 'qwen'] as const
 
 /**
+ * Fork providers registered before their operations exist, with the label the UI shows.
+ * Each must be addable from the "Add New Provider" dropdown and take a plain API key.
+ */
+export const REGISTRATION_ONLY_PROVIDERS = [
+  { name: 'dashscope', label: 'Alibaba DashScope' },
+] as const
+
+/**
  * Seed model canaries used to verify provider model catalog population.
  */
 export const NEW_PROVIDER_MODEL_CANARIES: Partial<Record<(typeof NEWLY_ADDED_PROVIDERS)[number], string>> = {
