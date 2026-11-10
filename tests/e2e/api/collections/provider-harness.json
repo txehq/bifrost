@@ -316878,11 +316878,300 @@
     },
     {
       "name": "313. MiniMax chat content-safety flags (minimax sensitivity flags)",
-      "description": "TXE-6595 (vendor sheet B1, contract C6): MiniMax reports whether its content filter fired in top-level input_sensitive, output_sensitive, input_sensitive_type and output_sensitive_type on every chat response (platform.minimax.io/docs/api-reference/text-chat-openai). Bifrost returns them under the same names on the unified chat response. A benign prompt must come back with all four present and input_sensitive false. The streamed terminal chunk carrying the flags is pinned by TestMiniMaxChatStreamCarriesSensitivityFlags in core/providers/minimax. The native /v1/responses and /anthropic/v1/messages cases for the same ticket stay in folder 284 next to the cases they replaced. The replay case sends MiniMax-shaped reasoning history (summary [], reasoning_text content) back to /v1/responses; that Bifrost keeps the reasoning item on the wire is pinned by TestMiniMaxResponsesReplaysReasoningContent.",
+      "description": "TXE-6595 (vendor sheet B1, contract C6): MiniMax reports whether its content filter fired in top-level input_sensitive, output_sensitive, input_sensitive_type and output_sensitive_type on every chat response (platform.minimax.io/docs/api-reference/text-chat-openai). Bifrost returns them under the same names on the unified chat response. A benign prompt must come back with all four present and input_sensitive false. The streamed terminal chunk carrying the flags is pinned by TestMiniMaxChatStreamCarriesSensitivityFlags in core/providers/minimax. The native /v1/responses and /anthropic/v1/messages cases for the same ticket stay in folder 284 next to the cases they replaced. The replay case sends MiniMax-shaped reasoning history (summary [], reasoning_text content) back to /v1/responses; that Bifrost keeps the reasoning item on the wire is pinned by TestMiniMaxResponsesReplaysReasoningContent. Rows 313.1 to 313.5 run against the provider error fixture (tests/e2e/api/runners/provider-error-fixture.mjs, providerErrorFixture=1, no vendor key): the fixture's minimax answers chat for sensitive-flags with input_sensitive true and type 5, answers /v1/responses natively and serves /anthropic/v1/messages at the API origin, and GET /__wire shows what reached it. The two unnumbered rows assert what MiniMax's own filter and model return; they need a live MiniMax key, are skipped on a fixture run and stay structural-only in this program.",
       "item": [
+        {
+          "name": "313.1 fixture counters and recorded requests reset (minimax sensitivity flags)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "if (!pm.variables.get('providerErrorFixtureUrl')) {",
+                  "  pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('counters cleared', function () { pm.expect(j.data[0].reset, pm.response.text()).to.equal(true); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{providerErrorFixtureUrl}}/__reset"
+          }
+        },
+        {
+          "name": "313.2 /v1/chat/completions - MiniMax's flags (input_sensitive true, type 5) reach the unified response (minimax sensitivity flags)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "if (!pm.variables.get('providerErrorFixtureUrl')) {",
+                  "  pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('served by minimax', function () { pm.expect(j.extra_fields && j.extra_fields.provider, pm.response.text()).to.equal('minimax'); });",
+                  "pm.test('input_sensitive is the true MiniMax sent', function () { pm.expect(j.input_sensitive, pm.response.text()).to.equal(true); });",
+                  "pm.test('input_sensitive_type is the 5 (abusive) MiniMax sent', function () { pm.expect(j.input_sensitive_type, pm.response.text()).to.equal(5); });",
+                  "pm.test('output_sensitive is the false MiniMax sent', function () { pm.expect(j.output_sensitive, pm.response.text()).to.equal(false); });",
+                  "pm.test('output_sensitive_type is the 0 MiniMax sent', function () { pm.expect(j.output_sensitive_type, pm.response.text()).to.equal(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/sensitive-flags\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "313.3 /v1/chat/completions stream - the terminal chunk carries MiniMax's flags (minimax sensitivity flags)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "if (!pm.variables.get('providerErrorFixtureUrl')) {",
+                  "  pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "var chunks = pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "pm.test('the stream has chunks', function () { pm.expect(chunks.length, pm.response.text()).to.be.above(0); });",
+                  "var last = chunks[chunks.length - 1] || {};",
+                  "pm.test('the terminal chunk carries input_sensitive true and type 5', function () { pm.expect(last.input_sensitive, JSON.stringify(last)).to.equal(true); pm.expect(last.input_sensitive_type, JSON.stringify(last)).to.equal(5); });",
+                  "pm.test('the terminal chunk carries output_sensitive false and type 0', function () { pm.expect(last.output_sensitive, JSON.stringify(last)).to.equal(false); pm.expect(last.output_sensitive_type, JSON.stringify(last)).to.equal(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/sensitive-flags\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "313.4 /v1/responses - reaches MiniMax's native /v1/responses with the replayed reasoning_text item (minimax sensitivity flags)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "if (!pm.variables.get('providerErrorFixtureUrl')) {",
+                  "  pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('a completed Responses object from minimax', function () { pm.expect(j.extra_fields && j.extra_fields.provider, pm.response.text()).to.equal('minimax'); pm.expect(j.status, pm.response.text()).to.equal('completed'); });",
+                  "pm.test('MiniMax\\'s reasoning item comes back with its reasoning_text', function () { var r = (j.output || []).filter(function (o) { return o.type === 'reasoning'; })[0]; pm.expect(r, pm.response.text()).to.exist; pm.expect(JSON.stringify(r.content || []), pm.response.text()).to.include('Compare the tenths'); });",
+                  "var fx = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "pm.sendRequest({ url: fx + '/__wire', method: 'GET' }, function (err, res) {",
+                  "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+                  "  var calls = res.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/minimax/') === 0 && c.body.indexOf('And 9.11 or 9.2?') !== -1; });",
+                  "  pm.test('one request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
+                  "  pm.test('it went to the native /v1/responses, not chat completions', function () { pm.expect(calls[0].path, res.text()).to.equal('/pp/minimax/v1/responses'); });",
+                  "  var sent = JSON.parse(calls[0].body);",
+                  "  var replayed = (sent.input || []).filter(function (i) { return i.type === 'reasoning'; })[0];",
+                  "  pm.test('the replayed reasoning item reached MiniMax', function () { pm.expect(replayed, calls[0].body).to.exist; });",
+                  "  pm.test('with its reasoning_text content', function () { pm.expect(JSON.stringify(replayed.content || []), calls[0].body).to.include('Compare the tenths'); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/fx-responses\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Which is bigger, 9.11 or 9.9?\"\n    },\n    {\n      \"id\": \"rs_fx_1\",\n      \"type\": \"reasoning\",\n      \"summary\": [],\n      \"content\": [\n        {\n          \"type\": \"reasoning_text\",\n          \"text\": \"Compare the tenths: 9 is more than 1.\"\n        }\n      ]\n    },\n    {\n      \"id\": \"msg_fx_1\",\n      \"type\": \"message\",\n      \"role\": \"assistant\",\n      \"status\": \"completed\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"9.9\",\n          \"annotations\": []\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"And 9.11 or 9.2?\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "313.5 /anthropic/v1/messages - forwarded unchanged to MiniMax's /anthropic/v1/messages (minimax sensitivity flags)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "if (!pm.variables.get('providerErrorFixtureUrl')) {",
+                  "  pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('status is 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('the Messages response MiniMax sent comes back', function () { pm.expect(j.type, pm.response.text()).to.equal('message'); pm.expect(j.id, pm.response.text()).to.equal('msg_fixture'); });",
+                  "var fx = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "pm.sendRequest({ url: fx + '/__wire', method: 'GET' }, function (err, res) {",
+                  "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+                  "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/anthropic/v1/messages'; });",
+                  "  pm.test('one request reached MiniMax\\'s Anthropic endpoint', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
+                  "  var sent = JSON.parse(calls[0].body);",
+                  "  pm.test('the model is MiniMax\\'s own name', function () { pm.expect(sent.model, calls[0].body).to.equal('MiniMax-M3'); });",
+                  "  pm.test('fields Bifrost does not model are forwarded unchanged', function () { pm.expect(sent.output_config, calls[0].body).to.eql({ effort: 'max' }); pm.expect(sent.system, calls[0].body).to.equal('be brief'); pm.expect(sent.max_tokens, calls[0].body).to.equal(64); pm.expect(sent.messages, calls[0].body).to.eql([{ role: 'user', content: 'hi' }]); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"max_tokens\": 64,\n  \"system\": \"be brief\",\n  \"output_config\": {\n    \"effort\": \"max\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+            }
+          }
+        },
         {
           "name": "/v1/chat/completions - content-safety flags input_sensitive/output_sensitive - minimax/MiniMax-M3",
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Live MiniMax row: it asserts what the vendor's own filter and model return, so a fixture run skips it.",
+                  "if (pm.variables.get('providerErrorFixture') === '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
@@ -316930,6 +317219,18 @@
         {
           "name": "/v1/responses - replayed MiniMax reasoning_text history is accepted - minimax/MiniMax-M3",
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Live MiniMax row: it asserts what the vendor's own filter and model return, so a fixture run skips it.",
+                  "if (pm.variables.get('providerErrorFixture') === '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
