@@ -521,6 +521,36 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 	return geminiReq
 }
 
+// ValidateImagenImageGenerationParams rejects the unified fields Imagen generation cannot deliver.
+// Fork (TXE-6536, contract C4 agreement three): Imagen's :predict has no quality or background
+// parameter, and both can change what a request is priced at, so they return 400
+// caller_unsupported_parameter instead of being dropped. Every Imagen generation path calls this
+// before building the upstream request; a rejected request makes no upstream call.
+func ValidateImagenImageGenerationParams(params *schemas.ImageGenerationParameters) *schemas.BifrostError {
+	if params == nil {
+		return nil
+	}
+	return rejectImagenUnsupportedParams(params.Quality, params.Background)
+}
+
+// ValidateImagenImageEditParams is ValidateImagenImageGenerationParams for Imagen edit.
+func ValidateImagenImageEditParams(params *schemas.ImageEditParameters) *schemas.BifrostError {
+	if params == nil {
+		return nil
+	}
+	return rejectImagenUnsupportedParams(params.Quality, params.Background)
+}
+
+func rejectImagenUnsupportedParams(quality, background *string) *schemas.BifrostError {
+	if quality != nil {
+		return schemas.NewUnsupportedParameterError("quality", "Imagen models do not support the quality parameter")
+	}
+	if background != nil {
+		return schemas.NewUnsupportedParameterError("background", "Imagen models do not support the background parameter")
+	}
+	return nil
+}
+
 // ToImagenImageGenerationRequest converts a Bifrost Image Request to Imagen format
 func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRequest) *GeminiImagenRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
@@ -627,6 +657,13 @@ func ToImagenImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 					req.Parameters.SafetySettings = settings
 				}
 			}
+
+			// Imagen reports raiFilteredReason only when this is set. Passed through when the
+			// caller sends it, as the edit converter does; never added on the caller's behalf.
+			if includeRaiReason, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["includeRaiReason"]); ok {
+				delete(req.ExtraParams, "includeRaiReason")
+				req.Parameters.IncludeRaiReason = includeRaiReason
+			}
 		}
 	}
 
@@ -679,32 +716,52 @@ func convertOutputFormatToMimeType(outputFormat string) string {
 	}
 }
 
-// ToBifrostImageGenerationResponse converts an Imagen response to Bifrost format
+// ToBifrostImageGenerationResponse converts an Imagen response to Bifrost format.
+//
+// Fork (TXE-6536, contract C5 and C6): only predictions that carry image bytes reach Data, numbered
+// without gaps. A prediction with no bytes and a raiFilteredReason was blocked: it takes no slot and
+// is reported in ContentFilter with the vendor's reason verbatim. A prediction with neither is not a
+// blocked image (includeSafetyAttributes appends one holding only the prompt's safety attributes), so
+// it is skipped without being counted. Usage.OutputImages is the number delivered, 0 included.
 func (response *GeminiImagenResponse) ToBifrostImageGenerationResponse() *schemas.BifrostImageGenerationResponse {
 	if response == nil {
 		return nil
 	}
 
 	bifrostResp := &schemas.BifrostImageGenerationResponse{
-		Data: make([]schemas.ImageData, len(response.Predictions)),
+		Data: make([]schemas.ImageData, 0, len(response.Predictions)),
 	}
 
-	// Convert each prediction to ImageData
-	for i, prediction := range response.Predictions {
-		bifrostResp.Data[i] = schemas.ImageData{
-			B64JSON: prediction.BytesBase64Encoded,
-			Index:   i,
+	var filteredReasons []string
+	for _, prediction := range response.Predictions {
+		if prediction.BytesBase64Encoded == "" {
+			if prediction.RaiFilteredReason != "" {
+				filteredReasons = append(filteredReasons, prediction.RaiFilteredReason)
+			}
+			continue
 		}
 
-		// Set output format from MIME type if available
-		if prediction.MimeType != "" && i == 0 {
-			// Convert MIME type to file extension for OutputFormat
-			outputFormat := convertMimeTypeToExtension(prediction.MimeType)
+		// The output format comes from the first delivered image, which is not
+		// predictions[0] when that one was blocked.
+		if prediction.MimeType != "" && len(bifrostResp.Data) == 0 {
 			bifrostResp.ImageGenerationResponseParameters = &schemas.ImageGenerationResponseParameters{
-				OutputFormat: outputFormat,
+				OutputFormat: convertMimeTypeToExtension(prediction.MimeType),
 			}
 		}
+
+		bifrostResp.Data = append(bifrostResp.Data, schemas.ImageData{
+			B64JSON: prediction.BytesBase64Encoded,
+			Index:   len(bifrostResp.Data),
+		})
 	}
+
+	if len(filteredReasons) > 0 {
+		bifrostResp.ContentFilter = &schemas.ContentFilterInfo{
+			FilteredCount: len(filteredReasons),
+			Reasons:       filteredReasons,
+		}
+	}
+	bifrostResp.Usage = &schemas.ImageUsage{OutputImages: schemas.Ptr(len(bifrostResp.Data))}
 
 	return bifrostResp
 }

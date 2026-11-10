@@ -2098,10 +2098,22 @@ func (provider *VertexProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
+// isVertexImagenRequest reports whether the image handlers send model to Imagen's :predict. It
+// follows the handlers' own branch order, where the Gemini and fine-tuned branches come first.
+func isVertexImagenRequest(ctx *schemas.BifrostContext, model string) bool {
+	return !schemas.IsGeminiModelFamily(ctx, model) && !schemas.IsAllDigitsASCII(model) && schemas.IsImagenModelFamily(ctx, model)
+}
+
 func (provider *VertexProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	// Validate model type before processing
 	if !schemas.IsGeminiModelFamily(ctx, request.Model) && !schemas.IsAllDigitsASCII(request.Model) && !schemas.IsImagenModelFamily(ctx, request.Model) {
 		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("image generation is only supported for Gemini and Imagen models, got: %s", request.Model))
+	}
+
+	if isVertexImagenRequest(ctx, request.Model) {
+		if bifrostErr := gemini.ValidateImagenImageGenerationParams(request.Params); bifrostErr != nil {
+			return nil, bifrostErr
+		}
 	}
 
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
@@ -2312,6 +2324,12 @@ func (provider *VertexProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 	// Validate model type before processing
 	if !schemas.IsGeminiModelFamily(ctx, request.Model) && !schemas.IsAllDigitsASCII(request.Model) && !schemas.IsImagenModelFamily(ctx, request.Model) {
 		return nil, providerUtils.NewConfigurationError(fmt.Sprintf("image edit is only supported for Gemini and Imagen models, got: %s", request.Model))
+	}
+
+	if isVertexImagenRequest(ctx, request.Model) {
+		if bifrostErr := gemini.ValidateImagenImageEditParams(request.Params); bifrostErr != nil {
+			return nil, bifrostErr
+		}
 	}
 
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(

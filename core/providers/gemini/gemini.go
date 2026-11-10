@@ -2116,6 +2116,10 @@ func (provider *GeminiProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 
 // handleImagenImageGeneration handles Imagen model requests using Vertex AI endpoint with API key auth
 func (provider *GeminiProvider) handleImagenImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if bifrostErr := ValidateImagenImageGenerationParams(request.Params); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
 	// Prepare Imagen request body
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -2209,6 +2213,10 @@ func (provider *GeminiProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 
 	// Handle Imagen models using :predict endpoint
 	if schemas.IsImagenModel(request.Model) {
+		if bifrostErr := ValidateImagenImageEditParams(request.Params); bifrostErr != nil {
+			return nil, bifrostErr
+		}
+
 		jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,

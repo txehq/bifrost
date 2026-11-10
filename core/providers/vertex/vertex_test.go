@@ -1,12 +1,15 @@
 package vertex_test
 
 import (
+	"context"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/internal/llmtests"
 	"github.com/capsohq/bifrost/core/providers/gemini"
+	"github.com/capsohq/bifrost/core/providers/vertex"
 
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -210,4 +213,46 @@ func TestVertexGeminiRejectsUnsupportedScheme(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `URL scheme "file" is not allowed`)
+}
+
+// The rejection has to come before any key or endpoint work: the empty key below would otherwise
+// fail with "project ID is not set".
+func TestVertexImagen_UnsupportedParamsReturn400(t *testing.T) {
+	config := &schemas.ProviderConfig{}
+	config.CheckAndSetDefaults()
+	provider, err := vertex.NewVertexProvider(config, nil)
+	require.NoError(t, err)
+	newCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	assertRejected := func(t *testing.T, bifrostErr *schemas.BifrostError, param string) {
+		t.Helper()
+		require.NotNil(t, bifrostErr)
+		require.NotNil(t, bifrostErr.StatusCode)
+		assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+		require.NotNil(t, bifrostErr.Error)
+		assert.Equal(t, param, bifrostErr.Error.Param)
+		assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+	}
+	generation := func(model string, params *schemas.ImageGenerationParameters) *schemas.BifrostImageGenerationRequest {
+		return &schemas.BifrostImageGenerationRequest{Provider: schemas.Vertex, Model: model, Input: &schemas.ImageGenerationInput{Prompt: "a red apple"}, Params: params}
+	}
+	edit := func(params *schemas.ImageEditParameters) *schemas.BifrostImageEditRequest {
+		return &schemas.BifrostImageEditRequest{Provider: schemas.Vertex, Model: "imagen-3.0-capability-001", Input: &schemas.ImageEditInput{Prompt: "make it green", Images: []schemas.ImageInput{{Image: []byte("png")}}}, Params: params}
+	}
+
+	_, bifrostErr := provider.ImageGeneration(newCtx(), schemas.Key{}, generation("imagen-4.0-generate-001", &schemas.ImageGenerationParameters{Quality: schemas.Ptr("high")}))
+	assertRejected(t, bifrostErr, "quality")
+	_, bifrostErr = provider.ImageGeneration(newCtx(), schemas.Key{}, generation("imagen-4.0-generate-001", &schemas.ImageGenerationParameters{Background: schemas.Ptr("transparent")}))
+	assertRejected(t, bifrostErr, "background")
+	_, bifrostErr = provider.ImageEdit(newCtx(), schemas.Key{}, edit(&schemas.ImageEditParameters{Quality: schemas.Ptr("high")}))
+	assertRejected(t, bifrostErr, "quality")
+	_, bifrostErr = provider.ImageEdit(newCtx(), schemas.Key{}, edit(&schemas.ImageEditParameters{Background: schemas.Ptr("opaque")}))
+	assertRejected(t, bifrostErr, "background")
+
+	// A Gemini image model on the same route is not an Imagen request: it passes this check and
+	// stops at the missing project instead.
+	_, bifrostErr = provider.ImageGeneration(newCtx(), schemas.Key{}, generation("gemini-2.5-flash-image", &schemas.ImageGenerationParameters{Quality: schemas.Ptr("high")}))
+	require.NotNil(t, bifrostErr)
+	assert.NotEqual(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
 }

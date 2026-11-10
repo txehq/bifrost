@@ -1,7 +1,12 @@
 package gemini
 
 import (
+	"context"
 	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -234,4 +239,227 @@ func TestToImagenImageEditRequest_ExtraParamsSurviveRetries(t *testing.T) {
 
 	assert.Len(t, bifrostReq.Params.ExtraParams, 14)
 	assert.Contains(t, bifrostReq.Params.ExtraParams, "maskMode")
+}
+
+// imagenPartiallyFilteredResponse has the shape Imagen returns with includeRaiReason on: the blocked
+// image's prediction holds only the reason, and the middle position shows the blocked image takes no
+// slot in data.
+const imagenPartiallyFilteredResponse = `{"predictions":[
+	{"bytesBase64Encoded":"aW1hZ2Ux","mimeType":"image/png"},
+	{"raiFilteredReason":"Unable to show generated images. Support codes: 58061214"},
+	{"bytesBase64Encoded":"aW1hZ2Uy","mimeType":"image/png"}
+]}`
+
+func TestImagenResponse_FilteredImagesAndOutputCount(t *testing.T) {
+	const reasonA = "Unable to show generated images. Support codes: 58061214"
+	const reasonB = "Your current safety filter settings do not allow generation. Support codes: 17301594"
+
+	tests := []struct {
+		name         string
+		body         string
+		wantData     []string
+		wantReasons  []string
+		wantFormat   string
+		wantDataJSON string
+	}{
+		{
+			name:        "one of three blocked",
+			body:        imagenPartiallyFilteredResponse,
+			wantData:    []string{"aW1hZ2Ux", "aW1hZ2Uy"},
+			wantReasons: []string{reasonA},
+			wantFormat:  "png",
+		},
+		{
+			name:        "first blocked still reports the delivered format",
+			body:        `{"predictions":[{"raiFilteredReason":"` + reasonA + `"},{"bytesBase64Encoded":"aW1hZ2Ux","mimeType":"image/jpeg"}]}`,
+			wantData:    []string{"aW1hZ2Ux"},
+			wantReasons: []string{reasonA},
+			wantFormat:  "jpeg",
+		},
+		{
+			name:         "all blocked keeps one reason per image and an empty array",
+			body:         `{"predictions":[{"raiFilteredReason":"` + reasonA + `"},{"raiFilteredReason":"` + reasonB + `"}]}`,
+			wantData:     []string{},
+			wantReasons:  []string{reasonA, reasonB},
+			wantDataJSON: `"data":[]`,
+		},
+		{
+			name:       "nothing blocked has no content_filter",
+			body:       `{"predictions":[{"bytesBase64Encoded":"aW1hZ2Ux","mimeType":"image/webp"}]}`,
+			wantData:   []string{"aW1hZ2Ux"},
+			wantFormat: "webp",
+		},
+		{
+			name:       "a prediction with neither bytes nor reason is skipped and not counted",
+			body:       `{"predictions":[{"bytesBase64Encoded":"aW1hZ2Ux","mimeType":"image/png"},{"mimeType":"image/png"}]}`,
+			wantData:   []string{"aW1hZ2Ux"},
+			wantFormat: "png",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var response GeminiImagenResponse
+			require.NoError(t, json.Unmarshal([]byte(tt.body), &response))
+
+			got := response.ToBifrostImageGenerationResponse()
+
+			require.Len(t, got.Data, len(tt.wantData))
+			for i, want := range tt.wantData {
+				assert.Equal(t, want, got.Data[i].B64JSON)
+				assert.Equal(t, i, got.Data[i].Index, "blocked images take no slot")
+			}
+
+			require.NotNil(t, got.Usage)
+			require.NotNil(t, got.Usage.OutputImages)
+			assert.Equal(t, len(tt.wantData), *got.Usage.OutputImages)
+
+			if tt.wantReasons == nil {
+				assert.Nil(t, got.ContentFilter)
+			} else {
+				require.NotNil(t, got.ContentFilter)
+				assert.Equal(t, len(tt.wantReasons), got.ContentFilter.FilteredCount)
+				assert.Equal(t, tt.wantReasons, got.ContentFilter.Reasons)
+			}
+
+			if tt.wantFormat == "" {
+				assert.Nil(t, got.ImageGenerationResponseParameters)
+			} else {
+				require.NotNil(t, got.ImageGenerationResponseParameters)
+				assert.Equal(t, tt.wantFormat, got.ImageGenerationResponseParameters.OutputFormat)
+			}
+
+			wire, err := json.Marshal(got)
+			require.NoError(t, err)
+			if tt.wantDataJSON != "" {
+				assert.Contains(t, string(wire), tt.wantDataJSON)
+				assert.Contains(t, string(wire), `"output_images":0`, "zero delivered is reported, not omitted")
+			}
+		})
+	}
+}
+
+func TestToImagenImageGenerationRequest_IncludeRaiReasonOnlyWhenSent(t *testing.T) {
+	request := func(extra map[string]interface{}) *schemas.BifrostImageGenerationRequest {
+		return &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Vertex,
+			Model:    "imagen-4.0-generate-001",
+			Input:    &schemas.ImageGenerationInput{Prompt: "a red apple"},
+			Params:   &schemas.ImageGenerationParameters{ExtraParams: extra},
+		}
+	}
+
+	sent := ToImagenImageGenerationRequest(request(map[string]interface{}{"includeRaiReason": true}))
+	require.NotNil(t, sent.Parameters.IncludeRaiReason)
+	assert.True(t, *sent.Parameters.IncludeRaiReason)
+	assert.Empty(t, sent.GetExtraParams(), "the converted key must not also go out as an extra")
+
+	notSent := ToImagenImageGenerationRequest(request(map[string]interface{}{}))
+	assert.Nil(t, notSent.Parameters.IncludeRaiReason, "Bifrost does not add a value the caller did not send")
+}
+
+func assertImagenUnsupportedParameter(t *testing.T, bifrostErr *schemas.BifrostError, param string) {
+	t.Helper()
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.StatusCode)
+	assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+	require.NotNil(t, bifrostErr.Error)
+	assert.Equal(t, param, bifrostErr.Error.Param)
+	assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+}
+
+func TestGeminiImagen_UnsupportedParamsRejectedWithoutUpstreamCall(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(imagenPartiallyFilteredResponse))
+	}))
+	defer server.Close()
+
+	provider := NewGeminiProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+	}, testNoopLogger{})
+	key := schemas.Key{Value: *schemas.NewSecretVar("gemini-test")}
+	newCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+	generation := func(params *schemas.ImageGenerationParameters) *schemas.BifrostImageGenerationRequest {
+		return &schemas.BifrostImageGenerationRequest{Provider: schemas.Gemini, Model: "imagen-4.0-generate-001", Input: &schemas.ImageGenerationInput{Prompt: "a red apple"}, Params: params}
+	}
+	edit := func(params *schemas.ImageEditParameters) *schemas.BifrostImageEditRequest {
+		return &schemas.BifrostImageEditRequest{Provider: schemas.Gemini, Model: "imagen-3.0-capability-001", Input: &schemas.ImageEditInput{Prompt: "make it green", Images: []schemas.ImageInput{{Image: imageTestPNG(t)}}}, Params: params}
+	}
+
+	_, bifrostErr := provider.ImageGeneration(newCtx(), key, generation(&schemas.ImageGenerationParameters{Quality: schemas.Ptr("high")}))
+	assertImagenUnsupportedParameter(t, bifrostErr, "quality")
+	_, bifrostErr = provider.ImageGeneration(newCtx(), key, generation(&schemas.ImageGenerationParameters{Background: schemas.Ptr("transparent")}))
+	assertImagenUnsupportedParameter(t, bifrostErr, "background")
+	_, bifrostErr = provider.ImageEdit(newCtx(), key, edit(&schemas.ImageEditParameters{Quality: schemas.Ptr("high")}))
+	assertImagenUnsupportedParameter(t, bifrostErr, "quality")
+	_, bifrostErr = provider.ImageEdit(newCtx(), key, edit(&schemas.ImageEditParameters{Background: schemas.Ptr("opaque")}))
+	assertImagenUnsupportedParameter(t, bifrostErr, "background")
+	assert.Zero(t, calls.Load(), "a rejected request makes no upstream call")
+
+	// Without those fields the same paths reach the vendor once and report the filtered image.
+	response, bifrostErr := provider.ImageGeneration(newCtx(), key, generation(&schemas.ImageGenerationParameters{N: schemas.Ptr(3)}))
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, int32(1), calls.Load())
+	assert.Len(t, response.Data, 2)
+	require.NotNil(t, response.ContentFilter)
+	assert.Equal(t, 1, response.ContentFilter.FilteredCount)
+
+	response, bifrostErr = provider.ImageEdit(newCtx(), key, edit(&schemas.ImageEditParameters{}))
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, int32(2), calls.Load())
+	require.NotNil(t, response.Usage)
+	assert.Equal(t, schemas.Ptr(2), response.Usage.OutputImages)
+}
+
+func TestValidateImagenParams_NilAndAbsent(t *testing.T) {
+	assert.Nil(t, ValidateImagenImageGenerationParams(nil))
+	assert.Nil(t, ValidateImagenImageEditParams(nil))
+	assert.Nil(t, ValidateImagenImageGenerationParams(&schemas.ImageGenerationParameters{N: schemas.Ptr(1)}))
+	assert.Nil(t, ValidateImagenImageEditParams(&schemas.ImageEditParameters{N: schemas.Ptr(1)}))
+}
+
+// The common case: neither unsupported field is sent, so the check is two nil comparisons.
+func BenchmarkValidateImagenImageGenerationParams(b *testing.B) {
+	params := &schemas.ImageGenerationParameters{}
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := ValidateImagenImageGenerationParams(params); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// benchImagenResponse is a response of n images, with blocked of them filtered.
+func benchImagenResponse(n, blocked int) *GeminiImagenResponse {
+	resp := &GeminiImagenResponse{Predictions: make([]GeminiImagenPrediction, n)}
+	for i := range resp.Predictions {
+		if i < blocked {
+			resp.Predictions[i].RaiFilteredReason = "Unable to show generated images. Support codes: 58061214"
+			continue
+		}
+		resp.Predictions[i].BytesBase64Encoded = "aW1hZ2Ux"
+		resp.Predictions[i].MimeType = "image/png"
+	}
+	return resp
+}
+
+func BenchmarkImagenResponseAllDelivered(b *testing.B) {
+	resp := benchImagenResponse(4, 0)
+	b.ReportAllocs()
+	for b.Loop() {
+		resp.ToBifrostImageGenerationResponse()
+	}
+}
+
+func BenchmarkImagenResponseOneBlocked(b *testing.B) {
+	resp := benchImagenResponse(4, 1)
+	b.ReportAllocs()
+	for b.Loop() {
+		resp.ToBifrostImageGenerationResponse()
+	}
 }
