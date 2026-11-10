@@ -10,7 +10,8 @@ import (
 
 // pooledConnIsOpen reports whether a connection taken from the pool is known to be
 // still open and quiet: the upstream has not closed it and has sent nothing since
-// the last response. It is one non-blocking read on the socket and never waits.
+// the last response. It is one non-blocking read on the socket: it never waits and
+// does not depend on any deadline set on the connection.
 //
 //   - nothing to read yet (EAGAIN): open.
 //   - end of stream: the upstream closed it while it sat in the pool.
@@ -51,11 +52,12 @@ func pooledConnIsOpen(conn net.Conn) bool {
 		readErr error
 		buf     [1]byte
 	)
-	// The callback returns true whatever the read found, so Read never parks the
-	// goroutine waiting for the socket to become readable.
-	if err := raw.Read(func(fd uintptr) bool {
+	// Control, not Read: RawConn.Read first honours the connection's read deadline,
+	// and a pooled connection still carries the deadline of the request before it,
+	// often already past. Control runs the read whatever the deadline says, and the
+	// socket is non-blocking, so nothing here waits.
+	if err := raw.Control(func(fd uintptr) {
 		n, readErr = syscall.Read(int(fd), buf[:])
-		return true
 	}); err != nil {
 		return false
 	}

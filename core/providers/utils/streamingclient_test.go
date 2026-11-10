@@ -1169,6 +1169,22 @@ func TestContextTransport_WriteOnceRequestIsNeverResent(t *testing.T) {
 		})
 	}
 
+	// A request's read deadline stays on its connection when it returns to the pool. With a
+	// short timeout it has passed by the next request, which must still reuse the connection.
+	t.Run("an expired deadline left on a pooled connection does not cost a new one", func(t *testing.T) {
+		up := newWriteOnceUpstream(t, false, func(_, _ int32) upstreamAction { return answerAndKeep })
+		client := ConfigureDialer(&fasthttp.Client{ReadTimeout: 50 * time.Millisecond, WriteTimeout: 50 * time.Millisecond}, true)
+		for i := 1; i <= 3; i++ {
+			if err := postOnce(writeOnceContext(t), client, up.target); err != nil {
+				t.Fatalf("request %d failed: %+v", i, err.Error)
+			}
+			time.Sleep(120 * time.Millisecond) // past the deadline the request left behind
+		}
+		if got, conns := up.requests.Load(), up.accepted.Load(); got != 3 || conns != 1 {
+			t.Fatalf("upstream read %d requests on %d connections, want 3 on 1", got, conns)
+		}
+	})
+
 	// A GET changes nothing upstream (a task query, a list, a download), so it keeps the
 	// retry even on a write-once request type.
 	t.Run("a marked GET keeps the retry", func(t *testing.T) {
@@ -1255,6 +1271,17 @@ func TestPooledConnIsOpen(t *testing.T) {
 			}
 			if !pooledConnIsOpen(client) {
 				t.Fatal("the check must leave an open connection usable and open")
+			}
+		})
+		// A pooled connection keeps the read deadline of the request before it, which
+		// has usually passed. The check must not read that as a dead connection.
+		t.Run(name+"/open with an expired read deadline", func(t *testing.T) {
+			client, _ := pair(t, useTLS)
+			if err := client.SetReadDeadline(time.Now().Add(-time.Second)); err != nil {
+				t.Fatalf("set deadline: %v", err)
+			}
+			if !pooledConnIsOpen(client) {
+				t.Fatal("an open connection with an expired read deadline was reported not open")
 			}
 		})
 		t.Run(name+"/closed by the peer", func(t *testing.T) {
