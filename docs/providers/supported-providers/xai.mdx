@@ -22,6 +22,7 @@ xAI is an **OpenAI-compatible provider** powering the Grok family of models. Bif
 | Responses API | ✅ | ✅ | `/v1/responses` |
 | Text Completions | ✅ | ✅ | `/v1/completions` |
 | Image Generation | ✅ | - | `/v1/images/generations` |
+| Image Edit | ✅ | - | `/v1/images/edits` |
 | Context Compaction | ✅ | - | `/v1/responses/compact` |
 | List Models | ✅ | - | `/v1/models` |
 | Embeddings | ❌ | ❌ | - |
@@ -179,27 +180,31 @@ Streaming support available via `stream: true`.
 
 ---
 
-# 4. Image Generation
+# 4. Image Generation and Edit
 
-xAI's image generation uses the OpenAI-compatible format.
+xAI's image endpoints take JSON. Generation goes to `/v1/images/generations` in the OpenAI request shape; edit goes to `/v1/images/edits` in xAI's own shape (xAI does not take a multipart edit).
 
 **Request Conversion**
 
-xAI uses the same conversion as OpenAI (see [OpenAI Image Generation](/providers/supported-providers/openai#7-image-generation)):
-
-- **Model & Prompt**: `bifrostReq.Model` → `req.Model`, `bifrostReq.Prompt` → `req.Prompt`
-- **Parameters**: All fields from `bifrostReq` (`ImageGenerationParameters`) are embedded directly into the request struct via struct embedding
-- **Endpoint**: `/v1/images/generations`
-
-<Note>
-**Note** : `quality`, `size` and `style` parameters are not supported by xAI's API at the moment.
-</Note>
+- **Model & Prompt**: `bifrostReq.Model` → `model`, the prompt → `prompt`
+- **Generation parameters**: the `ImageGenerationParameters` fields are embedded as in [OpenAI Image Generation](/providers/supported-providers/openai#7-image-generation); `size`, `style` and `output_compression` have no xAI counterpart and are not sent
+- **Edit parameters**: `n`, `response_format`, `aspect_ratio`, `resolution`, `quality` and `user`. Any other price-affecting field (`size`, `mask`, `background`, `output_format`, ...) is refused with 400 `caller_unsupported_parameter`
+- **Edit source images**: one image goes in `image`, several (up to five) in `images`, each as `{"url": ..., "type": "image_url"}`. A URL or data URI is sent unchanged; image bytes (multipart upload or JSON `image` bytes) are sent as a data URI
+- **`quality`**: sent on `grok-imagine-image-2.0`, the only model xAI documents as taking it. On any other model it is refused with 400 `caller_unsupported_parameter`, `error.param: quality`, before any upstream call
+- **`resolution`**: the unified tier (`1K`, `1.5K`, `2K`) is sent in xAI's spelling (`1k`, `1.5k`, `2k`); another tier is refused with `caller_unsupported_parameter`
+- **`deferred`**: refused with 400 `caller_unsupported_parameter`, `error.param: deferred`. The image routes return the image from one upstream call; a deferred request would need polling
 
 **Response Conversion**
 
-Responses are unmarshaled directly into `BifrostImageGenerationResponse`.
+- `data` holds the delivered images. An image xAI marks `respect_moderation: false` is blocked: it takes no slot in `data` and is counted in `content_filter.filtered_count` (xAI gives no reason code, so `reasons` is empty). When every image is blocked, `data` is `[]`. When an image was blocked, `extra_fields.raw_response` is withheld even if raw-response send-back is on, because xAI's body still carries the blocked image
+- `usage.output_images` is the number of images in `data`
+- `usage.vendor_cost` is `{"amount": <cost_in_usd_ticks>, "unit": "usd_ticks"}` when xAI reports `cost_in_usd_ticks`; `usage.cost` is derived from the same value
+- With raw-request-body mode on, the caller's body is sent to xAI as written, and the typed-field checks above are skipped: they apply to the body Bifrost builds, not to a body it forwards
+- With large-payload optimisation on, an edit whose upload crosses the request threshold is refused with 400: xAI's edit takes JSON with the image inlined, so the streamed multipart body cannot be forwarded. A large generation request is streamed through as before
+- With a large-response threshold configured, a response over it is streamed to the caller as xAI sent it, without the `content_filter` and `vendor_cost` normalisation above, which needs the whole body in memory
+- Errors are parsed in xAI's `{"code", "error"}` shape (or the OpenAI envelope). A content-block code keeps the vendor's status and sets `extra_fields.error_type: caller_content_filtered`
 
-**Streaming**: Image generation streaming is not supported by xAI.
+**Streaming**: Image generation and edit streaming are not supported by xAI.
 
 ---
 

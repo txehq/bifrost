@@ -44,8 +44,10 @@ func ToOpenAIImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 	return req
 }
 
+// filterXAISpecificParameters drops the OpenAI image fields xAI has no counterpart for. quality is
+// kept (fork, TXE-6606, contract C4): grok-imagine-image-2.0 takes it, and the xai provider rejects
+// it with caller_unsupported_parameter, before any upstream call, on a model that does not.
 func filterXAISpecificParameters(req *OpenAIImageGenerationRequest) {
-	req.ImageGenerationParameters.Quality = nil
 	req.ImageGenerationParameters.Style = nil
 	req.ImageGenerationParameters.Size = nil
 	req.ImageGenerationParameters.OutputCompression = nil

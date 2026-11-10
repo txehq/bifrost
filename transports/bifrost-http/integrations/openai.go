@@ -3953,6 +3953,17 @@ func parseOpenAIImageEditMultipartRequest(ctx *fasthttp.RequestCtx, req interfac
 		imageEditReq.Quality = &quality
 	}
 
+	// Fork (TXE-6606, contract C4): the unified aspect ratio and resolution tier (TXE-6518) are
+	// read here as on /v1/images/edits. A provider prices a resolution tier, so a tier this
+	// parser dropped would be billed at the vendor's default instead of being delivered or refused.
+	if aspectRatioValues := form.Value["aspect_ratio"]; len(aspectRatioValues) > 0 && aspectRatioValues[0] != "" {
+		aspectRatio := aspectRatioValues[0]
+		imageEditReq.AspectRatio = &aspectRatio
+	}
+	if resolutionValues := form.Value["resolution"]; len(resolutionValues) > 0 && resolutionValues[0] != "" {
+		imageEditReq.Resolution = schemas.TolerantString(resolutionValues[0])
+	}
+
 	if responseFormatValues := form.Value["response_format"]; len(responseFormatValues) > 0 && responseFormatValues[0] != "" {
 		responseFormat := responseFormatValues[0]
 		imageEditReq.ResponseFormat = &responseFormat
