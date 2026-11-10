@@ -36,6 +36,7 @@ export const ProviderIcons = {
 	moonshot: GenericProviderIcon,
 	qwen: GenericProviderIcon,
 	dashscope: GenericProviderIcon,
+	bfl: GenericProviderIcon,
 	volcengine: GenericProviderIcon,
 
 	anthropic: ({ size = "md", className = "", theme }: IconProps) => {
