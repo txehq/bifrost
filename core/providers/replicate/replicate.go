@@ -250,16 +250,32 @@ func getPrediction(
 	return prediction, rawResponse, providerResponseHeaders, nil
 }
 
-// pollPrediction polls a prediction URL until it reaches a terminal state or timeout
+// PredictionPollURL returns the URL a created prediction is polled at (urls.get). Replicate
+// answered the create with a 2xx, so a prediction that is not finished and names no URL to
+// follow is a vendor answer with no usable result: 502 provider_empty_result (contract C6),
+// never a nil dereference. Every operation that polls goes through pollPrediction, which
+// calls this, so no call site reads prediction.URLs itself.
+func PredictionPollURL(created *ReplicatePredictionResponse) (string, *schemas.BifrostError) {
+	if created == nil || created.URLs == nil || created.URLs.Get == "" {
+		return "", schemas.NewProviderEmptyResultError("replicate accepted the prediction but returned no urls.get to poll it at")
+	}
+	return created.URLs.Get, nil
+}
+
+// pollPrediction polls a created prediction until it reaches a terminal state or timeout
 func pollPrediction(
 	ctx *schemas.BifrostContext,
 	client *fasthttp.Client,
-	predictionURL string,
+	created *ReplicatePredictionResponse,
 	key schemas.Key,
 	timeoutSeconds int,
 	logger schemas.Logger,
 	sendBackRawResponse bool,
 ) (*ReplicatePredictionResponse, interface{}, map[string]string, *schemas.BifrostError) {
+	predictionURL, urlErr := PredictionPollURL(created)
+	if urlErr != nil {
+		return nil, nil, nil, urlErr
+	}
 	// Create context with timeout
 	pollCtx, cancel := schemas.NewBifrostContextWithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
@@ -489,7 +505,7 @@ func (provider *ReplicateProvider) TextCompletion(ctx *schemas.BifrostContext, k
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
-			prediction.URLs.Get,
+			prediction,
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
 			provider.logger,
@@ -839,7 +855,7 @@ func (provider *ReplicateProvider) ChatCompletion(ctx *schemas.BifrostContext, k
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
-			prediction.URLs.Get,
+			prediction,
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
 			provider.logger,
@@ -1203,7 +1219,7 @@ func (provider *ReplicateProvider) Responses(ctx *schemas.BifrostContext, key sc
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
-			prediction.URLs.Get,
+			prediction,
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
 			provider.logger,
@@ -1825,7 +1841,7 @@ func (provider *ReplicateProvider) ImageGeneration(ctx *schemas.BifrostContext, 
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
-			prediction.URLs.Get,
+			prediction,
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
 			provider.logger,
@@ -2252,7 +2268,7 @@ func (provider *ReplicateProvider) ImageEdit(ctx *schemas.BifrostContext, key sc
 		prediction, rawResponse, providerResponseHeaders, err = pollPrediction(
 			ctx,
 			provider.client,
-			prediction.URLs.Get,
+			prediction,
 			key,
 			provider.networkConfig.DefaultRequestTimeoutInSeconds,
 			provider.logger,
