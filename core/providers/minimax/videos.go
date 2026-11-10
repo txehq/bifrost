@@ -73,6 +73,12 @@ func ToMiniMaxVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 			}
 			width, height = w, h
 		}
+		// The unified aspect_ratio is MiniMax's ratio (fork, TXE-7065). It overrides the
+		// ratio derived from size, with or without extra params: a Go SDK request sends
+		// none.
+		if params.AspectRatio != "" {
+			req.Ratio = schemas.Ptr(string(params.AspectRatio))
+		}
 		if len(params.ExtraParams) > 0 {
 			req.ExtraParams = make(map[string]interface{}, len(params.ExtraParams))
 			maps.Copy(req.ExtraParams, params.ExtraParams)
@@ -102,6 +108,12 @@ func ToMiniMaxVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationR
 				req.Resolution = v
 				delete(req.ExtraParams, "resolution")
 			}
+			// The copy of aspect_ratio the handlers keep among the extra params is dropped,
+			// so it is not also sent as a field MiniMax does not know. MiniMax's own name,
+			// ratio, read below, works only for a request that also sends aspect_ratio with
+			// the same value; core refuses it otherwise
+			// (schemas.CheckExtraParamPriceFieldsFor).
+			delete(req.ExtraParams, "aspect_ratio")
 			if v, ok := req.ExtraParams["ratio"].(string); ok && v != "" {
 				req.Ratio = &v
 				delete(req.ExtraParams, "ratio")

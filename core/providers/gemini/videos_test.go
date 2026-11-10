@@ -179,3 +179,30 @@ func TestGenAIVideoIngressSetsTheUnifiedResolution(t *testing.T) {
 	assert.Equal(t, schemas.Ptr("1080p"), got.Parameters.Resolution)
 	assert.Equal(t, schemas.Ptr("16:9"), got.Parameters.AspectRatio)
 }
+
+// TXE-7065: the unified aspect_ratio is delivered as Veo's aspectRatio, with or without
+// extra params, and the genai route carries Veo's aspectRatio as the unified field too.
+func TestGeminiVideoDeliversTheUnifiedAspectRatio(t *testing.T) {
+	for _, extra := range []map[string]interface{}{nil, {"personGeneration": "allow_adult"}, {"aspectRatio": "9:16"}} {
+		got, err := gemini.ToGeminiVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+			Provider: schemas.Gemini, Model: "veo-3.1-generate-preview",
+			Input:  &schemas.VideoGenerationInput{Prompt: "a paper boat"},
+			Params: &schemas.VideoGenerationParameters{Size: "1280x720", AspectRatio: "9:16", ExtraParams: extra},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, got.Parameters)
+		assert.Equal(t, schemas.Ptr("9:16"), got.Parameters.AspectRatio, "extra params %v", extra)
+	}
+
+	in := &gemini.GeminiVideoGenerationRequest{
+		Model:      "gemini/veo-3.1-generate-preview",
+		Instances:  []gemini.GeminiVideoGenerationInstance{{Prompt: "a paper boat"}},
+		Parameters: &gemini.VideoGenerationParameters{AspectRatio: schemas.Ptr("9:16")},
+	}
+	bifrostReq, err := in.ToBifrostVideoGenerationRequest(nil)
+	require.NoError(t, err)
+	assert.Equal(t, schemas.TolerantString("9:16"), bifrostReq.Params.AspectRatio)
+	assert.Nil(t, schemas.CheckExtraParamPriceFieldsFor(schemas.Gemini, &schemas.BifrostRequest{
+		RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: bifrostReq,
+	}), "the genai route's own request must not be refused")
+}

@@ -874,7 +874,7 @@ Requests use **JSON body (`application/json`)**.
 
 | Key | Notes |
 |-----|-------|
-| `aspectRatio` | Override the aspect ratio directly (e.g., `"16:9"`, `"9:16"`). Takes precedence over `size` |
+| `aspectRatio` | Veo's own name for the aspect ratio. Send the unified `aspect_ratio` request field instead (e.g., `"16:9"`, `"9:16"`); it takes precedence over `size`. `aspectRatio` is accepted only together with `aspect_ratio` and the same value, and is otherwise refused with `400` `caller_unsupported_parameter` |
 | `resolution` | Native Gemini resolution string |
 | `sampleCount` | Number of samples to generate |
 | `personGeneration` | Person generation policy |

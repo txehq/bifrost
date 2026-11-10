@@ -21,6 +21,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"io/fs"
 	"math/big"
 	"math/rand/v2"
 	"net"
@@ -28,7 +29,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"slices"
 	"sort"
@@ -12215,6 +12218,152 @@ func BenchmarkImageTaskCancelCheck(b *testing.B) {
 	for b.Loop() {
 		if err := schemas.CheckImageTaskCancelSupported(provider, req); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+// vendorPriceNameKeywords is what a price-affecting extra param tends to be called: the
+// things contract C4's table prices (size, count, duration, quality, format, voice,
+// speed, language, references) under whatever spelling a vendor uses.
+var vendorPriceNameKeywords = regexp.MustCompile(`(?i)ratio|aspect|resolution|size|duration|second|count|number|quality|format|voice|speaker|speed|pace|lang|dimension|frame|reference|image|mask|audio|background|instruction|granularit|timestamp|encoding|task_?type|callback|storage|expires|codec|sample`)
+
+// unmappedVendorPriceNames are extra params a converter reads that do carry a price- or
+// recovery-affecting value and are deliberately not in schemas.VendorPriceFieldNames, with
+// the reason. Each is a known way for such a value to reach the vendor without a unified
+// field showing it. Keyed by provider directory and name.
+var unmappedVendorPriceNames = map[string]string{
+	"gemini/sampleCount":                           "the number of videos; contract C4's video table has no count field to map it to",
+	"gemini/numberOfVideos":                        "the number of videos; contract C4's video table has no count field to map it to",
+	"gemini/lastFrame":                             "Veo's last frame object; the converter does not deliver the unified last_frame yet, so refusing this name would remove the feature",
+	"gemini/referenceImages":                       "Veo's reference image objects; the converter does not deliver the unified reference_images yet",
+	"gemini/storageURI":                            "the output location; the unified output_storage_uri is a task control field Gemini does not declare, so mapping it would refuse every use",
+	"gemini/storageUri":                            "the output location on images; C4's image table has no storage field",
+	"gemini/sampleImageSize":                       "Imagen's size tier; the genai route converts it to the unified size, and the converter reads the unified resolution",
+	"gemini/compressionQuality":                    "Veo's output compression; C4's video table has no quality field",
+	"gemini/media_resolution":                      "input media resolution on chat and responses, which are outside C4's table",
+	"gemini/taskType":                              "the OpenAI SDK's extra_body spelling of task_type on embeddings, which harness folder 142 pins as supported; left for a decision, since mapping it turns those requests into 400s",
+	"gemini/candidate_count":                       "the number of candidates on chat and responses, which are outside C4's table",
+	"byteplus/reference_videos":                    "Seedance reference videos; C4's video table lists reference_images only",
+	"byteplus/reference_audios":                    "Seedance reference audio; C4's video table lists reference_images only",
+	"byteplus/sequential_image_generation":         "Seedream's group mode, which decides how many images are made; documented, and C4 has no field for it beside n",
+	"byteplus/sequential_image_generation_options": "the options of Seedream's group mode; see sequential_image_generation",
+	"elevenlabs/duration_seconds":                  "the length of a generated sound effect; C4's speech table has no duration field",
+	"elevenlabs/timestamps_granularity":            "ElevenLabs' granularity; the converter does not deliver the unified timestamp_granularities yet",
+	"elevenlabs/num_speakers":                      "a diarization hint that changes the transcript, and on some plans the price; C4's transcription table has no field for it",
+	"minimax/timestamp_level":                      "MiniMax's level names, which are not the unified list's values; the converter maps the unified list and keeps this name for the rest",
+	"sarvam/output_audio_codec":                    "the output codec; the converter does not map the unified response_format onto it yet",
+	"sarvam/speech_sample_rate":                    "the output sample rate; C4's speech table has no field for it",
+	"runware/seedImage":                            "a Runware image UUID or URL as the input image; the unified input_images takes URLs only",
+	"runware/taskType":                             "Runware's task selector (which kind of job), not the embedding task_type",
+	"bedrock/images":                               "additional input images for Bedrock image models; the converter does not read the unified input_images there yet",
+	"perplexity/num_images":                        "the number of images a search answer may return, on chat and responses, which are outside C4's table",
+}
+
+// notPriceFieldNames are extra params a converter reads whose name matches
+// vendorPriceNameKeywords and that are not price fields: a filter, a flag, or an input
+// description.
+var notPriceFieldNames = map[string]bool{
+	"gemini/personGeneration": true, "gemini/maskClasses": true, "gemini/maskMode": true, "gemini/resizeMode": true,
+	"gemini/language":   true,
+	"bedrock/grow_mask": true, "bedrock/mask_prompt": true, "bedrock/return_mask": true,
+	"elevenlabs/file_format": true, "elevenlabs/tag_audio_events": true, "elevenlabs/use_speaker_boost": true,
+	"elevenlabs/apply_language_text_normalization": true, "elevenlabs/cloud_storage_url": true,
+	"huggingface/acceleration": true, "huggingface/do_sample": true, "huggingface/use_image_urls": true, "huggingface/return_timestamps": true,
+	"minimax/language_boost":         true,
+	"perplexity/image_domain_filter": true, "perplexity/image_format_filter": true, "perplexity/language_preference": true,
+	"perplexity/return_images": true, "perplexity/search_language_filter": true,
+	"runway/content_moderation": true,
+	"sarvam/input_audio_codec":  true,
+	"vertex/serviceAccount":     true,
+	"ollama/images":             true,
+}
+
+// TXE-7065: a converter that starts reading a price-looking extra param fails this test
+// until the name is classified: mapped to its unified field in
+// schemas.VendorPriceFieldNames (so core refuses it unless the request sent that field),
+// listed in unmappedVendorPriceNames with the reason it cannot be mapped, or listed in
+// notPriceFieldNames. It reads the converters' source, so it sees every literal key a
+// converter reads from the extra params; a key built at run time is not seen.
+func TestConvertersReadNoUnlistedVendorPriceName(t *testing.T) {
+	read := regexp.MustCompile(`(?:ExtraParams|extraParams|extra|ep)\["([A-Za-z0-9_\-]+)"\]`)
+	unified := map[string]bool{}
+	for _, requestType := range []schemas.RequestType{
+		schemas.EmbeddingRequest, schemas.ImageGenerationRequest, schemas.ImageEditRequest,
+		schemas.VideoGenerationRequest, schemas.SpeechRequest, schemas.TranscriptionRequest,
+	} {
+		fields := schemas.PriceAffectingUnifiedFields(requestType)
+		if len(fields) == 0 {
+			t.Fatalf("no price-affecting fields for %s", requestType)
+		}
+		for _, field := range fields {
+			unified[field] = true
+		}
+	}
+	for _, unpriced := range schemas.UnpricedUnifiedFields {
+		unified[unpriced] = true
+	}
+	mapped := map[string]bool{}
+	for _, alias := range schemas.VendorPriceFieldNames() {
+		mapped[string(alias.Provider)+"/"+alias.Name] = true
+	}
+	// Vertex runs Gemini's converters for Gemini models, so a name mapped for either
+	// covers the gemini directory.
+	seen := map[string]bool{}
+	err := filepath.WalkDir("providers", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		parts := strings.Split(filepath.ToSlash(path), "/")
+		if len(parts) < 3 || parts[1] == "utils" {
+			return nil
+		}
+		source, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, match := range read.FindAllStringSubmatch(string(source), -1) {
+			name := match[1]
+			key := parts[1] + "/" + name
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if unified[name] || !vendorPriceNameKeywords.MatchString(name) {
+				continue
+			}
+			if mapped[key] || notPriceFieldNames[key] {
+				continue
+			}
+			if _, leftOut := unmappedVendorPriceNames[key]; leftOut {
+				continue
+			}
+			t.Errorf("%s reads the extra param %q, which looks like a price field. Map it to its unified field in schemas.VendorPriceFieldNames (and make the converter deliver that field), or list %q in unmappedVendorPriceNames with the reason, or in notPriceFieldNames", path, name, key)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) < 100 {
+		t.Fatalf("only %d extra-param reads found under providers; the scan is not seeing the converters", len(seen))
+	}
+	// A stale entry hides nothing but misleads the next reader.
+	for key := range mapped {
+		if !seen[key] && !seen["gemini/"+strings.TrimPrefix(key, "vertex/")] {
+			t.Errorf("schemas.VendorPriceFieldNames lists %s, but no converter of that provider reads it", key)
+		}
+	}
+	for key := range unmappedVendorPriceNames {
+		if !seen[key] {
+			t.Errorf("unmappedVendorPriceNames lists %s, but no converter reads it any more", key)
+		}
+	}
+	for key := range notPriceFieldNames {
+		if !seen[key] {
+			t.Errorf("notPriceFieldNames lists %s, but no converter reads it any more", key)
 		}
 	}
 }

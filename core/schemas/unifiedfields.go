@@ -114,6 +114,70 @@ func PriceAffectingUnifiedFields(requestType RequestType) []string {
 	return priceAffectingUnifiedFields[requestType]
 }
 
+// VendorPriceFieldName is a vendor's own name for a price-affecting unified field, as one
+// provider's converter reads it from the extra params on some operations.
+type VendorPriceFieldName struct {
+	Provider ModelProvider // the provider whose converter reads the name
+	Name     string        // the vendor's name, as the converter reads it
+	Field    string        // the unified field it stands for
+	Requests []RequestType // the operations on which the converter reads it
+}
+
+// vendorPriceFieldNames maps each vendor-own spelling of a C4 price field that a
+// converter reads from the extra params to the unified field (TXE-7065). The check below
+// treats the vendor's name as the unified field: "ratio" on a BytePlus video is
+// aspect_ratio, and is refused unless the request sent aspect_ratio with that value.
+//
+// A name is listed only when the provider's converter delivers the unified field, so a
+// caller who is refused the vendor's name can send the unified one and get the same
+// result. core's TestConvertersReadNoUnlistedVendorPriceName fails when a converter reads
+// a price-looking extra param that is neither here nor in that test's list of names left
+// out on purpose, with the reason for each.
+var vendorPriceFieldNames = func() []VendorPriceFieldName {
+	video := []RequestType{VideoGenerationRequest}
+	speech := []RequestType{SpeechRequest, SpeechStreamRequest}
+	transcription := []RequestType{TranscriptionRequest, TranscriptionStreamRequest}
+	return []VendorPriceFieldName{
+		{BytePlus, "ratio", "aspect_ratio", video},
+		{MiniMax, "ratio", "aspect_ratio", video},
+		{Gemini, "aspectRatio", "aspect_ratio", video},
+		{Vertex, "aspectRatio", "aspect_ratio", video},
+		{Runway, "references", "reference_images", video},
+		{Runware, "outputFormat", "output_format", video},
+		{Sarvam, "speaker", "voice", speech},
+		{Sarvam, "pace", "speed", speech},
+		{Sarvam, "target_language_code", "language_code", speech},
+		{Sarvam, "language_code", "language", transcription},
+	}
+}()
+
+// VendorPriceFieldNames returns the table of vendor-own names for price-affecting unified
+// fields. The slice is shared; do not modify it.
+func VendorPriceFieldNames() []VendorPriceFieldName {
+	return vendorPriceFieldNames
+}
+
+// priceFieldNamed returns the price-affecting unified field of requestType that an extra
+// param named key stands for on baseProvider: the unified name itself in any letter
+// case, or the provider's own name for it. "" when it stands for none.
+func priceFieldNamed(baseProvider ModelProvider, requestType RequestType, table []string, key string) string {
+	for _, candidate := range table {
+		if strings.EqualFold(key, candidate) {
+			return candidate
+		}
+	}
+	if baseProvider == "" {
+		return ""
+	}
+	for i := range vendorPriceFieldNames {
+		alias := &vendorPriceFieldNames[i]
+		if alias.Provider == baseProvider && strings.EqualFold(key, alias.Name) && slices.Contains(alias.Requests, requestType) {
+			return alias.Field
+		}
+	}
+	return ""
+}
+
 // CheckExtraParamPriceFields refuses a request that names a price-affecting unified
 // field among its extra params without sending the field itself (contract C4, agreement
 // three; TXE-7059). Such a field is merged into the vendor's body, or read there by the
@@ -135,10 +199,20 @@ func PriceAffectingUnifiedFields(requestType RequestType) []string {
 //     value the field would have taken is the field under another route.
 //   - An empty value (nil, "", [] or {}): it supplies no field. A client that serializes
 //     an optional list as [] is not refused.
-//   - A vendor's own name for the field (BytePlus ratio, Gemini aspectRatio). The name is
-//     compared ignoring letter case only, so "Size" is size but "aspectRatio" is not
-//     aspect_ratio.
+//   - A vendor's own name for the field that no converter is known to read. The unified
+//     name is compared ignoring letter case only, so "Size" is size but "aspectRatio" is
+//     not aspect_ratio by spelling. The names converters do read are listed per provider
+//     in vendorPriceFieldNames and refused by CheckExtraParamPriceFieldsFor.
 func CheckExtraParamPriceFields(req *BifrostRequest) *BifrostError {
+	return CheckExtraParamPriceFieldsFor("", req)
+}
+
+// CheckExtraParamPriceFieldsFor is CheckExtraParamPriceFields for a request served by
+// baseProvider (the base provider type, for a custom provider). It also refuses that
+// provider's own names for the price-affecting fields (vendorPriceFieldNames), which its
+// converter would read: a value under the vendor's name is no more visible on the request
+// than one under the unified name. The request worker calls this form.
+func CheckExtraParamPriceFieldsFor(baseProvider ModelProvider, req *BifrostRequest) *BifrostError {
 	if req == nil {
 		return nil
 	}
@@ -147,7 +221,7 @@ func CheckExtraParamPriceFields(req *BifrostRequest) *BifrostError {
 		return nil
 	}
 	params := req.paramsValue()
-	if bifrostErr := checkExtraParamPriceFields(req, table, params); bifrostErr != nil {
+	if bifrostErr := checkExtraParamPriceFields(baseProvider, req, table, params); bifrostErr != nil {
 		return bifrostErr
 	}
 	// An embedding item may carry its own params.
@@ -157,7 +231,7 @@ func CheckExtraParamPriceFields(req *BifrostRequest) *BifrostError {
 			if item == nil || len(item.ExtraParams) == 0 {
 				continue
 			}
-			if bifrostErr := checkExtraParamPriceFields(req, table, reflect.ValueOf(item).Elem()); bifrostErr != nil {
+			if bifrostErr := checkExtraParamPriceFields(baseProvider, req, table, reflect.ValueOf(item).Elem()); bifrostErr != nil {
 				return bifrostErr
 			}
 		}
@@ -165,7 +239,7 @@ func CheckExtraParamPriceFields(req *BifrostRequest) *BifrostError {
 	return nil
 }
 
-func checkExtraParamPriceFields(req *BifrostRequest, table []string, params reflect.Value) *BifrostError {
+func checkExtraParamPriceFields(baseProvider ModelProvider, req *BifrostRequest, table []string, params reflect.Value) *BifrostError {
 	if !params.IsValid() {
 		return nil
 	}
@@ -181,13 +255,7 @@ func checkExtraParamPriceFields(req *BifrostRequest, table []string, params refl
 	// or allocated for it.
 	var refused, refusedField string
 	for key, value := range extraParams {
-		field := ""
-		for _, candidate := range table {
-			if strings.EqualFold(key, candidate) {
-				field = candidate
-				break
-			}
-		}
+		field := priceFieldNamed(baseProvider, req.RequestType, table, key)
 		if field == "" || extraParamIsEmpty(value) {
 			continue
 		}
@@ -289,11 +357,14 @@ func unifiedFieldSent(req *BifrostRequest, params reflect.Value, field string) (
 		if !ok || fieldIsUnset(fv) {
 			return sentUnifiedField{}, false
 		}
-		if fv.Kind() == reflect.Pointer {
-			fv = fv.Elem()
+		// A pointer is kept as it is for the comparison, so a type whose MarshalJSON has
+		// a pointer receiver (the speech voice) is encoded as the wire shows it.
+		elem := fv
+		if elem.Kind() == reflect.Pointer {
+			elem = elem.Elem()
 		}
-		if fv.Kind() == reflect.String {
-			return sentUnifiedField{text: fv.String(), isText: true}, true
+		if elem.Kind() == reflect.String {
+			return sentUnifiedField{text: elem.String(), isText: true}, true
 		}
 		return sentUnifiedField{value: fv}, true
 	}

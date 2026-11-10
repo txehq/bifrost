@@ -373,7 +373,108 @@ func BenchmarkCheckExtraParamPriceFields(b *testing.B) {
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				_ = CheckExtraParamPriceFields(tc.req)
+				// The worker's form: the vendor name table is scanned for each extra
+				// param that is not a unified name.
+				_ = CheckExtraParamPriceFieldsFor(OpenAI, tc.req)
+			}
+		})
+	}
+}
+
+// TXE-7065: a provider's own name for a price-affecting field is checked like the unified
+// field, on that provider and those operations only. The loop runs over the table, so a
+// name added there is tested without a new case.
+func TestCheckExtraParamPriceFieldsForRefusesEveryVendorPriceName(t *testing.T) {
+	if len(vendorPriceFieldNames) == 0 {
+		t.Fatal("the vendor name table is empty")
+	}
+	for _, alias := range vendorPriceFieldNames {
+		for _, requestType := range alias.Requests {
+			name := string(alias.Provider) + "/" + string(requestType) + "/" + alias.Name
+			t.Run(name, func(t *testing.T) {
+				if !slices.Contains(priceAffectingUnifiedFields[requestType], alias.Field) {
+					t.Fatalf("%s maps to %q, which is not a price-affecting field of %s", alias.Name, alias.Field, requestType)
+				}
+				// A value the unified field would have taken.
+				var planted interface{} = "planted"
+				if alias.Field == "reference_images" {
+					planted = []interface{}{"https://example.invalid/a.png"}
+				}
+				req := extraOnlyRequest(t, requestType, map[string]interface{}{alias.Name: planted})
+
+				bifrostErr := CheckExtraParamPriceFieldsFor(alias.Provider, req)
+				if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 ||
+					bifrostErr.ExtraFields.ErrorType != ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != alias.Name {
+					t.Fatalf("want 400 %s with error.param %q, got %+v", ErrorTypeCallerUnsupportedParameter, alias.Name, bifrostErr)
+				}
+				if !strings.Contains(bifrostErr.Error.Message, alias.Field) {
+					t.Errorf("message %q does not name the unified field %q to send instead", bifrostErr.Error.Message, alias.Field)
+				}
+				// The name means nothing on a provider whose converter does not read it.
+				if alias.Name != alias.Field {
+					if other := CheckExtraParamPriceFieldsFor("some-other-provider", req); other != nil {
+						t.Errorf("refused on a provider that does not read %q: %+v", alias.Name, other)
+					}
+					if unscoped := CheckExtraParamPriceFields(req); unscoped != nil {
+						t.Errorf("refused with no provider given: %+v", unscoped)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCheckExtraParamPriceFieldsForVendorNameBesideTheUnifiedField(t *testing.T) {
+	video := func(params *VideoGenerationParameters) *BifrostRequest {
+		return &BifrostRequest{RequestType: VideoGenerationRequest,
+			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"}, Params: params}}
+	}
+	speech := func(params *SpeechParameters) *BifrostRequest {
+		return &BifrostRequest{RequestType: SpeechRequest,
+			SpeechRequest: &BifrostSpeechRequest{Input: &SpeechInput{Input: "hi"}, Params: params}}
+	}
+	voice := "anushka"
+	accepted := []struct {
+		name     string
+		provider ModelProvider
+		req      *BifrostRequest
+	}{
+		{"the vendor's name with the value the request sent", BytePlus, video(&VideoGenerationParameters{
+			AspectRatio: "9:16", ExtraParams: map[string]interface{}{"ratio": "9:16", "aspect_ratio": "9:16"}})},
+		{"a number under the vendor's name equal to the unified one", Sarvam, speech(&SpeechParameters{
+			Speed: Ptr(1.25), ExtraParams: map[string]interface{}{"pace": 1.25}})},
+		{"the voice, whose unified field is not a plain string", Sarvam, speech(&SpeechParameters{
+			VoiceConfig: &SpeechVoiceInput{Voice: &voice}, ExtraParams: map[string]interface{}{"speaker": "anushka"}})},
+		{"reference objects under Runway's own name, which the unified list cannot hold", Runway, video(&VideoGenerationParameters{
+			ExtraParams: map[string]interface{}{"references": []interface{}{map[string]interface{}{"uri": "https://example.invalid/a.png", "tag": "fox"}}}})},
+		{"an operation the name is not read on", Runware, imageReq(&ImageGenerationParameters{
+			ExtraParams: map[string]interface{}{"outputFormat": "WEBP"}})},
+	}
+	for _, tc := range accepted {
+		t.Run(tc.name, func(t *testing.T) {
+			if bifrostErr := CheckExtraParamPriceFieldsFor(tc.provider, tc.req); bifrostErr != nil {
+				t.Fatalf("refused: %+v", bifrostErr)
+			}
+		})
+	}
+	refused := []struct {
+		name      string
+		provider  ModelProvider
+		req       *BifrostRequest
+		wantParam string
+	}{
+		{"the vendor's name with another value than the request sent", MiniMax, video(&VideoGenerationParameters{
+			AspectRatio: "16:9", ExtraParams: map[string]interface{}{"ratio": "9:16"}}), "ratio"},
+		{"in any letter case", Gemini, video(&VideoGenerationParameters{
+			ExtraParams: map[string]interface{}{"ASPECTRATIO": "9:16"}}), "ASPECTRATIO"},
+		{"a pace that differs from the speed the request sent", Sarvam, speech(&SpeechParameters{
+			Speed: Ptr(1.0), ExtraParams: map[string]interface{}{"pace": 2.5}}), "pace"},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			bifrostErr := CheckExtraParamPriceFieldsFor(tc.provider, tc.req)
+			if bifrostErr == nil || bifrostErr.Error.Param != tc.wantParam || bifrostErr.ExtraFields.ErrorType != ErrorTypeCallerUnsupportedParameter {
+				t.Fatalf("want a refusal naming %q, got %+v", tc.wantParam, bifrostErr)
 			}
 		})
 	}

@@ -137160,7 +137160,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"runware/bria:51@1\",\n  \"type\": \"background_removal\",\n  \"video_uri\": \"https://storage.googleapis.com/generativeai-downloads/video/__nonexistent__.mp4\",\n  \"outputFormat\": \"WEBM\"\n}"
+                  "raw": "{\n  \"model\": \"runware/bria:51@1\",\n  \"type\": \"background_removal\",\n  \"video_uri\": \"https://storage.googleapis.com/generativeai-downloads/video/__nonexistent__.mp4\",\n  \"output_format\": \"webm\"\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/videos",
@@ -137182,7 +137182,7 @@
                       "pm.test('video_uri maps into the nested inputs.video envelope', function () {",
                       "  pm.expect(pm.response.text(), 'inputs.video envelope rejected').to.not.include('unsupportedParameter');",
                       "});",
-                      "pm.test('outputFormat is promoted from extra params to a typed field', function () {",
+                      "pm.test('the unified output_format reaches Runware as outputFormat', function () {",
                       "  pm.expect(pm.response.text(), 'alpha-capable container not applied').to.not.include('invalidOutputFormat');",
                       "});",
                       "pm.test('prompt is not required for a source-driven video task', function () {",
@@ -302629,7 +302629,7 @@
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
                   "  pm.expect(((pm.response.json().embeddings || {}).float || []).length).to.eql(1);",
                   "});",
-                  "pm.test('meta.billed_units is Cohere's own', function () {",
+                  "pm.test('meta.billed_units is the one Cohere sent', function () {",
                   "  var billed = (pm.response.json().meta || {}).billed_units || {};",
                   "  pm.expect(billed.input_tokens, 'no billed input_tokens: ' + JSON.stringify(pm.response.json().meta)).to.be.above(0);",
                   "});"
@@ -309057,17 +309057,17 @@
           }
         },
         {
-          "name": "[EXPECT-400] bedrock cohere.rerank-v3-5:0 extra-params-unsettable: /v1/rerank - a version field is refused before it reaches the reranker's request fields",
+          "name": "[EXPECT-400] bedrock cohere.rerank-v3-5:0 extra-params-unsettable: /v1/rerank - a version field is refused before it reaches the reranker request fields",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('extra-params-unsettable bedrock cohere.rerank-v3-5:0 extra-params-unsettable: /v1/rerank - a version field is refused before it reaches the reranker's request fields: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "pm.test('extra-params-unsettable bedrock cohere.rerank-v3-5:0 extra-params-unsettable: /v1/rerank - a version field is refused before it reaches the reranker request fields: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
                   "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
                   "var err = j.error || {};",
-                  "pm.test('extra-params-unsettable bedrock cohere.rerank-v3-5:0 extra-params-unsettable: /v1/rerank - a version field is refused before it reaches the reranker's request fields: the refusal is the extra-params rule and names version', function () {",
+                  "pm.test('extra-params-unsettable bedrock cohere.rerank-v3-5:0 extra-params-unsettable: /v1/rerank - a version field is refused before it reaches the reranker request fields: the refusal is the extra-params rule and names version', function () {",
                   "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
                   "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('version');",
                   "});"
@@ -313162,6 +313162,729 @@
               "path": [
                 "__probe",
                 "stale-get"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "434. A vendor's own name for a price-affecting field is checked like the unified field (vendor-price-name)",
+      "description": "Folder 430 pins that an extra param cannot supply a price-affecting unified field the request did not send. That rule compared the unified name only, so a converter that reads the vendor's own name for the same field still took a value no unified field showed: ratio on a Seedance or MiniMax video, aspectRatio on a Veo video, outputFormat on a Runware video. schemas.VendorPriceFieldNames now maps each such name, per provider and operation, to its unified field, and the request worker refuses it exactly as it refuses the unified name: 400 caller_unsupported_parameter naming the vendor's field, unless the request sent the unified field with the same value. A name is mapped only where the converter delivers the unified field, so the caller who is refused can send that instead; the BytePlus, MiniMax and Gemini video converters gained delivery of aspect_ratio for this. Go pins the table over every entry, a lint over the converters' source that fails when one reads an unlisted price-looking name, and every integration route's own ingress through the worker. These rows pin the refusal on the native routes, where an unknown top-level field or form field is an extra param: /v1/videos for the video names, /v1/audio/speech and /v1/audio/transcriptions for Sarvam's. Sarvam's speaker has no row of its own without a voice, because the speech route requires voice; it is refused there when it differs from the voice sent. The ten refusal rows are refused before any upstream call, so none creates a task. The next three rows pin the other half: the unified aspect_ratio, sent with a size that would derive 16:9, reaches BytePlus and MiniMax as ratio and Gemini as aspectRatio. An accepted video create is a billed task at a real vendor, so those three run only on the provider error fixture (providerErrorFixture=1), which answers each vendor's task shape and returns what it was sent from /__wire; elsewhere they are skipped. The last row is the genai route's own Veo request, with aspectRatio and resolution in parameters: the route carries them as the unified fields as well, so the worker accepts its own request, and they reach Veo unchanged. It runs on the fixture for the same reason.",
+      "item": [
+        {
+          "name": "[EXPECT-400] byteplus dreamina-seedance-2-5-260628 vendor-price-name: /v1/videos - ratio without aspect_ratio is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vendor-price-name byteplus dreamina-seedance-2-5-260628 vendor-price-name: /v1/videos - ratio without aspect_ratio is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('vendor-price-name byteplus dreamina-seedance-2-5-260628 vendor-price-name: /v1/videos - ratio without aspect_ratio is refused: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+                  "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('ratio');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('aspect_ratio');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-5-260628\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"ratio\": \"9:16\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] byteplus dreamina-seedance-2-5-260628 vendor-price-name: /v1/videos - ratio that differs from the aspect_ratio the request sent is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vendor-price-name byteplus dreamina-seedance-2-5-260628 vendor-price-name: /v1/videos - ratio that differs from the aspect_ratio the request sent is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('vendor-price-name byteplus dreamina-seedance-2-5-260628 vendor-price-name: /v1/videos - ratio that differs from the aspect_ratio the request sent is refused: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+                  "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('ratio');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('aspect_ratio');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-5-260628\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"aspect_ratio\": \"16:9\",\n  \"ratio\": \"9:16\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] minimax MiniMax-H3 vendor-price-name: /v1/videos - ratio without aspect_ratio is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vendor-price-name minimax MiniMax-H3 vendor-price-name: /v1/videos - ratio without aspect_ratio is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('vendor-price-name minimax MiniMax-H3 vendor-price-name: /v1/videos - ratio without aspect_ratio is refused: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+                  "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('ratio');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('aspect_ratio');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-H3\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"ratio\": \"9:16\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] gemini veo-3.1-generate-preview vendor-price-name: /v1/videos - aspectRatio without aspect_ratio is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vendor-price-name gemini veo-3.1-generate-preview vendor-price-name: /v1/videos - aspectRatio without aspect_ratio is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('vendor-price-name gemini veo-3.1-generate-preview vendor-price-name: /v1/videos - aspectRatio without aspect_ratio is refused: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+                  "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('aspectRatio');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('aspect_ratio');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/veo-3.1-generate-preview\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"aspectRatio\": \"9:16\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] runware klingai:kling-video@3-standard vendor-price-name: /v1/videos - outputFormat without output_format is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vendor-price-name runware klingai:kling-video@3-standard vendor-price-name: /v1/videos - outputFormat without output_format is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('vendor-price-name runware klingai:kling-video@3-standard vendor-price-name: /v1/videos - outputFormat without output_format is refused: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+                  "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('outputFormat');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('output_format');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"runware/klingai:kling-video@3-standard\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"outputFormat\": \"WEBM\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] runway gen4_turbo vendor-price-name: /v1/videos - references as a list of URLs without reference_images is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vendor-price-name runway gen4_turbo vendor-price-name: /v1/videos - references as a list of URLs without reference_images is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('vendor-price-name runway gen4_turbo vendor-price-name: /v1/videos - references as a list of URLs without reference_images is refused: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+                  "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('references');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('reference_images');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"runway/gen4_turbo\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"references\": [\n    \"https://example.invalid/a.png\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] sarvam bulbul:v2 vendor-price-name: /v1/audio/speech - speaker that differs from the voice the request sent is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vendor-price-name sarvam bulbul:v2 vendor-price-name: /v1/audio/speech - speaker that differs from the voice the request sent is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('vendor-price-name sarvam bulbul:v2 vendor-price-name: /v1/audio/speech - speaker that differs from the voice the request sent is refused: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+                  "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('speaker');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('voice');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"sarvam/bulbul:v2\",\n  \"input\": \"hello\",\n  \"voice\": \"anushka\",\n  \"speaker\": \"meera\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] sarvam bulbul:v2 vendor-price-name: /v1/audio/speech - pace without speed is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vendor-price-name sarvam bulbul:v2 vendor-price-name: /v1/audio/speech - pace without speed is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('vendor-price-name sarvam bulbul:v2 vendor-price-name: /v1/audio/speech - pace without speed is refused: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+                  "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('pace');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('speed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"sarvam/bulbul:v2\",\n  \"input\": \"hello\",\n  \"voice\": \"anushka\",\n  \"pace\": 1.5\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] sarvam bulbul:v2 vendor-price-name: /v1/audio/speech - target_language_code without language_code is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vendor-price-name sarvam bulbul:v2 vendor-price-name: /v1/audio/speech - target_language_code without language_code is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('vendor-price-name sarvam bulbul:v2 vendor-price-name: /v1/audio/speech - target_language_code without language_code is refused: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+                  "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('target_language_code');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('language_code');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"sarvam/bulbul:v2\",\n  \"input\": \"hello\",\n  \"voice\": \"anushka\",\n  \"target_language_code\": \"hi-IN\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] sarvam saarika:v2.5 vendor-price-name: /v1/audio/transcriptions - a language_code form field without language is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vendor-price-name sarvam saarika:v2.5 vendor-price-name: /v1/audio/transcriptions - a language_code form field without language is refused: refused with 400 before any upstream call', function () { pm.expect(pm.response.code, 'not refused: ' + pm.response.text().slice(0, 600)).to.eql(400); });",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('vendor-price-name sarvam saarika:v2.5 vendor-price-name: /v1/audio/transcriptions - a language_code form field without language is refused: the refusal is caller_unsupported_parameter, names the vendor field and says which unified field to send', function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text().slice(0, 600)).to.include('caller_unsupported_parameter');",
+                  "  pm.expect(err.param, pm.response.text().slice(0, 600)).to.eql('language_code');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('extra params cannot set');",
+                  "  pm.expect(String(err.message), pm.response.text().slice(0, 600)).to.include('language');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "sarvam/saarika:v2.5",
+                  "type": "text"
+                },
+                {
+                  "key": "language_code",
+                  "value": "hi-IN",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "byteplus dreamina-seedance-2-5-260628 vendor-price-name: /v1/videos - the unified aspect_ratio reaches the vendor as ratio (provider error fixture)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The vendor here is the local fixture. Against a real vendor this row would create a billed task.",
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('vendor-price-name byteplus delivery: the video create is accepted', function () { pm.expect(pm.response.code, text.slice(0, 600)).to.eql(200); });",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+                  "  pm.test('vendor-price-name byteplus delivery: the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+                  "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/byteplus/api/v3/contents/generations/tasks' && c.body.indexOf('vendor-price-name-byteplus-delivery') !== -1; });",
+                  "  pm.test('vendor-price-name byteplus delivery: the request reached the vendor', function () { pm.expect(calls.length, 'no captured call on /pp/byteplus/api/v3/contents/generations/tasks').to.be.above(0); });",
+                  "  if (!calls.length) { return; }",
+                  "  var sent = JSON.parse(calls[calls.length - 1].body);",
+                  "  pm.test('vendor-price-name byteplus delivery: the vendor received the unified 9:16, not the 16:9 its size would derive', function () {",
+                  "    pm.expect(sent.ratio, calls[calls.length - 1].body).to.eql('9:16');",
+                  "  });",
+                  "  pm.test('vendor-price-name byteplus delivery: the unified name is not also sent as a field the vendor does not know', function () {",
+                  "    pm.expect(Object.keys(sent), calls[calls.length - 1].body).to.not.include('aspect_ratio');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-5-260628\",\n  \"prompt\": \"a paper boat on a pond vendor-price-name-byteplus-delivery\",\n  \"size\": \"1280x720\",\n  \"aspect_ratio\": \"9:16\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        },
+        {
+          "name": "minimax MiniMax-H3 vendor-price-name: /v1/videos - the unified aspect_ratio reaches the vendor as ratio (provider error fixture)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The vendor here is the local fixture. Against a real vendor this row would create a billed task.",
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('vendor-price-name minimax delivery: the video create is accepted', function () { pm.expect(pm.response.code, text.slice(0, 600)).to.eql(200); });",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+                  "  pm.test('vendor-price-name minimax delivery: the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+                  "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/minimax/v2/video_generation' && c.body.indexOf('vendor-price-name-minimax-delivery') !== -1; });",
+                  "  pm.test('vendor-price-name minimax delivery: the request reached the vendor', function () { pm.expect(calls.length, 'no captured call on /pp/minimax/v2/video_generation').to.be.above(0); });",
+                  "  if (!calls.length) { return; }",
+                  "  var sent = JSON.parse(calls[calls.length - 1].body);",
+                  "  pm.test('vendor-price-name minimax delivery: the vendor received the unified 9:16, not the 16:9 its size would derive', function () {",
+                  "    pm.expect(sent.ratio, calls[calls.length - 1].body).to.eql('9:16');",
+                  "  });",
+                  "  pm.test('vendor-price-name minimax delivery: the unified name is not also sent as a field the vendor does not know', function () {",
+                  "    pm.expect(Object.keys(sent), calls[calls.length - 1].body).to.not.include('aspect_ratio');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-H3\",\n  \"prompt\": \"a paper boat on a pond vendor-price-name-minimax-delivery\",\n  \"size\": \"1280x720\",\n  \"aspect_ratio\": \"9:16\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini veo-3.1-generate-preview vendor-price-name: /v1/videos - the unified aspect_ratio reaches the vendor as aspectRatio (provider error fixture)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The vendor here is the local fixture. Against a real vendor this row would create a billed task.",
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('vendor-price-name gemini delivery: the video create is accepted', function () { pm.expect(pm.response.code, text.slice(0, 600)).to.eql(200); });",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+                  "  pm.test('vendor-price-name gemini delivery: the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+                  "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/gemini/models/veo-3.1-generate-preview:predictLongRunning' && c.body.indexOf('vendor-price-name-gemini-delivery') !== -1; });",
+                  "  pm.test('vendor-price-name gemini delivery: the request reached the vendor', function () { pm.expect(calls.length, 'no captured call on /pp/gemini/models/veo-3.1-generate-preview:predictLongRunning').to.be.above(0); });",
+                  "  if (!calls.length) { return; }",
+                  "  var sent = JSON.parse(calls[calls.length - 1].body);",
+                  "  pm.test('vendor-price-name gemini delivery: the vendor received the unified 9:16, not the 16:9 its size would derive', function () {",
+                  "    pm.expect((sent.parameters || {}).aspectRatio, calls[calls.length - 1].body).to.eql('9:16');",
+                  "  });",
+                  "  pm.test('vendor-price-name gemini delivery: the unified name is not also sent as a field the vendor does not know', function () {",
+                  "    pm.expect(Object.keys(sent), calls[calls.length - 1].body).to.not.include('aspect_ratio');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/veo-3.1-generate-preview\",\n  \"prompt\": \"a paper boat on a pond vendor-price-name-gemini-delivery\",\n  \"size\": \"1280x720\",\n  \"aspect_ratio\": \"9:16\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[NO-CONTENT] gemini veo-3.1-generate-preview vendor-price-name: /genai predictLongRunning - the route's own aspectRatio and resolution are accepted and reach Veo (provider error fixture)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The vendor here is the local fixture. Against a real vendor this row would create a billed task.",
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('vendor-price-name genai ingress: the native request is not refused by the price-field rule', function () {",
+                  "  pm.expect(text, text.slice(0, 600)).to.not.include('caller_unsupported_parameter');",
+                  "  pm.expect(pm.response.code, text.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "pm.test('vendor-price-name genai ingress: the reply is the operation Veo started', function () {",
+                  "  var op = {}; try { op = pm.response.json(); } catch (e) { op = {}; }",
+                  "  pm.expect(String(op.name), text.slice(0, 600)).to.include('operations/');",
+                  "});",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+                  "  pm.test('vendor-price-name genai ingress: the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+                  "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/gemini/models/veo-3.1-generate-preview:predictLongRunning' && c.body.indexOf('vendor-price-name-genai-ingress') !== -1; });",
+                  "  pm.test('vendor-price-name genai ingress: the request reached the vendor', function () { pm.expect(calls.length, 'no captured call on /pp/gemini/models/veo-3.1-generate-preview:predictLongRunning').to.be.above(0); });",
+                  "  if (!calls.length) { return; }",
+                  "  var sent = JSON.parse(calls[calls.length - 1].body);",
+                  "  pm.test('vendor-price-name genai ingress: Veo received the aspectRatio and resolution the caller sent', function () {",
+                  "    pm.expect((sent.parameters || {}).aspectRatio, calls[calls.length - 1].body).to.eql('9:16');",
+                  "    pm.expect((sent.parameters || {}).resolution, calls[calls.length - 1].body).to.eql('1080p');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"instances\": [\n    {\n      \"prompt\": \"a paper boat on a pond vendor-price-name-genai-ingress\"\n    }\n  ],\n  \"parameters\": {\n    \"aspectRatio\": \"9:16\",\n    \"resolution\": \"1080p\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/veo-3.1-generate-preview:predictLongRunning",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "veo-3.1-generate-preview:predictLongRunning"
               ]
             }
           }

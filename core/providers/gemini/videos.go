@@ -357,6 +357,12 @@ func ToGeminiVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationRe
 		}
 
 		// Convert size to aspect ratio if size is provided and aspect ratio is not already set
+		// The unified aspect_ratio is Veo's aspectRatio (fork, TXE-7065). Veo's own name
+		// among the extra params, read above, must carry the same value: core refuses it
+		// otherwise (schemas.CheckExtraParamPriceFieldsFor).
+		if params.AspectRatio == nil && bifrostReq.Params.AspectRatio != "" {
+			params.AspectRatio = schemas.Ptr(string(bifrostReq.Params.AspectRatio))
+		}
 		if params.AspectRatio == nil && bifrostReq.Params.Size != "" {
 			aspectRatio := sizeToAspectRatio(bifrostReq.Params.Size)
 			if aspectRatio != "" {
@@ -614,6 +620,9 @@ func (request *GeminiVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx
 			params.Audio = request.Parameters.GenerateAudio
 		}
 		if request.Parameters.AspectRatio != nil {
+			// The unified field carries the ratio as well, so core's price-field rule sees
+			// it as sent (schemas.CheckExtraParamPriceFieldsFor, TXE-7065).
+			params.AspectRatio = schemas.TolerantString(*request.Parameters.AspectRatio)
 			params.ExtraParams["aspectRatio"] = *request.Parameters.AspectRatio
 		}
 		if request.Parameters.Resolution != nil {

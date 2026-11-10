@@ -8319,7 +8319,13 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		// Nor may an extra param supply a price-affecting unified field the request did
 		// not send: the vendor would bill for a value no unified field shows (contract
 		// C4, TXE-7059). One rule for every provider, refused here for the same reason.
-		if fieldErr := schemas.CheckExtraParamPriceFields(&req.BifrostRequest); fieldErr != nil {
+		// The provider's own names for those fields are refused too; a custom provider
+		// runs its base provider's converter, so it is checked under the base type (TXE-7065).
+		priceFieldProvider := provider.GetProviderKey()
+		if config.CustomProviderConfig != nil && config.CustomProviderConfig.BaseProviderType != "" {
+			priceFieldProvider = config.CustomProviderConfig.BaseProviderType
+		}
+		if fieldErr := schemas.CheckExtraParamPriceFieldsFor(priceFieldProvider, &req.BifrostRequest); fieldErr != nil {
 			fieldErr.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), model, model)
 			bifrost.sendWorkerError(req, *fieldErr)
 			continue
