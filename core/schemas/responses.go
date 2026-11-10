@@ -1347,6 +1347,9 @@ type ResponsesResponseUsage struct {
 	Cost                *BifrostCost                   `json:"cost,omitempty"`          // Only for the providers which support cost calculation
 	Iterations          []ResponsesResponseUsage       `json:"iterations,omitempty"`    // iterations field is sent by anthropic
 	ToolUsage           *ToolUsage                     `json:"tool_usage,omitempty"`    // Server-side tool call counts; moved to the response's top-level tool_usage on the wire
+	// SearchContextSize mirrors BifrostLLMUsage.SearchContextSize, so a chat usage converted to
+	// Responses (Perplexity's Sonar models) keeps the tier the vendor billed (fork, TXE-6549).
+	SearchContextSize *string `json:"search_context_size,omitempty"`
 
 	// xAI-specific usage fields
 	NumSourcesUsed             *int                                 `json:"num_sources_used,omitempty"`

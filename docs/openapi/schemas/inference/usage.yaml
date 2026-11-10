@@ -37,6 +37,12 @@ BifrostLLMUsage:
           type: integer
     tool_usage:
       $ref: "#/ToolUsage"
+    search_context_size:
+      type: string
+      description: >
+        Search context tier the provider reports it billed the request at
+        ("low", "medium" or "high"); Perplexity prices its per-request search
+        fee by it. Present only when the provider reports it.
     cost:
       $ref: "#/BifrostCost"
 
@@ -65,6 +71,18 @@ ToolUsage:
         num_requests:
           type: integer
           description: Number of billable code execution calls.
+    per_tool:
+      type: object
+      description: >
+        Call count of every tool the provider reported one for, keyed by the
+        provider's own tool name (Perplexity usage.tool_calls_details.<tool>.invocation).
+        Present only when the provider reports per-tool counts.
+      additionalProperties:
+        type: object
+        properties:
+          num_requests:
+            type: integer
+            description: Number of calls of this tool.
 
 ChatPromptTokensDetails:
   type: object

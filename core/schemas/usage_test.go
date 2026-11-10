@@ -476,16 +476,32 @@ func BenchmarkMergeStreamFrame(b *testing.B) {
 func TestToolUsageAddDeepCopyCoverEveryField(t *testing.T) {
 	var tu ToolUsage
 	v := reflect.ValueOf(&tu).Elem()
+	perTool := reflect.TypeOf(map[string]ToolRequestUsage{})
 	for i := 0; i < v.NumField(); i++ {
-		if v.Field(i).Type() != reflect.TypeOf(&ToolRequestUsage{}) {
-			t.Fatalf("ToolUsage.%s is not a *ToolRequestUsage; extend this test", v.Type().Field(i).Name)
+		switch v.Field(i).Type() {
+		case reflect.TypeOf(&ToolRequestUsage{}):
+			v.Field(i).Set(reflect.ValueOf(&ToolRequestUsage{NumRequests: i + 1}))
+		case perTool:
+			v.Field(i).Set(reflect.ValueOf(map[string]ToolRequestUsage{"tool": {NumRequests: i + 1}}))
+		default:
+			t.Fatalf("ToolUsage.%s is neither a *ToolRequestUsage nor the per-tool map; extend this test", v.Type().Field(i).Name)
 		}
-		v.Field(i).Set(reflect.ValueOf(&ToolRequestUsage{NumRequests: i + 1}))
 	}
 	sum := reflect.ValueOf(tu.Add(&tu)).Elem()
 	cp := reflect.ValueOf(tu.DeepCopy()).Elem()
 	for i := 0; i < v.NumField(); i++ {
 		name := v.Type().Field(i).Name
+		if v.Field(i).Type() == perTool {
+			if s := sum.Field(i).Interface().(map[string]ToolRequestUsage); s["tool"].NumRequests != 2*(i+1) {
+				t.Fatalf("Add drops or mis-sums ToolUsage.%s: %+v", name, s)
+			}
+			c := cp.Field(i).Interface().(map[string]ToolRequestUsage)
+			c["tool"] = ToolRequestUsage{NumRequests: -1}
+			if tu.PerTool["tool"].NumRequests != i+1 {
+				t.Fatalf("DeepCopy does not own ToolUsage.%s", name)
+			}
+			continue
+		}
 		if s := sum.Field(i).Interface().(*ToolRequestUsage); s == nil || s.NumRequests != 2*(i+1) {
 			t.Fatalf("Add drops or mis-sums ToolUsage.%s: %+v", name, s)
 		}
@@ -702,5 +718,73 @@ func BenchmarkBifrostLLMUsageDeepCopy_Tokens(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		llmUsageSink = x.DeepCopy()
+	}
+}
+
+// TestToolUsagePerToolAddAndDeepCopy: the per-tool map (TXE-6549) is summed tool by tool when
+// separate calls are added up, and DeepCopy owns its map.
+func TestToolUsagePerToolAddAndDeepCopy(t *testing.T) {
+	a := &ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 2}, PerTool: map[string]ToolRequestUsage{"web_search": {NumRequests: 2}, "fetch_url": {NumRequests: 1}}}
+	b := &ToolUsage{PerTool: map[string]ToolRequestUsage{"fetch_url": {NumRequests: 4}, "sandbox": {NumRequests: 1}}}
+
+	sum := a.Add(b)
+	want := map[string]ToolRequestUsage{"web_search": {NumRequests: 2}, "fetch_url": {NumRequests: 5}, "sandbox": {NumRequests: 1}}
+	if !reflect.DeepEqual(sum.PerTool, want) || sum.WebSearch.NumRequests != 2 {
+		t.Fatalf("Add = %+v / %+v, want %+v / web_search 2", sum.PerTool, sum.WebSearch, want)
+	}
+	sum.PerTool["web_search"] = ToolRequestUsage{NumRequests: 99}
+	if a.PerTool["web_search"].NumRequests != 2 {
+		t.Fatal("Add shares an operand's map")
+	}
+	if only := (&ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 1}}).Add(nil); only.PerTool != nil {
+		t.Fatalf("a usage with no per-tool report must not gain a map: %+v", only.PerTool)
+	}
+
+	cp := a.DeepCopy()
+	cp.PerTool["fetch_url"] = ToolRequestUsage{NumRequests: 7}
+	if a.PerTool["fetch_url"].NumRequests != 1 {
+		t.Fatal("DeepCopy shares the per-tool map")
+	}
+
+	out, err := Marshal(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back ToolUsage
+	if err := Unmarshal(out, &back); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(&back, a) {
+		t.Fatalf("JSON round trip = %+v, want %+v (wire %s)", back, a, out)
+	}
+}
+
+// TestSearchContextSizeSurvivesCopyMergeAndResponsesConversion: the tier the vendor billed
+// (TXE-6549) is owned by DeepCopy, kept by MergeBifrostLLMUsage (the later call's report, else
+// the earlier one's) and carried both ways through the chat/Responses usage conversion.
+func TestSearchContextSizeSurvivesCopyMergeAndResponsesConversion(t *testing.T) {
+	high, low := "high", "low"
+	u := &BifrostLLMUsage{PromptTokens: 1, TotalTokens: 1, SearchContextSize: &high,
+		ToolUsage: &ToolUsage{PerTool: map[string]ToolRequestUsage{"web_search": {NumRequests: 1}}}}
+
+	cp := u.DeepCopy()
+	if cp.SearchContextSize == u.SearchContextSize || *cp.SearchContextSize != "high" {
+		t.Fatalf("DeepCopy must own search_context_size, got %v", cp.SearchContextSize)
+	}
+
+	if got := MergeBifrostLLMUsage(u, &BifrostLLMUsage{PromptTokens: 1}); got.SearchContextSize == nil || *got.SearchContextSize != "high" {
+		t.Fatalf("merge with a call that reports no tier dropped it: %v", got.SearchContextSize)
+	}
+	if got := MergeBifrostLLMUsage(u, &BifrostLLMUsage{SearchContextSize: &low}); *got.SearchContextSize != "low" {
+		t.Fatalf("merge = %q, want the later call's tier", *got.SearchContextSize)
+	}
+
+	ru := u.ToResponsesResponseUsage()
+	if ru.SearchContextSize == nil || *ru.SearchContextSize != "high" || ru.ToolUsage.PerTool["web_search"].NumRequests != 1 {
+		t.Fatalf("ToResponsesResponseUsage lost the tier or the per-tool counts: %+v", ru)
+	}
+	back := ru.ToBifrostLLMUsage()
+	if back.SearchContextSize == nil || *back.SearchContextSize != "high" || back.ToolUsage.PerTool["web_search"].NumRequests != 1 {
+		t.Fatalf("ToBifrostLLMUsage lost the tier or the per-tool counts: %+v", back)
 	}
 }

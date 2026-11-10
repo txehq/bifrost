@@ -47,6 +47,9 @@ func (u *BifrostLLMUsage) MergeStreamFrame(frame *BifrostLLMUsage) {
 	if frame.ToolUsage != nil {
 		u.ToolUsage = frame.ToolUsage
 	}
+	if frame.SearchContextSize != nil {
+		u.SearchContextSize = frame.SearchContextSize
+	}
 	if frame.Cost != nil {
 		u.Cost = frame.Cost
 	}

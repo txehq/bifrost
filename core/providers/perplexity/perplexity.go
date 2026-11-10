@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/providers/openai"
 	"github.com/capsohq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
@@ -228,7 +229,7 @@ func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 		schemas.Perplexity,
 		postHookRunner,
 		customRequestConverter,
-		nil,
+		provider.parseChatStreamFrame,
 		nil,
 		nil,
 		nil,
@@ -236,6 +237,26 @@ func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 		provider.logger,
 		postHookSpanFinalizer,
 	)
+}
+
+// parseChatStreamFrame decodes one streamed frame, reading usage in Perplexity's own shape and
+// converting it exactly as the non-streamed response does. The shared stream accumulator then
+// merges it, so the final frame keeps the search context size, the search and per-tool counts,
+// the citation tokens and the cost the generic decode dropped (contract C5, C10). It runs for
+// the Responses route's chat fallback too, which a postResponseConverter would not.
+//
+// A frame that does not parse is skipped with a warning, as the shared stream does: the handler
+// hands back an empty frame, which the stream loop passes over, instead of an error, which
+// would end the stream.
+func (provider *PerplexityProvider) parseChatStreamFrame(responseBody []byte, response *schemas.BifrostChatResponse, _ []byte, _ bool, _ bool) (interface{}, interface{}, *schemas.BifrostError) {
+	frame := streamFrame{BifrostChatResponse: response}
+	if err := sonic.Unmarshal(responseBody, &frame); err != nil {
+		provider.logger.Warn("Failed to parse stream response: %v", err)
+		*response = schemas.BifrostChatResponse{}
+		return nil, nil, nil
+	}
+	response.Usage = frame.Usage.toBifrostUsage()
+	return nil, nil, nil
 }
 
 // Responses performs a responses request to the Perplexity API.

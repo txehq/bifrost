@@ -795,6 +795,11 @@ ResponsesResponseUsage:
       $ref: "#/ResponsesResponseOutputTokens"
     total_tokens:
       type: integer
+    search_context_size:
+      type: string
+      description: >
+        Search context tier the provider reports it billed the request at
+        ("low", "medium" or "high"). Present only when the provider reports it.
     cost:
       $ref: "./usage.yaml#/BifrostCost"
 

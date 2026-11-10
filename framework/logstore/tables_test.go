@@ -442,6 +442,27 @@ func TestLogTokenUsageKeepsEveryToolCounter(t *testing.T) {
 	assert.Equal(t, 1, tu.CodeExecution.NumRequests)
 }
 
+// TestLogTokenUsageKeepsPerToolCountsAndSearchContextSize: a Perplexity usage (TXE-6549) is
+// stored with its per-tool counts and its search context tier, and read back whole.
+func TestLogTokenUsageKeepsPerToolCountsAndSearchContextSize(t *testing.T) {
+	usage := &schemas.BifrostLLMUsage{TotalTokens: 1, SearchContextSize: schemas.Ptr("high"), ToolUsage: &schemas.ToolUsage{
+		WebSearch: &schemas.WebSearchToolUsage{NumRequests: 3},
+		PerTool:   map[string]schemas.ToolRequestUsage{"web_search": {NumRequests: 3}, "fetch_url": {NumRequests: 1}},
+	}}
+	written := &Log{TokenUsageParsed: usage}
+	require.NoError(t, written.SerializeFields())
+	assert.JSONEq(t, `{"total_tokens":1,"completion_tokens_details":{"num_search_queries":3},"tool_usage":{"per_tool":{"web_search":{"num_requests":3},"fetch_url":{"num_requests":1}}},"search_context_size":"high"}`, written.TokenUsage)
+
+	read := &Log{TokenUsage: written.TokenUsage}
+	require.NoError(t, read.DeserializeFields())
+	got := read.TokenUsageParsed
+	require.NotNil(t, got.ToolUsage)
+	assert.Equal(t, 3, got.ToolUsage.WebSearch.NumRequests)
+	assert.Equal(t, usage.ToolUsage.PerTool, got.ToolUsage.PerTool)
+	require.NotNil(t, got.SearchContextSize)
+	assert.Equal(t, "high", *got.SearchContextSize)
+}
+
 func TestDeserializeFieldsRebuildsToolUsageFromNumSearchQueries(t *testing.T) {
 	log := &Log{TokenUsage: `{"total_tokens":15,"completion_tokens_details":{"num_search_queries":3}}`}
 	require.NoError(t, log.DeserializeFields())
