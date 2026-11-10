@@ -8147,10 +8147,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		}
 		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
 		// Read once per request, so the retry loop needs no handle on the Bifrost instance.
-		// Set only when on: the retry stays today's behaviour for every other deployment.
-		if bifrost.disableEncryptedReasoningRetry.Load() {
-			req.Context.SetValue(schemas.BifrostContextKeyDisableEncryptedReasoningRetry, true)
-		}
+		markEncryptedReasoningRetry(req.Context, bifrost.disableEncryptedReasoningRetry.Load())
 		// Lets downstream converters resolve a custom provider key back to the built-in provider it wraps.
 		req.Context.SetValue(schemas.BifrostContextKeyBaseProviderType, baseProvider)
 		// Re-stamped per attempt so a fallback cannot inherit the previous provider's opt-in.

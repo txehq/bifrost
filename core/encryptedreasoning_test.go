@@ -247,10 +247,21 @@ func TestDisableEncryptedReasoningRetrySwitch(t *testing.T) {
 	if encryptedReasoningRetryDisabled(ctx) {
 		t.Fatal("an unmarked context keeps the retry")
 	}
-	ctx.SetValue(schemas.BifrostContextKeyDisableEncryptedReasoningRetry, true)
+	markEncryptedReasoningRetry(ctx, false)
+	if ctx.Value(schemas.BifrostContextKeyDisableEncryptedReasoningRetry) != nil {
+		t.Fatal("with the switch off, an unmarked context is left untouched")
+	}
+	markEncryptedReasoningRetry(ctx, true)
 	if !encryptedReasoningRetryDisabled(ctx) {
 		t.Fatal("a marked context turns the retry off")
 	}
+	// A context reused for a later request, after the switch was turned back off, must not
+	// keep the earlier request's mark.
+	markEncryptedReasoningRetry(ctx, false)
+	if encryptedReasoningRetryDisabled(ctx) {
+		t.Fatal("a reused context kept the mark after the switch was turned off")
+	}
+	markEncryptedReasoningRetry(nil, true)
 }
 
 // BenchmarkEncryptedReasoningRetryDisabled is the read the retry loop makes when an attempt
@@ -259,6 +270,8 @@ func BenchmarkEncryptedReasoningRetryDisabled(b *testing.B) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	b.ReportAllocs()
 	for b.Loop() {
+		// The worker's per-request step with the switch off: one context read, no write.
+		markEncryptedReasoningRetry(ctx, false)
 		if encryptedReasoningRetryDisabled(ctx) {
 			b.Fatal("an unmarked context keeps the retry")
 		}
