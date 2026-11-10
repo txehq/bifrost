@@ -422,6 +422,26 @@ func TestSerializeFieldsStoresWebSearchAsNumSearchQueries(t *testing.T) {
 	assert.JSONEq(t, `{"total_tokens":1,"completion_tokens_details":{"num_search_queries":2}}`, onlyTool.TokenUsage)
 }
 
+func TestLogTokenUsageKeepsEveryToolCounter(t *testing.T) {
+	usage := &schemas.BifrostLLMUsage{TotalTokens: 1, ToolUsage: &schemas.ToolUsage{
+		WebSearch:     &schemas.WebSearchToolUsage{NumRequests: 3},
+		WebFetch:      &schemas.ToolRequestUsage{NumRequests: 2},
+		CodeExecution: &schemas.ToolRequestUsage{NumRequests: 1},
+	}}
+	written := &Log{TokenUsageParsed: usage}
+	require.NoError(t, written.SerializeFields())
+	assert.JSONEq(t, `{"total_tokens":1,"completion_tokens_details":{"num_search_queries":3},"tool_usage":{"web_fetch":{"num_requests":2},"code_execution":{"num_requests":1}}}`, written.TokenUsage)
+	require.NotNil(t, usage.ToolUsage.WebSearch, "the caller's usage keeps its own shape")
+
+	read := &Log{TokenUsage: written.TokenUsage}
+	require.NoError(t, read.DeserializeFields())
+	tu := read.TokenUsageParsed.ToolUsage
+	require.NotNil(t, tu)
+	assert.Equal(t, 3, tu.WebSearch.NumRequests)
+	assert.Equal(t, 2, tu.WebFetch.NumRequests)
+	assert.Equal(t, 1, tu.CodeExecution.NumRequests)
+}
+
 func TestDeserializeFieldsRebuildsToolUsageFromNumSearchQueries(t *testing.T) {
 	log := &Log{TokenUsage: `{"total_tokens":15,"completion_tokens_details":{"num_search_queries":3}}`}
 	require.NoError(t, log.DeserializeFields())
