@@ -17,6 +17,7 @@ func isWorkspaceOperation(requestType schemas.RequestType) bool {
 	case schemas.VideoGenerationRequest,
 		schemas.VideoEditRequest,
 		schemas.VideoRetrieveRequest,
+		schemas.VideoCancelRequest,
 		schemas.VideoDownloadRequest,
 		schemas.VideoDeleteRequest,
 		schemas.VideoListRequest,
