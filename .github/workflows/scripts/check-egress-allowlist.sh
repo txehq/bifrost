@@ -119,7 +119,9 @@ PY
 #
 # The rule enforced here is deliberately blunt: every external host appearing in
 # the harness collection or its seeded provider config must be either
-# allowlisted or listed in NOT_DIALLED_HOSTS with a reason. Classifying
+# allowlisted or listed in NOT_DIALLED_HOSTS with a reason. The one exception is
+# text that is documentation by construction - Postman description fields and
+# whole-line script comments - which is not scanned at all. Classifying
 # automatically would mean deciding which URLs Bifrost fetches and which the
 # provider fetches, which depends on per-provider API shape and would silently
 # get it wrong. Forcing a human to say which one it is cannot.
@@ -180,16 +182,10 @@ NOT_DIALLED_HOSTS = {
     "api.openapi.example": "reserved .example TLD; an operation server in a 272 openapi-preservation inline document, previewed and never dialled",
     "server.openapi.example": "reserved .example TLD; a server in the 272 openapi-preservation inline documents, previewed and never dialled",
     "idp.example": "reserved .example TLD; oauth_key_config token_url in the OAuth-minted key rows, never resolves",
-    # Documentation links inside descriptions and comments.
-    "anthropic.com": "doc link in a folder description",
-    "www.anthropic.com": "doc link in a folder description",
-    "platform.claude.com": "doc link in a folder description",
-    "code.claude.com": "doc link in a folder description",
-    "developers.openai.com": "doc link in a folder description",
-    "docs.aws.amazon.com": "doc link in a folder description",
-    "docs.x.ai": "doc link in a folder description",
-    "ai.google.dev": "Gemini thinking-level doc link in a folder description",
-    "learn.microsoft.com": "Azure OpenAI files API doc link in a test-script comment",
+    "anthropic.com": "Gemini urlContext target in a prompt (12 backlog row) - Google fetches it server-side",
+    # Documentation links in a folder or request description, or in a whole-line
+    # test-script comment, need no entry here: hosts_in_collection() does not
+    # scan that text (TXE-6978).
     "schema.getpostman.com": "Postman collection schema declaration, not fetched at run time",
     # Identifiers that merely look like endpoints.
     "s3.amazonaws.com": "XML namespace URI in a ListBucketResult document; namespaces are names, not fetches",
@@ -208,7 +204,10 @@ def hosts_in(path):
     if not os.path.exists(path):
         return set()
     with open(path, encoding="utf-8") as fh:
-        raw = fh.read()
+        return hosts_in_text(fh.read())
+
+
+def hosts_in_text(raw):
     found = set()
     for line in raw.splitlines():
         if TEMPLATED.search(line):
@@ -222,6 +221,44 @@ def hosts_in(path):
         for m in HOST_RE.finditer(line):
             found.add(m.group(1))
     return found
+
+
+def collection_without_documentation(node, parent_key=None):
+    """Drop the parts of a Postman collection that are documentation, not requests.
+
+    A `description` (collection, folder, request, header, variable) is prose that
+    newman never sends, and a whole-line `//` comment in a test or pre-request
+    script never runs. A vendor documentation link belongs in exactly those two
+    places, and read as a dialled host it failed this check on every pull request
+    until someone listed the docs site by hand: platform.kimi.ai after the Moonshot
+    harness folder (TXE-6978), and docs.x.ai, docs.aws.amazon.com, ai.google.dev
+    and five more before it. Request URLs, headers, bodies and script code are
+    all still scanned, so a host the harness can dial is not hidden by this.
+    """
+    if isinstance(node, dict):
+        return {
+            key: collection_without_documentation(value, key)
+            for key, value in node.items()
+            if key != "description"
+        }
+    if isinstance(node, list):
+        if parent_key == "exec":
+            return [
+                line
+                for line in node
+                if not (isinstance(line, str) and line.lstrip().startswith("//"))
+            ]
+        return [collection_without_documentation(item, parent_key) for item in node]
+    return node
+
+
+def hosts_in_collection(path):
+    with open(path, encoding="utf-8") as fh:
+        collection = json.load(fh)
+    # Re-serialised one value per line so the line-based scan below still sees a
+    # templated URL and a literal one on separate lines.
+    text = json.dumps(collection_without_documentation(collection), indent=1, ensure_ascii=False)
+    return hosts_in_text(text)
 
 
 # Provider endpoints Bifrost builds in Go rather than reading from config, which
@@ -249,7 +286,7 @@ def hosts_in_go(root):
     return found
 
 
-required = hosts_in(COLLECTION) | hosts_in(PROVIDER_CONFIG) | hosts_in_go(REPO_ROOT)
+required = hosts_in_collection(COLLECTION) | hosts_in(PROVIDER_CONFIG) | hosts_in_go(REPO_ROOT)
 required -= set(NOT_DIALLED_HOSTS)
 required = {h for h in required if h not in ("localhost",)}
 
