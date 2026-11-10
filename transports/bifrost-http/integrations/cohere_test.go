@@ -7,6 +7,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/providers/cohere"
+	"github.com/capsohq/bifrost/core/providers/gemini"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -366,4 +367,60 @@ func TestCohereEmbedRouteResponseReturnsBilledImages(t *testing.T) {
 	require.NotNil(t, native.Meta.BilledUnits)
 	require.NotNil(t, native.Meta.BilledUnits.Images)
 	assert.Equal(t, 2, *native.Meta.BilledUnits.Images)
+}
+
+// Gemini-shaped ingress to Cohere (TXE-6546): /genai/v1beta/models/cohere/...:embedContent
+// and :batchEmbedContents, also mounted under /langchain, carry Gemini's taskType into the
+// unified task_type, which reaches Cohere as its input_type. Without one the request is
+// refused with caller_unsupported_parameter before any upstream call.
+func TestGenAIRoutesToCohereMapTaskTypeAndRefuseAMissingOne(t *testing.T) {
+	content := func() *gemini.Content { return &gemini.Content{Parts: []*gemini.Part{{Text: "hi"}}} }
+	for _, prefix := range []string{"/genai", "/langchain"} {
+		var route *RouteConfig
+		routes := CreateGenAIRouteConfigs(prefix)
+		for i := range routes {
+			if routes[i].Path == prefix+"/v1beta/models/{model:*}" && routes[i].EmbeddingResponseConverter != nil {
+				route = &routes[i]
+			}
+		}
+		require.NotNil(t, route, prefix)
+		toEgress := func(native interface{}) (*cohere.CohereEmbeddingRequest, error) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq, err := route.RequestConverter(ctx, native)
+			require.NoError(t, err)
+			require.NotNil(t, bifrostReq.EmbeddingRequest)
+			require.Equal(t, schemas.Cohere, bifrostReq.EmbeddingRequest.Provider)
+			return cohere.ToCohereEmbeddingRequest(bifrostReq.EmbeddingRequest)
+		}
+		cases := map[string]struct {
+			withTask, withoutTask interface{}
+		}{
+			"embedContent": {
+				withTask:    &gemini.GeminiEmbeddingRequest{Model: "cohere/embed-v4.0", Content: content(), TaskType: schemas.Ptr("RETRIEVAL_QUERY")},
+				withoutTask: &gemini.GeminiEmbeddingRequest{Model: "cohere/embed-v4.0", Content: content()},
+			},
+			"batchEmbedContents": {
+				withTask: &gemini.GeminiBatchEmbeddingRequest{Model: "cohere/embed-v4.0", Requests: []gemini.GeminiEmbeddingRequest{
+					{Model: "models/embed-v4.0", Content: content(), TaskType: schemas.Ptr("RETRIEVAL_DOCUMENT")},
+				}},
+				withoutTask: &gemini.GeminiBatchEmbeddingRequest{Model: "cohere/embed-v4.0", Requests: []gemini.GeminiEmbeddingRequest{
+					{Model: "models/embed-v4.0", Content: content()},
+				}},
+			},
+		}
+		want := map[string]string{"embedContent": "search_query", "batchEmbedContents": "search_document"}
+		for name, tc := range cases {
+			t.Run(prefix+"/"+name, func(t *testing.T) {
+				egress, err := toEgress(tc.withTask)
+				require.NoError(t, err)
+				assert.Equal(t, want[name], egress.InputType)
+
+				_, err = toEgress(tc.withoutTask)
+				bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+				require.True(t, ok, "want a caller error, got %v", err)
+				assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+				assert.Equal(t, "task_type", bifrostErr.Error.Param)
+			})
+		}
+	}
 }

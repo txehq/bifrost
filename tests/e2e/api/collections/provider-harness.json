@@ -299071,7 +299071,7 @@
     },
     {
       "name": "315. Cohere embeddings bill on billed_units and require task_type (cohere embeddings task_type)",
-      "description": "Fork contract C4/C5 for the cohere provider's /v2/embed. Before this, Bifrost wrote input_type search_document whenever the caller sent none, ignored the unified task_type, and filled usage from meta.tokens (processed counts) ahead of meta.billed_units (what Cohere bills), dropping billed_units.images. Now task_type is converted to input_type (Cohere's own values as given, Gemini's RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT/CLASSIFICATION/CLUSTERING onto their equivalent), a request with neither task_type nor input_type is refused with 400 caller_unsupported_parameter on task_type before any upstream call, and usage comes from billed_units with the image count in usage.input_images. The native /cohere/v2/embed route is covered too: the caller's input_type reaches Cohere unchanged, and a native request without one is refused the same way, the classification arriving in the x-bifrost-error-type header because the Cohere error envelope has no extra_fields. Every case pins the key with x-bf-api-key so the one upstream call goes to that key with no fallback.",
+      "description": "Fork contract C4/C5 for the cohere provider's /v2/embed. Before this, Bifrost wrote input_type search_document whenever the caller sent none, ignored the unified task_type, and filled usage from meta.tokens (processed counts) ahead of meta.billed_units (what Cohere bills), dropping billed_units.images. Now task_type is converted to input_type (Cohere's own values as given, Gemini's RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT/CLASSIFICATION/CLUSTERING onto their equivalent), a request with neither task_type nor input_type is refused with 400 caller_unsupported_parameter on task_type before any upstream call, and usage comes from billed_units with the image count in usage.input_images. The Gemini-shaped /genai and /langchain routes carry taskType to Cohere the same way, and refuse a request without one. The native /cohere/v2/embed route is covered too: the caller's input_type reaches Cohere unchanged, and a native request without one is refused the same way, the classification arriving in the x-bifrost-error-type header because the Cohere error envelope has no extra_fields. Every case pins the key with x-bf-api-key so the one upstream call goes to that key with no fallback.",
       "item": [
         {
           "name": "315.1 cohere/embed-v4.0 - task_type reaches Cohere as input_type, usage is billed_units, one call on the pinned key",
@@ -299358,6 +299358,147 @@
                   "pm.test('meta.billed_units is Cohere's own', function () {",
                   "  var billed = (pm.response.json().meta || {}).billed_units || {};",
                   "  pm.expect(billed.input_tokens, 'no billed input_tokens: ' + JSON.stringify(pm.response.json().meta)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "315.6 /genai cohere/embed-v4.0:embedContent - taskType RETRIEVAL_QUERY reaches Cohere",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Cohere API Key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": {\n    \"parts\": [\n      {\n        \"text\": \"alpha kestrel harbor\"\n      }\n    ]\n  },\n  \"taskType\": \"RETRIEVAL_QUERY\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/cohere/embed-v4.0:embedContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "cohere",
+                "embed-v4.0:embedContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 with a vector', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+                  "  pm.expect(((pm.response.json().embedding || {}).values || []).length).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "315.7 [EXPECT-400] /genai cohere/embed-v4.0:embedContent - no taskType is caller_unsupported_parameter with no upstream call",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Cohere API Key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": {\n    \"parts\": [\n      {\n        \"text\": \"alpha kestrel harbor\"\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/cohere/embed-v4.0:embedContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "cohere",
+                "embed-v4.0:embedContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400, classified caller_unsupported_parameter', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 400)).to.eql(400);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-error-type')).to.eql('caller_unsupported_parameter');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "315.8 /langchain cohere/embed-v4.0:batchEmbedContents - taskType RETRIEVAL_DOCUMENT reaches Cohere",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Cohere API Key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requests\": [\n    {\n      \"model\": \"models/embed-v4.0\",\n      \"content\": {\n        \"parts\": [\n          {\n            \"text\": \"alpha kestrel harbor\"\n          }\n        ]\n      },\n      \"taskType\": \"RETRIEVAL_DOCUMENT\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/v1beta/models/cohere/embed-v4.0:batchEmbedContents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "v1beta",
+                "models",
+                "cohere",
+                "embed-v4.0:batchEmbedContents"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 with one vector', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+                  "  pm.expect((pm.response.json().embeddings || []).length).to.eql(1);",
                   "});"
                 ]
               }
