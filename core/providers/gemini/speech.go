@@ -237,6 +237,15 @@ func (response *GenerateContentResponse) SpeechBlockError() *schemas.BifrostErro
 	return nil
 }
 
+// speechBilledUsage returns the usage the vendor counted for a speech that ends on an error,
+// for the error's BilledUsage, and nil when it counted no tokens.
+func speechBilledUsage(metadata *GenerateContentResponseUsageMetadata) *schemas.BifrostLLMUsage {
+	if metadata == nil || (metadata.PromptTokenCount == 0 && metadata.CandidatesTokenCount == 0 && metadata.TotalTokenCount == 0) {
+		return nil
+	}
+	return ConvertGeminiUsageMetadataToChatUsage(metadata)
+}
+
 // isSpeechSafetyFinishReason reports whether a candidate's finishReason says Gemini stopped
 // the speech over its content. LANGUAGE (an unsupported language) and the reasons that only
 // image or tool generation produce are not content blocks.

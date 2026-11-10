@@ -196,15 +196,23 @@ func TestPrepareTranscriptionRequest_GeminiUnifiedFields(t *testing.T) {
 	}
 	assertRefused(gemini.ValidateTranscriptionRequest(srt), "response_format")
 
-	delivered := prepare([][2]string{{"prompt", "Transcribe the call."}, {"response_format", "json"}})
+	delivered := prepare([][2]string{{"prompt", "Transcribe the call."}, {"response_format", "json"}, {"temperature", "0.2"}})
 	if fieldErr := declared(delivered); fieldErr != nil {
 		t.Fatalf("a deliverable request was refused: %+v", fieldErr.Error)
 	}
 	if fieldErr := gemini.ValidateTranscriptionRequest(delivered); fieldErr != nil {
 		t.Fatalf("a deliverable request was refused: %+v", fieldErr.Error)
 	}
-	if got := gemini.ToGeminiTranscriptionRequest(delivered).Contents[0].Parts[0].Text; got != "Transcribe the call." {
+	upstream := gemini.ToGeminiTranscriptionRequest(delivered)
+	if got := upstream.Contents[0].Parts[0].Text; got != "Transcribe the call." {
 		t.Errorf("prompt sent to Gemini = %q", got)
+	}
+	// The multipart temperature field reaches generationConfig.temperature.
+	if got := upstream.GenerationConfig.Temperature; got == nil || *got != 0.2 {
+		t.Errorf("generationConfig.temperature = %v, want 0.2", got)
+	}
+	if _, leaked := upstream.ExtraParams["temperature"]; leaked {
+		t.Error("temperature must not also be merged into the Gemini body as an extra param")
 	}
 }
 

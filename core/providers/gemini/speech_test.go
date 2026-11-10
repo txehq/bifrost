@@ -154,6 +154,14 @@ func TestGeminiSpeechBlockedPromptIsContentFilteredError(t *testing.T) {
 		require.NotNil(t, bErr.Error.Code)
 		assert.Contains(t, body, `"`+*bErr.Error.Code+`"`, "error.code is the vendor's reason verbatim")
 		assert.NotNil(t, bErr.ExtraFields.RawResponse, "the vendor's body is kept for the caller who asked for it")
+		// Tokens the vendor counted before blocking are billed; a block that counted none bills nothing.
+		if body == geminiSpeechSafetyFinishChunk {
+			require.NotNil(t, bErr.ExtraFields.BilledUsage)
+			assert.Equal(t, 7, bErr.ExtraFields.BilledUsage.PromptTokens)
+			assert.Equal(t, 7, bErr.ExtraFields.BilledUsage.TotalTokens)
+		} else {
+			assert.Nil(t, bErr.ExtraFields.BilledUsage)
+		}
 		assert.EqualValues(t, 1, calls.Load(), "one upstream call per request")
 	}
 }
@@ -167,9 +175,10 @@ func TestGeminiSpeechStreamBlockedEndsOnContentFilteredError(t *testing.T) {
 		events     []string
 		wantDeltas int
 		wantCode   string
+		wantBilled int // prompt tokens billed with the error; 0 means no BilledUsage
 	}{
 		{name: "prompt blocked", events: []string{geminiPromptBlockedBody}, wantCode: "SAFETY"},
-		{name: "safety finishReason after audio", events: []string{geminiSpeechAudioChunk, geminiSpeechSafetyFinishChunk}, wantDeltas: 1, wantCode: "PROHIBITED_CONTENT"},
+		{name: "safety finishReason after audio", events: []string{geminiSpeechAudioChunk, geminiSpeechSafetyFinishChunk}, wantDeltas: 1, wantCode: "PROHIBITED_CONTENT", wantBilled: 7},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -187,6 +196,13 @@ func TestGeminiSpeechStreamBlockedEndsOnContentFilteredError(t *testing.T) {
 			assert.Equal(t, schemas.ErrorTypeCallerContentFiltered, last.BifrostError.ExtraFields.ErrorType)
 			require.NotNil(t, last.BifrostError.Error.Code)
 			assert.Equal(t, tc.wantCode, *last.BifrostError.Error.Code)
+			// The audio already sent was counted by the vendor: the error carries it for the caller's budget.
+			if tc.wantBilled == 0 {
+				assert.Nil(t, last.BifrostError.ExtraFields.BilledUsage)
+			} else {
+				require.NotNil(t, last.BifrostError.ExtraFields.BilledUsage)
+				assert.Equal(t, tc.wantBilled, last.BifrostError.ExtraFields.BilledUsage.PromptTokens)
+			}
 			assert.EqualValues(t, 1, calls.Load(), "one upstream call per request")
 		})
 	}
@@ -220,6 +236,13 @@ func TestGeminiSpeechStreamWithoutFinishReasonIsTruncated(t *testing.T) {
 			assert.False(t, last.BifrostError.IsBifrostError)
 			require.NotNil(t, last.BifrostError.StatusCode)
 			assert.Equal(t, 502, *last.BifrostError.StatusCode)
+			// Usage the vendor reported before the body ended is billed with the error.
+			if tc.name == "usage but no finishReason" {
+				require.NotNil(t, last.BifrostError.ExtraFields.BilledUsage)
+				assert.Equal(t, 69, last.BifrostError.ExtraFields.BilledUsage.TotalTokens)
+			} else {
+				assert.Nil(t, last.BifrostError.ExtraFields.BilledUsage)
+			}
 		})
 	}
 }

@@ -1509,6 +1509,8 @@ func (provider *GeminiProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	// A blocked speech is the caller's content block, not an empty audio (contract C6).
 	if blockErr := geminiResponse.SpeechBlockError(); blockErr != nil {
 		blockErr = providerUtils.EnrichError(ctx, blockErr, jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+		// Tokens the vendor counted before it blocked are still billed to the caller's budget.
+		blockErr.ExtraFields.BilledUsage = speechBilledUsage(geminiResponse.UsageMetadata)
 		if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 			blockErr.ExtraFields.RawResponse = rawResponse
 		}
@@ -1675,6 +1677,9 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		// usageMetadata is cumulative: the last one the vendor sent is the stream's usage. It is
 		// kept as it arrived and converted once, for the done frame.
 		var lastUsageMetadata *GenerateContentResponseUsageMetadata
+		// The running usage a cancelled, timed-out or truncated stream is billed from.
+		streamUsage := &schemas.BifrostLLMUsage{}
+		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, streamUsage)
 		lastChunkTime := startTime
 		// sawFinish records the vendor's end marker: a candidate carrying a finishReason.
 		sawFinish := false
@@ -1722,6 +1727,12 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 			// done frame (contract C6). As the first chunk it becomes the request's HTTP error.
 			if blockErr := geminiResponse.SpeechBlockError(); blockErr != nil {
 				blockErr = providerUtils.EnrichError(ctx, blockErr, jsonBody, []byte(jsonData), provider.sendBackRawRequest, provider.sendBackRawResponse)
+				// usageMetadata is cumulative: the blocking frame's, or the last one before it, is
+				// what the vendor counted, and it is still billed to the caller's budget.
+				if geminiResponse.UsageMetadata != nil {
+					lastUsageMetadata = geminiResponse.UsageMetadata
+				}
+				blockErr.ExtraFields.BilledUsage = speechBilledUsage(lastUsageMetadata)
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, blockErr, responseChan, provider.logger, postHookSpanFinalizer)
 				return
@@ -1758,6 +1769,9 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 			}
 			if geminiResponse.UsageMetadata != nil {
 				lastUsageMetadata = geminiResponse.UsageMetadata
+				if billed := speechBilledUsage(lastUsageMetadata); billed != nil {
+					*streamUsage = *billed
+				}
 			}
 
 			// Only send response if we have actual audio content

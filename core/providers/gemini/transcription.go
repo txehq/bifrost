@@ -139,6 +139,13 @@ func ToGeminiTranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionReques
 		// The sampling temperature, sent as given.
 		geminiReq.GenerationConfig.Temperature = bifrostReq.Params.Temperature
 		geminiReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
+		// The neutral multipart route carries temperature as an untyped form field.
+		if geminiReq.GenerationConfig.Temperature == nil {
+			if temperature, ok := schemas.SafeExtractFloat64Pointer(geminiReq.ExtraParams["temperature"]); ok {
+				geminiReq.GenerationConfig.Temperature = temperature
+			}
+		}
+		delete(geminiReq.ExtraParams, "temperature")
 		// Handle extra parameters
 		if bifrostReq.Params.ExtraParams != nil {
 			// Safety settings

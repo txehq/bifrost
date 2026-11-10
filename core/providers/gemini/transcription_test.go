@@ -146,4 +146,14 @@ func TestToGeminiTranscriptionRequestDeliversDeclaredFields(t *testing.T) {
 	wire, err = sonic.Marshal(geminiReq)
 	require.NoError(t, err)
 	assert.NotContains(t, string(wire), "temperature")
+
+	// The multipart /v1/audio/transcriptions route carries temperature as an untyped form
+	// field: it reaches generationConfig.temperature and is not also merged as an extra.
+	geminiReq = ToGeminiTranscriptionRequest(&schemas.BifrostTranscriptionRequest{
+		Model: "gemini-3.5-transcribe", Input: &schemas.TranscriptionInput{File: []byte("RIFF")},
+		Params: &schemas.TranscriptionParameters{ExtraParams: map[string]interface{}{"temperature": "0.2"}},
+	})
+	require.NotNil(t, geminiReq.GenerationConfig.Temperature)
+	assert.Equal(t, 0.2, *geminiReq.GenerationConfig.Temperature)
+	assert.NotContains(t, geminiReq.ExtraParams, "temperature")
 }
