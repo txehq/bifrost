@@ -104,8 +104,9 @@ if command -v make >/dev/null 2>&1; then
 	# $(EXPOSE_ENV) is make syntax, expanded by make, not here.
 	# shellcheck disable=SC2016
 	printf 'include %s/Makefile\noffline-probe:\n\t@$(EXPOSE_ENV); env | grep -c "^PROBE_API_KEY=" || true\n' "$ROOT" >"$probe/probe.mk"
-	# The control must load .env even when this check itself runs under the runner.
-	control=$(cd "$probe" && env -u BIFROST_TEST_OFFLINE make -s -f probe.mk -I "$ROOT" offline-probe 2>/dev/null | tail -1)
+	# The control must load the probe's .env even when this check runs under the runner or the
+	# caller has USE_INFISICAL set, so it clears the flag and forces the .env branch.
+	control=$(cd "$probe" && env -u BIFROST_TEST_OFFLINE USE_INFISICAL=0 make -s -f probe.mk -I "$ROOT" offline-probe 2>/dev/null | tail -1)
 	offline=$(cd "$probe" && "$RUN" make -s -f probe.mk -I "$ROOT" offline-probe 2>/dev/null | tail -1)
 	rm -rf "$probe"
 	if [ "$control" != "1" ]; then
