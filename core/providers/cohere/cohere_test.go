@@ -169,8 +169,8 @@ func TestToCohereResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
 }
 
 // Cohere's documented error statuses (docs.cohere.com/reference/errors), each with the flat
-// {"id", "message"} body the v2 API returns. Chat, its stream and embeddings all parse
-// errors in one place; each must carry the matching extra_fields.error_type and keep
+// {"id", "message"} body the v2 API returns. Chat, Responses, their streams and embeddings
+// all parse errors in one place; each must carry the matching extra_fields.error_type and keep
 // Cohere's status unchanged (contract C6).
 func TestCohereErrorsCarryErrorType(t *testing.T) {
 	t.Parallel()
@@ -210,6 +210,16 @@ func TestCohereErrorsCarryErrorType(t *testing.T) {
 			})
 			return err
 		},
+		"responses": func(p *cohere.CohereProvider, ctx *schemas.BifrostContext, key schemas.Key) *schemas.BifrostError {
+			_, err := p.Responses(ctx, key, cohereErrorResponsesRequest())
+			return err
+		},
+		"responses stream": func(p *cohere.CohereProvider, ctx *schemas.BifrostContext, key schemas.Key) *schemas.BifrostError {
+			_, err := p.ResponsesStream(ctx, func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return r, e
+			}, func(context.Context) {}, key, cohereErrorResponsesRequest())
+			return err
+		},
 		"embedding": func(p *cohere.CohereProvider, ctx *schemas.BifrostContext, key schemas.Key) *schemas.BifrostError {
 			_, err := p.Embedding(ctx, key, &schemas.BifrostEmbeddingRequest{
 				Provider: schemas.Cohere,
@@ -243,5 +253,17 @@ func TestCohereErrorsCarryErrorType(t *testing.T) {
 			})
 		}
 		server.Close()
+	}
+}
+
+func cohereErrorResponsesRequest() *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.Cohere,
+		Model:    "command-a-03-2025",
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
 	}
 }
