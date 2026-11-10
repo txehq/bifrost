@@ -188,6 +188,7 @@ bifrost:
     hideDeletedVirtualKeysInFilters: true
     disableProviderJobAccounting: true
     disablePassthroughSseHeartbeat: true
+    disableEncryptedReasoningRetry: true
 VALS
 
 render_config "$TMPDIR/values-client.yaml"
@@ -220,9 +221,10 @@ assert_field_value 'client.mcp_tool_execution_timeout' '.client.mcp_tool_executi
 assert_field_value 'client.mcp_code_mode_binding_level' '.client.mcp_code_mode_binding_level' '"server"'
 assert_field_value 'client.mcp_tool_sync_interval' '.client.mcp_tool_sync_interval' '60'
 assert_field_value 'client.hide_deleted_virtual_keys_in_filters' '.client.hide_deleted_virtual_keys_in_filters' 'true'
-# The two fork deployment switches (TXE-6519, TXE-7038): each renders when set.
+# The fork's deployment switches (TXE-6519, TXE-6527; chart values TXE-7038): each renders when set.
 assert_field_value 'client.disable_provider_job_accounting' '.client.disable_provider_job_accounting' 'true'
 assert_field_value 'client.disable_passthrough_sse_heartbeat' '.client.disable_passthrough_sse_heartbeat' 'true'
+assert_field_value 'client.disable_encrypted_reasoning_retry' '.client.disable_encrypted_reasoning_retry' 'true'
 
 # An explicit false renders too, so a values file can state the default (hasKey, not truthiness).
 cat > "$TMPDIR/values-client-switches-off.yaml" << 'VALS'
@@ -232,11 +234,13 @@ bifrost:
   client:
     disableProviderJobAccounting: false
     disablePassthroughSseHeartbeat: false
+    disableEncryptedReasoningRetry: false
 VALS
 
 render_config "$TMPDIR/values-client-switches-off.yaml"
 assert_field_value 'client.disable_provider_job_accounting (false)' '.client.disable_provider_job_accounting' 'false'
 assert_field_value 'client.disable_passthrough_sse_heartbeat (false)' '.client.disable_passthrough_sse_heartbeat' 'false'
+assert_field_value 'client.disable_encrypted_reasoning_retry (false)' '.client.disable_encrypted_reasoning_retry' 'false'
 
 ###############################################################################
 # 1b. Server Config

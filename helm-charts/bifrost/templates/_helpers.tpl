@@ -461,6 +461,9 @@ false
 {{- if hasKey .Values.bifrost.client "disablePassthroughSseHeartbeat" }}
 {{- $_ := set $client "disable_passthrough_sse_heartbeat" .Values.bifrost.client.disablePassthroughSseHeartbeat }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "disableEncryptedReasoningRetry" }}
+{{- $_ := set $client "disable_encrypted_reasoning_retry" .Values.bifrost.client.disableEncryptedReasoningRetry }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "deleteExpiredVirtualKeys" }}
 {{- $_ := set $client "delete_expired_virtual_keys" .Values.bifrost.client.deleteExpiredVirtualKeys }}
 {{- end }}
