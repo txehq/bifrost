@@ -210,13 +210,14 @@ func sanitizeSeedanceMediaURL(rawURL string) (string, error) {
 // seedanceRatios are the concrete ratios Seedance accepts besides "adaptive".
 var seedanceRatios = []struct {
 	name string
+	w, h int
 }{
-	{"21:9"},
-	{"16:9"},
-	{"4:3"},
-	{"1:1"},
-	{"3:4"},
-	{"9:16"},
+	{"21:9", 21, 9},
+	{"16:9", 16, 9},
+	{"4:3", 4, 3},
+	{"1:1", 1, 1},
+	{"3:4", 3, 4},
+	{"9:16", 9, 16},
 }
 
 // Ark's range for execution_expires_after, in seconds (contract C7).
@@ -284,9 +285,13 @@ func bytePlusVideoSize(size string) (string, string, *schemas.BifrostError) {
 	if !ok {
 		return "", "", unsupported()
 	}
-	nominal := strconv.Itoa(width) + "x" + strconv.Itoa(height)
+	// The same arithmetic as seedanceVideoSize: the long edge is the short edge scaled by the ratio.
+	short, long := min(width, height), max(width, height)
 	for _, r := range seedanceRatios {
-		if seedanceVideoSize(resolution, r.name) == nominal {
+		if (r.w >= r.h) != (width >= height) && r.w != r.h {
+			continue
+		}
+		if int(math.Round(float64(short)*float64(max(r.w, r.h))/float64(min(r.w, r.h)))) == long {
 			return resolution, r.name, nil
 		}
 	}
