@@ -335,6 +335,13 @@ jobs:
           # discoveryengine.googleapis.com is the Vertex semantic-ranker backend for
           # the rerank rows. Its host is built in Go rather than declared in
           # config.json, so auditing the seeded provider config does not reveal it.
+          # Provider hosts: every provider in the harness profile
+          # (tests/integrations/python/config.json) has its default host here, which
+          # check-egress-allowlist.sh enforces from provider-default-hosts.json.
+          # api.minimax.io, api.runware.ai, ark.ap-southeast.bytepluses.com and
+          # api.moonshot.ai are listed although this job does not pass those
+          # providers' keys yet: the harness skips a provider only while its key is
+          # absent, so the host must already be here the day a key is added (TXE-6981).
           allowed-endpoints: >
             127.0.0.1:8080
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
@@ -357,6 +364,11 @@ jobs:
             api.groq.com:443
             api.mistral.ai:443
             api.moonshot.ai:443
+            api.minimax.io:443
+            api.runware.ai:443
+            api.dev.runwayml.com:443
+            api.typesafe.ai:443
+            ark.ap-southeast.bytepluses.com:443
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
