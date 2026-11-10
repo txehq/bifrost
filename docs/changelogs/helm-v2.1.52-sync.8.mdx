@@ -1,0 +1,14 @@
+---
+title: "v2.1.52-sync.8"
+description: "Helm v2.1.52-sync.8 prerelease changelog - 2026-11-10"
+---
+
+<Update label="Bifrost Helm" description="v2.1.52-sync.8 (prerelease)">
+
+## Changelog
+
+Prerelease of the txehq fork for transport v2.4.0-sync.8; the stable chart stays 2.1.51 until a stable version supersedes it. Install this one with `helm install --devel` or `--version 2.1.52-sync.8`.
+
+- `appVersion` is now `2.4.0-sync.8`, so an empty `image.tag` selects `v2.4.0-sync.8`. That transport carries the Bifrost–Tokun contract base (TXE-6523): `extra_fields.error_type` on every error with `policy_*` refusals and the `caller_unsupported_parameter` refusal (TXE-6517), the async task object's statuses, control fields and `POST /v1/videos/{id}/cancel` (TXE-6521), ElevenLabs speech, transcription and sound effects (TXE-6524) and Gemini API image generation and edit (TXE-6526), on top of the unified media fields (TXE-6518), the two deployment switches (TXE-6519) and the streamed final-frame usage (TXE-6522) of the earlier prereleases. It also carries the contract batch routes (TXE-6427), the speech usage header (TXE-6530), a `tencent` image provider (TXE-6666) and the vendor fixes listed in the transport changelog. No client-config key is added and no default changes, so a chart that sets nothing new is unchanged. No values, templates or schema change.
+
+</Update>
