@@ -3308,6 +3308,23 @@ func TestProviderBaseURLs_CheckEveryDialTarget(t *testing.T) {
 	}
 }
 
+// BenchmarkProviderBaseURLChecks measures the shape and dial-target checks a provider
+// create or update runs, for the common case of a provider with only base_url set. These
+// run on /api/providers writes, not on inference requests.
+func BenchmarkProviderBaseURLChecks(b *testing.B) {
+	stored := &schemas.NetworkConfig{BaseURL: "https://1.1.1.1/v1"}
+	next := schemas.NetworkConfig{BaseURL: "https://1.0.0.1/v1"}
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := validateProviderBaseURLs(next); err != nil {
+			b.Fatal(err)
+		}
+		if !providerDialTargetChanged(stored, next) {
+			b.Fatal("changed base not detected")
+		}
+	}
+}
+
 // TestAddProvider_DashScopeStoresBothBases pins that a dashscope provider written through
 // /api/providers keeps its Singapore base and its workspace base, and that the workspace
 // base cannot be set under the auth bypass or aimed at a private address.
