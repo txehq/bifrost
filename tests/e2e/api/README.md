@@ -197,6 +197,23 @@ newman run tests/e2e/api/collections/provider-harness.json \
   --env-var providerErrorFixture=1
 ```
 
+Folder 336 (OpenAI-compatible chat fields and the encrypted-reasoning retry switch, TXE-6527) runs on the
+same fixture and gateway:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "336. OpenAI-compatible chat sends price-affecting fields as sent or refuses them, and the encrypted-reasoning retry has a switch (compatible chat fields)" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1
+```
+
+Its `moonshot` and `deepseek` providers point at the fixture's `/pp/oc`, which records each request body
+(`GET /__wire`), so a row reads back the `max_completion_tokens`, prompt-cache fields and `service_tier` the
+vendor received. `oc-tiered` has a capability record listing `default` and `priority`, so `flex` is refused
+before any upstream call. `azure-content-filter` answers with Azure OpenAI's documented blocked-prompt 400.
+Rows 336.9 to 336.12 save `client.disable_encrypted_reasoning_retry` through `PUT /api/config` with the
+config's setup token and turn it off again; if the run stops between them, restart the gateway.
+
 The fixture answers by model name: `upstream-500` returns HTTP 500, `upstream-503` returns HTTP 503,
 `upstream-429` returns 429 with `Retry-After: 7`, `upstream-429-ms` returns 429 with
 `retry-after-ms: 2500`, `upstream-ok` returns a chat completion, and `upstream-slow` returns the

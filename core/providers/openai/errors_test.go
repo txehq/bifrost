@@ -209,3 +209,72 @@ func TestApplyStreamErrorStatus_PreservesExistingStatus(t *testing.T) {
 		t.Fatalf("StatusCode = %d, want 429 preserved", *bifrostErr.StatusCode)
 	}
 }
+
+// A prompt the vendor's content filter blocked is classed caller_content_filtered, with the
+// vendor's status and code kept (contract C6). The Azure body is the documented one for a
+// blocked prompt; azure parses its errors with ParseOpenAIError too.
+func TestParseOpenAIError_ContentFilterIsCallerContentFiltered(t *testing.T) {
+	cases := []struct {
+		name, body, wantCode string
+		status               int
+		wantType             schemas.ErrorType
+	}{
+		{
+			name:   "azure prompt blocked",
+			status: fasthttp.StatusBadRequest,
+			body: `{"error":{"message":"The response was filtered due to the prompt triggering Azure OpenAI's content management policy. Please modify your prompt and retry. To learn more about our content filtering policies please read our documentation: https://go.microsoft.com/fwlink/?linkid=2198766","type":null,"param":"prompt","code":"content_filter","status":400,` +
+				`"innererror":{"code":"ResponsibleAIPolicyViolation","content_filter_result":{"hate":{"filtered":false,"severity":"safe"},"jailbreak":{"filtered":true,"detected":true},"self_harm":{"filtered":false,"severity":"safe"},"sexual":{"filtered":false,"severity":"safe"},"violence":{"filtered":false,"severity":"safe"}}}}}`,
+			wantCode: "content_filter",
+			wantType: schemas.ErrorTypeCallerContentFiltered,
+		},
+		{
+			name:     "openai content policy violation",
+			status:   fasthttp.StatusBadRequest,
+			body:     `{"error":{"message":"Your request was rejected as a result of our safety system.","type":"invalid_request_error","param":null,"code":"content_policy_violation"}}`,
+			wantCode: "content_policy_violation",
+			wantType: schemas.ErrorTypeCallerContentFiltered,
+		},
+		{
+			name:     "an ordinary 400 declares nothing",
+			status:   fasthttp.StatusBadRequest,
+			body:     `{"error":{"message":"unsupported role: developer","type":"invalid_request_error","param":"messages.0.role","code":"invalid_value"}}`,
+			wantCode: "invalid_value",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var resp fasthttp.Response
+			resp.SetStatusCode(tc.status)
+			resp.SetBodyString(tc.body)
+
+			got := ParseOpenAIError(&resp)
+			if got == nil || got.Error == nil {
+				t.Fatal("expected a parsed error")
+			}
+			if got.StatusCode == nil || *got.StatusCode != tc.status {
+				t.Fatalf("status = %v, want the vendor's %d", got.StatusCode, tc.status)
+			}
+			if got.Error.Code == nil || *got.Error.Code != tc.wantCode {
+				t.Fatalf("error.code = %v, want the vendor's %q", got.Error.Code, tc.wantCode)
+			}
+			if got.ExtraFields.ErrorType != tc.wantType {
+				t.Fatalf("extra_fields.error_type = %q, want %q", got.ExtraFields.ErrorType, tc.wantType)
+			}
+		})
+	}
+}
+
+// BenchmarkParseOpenAIError is the error path every OpenAI-shape provider shares; the
+// content-filter check adds one code comparison to it.
+func BenchmarkParseOpenAIError(b *testing.B) {
+	body := []byte(`{"error":{"message":"unsupported role: developer","type":"invalid_request_error","param":"messages.0.role","code":"invalid_value"}}`)
+	var resp fasthttp.Response
+	resp.SetStatusCode(fasthttp.StatusBadRequest)
+	b.ReportAllocs()
+	for b.Loop() {
+		resp.SetBody(body)
+		if got := ParseOpenAIError(&resp); got == nil {
+			b.Fatal("nil error")
+		}
+	}
+}

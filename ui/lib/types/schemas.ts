@@ -1270,6 +1270,9 @@ export const coreConfigSchema = z.object({
 	hide_deleted_virtual_keys_in_filters: z.boolean().default(false),
 	delete_expired_virtual_keys: z.boolean().default(false),
 	enforce_vk_object_ownership: z.boolean().default(true),
+	// Fork (TXE-6527) deployment switch: optional with no default, so a save never sends a value
+	// the API did not return.
+	disable_encrypted_reasoning_retry: z.boolean().optional(),
 	extra_fields_placement: z.enum(["body", "headers"]).default("body"),
 	hidden_request_types: z.array(z.string()).default([]),
 	allowed_origins: z.array(z.string()).default(["*"]),

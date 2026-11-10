@@ -51,10 +51,16 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 
 	if bifrostReq.Params != nil {
 		openaiReq.ChatParameters = *bifrostReq.Params
-		openaiReq.ServiceTier = serviceTierForModel(caps, openaiReq.ServiceTier)
-		if openaiReq.ChatParameters.MaxCompletionTokens != nil && *openaiReq.ChatParameters.MaxCompletionTokens < MinMaxCompletionTokens {
-			openaiReq.ChatParameters.MaxCompletionTokens = schemas.Ptr(MinMaxCompletionTokens)
+		// A tier the target cannot take is refused by ChatServiceTierError before this
+		// runs, on every path that sends the request (contract C4: a price-affecting
+		// field is never dropped). Here the tier is only put in its wire form; a tier
+		// that would have been refused is left as sent, so a caller that skipped the
+		// check gets the vendor's own refusal instead of a silently different tier.
+		if wireTier, supported := serviceTierOnWire(caps, openaiReq.ServiceTier); supported {
+			openaiReq.ServiceTier = wireTier
 		}
+		// max_completion_tokens goes out as sent. A value below the vendor's minimum is
+		// the vendor's to refuse, with its own status code (contract C4).
 		// Drop user field if it exceeds OpenAI's 64 character limit
 		openaiReq.ChatParameters.User = SanitizeUserField(openaiReq.ChatParameters.User)
 		// Fable 5.1+ rejects forced tool use outright. Drop the choice so the model
@@ -219,6 +225,18 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.filterOpenAISpecificParametersInternal(caps, false)
 		openaiReq.applyQwenCompatibility()
 		return openaiReq
+	case schemas.Moonshot:
+		// Kimi prices a cache write by the request's prompt_cache_options.ttl and does
+		// not echo the TTL back, so losing either prompt-cache field silently bills
+		// another tier. Both go out as sent, whatever the capability catalog records
+		// (contract C4); the rest of the OpenAI-only fields are filtered as for any
+		// compatible provider.
+		promptCacheKey := openaiReq.ChatParameters.PromptCacheKey
+		promptCacheOptions := openaiReq.ChatParameters.PromptCacheOptions
+		openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.ChatParameters.PromptCacheKey = promptCacheKey
+		openaiReq.ChatParameters.PromptCacheOptions = promptCacheOptions
+		return openaiReq
 	case schemas.Fireworks:
 		// Fireworks uses prompt_cache_isolation_key for cache isolation on chat/completions.
 		// Preserve it before the generic filter strips prompt_cache_key.
@@ -245,26 +263,67 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	}
 }
 
-// serviceTierForModel filters a requested tier against the final target model's
-// capabilities. Omitting an unsupported tier lets the provider use its default
-// instead of returning an unsupported-tier error.
-func serviceTierForModel(caps schemas.ModelCaps, tier *schemas.BifrostServiceTier) *schemas.BifrostServiceTier {
+// serviceTierOnWire resolves a requested tier against the final target model's
+// capabilities. supported is false when the model cannot take the tier. When it is true,
+// wire is what goes to the vendor: the tier itself, or nil for a Bedrock default tier,
+// which Bedrock selects when the field is omitted.
+func serviceTierOnWire(caps schemas.ModelCaps, tier *schemas.BifrostServiceTier) (wire *schemas.BifrostServiceTier, supported bool) {
 	if tier == nil {
-		return nil
+		return nil, true
 	}
 	fallback := true
 	if caps.Provider() == schemas.Bedrock || caps.Provider() == schemas.BedrockMantle {
 		// Bedrock defaults to Standard when the field is omitted. Non-standard
 		// tiers are model-specific, so unknown catalog state must fail closed.
 		if *tier == schemas.BifrostServiceTierDefault || *tier == schemas.BifrostServiceTierAuto {
-			return nil
+			return nil, true
 		}
 		fallback = false
 	}
 	if !caps.ServiceTierSupported(*tier, fallback) {
+		return nil, false
+	}
+	return tier, true
+}
+
+// serviceTierForModel filters a requested tier against the final target model's
+// capabilities, omitting an unsupported tier. Only the Responses conversion still drops
+// a tier this way; chat refuses it (ChatServiceTierError).
+func serviceTierForModel(caps schemas.ModelCaps, tier *schemas.BifrostServiceTier) *schemas.BifrostServiceTier {
+	wire, _ := serviceTierOnWire(caps, tier)
+	return wire
+}
+
+// ChatServiceTierError is the refusal for a chat request whose service_tier the target
+// model cannot take: 400 caller_unsupported_parameter with error.param "service_tier",
+// and nil when the request has no tier or the model takes it. The tier sets the price,
+// so Bifrost neither drops it nor sends another one (contract C4). Every path that sends
+// a ToOpenAIChatRequest body calls this first, inside its request converter, so a refused
+// request makes no upstream call.
+//
+// A model with no tier list in the capability catalog takes any tier, as before, except
+// on Bedrock, where an unlisted non-default tier is refused.
+//
+// The standard tier, "default", is never refused. The catalog's lists come from a
+// datasheet that names the tiers a model adds, and for many models it leaves "default"
+// out (63 OpenAI models on 2026-11-10, gpt-4 and gpt-5 among them) although the vendor
+// takes it. Refusing on that would fail a correct request. "default" goes to the vendor
+// as sent, which is all the contract asks, and a vendor that does not know the field
+// answers with its own status.
+func ChatServiceTierError(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *schemas.BifrostError {
+	if bifrostReq == nil || bifrostReq.Params == nil || bifrostReq.Params.ServiceTier == nil {
 		return nil
 	}
-	return tier
+	tier := bifrostReq.Params.ServiceTier
+	if *tier == schemas.BifrostServiceTierDefault {
+		return nil
+	}
+	caps := schemas.ResolveModelCaps(bifrostReq.Provider, schemas.ResolveCanonicalModel(ctx, bifrostReq.Model))
+	if _, supported := serviceTierOnWire(caps, tier); supported {
+		return nil
+	}
+	return schemas.NewUnsupportedParameterError("service_tier",
+		"service_tier \""+string(*tier)+"\" is not supported by model "+bifrostReq.Model+" on provider "+string(bifrostReq.Provider))
 }
 
 // Filter OpenAI Specific Parameters

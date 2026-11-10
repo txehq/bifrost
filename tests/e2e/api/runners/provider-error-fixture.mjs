@@ -56,6 +56,31 @@ const behaviours = {
 		}),
 	}),
 };
+// Azure OpenAI's documented answer to a prompt its content filter blocked, TXE-6527 (contract C6): HTTP 400 with
+// error.code "content_filter" and the per-category verdicts under innererror.
+behaviours["azure-content-filter"] = () => ({
+	status: 400,
+	headers: {},
+	body: JSON.stringify({
+		error: {
+			message: "The response was filtered due to the prompt triggering Azure OpenAI's content management policy. Please modify your prompt and retry. To learn more about our content filtering policies please read our documentation: https://go.microsoft.com/fwlink/?linkid=2198766",
+			type: null,
+			param: "prompt",
+			code: "content_filter",
+			status: 400,
+			innererror: {
+				code: "ResponsibleAIPolicyViolation",
+				content_filter_result: {
+					hate: { filtered: false, severity: "safe" },
+					jailbreak: { filtered: true, detected: true },
+					self_harm: { filtered: false, severity: "safe" },
+					sexual: { filtered: false, severity: "safe" },
+					violence: { filtered: false, severity: "safe" },
+				},
+			},
+		},
+	}),
+});
 // upstream-slow answers as upstream-ok does, after SLOW_MS.
 behaviours["upstream-slow"] = () => ({ ...behaviours["upstream-ok"](), delayMs: SLOW_MS });
 // upstream-ok with every usage field a vendor reports beyond tokens, TXE-6522 (contract C10 BF21): web search calls,
@@ -567,6 +592,12 @@ const wireAnswer = (path, body, bytes) => {
 	if (path === "/pp/bounds/v1/chat/completions") {
 		return { status: 200, body: JSON.stringify({ id: "chatcmpl_bounds", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
 	}
+	// OpenAI-compatible chat as the vendor sees it, TXE-6527 (contract C4): moonshot posts to /v1/chat/completions and
+	// deepseek to /chat/completions under the same base. The recorded body is the assertion; the answer is a plain
+	// completion that echoes the tier it was asked for.
+	if (path === "/pp/oc/v1/chat/completions" || path === "/pp/oc/chat/completions") {
+		return { status: 200, body: JSON.stringify({ id: "chatcmpl_oc", object: "chat.completion", created: 1, model: body.model, service_tier: body.service_tier, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
+	}
 	if (path === "/pp/cp/v1/chat/completions") return cpChatAnswerFor(body);
 	// MiniMax answers its failures inside a 200 as base_resp, with no result (TXE-6588, contract C6). The model
 	// "base-resp-<code>" selects the code, so a case asks for exactly the MiniMax error it pins. Chat (which also
@@ -752,6 +783,8 @@ const server = http.createServer((req, res) => {
 		return send(200, {}, JSON.stringify({
 			"gpt-5-pro": { provider: "openai", mode: "responses", supported_endpoints: ["/v1/responses"] },
 			"pp-custom-legacy": { provider: "openai", mode: "responses", supported_endpoints: ["/v1/responses"], supports_custom_tools: false, supports_function_calling: true },
+			// TXE-6527: a model whose capability record lists its service tiers, so a tier outside the list is refused.
+			"oc-tiered": { provider: "moonshot", mode: "chat", service_tiers: ["default", "priority"] },
 		}));
 	}
 	if (req.method === "POST" && path === "/__reset") {

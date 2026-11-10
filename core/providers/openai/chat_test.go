@@ -3044,3 +3044,94 @@ func BenchmarkOpenAIChatRequestUnknownFields(b *testing.B) {
 		_ = OpenAIChatRequestUnknownFields(body)
 	}
 }
+
+// chatWireBody converts a chat request the way the shared handlers do and returns the JSON
+// object that goes to the vendor.
+func chatWireBody(t testing.TB, req *schemas.BifrostChatRequest) map[string]any {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	out := ToOpenAIChatRequest(ctx, req)
+	if out == nil {
+		t.Fatal("chat conversion returned nil")
+	}
+	raw, err := sonic.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("unmarshal %s: %v", raw, err)
+	}
+	return body
+}
+
+// TestToOpenAIChatRequest_MaxCompletionTokensGoesOutAsSent pins that a small output cap
+// reaches the vendor unchanged. The converter used to raise anything below 16 to 16, so a
+// caller that held 5 tokens was billed for up to 16 (contract C4). DeepSeek and GLM take the
+// cap under the legacy max_tokens name; the value is still the caller's.
+func TestToOpenAIChatRequest_MaxCompletionTokensGoesOutAsSent(t *testing.T) {
+	cases := []struct {
+		provider schemas.ModelProvider
+		model    string
+		field    string
+	}{
+		{schemas.OpenAI, "gpt-4o", "max_completion_tokens"},
+		{schemas.Azure, "gpt-4o", "max_completion_tokens"},
+		{schemas.Moonshot, "kimi-k2.6", "max_completion_tokens"},
+		{schemas.DeepSeek, "deepseek-chat", "max_tokens"},
+		{schemas.GLM, "glm-4.6", "max_tokens"},
+	}
+	for _, tc := range cases {
+		for _, sent := range []int{1, 5, 15, 16, 4096} {
+			t.Run(string(tc.provider), func(t *testing.T) {
+				body := chatWireBody(t, &schemas.BifrostChatRequest{
+					Provider: tc.provider,
+					Model:    tc.model,
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
+					Params:   &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(sent)},
+				})
+				got, ok := body[tc.field].(float64)
+				if !ok || int(got) != sent {
+					t.Fatalf("%s = %v, want %d as sent (body %v)", tc.field, body[tc.field], sent, body)
+				}
+			})
+		}
+	}
+}
+
+// TestToOpenAIChatRequest_MoonshotKeepsPromptCacheFields pins that Kimi's two prompt-cache
+// fields reach the vendor. Kimi prices a cache write by prompt_cache_options.ttl and does
+// not echo the TTL, so the generic filter that drops both for a compatible provider with no
+// catalog record silently billed the default tier. The other OpenAI-only fields are still
+// filtered for Moonshot, and another compatible provider still loses the cache fields.
+func TestToOpenAIChatRequest_MoonshotKeepsPromptCacheFields(t *testing.T) {
+	request := func(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    model,
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
+			Params: &schemas.ChatParameters{
+				PromptCacheKey:     schemas.Ptr("tenant-42"),
+				PromptCacheOptions: &schemas.PromptCacheOptions{TTL: schemas.Ptr("1h")},
+				Store:              schemas.Ptr(true),
+			},
+		}
+	}
+
+	body := chatWireBody(t, request(schemas.Moonshot, "kimi-k2.6"))
+	if body["prompt_cache_key"] != "tenant-42" {
+		t.Fatalf("moonshot prompt_cache_key = %v, want tenant-42 (body %v)", body["prompt_cache_key"], body)
+	}
+	options, _ := body["prompt_cache_options"].(map[string]any)
+	if options["ttl"] != "1h" {
+		t.Fatalf("moonshot prompt_cache_options = %v, want ttl 1h (body %v)", body["prompt_cache_options"], body)
+	}
+	if _, present := body["store"]; present {
+		t.Fatalf("moonshot still sends the OpenAI-only store field: %v", body)
+	}
+
+	other := chatWireBody(t, request(schemas.Parasail, "some-model"))
+	if _, present := other["prompt_cache_options"]; present {
+		t.Fatalf("a compatible provider with no catalog record must still drop prompt_cache_options: %v", other)
+	}
+}

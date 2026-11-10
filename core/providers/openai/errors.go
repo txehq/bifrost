@@ -166,6 +166,15 @@ func ParseOpenAIError(resp *fasthttp.Response) *schemas.BifrostError {
 		}
 	}
 
+	// A prompt the vendor's content filter blocked (Azure OpenAI answers 400 with
+	// error.code "content_filter"; OpenAI uses content_policy_violation and
+	// moderation_blocked) is the caller's content, not a malformed request. Declare it,
+	// keeping the vendor's status and code, so the class does not depend on what a later
+	// layer infers (contract C6).
+	if schemas.IsContentFilterError(bifrostErr) {
+		bifrostErr.ExtraFields.ErrorType = schemas.ErrorTypeCallerContentFiltered
+	}
+
 	// Set ExtraFields unconditionally so provider/model/request metadata is always attached
 
 	return bifrostErr

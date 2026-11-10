@@ -148,6 +148,35 @@ var reasoningConfigParams = []string{
 	"includethoughts",
 }
 
+// markEncryptedReasoningRetry carries the deployment's switch onto the request context.
+// While the switch is off it writes nothing, so a deployment that never sets it pays one
+// context read per request; but a context can be reused across requests (a Go SDK caller's
+// own, or Bifrost's when the caller passes nil), so a mark left by a request made while the
+// switch was on is cleared here, and a runtime change applies to the next request.
+func markEncryptedReasoningRetry(ctx *schemas.BifrostContext, disabled bool) {
+	if ctx == nil {
+		return
+	}
+	if disabled {
+		ctx.SetValue(schemas.BifrostContextKeyDisableEncryptedReasoningRetry, true)
+		return
+	}
+	if ctx.Value(schemas.BifrostContextKeyDisableEncryptedReasoningRetry) != nil {
+		ctx.SetValue(schemas.BifrostContextKeyDisableEncryptedReasoningRetry, false)
+	}
+}
+
+// encryptedReasoningRetryDisabled reports whether the deployment turned the fail-soft
+// retry off (BifrostConfig.DisableEncryptedReasoningRetry, carried on the request context
+// by the worker). A nil context, or one the worker never touched, keeps the retry.
+func encryptedReasoningRetryDisabled(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	disabled, _ := ctx.Value(schemas.BifrostContextKeyDisableEncryptedReasoningRetry).(bool)
+	return disabled
+}
+
 // shouldStripReasoningAfterClientError reports whether a failed attempt earns one more
 // try with the request's replayed reasoning tokens removed.
 //

@@ -637,6 +637,54 @@ func TestUpdateConfig_ForkDeploymentSwitchesPresence(t *testing.T) {
 	assertSwitches(false, false)
 }
 
+// The fork's encrypted-reasoning retry switch (TXE-6527) is copied only when sent, so a partial
+// save keeps the stored value, and it reads back through GET /api/config as the configuration
+// item a deployment sets.
+func TestUpdateConfig_DisableEncryptedReasoningRetryPresence(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	assertSwitch := func(want bool) {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		assert.Equal(t, want, persisted.DisableEncryptedReasoningRetry, "stored disable_encrypted_reasoning_retry")
+		assert.Equal(t, want, cfg.ClientConfig.DisableEncryptedReasoningRetry, "live disable_encrypted_reasoning_retry")
+	}
+
+	assertSwitch(false)
+
+	on := putConfigCtx(`{"client_config":{"log_retention_days":8,"disable_encrypted_reasoning_retry":true}}`)
+	h.updateConfig(on)
+	require.Equal(t, fasthttp.StatusOK, on.Response.StatusCode(), string(on.Response.Body()))
+	assertSwitch(true)
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assertSwitch(true)
+
+	var readReq fasthttp.Request
+	readReq.Header.SetMethod("GET")
+	read := initCtx(&readReq)
+	h.getConfig(read)
+	require.Equal(t, fasthttp.StatusOK, read.Response.StatusCode(), string(read.Response.Body()))
+	var shown struct {
+		ClientConfig struct {
+			DisableEncryptedReasoningRetry bool `json:"disable_encrypted_reasoning_retry"`
+		} `json:"client_config"`
+	}
+	require.NoError(t, json.Unmarshal(read.Response.Body(), &shown), string(read.Response.Body()))
+	assert.True(t, shown.ClientConfig.DisableEncryptedReasoningRetry, "GET /api/config shows the switch")
+
+	off := putConfigCtx(`{"client_config":{"log_retention_days":8,"disable_encrypted_reasoning_retry":false}}`)
+	h.updateConfig(off)
+	require.Equal(t, fasthttp.StatusOK, off.Response.StatusCode(), string(off.Response.Body()))
+	assertSwitch(false)
+}
+
 // extra_fields_placement is copied only when sent, so a partial save keeps the stored value,
 // and anything other than body/headers is refused before any live mutation.
 func TestUpdateConfig_ExtraFieldsPlacement(t *testing.T) {

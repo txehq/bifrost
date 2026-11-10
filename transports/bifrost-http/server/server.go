@@ -1632,6 +1632,9 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 			A2APlugins:         s.Config.GetLoadedA2APlugins(),
 			MCPConfig:          mcpConfig,
 			Logger:             logger,
+
+			// Fork (TXE-6527): a save that flips the switch reaches the core client here.
+			DisableEncryptedReasoningRetry: s.Config.ClientConfig.DisableEncryptedReasoningRetry,
 		})
 		if err := s.Client.UpdateToolManagerConfig(
 			s.Config.ClientConfig.MCPAgentDepth,
@@ -3380,6 +3383,9 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		Logger:             logger,
 		KVStore:            s.Config.KVStore,
 		ModelCatalog:       s.Config.ModelCatalog,
+
+		// Fork (TXE-6527): client.disable_encrypted_reasoning_retry.
+		DisableEncryptedReasoningRetry: s.Config.ClientConfig.DisableEncryptedReasoningRetry,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)

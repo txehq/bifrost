@@ -872,6 +872,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if _, present := clientConfigFields["disable_passthrough_sse_heartbeat"]; present {
 		updatedConfig.DisablePassthroughSSEHeartbeat = payload.ClientConfig.DisablePassthroughSSEHeartbeat
 	}
+	// The encrypted-reasoning retry switch (TXE-6527) is copied only when sent, like the two
+	// above. The server's client-config reload hands it to the core client.
+	if _, present := clientConfigFields["disable_encrypted_reasoning_retry"]; present {
+		updatedConfig.DisableEncryptedReasoningRetry = payload.ClientConfig.DisableEncryptedReasoningRetry
+	}
 
 	// Rotation grace period; bounds validated up front. Copied unconditionally
 	// so 0 clears a previously stored cooldown.

@@ -305,6 +305,35 @@ func TestPrepareImageGenerationRequest_Resolution(t *testing.T) {
 	}
 }
 
+// prompt_cache_options is a typed chat field (Kimi prices a cache write by its ttl), so it is a
+// known field like prompt_cache_key: it reaches the provider through ChatParameters whether or
+// not the caller opened the extra-param channel, and is not duplicated into the extra params.
+func TestChatPromptCacheOptionsIsAKnownField(t *testing.T) {
+	body := []byte(`{"model":"moonshot/kimi-k2.6","messages":[{"role":"user","content":"hi"}],"prompt_cache_key":"tenant-42","prompt_cache_options":{"ttl":"1h"},"vendor_only_switch":true}`)
+
+	extra, err := extractExtraParams(body, chatParamsKnownFields)
+	if err != nil {
+		t.Fatalf("extractExtraParams: %v", err)
+	}
+	if _, present := extra["prompt_cache_options"]; present {
+		t.Errorf("prompt_cache_options was reported as an extra param: %v", extra)
+	}
+	if _, present := extra["prompt_cache_key"]; present {
+		t.Errorf("prompt_cache_key was reported as an extra param: %v", extra)
+	}
+	if extra["vendor_only_switch"] != true {
+		t.Errorf("an unknown field must still be an extra param: %v", extra)
+	}
+
+	var req ChatRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if req.ChatParameters == nil || req.PromptCacheOptions == nil || req.PromptCacheOptions.TTL == nil || *req.PromptCacheOptions.TTL != "1h" {
+		t.Fatalf("typed prompt_cache_options = %+v, want ttl 1h", req.ChatParameters)
+	}
+}
+
 // The unified fields are kept out of the known-field tables on purpose (see the comment above
 // imageGenerationParamsKnownFields). Adding one there would silently stop it reaching every
 // provider that still reads it as an extra param.

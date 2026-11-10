@@ -171,6 +171,10 @@ type Bifrost struct {
 	keyPoolFilter             schemas.KeyPoolFilter               // optional hook to veto keys before selection (nil = all eligible)
 	kvStore                   schemas.KVStore                     // optional KV store for session stickiness (nil = disabled)
 	sessionAffinity           schemas.SessionAffinity             // decides which key a session stays on; never nil after Init
+
+	// Fork (TXE-6527): BifrostConfig.DisableEncryptedReasoningRetry. While set, a rejected
+	// encrypted-reasoning replay is returned as is instead of retried once without the token.
+	disableEncryptedReasoningRetry atomic.Bool
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -343,6 +347,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	bifrost.providers.Store(&[]schemas.Provider{})
 
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+	bifrost.disableEncryptedReasoningRetry.Store(config.DisableEncryptedReasoningRetry)
 
 	if bifrost.keySelector == nil {
 		bifrost.keySelector = keyselectors.WeightedRandom
@@ -513,6 +518,7 @@ func (bifrost *Bifrost) setModelCatalogOnContext(ctx *schemas.BifrostContext) {
 // We will keep on adding other aspects as required
 func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+	bifrost.disableEncryptedReasoningRetry.Store(config.DisableEncryptedReasoningRetry)
 	return nil
 }
 
@@ -4524,6 +4530,18 @@ func (bifrost *Bifrost) GetDropExcessRequests() bool {
 	return bifrost.dropExcessRequests.Load()
 }
 
+// GetDisableEncryptedReasoningRetry returns the current value of DisableEncryptedReasoningRetry.
+func (bifrost *Bifrost) GetDisableEncryptedReasoningRetry() bool {
+	return bifrost.disableEncryptedReasoningRetry.Load()
+}
+
+// UpdateDisableEncryptedReasoningRetry updates the DisableEncryptedReasoningRetry setting at
+// runtime (fork, TXE-6527). Requests already past the worker's setup keep the value they read.
+func (bifrost *Bifrost) UpdateDisableEncryptedReasoningRetry(value bool) {
+	bifrost.disableEncryptedReasoningRetry.Store(value)
+	bifrost.logger.Info("disable_encrypted_reasoning_retry updated to: %v", value)
+}
+
 // UpdateDropExcessRequests updates the DropExcessRequests setting at runtime.
 // This allows for hot-reloading of this configuration value.
 func (bifrost *Bifrost) UpdateDropExcessRequests(value bool) {
@@ -7768,8 +7786,14 @@ func executeRequestWithRetries[T any](
 		// missed phrasing handed a healable 400 to the client. stripUnverifiableReasoning
 		// returns false when there is nothing to strip, so the extra attempt is spent
 		// only on requests that carry a token. Runs once per request.
+		//
+		// The strip is a second upstream call the caller did not ask for. A deployment
+		// that settles each request against exactly one vendor call turns it off with
+		// BifrostConfig.DisableEncryptedReasoningRetry (fork, TXE-6527), and the 400
+		// goes back as the vendor sent it.
 		lastWasEncryptedContentStrip = false
-		if !shouldRetry && !strippedEncryptedContent && shouldStripReasoningAfterClientError(bifrostError) &&
+		if !shouldRetry && !strippedEncryptedContent && !encryptedReasoningRetryDisabled(ctx) &&
+			shouldStripReasoningAfterClientError(bifrostError) &&
 			stripUnverifiableReasoning(ctx, req) {
 			strippedEncryptedContent = true
 			lastWasEncryptedContentStrip = true
@@ -8122,6 +8146,8 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			baseProvider = cfg.BaseProviderType
 		}
 		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
+		// Read once per request, so the retry loop needs no handle on the Bifrost instance.
+		markEncryptedReasoningRetry(req.Context, bifrost.disableEncryptedReasoningRetry.Load())
 		// Lets downstream converters resolve a custom provider key back to the built-in provider it wraps.
 		req.Context.SetValue(schemas.BifrostContextKeyBaseProviderType, baseProvider)
 		// Re-stamped per attempt so a fallback cannot inherit the previous provider's opt-in.

@@ -30,6 +30,7 @@ var ChatRequestKnownFields = map[string]bool{
 	"parallel_tool_calls":    true,
 	"presence_penalty":       true,
 	"prompt_cache_key":       true,
+	"prompt_cache_options":   true,
 	"prompt_cache_retention": true,
 	"reasoning":              true,
 	"reasoning_effort":       true,

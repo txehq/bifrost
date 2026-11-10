@@ -2866,8 +2866,9 @@ func setConverseReasoningEffort(fields *schemas.OrderedMap, caps schemas.ModelCa
 // Bedrock serves the OpenAI family and xAI Grok from an OpenAI-compatible
 // backend that rejects anything below 16, while Claude and Nova happily return a
 // single token — so this is gated rather than applied to Converse as a whole.
-// The mantle path gets the same clamp for free from the OpenAI request builder;
-// Converse builds its own body and needs its own. The datasheet's
+// The mantle path goes through the OpenAI chat request builder, which sends the
+// caller's value as is and leaves a too-small one to the backend to refuse;
+// Converse builds its own body and clamps here. The datasheet's
 // min_output_tokens overrides the name-based guess.
 func clampMaxTokens(ctx *schemas.BifrostContext, maxTokens *int, caps schemas.ModelCaps) *int {
 	if maxTokens == nil {

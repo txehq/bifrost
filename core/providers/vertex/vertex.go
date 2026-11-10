@@ -723,6 +723,10 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 					return vertexGeminiChatRequestBody(ctx, key, request)
 				} else {
 					// Use centralized OpenAI converter for non-Claude models
+					// Same refusal the shared OpenAI chat handlers make before sending.
+					if tierErr := openai.ChatServiceTierError(ctx, request); tierErr != nil {
+						return nil, providerUtils.ConverterBifrostError(tierErr)
+					}
 					reqBody := openai.ToOpenAIChatRequest(ctx, request)
 					if reqBody == nil {
 						return nil, fmt.Errorf("chat completion input is not provided")
