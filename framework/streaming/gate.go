@@ -198,6 +198,7 @@ func gateChoiceBytes(choices []schemas.BifrostResponseChoice) int64 {
 	for i := range choices {
 		c := &choices[i]
 		size += int64(len(c.ContentFilterResults))
+		size += gateStrPtrBytes(c.NativeFinishReason)
 		if c.ChatStreamResponseChoice != nil && c.ChatStreamResponseChoice.Delta != nil {
 			d := c.ChatStreamResponseChoice.Delta
 			size += gateStrPtrBytes(d.Content) + gateStrPtrBytes(d.Reasoning) + gateStrPtrBytes(d.Refusal)

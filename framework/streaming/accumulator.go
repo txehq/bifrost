@@ -53,6 +53,7 @@ func (a *Accumulator) putChatStreamChunk(chunk *ChatStreamChunk) {
 	chunk.SemanticCacheDebug = nil
 	chunk.ErrorDetails = nil
 	chunk.FinishReason = nil
+	chunk.NativeFinishReason = nil
 	chunk.TokenUsage = nil
 	chunk.ServiceTier = nil
 	chunk.ContentSafety = nil
