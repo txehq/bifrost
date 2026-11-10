@@ -142,7 +142,10 @@ var klingSettingsKeys = []string{"duration", "resolution", "aspect_ratio", "audi
 // klingBodyContainers are the fields of the create body the converter builds, and "model", which
 // Kling takes in the path. An extra field named after one would land inside settings as a value
 // Kling does not define there; an extra model is what a caller would send to reach a model its
-// key does not allow, and is refused like every other provider refuses it.
+// key does not allow, and is refused like every other provider refuses it. The other names a
+// vendor may read the model under, and stream, are refused from the shared list
+// (providerUtils.ExtraParamUnsettableField), because this converter places extra fields itself
+// and so never passes through MergeExtraParamsIntoJSON, which applies that list elsewhere.
 var klingBodyContainers = []string{"model", "prompt", "contents", "settings", "options"}
 
 // klingWatermarkExtra is the extra field that asks for a watermarked result
@@ -236,10 +239,14 @@ func validateKlingExtraParams(params *schemas.VideoGenerationParameters) *schema
 			if _, ok := value.(bool); !ok {
 				return schemas.NewUnsupportedParameterError(name, "kling: watermark must be true or false")
 			}
-		case slices.Contains(klingSettingsKeys, lower):
+		case providerUtils.ExtraParamUnsettableField(name) != "":
+			return newKlingExtraParamError(name, fmt.Sprintf(
+				"kling: extra params cannot set %q: %s is decided by the gateway from the request, never by an extra param",
+				name, providerUtils.ExtraParamUnsettableField(name)))
+		case providerUtils.ExtraParamNamesField(name, klingSettingsKeys...):
 			return newKlingExtraParamError(name, fmt.Sprintf(
 				"kling: extra params cannot set %q; use the request's own seconds, resolution, aspect_ratio or audio field", name))
-		case slices.Contains(klingBodyContainers, lower):
+		case providerUtils.ExtraParamNamesField(name, klingBodyContainers...):
 			return newKlingExtraParamError(name, fmt.Sprintf(
 				"kling: extra params cannot set %q; extra fields are merged into settings", name))
 		}

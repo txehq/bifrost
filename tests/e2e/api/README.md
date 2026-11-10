@@ -450,6 +450,10 @@ newman run tests/e2e/api/collections/provider-harness.json \
   --env-var providerErrorFixture=1
 ```
 
+Its fixture rows read `providerErrorFixtureUrl`, so add `--env-var providerErrorFixtureUrl=http://127.0.0.1:<port>`
+when the fixture runs on another port (`PROVIDER_ERROR_FIXTURE_PORT`). Rows 416.20 to 416.22 are `[PREVIEW]`
+rows against the real Kling API and are checked structurally only.
+
 The fixture also serves the two datasheets a fresh gateway downloads on first start (the config's `framework.pricing` URLs point at it), including the model-parameters row that makes `gpt-5-pro` Responses-only, which is what makes folder 160's chat request convert. The run therefore needs no network. Starting the gateway with `HTTPS_PROXY=http://127.0.0.1:9` is a cheap proof: loopback is exempt from proxying, so only an accidental external call would fail.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.

@@ -8355,10 +8355,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			continue
 		}
 
-		// The async task contract (C7) refuses three requests here, before a key is chosen, so
+		// The async task contract (C7) refuses these requests here, before a key is chosen, so
 		// none makes an upstream call: a task control field this provider does not take, a
-		// cancel on a provider with no cancel API, and a query by client_reference_id on a
-		// provider whose vendor cannot be queried by the caller's own id.
+		// video or image task cancel on a provider with no cancel API, and a query by
+		// client_reference_id on a provider whose vendor cannot be queried by the caller's own id.
 		taskErr := schemas.CheckTaskControlFields(provider, &req.BifrostRequest)
 		if taskErr == nil {
 			taskErr = schemas.CheckVideoCancelSupported(provider, &req.BifrostRequest)
