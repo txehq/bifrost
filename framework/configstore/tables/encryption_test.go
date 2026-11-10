@@ -2490,3 +2490,43 @@ func TestTableKey_AliasesJSON_LegacyInputRoundTrip(t *testing.T) {
 	assert.Nil(t, got.ModelName)
 	assert.Nil(t, got.ModelFamily)
 }
+
+// TXE-7062: the BFL webhook secret is a credential. It is stored encrypted, decrypts back into
+// BFLKeyConfig, keeps an env. reference as a reference, and clearing the config clears the column.
+func TestTableKey_BFLWebhookSecretEncryptDecrypt(t *testing.T) {
+	db := setupTestDB(t)
+	key := &TableKey{
+		Name: "bfl-key", ProviderID: 1, Provider: "bfl", KeyID: "bfl-uuid-1",
+		Value:        *schemas.NewSecretVar("bfl-api-key"),
+		BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("bfl-webhook-secret-123")},
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	raw := rawRow(t, db, "config_keys", key.ID)
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	require.NotNil(t, raw["bfl_webhook_secret"])
+	assert.NotEqual(t, "bfl-webhook-secret-123", raw["bfl_webhook_secret"])
+	assert.NotContains(t, raw["bfl_webhook_secret"], "bfl-webhook-secret-123")
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.BFLKeyConfig)
+	assert.Equal(t, "bfl-webhook-secret-123", secretVarPtrValue(found.BFLKeyConfig.WebhookSecret))
+
+	found.BFLKeyConfig = nil
+	require.NoError(t, db.Save(&found).Error)
+	var cleared TableKey
+	require.NoError(t, db.First(&cleared, key.ID).Error)
+	assert.Nil(t, cleared.BFLKeyConfig, "a cleared config must not come back")
+
+	envKey := &TableKey{
+		Name: "bfl-env", ProviderID: 1, Provider: "bfl", KeyID: "bfl-uuid-2",
+		Value:        *schemas.NewSecretVar("bfl-api-key"),
+		BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("env.FAKE_BFL_WEBHOOK_SECRET_FOR_TEST")},
+	}
+	require.NoError(t, db.Create(envKey).Error)
+	var foundEnv TableKey
+	require.NoError(t, db.First(&foundEnv, envKey.ID).Error)
+	require.NotNil(t, foundEnv.BFLKeyConfig)
+	assert.Equal(t, "env.FAKE_BFL_WEBHOOK_SECRET_FOR_TEST", foundEnv.BFLKeyConfig.WebhookSecret.GetRawRef())
+}

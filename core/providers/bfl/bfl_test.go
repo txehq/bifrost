@@ -968,3 +968,44 @@ func BenchmarkBFLVideoConversion(b *testing.B) {
 		}
 	}
 }
+
+// TXE-7062: a key's bfl_key_config.webhook_secret is sent as BFL's webhook_secret on an image task
+// that carries callback_url; a webhook_secret on the request wins, and without callback_url
+// nothing is sent.
+func TestBFLKeyWebhookSecret(t *testing.T) {
+	keyWith := schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar("key-secret")}}
+	cases := []struct {
+		name   string
+		key    schemas.Key
+		params *schemas.ImageGenerationParameters
+		cb     *string
+		want   any // the webhook_secret BFL receives; nil for none
+	}{
+		{"the key's secret signs the callback", keyWith, nil, schemas.Ptr("https://hooks.example.test/v/1"), "key-secret"},
+		{"the request's own secret wins", keyWith, &schemas.ImageGenerationParameters{ExtraParams: map[string]any{"webhook_secret": "request-secret"}}, schemas.Ptr("https://hooks.example.test/v/1"), "request-secret"},
+		{"no callback_url, no secret", keyWith, nil, nil, nil},
+		{"a key without the config sends none", schemas.Key{Value: *schemas.NewSecretVar("k")}, nil, schemas.Ptr("https://hooks.example.test/v/1"), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &bflRecorder{submit: `{"id":"t1"}`}
+			server := httptest.NewServer(http.HandlerFunc(rec.serve))
+			defer server.Close()
+			provider := newTestProvider(t, schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true})
+			req := &schemas.BifrostImageGenerationRequest{Model: "flux-pro-1.1", Input: &schemas.ImageGenerationInput{Prompt: "a fox"}, Params: tc.params}
+			if tc.cb != nil {
+				req.TaskControl = &schemas.TaskControlParameters{CallbackURL: tc.cb}
+			}
+			if _, bifrostErr := provider.ImageGenerationTask(imageTaskCtx(t), tc.key, req); bifrostErr != nil {
+				t.Fatalf("submit: %+v", bifrostErr.Error)
+			}
+			var sent map[string]any
+			if err := json.Unmarshal(rec.bodies[0], &sent); err != nil {
+				t.Fatal(err)
+			}
+			if got, ok := sent["webhook_secret"]; tc.want == nil && ok || tc.want != nil && got != tc.want {
+				t.Fatalf("webhook_secret = %v (present %v), want %v; body %s", got, ok, tc.want, rec.bodies[0])
+			}
+		})
+	}
+}

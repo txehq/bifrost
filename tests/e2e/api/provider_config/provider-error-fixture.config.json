@@ -578,7 +578,10 @@
           "models": [
             "*"
           ],
-          "weight": 1
+          "weight": 1,
+          "bfl_key_config": {
+            "webhook_secret": "bfl-fixture-webhook-secret"
+          }
         }
       ],
       "network_config": {

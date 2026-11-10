@@ -2103,6 +2103,7 @@ func mergeProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbKeys 
 					OllamaKeyConfig:        dbKey.OllamaKeyConfig,
 					SGLKeyConfig:           dbKey.SGLKeyConfig,
 					DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
+					BFLKeyConfig:           dbKey.BFLKeyConfig,
 					GithubCopilotKeyConfig: dbKey.GithubCopilotKeyConfig,
 					CloudflareKeyConfig:    dbKey.CloudflareKeyConfig,
 					OAuthKeyConfig:         dbKey.OAuthKeyConfig,
@@ -2196,6 +2197,7 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 					OllamaKeyConfig:        dbKey.OllamaKeyConfig,
 					SGLKeyConfig:           dbKey.SGLKeyConfig,
 					DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
+					BFLKeyConfig:           dbKey.BFLKeyConfig,
 					GithubCopilotKeyConfig: dbKey.GithubCopilotKeyConfig,
 					CloudflareKeyConfig:    dbKey.CloudflareKeyConfig,
 					OAuthKeyConfig:         dbKey.OAuthKeyConfig,
@@ -9091,6 +9093,11 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				cfg.ClientID = cfg.ClientID.Redacted()
 				cfg.ClientSecret = cfg.ClientSecret.Redacted()
 				configStoreKey.DatabricksKeyConfig = &cfg
+			}
+			if key.BFLKeyConfig != nil {
+				cfg := *key.BFLKeyConfig // safe copy
+				cfg.WebhookSecret = cfg.WebhookSecret.Redacted()
+				configStoreKey.BFLKeyConfig = &cfg
 			}
 			if key.GithubCopilotKeyConfig != nil {
 				cfg := *key.GithubCopilotKeyConfig // safe copy

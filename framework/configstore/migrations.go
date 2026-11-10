@@ -577,6 +577,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_storage_prefix_indexes"}, run: migrationAddStoragePrefixIndexes},
 	{IDs: []string{"backfill_batch_output_folders"}, run: migrationBackfillBatchOutputFolders},
 	{IDs: []string{"add_client_config_max_response_body_size_mb_column"}, run: migrationAddClientConfigMaxResponseBodySizeMBColumn},
+	{IDs: []string{"add_bfl_key_config_columns"}, run: migrationAddBFLKeyConfigColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -7697,6 +7698,7 @@ func migrationBackfillAllowedModelsWildcard(ctx context.Context, db *gorm.DB, lo
 					OllamaKeyConfig:     key.OllamaKeyConfig,
 					SGLKeyConfig:        key.SGLKeyConfig,
 					DatabricksKeyConfig: key.DatabricksKeyConfig,
+					BFLKeyConfig:        key.BFLKeyConfig,
 					Enabled:             key.Enabled,
 					UseForBatchAPI:      key.UseForBatchAPI,
 				}
@@ -16634,6 +16636,27 @@ func migrationAddClientConfigMaxResponseBodySizeMBColumn(ctx context.Context, db
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "max_response_body_size_mb")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddBFLKeyConfigColumns adds the BFL per-key column (fork, TXE-7062): the webhook
+// secret BFL signs its webhook calls with, encrypted at rest like the other key secrets.
+func migrationAddBFLKeyConfigColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_bfl_key_config_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableKey{}, "bfl_webhook_secret")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableKey{}, "bfl_webhook_secret")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

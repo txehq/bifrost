@@ -76,6 +76,7 @@ type imageTaskInput struct {
 	mask              []byte
 	callbackURL       *string
 	extra             map[string]any
+	keyWebhookSecret  string // the key's bfl_key_config.webhook_secret (TXE-7062); "" when it has none
 }
 
 // refuse is the caller_unsupported_parameter error for param, carried out of a converter.
@@ -143,6 +144,10 @@ func toBFLImageBody(in imageTaskInput) (*bflImageBody, error) {
 			return nil, refuse(schemas.TaskControlFieldCallbackURL, fmt.Sprintf("model %s has no webhook_url", in.model))
 		}
 		fields["webhook_url"] = *in.callbackURL
+		// The key's secret signs the webhook unless the request names its own (TXE-7062).
+		if _, own := in.extra["webhook_secret"]; !own && in.keyWebhookSecret != "" {
+			fields["webhook_secret"] = in.keyWebhookSecret
+		}
 	}
 	return &bflImageBody{fields: fields, extra: in.extra}, nil
 }
@@ -268,17 +273,29 @@ func editTaskInput(request *schemas.BifrostImageEditRequest) imageTaskInput {
 	return in
 }
 
+// keyWebhookSecret is the key's BFL webhook secret, or "" when the key configures none.
+func keyWebhookSecret(key schemas.Key) string {
+	if key.BFLKeyConfig == nil || key.BFLKeyConfig.WebhookSecret == nil {
+		return ""
+	}
+	return key.BFLKeyConfig.WebhookSecret.GetValue()
+}
+
 // ImageGenerationTask submits an image generation task: one POST /v1/{model}.
 func (provider *BFLProvider) ImageGenerationTask(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
 	return provider.submitImageTask(ctx, key, request, request.Model, func() (providerUtils.RequestBodyWithExtraParams, error) {
-		return toBFLImageBody(generationTaskInput(request))
+		in := generationTaskInput(request)
+		in.keyWebhookSecret = keyWebhookSecret(key)
+		return toBFLImageBody(in)
 	})
 }
 
 // ImageEditTask submits an image edit task: one POST /v1/{model}.
 func (provider *BFLProvider) ImageEditTask(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
 	return provider.submitImageTask(ctx, key, request, request.Model, func() (providerUtils.RequestBodyWithExtraParams, error) {
-		return toBFLImageBody(editTaskInput(request))
+		in := editTaskInput(request)
+		in.keyWebhookSecret = keyWebhookSecret(key)
+		return toBFLImageBody(in)
 	})
 }
 

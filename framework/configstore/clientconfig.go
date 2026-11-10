@@ -992,6 +992,11 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].DatabricksKeyConfig = databricksConfig
 		}
 
+		// Redact BFL key config if present (fork, TXE-7062): the webhook secret is a credential.
+		if key.BFLKeyConfig != nil {
+			redactedConfig.Keys[i].BFLKeyConfig = &schemas.BFLKeyConfig{WebhookSecret: key.BFLKeyConfig.WebhookSecret.Redacted()}
+		}
+
 		if key.GithubCopilotKeyConfig != nil {
 			// The private key is the whole credential, so it is redacted like any other
 			// secret rather than surfaced in a config read.
@@ -1353,6 +1358,14 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	// Hash CloudflareKeyConfig
 	if key.CloudflareKeyConfig != nil {
 		data, err := sonic.Marshal(key.CloudflareKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash BFLKeyConfig
+	if key.BFLKeyConfig != nil {
+		data, err := sonic.Marshal(key.BFLKeyConfig)
 		if err != nil {
 			return "", err
 		}
