@@ -1520,10 +1520,15 @@ func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, ki
 // nil for every other response, and a 500 when the creator cannot be looked up, so an unchecked
 // task is never sent.
 func (p *GovernancePlugin) hideForeignVideoByReference(ctx *schemas.BifrostContext, provider string, result *schemas.BifrostResponse) *schemas.BifrostError {
+	// The response type is checked first: every response that is not a video task object costs
+	// one nil check here and no context read.
+	if result == nil || result.VideoGenerationResponse == nil {
+		return nil
+	}
 	if marked, _ := ctx.Value(governanceVideoByReferenceContextKey).(bool); !marked {
 		return nil
 	}
-	if p.configStore == nil || result == nil || result.VideoGenerationResponse == nil || !p.objectOwnershipEnforced() {
+	if p.configStore == nil || !p.objectOwnershipEnforced() {
 		return nil
 	}
 	vkID := requestVirtualKeyID(ctx)

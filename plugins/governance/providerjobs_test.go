@@ -858,6 +858,26 @@ func TestPostLLMHookHidesAnotherKeysVideoRetrievedByClientReference(t *testing.T
 	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
 }
 
+// PostLLMHook runs hideForeignVideoByReference on every successful response. A response that is
+// not a video task object must cost one nil check, and a video task object that was not retrieved
+// by client_reference_id one context read; neither allocates.
+func BenchmarkHideForeignVideoByReference(b *testing.B) {
+	plugin := newAccessTestPlugin(b, buildVKForMCPStamping(nil), nil)
+	chat := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{}}
+	video := &schemas.BifrostResponse{VideoGenerationResponse: &schemas.BifrostVideoGenerationResponse{ID: "vendor-1:openai"}}
+	ctx := presentCtx(mcpTestVKValue)
+	for name, result := range map[string]*schemas.BifrostResponse{"chat_response": chat, "video_by_task_id": video} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if err := plugin.hideForeignVideoByReference(ctx, "openai", result); err != nil {
+					b.Fatal(err.Error.Message)
+				}
+			}
+		})
+	}
+}
+
 // Without a config store no creator is recorded anywhere, so a virtual-key request that addresses
 // a bound object is refused up front like a batch request is. Lists address nothing and are only
 // ever narrowed to what is recorded, so they go through unfiltered, as they did before.
