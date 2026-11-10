@@ -1468,6 +1468,11 @@ func applyClientConfigDefaults(cc *configstore.ClientConfig) {
 	if cc.EnableLogging == nil {
 		cc.EnableLogging = new(true)
 	}
+	// 0 means never set. The gateway prunes at the documented default, and the config it
+	// reports must say so: PUT /api/config refuses a value below 1 (fork, TXE-7070).
+	if cc.LogRetentionDays < 1 {
+		cc.LogRetentionDays = logstore.DefaultLogRetentionDays
+	}
 }
 
 // validateClientConfig checks invariants on a fully-merged client config that
@@ -1685,6 +1690,9 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 			config.ClientConfig.ConfigHash = fileHash
 		} else {
 			config.ClientConfig = new(DefaultClientConfig)
+			// DefaultClientConfig itself stays as it is: toolManagerOnlyHash hashes it, and a
+			// changed default would change every stored checkpoint of a file with no client section.
+			applyClientConfigDefaults(config.ClientConfig)
 			applyToolManagerToClientConfig(config.ClientConfig, toolManagerFromFile)
 			defaultHash, hashErr := toolManagerOnlyHash(toolManagerFromFile)
 			if hashErr != nil {
