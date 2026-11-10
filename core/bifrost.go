@@ -21,6 +21,7 @@ import (
 	"github.com/capsohq/bifrost/core/mcp/codemode/starlark"
 	"github.com/capsohq/bifrost/core/mcp/credstore"
 	"github.com/capsohq/bifrost/core/providers/anthropic"
+	"github.com/capsohq/bifrost/core/providers/anthropicmsg"
 	"github.com/capsohq/bifrost/core/providers/azure"
 	"github.com/capsohq/bifrost/core/providers/bedrock"
 	"github.com/capsohq/bifrost/core/providers/bedrockmantle"
@@ -5777,6 +5778,37 @@ func injectedToolsRan(ctx *schemas.BifrostContext) bool {
 	return executed
 }
 
+// requestIsWriteOnce reports whether req must be written to the vendor at most once: every
+// request but the chat family (schemas.RequestType.KeepsStaleConnectionRetry). A passthrough
+// request is chat when it carries the native Messages create call, the third chat path, and
+// write-once for every other path (audio, files, batches, anything a vendor bills).
+func requestIsWriteOnce(req *schemas.BifrostRequest) bool {
+	if req.RequestType.KeepsStaleConnectionRetry() {
+		return false
+	}
+	switch req.RequestType {
+	case schemas.PassthroughRequest, schemas.PassthroughStreamRequest:
+		return req.PassthroughRequest == nil || !anthropicmsg.IsMessagesPath(req.PassthroughRequest.Path)
+	}
+	return true
+}
+
+// markWriteOnce stamps ctx for the HTTP transport: a request that is not chat must reach the
+// vendor at most once (contract C3), so the transport does not resend it when a reused
+// connection fails. The mark is the request's own classification, not a leftover: a caller
+// may reuse one context for an image request and then a chat request, and the chat request
+// must keep its retry, so a mark left by an earlier request is cleared. A chat request on a
+// context that never carried the mark pays one type check and one context read.
+func markWriteOnce(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) {
+	if requestIsWriteOnce(req) {
+		ctx.SetValue(schemas.BifrostContextKeyWriteOnce, true)
+		return
+	}
+	if marked, _ := ctx.Value(schemas.BifrostContextKeyWriteOnce).(bool); marked {
+		ctx.SetValue(schemas.BifrostContextKeyWriteOnce, false)
+	}
+}
+
 // isNoKeySupportsModel reports whether the error is the key pool's refusal for a model none of
 // the provider's keys can serve.
 func isNoKeySupportsModel(err *schemas.BifrostError) bool {
@@ -8148,6 +8180,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
 		// Read once per request, so the retry loop needs no handle on the Bifrost instance.
 		markEncryptedReasoningRetry(req.Context, bifrost.disableEncryptedReasoningRetry.Load())
+		markWriteOnce(req.Context, &req.BifrostRequest)
 		// Lets downstream converters resolve a custom provider key back to the built-in provider it wraps.
 		req.Context.SetValue(schemas.BifrostContextKeyBaseProviderType, baseProvider)
 		// Re-stamped per attempt so a fallback cannot inherit the previous provider's opt-in.

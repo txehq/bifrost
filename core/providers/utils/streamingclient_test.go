@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -979,6 +980,434 @@ func TestContextTransport_PooledStaleConnStillRetried(t *testing.T) {
 	}
 	if got := accepted.Load(); got != 2 {
 		t.Fatalf("upstream accepted %d connection(s), want 2 (pooled socket found dead, one redial)", got)
+	}
+}
+
+// writeOnceUpstream is a raw HTTP/1.1 upstream for the write-once tests. It counts every
+// request it reads in full and every connection it accepts. behave decides, per connection
+// (numbered from 1) and per request on it (numbered from 1), what happens after the request
+// was read: answer 200 and keep the connection, answer 200 and then close it, or drop it
+// without a response byte.
+type writeOnceUpstream struct {
+	target   string
+	requests atomic.Int32
+	accepted atomic.Int32
+}
+
+type upstreamAction int
+
+const (
+	answerAndKeep upstreamAction = iota
+	answerThenClose
+	dropUnanswered
+)
+
+func newWriteOnceUpstream(t *testing.T, useTLS bool, behave func(conn, request int32) upstreamAction) *writeOnceUpstream {
+	t.Helper()
+	up := &writeOnceUpstream{}
+	serve := func(conn net.Conn, n int32) {
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		for r := int32(1); ; r++ {
+			httpReq, err := http.ReadRequest(br)
+			if err != nil {
+				return
+			}
+			_, _ = io.Copy(io.Discard, httpReq.Body)
+			up.requests.Add(1)
+			action := behave(n, r)
+			if action == dropUnanswered {
+				return
+			}
+			_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
+			if action == answerThenClose {
+				return
+			}
+		}
+	}
+	if useTLS {
+		server := httptest.NewUnstartedServer(nil)
+		server.StartTLS()
+		ln := tls.NewListener(mustListen(t), server.TLS)
+		server.Close()
+		t.Cleanup(func() { ln.Close() })
+		up.target = "https://" + ln.Addr().String()
+		go acceptLoop(ln, &up.accepted, serve)
+		return up
+	}
+	ln := mustListen(t)
+	t.Cleanup(func() { ln.Close() })
+	up.target = "http://" + ln.Addr().String()
+	go acceptLoop(ln, &up.accepted, serve)
+	return up
+}
+
+func mustListen(t *testing.T) net.Listener {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	return ln
+}
+
+func acceptLoop(ln net.Listener, accepted *atomic.Int32, serve func(net.Conn, int32)) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go serve(conn, accepted.Add(1))
+	}
+}
+
+// writeOnceContext is a request context as core marks it for a request that is not chat.
+func writeOnceContext(t *testing.T) *schemas.BifrostContext {
+	t.Helper()
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancel)
+	ctx.SetValue(schemas.BifrostContextKeyWriteOnce, true)
+	return ctx
+}
+
+// postOnce sends one POST through MakeRequestWithContext, as a provider does.
+func postOnce(ctx context.Context, client *fasthttp.Client, target string) *schemas.BifrostError {
+	req, resp := newSilentStreamingRequest(target)
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	_, bifrostErr, wait := MakeRequestWithContext(ctx, client, req, resp)
+	wait()
+	if bifrostErr == nil && resp.StatusCode() != http.StatusOK {
+		return &schemas.BifrostError{Error: &schemas.ErrorField{Message: fmt.Sprintf("status %d", resp.StatusCode())}}
+	}
+	return bifrostErr
+}
+
+// TestContextTransport_WriteOnceRequestIsNeverResent pins contract C3 at the one place
+// every provider's client passes through (TXE-7044). A request core marked write-once
+// (every request type but chat) reaches the upstream at most once. Chat, and a request
+// with no mark, keep the stale-connection retry as it was.
+func TestContextTransport_WriteOnceRequestIsNeverResent(t *testing.T) {
+	newClient := func() *fasthttp.Client {
+		return ConfigureDialer(&fasthttp.Client{ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, TLSConfig: &tls.Config{InsecureSkipVerify: true}}, true)
+	}
+	chatContext := func(t *testing.T) *schemas.BifrostContext {
+		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 20*time.Second)
+		t.Cleanup(cancel)
+		return ctx
+	}
+
+	// The upstream reads the second request on a connection and drops it without a response
+	// byte: from the client's side that is indistinguishable from a stale socket, but the
+	// upstream has the request.
+	dropSecond := func(_, request int32) upstreamAction {
+		if request >= 2 {
+			return dropUnanswered
+		}
+		return answerAndKeep
+	}
+	for _, useTLS := range []bool{false, true} {
+		name := map[bool]string{false: "http", true: "https"}[useTLS]
+		t.Run("a request the upstream read and dropped/"+name, func(t *testing.T) {
+			t.Run("write-once: one copy, and the failure is returned", func(t *testing.T) {
+				up := newWriteOnceUpstream(t, useTLS, dropSecond)
+				client := newClient()
+				if err := postOnce(writeOnceContext(t), client, up.target); err != nil {
+					t.Fatalf("request 1 failed: %+v", err.Error)
+				}
+				if err := postOnce(writeOnceContext(t), client, up.target); err == nil {
+					t.Fatal("the dropped request must fail")
+				}
+				if got := up.requests.Load(); got != 2 {
+					t.Fatalf("upstream read %d requests, want 2: the dropped one exactly once", got)
+				}
+			})
+			t.Run("chat: the retry is kept", func(t *testing.T) {
+				up := newWriteOnceUpstream(t, useTLS, dropSecond)
+				client := newClient()
+				if err := postOnce(chatContext(t), client, up.target); err != nil {
+					t.Fatalf("request 1 failed: %+v", err.Error)
+				}
+				// The resend lands on a new connection as its first request and is answered.
+				if err := postOnce(chatContext(t), client, up.target); err != nil {
+					t.Fatalf("request 2 failed although its retry was answered: %+v", err.Error)
+				}
+				if got := up.requests.Load(); got != 3 {
+					t.Fatalf("upstream read %d requests, want 3: the dropped one was written again", got)
+				}
+			})
+		})
+
+		// The upstream's keep-alive expires while the socket sits in the client's pool. Chat
+		// finds out by failing and resending. A write-once request finds out before it
+		// writes: it must succeed, on a new connection, having been written once.
+		t.Run("a pooled connection the upstream closed while idle/"+name, func(t *testing.T) {
+			up := newWriteOnceUpstream(t, useTLS, func(conn, _ int32) upstreamAction {
+				if conn == 1 {
+					return answerThenClose
+				}
+				return answerAndKeep
+			})
+			client := newClient()
+			if err := postOnce(writeOnceContext(t), client, up.target); err != nil {
+				t.Fatalf("request 1 failed: %+v", err.Error)
+			}
+			time.Sleep(200 * time.Millisecond) // let the close reach the pooled socket
+			if err := postOnce(writeOnceContext(t), client, up.target); err != nil {
+				t.Fatalf("request 2 failed on a stale pooled connection: %+v", err.Error)
+			}
+			if got, conns := up.requests.Load(), up.accepted.Load(); got != 2 || conns != 2 {
+				t.Fatalf("upstream read %d requests on %d connections, want 2 on 2", got, conns)
+			}
+			// The open connection is reused: the check costs no extra dial.
+			if err := postOnce(writeOnceContext(t), client, up.target); err != nil {
+				t.Fatalf("request 3 failed: %+v", err.Error)
+			}
+			if got, conns := up.requests.Load(), up.accepted.Load(); got != 3 || conns != 2 {
+				t.Fatalf("upstream read %d requests on %d connections, want 3 on 2 (the live connection reused)", got, conns)
+			}
+		})
+	}
+
+	// A request's read deadline stays on its connection when it returns to the pool. With a
+	// short timeout it has passed by the next request, which must still reuse the connection.
+	t.Run("an expired deadline left on a pooled connection does not cost a new one", func(t *testing.T) {
+		up := newWriteOnceUpstream(t, false, func(_, _ int32) upstreamAction { return answerAndKeep })
+		client := ConfigureDialer(&fasthttp.Client{ReadTimeout: 50 * time.Millisecond, WriteTimeout: 50 * time.Millisecond}, true)
+		for i := 1; i <= 3; i++ {
+			if err := postOnce(writeOnceContext(t), client, up.target); err != nil {
+				t.Fatalf("request %d failed: %+v", i, err.Error)
+			}
+			time.Sleep(120 * time.Millisecond) // past the deadline the request left behind
+		}
+		if got, conns := up.requests.Load(), up.accepted.Load(); got != 3 || conns != 1 {
+			t.Fatalf("upstream read %d requests on %d connections, want 3 on 1", got, conns)
+		}
+	})
+
+	// After a burst the pool can hold many connections, and the upstream can expire all of
+	// them at once. The next write-once request closes each dead one and then dials: it must
+	// succeed, however many there were.
+	t.Run("a pool full of connections the upstream closed still yields a new one", func(t *testing.T) {
+		const burst = 48
+		var closeAll atomic.Bool
+		release := make(chan struct{})
+		up := newWriteOnceUpstream(t, false, func(_, _ int32) upstreamAction {
+			if closeAll.Load() {
+				return answerAndKeep
+			}
+			<-release // hold the burst so every request needs its own connection
+			return answerThenClose
+		})
+		client := newClient()
+		var wg sync.WaitGroup
+		errs := make(chan *schemas.BifrostError, burst)
+		for range burst {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs <- postOnce(writeOnceContext(t), client, up.target)
+			}()
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for up.requests.Load() < burst && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		close(release)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("a burst request failed: %+v", err.Error)
+			}
+		}
+		if conns := up.accepted.Load(); conns != burst {
+			t.Fatalf("the burst used %d connections, want %d", conns, burst)
+		}
+		closeAll.Store(true)
+		time.Sleep(300 * time.Millisecond) // every pooled socket has seen the upstream's close
+		if err := postOnce(writeOnceContext(t), client, up.target); err != nil {
+			t.Fatalf("the request after the burst failed with %d dead pooled connections: %+v", burst, err.Error)
+		}
+		if got, conns := up.requests.Load(), up.accepted.Load(); got != burst+1 || conns != burst+1 {
+			t.Fatalf("upstream read %d requests on %d connections, want %d on %d", got, conns, burst+1, burst+1)
+		}
+	})
+
+	// A GET changes nothing upstream (a task query, a list, a download), so it keeps the
+	// retry even on a write-once request type.
+	t.Run("a marked GET keeps the retry", func(t *testing.T) {
+		up := newWriteOnceUpstream(t, false, dropSecond)
+		client := newClient()
+		get := func() error {
+			req, resp := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseRequest(req)
+			defer fasthttp.ReleaseResponse(resp)
+			req.SetRequestURI(up.target + "/v1/videos/task_1")
+			req.Header.SetMethod(http.MethodGet)
+			_, bifrostErr, wait := MakeRequestWithContext(writeOnceContext(t), client, req, resp)
+			wait()
+			if bifrostErr != nil {
+				return errors.New(bifrostErr.Error.Message)
+			}
+			return nil
+		}
+		if err := get(); err != nil {
+			t.Fatalf("request 1 failed: %v", err)
+		}
+		if err := get(); err != nil {
+			t.Fatalf("request 2 failed although its retry was answered: %v", err)
+		}
+		if got := up.requests.Load(); got != 3 {
+			t.Fatalf("upstream read %d requests, want 3", got)
+		}
+	})
+}
+
+// TestPooledConnIsOpen pins the three answers of the pre-write check on a real socket, plain
+// and under TLS: an idle open connection is open; one the peer closed, and one holding bytes
+// nobody asked for, are not.
+func TestPooledConnIsOpen(t *testing.T) {
+	pair := func(t *testing.T, useTLS bool) (client, server net.Conn) {
+		t.Helper()
+		ln := mustListen(t)
+		t.Cleanup(func() { ln.Close() })
+		accepted := make(chan net.Conn, 1)
+		go func() {
+			c, err := ln.Accept()
+			if err == nil {
+				accepted <- c
+			}
+		}()
+		client, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		t.Cleanup(func() { client.Close() })
+		server = <-accepted
+		t.Cleanup(func() { server.Close() })
+		if !useTLS {
+			return client, server
+		}
+		ts := httptest.NewUnstartedServer(nil)
+		ts.StartTLS()
+		cfg := ts.TLS.Clone()
+		ts.Close()
+		tlsServer := tls.Server(server, cfg)
+		tlsClient := tls.Client(client, &tls.Config{InsecureSkipVerify: true})
+		done := make(chan error, 1)
+		go func() { done <- tlsServer.Handshake() }()
+		if err := tlsClient.Handshake(); err != nil {
+			t.Fatalf("client handshake: %v", err)
+		}
+		if err := <-done; err != nil {
+			t.Fatalf("server handshake: %v", err)
+		}
+		// Drain what the handshake left for the client (TLS 1.3 session tickets), as a
+		// first response read does, by exchanging one byte.
+		go func() { _, _ = tlsServer.Write([]byte("x")) }()
+		if _, err := io.ReadFull(tlsClient, make([]byte, 1)); err != nil {
+			t.Fatalf("first read: %v", err)
+		}
+		return tlsClient, tlsServer
+	}
+	for _, useTLS := range []bool{false, true} {
+		name := map[bool]string{false: "tcp", true: "tls"}[useTLS]
+		t.Run(name+"/idle and open", func(t *testing.T) {
+			client, _ := pair(t, useTLS)
+			if !pooledConnIsOpen(client) {
+				t.Fatal("an idle open connection was reported not open")
+			}
+			if !pooledConnIsOpen(client) {
+				t.Fatal("the check must leave an open connection usable and open")
+			}
+		})
+		// A pooled connection keeps the read deadline of the request before it, which
+		// has usually passed. The check must not read that as a dead connection.
+		t.Run(name+"/open with an expired read deadline", func(t *testing.T) {
+			client, _ := pair(t, useTLS)
+			if err := client.SetReadDeadline(time.Now().Add(-time.Second)); err != nil {
+				t.Fatalf("set deadline: %v", err)
+			}
+			if !pooledConnIsOpen(client) {
+				t.Fatal("an open connection with an expired read deadline was reported not open")
+			}
+		})
+		t.Run(name+"/closed by the peer", func(t *testing.T) {
+			client, server := pair(t, useTLS)
+			server.Close()
+			time.Sleep(100 * time.Millisecond)
+			if pooledConnIsOpen(client) {
+				t.Fatal("a connection the peer closed was reported open")
+			}
+		})
+		t.Run(name+"/bytes nobody asked for", func(t *testing.T) {
+			client, server := pair(t, useTLS)
+			if _, err := server.Write([]byte("HTTP/1.1 408 Request Timeout\r\n\r\n")); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			time.Sleep(100 * time.Millisecond)
+			if pooledConnIsOpen(client) {
+				t.Fatal("a connection with unsolicited bytes was reported open")
+			}
+		})
+	}
+	t.Run("a connection that cannot be inspected is not trusted", func(t *testing.T) {
+		client, _ := net.Pipe()
+		defer client.Close()
+		if pooledConnIsOpen(client) {
+			t.Fatal("a connection with no socket behind it was reported open")
+		}
+	})
+}
+
+// BenchmarkPooledConnIsOpen measures the check a write-once request pays on a reused
+// connection: one non-blocking read, no wait.
+func BenchmarkPooledConnIsOpen(b *testing.B) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err == nil {
+			defer c.Close()
+			_, _ = io.Copy(io.Discard, c)
+		}
+	}()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer conn.Close()
+	b.ReportAllocs()
+	for b.Loop() {
+		if !pooledConnIsOpen(conn) {
+			b.Fatal("an open connection was reported not open")
+		}
+	}
+}
+
+// BenchmarkIsWriteOnce measures what every request pays in the transport to learn whether
+// it is write-once: a method check and, for a non-GET, one context read.
+func BenchmarkIsWriteOnce(b *testing.B) {
+	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+	req.Header.SetMethod(http.MethodPost)
+	for name, mark := range map[string]bool{"chat (unmarked)": false, "write-once": true} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if mark {
+			ctx.SetValue(schemas.BifrostContextKeyWriteOnce, true)
+		}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if isWriteOnce(ctx, req) != mark {
+					b.Fatal("wrong answer")
+				}
+			}
+		})
 	}
 }
 

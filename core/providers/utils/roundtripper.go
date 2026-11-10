@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	schemas "github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
@@ -146,17 +147,29 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	if req.ConnectionClose() {
 		releaseAbandoned = hc.CloseConn
 	}
+	// A write-once request (every request but chat, contract C3) must reach the
+	// upstream at most once. See acquireOpenConn and retryOn below.
+	writeOnce := isWriteOnce(ctx, req)
 	cc, err := acquireWithContext(ctx, abort, reqTimeout, hc.AcquireConn, req.ConnectionClose(), releaseAbandoned)
 	if err != nil {
 		return false, err
+	}
+	if writeOnce {
+		if cc, err = acquireOpenConn(ctx, abort, reqTimeout, cc, hc.AcquireConn, req.ConnectionClose(), releaseAbandoned, hc.CloseConn); err != nil {
+			return false, err
+		}
 	}
 	conn := cc.Conn()
 	resp.ParseNetConn(conn)
 	// fasthttp stamps lastUseTime only when a connection is returned to the
 	// pool, so a zero value means this socket was dialed for this request.
 	reused := !cc.LastUseTime().IsZero()
+	// Once anything may have been written, a write-once request is never sent
+	// again: a reused socket that dies before the first response byte may have
+	// died after the upstream read the request, and a second copy is a second
+	// charge. Its stale sockets were weeded out before the write instead.
 	retryOn := func(err error) bool {
-		return reused && !errors.Is(err, fasthttp.ErrBodyTooLarge)
+		return reused && !writeOnce && !errors.Is(err, fasthttp.ErrBodyTooLarge)
 	}
 
 	watcher := startCancelWatcher(ctx, abort, conn)
@@ -287,6 +300,58 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	}
 	resp.SetBodyStream(body, resp.Header.ContentLength())
 	return false, nil
+}
+
+// isWriteOnce reports whether req must be written to the upstream at most once:
+// core marked its context (BifrostContextKeyWriteOnce, every request type but the
+// chat family) and its method is not one a server may safely see twice. A GET or
+// HEAD (a task query, a list, a download) changes nothing upstream, so it keeps
+// the stale-connection retry.
+func isWriteOnce(ctx context.Context, req *fasthttp.Request) bool {
+	if req.Header.IsGet() || req.Header.IsHead() {
+		return false
+	}
+	marked, _ := ctx.Value(schemas.BifrostContextKeyWriteOnce).(bool)
+	return marked
+}
+
+// acquireOpenConn returns a connection a write-once request can be written to: cc
+// when it was dialed for this request or is still open, else the next pooled or
+// newly dialed connection that is. A reused connection the upstream has closed
+// (or that holds bytes nobody asked for) is closed and replaced before anything
+// is written, which is the one moment a replacement is provably not a resend.
+// That is what the stale-connection retry does for chat after the fact; here it
+// happens before the write, so it can never duplicate a request.
+//
+// The check (pooledConnIsOpen) is one non-blocking read on the socket. Where it
+// cannot tell (a platform or a connection type it cannot inspect), the reused
+// connection is not trusted and is replaced, so the request still goes out once,
+// on a connection dialed for it.
+//
+// The walk has no budget of its own. Every connection it rejects is closed, which
+// takes it out of the pool, so it ends when the pool holds an open connection or is
+// empty, and an empty pool makes the next acquisition dial. An upstream that
+// expired a whole burst of connections therefore costs one close per dead socket
+// (no I/O to the upstream) and then one dial, never a failed request. The request
+// context still bounds it: each acquisition goes through acquireWithContext.
+func acquireOpenConn[C pooledConn](ctx context.Context, abort *AttemptAbort, reqTimeout time.Duration, cc C, acquire func(timeout time.Duration, connectionClose bool) (C, error), connectionClose bool, release func(C), closeConn func(C)) (C, error) {
+	for {
+		if cc.LastUseTime().IsZero() || pooledConnIsOpen(cc.Conn()) {
+			return cc, nil
+		}
+		closeConn(cc)
+		var err error
+		if cc, err = acquireWithContext(ctx, abort, reqTimeout, acquire, connectionClose, release); err != nil {
+			return cc, err
+		}
+	}
+}
+
+// pooledConn is what acquireOpenConn reads of fasthttp's connection handle, whose
+// type is not exported.
+type pooledConn interface {
+	Conn() net.Conn
+	LastUseTime() time.Time
 }
 
 // acquireWithContext acquires a pooled connection under the request context.

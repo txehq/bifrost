@@ -7,14 +7,19 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	crand "crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"math/big"
 	"math/rand/v2"
@@ -27,6 +32,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -9258,6 +9264,353 @@ func TestScenarioInferredFallbacksPassNoKeySupportsModel(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TXE-7044 (contract C3): every request type is chat or write-once, and write-once is the
+// default, so a type added later cannot escape the rule: it has to be added to the chat list
+// in schemas.RequestType.KeepsStaleConnectionRetry and to the list here to be resent. The
+// request types are read from the source, not from a list someone has to remember to extend.
+func TestEveryRequestTypeIsChatOrWriteOnce(t *testing.T) {
+	chat := []schemas.RequestType{
+		schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest,
+		schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest,
+		schemas.ResponsesRequest, schemas.ResponsesStreamRequest,
+	}
+	passthrough := []schemas.RequestType{schemas.PassthroughRequest, schemas.PassthroughStreamRequest}
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "schemas/bifrost.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse schemas/bifrost.go: %v", err)
+	}
+	var declared []schemas.RequestType
+	ast.Inspect(file, func(n ast.Node) bool {
+		spec, ok := n.(*ast.ValueSpec)
+		if !ok {
+			return true
+		}
+		if ident, ok := spec.Type.(*ast.Ident); !ok || ident.Name != "RequestType" {
+			return true
+		}
+		for _, value := range spec.Values {
+			if lit, ok := value.(*ast.BasicLit); ok {
+				name, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatalf("unquote %s: %v", lit.Value, err)
+				}
+				declared = append(declared, schemas.RequestType(name))
+			}
+		}
+		return true
+	})
+	// The scan must have found the types this test names, or it is reading the wrong thing.
+	for _, known := range append(append([]schemas.RequestType{schemas.EmbeddingRequest, schemas.SpeechRequest, schemas.TranscriptionRequest,
+		schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.VideoGenerationRequest, schemas.BatchCreateRequest,
+		schemas.FileUploadRequest, schemas.RerankRequest}, chat...), passthrough...) {
+		if !slices.Contains(declared, known) {
+			t.Fatalf("the scan of schemas/bifrost.go did not find %s (found %d types)", known, len(declared))
+		}
+	}
+	for _, requestType := range declared {
+		isChat := slices.Contains(chat, requestType)
+		if got := requestType.KeepsStaleConnectionRetry(); got != isChat {
+			t.Errorf("%s: keeps the stale-connection retry = %v, want %v (only the chat family may be resent)", requestType, got, isChat)
+		}
+		if slices.Contains(passthrough, requestType) {
+			continue // decided by its path, below
+		}
+		if got := requestIsWriteOnce(&schemas.BifrostRequest{RequestType: requestType}); got == isChat {
+			t.Errorf("%s: write-once = %v, want %v", requestType, got, !isChat)
+		}
+	}
+
+	// A passthrough is chat only when it carries the native Messages create call.
+	for path, want := range map[string]bool{
+		"/v1/messages":             false,
+		"/v1/messages?beta=true":   false,
+		"/v1/messages/batches":     true,
+		"/v1/audio/speech":         true,
+		"/v1/text-to-speech/voice": true,
+		"/v1/files":                true,
+	} {
+		for _, requestType := range []schemas.RequestType{schemas.PassthroughRequest, schemas.PassthroughStreamRequest} {
+			req := &schemas.BifrostRequest{RequestType: requestType, PassthroughRequest: &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: path}}
+			if got := requestIsWriteOnce(req); got != want {
+				t.Errorf("%s %s: write-once = %v, want %v", requestType, path, got, want)
+			}
+		}
+	}
+}
+
+// writeOnceFixture is an upstream and an HTTP forward proxy in one, for the provider sweep
+// below. Every provider is pointed at it twice over: as its base URL, and as its proxy, so a
+// provider that builds its own host still lands here and nothing leaves the machine (a TLS
+// handshake to a real host inside the tunnel fails here, before any request).
+//
+// On each connection the first request is answered 200 with an empty JSON object and the
+// connection is kept; every later request on it is read in full and the connection dropped
+// without a response byte. A provider's second call therefore finds a pooled connection,
+// reuses it, and has its request read and dropped: the case where a resend is a duplicate.
+type writeOnceFixture struct {
+	url string
+	mu  sync.Mutex
+	// seen counts each request read in full, by method, path and body.
+	seen    map[string]int
+	dropped int
+}
+
+func newWriteOnceFixture(t *testing.T) *writeOnceFixture {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	f := &writeOnceFixture{url: "http://" + ln.Addr().String(), seen: map[string]int{}}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go f.serve(conn)
+		}
+	}()
+	return f
+}
+
+func (f *writeOnceFixture) serve(conn net.Conn) {
+	defer conn.Close()
+	br := bufio.NewReader(conn)
+	for served := 0; ; {
+		_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		req, err := http.ReadRequest(br)
+		if err != nil {
+			return
+		}
+		if req.Method == http.MethodConnect {
+			// The tunnel ends here whatever host it names.
+			if _, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+				return
+			}
+			continue
+		}
+		body, _ := io.ReadAll(req.Body)
+		sum := sha256.Sum256(body)
+		key := req.Method + " " + req.URL.Path + " " + hex.EncodeToString(sum[:8])
+		f.mu.Lock()
+		f.seen[key]++
+		served++
+		drop := served > 1
+		if drop {
+			f.dropped++
+		}
+		f.mu.Unlock()
+		if drop {
+			return
+		}
+		if _, err := io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"); err != nil {
+			return
+		}
+	}
+}
+
+// reset clears the record and returns what it held.
+func (f *writeOnceFixture) reset() (seen map[string]int, dropped int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	seen, dropped = f.seen, f.dropped
+	f.seen, f.dropped = map[string]int{}, 0
+	return seen, dropped
+}
+
+// TXE-7044 (contract C3): no provider's non-chat operation is written to the vendor twice.
+// Each provider is driven through Bifrost with max_retries 0, so the only thing that could
+// repeat a request is the HTTP transport. Each operation is called twice: the first call
+// leaves a keep-alive connection in the provider's pool, the second reuses it and the
+// fixture reads the request and drops the connection. Before the change the transport wrote
+// such a request again on a new connection; now the fixture must never see the same request
+// twice within one call.
+func TestNonChatRequestsReachTheVendorOnce(t *testing.T) {
+	fixture := newWriteOnceFixture(t)
+	// Providers whose requests need cloud credentials minted elsewhere (a token exchange or a
+	// signature with real secrets) cannot be driven with a test key; they share the same
+	// transport, which TestContextTransport_WriteOnceRequestIsNeverResent pins directly.
+	skipped := []schemas.ModelProvider{schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex, schemas.Azure, schemas.GithubCopilot, schemas.Databricks, schemas.SGL,
+		// Replicate dereferences prediction.URLs on a 200 that carries none (replicate.go,
+		// pollPrediction's argument), which the fixture's empty JSON answer is: it panics the
+		// worker instead of returning an error. That is TXE-7056, which removes this entry.
+		schemas.Replicate}
+
+	account := NewMockAccount()
+	var providers []schemas.ModelProvider
+	for _, provider := range schemas.StandardProviders {
+		if slices.Contains(skipped, provider) {
+			continue
+		}
+		providers = append(providers, provider)
+		account.AddProviderWithBaseURL(provider, 1, 4, fixture.url)
+		account.SetKeysForProvider(provider, []schemas.Key{
+			{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("test-key"), Weight: 1, Models: schemas.WhiteList{"*"}},
+		})
+		account.mu.Lock()
+		cfg := account.configs[provider]
+		cfg.NetworkConfig.MaxRetries = 0
+		cfg.NetworkConfig.DefaultRequestTimeoutInSeconds = 10
+		cfg.NetworkConfig.AllowPrivateNetwork = true
+		cfg.ProxyConfig = &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(fixture.url)}
+		account.mu.Unlock()
+	}
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	model := "sweep-model"
+	operations := map[string]func(ctx *schemas.BifrostContext, provider schemas.ModelProvider) *schemas.BifrostError{
+		"speech": func(ctx *schemas.BifrostContext, provider schemas.ModelProvider) *schemas.BifrostError {
+			_, err := client.SpeechRequest(ctx, &schemas.BifrostSpeechRequest{Provider: provider, Model: model,
+				Input: &schemas.SpeechInput{Input: "hello"}, Params: &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: schemas.Ptr("voice")}}})
+			return err
+		},
+		"transcription": func(ctx *schemas.BifrostContext, provider schemas.ModelProvider) *schemas.BifrostError {
+			_, err := client.TranscriptionRequest(ctx, &schemas.BifrostTranscriptionRequest{Provider: provider, Model: model,
+				Input: &schemas.TranscriptionInput{File: []byte("RIFFaudio"), Filename: "a.wav"}, Params: &schemas.TranscriptionParameters{}})
+			return err
+		},
+		"image generation": func(ctx *schemas.BifrostContext, provider schemas.ModelProvider) *schemas.BifrostError {
+			_, err := client.ImageGenerationRequest(ctx, &schemas.BifrostImageGenerationRequest{Provider: provider, Model: model,
+				Input: &schemas.ImageGenerationInput{Prompt: "a dog"}, Params: &schemas.ImageGenerationParameters{}})
+			return err
+		},
+		"image edit": func(ctx *schemas.BifrostContext, provider schemas.ModelProvider) *schemas.BifrostError {
+			_, err := client.ImageEditRequest(ctx, &schemas.BifrostImageEditRequest{Provider: provider, Model: model,
+				Input:  &schemas.ImageEditInput{Prompt: "a dog", Images: []schemas.ImageInput{{Image: []byte("\x89PNG")}}},
+				Params: &schemas.ImageEditParameters{}})
+			return err
+		},
+		"video generation": func(ctx *schemas.BifrostContext, provider schemas.ModelProvider) *schemas.BifrostError {
+			_, err := client.VideoGenerationRequest(ctx, &schemas.BifrostVideoGenerationRequest{Provider: provider, Model: model,
+				Input: &schemas.VideoGenerationInput{Prompt: "a dog"}, Params: &schemas.VideoGenerationParameters{}})
+			return err
+		},
+		"rerank": func(ctx *schemas.BifrostContext, provider schemas.ModelProvider) *schemas.BifrostError {
+			_, err := client.RerankRequest(ctx, &schemas.BifrostRerankRequest{Provider: provider, Model: model,
+				Query: "q", Documents: []schemas.RerankDocument{{Text: "a"}, {Text: "b"}}})
+			return err
+		},
+		"batch create": func(ctx *schemas.BifrostContext, provider schemas.ModelProvider) *schemas.BifrostError {
+			_, err := client.BatchCreateRequest(ctx, &schemas.BifrostBatchCreateRequest{Provider: provider, Model: schemas.Ptr(model),
+				Requests: []schemas.BatchRequestItem{{CustomID: "line-1", Method: http.MethodPost, URL: "/v1/chat/completions",
+					Body: map[string]any{"model": model, "messages": []any{map[string]any{"role": "user", "content": "hi"}}}}}})
+			return err
+		},
+		"file upload": func(ctx *schemas.BifrostContext, provider schemas.ModelProvider) *schemas.BifrostError {
+			_, err := client.FileUploadRequest(ctx, &schemas.BifrostFileUploadRequest{Provider: provider, Model: schemas.Ptr(model),
+				File: []byte("{}\n"), Filename: "input.jsonl", Purpose: "batch"})
+			return err
+		},
+	}
+	names := make([]string, 0, len(operations))
+	for name := range operations {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+
+	call := func(run func(*schemas.BifrostContext, schemas.ModelProvider) *schemas.BifrostError, provider schemas.ModelProvider) {
+		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_ = run(ctx, provider)
+	}
+	exercised := 0
+	var exercisedPairs []string
+	for _, provider := range providers {
+		for _, name := range names {
+			call(operations[name], provider) // leaves a keep-alive connection in the pool
+			fixture.reset()
+			call(operations[name], provider) // reuses it; the fixture reads and drops
+			seen, dropped := fixture.reset()
+			for key, count := range seen {
+				if count > 1 {
+					t.Errorf("%s %s: the vendor read the same request %d times: %s", provider, name, count, key)
+				}
+			}
+			if dropped > 0 {
+				exercised++
+				exercisedPairs = append(exercisedPairs, string(provider)+"/"+name)
+			}
+		}
+	}
+	// The sweep proves nothing if no call reached the drop.
+	if exercised < 20 {
+		t.Fatalf("only %d provider operations had a request read and dropped (%v); the sweep is not exercising the transport", exercised, exercisedPairs)
+	}
+	t.Logf("%d provider operations had a request read and dropped, none was written twice: %v", exercised, exercisedPairs)
+}
+
+// A caller may reuse one context across requests. The mark is each request's own
+// classification: a chat request after an image request on the same context is not
+// write-once and keeps its retry.
+func TestMarkWriteOnceFollowsTheRequestNotTheContext(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	marked := func() bool {
+		v, _ := ctx.Value(schemas.BifrostContextKeyWriteOnce).(bool)
+		return v
+	}
+	chat := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest}
+	image := &schemas.BifrostRequest{RequestType: schemas.ImageGenerationRequest}
+
+	markWriteOnce(ctx, chat)
+	if marked() {
+		t.Fatal("a chat request was marked write-once")
+	}
+	markWriteOnce(ctx, image)
+	if !marked() {
+		t.Fatal("an image request was not marked write-once")
+	}
+	markWriteOnce(ctx, chat)
+	if marked() {
+		t.Fatal("a chat request inherited the mark of the image request before it on the same context")
+	}
+	markWriteOnce(ctx, image)
+	if !marked() {
+		t.Fatal("an image request after a chat request was not marked write-once")
+	}
+}
+
+// BenchmarkMarkWriteOnce measures what the request worker pays per request to stamp the
+// context: a chat request on a fresh context reads once and writes nothing.
+func BenchmarkMarkWriteOnce(b *testing.B) {
+	for name, req := range map[string]*schemas.BifrostRequest{
+		"chat":             {RequestType: schemas.ChatCompletionRequest},
+		"image generation": {RequestType: schemas.ImageGenerationRequest},
+	} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				markWriteOnce(ctx, req)
+			}
+		})
+	}
+}
+
+// BenchmarkRequestIsWriteOnce measures what the request worker pays per request to decide
+// whether to mark it write-once: chat is one switch; a passthrough also checks its path.
+func BenchmarkRequestIsWriteOnce(b *testing.B) {
+	for name, req := range map[string]*schemas.BifrostRequest{
+		"chat":                 {RequestType: schemas.ChatCompletionRequest},
+		"image generation":     {RequestType: schemas.ImageGenerationRequest},
+		"messages passthrough": {RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{Path: "/v1/messages"}},
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = requestIsWriteOnce(req)
+			}
+		})
 	}
 }
 
