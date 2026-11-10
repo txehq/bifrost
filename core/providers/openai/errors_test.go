@@ -329,3 +329,25 @@ func TestParseOpenAIError_OtherInnerCodeIsKeptButNotAFilter(t *testing.T) {
 		t.Fatalf("error.inner_code = %v, want none", *plain.Error.InnerCode)
 	}
 }
+
+func benchmarkParseOpenAIError(b *testing.B, body string) {
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+	resp.SetStatusCode(fasthttp.StatusBadRequest)
+	resp.SetBodyString(body)
+	b.ReportAllocs()
+	for b.Loop() {
+		ParseOpenAIError(resp)
+	}
+}
+
+// BenchmarkParseOpenAIErrorInnerCode measures the inner code step: it is read from the body the
+// parser already decoded, so a body without inner_error adds only map lookups.
+func BenchmarkParseOpenAIErrorInnerCode(b *testing.B) {
+	b.Run("no_inner_error", func(b *testing.B) {
+		benchmarkParseOpenAIError(b, `{"error":{"code":"bad","message":"x","type":"invalid_request_error"}}`)
+	})
+	b.Run("inner_error", func(b *testing.B) {
+		benchmarkParseOpenAIError(b, `{"error":{"code":"invalid_prompt","message":"x","inner_error":{"code":"ResponsibleAIPolicyViolation"}}}`)
+	})
+}

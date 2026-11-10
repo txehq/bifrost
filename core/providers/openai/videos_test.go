@@ -323,3 +323,49 @@ func TestVideoDownloadStreamsOnRequest(t *testing.T) {
 		t.Fatalf("upstream calls = %q", calls)
 	}
 }
+
+func benchmarkFillOpenAIVideoTaskObject(b *testing.B, base schemas.BifrostVideoGenerationResponse) {
+	b.ReportAllocs()
+	for b.Loop() {
+		response := base
+		fillOpenAIVideoTaskObject(&response)
+	}
+}
+
+// BenchmarkFillOpenAIVideoTaskObject measures the task object step on create and query: a task
+// still running is the common poll and allocates nothing.
+func BenchmarkFillOpenAIVideoTaskObject(b *testing.B) {
+	seconds := "8"
+	b.Run("in_progress", func(b *testing.B) {
+		benchmarkFillOpenAIVideoTaskObject(b, schemas.BifrostVideoGenerationResponse{Status: schemas.VideoStatusInProgress, Seconds: &seconds})
+	})
+	b.Run("completed", func(b *testing.B) {
+		benchmarkFillOpenAIVideoTaskObject(b, schemas.BifrostVideoGenerationResponse{Status: schemas.VideoStatusCompleted, Seconds: &seconds})
+	})
+}
+
+func benchmarkVideoGenerationForm(b *testing.B, extraParams map[string]any, passthrough bool) {
+	request := &schemas.BifrostVideoGenerationRequest{
+		Model:  "sora-2",
+		Input:  &schemas.VideoGenerationInput{Prompt: "a fox"},
+		Params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("8"), Size: "1280x720", ExtraParams: extraParams},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		openaiReq, err := ToOpenAIVideoGenerationRequest(request)
+		if err != nil {
+			b.Fatal(err)
+		}
+		var body bytes.Buffer
+		if bifrostErr := parseVideoGenerationFormDataBodyFromRequest(multipart.NewWriter(&body), openaiReq, schemas.Azure, passthrough); bifrostErr != nil {
+			b.Fatal(bifrostErr.Error.Message)
+		}
+	}
+}
+
+// BenchmarkVideoGenerationForm measures building the multipart create body. A request with no
+// passthrough header skips the extra-param writer behind one bool check.
+func BenchmarkVideoGenerationForm(b *testing.B) {
+	b.Run("no_passthrough", func(b *testing.B) { benchmarkVideoGenerationForm(b, map[string]any{"vendor_hint": "high"}, false) })
+	b.Run("passthrough_one_extra", func(b *testing.B) { benchmarkVideoGenerationForm(b, map[string]any{"vendor_hint": "high"}, true) })
+}
