@@ -558,7 +558,11 @@ Only `framework/vectorstore` needs any of this. Every other framework package pa
    - `ui/lib/constants/logs.ts` — provider display name (2 places)
    - `docs/openapi/openapi.json` — OpenAPI spec update
    - `transports/config.schema.json` — config schema (2 locations)
-6. **CI/CD**: Add env vars to `.github/workflows/pr-tests.yml` and `release-pipeline.yml` (4 jobs)
+6. **CI/CD**: The key is a secret of the `live-providers` GitHub environment, never a repository or organization secret: a job runs the code of whatever ref triggered it, so any writer could read a repository secret, and only the environment's required reviewers gate it (TXE-6975).
+   - Name it `<PROVIDER>_API_KEY`. A vendor credential of another shape goes in `OTHER_PROVIDER_CREDENTIALS` in `.github/workflows/scripts/check-provider-key-environment.py` in the same change.
+   - Read it only in jobs that name `environment: live-providers` (literally, not as an expression): `run-tests` in `pr-tests.yml`, `run-core-tests` in `run-core-tests.yml`, and the live test and release jobs in `release-pipeline.yml`. workflow-lint fails a provider credential read anywhere else.
+   - A maintainer stores the value with `gh secret set <PROVIDER>_API_KEY --env live-providers -R txehq/bifrost`.
+   - If no test needs the key yet, leave it out of the workflows. A harness provider whose key variables are all unset is skipped.
 7. **Docs**: Create `docs/providers/supported-providers/<name>.mdx`
 8. **Test**: `make test-core PROVIDER=<name>`
 

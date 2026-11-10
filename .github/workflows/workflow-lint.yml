@@ -77,6 +77,17 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 .github/workflows/scripts/test-approval-environment.py
 
+      # A job runs the code of whatever ref triggered it, so a provider key reaches only
+      # jobs that name the live-providers environment, whose reviewers approve each run
+      # (TXE-6975).
+      - name: Check provider credentials reach only live-providers jobs
+        if: ${{ !cancelled() }}
+        run: python3 .github/workflows/scripts/check-provider-key-environment.py
+
+      - name: Check the provider credential rule on fixture workflows
+        if: ${{ !cancelled() }}
+        run: ./.github/workflows/scripts/check-provider-key-environment.test.sh
+
       # The offline API-collection suites run on every pull request, from the one script
       # the release's API integration job also runs (TXE-6055).
       - name: Check the offline API collection suites run before merge

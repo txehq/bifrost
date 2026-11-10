@@ -14,6 +14,11 @@ permissions:
 jobs:
   test-e2e-ui:
     name: E2E UI (Playwright)
+    # Provider credentials are secrets of the live-providers environment, never
+    # repository secrets: this job runs the code of whatever ref triggered it, so
+    # only the environment's protection rules gate the keys (TXE-6975,
+    # check-provider-key-environment.py).
+    environment: live-providers
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
     timeout-minutes: 45
     permissions:

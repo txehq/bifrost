@@ -1,0 +1,21 @@
+# expect: job run-core-tests: job-level env reads OPENAI_API_KEY, checks out ${{ inputs.branch }}, and the job names no environment
+# The original finding (PR #120): a writer dispatches any branch, and its code runs with the key.
+on:
+  workflow_dispatch:
+    inputs:
+      branch: {required: true, type: string}
+jobs:
+  authorize:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "write access checked"
+  run-core-tests:
+    needs: authorize
+    runs-on: ubuntu-24.04
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.branch }}
+      - run: ./.github/workflows/scripts/test-core.sh

@@ -1,0 +1,11 @@
+# expect: job test-core: reads OPENAI_API_KEY, and the job names environment "${{ github.ref == 'refs/heads/main' && 'ci-trusted-branch' || 'live-providers' }}"
+# An expression can route some events to an environment without reviewers: the name must be literal.
+on: [push, workflow_dispatch]
+jobs:
+  test-core:
+    runs-on: ubuntu-24.04
+    environment: ${{ github.ref == 'refs/heads/main' && 'ci-trusted-branch' || 'live-providers' }}
+    steps:
+      - run: make test-core
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

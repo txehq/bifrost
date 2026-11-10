@@ -1,0 +1,13 @@
+# expect: job test-core: reads ANTHROPIC_API_KEY, checks out the triggering ref, and the job names no environment
+# Step-level env is no safer: the step runs the triggering ref's code.
+on:
+  push:
+    branches: [main]
+jobs:
+  test-core:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - run: ./.github/workflows/scripts/test-core.sh
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

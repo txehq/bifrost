@@ -1,0 +1,10 @@
+# expect: job smoke: reads deepseek_api_key, and the job names no environment
+# Secret names are case-insensitive, and an action input is as exposed as an env var.
+on: push
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: some-org/provider-smoke@v1
+        with:
+          api-key: ${{ secrets.deepseek_api_key }}
