@@ -23,6 +23,8 @@ func TestBifrostVideoGenerationResponseBackfillSeconds(t *testing.T) {
 		req      *BifrostRequest
 		want     *string
 		model    string // the model the response is backfilled with; "m" when empty
+		// responseModel is the model the provider reported on the response, when it reported one.
+		responseModel string
 	}{
 		{name: "provider-reported duration is kept", reported: Ptr("5"), req: request(MiniMax, Ptr("2")), want: Ptr("5")},
 		{name: "missing duration comes from the request", req: request(OpenAI, Ptr("8")), want: Ptr("8")},
@@ -31,11 +33,14 @@ func TestBifrostVideoGenerationResponseBackfillSeconds(t *testing.T) {
 		// The Gemini and Vertex default is Veo's; an Omni model picks its own duration.
 		{name: "missing duration on a Gemini Omni model stays empty", req: modelRequest(Gemini, "gemini-omni-1.1-flash", nil), want: nil, model: "gemini-omni-1.1-flash"},
 		{name: "missing duration on a Vertex Omni model stays empty", req: modelRequest(Vertex, "gemini-omni-1.1-flash-preview", nil), want: nil, model: "gemini-omni-1.1-flash-preview"},
+		// An alias can put an opaque wire id in the request; the response names the model that ran.
+		{name: "missing duration on an aliased Omni model stays empty", responseModel: "gemini-omni-1.1-flash", req: modelRequest(Gemini, "tuned-endpoint-1", nil), want: nil, model: "gemini-omni-1.1-flash"},
+		{name: "a duration an aliased Omni request names is kept", responseModel: "gemini-omni-1.1-flash", req: modelRequest(Vertex, "tuned-endpoint-1", Ptr("9")), want: Ptr("9"), model: "gemini-omni-1.1-flash"},
 		{name: "a duration the Omni request names is kept", req: modelRequest(Gemini, "gemini-omni-1.1-flash", Ptr("12")), want: Ptr("12"), model: "gemini-omni-1.1-flash"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resp := &BifrostVideoGenerationResponse{Seconds: tc.reported}
+			resp := &BifrostVideoGenerationResponse{Seconds: tc.reported, Model: tc.responseModel}
 			resp.BackfillParams(tc.req)
 			switch {
 			case tc.want == nil && resp.Seconds != nil:

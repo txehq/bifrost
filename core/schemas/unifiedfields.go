@@ -59,13 +59,23 @@ func NewUnsupportedParameterError(param, message string) *BifrostError {
 
 // CheckUnifiedFields returns the caller_unsupported_parameter error for the first
 // (alphabetically) Params field set on req that is neither in supported nor in
-// UnpricedUnifiedFields, and nil when every set field is one of them.
+// UnpricedUnifiedFields, and nil when every set field is one of them. It walks the cached,
+// name-sorted field list of the Params type directly, so a request that passes allocates
+// nothing: the worker runs it on every request of an operation a provider declares.
 func CheckUnifiedFields(req *BifrostRequest, supported []string) *BifrostError {
-	for _, field := range req.UnifiedFieldsPresent() {
-		if slices.Contains(supported, field) || slices.Contains(UnpricedUnifiedFields, field) {
+	params := req.paramsValue()
+	if !params.IsValid() {
+		return nil
+	}
+	for _, f := range unifiedParamFields(params.Type()) {
+		fv, ok := fieldByIndex(params, f.index)
+		if !ok || fieldIsUnset(fv) {
 			continue
 		}
-		return NewUnsupportedParameterError(field, "")
+		if slices.Contains(supported, f.name) || slices.Contains(UnpricedUnifiedFields, f.name) {
+			continue
+		}
+		return NewUnsupportedParameterError(f.name, "")
 	}
 	return nil
 }
@@ -754,13 +764,14 @@ type unifiedParamField struct {
 // operation).
 var unifiedParamFieldsByType sync.Map // reflect.Type -> []unifiedParamField
 
-// unifiedParamFields lists the serialized fields of Params struct type t.
+// unifiedParamFields lists the serialized fields of Params struct type t, sorted by JSON name.
 func unifiedParamFields(t reflect.Type) []unifiedParamField {
 	if cached, ok := unifiedParamFieldsByType.Load(t); ok {
 		return cached.([]unifiedParamField)
 	}
 	var fields []unifiedParamField
 	collectParamFields(t, nil, &fields)
+	slices.SortStableFunc(fields, func(a, b unifiedParamField) int { return strings.Compare(a.name, b.name) })
 	actual, _ := unifiedParamFieldsByType.LoadOrStore(t, fields)
 	return actual.([]unifiedParamField)
 }

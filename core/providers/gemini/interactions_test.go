@@ -756,3 +756,63 @@ func TestGeminiOmniVideoDownload(t *testing.T) {
 		assert.Contains(t, bifrostErr.Error.Message, "in_progress")
 	})
 }
+
+// The request worker runs the provider's field declaration on every video create. A Veo request
+// is not part of the Omni feature, so the check must add no allocation to it; the Omni rows
+// measure the feature's own conversion.
+func BenchmarkGeminiVideoGenerationFieldCheck(b *testing.B) {
+	provider := NewGeminiProvider(&schemas.ProviderConfig{}, testNoopLogger{})
+	veo := &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: omniVideoRequest("veo-3.1-generate-001", nil, &schemas.VideoGenerationParameters{
+		Seconds: schemas.Ptr("8"), Size: "1280x720", Audio: schemas.Ptr(true), NegativePrompt: schemas.Ptr("no rain"),
+	})}
+	veoNoParams := &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: omniVideoRequest("veo-3.1-generate-001", nil, nil)}
+	omni := &schemas.BifrostRequest{RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: omniVideoRequest("gemini-omni-1.1-flash", nil, &schemas.VideoGenerationParameters{
+		Seconds: schemas.Ptr("8"), AspectRatio: "16:9", Resolution: "720p",
+		TaskControlParameters: schemas.TaskControlParameters{CallbackURL: schemas.Ptr("https://hooks.tokun.sh/v/task-1"), ClientReferenceID: schemas.Ptr("task-1")},
+	})}
+	for _, tc := range []struct {
+		name string
+		req  *schemas.BifrostRequest
+	}{{"veo_params", veo}, {"veo_no_params", veoNoParams}, {"omni_params", omni}} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if err := schemas.CheckDeclaredUnifiedFields(provider, tc.req); err != nil {
+					b.Fatal(err.Error.Message)
+				}
+				if err := schemas.CheckTaskControlFields(provider, tc.req); err != nil {
+					b.Fatal(err.Error.Message)
+				}
+			}
+		})
+	}
+}
+
+// The Omni create conversion and the task-object conversion of a completed interaction.
+func BenchmarkGeminiInteractionVideoConversion(b *testing.B) {
+	req := omniVideoRequest("gemini-omni-1.1-flash", nil, &schemas.VideoGenerationParameters{
+		Seconds: schemas.Ptr("8"), AspectRatio: "16:9", Resolution: "720p",
+		TaskControlParameters: schemas.TaskControlParameters{CallbackURL: schemas.Ptr("https://hooks.tokun.sh/v/task-1"), ClientReferenceID: schemas.Ptr("task-1")},
+	})
+	b.Run("request", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := ToGeminiInteractionVideoRequest(req, GeminiInteractionVideoOptions); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	var interaction GeminiInteraction
+	body := strings.Replace(omniInteractionCompletedURITemplate, "FILE_URI", "https://generativelanguage.googleapis.com/v1beta/files/abc123:download?alt=media", 1)
+	if err := schemas.Unmarshal([]byte(body), &interaction); err != nil {
+		b.Fatal(err)
+	}
+	b.Run("response", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := ToBifrostInteractionVideoResponse(&interaction, GeminiInteractionVideoOptions); err != nil {
+				b.Fatal(err.Error.Message)
+			}
+		}
+	})
+}
