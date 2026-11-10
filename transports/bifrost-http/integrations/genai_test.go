@@ -245,6 +245,49 @@ func TestGenAISpeechMaxOutputTokensSurvivesConversion(t *testing.T) {
 	assert.EqualValues(t, 2048, upstream.GenerationConfig.MaxOutputTokens)
 }
 
+// TXE-6539: the unified speech route answers WAV when no format is named, but a native GenAI
+// client reads the inlineData as the bare PCM Gemini answers. A native speech request that goes
+// to Gemini or Vertex therefore names pcm, and its response is labelled as that PCM; a request
+// routed to another provider keeps that provider's default.
+func TestGenAISpeechNativeRouteKeepsPCM(t *testing.T) {
+	rawBody := []byte(`{
+		"contents":[{"role":"user","parts":[{"text":"hello"}]}],
+		"generationConfig":{"responseModalities":["AUDIO"],"speechConfig":{"voiceConfig":{"prebuiltVoiceConfig":{"voiceName":"Kore"}}}}
+	}`)
+	route := findGenAIRouteForTest(t, CreateGenAIRouteConfigs("/genai"), "/genai/v1beta/models/{model:*}", "POST")
+	convert := func(model, providerHeader string) *schemas.BifrostSpeechRequest {
+		requestCtx := &fasthttp.RequestCtx{}
+		requestCtx.SetUserValue("model", model)
+		if providerHeader != "" {
+			requestCtx.Request.Header.Set("x-model-provider", providerHeader)
+		}
+		requestCtx.Request.SetBody(rawBody)
+		bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		geminiReq := &gemini.GeminiGenerationRequest{}
+		require.NoError(t, sonic.Unmarshal(rawBody, geminiReq))
+		require.NoError(t, extractAndSetModelAndRequestType(requestCtx, bifrostCtx, geminiReq))
+		converted, err := route.RequestConverter(bifrostCtx, geminiReq)
+		require.NoError(t, err)
+		require.NotNil(t, converted.SpeechRequest)
+		require.NotNil(t, converted.SpeechRequest.Params)
+		return converted.SpeechRequest
+	}
+
+	assert.Equal(t, "pcm", convert("gemini-3.8-flash-tts:generateContent", "").Params.ResponseFormat, "a bare model defaults to Gemini")
+	assert.Equal(t, "pcm", convert("gemini-3.8-flash-tts:generateContent", "gemini").Params.ResponseFormat)
+	assert.Equal(t, "pcm", convert("vertex/gemini-3.8-flash-tts:generateContent", "").Params.ResponseFormat)
+	assert.Equal(t, "", convert("gpt-4o-mini-tts:generateContent", "openai").Params.ResponseFormat, "another provider keeps its own default")
+
+	pcm := []byte{0, 1, 2, 3, 4, 5}
+	geminiResp := &schemas.BifrostSpeechResponse{Audio: pcm}
+	geminiResp.ExtraFields.RoutingInfo.Provider = schemas.Gemini
+	converted, err := route.SpeechResponseConverter(nil, geminiResp)
+	require.NoError(t, err)
+	blob := converted.(*gemini.GenerateContentResponse).Candidates[0].Content.Parts[0].InlineData
+	assert.Equal(t, "audio/L16;codec=pcm;rate=24000", blob.MIMEType)
+	assert.Equal(t, "AAECAwQF", blob.Data, "the PCM is returned as Gemini sent it, with no WAV header")
+}
+
 // TXE-6539: the native route's done chunk carries the speech usage's output token details back
 // as candidatesTokensDetails and thoughtsTokenCount.
 func TestGenAISpeechStreamDoneResponseIncludesOutputTokenDetails(t *testing.T) {

@@ -414,6 +414,7 @@ Gemini's `generateContent` has no counterpart for any other speech field. A requ
 - **Format conversion**: Gemini returns PCM audio (s16le, 24kHz, mono)
 - **Auto-conversion**: PCM → WAV when `response_format` is `"wav"`, omitted or an empty string
 - Raw PCM returned when `response_format` is `"pcm"`. Streamed chunks (`stream_format: "sse"`) are always the raw PCM
+- The native GenAI route (`/genai/v1beta/models/{model}:generateContent`) always returns the raw PCM as `inlineData` with `mimeType: "audio/L16;codec=pcm;rate=24000"`, as Gemini itself does
 - **Usage**: `promptTokenCount` → `input_tokens`, `candidatesTokenCount` → `output_tokens`, `totalTokenCount` → `total_tokens`, `promptTokensDetails` → `input_token_details`, `candidatesTokensDetails` and `thoughtsTokenCount` → `output_token_details` (`text_tokens`, `audio_tokens`, `reasoning_tokens`). Thought tokens are reported beside `output_tokens`, not added into it. When streaming, usage is on the `speech.audio.done` event
 
 ### Blocked and truncated responses

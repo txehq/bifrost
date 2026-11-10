@@ -97,6 +97,10 @@ const (
 	SpeechResponseFormatPCM = "pcm"
 )
 
+// speechPCMMimeType is the MIME type Gemini gives its speech: headerless signed 16-bit PCM,
+// 24 kHz, mono.
+const speechPCMMimeType = "audio/L16;codec=pcm;rate=24000"
+
 // speechMaxOutputTokensParam is the unified speech field for the output-token bound.
 const speechMaxOutputTokensParam = "max_output_tokens"
 
@@ -305,13 +309,20 @@ func ToGeminiSpeechResponse(bifrostResp *schemas.BifrostSpeechResponse) *Generat
 
 	genaiResp := &GenerateContentResponse{}
 
+	mimeType := utils.DetectAudioMimeType(bifrostResp.Audio)
+	if provider := bifrostResp.ExtraFields.RoutingInfo.Provider; (provider == schemas.Gemini || provider == schemas.Vertex) && mimeType != "audio/wav" {
+		// Gemini's speech is headerless signed 16-bit PCM, which header detection reports as
+		// audio/mp3; a native GenAI client would decode valid PCM as the wrong format.
+		mimeType = speechPCMMimeType
+	}
+
 	candidate := &Candidate{
 		Content: &Content{
 			Parts: []*Part{
 				{
 					InlineData: &Blob{
 						Data:     encodeBytesToBase64String(bifrostResp.Audio),
-						MIMEType: utils.DetectAudioMimeType(bifrostResp.Audio),
+						MIMEType: mimeType,
 					},
 				},
 			},
@@ -343,7 +354,7 @@ func ToGeminiSpeechStreamResponse(bifrostResp *schemas.BifrostSpeechStreamRespon
 			// Gemini TTS stream chunks are headerless signed 16-bit PCM. Generic
 			// header detection falls back to audio/mp3 for headerless data, which
 			// makes native GenAI clients decode valid PCM as the wrong format.
-			mimeType = "audio/L16;codec=pcm;rate=24000"
+			mimeType = speechPCMMimeType
 		}
 		genaiResp.Candidates = []*Candidate{{
 			Content: &Content{

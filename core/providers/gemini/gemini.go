@@ -1672,7 +1672,9 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 		chunkIndex := -1
-		usage := &schemas.SpeechUsage{}
+		// usageMetadata is cumulative: the last one the vendor sent is the stream's usage. It is
+		// kept as it arrived and converted once, for the done frame.
+		var lastUsageMetadata *GenerateContentResponseUsageMetadata
 		lastChunkTime := startTime
 		// sawFinish records the vendor's end marker: a candidate carrying a finishReason.
 		sawFinish := false
@@ -1754,10 +1756,8 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 					sawFinish = true
 				}
 			}
-			// usageMetadata is cumulative; the last one reported is the stream's usage, with
-			// every token detail the vendor gave (contract C5).
 			if geminiResponse.UsageMetadata != nil {
-				usage = convertGeminiUsageMetadataToSpeechUsage(geminiResponse.UsageMetadata)
+				lastUsageMetadata = geminiResponse.UsageMetadata
 			}
 
 			// Only send response if we have actual audio content
@@ -1788,6 +1788,11 @@ func (provider *GeminiProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		if !sawFinish {
 			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonBody)
 			return
+		}
+		// The usage of the done frame, with every token detail the vendor gave (contract C5).
+		usage := convertGeminiUsageMetadataToSpeechUsage(lastUsageMetadata)
+		if usage == nil {
+			usage = &schemas.SpeechUsage{}
 		}
 		response := &schemas.BifrostSpeechStreamResponse{
 			Type:  schemas.SpeechStreamResponseTypeDone,
