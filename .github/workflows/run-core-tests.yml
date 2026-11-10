@@ -109,6 +109,8 @@ jobs:
           # tokenhub.tencentmaas.com and api.moonshot.ai are listed although this job does not pass those
           # providers' keys yet: the harness skips a provider only while its key is
           # absent, so the host must already be here the day a key is added (TXE-6981).
+          # dashscope-intl.aliyuncs.com is dialled by no request yet: every dashscope
+          # operation is unsupported and its key is a non-secret sentinel (TXE-6590).
           allowed-endpoints: >
             127.0.0.1:8080
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
@@ -137,6 +139,7 @@ jobs:
             api.typesafe.ai:443
             ark.ap-southeast.bytepluses.com:443
             tokenhub.tencentmaas.com:443
+            dashscope-intl.aliyuncs.com:443
             api.tokenfactory.nebius.com:443
             api.openai.com:443
             api.parasail.io:443
