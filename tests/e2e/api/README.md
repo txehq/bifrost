@@ -432,6 +432,24 @@ by that key only; the batch made elsewhere is neither retrieved, cancelled nor l
 with no virtual key is forwarded for it. Its rows use the management API, so run the augmented collection with
 `--env-var setupToken=<the config's setup_token>`.
 
+The same fixture and gateway serve folder 416 (Kling video on the contract). The config's built-in
+`kling` provider points at the fixture with two keys, `kling-key-a` and `kling-key-b`
+(`kling-secret-a`, `kling-secret-b`), and the fixture answers Kling's API on its new design standard:
+`POST /text-to-video/{model}`, `/image-to-video/{model}` and `/omni-video/{model}`,
+`GET /tasks?task_ids=` and `?external_task_ids=`, and `POST /tasks`. A prompt that says `blocked` is
+answered HTTP 400 with service code 1301, task `893605946402811986` is a task Kling's risk control
+failed, and an `external_task_ids` value that starts `missing` has no task. Every request is kept
+with its key and JSON body (`GET /__kling-calls`) and counted under
+`kling <METHOD> <path> <bearer token>` in `/__hits`, which is how the folder proves the body sent to
+Kling, one upstream call per create and per query, and none for a refused request:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "416. Kling video on the contract: create by model path, query by task id or client_reference_id, Units as vendor_cost, refusals (kling video contract, provider error fixture)" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1
+```
+
 The fixture also serves the two datasheets a fresh gateway downloads on first start (the config's `framework.pricing` URLs point at it), including the model-parameters row that makes `gpt-5-pro` Responses-only, which is what makes folder 160's chat request convert. The run therefore needs no network. Starting the gateway with `HTTPS_PROXY=http://127.0.0.1:9` is a cheap proof: loopback is exempt from proxying, so only an accidental external call would fail.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.

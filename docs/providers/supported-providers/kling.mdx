@@ -1,0 +1,171 @@
+---
+title: "Kling"
+description: "Kuaishou Kling conversion guide for video generation on the Kling international site: Kling 3.0, 3.0 Omni, 2.5 Turbo and O1"
+icon: "k"
+---
+
+## Overview
+
+Kling is Kuaishou's video generation model family. Bifrost's `kling` provider serves it through the API of the Kling international site, on Kling's new design standard. Key characteristics:
+
+- **Asynchronous tasks.** A create returns a task object; the caller queries it until it is `completed` or `failed`. Every create, query and list is one call to Kling: Bifrost stores no task, retries nothing and polls nothing.
+- **One create path per model and input.** Bifrost picks `/text-to-video/{model}`, `/image-to-video/{model}` or `/omni-video/{model}` from the model name and from whether the request has a first frame.
+- **The caller's own task id.** `client_reference_id` is sent as Kling's `options.external_task_id`, and the task can be queried by it. `callback_url` is sent as `options.callback_url`; Kling notifies that address itself and can sign the notification. Bifrost receives no callback.
+- **Units.** Kling reports what a task consumed in `billing[]`. Bifrost returns the Units as `usage.vendor_cost` with unit `unit`.
+- **No cancel and no delete.** Kling has neither API. The cancel route answers `400` `provider_cancel_unsupported`; results are kept by Kling for 30 days.
+
+Source: Kling's API reference, [kling.ai/document-api](https://kling.ai/document-api/api/video/3-0-omni/text-to-video). The legacy API (`/v1/videos/...`, access key and secret key) is not served.
+
+### Supported operations
+
+| Operation | Supported | Kling endpoint |
+|-----------|-----------|----------------|
+| Video Generation | ✅ | `POST /text-to-video/{model}`, `POST /image-to-video/{model}`, `POST /omni-video/{model}` |
+| Video Retrieve | ✅ | `GET /tasks?task_ids=`, `GET /tasks?external_task_ids=` |
+| Video List | ✅ | `POST /tasks` |
+| Video Download | ✅ | `GET /tasks?task_ids=`, then the result link |
+| Video Cancel | ❌ (`provider_cancel_unsupported`) | - |
+| Video Delete, Edit, Remix | ❌ | - |
+| Everything else | ❌ | - |
+
+### Models
+
+| Model | Create path | `seconds` | `resolution` | `aspect_ratio` | `audio` |
+|-------|-------------|-----------|--------------|----------------|---------|
+| `kling-3.0` | `/text-to-video/kling-3.0` without a first frame | 3 to 15 | `720p`, `1080p`, `4k` | `16:9`, `9:16`, `1:1` | `true` → `native`, `false` → `off` |
+| `kling-3.0` | `/image-to-video/kling-3.0` with a first frame | 3 to 15 | `720p`, `1080p`, `4k` | not taken | `true` → `native`, `false` → `off` |
+| `kling-3.0-omni` | `/omni-video/kling-3.0-omni` | 3 to 15 | `720p`, `1080p`, `4k` | `16:9`, `9:16`, `1:1` | `true` → `native`, `false` → `off` |
+| `kling-2.5-turbo` | `/text-to-video/kling-2.5-turbo` without a first frame | 5, 10 | `720p`, `1080p` | `16:9`, `9:16`, `1:1` | not taken |
+| `kling-2.5-turbo` | `/image-to-video/kling-2.5-turbo` with a first frame | 5, 10 | `720p`, `1080p` | not taken | not taken |
+| `kling-o1` | `/omni-video/kling-o1` | 3 to 10 | `720p`, `1080p` | `16:9`, `9:16`, `1:1` | `true` → `original`, `false` → `off` |
+
+A model that is not in this table is refused with `400` `caller_model_unknown`: Bifrost refuses a value outside a model's tiers instead of sending it, and it cannot do that for a model whose tiers it does not know.
+
+## Setup and configuration
+
+Bifrost calls `https://api-singapore.klingai.com` by default and sends the Kling API key as a bearer token (`Authorization: Bearer <key>`). Set `network_config.base_url` to use another host; Bifrost appends the paths above itself.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Click **Add New Provider** and select **Kling**.
+2. Click **Add Key**, name it, and paste your Kling API key or an environment variable (for example, `env.KLING_API_KEY`).
+3. Under **Allowed Models**, list the Kling models you use, for example `kling-3.0` and `kling-2.5-turbo`.
+4. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "kling": {
+      "keys": [
+        {
+          "name": "kling",
+          "value": "env.KLING_API_KEY",
+          "models": ["kling-3.0", "kling-3.0-omni", "kling-2.5-turbo", "kling-o1"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "max_retries": 0
+      }
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+`kling` can be the `base_provider_type` of a custom provider. Such a provider reports its own name (task ids end in `:<its name>`), honours `allowed_requests` (`video_generation`, `video_retrieve`, `video_download`, `video_list`), and `request_path_overrides` replaces a default path.
+
+## Video generation
+
+```bash
+curl -X POST http://localhost:8080/v1/videos \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "kling/kling-3.0",
+    "prompt": "A paper boat drifts across a still pond at dawn",
+    "seconds": "5",
+    "resolution": "1080p",
+    "aspect_ratio": "16:9",
+    "audio": true,
+    "client_reference_id": "my-task-42",
+    "callback_url": "https://example.com/hooks/my-task-42"
+  }'
+```
+
+### Request conversion
+
+| Bifrost field | Kling field |
+|---------------|-------------|
+| `prompt` | `prompt` on text-to-video; a `contents` item `{type: "prompt"}` on image-to-video and omni-video |
+| `input_reference` (URL or data URL) | `contents` item `{type: "first_frame"}`; selects the image-to-video path |
+| `last_frame` (URL or data URL) | `contents` item `{type: "last_frame"}`; needs `input_reference` |
+| `seconds` | `settings.duration`, a whole number of seconds |
+| `resolution` | `settings.resolution` |
+| `aspect_ratio` | `settings.aspect_ratio` |
+| `audio` | `settings.audio`: `native` or `original` by model for `true`, `off` for `false` |
+| `callback_url` | `options.callback_url`, unchanged |
+| `client_reference_id` | `options.external_task_id`, unchanged |
+| extra field `watermark` (`true` or `false`) | `options.watermark_info.enabled` |
+| any other extra field (for example `multi_shot`) | `settings.<name>` |
+
+A URL input is sent to Kling unchanged. A data URL is sent as its Base64 payload, the form Kling takes.
+
+`negative_prompt` has no Kling field (Kling reads negative descriptions from the prompt itself) and is not sent.
+
+These are refused with `400`, `extra_fields.error_type` `caller_unsupported_parameter` and the field in `error.param`, and nothing is sent to Kling:
+
+- `seconds`, `resolution` or `aspect_ratio` outside the model's tiers above. A value is never rounded or clamped.
+- `aspect_ratio` with a first frame on `kling-3.0` or `kling-2.5-turbo`, and `audio` on `kling-2.5-turbo`: those paths have no such setting.
+- `seed`, `size`, `output_format`, `reference_images`, `video_uri`, `expires_after_seconds`, `output_storage_uri`: Kling has no parameter for them.
+- `last_frame` without `input_reference`: Kling does not generate from a last frame alone.
+
+An extra field named `duration`, `resolution`, `aspect_ratio`, `audio`, `prompt`, `contents`, `settings` or `options` is refused with `400` `caller_invalid_request`: it would overwrite a converted value.
+
+## The task object
+
+```bash
+# by the task id the create returned
+curl http://localhost:8080/v1/videos/893605946402811985:kling
+
+# by the client_reference_id the task was created with
+curl "http://localhost:8080/v1/videos/my-task-42:kling?id_type=client_reference_id"
+```
+
+Both return the same task object, whose `id` is Kling's task id. A query Kling returns no task for is `404` with `error.code` `task_not_found`, so a caller that never saw its create response can tell "submit again" from a failure.
+
+| Kling | Bifrost |
+|-------|---------|
+| `id` | `id`, as `{id}:kling` |
+| `status` `submitted`, `processing`, `succeeded`, `failed` | `status` `queued`, `in_progress`, `completed`, `failed`; the vendor's string in `provider_status` |
+| `create_time` (ms) | `created_at` (s) |
+| `update_time` (ms) of a succeeded task | `completed_at` (s) |
+| completion + 30 days (Kling keeps a result for 30 days) | `expires_at` |
+| `outputs[]` of type `video`: `url`, `id` | `videos[]`: `type: "url"`, `url`, `id`, `content_type: "video/mp4"` |
+| `outputs[].duration` | `seconds`, and `usage.output_seconds` |
+| `billing[]` records with `charge_type: "unit"`, summed | `usage.vendor_cost{amount, unit: "unit"}` |
+| `message` of a failed task | `error.message` |
+| a failed task whose `message` names the platform's content risk control | `content_filter{filtered_count: 1, reasons: [message]}` |
+
+Usage holds only what Kling reported. A deduction from a cash balance (`charge_type: "cash"`) is money, not Units, and is not put in `vendor_cost`; it is in `extra_fields.raw_response` with `x-bf-send-back-raw-response: true`. Kling's task object has no failure code, so `error.code` is empty. A watermarked result (`outputs[].watermark_url`) is in the raw response.
+
+`GET /v1/videos?provider=kling` lists the account's video tasks through Kling's query by cursor: `after` is Kling's cursor, `limit` its page size (1 to 500). While `has_more` is true, `last_id` is the cursor of the next page. `order` is refused; Kling has no order parameter.
+
+`GET /v1/videos/{id}/content` queries the task and downloads `videos[0].url`, which needs no key.
+
+### Errors and content filtering
+
+| Kling answer | Bifrost answer |
+|--------------|----------------|
+| Service code `1301` (content security policy) on a create | The same status (`400`), `error_type` `caller_content_filtered`, `error.code` `1301` |
+| Service code `1101` or `1102` (arrears, resource pack exhausted), HTTP 429 | The same status, `error_type` `provider_billing` |
+| Any other 4xx or 5xx | The same status, Kling's service code in `error.code`, its message in `error.message`, its `request_id` in `error.event_id` |
+| 200 with a non-zero service code | The HTTP status Kling documents for that code, as above |
+| 200 from a create with no task id | `502`, `error_type` `provider_empty_result` |
+
+With `x-bf-send-back-raw-response: true`, Kling's body is in `extra_fields.raw_response` on errors as well as on success.

@@ -130,7 +130,27 @@ video-by-id:
       required: true
       schema:
         type: string
-      description: Video ID in format `id:provider` (e.g., `video_abc123:openai`)
+      description: |
+        Video ID in format `id:provider` (e.g., `video_abc123:openai`). With
+        `id_type=client_reference_id` it is `client_reference_id:provider` instead (e.g.,
+        `tk_task_1:kling`): the provider is the text after the last colon.
+    - name: id_type
+      in: query
+      required: false
+      schema:
+        type: string
+        enum:
+        - task_id
+        - client_reference_id
+        default: task_id
+      description: |
+        What the id in the path is. `task_id` (the default) is the provider's task id, as a create
+        response gave it. `client_reference_id` is the caller's own id, sent on create as
+        `client_reference_id`: the task is looked up by it, for a caller that never saw the create
+        response. The response is the same task object, whose `id` is the provider's task id.
+        Only a provider whose API can be queried by the caller's id serves it (Kling); every other
+        provider answers 400 `caller_unsupported_parameter` with `error.param` `id_type`, without
+        an upstream call. A task that does not exist is 404.
     responses:
       '200':
         description: Successful response. Returns the video generation job details.

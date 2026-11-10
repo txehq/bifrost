@@ -344,7 +344,7 @@ jobs:
           # (tests/integrations/python/config.json) has its default host here, which
           # check-egress-allowlist.sh enforces from provider-default-hosts.json.
           # api.minimax.io, api.runware.ai, ark.ap-southeast.bytepluses.com,
-          # tokenhub.tencentmaas.com, sync.assemblyai.com and api.moonshot.ai are listed although this job does not pass those
+          # tokenhub.tencentmaas.com, sync.assemblyai.com, api-singapore.klingai.com and api.moonshot.ai are listed although this job does not pass those
           # providers' keys yet: the harness skips a provider only while its key is
           # absent, so the host must already be here the day a key is added (TXE-6981).
           # dashscope-intl.aliyuncs.com is dialled by no request yet: every dashscope
@@ -381,6 +381,7 @@ jobs:
             ark.ap-southeast.bytepluses.com:443
             api.bfl.ai:443
             tokenhub.tencentmaas.com:443
+            api-singapore.klingai.com:443
             dashscope-intl.aliyuncs.com:443
             sync.assemblyai.com:443
             api.openai.com:443

@@ -567,6 +567,22 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "kling": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Kling API Key",
+          "value": "env.KLING_API_KEY",
+          "weight": 1,
+          "models": ["kling-3.0", "kling-3.0-omni", "kling-2.5-turbo", "kling-o1"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "dashscope": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
@@ -1706,6 +1722,12 @@
           },
           {
             "provider": "tencent",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "kling",
             "allowed_models": ["*"],
             "key_ids": ["*"],
             "weight": 1.0

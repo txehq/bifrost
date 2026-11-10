@@ -724,6 +724,9 @@
         "tencent": {
           "$ref": "#/$defs/provider"
         },
+        "kling": {
+          "$ref": "#/$defs/provider"
+        },
         "dashscope": {
           "$ref": "#/$defs/provider"
         },

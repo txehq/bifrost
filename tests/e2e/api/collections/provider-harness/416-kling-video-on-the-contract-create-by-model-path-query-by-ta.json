@@ -1,0 +1,1147 @@
+{
+  "name": "416. Kling video on the contract: create by model path, query by task id or client_reference_id, Units as vendor_cost, refusals (kling video contract, provider error fixture)",
+  "description": "Pins the Kling provider (TXE-6430) against contract C3, C4, C5, C6, C7 and C9 on the unified video routes. Rows 1 to 7 and 15 to 19 are a local fixture regression with no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; they are skipped otherwise. In that config the built-in kling provider points at the fixture with two keys, kling-key-a and kling-key-b. The fixture answers Kling's new design standard API (kling.ai/document-api): POST /text-to-video/{model}, /image-to-video/{model} and /omni-video/{model}, GET /tasks?task_ids= and ?external_task_ids=, POST /tasks. It keeps every request with its key and body under /__kling-calls and counts it under 'kling <METHOD> <path> <bearer token>'. Rows 2 to 4: a create picks the path by model and input (text-to-video without a first frame, image-to-video with one), sends seconds, resolution, aspect_ratio and audio unchanged in settings, the caller's client_reference_id as options.external_task_id and callback_url as options.callback_url, the extra field watermark as options.watermark_info and every other extra field in settings, and returns the task object. Rows 5 and 6: a query by Kling's task id and a query by the caller's client_reference_id (GET /v1/videos/{client_reference_id}:kling?id_type=client_reference_id) return the same task object with provider_status, videos[].url, expires_at = completion + 30 days, usage.output_seconds and Kling's Units as usage.vendor_cost{unit: unit}. Row 7 is the list, Kling's query by cursor. Rows 8 to 14 need no upstream and run wherever a kling provider is configured: seconds, resolution and aspect_ratio outside the model's tiers, seed, expires_after_seconds and output_storage_uri are each 400 caller_unsupported_parameter naming the field, and the cancel route is 400 provider_cancel_unsupported, because Kling has no cancel API. Row 15: Kling's content security block of a create (HTTP 400, service code 1301) is caller_content_filtered with error.code 1301. Row 16: a task Kling's risk control failed is status failed with content_filter. Row 17: a client_reference_id Kling has no task for is 404 task_not_found. Row 18: a provider whose vendor cannot be queried by the caller's id refuses id_type=client_reference_id with 400 caller_unsupported_parameter. Row 19 reads the fixture's counters: each create and each query was exactly one upstream call with the key x-bf-api-key named, and the eight refused requests made none. Rows 20 to 22 are live and [PREVIEW] (INCLUDE_PREVIEW=1), because a Kling task costs Units: create a 5 second 720p kling-2.5-turbo task with a client_reference_id, poll it to completion, and find it again by that client_reference_id. They need KLING_API_KEY in the gateway's environment. Before the change none of this existed: the fork had no kling provider (POST /v1/videos with a kling/ model answered an unknown-provider error) and GET /v1/videos/{id} had no id_type form.",
+  "item": [
+    {
+      "name": "416.1 reset the fixture's hit counters (kling video contract)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture reset its counters', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().data[0].reset).to.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__reset"
+      }
+    },
+    {
+      "name": "416.2 /v1/videos - text-to-video is created on the model's path and returns the task object - kling/kling-3.0 (kling video contract)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('create returns the queued task object with the vendor status', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('893605946402811985:kling');",
+              "  pm.expect(j.object, 'object').to.eql('video');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('queued');",
+              "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('submitted');",
+              "  pm.expect(j.model, 'model').to.eql('kling-3.0');",
+              "  pm.expect(j.created_at, 'created_at').to.eql(1781080778);",
+              "  pm.expect(j.extra_fields && j.extra_fields.provider, 'provider').to.eql('kling');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "kling-key-b"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"kling/kling-3.0\",\n  \"prompt\": \"a paper boat drifts across a still pond at dawn\",\n  \"seconds\": \"15\",\n  \"resolution\": \"4k\",\n  \"aspect_ratio\": \"9:16\",\n  \"audio\": true,\n  \"callback_url\": \"https://hooks.example.test/v/tk_harness_task_1\",\n  \"client_reference_id\": \"tk_harness_task_1\",\n  \"watermark\": true,\n  \"multi_shot\": false\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.3 /v1/videos - image-to-video with a first and a last frame uses the image path - kling/kling-3.0 (kling video contract)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('create returns the queued task object', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('893605946402811985:kling');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('queued');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "kling-key-b"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"kling/kling-3.0\",\n  \"prompt\": \"the boat turns toward the reeds\",\n  \"input_reference\": \"https://example.test/first.png\",\n  \"last_frame\": \"data:image/png;base64,iVBORw0KGgo=\",\n  \"seconds\": \"10\",\n  \"resolution\": \"1080p\",\n  \"audio\": false,\n  \"client_reference_id\": \"tk_harness_task_2\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.4 the two creates reached Kling once each, on the model's path, with the fields unchanged and Tokun's ids in options (kling video contract)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls;",
+              "pm.test('each create is exactly one upstream call with the named key', function () {",
+              "  pm.expect(calls, JSON.stringify(calls)).to.be.an('array').with.length(2);",
+              "  pm.expect(calls[0].method + ' ' + calls[0].path).to.eql('POST /text-to-video/kling-3.0');",
+              "  pm.expect(calls[1].method + ' ' + calls[1].path).to.eql('POST /image-to-video/kling-3.0');",
+              "  pm.expect(calls[0].key).to.eql('kling-secret-b');",
+              "  pm.expect(calls[1].key).to.eql('kling-secret-b');",
+              "});",
+              "pm.test('text-to-video: prompt at the top level, settings and options as sent', function () {",
+              "  pm.expect(calls[0].body, JSON.stringify(calls[0].body)).to.eql({",
+              "    prompt: 'a paper boat drifts across a still pond at dawn',",
+              "    settings: { duration: 15, resolution: '4k', aspect_ratio: '9:16', audio: 'native', multi_shot: false },",
+              "    options: { callback_url: 'https://hooks.example.test/v/tk_harness_task_1', external_task_id: 'tk_harness_task_1', watermark_info: { enabled: true } }",
+              "  });",
+              "});",
+              "pm.test('image-to-video: the prompt and both frames are contents, a data URL goes as Base64', function () {",
+              "  pm.expect(calls[1].body, JSON.stringify(calls[1].body)).to.eql({",
+              "    contents: [",
+              "      { type: 'prompt', text: 'the boat turns toward the reeds' },",
+              "      { type: 'first_frame', url: 'https://example.test/first.png' },",
+              "      { type: 'last_frame', url: 'iVBORw0KGgo=' }",
+              "    ],",
+              "    settings: { duration: 10, resolution: '1080p', audio: 'off' },",
+              "    options: { external_task_id: 'tk_harness_task_2' }",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__kling-calls"
+      }
+    },
+    {
+      "name": "416.5 kling GET /v1/videos/{id} - a query by the task id returns the task object with the link, its expiry, seconds and Units (kling video contract)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the task object carries provider_status, the link, expires_at, output_seconds and vendor_cost', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('893605946402811985:kling');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('succeeded');",
+              "  pm.expect(j.videos, 'videos: ' + pm.response.text()).to.be.an('array').with.length(1);",
+              "  pm.expect(j.videos[0].type, 'videos[0].type').to.eql('url');",
+              "  pm.expect(j.videos[0].url, 'videos[0].url').to.eql('https://kling-fixture.example.test/out.mp4');",
+              "  pm.expect(j.completed_at, 'completed_at: ' + pm.response.text()).to.eql(1781080794);",
+              "  pm.expect(j.expires_at, 'expires_at is completion + 30 days: ' + pm.response.text()).to.eql(1781080794 + 30 * 24 * 3600);",
+              "  pm.expect(j.seconds, 'seconds: ' + pm.response.text()).to.eql('5.1');",
+              "  var u = j.usage || {};",
+              "  pm.expect(u.output_seconds, 'usage.output_seconds: ' + pm.response.text()).to.eql(5.1);",
+              "  pm.expect(u.vendor_cost, 'usage.vendor_cost: ' + pm.response.text()).to.eql({ amount: 3.5, unit: 'unit' });",
+              "  pm.expect(j.content_filter, 'content_filter').to.equal(undefined);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "kling-key-b"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/893605946402811985:kling",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "893605946402811985:kling"
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.6 kling GET /v1/videos/{client_reference_id}?id_type=client_reference_id - a query by Tokun's own id returns the same task object (kling video contract)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the query by client_reference_id returns the same task object, with the Kling task id', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql('893605946402811985:kling');",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.eql('succeeded');",
+              "  pm.expect(j.videos, 'videos: ' + pm.response.text()).to.be.an('array').with.length(1);",
+              "  pm.expect(j.videos[0].type, 'videos[0].type').to.eql('url');",
+              "  pm.expect(j.videos[0].url, 'videos[0].url').to.eql('https://kling-fixture.example.test/out.mp4');",
+              "  pm.expect(j.completed_at, 'completed_at: ' + pm.response.text()).to.eql(1781080794);",
+              "  pm.expect(j.expires_at, 'expires_at is completion + 30 days: ' + pm.response.text()).to.eql(1781080794 + 30 * 24 * 3600);",
+              "  pm.expect(j.seconds, 'seconds: ' + pm.response.text()).to.eql('5.1');",
+              "  var u = j.usage || {};",
+              "  pm.expect(u.output_seconds, 'usage.output_seconds: ' + pm.response.text()).to.eql(5.1);",
+              "  pm.expect(u.vendor_cost, 'usage.vendor_cost: ' + pm.response.text()).to.eql({ amount: 3.5, unit: 'unit' });",
+              "  pm.expect(j.content_filter, 'content_filter').to.equal(undefined);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "kling-key-a"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/tk_harness_task_1:kling?id_type=client_reference_id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "tk_harness_task_1:kling"
+          ],
+          "query": [
+            {
+              "key": "id_type",
+              "value": "client_reference_id"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.7 kling GET /v1/videos?provider=kling - the list is Kling's query by cursor (kling video contract)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the list returns Kling task objects', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.data, 'data: ' + pm.response.text()).to.be.an('array').with.length(1);",
+              "  pm.expect(j.data[0].id, 'id').to.eql('893605946402811985:kling');",
+              "  pm.expect(j.data[0].status, 'status').to.eql('completed');",
+              "  pm.expect(j.has_more, 'has_more').to.eql(false);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "kling-key-b"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos?provider=kling&limit=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "kling"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.8 [EXPECT-400] /v1/videos - seconds outside the model's tier is refused, not clamped - kling/kling-3.0 (kling video contract)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('seconds is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('seconds');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"kling/kling-3.0\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"seconds\": \"20\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.9 [EXPECT-400] /v1/videos - a resolution the model does not offer is refused - kling/kling-2.5-turbo (kling video contract)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('resolution is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('resolution');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"kling/kling-2.5-turbo\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"resolution\": \"4k\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.10 [EXPECT-400] /v1/videos - an aspect ratio Kling does not offer is refused - kling/kling-3.0 (kling video contract)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('aspect_ratio is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('aspect_ratio');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"kling/kling-3.0\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"aspect_ratio\": \"4:3\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.11 [EXPECT-400] /v1/videos - seed is refused, Kling has no seed parameter - kling/kling-3.0 (kling video contract)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('seed is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('seed');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"kling/kling-3.0\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"seed\": 7\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.12 [EXPECT-400] /v1/videos - the task control field expires_after_seconds is refused, Kling has no deadline parameter - kling/kling-3.0 (kling video contract)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('expires_after_seconds is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('expires_after_seconds');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"kling/kling-3.0\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"expires_after_seconds\": 7200\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.13 [EXPECT-400] /v1/videos - the task control field output_storage_uri is refused, Kling writes to its own storage - kling/kling-3.0 (kling video contract)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('output_storage_uri is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('output_storage_uri');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"kling/kling-3.0\",\n  \"prompt\": \"a paper boat on a pond\",\n  \"output_storage_uri\": \"s3://bucket/task_1/\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.14 [EXPECT-400] kling POST /v1/videos/{id}/cancel - Kling has no cancel API (kling video contract)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the cancel is refused as provider_cancel_unsupported', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_cancel_unsupported');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/893605946402811985:kling/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "893605946402811985:kling",
+            "cancel"
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.15 [EXPECT-400] /v1/videos - Kling's content security block (code 1301) is caller_content_filtered with the vendor's code - kling/kling-3.0 (kling video contract)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a create Kling blocks is caller_content_filtered and keeps the vendor status and code', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_content_filtered');",
+              "  pm.expect(j.error && j.error.code, 'error.code: ' + pm.response.text()).to.eql('1301');",
+              "  pm.expect(j.is_bifrost_error, 'is_bifrost_error').to.eql(false);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "kling-key-a"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"kling/kling-3.0\",\n  \"prompt\": \"a blocked scene\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.16 kling GET /v1/videos/{id} - a task Kling's risk control failed is failed with content_filter (kling video contract)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the blocked task is failed, carries the vendor message and content_filter', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('failed');",
+              "  pm.expect(j.provider_status, 'provider_status').to.eql('failed');",
+              "  pm.expect(j.error && j.error.message, 'error.message: ' + pm.response.text()).to.match(/content risk control/);",
+              "  pm.expect(j.content_filter, 'content_filter: ' + pm.response.text()).to.be.an('object');",
+              "  pm.expect(j.content_filter.filtered_count, 'filtered_count').to.eql(1);",
+              "  pm.expect(j.content_filter.reasons, 'reasons').to.eql([j.error.message]);",
+              "  pm.expect(j.videos, 'videos').to.equal(undefined);",
+              "  pm.expect(j.expires_at, 'expires_at').to.equal(undefined);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "kling-key-a"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/893605946402811986:kling",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "893605946402811986:kling"
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.17 [EXPECT-404] kling GET /v1/videos/{client_reference_id}?id_type=client_reference_id - a reference Kling has no task for is 404 (kling video contract)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('no task for the reference is 404, not a vendor failure', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(404);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.error && j.error.code, 'error.code: ' + pm.response.text()).to.eql('task_not_found');",
+              "  pm.expect(j.is_bifrost_error, 'is_bifrost_error').to.eql(false);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "kling-key-a"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/missing_task_1:kling?id_type=client_reference_id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "missing_task_1:kling"
+          ],
+          "query": [
+            {
+              "key": "id_type",
+              "value": "client_reference_id"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.18 [EXPECT-400] openai_video_keys GET /v1/videos/{client_reference_id}?id_type=client_reference_id - a provider that cannot query by the caller's id refuses it (kling video contract)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('id_type is refused as caller_unsupported_parameter', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('id_type');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/tk_harness_task_1:openai_video_keys?id_type=client_reference_id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "tk_harness_task_1:openai_video_keys"
+          ],
+          "query": [
+            {
+              "key": "id_type",
+              "value": "client_reference_id"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.19 fixture hit counts prove one call per create and per query with the named key, and no call for a refused request (kling video contract)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var h = pm.response.json().data[0].hits;",
+              "var kling = {};",
+              "Object.keys(h).forEach(function (k) { if (k.indexOf('kling ') === 0) { kling[k] = h[k]; } });",
+              "pm.test('two creates and one blocked create, two task queries, two queries by reference, one list, and nothing else', function () {",
+              "  pm.expect(kling, JSON.stringify(h)).to.eql({",
+              "    'kling POST /text-to-video/kling-3.0 kling-secret-b': 1,",
+              "    'kling POST /image-to-video/kling-3.0 kling-secret-b': 1,",
+              "    'kling GET /tasks kling-secret-b': 1,",
+              "    'kling GET /tasks kling-secret-a': 3,",
+              "    'kling POST /tasks kling-secret-b': 1,",
+              "    'kling POST /text-to-video/kling-3.0 kling-secret-a': 1",
+              "  });",
+              "});",
+              "pm.test('no video request of the folder reached the OpenAI-shaped upstream', function () {",
+              "  var other = Object.keys(h).filter(function (k) { return k.indexOf('videos ') === 0; });",
+              "  pm.expect(other, JSON.stringify(h)).to.eql([]);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{providerErrorFixtureUrl}}/__hits"
+      }
+    },
+    {
+      "name": "416.20 [PREVIEW] /v1/videos - a live text-to-video task is created with a client_reference_id - kling/kling-2.5-turbo (kling video contract)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('include_preview') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('klingReferenceId', 'bifrost-harness-' + Date.now());"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset('klingVideoId');",
+              "pm.collectionVariables.unset('klingVideoPolls');",
+              "pm.test('create returns a queued task with a provider-suffixed id and the vendor status', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'no task id: ' + pm.response.text()).to.match(/:kling$/);",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.be.oneOf(['queued', 'in_progress']);",
+              "  pm.expect(j.provider_status, 'provider_status: ' + pm.response.text()).to.be.oneOf(['submitted', 'processing']);",
+              "  pm.collectionVariables.set('klingVideoId', j.id);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"kling/kling-2.5-turbo\",\n  \"prompt\": \"A paper boat drifts across a still pond at dawn\",\n  \"seconds\": \"5\",\n  \"resolution\": \"720p\",\n  \"aspect_ratio\": \"16:9\",\n  \"client_reference_id\": \"{{klingReferenceId}}\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.21 [PREVIEW] kling GET /v1/videos/{id} - poll the live task until it completes with a link, its expiry, seconds and Kling's deduction (kling video contract)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('include_preview') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var id = pm.collectionVariables.get('klingVideoId');",
+              "if (!id) { pm.test.skip('no Kling video id produced by the create row', function () {}); return; }",
+              "pm.test('retrieve succeeds', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});",
+              "if (pm.response.code !== 200) { pm.collectionVariables.unset('klingVideoPolls'); return; }",
+              "var j = pm.response.json();",
+              "var polls = Number(pm.collectionVariables.get('klingVideoPolls') || 0);",
+              "if ((j.status === 'queued' || j.status === 'in_progress') && polls < 90) {",
+              "  // Poll every 10s for up to 15 minutes.",
+              "  pm.collectionVariables.set('klingVideoPolls', polls + 1);",
+              "  setTimeout(function () {}, 10000);",
+              "  postman.setNextRequest(pm.info.requestName);",
+              "  return;",
+              "}",
+              "pm.collectionVariables.unset('klingVideoPolls');",
+              "pm.test('the task completed with a public link that expires 30 days after completion', function () {",
+              "  pm.expect(j.status, 'final status: ' + pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.provider_status, 'provider_status').to.eql('succeeded');",
+              "  pm.expect(j.id).to.eql(id);",
+              "  pm.expect(j.videos, 'videos: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+              "  pm.expect(j.videos[0].type, 'videos[0].type').to.eql('url');",
+              "  pm.expect(j.videos[0].url, 'videos[0].url').to.match(/^https:\\/\\//);",
+              "  pm.expect(j.expires_at, 'expires_at: ' + pm.response.text()).to.eql(j.completed_at + 30 * 24 * 3600);",
+              "});",
+              "pm.test('usage carries the seconds Kling reported', function () {",
+              "  pm.expect(j.usage && j.usage.output_seconds, 'usage.output_seconds: ' + pm.response.text()).to.be.above(0);",
+              "});",
+              "pm.test('a deduction from a resource package is reported in Units', function () {",
+              "  var cost = j.usage && j.usage.vendor_cost;",
+              "  if (!cost) { return; } // an account billed from its cash balance has no Units to report",
+              "  pm.expect(cost.unit, 'vendor_cost.unit: ' + pm.response.text()).to.eql('unit');",
+              "  pm.expect(cost.amount, 'vendor_cost.amount').to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{klingVideoId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{klingVideoId}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "416.22 [PREVIEW] kling GET /v1/videos/{client_reference_id}?id_type=client_reference_id - the live task is found by its client_reference_id (kling video contract)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('include_preview') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var id = pm.collectionVariables.get('klingVideoId');",
+              "if (!id) { pm.test.skip('no Kling video id produced by the create row', function () {}); return; }",
+              "pm.test('the query by client_reference_id returns the task the create returned', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, 'id: ' + pm.response.text()).to.eql(id);",
+              "  pm.expect(j.status, 'status: ' + pm.response.text()).to.eql('completed');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{klingReferenceId}}:kling?id_type=client_reference_id",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{klingReferenceId}}:kling"
+          ],
+          "query": [
+            {
+              "key": "id_type",
+              "value": "client_reference_id"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

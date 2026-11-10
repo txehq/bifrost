@@ -62,6 +62,14 @@ const ProviderEndpoints: Partial<Record<BaseProvider, Partial<Record<RequestType
 		// The default depends on the model: hy-image-v3.5-* uses /v1/wand/hunyuan-image/v35-generation.
 		image_generation: "/v1/wand/hunyuan-image/v3-generation",
 	},
+	kling: {
+		// The default depends on the model and the input: /image-to-video/{model} with a first frame,
+		// /omni-video/{model} for the omni models.
+		video_generation: "/text-to-video/kling-3.0",
+		video_retrieve: "/tasks",
+		video_download: "/tasks",
+		video_list: "/tasks",
+	},
 };
 
 // Helper function to get the appropriate placeholder

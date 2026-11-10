@@ -46,6 +46,7 @@ ModelProvider:
     - google-cloud-tts
     - azurespeech
     - assemblyai
+    - kling
 
 Fallback:
   type: object

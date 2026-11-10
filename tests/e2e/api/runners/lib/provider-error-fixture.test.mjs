@@ -690,3 +690,52 @@ test("seedance task routes answer by task id and count queries and deletes", asy
   const wire = (await (await fetch(`${base}/__wire`)).json()).data[0].calls;
   assert.deepEqual(wire.map((c) => c.path), ["/pp/byteplus/api/v3/contents/generations/tasks"]);
 });
+
+// The Kling routes (TXE-6430) keep every request with its key and body and count it per path and bearer
+// token, which is how a harness case proves the body the gateway sent to Kling, that a create and a query
+// are one call each with the named key, and that a refused request never reached the upstream.
+test("Kling routes answer the task object, keep the wire and count requests per key", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  const kling = (method, path, key, body) => fetch(`${base}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  const createBody = { prompt: "a paper boat", settings: { duration: 5 }, options: { external_task_id: "tk_task_1" } };
+  const created = await kling("POST", "/text-to-video/kling-3.0", "kling-secret-b", createBody);
+  assert.equal(created.status, 200);
+  assert.deepEqual((await created.json()).data, { id: "893605946402811985", status: "submitted", create_time: 1781080778802, update_time: 1781080778802, external_id: "tk_task_1" });
+
+  const blocked = await kling("POST", "/image-to-video/kling-3.0", "kling-secret-a", { contents: [{ type: "prompt", text: "a blocked scene" }] });
+  assert.equal(blocked.status, 400);
+  assert.equal((await blocked.json()).code, 1301);
+
+  const byID = await (await kling("GET", "/tasks?task_ids=893605946402811985", "kling-secret-b")).json();
+  assert.equal(byID.data[0].status, "succeeded");
+  assert.deepEqual(byID.data[0].billing, [{ charge_type: "unit", amount: "3.5", package_type: "video" }]);
+  assert.equal(byID.data[0].outputs[0].duration, "5.1");
+  const byReference = await (await kling("GET", "/tasks?external_task_ids=tk_task_1", "kling-secret-b")).json();
+  assert.equal(byReference.data[0].id, "893605946402811985");
+  assert.equal(byReference.data[0].external_id, "tk_task_1");
+  assert.deepEqual((await (await kling("GET", "/tasks?external_task_ids=missing_1", "kling-secret-b")).json()).data, []);
+  const failed = await (await kling("GET", "/tasks?task_ids=893605946402811986", "kling-secret-b")).json();
+  assert.equal(failed.data[0].status, "failed");
+  assert.match(failed.data[0].message, /content risk control/);
+  const listed = await (await kling("POST", "/tasks", "kling-secret-a", { limit: 1 })).json();
+  assert.equal(listed.data.result.length, 1);
+  assert.equal(listed.data.has_more, false);
+  assert.equal((await kling("POST", "/tasks/893605946402811985/cancel", "kling-secret-a")).status, 404, "Kling has no cancel API, so the fixture has none");
+
+  const calls = (await (await fetch(`${base}/__kling-calls`)).json()).data[0].calls;
+  assert.equal(calls.length, 8);
+  assert.deepEqual(calls[0], { method: "POST", path: "/text-to-video/kling-3.0", query: "", key: "kling-secret-b", body: createBody });
+  assert.deepEqual(calls[3], { method: "GET", path: "/tasks", query: "external_task_ids=tk_task_1", key: "kling-secret-b", body: null });
+  const hits = (await (await fetch(`${base}/__hits`)).json()).data[0].hits;
+  assert.equal(hits["kling GET /tasks kling-secret-b"], 4);
+  assert.equal(hits["kling POST /text-to-video/kling-3.0 kling-secret-b"], 1);
+
+  await fetch(`${base}/__reset`, { method: "POST" });
+  assert.deepEqual((await (await fetch(`${base}/__kling-calls`)).json()).data[0].calls, []);
+});
