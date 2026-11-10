@@ -5992,3 +5992,54 @@ func TestAccumulateResponsesUsage_MaxMergesServerToolCounts(t *testing.T) {
 	assertServerToolCounts(t, "stream response", usage.ToolUsage, 0, 2, 1)
 	assertServerToolCounts(t, "stream billed", billed.ToolUsage, 0, 2, 1)
 }
+
+// Request-path cost of Anthropic usage conversion (TXE-6534). The stream cases feed
+// message_start then message_delta into a fresh accumulator, as one stream does.
+func BenchmarkAccumulateResponsesUsage_NoServerTools(b *testing.B) {
+	start := &AnthropicUsage{InputTokens: 100, OutputTokens: 1}
+	delta := &AnthropicUsage{OutputTokens: 50}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		usage, billed := &schemas.ResponsesResponseUsage{}, &schemas.BifrostLLMUsage{}
+		accumulateAnthropicResponsesUsage(usage, billed, start)
+		accumulateAnthropicResponsesUsage(usage, billed, delta)
+	}
+}
+
+func BenchmarkAccumulateResponsesUsage_WebSearchStream(b *testing.B) {
+	start := &AnthropicUsage{InputTokens: 100, OutputTokens: 1, ServerToolUse: &AnthropicServerToolUseUsage{WebSearchRequests: 1}}
+	delta := &AnthropicUsage{OutputTokens: 50, ServerToolUse: &AnthropicServerToolUseUsage{WebSearchRequests: 1}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		usage, billed := &schemas.ResponsesResponseUsage{}, &schemas.BifrostLLMUsage{}
+		accumulateAnthropicResponsesUsage(usage, billed, start)
+		accumulateAnthropicResponsesUsage(usage, billed, delta)
+	}
+}
+
+func BenchmarkConvertAnthropicUsage_WebSearch(b *testing.B) {
+	u := &AnthropicUsage{InputTokens: 100, OutputTokens: 50, ServerToolUse: &AnthropicServerToolUseUsage{WebSearchRequests: 2}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = ConvertAnthropicUsageToBifrostUsage(u)
+	}
+}
+
+func BenchmarkAccumulateResponsesUsage_AllToolsStream(b *testing.B) {
+	start := &AnthropicUsage{InputTokens: 100, OutputTokens: 1, ServerToolUse: &AnthropicServerToolUseUsage{WebSearchRequests: 1, WebFetchRequests: 1}}
+	delta := &AnthropicUsage{OutputTokens: 50, ServerToolUse: &AnthropicServerToolUseUsage{WebSearchRequests: 1, WebFetchRequests: 2, CodeExecutionRequests: 1}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		usage, billed := &schemas.ResponsesResponseUsage{}, &schemas.BifrostLLMUsage{}
+		accumulateAnthropicResponsesUsage(usage, billed, start)
+		accumulateAnthropicResponsesUsage(usage, billed, delta)
+	}
+}
+
+func BenchmarkConvertAnthropicUsage_AllTools(b *testing.B) {
+	u := &AnthropicUsage{InputTokens: 100, OutputTokens: 50, ServerToolUse: &AnthropicServerToolUseUsage{WebSearchRequests: 2, WebFetchRequests: 2, CodeExecutionRequests: 1}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = ConvertAnthropicUsageToBifrostUsage(u)
+	}
+}

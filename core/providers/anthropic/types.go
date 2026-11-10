@@ -2250,6 +2250,28 @@ func (s *AnthropicServerToolUseUsage) ToToolUsage() *schemas.ToolUsage {
 	return tu
 }
 
+// mergeServerToolUseMax max-merges the vendor's per-request tool totals into *dst, which
+// streams repeat across message_start and message_delta. It allocates only when a count
+// first appears or grows, and then swaps in a new counter rather than mutating one an
+// earlier chunk may still reference.
+func mergeServerToolUseMax(dst **schemas.ToolUsage, s *AnthropicServerToolUseUsage) {
+	if s == nil || (s.WebSearchRequests <= 0 && s.WebFetchRequests <= 0 && s.CodeExecutionRequests <= 0) {
+		return
+	}
+	if *dst == nil {
+		*dst = &schemas.ToolUsage{}
+	}
+	maxToolCount(&(*dst).WebSearch, s.WebSearchRequests)
+	maxToolCount(&(*dst).WebFetch, s.WebFetchRequests)
+	maxToolCount(&(*dst).CodeExecution, s.CodeExecutionRequests)
+}
+
+func maxToolCount(dst **schemas.ToolRequestUsage, n int) {
+	if n > 0 && (*dst == nil || n > (*dst).NumRequests) {
+		*dst = &schemas.ToolRequestUsage{NumRequests: n}
+	}
+}
+
 // anthropicServerToolUseFromToolUsage is the inverse of ToToolUsage; nil when no count is set.
 func anthropicServerToolUseFromToolUsage(tu *schemas.ToolUsage) *AnthropicServerToolUseUsage {
 	if tu == nil {

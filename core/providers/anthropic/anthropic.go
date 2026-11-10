@@ -745,11 +745,9 @@ func accumulateAnthropicResponsesUsage(usage *schemas.ResponsesResponseUsage, bi
 	// The terminal chunk overwrites Response.Usage with this accumulator, so the counts
 	// must live here (not only on the per-event message_delta usage).
 	// Web fetch and code execution counts ride along in tool_usage, max-merged per tool.
-	if tu := usageToProcess.ServerToolUse.ToToolUsage(); tu != nil {
-		usage.ToolUsage = usage.ToolUsage.Max(tu)
-		if billedUsage != nil {
-			billedUsage.ToolUsage = billedUsage.ToolUsage.Max(tu)
-		}
+	mergeServerToolUseMax(&usage.ToolUsage, usageToProcess.ServerToolUse)
+	if billedUsage != nil {
+		mergeServerToolUseMax(&billedUsage.ToolUsage, usageToProcess.ServerToolUse)
 	}
 	if usageToProcess.ServerToolUse != nil && usageToProcess.ServerToolUse.WebSearchRequests > 0 {
 		n := usageToProcess.ServerToolUse.WebSearchRequests
@@ -1136,9 +1134,7 @@ func HandleAnthropicChatCompletionStreaming(
 				usageToProcess = billableAnthropicUsage(usageToProcess)
 				// Server tool request counts (web search, web fetch, code execution), max-merged
 				// per tool; web search is also billed as search queries.
-				if tu := usageToProcess.ServerToolUse.ToToolUsage(); tu != nil {
-					usage.ToolUsage = usage.ToolUsage.Max(tu)
-				}
+				mergeServerToolUseMax(&usage.ToolUsage, usageToProcess.ServerToolUse)
 				if usageToProcess.ServerToolUse != nil && usageToProcess.ServerToolUse.WebSearchRequests > 0 {
 					if usage.CompletionTokensDetails == nil {
 						usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
