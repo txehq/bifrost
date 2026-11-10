@@ -569,6 +569,16 @@
       "key": "azureBatchDeployment",
       "value": "replace-me-global-batch-deployment",
       "type": "string"
+    },
+    {
+      "key": "providerErrorFixtureUrl",
+      "value": "http://127.0.0.1:8791",
+      "type": "string"
+    },
+    {
+      "key": "providerErrorFixtureStallProxyUrl",
+      "value": "http://127.0.0.1:8799",
+      "type": "string"
     }
   ],
   "item": [
@@ -197606,7 +197616,7 @@
           "request": {
             "method": "POST",
             "header": [],
-            "url": "http://127.0.0.1:8791/__reset"
+            "url": "{{providerErrorFixtureUrl}}/__reset"
           }
         },
         {
@@ -197913,7 +197923,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "http://127.0.0.1:8791/__hits"
+            "url": "{{providerErrorFixtureUrl}}/__hits"
           }
         },
         {
@@ -197937,9 +197947,9 @@
                 "exec": [
                   "var j = pm.response.json();",
                   "pm.test('constructor is an unknown model, not an inherited function', function () { pm.expect(j.error && j.error.code, pm.response.text()).to.equal('model_not_found'); });",
-                  "pm.sendRequest({ url: 'http://127.0.0.1:8791/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ model: 'toString' }) } }, function (err, res) {",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/v1/chat/completions', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: JSON.stringify({ model: 'toString' }) } }, function (err, res) {",
                   "  pm.test('a second prototype name (toString) also gets a 404 envelope', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(404); pm.expect(res.json().error.code).to.equal('model_not_found'); });",
-                  "  pm.sendRequest({ url: 'http://127.0.0.1:8791/__hits', method: 'GET' }, function (err2, res2) {",
+                  "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err2, res2) {",
                   "    pm.test('the fixture is still serving afterwards', function () { pm.expect(err2, String(err2)).to.equal(null); pm.expect(res2.code).to.equal(200); });",
                   "  });",
                   "});"
@@ -197959,7 +197969,7 @@
               "mode": "raw",
               "raw": "{\n  \"model\": \"constructor\"\n}"
             },
-            "url": "http://127.0.0.1:8791/v1/chat/completions"
+            "url": "{{providerErrorFixtureUrl}}/v1/chat/completions"
           }
         }
       ]
@@ -199745,7 +199755,7 @@
           "request": {
             "method": "POST",
             "header": [],
-            "url": "http://127.0.0.1:8791/__reset"
+            "url": "{{providerErrorFixtureUrl}}/__reset"
           }
         },
         {
@@ -199895,7 +199905,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "http://127.0.0.1:8791/__hits"
+            "url": "{{providerErrorFixtureUrl}}/__hits"
           }
         }
       ]
@@ -242591,7 +242601,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -242806,7 +242816,7 @@
                   "// Plan rows: PS-02.",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -243069,7 +243079,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -243283,7 +243293,7 @@
                   "// Plan rows: PS-22.",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -243545,7 +243555,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -243771,7 +243781,7 @@
                   "// Plan rows: IX-25.",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -244042,7 +244052,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -244255,7 +244265,7 @@
                   "// Plan rows: DC-13.",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -244512,7 +244522,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -244730,7 +244740,7 @@
                   "// Plan rows: RR-17.",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -244987,7 +244997,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -245203,7 +245213,7 @@
                   "// Plan rows: RR-28.",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -245481,7 +245491,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -245697,7 +245707,7 @@
                   "// Plan rows: EK-07.",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -245981,7 +245991,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -246198,7 +246208,7 @@
                   "// Plan rows: DK-07.",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -246477,7 +246487,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -246692,7 +246702,7 @@
                   "// Plan rows: PS-23.",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -246972,7 +246982,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -247188,7 +247198,7 @@
                   "// Plan rows: EK-19.",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -247472,7 +247482,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -247687,7 +247697,7 @@
                   "// PR #8231: the attempt a provider's request timeout ends is recorded as a timeout.",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -247952,7 +247962,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -248135,7 +248145,7 @@
                   "    });",
                   "  })();",
                   "}",
-                  "var STALL = pm.variables.get('providerErrorFixtureStallProxyUrl') || 'http://127.0.0.1:8799';",
+                  "var STALL = pm.variables.get('providerErrorFixtureStallProxyUrl');",
                   "// A run-scoped OpenAI-backed provider on the fixture, reached only through the fixture's stall proxy: the proxy",
                   "// accepts the connection and never answers the CONNECT, so an attempt on it stalls inside connection acquisition.",
                   "function stalledProvider(suffix, keys, cb) {",
@@ -248183,7 +248193,7 @@
                   "// TXE-5374 (PR5 5d31a757a, R2-M29).",
                   "// ---- in-script management calls (see the folder description) ----",
                   "var BASE = pm.variables.get('baseUrl');",
-                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
                   "var PREFIX = 'harness-fx-';",
                   "var GATE = 'x-harness-fx-run';",
                   "function call(method, path, body, cb) {",
@@ -250437,7 +250447,7 @@
                   "  });",
                   "}",
                   "// Three keys: one per model and one for every model. The virtual key may use only the two split keys.",
-                  "post('/api/providers', {provider: provider, custom_provider_config: {base_provider_type: 'openai'}, network_config: {base_url: 'http://127.0.0.1:8791', max_retries: 0, default_request_timeout_in_seconds: 10}}, 'Run-scoped fake provider created', function () {",
+                  "post('/api/providers', {provider: provider, custom_provider_config: {base_provider_type: 'openai'}, network_config: {base_url: pm.variables.get('providerErrorFixtureUrl'), max_retries: 0, default_request_timeout_in_seconds: 10}}, 'Run-scoped fake provider created', function () {",
                   "  post('/api/providers/' + provider + '/keys', {name: 'voice-only', value: 'sk-fake-voice-only', models: ['gpt-live-1'], weight: 1}, 'Voice-only key created', function () {",
                   "    post('/api/providers/' + provider + '/keys', {name: 'backend-only', value: 'sk-fake-backend-only', models: ['gpt-5.6-luna'], weight: 1}, 'Backend-only key created', function () {",
                   "      post('/api/providers/' + provider + '/keys', {name: 'every-model', value: 'sk-fake-every-model', models: ['*'], weight: 1}, 'Every-model key created', function () {",
@@ -251865,7 +251875,7 @@
                   "pm.variables.set('liveBillingInstructions', pm.info.requestName.indexOf('before create') !== -1 ? 'refuse-live-create' : pm.info.requestName.indexOf('without answer') !== -1 ? 'answerless-live-create' : provider);",
                   "var base = pm.variables.get('baseUrl');",
                   "var headers = { 'Content-Type': 'application/json', 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || 'bifrost-e2e-setup-token' };",
-                  "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode:'raw', raw: JSON.stringify({provider: provider, custom_provider_config:{base_provider_type:'openai'}, network_config:{base_url:'http://127.0.0.1:8791', max_retries:0, default_request_timeout_in_seconds:10}})}}, function(err, res) {",
+                  "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode:'raw', raw: JSON.stringify({provider: provider, custom_provider_config:{base_provider_type:'openai'}, network_config:{base_url:pm.variables.get('providerErrorFixtureUrl'), max_retries:0, default_request_timeout_in_seconds:10}})}}, function(err, res) {",
                   "  pm.test('Run-scoped fake provider created', function() { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.be.below(300); });",
                   "  if (err || res.code >= 300) throw new Error('cannot create fake provider');",
                   "  pm.sendRequest({url: base + '/api/providers/' + provider + '/keys', method:'POST', header:headers, body:{mode:'raw', raw:JSON.stringify({name:'fake-live-key', value:'sk-fake-live-billing', models:['gpt-live-1'], weight:1})}}, function(keyErr, keyRes) {",
@@ -251980,7 +251990,7 @@
                   "pm.variables.set('liveBillingInstructions', pm.info.requestName.indexOf('before create') !== -1 ? 'refuse-live-create' : pm.info.requestName.indexOf('without answer') !== -1 ? 'answerless-live-create' : provider);",
                   "var base = pm.variables.get('baseUrl');",
                   "var headers = { 'Content-Type': 'application/json', 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || 'bifrost-e2e-setup-token' };",
-                  "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode:'raw', raw: JSON.stringify({provider: provider, custom_provider_config:{base_provider_type:'openai'}, network_config:{base_url:'http://127.0.0.1:8791', max_retries:0, default_request_timeout_in_seconds:10}})}}, function(err, res) {",
+                  "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode:'raw', raw: JSON.stringify({provider: provider, custom_provider_config:{base_provider_type:'openai'}, network_config:{base_url:pm.variables.get('providerErrorFixtureUrl'), max_retries:0, default_request_timeout_in_seconds:10}})}}, function(err, res) {",
                   "  pm.test('Run-scoped fake provider created', function() { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.be.below(300); });",
                   "  if (err || res.code >= 300) throw new Error('cannot create fake provider');",
                   "  pm.sendRequest({url: base + '/api/providers/' + provider + '/keys', method:'POST', header:headers, body:{mode:'raw', raw:JSON.stringify({name:'fake-live-key', value:'sk-fake-live-billing', models:['gpt-live-1'], weight:1})}}, function(keyErr, keyRes) {",
@@ -252080,7 +252090,7 @@
                   "pm.variables.set('liveBillingInstructions', pm.info.requestName.indexOf('before create') !== -1 ? 'refuse-live-create' : pm.info.requestName.indexOf('without answer') !== -1 ? 'answerless-live-create' : provider);",
                   "var base = pm.variables.get('baseUrl');",
                   "var headers = { 'Content-Type': 'application/json', 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || 'bifrost-e2e-setup-token' };",
-                  "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode:'raw', raw: JSON.stringify({provider: provider, custom_provider_config:{base_provider_type:'openai'}, network_config:{base_url:'http://127.0.0.1:8791', max_retries:0, default_request_timeout_in_seconds:10}})}}, function(err, res) {",
+                  "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode:'raw', raw: JSON.stringify({provider: provider, custom_provider_config:{base_provider_type:'openai'}, network_config:{base_url:pm.variables.get('providerErrorFixtureUrl'), max_retries:0, default_request_timeout_in_seconds:10}})}}, function(err, res) {",
                   "  pm.test('Run-scoped fake provider created', function() { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.be.below(300); });",
                   "  if (err || res.code >= 300) throw new Error('cannot create fake provider');",
                   "  pm.sendRequest({url: base + '/api/providers/' + provider + '/keys', method:'POST', header:headers, body:{mode:'raw', raw:JSON.stringify({name:'fake-live-key', value:'sk-fake-live-billing', models:['gpt-live-1'], weight:1})}}, function(keyErr, keyRes) {",
@@ -252188,7 +252198,7 @@
                   "pm.variables.set('liveFilterInstructions', 'filtered-live-create-' + provider);",
                   "var base = pm.variables.get('baseUrl');",
                   "var headers = { 'Content-Type': 'application/json', 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || 'bifrost-e2e-setup-token' };",
-                  "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode:'raw', raw: JSON.stringify({provider: provider, custom_provider_config:{base_provider_type:'openai'}, network_config:{base_url:'http://127.0.0.1:8791', max_retries:0, default_request_timeout_in_seconds:10}})}}, function(err, res) {",
+                  "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode:'raw', raw: JSON.stringify({provider: provider, custom_provider_config:{base_provider_type:'openai'}, network_config:{base_url:pm.variables.get('providerErrorFixtureUrl'), max_retries:0, default_request_timeout_in_seconds:10}})}}, function(err, res) {",
                   "  pm.test('Run-scoped fake provider created', function() { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.be.below(300); });",
                   "  if (err || res.code >= 300) throw new Error('cannot create fake provider');",
                   "  pm.variables.set('liveFilterProviderCreated', 'yes');",
@@ -252275,7 +252285,7 @@
                   "pm.variables.set('liveFilterInstructions', 'filtered-live-create-' + provider);",
                   "var base = pm.variables.get('baseUrl');",
                   "var headers = { 'Content-Type': 'application/json', 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || 'bifrost-e2e-setup-token' };",
-                  "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode:'raw', raw: JSON.stringify({provider: provider, custom_provider_config:{base_provider_type:'openai'}, network_config:{base_url:'http://127.0.0.1:8791', max_retries:0, default_request_timeout_in_seconds:10}})}}, function(err, res) {",
+                  "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode:'raw', raw: JSON.stringify({provider: provider, custom_provider_config:{base_provider_type:'openai'}, network_config:{base_url:pm.variables.get('providerErrorFixtureUrl'), max_retries:0, default_request_timeout_in_seconds:10}})}}, function(err, res) {",
                   "  pm.test('Run-scoped fake provider created', function() { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.be.below(300); });",
                   "  if (err || res.code >= 300) throw new Error('cannot create fake provider');",
                   "  pm.variables.set('liveFilterProviderCreated', 'yes');",
@@ -252362,7 +252372,7 @@
                   "pm.variables.set('liveFilterInstructions', 'filtered-live-create-' + provider);",
                   "var base = pm.variables.get('baseUrl');",
                   "var headers = { 'Content-Type': 'application/json', 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || 'bifrost-e2e-setup-token' };",
-                  "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode:'raw', raw: JSON.stringify({provider: provider, custom_provider_config:{base_provider_type:'openai'}, network_config:{base_url:'http://127.0.0.1:8791', max_retries:0, default_request_timeout_in_seconds:10}})}}, function(err, res) {",
+                  "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode:'raw', raw: JSON.stringify({provider: provider, custom_provider_config:{base_provider_type:'openai'}, network_config:{base_url:pm.variables.get('providerErrorFixtureUrl'), max_retries:0, default_request_timeout_in_seconds:10}})}}, function(err, res) {",
                   "  pm.test('Run-scoped fake provider created', function() { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.be.below(300); });",
                   "  if (err || res.code >= 300) throw new Error('cannot create fake provider');",
                   "  pm.variables.set('liveFilterProviderCreated', 'yes');",
@@ -252449,7 +252459,7 @@
                   "pm.variables.set('liveFilterInstructions', 'filtered-live-create-' + provider);",
                   "var base = pm.variables.get('baseUrl');",
                   "var headers = { 'Content-Type': 'application/json', 'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || 'bifrost-e2e-setup-token' };",
-                  "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode:'raw', raw: JSON.stringify({provider: provider, custom_provider_config:{base_provider_type:'openai'}, network_config:{base_url:'http://127.0.0.1:8791', max_retries:0, default_request_timeout_in_seconds:10}})}}, function(err, res) {",
+                  "pm.sendRequest({url: base + '/api/providers', method: 'POST', header: headers, body: {mode:'raw', raw: JSON.stringify({provider: provider, custom_provider_config:{base_provider_type:'openai'}, network_config:{base_url:pm.variables.get('providerErrorFixtureUrl'), max_retries:0, default_request_timeout_in_seconds:10}})}}, function(err, res) {",
                   "  pm.test('Run-scoped fake provider created', function() { pm.expect(err).not.to.be.ok; pm.expect(res && res.code, res && res.text()).to.be.below(300); });",
                   "  if (err || res.code >= 300) throw new Error('cannot create fake provider');",
                   "  pm.variables.set('liveFilterProviderCreated', 'yes');",
@@ -296239,7 +296249,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "http://127.0.0.1:8791/__hits"
+            "url": "{{providerErrorFixtureUrl}}/__hits"
           },
           "event": [
             {
@@ -297226,7 +297236,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
                   "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
                   "pm.variables.set('gapProbeHeaders', JSON.stringify(auth ? { Authorization: auth } : {}));"
@@ -297308,7 +297317,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
                   "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
                   "pm.variables.set('gapProbeHeaders', JSON.stringify(auth ? { Authorization: auth } : {}));"
@@ -297390,7 +297398,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
                   "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
                   "pm.variables.set('gapProbeHeaders', JSON.stringify(auth ? { Authorization: auth } : {}));"
@@ -297472,7 +297479,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
                   "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
                   "pm.variables.set('gapProbeHeaders', JSON.stringify(auth ? { Authorization: auth } : {}));"
@@ -299804,7 +299810,7 @@
           "request": {
             "method": "POST",
             "header": [],
-            "url": "http://127.0.0.1:8791/__reset"
+            "url": "{{providerErrorFixtureUrl}}/__reset"
           }
         },
         {
@@ -299946,7 +299952,7 @@
                   "// first poll each kind schedules at create. With accounting on, the video sweeper would have",
                   "// asked the fixture for the task by now; with it off, nothing but the caller ever does.",
                   "setTimeout(function () {",
-                  "  pm.sendRequest({ url: 'http://127.0.0.1:8791/__hits', method: 'GET' }, function (err, res) {",
+                  "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
                   "    pm.test('after 70 s no poll, download or results fetch reached the fixture', function () {",
                   "      pm.expect(err, 'fixture unreachable: ' + err).to.equal(null);",
                   "      var later = res.json().data[0].hits;",
@@ -299967,7 +299973,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "http://127.0.0.1:8791/__hits"
+            "url": "{{providerErrorFixtureUrl}}/__hits"
           }
         },
         {
@@ -300141,7 +300147,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "http://127.0.0.1:8791/__hits"
+            "url": "{{providerErrorFixtureUrl}}/__hits"
           }
         },
         {
@@ -300234,7 +300240,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "http://127.0.0.1:8791/__sent?model=upstream-idle-stream"
+            "url": "{{providerErrorFixtureUrl}}/__sent?model=upstream-idle-stream"
           }
         }
       ]
@@ -303767,7 +303773,7 @@
           "request": {
             "method": "POST",
             "header": [],
-            "url": "http://127.0.0.1:8791/__reset"
+            "url": "{{providerErrorFixtureUrl}}/__reset"
           },
           "event": [
             {
@@ -304213,7 +304219,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "http://127.0.0.1:8791/__hits"
+            "url": "{{providerErrorFixtureUrl}}/__hits"
           },
           "event": [
             {
@@ -309186,7 +309192,7 @@
           "request": {
             "method": "POST",
             "header": [],
-            "url": "http://127.0.0.1:8791/__reset"
+            "url": "{{providerErrorFixtureUrl}}/__reset"
           }
         },
         {
@@ -309209,7 +309215,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
-                  "pm.sendRequest({ url: 'http://127.0.0.1:8791/__wire', method: 'GET' }, function (err, res) {",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
                   "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
                   "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/oc/v1/chat/completions' && JSON.parse(c.body).model === 'oc-plain'; });",
                   "  pm.test('one request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
@@ -309267,7 +309273,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
-                  "pm.sendRequest({ url: 'http://127.0.0.1:8791/__wire', method: 'GET' }, function (err, res) {",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
                   "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
                   "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/oc/chat/completions' && JSON.parse(c.body).model === 'oc-plain'; });",
                   "  pm.test('one request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
@@ -309325,7 +309331,7 @@
                   "pm.test('status is 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
                   "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
                   "pm.test('error.param names service_tier', function () { pm.expect(j.error && j.error.param, pm.response.text()).to.equal('service_tier'); });",
-                  "pm.sendRequest({ url: 'http://127.0.0.1:8791/__wire', method: 'GET' }, function (err, res) {",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
                   "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
                   "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/oc/v1/chat/completions' && JSON.parse(c.body).model === 'oc-tiered'; });",
                   "  pm.test('no request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(0); });",
@@ -309380,7 +309386,7 @@
                 "exec": [
                   "pm.test('the request succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
                   "pm.test('the compat plugin reports neither price-affecting field as dropped', function () { var d = (pm.response.json().extra_fields || {}).dropped_compat_plugin_params || []; pm.expect(d, pm.response.text()).to.not.include('service_tier'); pm.expect(d, pm.response.text()).to.not.include('max_completion_tokens'); });",
-                  "pm.sendRequest({ url: 'http://127.0.0.1:8791/__wire', method: 'GET' }, function (err, res) {",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
                   "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
                   "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/oc/v1/chat/completions' && JSON.parse(c.body).model === 'oc-tiered'; });",
                   "  pm.test('one request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
@@ -309439,7 +309445,7 @@
                   "pm.test('status is 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
                   "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
                   "pm.test('error.param names service_tier', function () { pm.expect(j.error && j.error.param, pm.response.text()).to.equal('service_tier'); });",
-                  "pm.sendRequest({ url: 'http://127.0.0.1:8791/__wire', method: 'GET' }, function (err, res) {",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
                   "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
                   "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/oc/v1/chat/completions' && JSON.parse(c.body).model === 'oc-tiered'; });",
                   "  pm.test('only the listed-tier request of 336.5 reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
@@ -309545,7 +309551,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('the stripped retry succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
-                  "pm.sendRequest({ url: 'http://127.0.0.1:8791/__hits', method: 'GET' }, function (err, res) {",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
                   "  pm.test('the fixture reports its hit counts', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
                   "  var h = res.json().data[0].hits;",
                   "  pm.test('the vendor refused the replay once', function () { pm.expect(h['replay-id-mismatch'], res.text()).to.equal(1); });",
@@ -309698,7 +309704,7 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "} else {",
-                  "  pm.sendRequest({ url: 'http://127.0.0.1:8791/__reset', method: 'POST' }, function (err) { if (err) { throw err; } });",
+                  "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err) { if (err) { throw err; } });",
                   "}"
                 ]
               }
@@ -309711,7 +309717,7 @@
                   "var j = pm.response.json();",
                   "pm.test('the vendor status is returned', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
                   "pm.test('the vendor code is returned', function () { pm.expect(j.error && j.error.code, pm.response.text()).to.equal('invalid_encrypted_content'); });",
-                  "pm.sendRequest({ url: 'http://127.0.0.1:8791/__hits', method: 'GET' }, function (err, res) {",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__hits', method: 'GET' }, function (err, res) {",
                   "  pm.test('the fixture reports its hit counts', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
                   "  var h = res.json().data[0].hits;",
                   "  pm.test('exactly one upstream call', function () { pm.expect(h['gpt-5-pro'], res.text()).to.equal(1); });",
@@ -309860,7 +309866,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -309940,7 +309945,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -310016,7 +310020,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -310092,7 +310095,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -310168,7 +310170,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -310244,7 +310245,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -310319,7 +310319,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -310395,7 +310394,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -310470,7 +310468,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -310557,7 +310554,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -310639,7 +310635,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -310721,7 +310716,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -310797,7 +310791,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -310886,7 +310879,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -310969,7 +310961,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -311051,7 +311042,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -311136,7 +311126,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -311218,7 +311207,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
                   "  pm.test('gemini speech contract setup: the fixture was reset', function () {",
                   "    pm.expect(err, String(err)).to.equal(null);",
@@ -311258,7 +311246,7 @@
           "request": {
             "method": "POST",
             "header": [],
-            "url": "http://127.0.0.1:8791/__reset"
+            "url": "{{providerErrorFixtureUrl}}/__reset"
           },
           "event": [
             {
@@ -311397,7 +311385,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "http://127.0.0.1:8791/__wire"
+            "url": "{{providerErrorFixtureUrl}}/__wire"
           },
           "event": [
             {
@@ -311587,7 +311575,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "http://127.0.0.1:8791/__hits"
+            "url": "{{providerErrorFixtureUrl}}/__hits"
           },
           "event": [
             {
@@ -311955,7 +311943,7 @@
           "request": {
             "method": "POST",
             "header": [],
-            "url": "http://127.0.0.1:8791/__reset"
+            "url": "{{providerErrorFixtureUrl}}/__reset"
           }
         },
         {
@@ -311981,7 +311969,7 @@
                   "var dropped = (pm.response.json().extra_fields || {}).dropped_compat_plugin_params || [];",
                   "pm.test('the compat plugin reports no price-affecting field as dropped', function () { ['max_completion_tokens', 'max_output_tokens', 'service_tier', 'prompt_cache_key', 'prompt_cache_retention', 'reasoning'].forEach(function (f) { pm.expect(dropped, pm.response.text()).to.not.include(f); }); });",
                   "pm.test('a field that does not affect the price is still dropped and reported', function () { pm.expect(dropped, pm.response.text()).to.include('seed'); });",
-                  "pm.sendRequest({ url: 'http://127.0.0.1:8791/__wire', method: 'GET' }, function (err, res) {",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
                   "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
                   "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/oc/v1/chat/completions' && JSON.parse(c.body).model === 'oc-capped'; });",
                   "  pm.test('one request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
@@ -312044,7 +312032,7 @@
                   "var dropped = (pm.response.json().extra_fields || {}).dropped_compat_plugin_params || [];",
                   "pm.test('the compat plugin reports no price-affecting field as dropped', function () { ['max_completion_tokens', 'max_output_tokens', 'service_tier', 'prompt_cache_key', 'prompt_cache_retention', 'reasoning'].forEach(function (f) { pm.expect(dropped, pm.response.text()).to.not.include(f); }); });",
                   "pm.test('a field that does not affect the price is still dropped and reported', function () { pm.expect(dropped, pm.response.text()).to.include('top_p'); });",
-                  "pm.sendRequest({ url: 'http://127.0.0.1:8791/__wire', method: 'GET' }, function (err, res) {",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
                   "  pm.test('the fixture reports what reached it', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
                   "  var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/cp/v1/responses' && JSON.parse(c.body).model === 'cp-capped'; });",
                   "  pm.test('one request reached the vendor', function () { pm.expect(calls.length, res.text()).to.equal(1); });",
@@ -312095,9 +312083,9 @@
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "http://127.0.0.1:8791/__reset",
+              "raw": "{{providerErrorFixtureUrl}}/__reset",
               "host": [
-                "http://127.0.0.1:8791"
+                "{{providerErrorFixtureUrl}}"
               ],
               "path": [
                 "__reset"
@@ -312195,9 +312183,9 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "http://127.0.0.1:8791/__wire",
+              "raw": "{{providerErrorFixtureUrl}}/__wire",
               "host": [
-                "http://127.0.0.1:8791"
+                "{{providerErrorFixtureUrl}}"
               ],
               "path": [
                 "__wire"
@@ -312614,9 +312602,9 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "http://127.0.0.1:8791/__hits",
+              "raw": "{{providerErrorFixtureUrl}}/__hits",
               "host": [
-                "http://127.0.0.1:8791"
+                "{{providerErrorFixtureUrl}}"
               ],
               "path": [
                 "__hits"
@@ -312659,9 +312647,9 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "http://127.0.0.1:8791/__wire",
+              "raw": "{{providerErrorFixtureUrl}}/__wire",
               "host": [
-                "http://127.0.0.1:8791"
+                "{{providerErrorFixtureUrl}}"
               ],
               "path": [
                 "__wire"
@@ -312706,7 +312694,7 @@
           "request": {
             "method": "POST",
             "header": [],
-            "url": "http://127.0.0.1:8791/__reset"
+            "url": "{{providerErrorFixtureUrl}}/__reset"
           },
           "event": [
             {
@@ -313016,7 +313004,7 @@
           "request": {
             "method": "GET",
             "header": [],
-            "url": "http://127.0.0.1:8791/__wire"
+            "url": "{{providerErrorFixtureUrl}}/__wire"
           },
           "event": [
             {
@@ -313113,7 +313101,6 @@
                   "if (pm.variables.get('providerErrorFixture') !== '1') {",
                   "  pm.execution.skipRequest();",
                   "}",
-                  "if (!pm.variables.get('providerErrorFixtureUrl')) pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791');",
                   "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
                   "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
                   "pm.variables.set('staleProbeHeaders', JSON.stringify(auth ? { Authorization: auth } : {}));"

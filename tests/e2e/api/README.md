@@ -95,6 +95,15 @@ Run from the repository root. Check that ports 8790, 8791 and 8799 (the fixture'
 lsof -nP -iTCP:8790 -iTCP:8791 -iTCP:8799 -sTCP:LISTEN
 ```
 
+To run the fixture elsewhere, start it with `PROVIDER_ERROR_FIXTURE_PORT` and
+`PROVIDER_ERROR_FIXTURE_STALL_PORT`, point the gateway config's fixture URLs at those ports, and pass
+`--env-var providerErrorFixtureUrl=http://127.0.0.1:<port>` and
+`--env-var providerErrorFixtureStallProxyUrl=http://127.0.0.1:<stall port>`. The harness declares
+`http://127.0.0.1:8791` and `:8799` once, as those two collection variables' defaults. A row reaches the
+fixture only through them (`{{providerErrorFixtureUrl}}` or `pm.variables.get('providerErrorFixtureUrl')`).
+`collection-scripts.test.mjs` fails on a literal fixture address in any collection's scripts, request URLs,
+bodies or headers.
+
 Start the fixture in one terminal:
 
 ```bash
