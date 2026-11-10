@@ -354,6 +354,7 @@ jobs:
             api.individual.githubcopilot.com:443
             api.groq.com:443
             api.mistral.ai:443
+            api.moonshot.ai:443
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443

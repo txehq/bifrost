@@ -61,6 +61,12 @@ jobs:
       - name: Check egress allowlists
         run: ./.github/workflows/scripts/check-egress-allowlist.sh
 
+      # A documentation link in a harness description or script comment is not a host the
+      # runner dials; a host in anything newman sends or runs still is (TXE-6978).
+      - name: Check the egress allowlist rule on fixture collections
+        if: ${{ !cancelled() }}
+        run: ./.github/workflows/scripts/check-egress-allowlist.test.sh
+
       - name: Check every job names a runner the fork has
         if: ${{ !cancelled() }}
         run: python3 .github/workflows/scripts/check-runner-labels.py
