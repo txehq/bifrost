@@ -125,7 +125,10 @@ func bytePlusImageSize(size *string, resolution string, extraParams map[string]i
 		}
 	}
 	if resolution != "" {
-		return &resolution
+		// A copy, so only a request that sets a resolution pays the heap allocation; taking the
+		// parameter's address would move it to the heap on every call.
+		tier := resolution
+		return &tier
 	}
 	if size != nil && *size != "" && *size != "auto" {
 		return size

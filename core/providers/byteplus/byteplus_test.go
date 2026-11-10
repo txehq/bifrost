@@ -2258,3 +2258,55 @@ func TestBytePlusImageModerationHTTPErrorIsContentFiltered(t *testing.T) {
 		})
 	}
 }
+
+// benchImageRequest is the common Seedream request: a prompt, a size, one image, a seed. No unified field is unsupported.
+func benchImageRequest() *schemas.BifrostImageGenerationRequest {
+	size, format := "2048x2048", "url"
+	return &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.BytePlus,
+		Model:    "seedream-4-5-251128",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse at dusk"},
+		Params:   &schemas.ImageGenerationParameters{N: schemas.Ptr(1), Size: &size, ResponseFormat: &format, Seed: schemas.Ptr(7)},
+	}
+}
+
+// BenchmarkBytePlusImageGenerationRequestPath measures what ImageGeneration does before the Ark call: the
+// unsupported-field check at the entry point, then the conversion (which repeats the check as a backstop).
+func BenchmarkBytePlusImageGenerationRequestPath(b *testing.B) {
+	req := benchImageRequest()
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := byteplus.ValidateBytePlusImageParams(req.Params, nil); err != nil {
+			b.Fatal(err.Error.Message)
+		}
+		if _, err := byteplus.ToBytePlusImageGenerationRequest(req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkBytePlusImageGenerationResponse measures the Ark 200 conversion: every image delivered (the common case)
+// and one of three refused (the content_filter bookkeeping).
+func BenchmarkBytePlusImageGenerationResponse(b *testing.B) {
+	image := func(i int) byteplus.BytePlusImageData {
+		return byteplus.BytePlusImageData{URL: "https://cdn.example/" + strconv.Itoa(i) + ".png", Size: "2048x2048"}
+	}
+	refused := byteplus.BytePlusImageData{Error: &byteplus.BytePlusError{Code: "OutputImageSensitiveContentDetected", Message: "blocked"}}
+	cases := []struct {
+		name string
+		resp *byteplus.BytePlusImageGenerationResponse
+	}{
+		{"all_delivered", &byteplus.BytePlusImageGenerationResponse{Model: "seedream-4-5-251128", Created: 1, Data: []byteplus.BytePlusImageData{image(0), image(1), image(2)}, Usage: &byteplus.BytePlusImageUsage{GeneratedImages: 3, OutputTokens: 49152, TotalTokens: 49152}}},
+		{"one_of_three_refused", &byteplus.BytePlusImageGenerationResponse{Model: "seedream-4-5-251128", Created: 1, Data: []byteplus.BytePlusImageData{image(0), refused, image(2)}, Usage: &byteplus.BytePlusImageUsage{GeneratedImages: 2, OutputTokens: 32768, TotalTokens: 32768}}},
+	}
+	for _, c := range cases {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if resp, _ := byteplus.ToBifrostImageGenerationResponse(c.resp, "seedream-4-5-251128"); resp == nil && c.name == "all_delivered" {
+					b.Fatal("no response")
+				}
+			}
+		})
+	}
+}
