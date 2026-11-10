@@ -1246,5 +1246,34 @@ test("provider-harness: 62.14 polls Azure readiness before its asserted content 
   assert.strictEqual(poll([409]).length, 11, "the poll is not bounded at 10 retries");
 });
 
+// The collection-level routed-identity check asserts x-bifrost-* headers on every 2xx inference
+// response. An async submit (/v1/async/...) answers 202 with a job receipt before anything is
+// routed, so the check must leave it alone, while a synchronous response on the same suffix is
+// still checked. Found running folder 428 under newman: its async submit failed 8 header checks.
+test("provider-harness: the routed-identity check skips an async submit and still checks a routed response", () => {
+  const src = providerHarness.event.find((e) => e.listen === "test").script.exec.join("\n");
+  const start = src.indexOf("// Routed-identity response headers");
+  assert.ok(start >= 0, "the routed-identity block is gone from the collection test script");
+  const end = src.indexOf("})();", start);
+  const block = src.slice(start, end + "})();".length);
+  const identityTests = (url, code) => {
+    const names = [];
+    const pm = {
+      request: { url: { toString: () => url }, body: { mode: "raw", raw: '{"model":"xai/grok-imagine-image-2.0"}' } },
+      response: { code, headers: { get: () => undefined } },
+      variables: { replaceIn: (v) => v },
+      test: (name) => { names.push(name); },
+      expect: expectChain,
+    };
+    new Function("pm", block)(pm);
+    return names.filter((n) => n.startsWith("Routed-identity header"));
+  };
+  for (const route of ["images/generations", "chat/completions", "responses", "embeddings", "audio/speech"]) {
+    assert.deepStrictEqual(identityTests(`http://gw/v1/async/${route}`, 202), [], `the async submit on /v1/async/${route} is checked for routed identity`);
+  }
+  assert.strictEqual(identityTests("http://gw/v1/images/generations", 200).length, 8, "a synchronous image generation is no longer checked");
+  assert.strictEqual(identityTests("http://gw/openai/v1/images/generations", 200).length, 8, "the OpenAI image route is no longer checked");
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
