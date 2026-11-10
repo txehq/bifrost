@@ -110,7 +110,11 @@ func miniMaxSpeechUsage(resp *MiniMaxSpeechResponse) *schemas.SpeechUsage {
 	if resp == nil || resp.ExtraInfo == nil {
 		return nil
 	}
-	return &schemas.SpeechUsage{InputChars: resp.ExtraInfo.UsageCharacters}
+	// usage_characters is the count MiniMax bills (TXE-6530, contract C5): it goes into
+	// billed_characters, and also stays in input_chars so Bifrost's per-character pricing reads
+	// the vendor's figure; BackfillParams no longer replaces it with a code-point count.
+	billed := resp.ExtraInfo.UsageCharacters
+	return &schemas.SpeechUsage{InputChars: billed, BilledCharacters: &billed}
 }
 
 // popFloat removes key from m and returns it as a float64 when it holds a number.

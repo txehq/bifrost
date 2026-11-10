@@ -149,7 +149,7 @@ var ExposedResponseHeaders = strings.Join([]string{
 	HeaderBifrostCacheThreshold, HeaderBifrostCacheProviderUsed, HeaderBifrostCacheModelUsed, HeaderBifrostCacheInputTokens,
 	HeaderBifrostLatency, HeaderBifrostPricingRequestType, HeaderBifrostConvertedRequestType,
 	HeaderBifrostDroppedCompatParams, HeaderBifrostDroppedUnsupportedTools, HeaderBifrostPassthroughPath,
-	HeaderBifrostErrorType, HeaderBifrostRetryAfterMs,
+	HeaderBifrostErrorType, HeaderBifrostRetryAfterMs, HeaderBifrostUsage,
 }, ", ")
 
 // extraFieldsKey is the top-level JSON key every Bifrost response and error carries its metadata under.

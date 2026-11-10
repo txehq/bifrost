@@ -2,11 +2,24 @@ package handlers
 
 import (
 	"bytes"
+	"context"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"mime"
 	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 
-	schemas "github.com/capsohq/bifrost/core/schemas"
+	bifrost "github.com/capsohq/bifrost/core"
+	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/framework/configstore"
 	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -245,7 +258,7 @@ func TestWriteSpeechAudioMissingAudioIsProviderEmptyResult(t *testing.T) {
 	}}
 	// What the speech handler does before writing the body.
 	lib.ApplyBifrostResponseHeaders(ctx, nil, resp.ExtraFields)
-	writeSpeechAudio(ctx, resp, "speech.mp3")
+	writeSpeechAudio(ctx, resp, "mp3")
 
 	if got := ctx.Response.StatusCode(); got != fasthttp.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", got)
@@ -262,14 +275,271 @@ func TestWriteSpeechAudioMissingAudioIsProviderEmptyResult(t *testing.T) {
 
 	// An empty body is no audio too: a vendor 200 whose body is empty.
 	empty := &fasthttp.RequestCtx{}
-	writeSpeechAudio(empty, &schemas.BifrostSpeechResponse{Audio: []byte{}}, "speech.mp3")
+	writeSpeechAudio(empty, &schemas.BifrostSpeechResponse{Audio: []byte{}}, "mp3")
 	if got := empty.Response.StatusCode(); got != fasthttp.StatusBadGateway {
 		t.Fatalf("empty audio: status = %d, want 502", got)
 	}
 
 	ok := &fasthttp.RequestCtx{}
-	writeSpeechAudio(ok, &schemas.BifrostSpeechResponse{Audio: []byte("ID3")}, "speech.mp3")
+	writeSpeechAudio(ok, &schemas.BifrostSpeechResponse{Audio: []byte("ID3")}, "mp3")
 	if ok.Response.StatusCode() != fasthttp.StatusOK || string(ok.Response.Body()) != "ID3" {
 		t.Fatalf("audio response: status %d body %q", ok.Response.StatusCode(), ok.Response.Body())
+	}
+}
+
+// A repeated unknown form field (include[]=a&include[]=b) used to keep only its first value.
+func TestPrepareTranscriptionRequest_RepeatedExtraFieldKeepsEveryValue(t *testing.T) {
+	req, _, err := prepareTranscriptionRequest(multipartTranscriptionCtx(t, [][2]string{
+		{"model", "openai/gpt-4o-transcribe"},
+		{"include[]", "logprobs"},
+		{"include[]", "segments"},
+		{"chunking_strategy", "auto"},
+	}), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got, _ := req.Params.ExtraParams["include[]"].([]string); !slices.Equal(got, []string{"logprobs", "segments"}) {
+		t.Fatalf("include[] = %#v, want [logprobs segments]", req.Params.ExtraParams["include[]"])
+	}
+	if got := req.Params.ExtraParams["chunking_strategy"]; got != "auto" {
+		t.Fatalf("chunking_strategy = %#v, want the single value as a string", got)
+	}
+}
+
+// audioUpstreamAccount points OpenAI, MiniMax and Gemini at local test servers.
+type audioUpstreamAccount struct {
+	baseURLs map[schemas.ModelProvider]string
+}
+
+func (a audioUpstreamAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	out := make([]schemas.ModelProvider, 0, len(a.baseURLs))
+	for p := range a.baseURLs {
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func (a audioUpstreamAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	if _, ok := a.baseURLs[p]; !ok {
+		return nil, nil
+	}
+	return []schemas.Key{{ID: "k-" + string(p), Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 1}}, nil
+}
+
+func (a audioUpstreamAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	baseURL, ok := a.baseURLs[p]
+	if !ok {
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	nc := schemas.DefaultNetworkConfig
+	nc.BaseURL = baseURL
+	return &schemas.ProviderConfig{NetworkConfig: nc, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// audioUpstream answers with a fixed response and records the last request it saw.
+type audioUpstream struct {
+	contentType string
+	body        []byte
+
+	mu          sync.Mutex
+	gotType     string
+	gotBody     []byte
+	gotRequests int
+}
+
+func (u *audioUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	u.mu.Lock()
+	u.gotType, u.gotBody = r.Header.Get("Content-Type"), body
+	u.gotRequests++
+	u.mu.Unlock()
+	w.Header().Set("Content-Type", u.contentType)
+	_, _ = w.Write(u.body)
+}
+
+func newAudioTestHandler(t *testing.T, upstreams map[schemas.ModelProvider]*audioUpstream) *CompletionHandler {
+	t.Helper()
+	baseURLs := make(map[schemas.ModelProvider]string, len(upstreams))
+	for p, u := range upstreams {
+		srv := httptest.NewServer(u)
+		t.Cleanup(srv.Close)
+		baseURLs[p] = srv.URL
+	}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: audioUpstreamAccount{baseURLs: baseURLs},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("bifrost.Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	return &CompletionHandler{client: client, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+}
+
+func speechCtx(body string) *fasthttp.RequestCtx {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/v1/audio/speech")
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyString(body)
+	return ctx
+}
+
+func speechUsageHeader(t *testing.T, ctx *fasthttp.RequestCtx) map[string]any {
+	t.Helper()
+	raw := ctx.Response.Header.Peek(lib.HeaderBifrostUsage)
+	if raw == nil {
+		return nil
+	}
+	var usage map[string]any
+	if err := json.Unmarshal(raw, &usage); err != nil {
+		t.Fatalf("x-bifrost-usage is not JSON: %q: %v", raw, err)
+	}
+	return usage
+}
+
+// The non-streaming /v1/audio/speech response used to be the audio with a fixed
+// Content-Type: audio/mpeg and no usage anywhere. It now keeps the audio as the body, labels
+// it with its real format and carries the vendor's usage in x-bifrost-usage (contract C5).
+func TestSpeechNonStreamingCarriesUsageHeaderAndContentType(t *testing.T) {
+	wav := []byte("RIFF\x24\x00\x00\x00WAVEfmt \x10\x00\x00\x00")
+	pcm := []byte{0x01, 0x00, 0x02, 0x00, 0x03, 0x00}
+	miniMax := &audioUpstream{contentType: "application/json", body: []byte(`{"data":{"audio":"` + hex.EncodeToString(wav) +
+		`","status":2},"extra_info":{"audio_length":1200,"usage_characters":13},"trace_id":"t1","base_resp":{"status_code":0,"status_msg":"success"}}`)}
+	gemini := &audioUpstream{contentType: "application/json", body: []byte(`{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"audio/L16;codec=pcm;rate=24000","data":"` +
+		base64.StdEncoding.EncodeToString(pcm) + `"}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":42,"totalTokenCount":49}}`)}
+	openAI := &audioUpstream{contentType: "audio/flac", body: []byte("fLaC\x00\x00\x00\x22")}
+	h := newAudioTestHandler(t, map[schemas.ModelProvider]*audioUpstream{
+		schemas.MiniMax: miniMax, schemas.Gemini: gemini, schemas.OpenAI: openAI,
+	})
+
+	t.Run("minimax", func(t *testing.T) {
+		ctx := speechCtx(`{"model":"minimax/speech-2.6-hd","input":"你好, world","voice":"English_Graceful_Lady","response_format":"wav"}`)
+		h.speech(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		if !bytes.Equal(ctx.Response.Body(), wav) {
+			t.Fatalf("body = %q, want the decoded audio", ctx.Response.Body())
+		}
+		if got := string(ctx.Response.Header.ContentType()); got != "audio/wav" {
+			t.Fatalf("Content-Type = %q, want audio/wav", got)
+		}
+		usage := speechUsageHeader(t, ctx)
+		// MiniMax's usage_characters (13) used to be overwritten by the code-point count (9).
+		if usage == nil || usage["input_chars"] != float64(13) || usage["billed_characters"] != float64(13) {
+			t.Fatalf("x-bifrost-usage = %v, want MiniMax's usage_characters 13 in input_chars and billed_characters", usage)
+		}
+	})
+
+	t.Run("gemini", func(t *testing.T) {
+		// Gemini accepts only wav or no response_format; with none it answers raw PCM, which
+		// used to go out labeled audio/mpeg.
+		ctx := speechCtx(`{"model":"gemini/gemini-2.5-flash-preview-tts","input":"Hello","voice":"Kore"}`)
+		h.speech(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		if !bytes.Equal(ctx.Response.Body(), pcm) {
+			t.Fatalf("body = %q, want the PCM bytes", ctx.Response.Body())
+		}
+		if got := string(ctx.Response.Header.ContentType()); got != "audio/L16;codec=pcm;rate=24000" {
+			t.Fatalf("Content-Type = %q, want Gemini's audio/L16 type", got)
+		}
+		usage := speechUsageHeader(t, ctx)
+		if usage == nil || usage["input_tokens"] != float64(7) || usage["output_tokens"] != float64(42) {
+			t.Fatalf("x-bifrost-usage = %v, want Gemini's usageMetadata tokens", usage)
+		}
+	})
+
+	t.Run("gemini wav", func(t *testing.T) {
+		ctx := speechCtx(`{"model":"gemini/gemini-2.5-flash-preview-tts","input":"Hello","voice":"Kore","response_format":"wav"}`)
+		h.speech(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		if got := string(ctx.Response.Header.ContentType()); got != "audio/wav" {
+			t.Fatalf("Content-Type = %q, want audio/wav", got)
+		}
+		if !bytes.HasPrefix(ctx.Response.Body(), []byte("RIFF")) {
+			t.Fatalf("body = %q, want a WAV file", ctx.Response.Body())
+		}
+	})
+
+	t.Run("openai", func(t *testing.T) {
+		ctx := speechCtx(`{"model":"openai/gpt-4o-mini-tts","input":"Hello","voice":"alloy","response_format":"flac","language_code":"en","with_timestamps":true}`)
+		h.speech(ctx)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		if got := string(ctx.Response.Header.ContentType()); got != "audio/flac" {
+			t.Fatalf("Content-Type = %q, want OpenAI's audio/flac", got)
+		}
+		// OpenAI reports no usage for non-streaming speech; no token count may be invented.
+		usage := speechUsageHeader(t, ctx)
+		for _, key := range []string{"input_tokens", "output_tokens", "total_tokens", "billed_characters"} {
+			if v, ok := usage[key]; ok && v != float64(0) {
+				t.Fatalf("x-bifrost-usage = %v, carries invented %s", usage, key)
+			}
+		}
+		openAI.mu.Lock()
+		sent := string(openAI.gotBody)
+		openAI.mu.Unlock()
+		for _, key := range []string{"language_code", "with_timestamps"} {
+			if strings.Contains(sent, `"`+key+`"`) {
+				t.Fatalf("OpenAI received ElevenLabs field %s: %s", key, sent)
+			}
+		}
+	})
+}
+
+// A repeated transcription form field must reach the vendor with every value (contract C4).
+func TestTranscriptionForwardsRepeatedFormFieldToVendor(t *testing.T) {
+	openAI := &audioUpstream{contentType: "application/json", body: []byte(`{"text":"hi","usage":{"type":"duration","seconds":1}}`)}
+	h := newAudioTestHandler(t, map[schemas.ModelProvider]*audioUpstream{schemas.OpenAI: openAI})
+
+	ctx := multipartTranscriptionCtx(t, [][2]string{
+		{"model", "openai/gpt-4o-transcribe"},
+		{"include[]", "logprobs"},
+		{"include[]", "segments"},
+	})
+	h.transcription(ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+
+	openAI.mu.Lock()
+	contentType, body := openAI.gotType, openAI.gotBody
+	openAI.mu.Unlock()
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		t.Fatalf("vendor Content-Type %q: %v", contentType, err)
+	}
+	form, err := multipart.NewReader(bytes.NewReader(body), params["boundary"]).ReadForm(1 << 20)
+	if err != nil {
+		t.Fatalf("read vendor form: %v", err)
+	}
+	if got := form.Value["include[]"]; !slices.Equal(got, []string{"logprobs", "segments"}) {
+		t.Fatalf("vendor include[] = %q, want [logprobs segments]", got)
+	}
+}
+
+// The speech handler writes x-bifrost-usage before the body; when the vendor's 200 carried no
+// audio, the 502 provider_empty_result must not keep the success usage header.
+func TestWriteSpeechAudioEmptyAudioDropsUsageHeader(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	lib.SetSpeechUsageHeader(ctx, &schemas.SpeechUsage{InputTokens: 3})
+	writeSpeechAudio(ctx, &schemas.BifrostSpeechResponse{Usage: &schemas.SpeechUsage{InputTokens: 3}}, "wav")
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", got)
+	}
+	if got := ctx.Response.Header.Peek(lib.HeaderBifrostUsage); got != nil {
+		t.Fatalf("x-bifrost-usage = %q on a 502", got)
+	}
+
+	ok := &fasthttp.RequestCtx{}
+	writeSpeechAudio(ok, &schemas.BifrostSpeechResponse{Audio: []byte("RIFF\x24\x00\x00\x00WAVEfmt ")}, "mp3")
+	if got := string(ok.Response.Header.ContentType()); got != "audio/wav" {
+		t.Fatalf("Content-Type = %q, want audio/wav from the bytes", got)
 	}
 }

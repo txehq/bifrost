@@ -2782,6 +2782,13 @@ func HandleOpenAISpeechRequest(
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
+	// The vendor's Content-Type names the audio format it actually returned; read it before
+	// finalizeOpenAIResponse takes ownership of resp (TXE-6530).
+	audioContentType := ""
+	if ct := string(resp.Header.ContentType()); strings.HasPrefix(strings.ToLower(ct), "audio/") {
+		audioContentType = ct
+	}
+
 	// Get the binary audio data from the response body
 	body, lpResult, finalErr := finalizeOpenAIResponse(ctx, resp, latency, providerName, logger)
 	respOwned = false // ownership transferred
@@ -2798,7 +2805,8 @@ func HandleOpenAISpeechRequest(
 	// Note: For speech synthesis, we return the binary audio data in the raw response
 	// The audio data is typically in MP3, WAV, or other audio formats as specified by response_format
 	bifrostResponse := &schemas.BifrostSpeechResponse{
-		Audio: body,
+		Audio:       body,
+		ContentType: audioContentType,
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: providerResponseHeaders,

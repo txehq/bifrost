@@ -131,11 +131,15 @@ func (response *GenerateContentResponse) ToBifrostSpeechResponse(ctx context.Con
 		candidate := response.Candidates[0]
 		if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
 			var audioData []byte
+			audioMIMEType := ""
 			// Extract audio data from all parts
 			for _, part := range candidate.Content.Parts {
 				if part.InlineData != nil && len(part.InlineData.Data) > 0 {
 					// Check if this is audio data
 					if strings.HasPrefix(part.InlineData.MIMEType, "audio/") {
+						if audioMIMEType == "" {
+							audioMIMEType = part.InlineData.MIMEType
+						}
 						decodedData, err := decodeBase64StringToBytes(part.InlineData.Data)
 						if err != nil {
 							return nil, fmt.Errorf("failed to decode base64 audio data: %v", err)
@@ -154,8 +158,12 @@ func (response *GenerateContentResponse) ToBifrostSpeechResponse(ctx context.Con
 						return nil, fmt.Errorf("failed to convert PCM to WAV: %v", err)
 					}
 					bifrostResp.Audio = wavData
+					bifrostResp.ContentType = "audio/wav"
 				} else {
+					// Raw PCM as Gemini sent it; its mimeType (audio/L16;codec=pcm;rate=24000)
+					// is the only record of the format (TXE-6530).
 					bifrostResp.Audio = audioData
+					bifrostResp.ContentType = audioMIMEType
 				}
 			}
 

@@ -3,6 +3,7 @@ package lib
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -753,10 +754,21 @@ func BenchmarkStripExtraFieldsIfInHeaders_BodyMode(b *testing.B) {
 }
 
 // TestExposedResponseHeadersListsEveryGatewayHeader guards ExposedResponseHeaders against drift:
-// every x-bifrost-* header constant in responseheaders.go must be exposed to browser clients.
+// every x-bifrost-* header constant declared anywhere in this package must be exposed to browser
+// clients. It scans every non-test source file, not only responseheaders.go: x-bifrost-usage
+// (audio.go, TXE-6530) was first declared outside it and escaped the list.
 func TestExposedResponseHeadersListsEveryGatewayHeader(t *testing.T) {
-	src, err := os.ReadFile("responseheaders.go")
+	files, err := filepath.Glob("*.go")
 	assert.NoError(t, err)
+	var src []byte
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		assert.NoError(t, err)
+		src = append(src, b...)
+	}
 	exposed := strings.Split(ExposedResponseHeaders, ", ")
 	names := regexp.MustCompile(`= "(x-bifrost-[a-z0-9-]+)"`).FindAllStringSubmatch(string(src), -1)
 	assert.NotEmpty(t, names)

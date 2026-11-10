@@ -294896,6 +294896,327 @@
       ]
     },
     {
+      "name": "304. TTS usage header, audio Content-Type and repeated transcription form fields (tts usage header)",
+      "description": "TXE-6530, contract C5 and C4. A non-streaming /v1/audio/speech (and /openai/v1/audio/speech) response keeps the audio bytes as its body, labels them with the format actually returned instead of a fixed audio/mpeg, and carries the unified speech usage as JSON in the x-bifrost-usage response header. A character count the vendor reports (MiniMax usage_characters) is no longer overwritten by Bifrost's own code-point count. OpenAI speech requests no longer carry the ElevenLabs-only fields of the shared speech parameters (language_code, with_timestamps and the rest). A transcription form field the caller repeats (include[]) reaches the vendor with every value; OpenAI accepts only one include value (logprobs), so the red half of that change is pinned by the Go handler test on the outgoing form and the case here pins the route end to end.",
+      "item": [
+        {
+          "name": "/v1/audio/speech - wav labeled audio/wav, vendor usage in x-bifrost-usage - minimax/speech-2.8-turbo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function bifrostUsage() {",
+                  "  var raw = pm.response.headers.get('x-bifrost-usage');",
+                  "  pm.expect(raw, 'no x-bifrost-usage header; headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.a('string').and.not.empty;",
+                  "  return JSON.parse(raw);",
+                  "}",
+                  "pm.test('audio body, real Content-Type and MiniMax usage in the header', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), 'content type').to.eql('audio/wav');",
+                  "  var bytes = pm.response.stream;",
+                  "  pm.expect(String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]), 'body is not a WAV file').to.eql('RIFF');",
+                  "  var usage = bifrostUsage();",
+                  "  pm.expect(usage.billed_characters, 'usage_characters missing from billed_characters: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "  pm.expect(usage.input_chars, 'input_chars should keep the vendor count: ' + JSON.stringify(usage)).to.eql(usage.billed_characters);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/speech-2.8-turbo\",\n  \"input\": \"Hello from MiniMax through Bifrost.\",\n  \"voice\": \"English_Graceful_Lady\",\n  \"response_format\": \"wav\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/speech - raw PCM labeled with Gemini's audio/L16 type, token usage in x-bifrost-usage - gemini/gemini-2.5-flash-preview-tts",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function bifrostUsage() {",
+                  "  var raw = pm.response.headers.get('x-bifrost-usage');",
+                  "  pm.expect(raw, 'no x-bifrost-usage header; headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.a('string').and.not.empty;",
+                  "  return JSON.parse(raw);",
+                  "}",
+                  "pm.test('PCM body labeled audio/L16 with Gemini usage in the header', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), 'content type').to.match(/^audio\\/L16/i);",
+                  "  pm.expect(pm.response.stream.length, 'audio too small').to.be.above(2000);",
+                  "  var usage = bifrostUsage();",
+                  "  pm.expect(usage.input_tokens, 'input_tokens: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "  pm.expect(usage.output_tokens, 'output_tokens: ' + JSON.stringify(usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash-preview-tts\",\n  \"input\": \"Hello from Gemini through Bifrost.\",\n  \"voice\": \"Kore\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/speech - flac labeled audio/flac, ElevenLabs-only language_code not sent, no invented tokens - openai/gpt-4o-mini-tts",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function bifrostUsage() {",
+                  "  var raw = pm.response.headers.get('x-bifrost-usage');",
+                  "  pm.expect(raw, 'no x-bifrost-usage header; headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.a('string').and.not.empty;",
+                  "  return JSON.parse(raw);",
+                  "}",
+                  "pm.test('flac body, OpenAI Content-Type, no token counts OpenAI did not report', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), 'content type').to.eql('audio/flac');",
+                  "  var bytes = pm.response.stream;",
+                  "  pm.expect(String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]), 'body is not FLAC').to.eql('fLaC');",
+                  "  var usage = bifrostUsage();",
+                  "  pm.expect(usage.input_tokens || 0, 'invented input_tokens: ' + JSON.stringify(usage)).to.eql(0);",
+                  "  pm.expect(usage.output_tokens || 0, 'invented output_tokens: ' + JSON.stringify(usage)).to.eql(0);",
+                  "  pm.expect(usage.billed_characters, 'invented billed_characters: ' + JSON.stringify(usage)).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini-tts\",\n  \"input\": \"Hello from OpenAI through Bifrost.\",\n  \"voice\": \"alloy\",\n  \"response_format\": \"flac\",\n  \"language_code\": \"en\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/audio/speech - wav labeled audio/wav with speech.wav and x-bifrost-usage - openai/gpt-4o-mini-tts",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function bifrostUsage() {",
+                  "  var raw = pm.response.headers.get('x-bifrost-usage');",
+                  "  pm.expect(raw, 'no x-bifrost-usage header; headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.a('string').and.not.empty;",
+                  "  return JSON.parse(raw);",
+                  "}",
+                  "pm.test('drop-in route shares the /v1 speech writer', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), 'content type').to.eql('audio/wav');",
+                  "  pm.expect(pm.response.headers.get('Content-Disposition'), 'filename').to.eql('attachment; filename=speech.wav');",
+                  "  var usage = bifrostUsage();",
+                  "  pm.expect(usage, 'usage').to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini-tts\",\n  \"input\": \"Hello from the OpenAI drop-in route.\",\n  \"voice\": \"alloy\",\n  \"response_format\": \"wav\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai/openai/deployments/{deployment}/audio/speech - Azure deployment route labels wav audio/wav with speech.wav and x-bifrost-usage - azure/gpt-4o-mini-tts",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deployment route shares the /v1 speech writer', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type'), 'content type').to.eql('audio/wav');",
+                  "  pm.expect(pm.response.headers.get('Content-Disposition'), 'filename').to.eql('attachment; filename=speech.wav');",
+                  "  var bytes = pm.response.stream;",
+                  "  pm.expect(String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]), 'body is not a WAV file').to.eql('RIFF');",
+                  "  var raw = pm.response.headers.get('x-bifrost-usage');",
+                  "  pm.expect(raw, 'no x-bifrost-usage header').to.be.a('string').and.not.empty;",
+                  "  pm.expect(JSON.parse(raw), 'usage').to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "api-key",
+                "value": "{{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini-tts\",\n  \"input\": \"Hello from the Azure deployment route.\",\n  \"voice\": \"alloy\",\n  \"response_format\": \"wav\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/openai/deployments/gpt-4o-mini-tts/audio/speech?api-version=2025-04-01-preview",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "openai",
+                "deployments",
+                "gpt-4o-mini-tts",
+                "audio",
+                "speech?api-version=2025-04-01-preview"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/transcriptions - include[] form field reaches OpenAI, logprobs come back - openai/gpt-4o-mini-transcribe",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('include[]=logprobs reached the vendor', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'no transcript: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.logprobs, 'no logprobs, include[] was dropped: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/gpt-4o-mini-transcribe",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "json",
+                  "type": "text"
+                },
+                {
+                  "key": "include[]",
+                  "value": "logprobs",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "303. Moonshot Kimi Responses API and Anthropic-compatible Messages (moonshot kimi native)",
       "description": "Moonshot (Kimi) serves its own Responses API at /v1/responses and an Anthropic-compatible Messages API at /anthropic/v1/messages (https://platform.kimi.ai/docs/api/responses.md, https://platform.kimi.ai/docs/api/messages.md). The moonshot provider used to convert every Responses request to chat completions, which drops Responses-only fields: a server-side web_search tool never reached Kimi and no web_search_call output item came back. It did not advertise an Anthropic endpoint either, so /anthropic/v1/messages was converted twice (Messages to Responses to chat). The provider now calls Kimi's /v1/responses, and /anthropic/v1/messages with a moonshot/ model is passed through byte for byte to Kimi's Anthropic-compatible endpoint with bearer auth (core/providers/moonshot/moonshot.go, core/providers/anthropicmsg). Byte-exactness of the Messages body is pinned by TestAnthropicMessagesRouteNativeMoonshotEndToEnd and TestMoonshotMessagesPassthroughToKimiAnthropicEndpoint; these cases pin the live wire path. Chat completions on moonshot are unchanged and not covered here.",
       "item": [

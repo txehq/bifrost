@@ -14,9 +14,22 @@ speech:
             $ref: '../../schemas/inference/speech.yaml#/SpeechRequest'
     responses:
       '200':
-        description: Successful response
+        description: |
+          Successful response. Without `stream_format` the body is the audio itself, and its
+          `Content-Type` names the format actually returned (for example `audio/wav`,
+          `audio/flac`, or Gemini's `audio/L16;codec=pcm;rate=24000`), not always `audio/mpeg`.
+          The unified usage of that response is in the `x-bifrost-usage` header.
+        headers:
+          x-bifrost-usage:
+            description: |
+              The unified speech usage of a non-streaming audio response, as compact JSON
+              (the `SpeechUsage` object). Quantities come from what the provider reported;
+              absent when the response has no usage.
+            schema:
+              type: string
+              example: '{"input_chars":36,"input_tokens":7,"output_tokens":42,"total_tokens":49}'
         content:
-          audio/mpeg:
+          audio/*:
             schema:
               type: string
               format: binary

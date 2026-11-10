@@ -33,6 +33,14 @@ func ToOpenAISpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *OpenAISpee
 
 	if params != nil {
 		openaiReq.SpeechParameters = *params
+		// SpeechParameters is shared with ElevenLabs. OpenAI's /audio/speech schema has none of
+		// these fields, so they are not sent to OpenAI-shaped endpoints (OpenAI, Azure, Groq,
+		// OpenRouter) even when the caller set them (TXE-6530, contract C4).
+		openaiReq.LanguageCode = nil
+		openaiReq.PronunciationDictionaryLocators = nil
+		openaiReq.EnableLogging = nil
+		openaiReq.OptimizeStreamingLatency = nil
+		openaiReq.WithTimestamps = nil
 	}
 
 	if bifrostReq.Params != nil {

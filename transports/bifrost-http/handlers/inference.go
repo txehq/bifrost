@@ -1833,32 +1833,6 @@ func prepareSpeechRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Speech
 	}, nil
 }
 
-// speechAttachmentFilename derives the download filename from the requested
-// audio format so non-MP3 responses aren't mislabeled as "speech.mp3". The
-// format may be OpenAI-style ("opus", "wav", "flac", ...) or ElevenLabs-style
-// with a codec/rate prefix ("mp3_22050_32", "pcm_16000", "ulaw_8000"). Unknown
-// or empty formats fall back to mp3 (the API default).
-func speechAttachmentFilename(responseFormat string) string {
-	ext := "mp3"
-	switch {
-	case strings.HasPrefix(responseFormat, "opus"):
-		ext = "opus"
-	case strings.HasPrefix(responseFormat, "aac"):
-		ext = "aac"
-	case strings.HasPrefix(responseFormat, "flac"):
-		ext = "flac"
-	case strings.HasPrefix(responseFormat, "wav"):
-		ext = "wav"
-	case strings.HasPrefix(responseFormat, "pcm"):
-		ext = "pcm"
-	case strings.HasPrefix(responseFormat, "ulaw"):
-		ext = "ulaw"
-	case strings.HasPrefix(responseFormat, "alaw"):
-		ext = "alaw"
-	}
-	return "speech." + ext
-}
-
 // speech handles POST /v1/audio/speech - Process speech completion requests.
 // ElevenLabs sound-effect models (e.g. "eleven_text_to_sound_v2") also flow
 // through here; the provider routes them to /v1/sound-generation by model id,
@@ -1871,7 +1845,7 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 	}
 	// Filename tracks the requested audio format (prepareSpeechRequest guarantees
 	// req.SpeechParameters is non-nil, so ResponseFormat is safe to read here).
-	attachmentFilename := speechAttachmentFilename(req.ResponseFormat)
+	attachmentFilename := lib.SpeechAttachmentFilename(req.ResponseFormat)
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	if bifrostCtx == nil {
@@ -1901,6 +1875,9 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 
 	if resp != nil {
 		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
+		// The audio body has no room for the unified usage, so it travels in x-bifrost-usage,
+		// next to the vendor's own headers (TXE-6530, contract C5).
+		lib.SetSpeechUsageHeader(ctx, resp.Usage)
 	}
 
 	if streamLargeResponseIfActive(ctx, bifrostCtx) {
@@ -1917,15 +1894,17 @@ func (h *CompletionHandler) speech(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	writeSpeechAudio(ctx, resp, attachmentFilename)
+	writeSpeechAudio(ctx, resp, req.ResponseFormat)
 }
 
-// writeSpeechAudio writes a buffered speech response's audio. A vendor 200 with no audio
-// (an empty body included) and no error object is the vendor's fault, not the caller's:
-// 502 provider_empty_result (contract C6), keeping the vendor's response headers the
-// caller already forwarded.
-func writeSpeechAudio(ctx *fasthttp.RequestCtx, resp *schemas.BifrostSpeechResponse, attachmentFilename string) {
+// writeSpeechAudio writes a buffered speech response's audio through lib.WriteSpeechAudioResponse
+// (Content-Type and filename from the audio actually returned, TXE-6530). A vendor 200 with no
+// audio (an empty body included) and no error object is the vendor's fault, not the caller's:
+// 502 provider_empty_result (contract C6), keeping the vendor's response headers the caller
+// already forwarded but not the success usage header.
+func writeSpeechAudio(ctx *fasthttp.RequestCtx, resp *schemas.BifrostSpeechResponse, responseFormat string) {
 	if resp == nil || len(resp.Audio) == 0 {
+		ctx.Response.Header.Del(lib.HeaderBifrostUsage)
 		emptyErr := schemas.NewProviderEmptyResultError("Speech response is missing audio data")
 		if resp != nil {
 			emptyErr.ExtraFields = schemas.ErrorExtraFieldsFromResponse(resp.ExtraFields, schemas.ErrorTypeProviderEmptyResult)
@@ -1934,10 +1913,7 @@ func writeSpeechAudio(ctx *fasthttp.RequestCtx, resp *schemas.BifrostSpeechRespo
 		return
 	}
 
-	ctx.Response.Header.Set("Content-Type", "audio/mpeg")
-	ctx.Response.Header.Set("Content-Disposition", "attachment; filename="+attachmentFilename)
-	ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(resp.Audio)))
-	ctx.Response.SetBody(resp.Audio)
+	lib.WriteSpeechAudioResponse(ctx, resp, responseFormat)
 }
 
 // prepareTranscriptionRequest prepares a BifrostTranscriptionRequest from a multipart form.
@@ -1991,8 +1967,16 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (
 		transcriptionParams.ExtraParams = make(map[string]interface{})
 	}
 	for key, value := range form.Value {
-		if len(value) > 0 && value[0] != "" && !transcriptionParamsKnownFields[key] {
-			transcriptionParams.ExtraParams[key] = value[0]
+		if transcriptionParamsKnownFields[key] {
+			continue
+		}
+		// A field the caller repeated keeps every value (TXE-6530); one value stays a string.
+		switch values := lib.NonEmptyFormValues(value); len(values) {
+		case 0:
+		case 1:
+			transcriptionParams.ExtraParams[key] = values[0]
+		default:
+			transcriptionParams.ExtraParams[key] = values
 		}
 	}
 	stream := false

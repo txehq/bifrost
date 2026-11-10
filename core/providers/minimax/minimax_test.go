@@ -676,8 +676,8 @@ func TestMiniMaxSpeech(t *testing.T) {
 	if !bytes.Equal(resp.Audio, audio) {
 		t.Errorf("audio = %q, want %q", resp.Audio, audio)
 	}
-	if resp.Usage == nil || resp.Usage.InputChars != 11 {
-		t.Errorf("usage = %+v, want 11 input chars", resp.Usage)
+	if resp.Usage == nil || resp.Usage.InputChars != 11 || resp.Usage.BilledCharacters == nil || *resp.Usage.BilledCharacters != 11 {
+		t.Errorf("usage = %+v, want usage_characters 11 in input_chars and billed_characters", resp.Usage)
 	}
 	body := captured()[0].body
 	if gjson.GetBytes(body, "voice_setting.voice_id").String() != "English_Graceful_Lady" || gjson.GetBytes(body, "output_format").String() != "hex" {
@@ -734,8 +734,8 @@ func TestMiniMaxSpeechStream(t *testing.T) {
 	if !bytes.Equal(audio, []byte{0xaa, 0xbb, 0xcc}) {
 		t.Errorf("audio = %x, want aabbcc", audio)
 	}
-	if usage == nil || usage.InputChars != 11 {
-		t.Errorf("usage = %+v, want 11 input chars", usage)
+	if usage == nil || usage.InputChars != 11 || usage.BilledCharacters == nil || *usage.BilledCharacters != 11 {
+		t.Errorf("usage = %+v, want usage_characters 11 in input_chars and billed_characters", usage)
 	}
 	if !gjson.GetBytes(captured()[0].body, "stream_options.exclude_aggregated_audio").Bool() {
 		t.Errorf("exclude_aggregated_audio not sent: %s", captured()[0].body)
