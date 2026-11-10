@@ -958,7 +958,8 @@ const azureSpeechAnswer = (req, res, path, raw) => {
 			};
 			return next();
 		}
-		res.writeHead(200, { "Content-Type": "audio/mpeg" });
+		// Azure AI Speech labels the audio itself: a riff-* output format comes back as audio/x-wav.
+		res.writeHead(200, { "Content-Type": headers.output_format.startsWith("riff-") ? "audio/x-wav" : "audio/mpeg" });
 		return res.end(azureSpeechAudio);
 	}
 	const form = raw.toString("latin1");

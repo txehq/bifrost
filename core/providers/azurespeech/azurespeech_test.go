@@ -266,6 +266,33 @@ func TestAzureSpeechSpeechSendsSSMLAndOutputFormat(t *testing.T) {
 	}
 }
 
+// The Content-Type of the speech response is the vendor's own for the audio it returned
+// (TXE-6530): it is kept as sent, and left empty when the vendor sent none or a non-audio one.
+func TestAzureSpeechSpeechKeepsTheVendorAudioContentType(t *testing.T) {
+	cases := []struct {
+		name, vendor, want string
+	}{
+		{name: "wav", vendor: "audio/x-wav", want: "audio/x-wav"},
+		{name: "opus with codec parameter", vendor: "audio/ogg; codecs=opus", want: "audio/ogg; codecs=opus"},
+		{name: "upper case", vendor: "Audio/MPEG", want: "Audio/MPEG"},
+		{name: "not an audio type", vendor: "application/octet-stream", want: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider, _ := newMockAzureSpeech(t, map[string]http.HandlerFunc{
+				speechPath: audioResponse(tc.vendor, []byte("audio-bytes")),
+			})
+			response, bifrostErr := provider.Speech(testContext(t), testKey(), speechRequest(maiVoice, nil))
+			if bifrostErr != nil {
+				t.Fatalf("Speech error: %+v", bifrostErr.Error)
+			}
+			if response.ContentType != tc.want {
+				t.Errorf("ContentType = %q, want %q", response.ContentType, tc.want)
+			}
+		})
+	}
+}
+
 func TestToAzureSpeechSSML(t *testing.T) {
 	const open = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="`
 	tests := []struct {

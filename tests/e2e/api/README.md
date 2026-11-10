@@ -390,7 +390,8 @@ passthrough body carries `: heartbeat` lines.
 ## Azure AI Speech
 
 Folder 330 pins the `azurespeech` provider against the same local fixture, with no live provider calls:
-the SSML and `X-Microsoft-OutputFormat` of a speech request, audio chunks forwarded on arrival for a
+the SSML and `X-Microsoft-OutputFormat` of a speech request, the vendor's audio `Content-Type` and the
+`x-bifrost-usage` header on its response, audio chunks forwarded on arrival for a
 streamed one, the multipart `audio` + `definition` of a transcription and the `usage.seconds` read from
 `durationMilliseconds`, the `caller_unsupported_parameter` refusals, and vendor errors that keep their
 status. The fixture serves the text to speech API on `/tts/cognitiveservices/v1` and fast transcription on

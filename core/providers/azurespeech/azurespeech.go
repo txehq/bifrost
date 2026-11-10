@@ -143,8 +143,18 @@ func (provider *AzureSpeechProvider) newSpeechRequest(ctx *schemas.BifrostContex
 	return ssml, nil
 }
 
+// audioContentType returns the Content-Type Azure AI Speech sent with the audio, which names
+// the format it actually returned, or "" when the header is missing or is not an audio type.
+func audioContentType(resp *fasthttp.Response) string {
+	contentType := string(resp.Header.ContentType())
+	if len(contentType) >= 6 && strings.EqualFold(contentType[:6], "audio/") {
+		return contentType
+	}
+	return ""
+}
+
 // Speech performs a text to speech request: one POST of the SSML, answered with the audio
-// bytes. Usage stays empty: real-time synthesis reports no billed character count.
+// bytes and the vendor's Content-Type for them. Usage stays empty: real-time synthesis reports no billed character count.
 func (provider *AzureSpeechProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
@@ -188,7 +198,8 @@ func (provider *AzureSpeechProvider) Speech(ctx *schemas.BifrostContext, key sch
 	}
 
 	bifrostResponse := &schemas.BifrostSpeechResponse{
-		Audio: body,
+		Audio:       body,
+		ContentType: audioContentType(resp),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
