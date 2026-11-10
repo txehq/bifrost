@@ -312383,6 +312383,407 @@
           ]
         }
       ]
+    },
+    {
+      "name": "456. A Replicate prediction with no URL to poll is an empty result, not a crash (replicate empty prediction)",
+      "description": "Pins TXE-7056. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The replicate provider's base is the fixture's /pp/replicate, which accepts every prediction create with 201 and a body that is not finished and names no urls.get. Before the change the provider dereferenced the missing urls in the request worker and the gateway process died, Rows 2 to 6: each of the five routes whose Replicate operation polls a prediction (/v1/images/generations, /v1/chat/completions, /v1/completions, /v1/responses, /v1/images/edits as a multipart form) returns 502 provider_empty_result. Row 7: the fixture saw one create per request and no poll. Row 8: the gateway still answers. Before the change the gateway process died on row 2 and every later row failed to connect.",
+      "item": [
+        {
+          "name": "456.1 reset the fixture's record (replicate empty prediction)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "http://127.0.0.1:8791/__reset"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the fixture reset its record', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "456.2 [EXPECT-502] replicate/owner/model POST /v1/images/generations: a prediction accepted with no urls is an empty result (replicate empty prediction)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"replicate/owner/model\",\n  \"prompt\": \"a paper boat on a pond\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an accepted prediction with no URL to poll is 502 provider_empty_result', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(502);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, pm.response.text()).to.eql(false);",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_empty_result');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "456.3 [EXPECT-502] replicate/owner/model POST /v1/chat/completions: a prediction accepted with no urls is an empty result (replicate empty prediction)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"replicate/owner/model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an accepted prediction with no URL to poll is 502 provider_empty_result', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(502);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, pm.response.text()).to.eql(false);",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_empty_result');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "456.4 [EXPECT-502] replicate/owner/model POST /v1/completions: a prediction accepted with no urls is an empty result (replicate empty prediction)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"replicate/owner/model\",\n  \"prompt\": \"hi\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an accepted prediction with no URL to poll is 502 provider_empty_result', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(502);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, pm.response.text()).to.eql(false);",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_empty_result');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "456.5 [EXPECT-502] replicate/owner/model POST /v1/responses: a prediction accepted with no urls is an empty result (replicate empty prediction)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"replicate/owner/model\",\n  \"input\": \"hi\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an accepted prediction with no URL to poll is 502 provider_empty_result', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(502);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, pm.response.text()).to.eql(false);",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_empty_result');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "456.6 [EXPECT-502] replicate/owner/model POST /v1/images/edits: a prediction accepted with no urls is an empty result (replicate empty prediction)",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "replicate/owner/model",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "make it blue",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an accepted prediction with no URL to poll is 502 provider_empty_result', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(502);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, pm.response.text()).to.eql(false);",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_empty_result');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "456.7 replicate prediction creates reached the vendor once each and nothing was polled (replicate empty prediction)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "http://127.0.0.1:8791/__wire"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/replicate/') === 0; });",
+                  "pm.test('five creates, one per request, and no poll', function () {",
+                  "  pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.path; }))).to.eql(5);",
+                  "  calls.forEach(function (c) { pm.expect(c.path, c.path).to.match(/\\/predictions$/); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "456.8 openai/upstream-ok POST /v1/chat/completions still answers: the gateway kept serving (replicate empty prediction)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-ok\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the gateway is still serving after the five empty predictions', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
