@@ -21,6 +21,7 @@ import (
 	"github.com/capsohq/bifrost/core/mcp/codemode/starlark"
 	"github.com/capsohq/bifrost/core/mcp/credstore"
 	"github.com/capsohq/bifrost/core/providers/anthropic"
+	"github.com/capsohq/bifrost/core/providers/anthropicmsg"
 	"github.com/capsohq/bifrost/core/providers/azure"
 	"github.com/capsohq/bifrost/core/providers/bedrock"
 	"github.com/capsohq/bifrost/core/providers/bedrockmantle"
@@ -5777,6 +5778,21 @@ func injectedToolsRan(ctx *schemas.BifrostContext) bool {
 	return executed
 }
 
+// requestIsWriteOnce reports whether req must be written to the vendor at most once: every
+// request but the chat family (schemas.RequestType.KeepsStaleConnectionRetry). A passthrough
+// request is chat when it carries the native Messages create call, the third chat path, and
+// write-once for every other path (audio, files, batches, anything a vendor bills).
+func requestIsWriteOnce(req *schemas.BifrostRequest) bool {
+	if req.RequestType.KeepsStaleConnectionRetry() {
+		return false
+	}
+	switch req.RequestType {
+	case schemas.PassthroughRequest, schemas.PassthroughStreamRequest:
+		return req.PassthroughRequest == nil || !anthropicmsg.IsMessagesPath(req.PassthroughRequest.Path)
+	}
+	return true
+}
+
 // isNoKeySupportsModel reports whether the error is the key pool's refusal for a model none of
 // the provider's keys can serve.
 func isNoKeySupportsModel(err *schemas.BifrostError) bool {
@@ -8148,6 +8164,12 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		req.Context.SetValue(schemas.BifrostContextKeyIsCustomProvider, !IsStandardProvider(baseProvider))
 		// Read once per request, so the retry loop needs no handle on the Bifrost instance.
 		markEncryptedReasoningRetry(req.Context, bifrost.disableEncryptedReasoningRetry.Load())
+		// A request that is not chat must reach the vendor at most once (contract C3): the HTTP
+		// transport reads this mark and does not resend it when a reused connection fails. Chat
+		// pays only the type check.
+		if requestIsWriteOnce(&req.BifrostRequest) {
+			req.Context.SetValue(schemas.BifrostContextKeyWriteOnce, true)
+		}
 		// Lets downstream converters resolve a custom provider key back to the built-in provider it wraps.
 		req.Context.SetValue(schemas.BifrostContextKeyBaseProviderType, baseProvider)
 		// Re-stamped per attempt so a fallback cannot inherit the previous provider's opt-in.
