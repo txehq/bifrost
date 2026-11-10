@@ -1156,3 +1156,45 @@ func TestChatRequestWithoutToolsOmitsAttribute(t *testing.T) {
 		t.Errorf("%s present with no tools configured", schemas.AttrTools)
 	}
 }
+
+// TXE-6959: every span builder that renders cache-write tiers carries OpenAI's 30m and 12h tiers,
+// in the chat (prompt_token_details) or Responses (input_token_details) namespace.
+func TestSpanBuildersCarryOpenAICacheWriteTiers(t *testing.T) {
+	tiers := func() *schemas.ChatCachedWriteTokenDetails {
+		return &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens30m: 50, CachedWriteTokens12h: 30}
+	}
+	check := func(t *testing.T, name string, attrs map[string]any, responses bool) {
+		t.Helper()
+		for tier, want := range map[string]int{schemas.CachedWriteTier30m: 50, schemas.CachedWriteTier12h: 30} {
+			if got := attrs[schemas.CachedWriteTierAttr(responses, tier)]; got != want {
+				t.Errorf("%s: %s tier attribute = %v, want %d", name, tier, got, want)
+			}
+			if _, ok := attrs[schemas.CachedWriteTierAttr(!responses, tier)]; ok {
+				t.Errorf("%s: %s tier emitted in the other API family's namespace", name, tier)
+			}
+		}
+	}
+
+	for _, rt := range []schemas.RequestType{schemas.ChatCompletionStreamRequest, schemas.ResponsesStreamRequest} {
+		bifrostErr := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "cancelled"}}
+		bifrostErr.ExtraFields.RequestType = rt
+		bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedWriteTokenDetails: tiers()},
+		}
+		check(t, "error "+string(rt), PopulateErrorAttributes(bifrostErr), rt == schemas.ResponsesStreamRequest)
+	}
+
+	chatAttrs := map[string]any{}
+	PopulateChatResponseAttributes(&schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{
+		PromptTokens:        100,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedWriteTokens: 80, CachedWriteTokenDetails: tiers()},
+	}}, chatAttrs)
+	check(t, "chat response", chatAttrs, false)
+
+	respAttrs := map[string]any{}
+	PopulateResponsesResponseAttributes(&schemas.BifrostResponsesResponse{Usage: &schemas.ResponsesResponseUsage{
+		InputTokens:        100,
+		InputTokensDetails: &schemas.ResponsesResponseInputTokens{CachedWriteTokens: 80, CachedWriteTokenDetails: tiers()},
+	}}, respAttrs)
+	check(t, "responses response", respAttrs, true)
+}

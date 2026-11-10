@@ -165,23 +165,24 @@ type PrometheusPlugin struct {
 	ProcessCollector prometheus.Collector
 
 	// Metrics are defined using promauto for automatic registration
-	HTTPRequestsTotal              *prometheus.CounterVec
-	HTTPRequestDuration            *prometheus.HistogramVec
-	HTTPRequestSizeBytes           *prometheus.HistogramVec
-	HTTPResponseSizeBytes          *prometheus.HistogramVec
-	UpstreamRequestsTotal          *prometheus.CounterVec
-	UpstreamLatencySeconds         *prometheus.HistogramVec
-	OverheadLatencyMicros          *prometheus.HistogramVec
-	OverheadComponentMicros        *prometheus.HistogramVec
-	SuccessRequestsTotal           *prometheus.CounterVec
-	ErrorRequestsTotal             *prometheus.CounterVec
-	InputTokensTotal               *prometheus.CounterVec
-	OutputTokensTotal              *prometheus.CounterVec
-	CacheHitsTotal                 *prometheus.CounterVec
-	CacheReadInputTokensTotal      *prometheus.CounterVec
-	CacheWriteInputTokensTotal     *prometheus.CounterVec
-	CacheWriteInputTokens5mTotal   *prometheus.CounterVec
-	CacheWriteInputTokens1hTotal   *prometheus.CounterVec
+	HTTPRequestsTotal          *prometheus.CounterVec
+	HTTPRequestDuration        *prometheus.HistogramVec
+	HTTPRequestSizeBytes       *prometheus.HistogramVec
+	HTTPResponseSizeBytes      *prometheus.HistogramVec
+	UpstreamRequestsTotal      *prometheus.CounterVec
+	UpstreamLatencySeconds     *prometheus.HistogramVec
+	OverheadLatencyMicros      *prometheus.HistogramVec
+	OverheadComponentMicros    *prometheus.HistogramVec
+	SuccessRequestsTotal       *prometheus.CounterVec
+	ErrorRequestsTotal         *prometheus.CounterVec
+	InputTokensTotal           *prometheus.CounterVec
+	OutputTokensTotal          *prometheus.CounterVec
+	CacheHitsTotal             *prometheus.CounterVec
+	CacheReadInputTokensTotal  *prometheus.CounterVec
+	CacheWriteInputTokensTotal *prometheus.CounterVec
+	// CacheWriteInputTokensByTier holds one counter per cache-write lifetime tier
+	// (schemas.CachedWriteTiers), named bifrost_cache_write_input_tokens_<tier>_total.
+	CacheWriteInputTokensByTier    map[string]*prometheus.CounterVec
 	CostTotal                      *prometheus.CounterVec
 	RoutingEmbeddingRequestsTotal  *prometheus.CounterVec
 	RoutingEmbeddingCostTotal      *prometheus.CounterVec
@@ -563,21 +564,16 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		bifrostLabels(),
 	)
 
-	bifrostCacheWriteInputTokens5mTotal := factory.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "bifrost_cache_write_input_tokens_5m_total",
-			Help: "Provider-side prompt-cache write input tokens with a 5-minute TTL (Anthropic only). Subset of bifrost_cache_write_input_tokens_total — do not sum with it.",
-		},
-		bifrostLabels(),
-	)
-
-	bifrostCacheWriteInputTokens1hTotal := factory.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "bifrost_cache_write_input_tokens_1h_total",
-			Help: "Provider-side prompt-cache write input tokens with a 1-hour TTL (Anthropic only). Subset of bifrost_cache_write_input_tokens_total — do not sum with it.",
-		},
-		bifrostLabels(),
-	)
+	bifrostCacheWriteInputTokensByTier := make(map[string]*prometheus.CounterVec, len(schemas.CachedWriteTiers))
+	for _, tier := range schemas.CachedWriteTiers {
+		bifrostCacheWriteInputTokensByTier[tier] = factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "bifrost_cache_write_input_tokens_" + tier + "_total",
+				Help: "Provider-side prompt-cache write input tokens with a " + tier + " TTL (" + schemas.CachedWriteTierVendors(tier) + "). Subset of bifrost_cache_write_input_tokens_total — do not sum with it.",
+			},
+			bifrostLabels(),
+		)
+	}
 
 	bifrostCostTotal := factory.NewCounterVec(
 		prometheus.CounterOpts{
@@ -730,8 +726,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		CacheHitsTotal:                 bifrostCacheHitsTotal,
 		CacheReadInputTokensTotal:      bifrostCacheReadInputTokensTotal,
 		CacheWriteInputTokensTotal:     bifrostCacheWriteInputTokensTotal,
-		CacheWriteInputTokens5mTotal:   bifrostCacheWriteInputTokens5mTotal,
-		CacheWriteInputTokens1hTotal:   bifrostCacheWriteInputTokens1hTotal,
+		CacheWriteInputTokensByTier:    bifrostCacheWriteInputTokensByTier,
 		CostTotal:                      bifrostCostTotal,
 		RoutingEmbeddingRequestsTotal:  bifrostRoutingEmbeddingRequestsTotal,
 		RoutingEmbeddingCostTotal:      bifrostRoutingEmbeddingCostTotal,
@@ -1146,10 +1141,11 @@ func mcpErrorType(bifrostErr *schemas.BifrostError) string {
 
 // extractProviderCacheTokens returns provider-side prompt-cache token counts from a
 // response's usage: cache-read (cached) input tokens, cache-write (creation) input tokens,
-// and the Anthropic-only 5m/1h TTL breakdown of the write total. Chat/text-completion carry
+// and the per-lifetime breakdown of the write total (5m/1h from Anthropic and Bedrock, 30m/12h
+// from OpenAI). Chat/text-completion carry
 // these on Usage.PromptTokensDetails; the Responses API carries them on
 // Usage.InputTokensDetails. Mirrors the response-type switch used for input/output tokens.
-func extractProviderCacheTokens(result *schemas.BifrostResponse) (read, write, write5m, write1h int) {
+func extractProviderCacheTokens(result *schemas.BifrostResponse) (read, write int, tiers *schemas.ChatCachedWriteTokenDetails) {
 	var promptDetails *schemas.ChatPromptTokensDetails
 	var inputDetails *schemas.ResponsesResponseInputTokens
 
@@ -1166,15 +1162,9 @@ func extractProviderCacheTokens(result *schemas.BifrostResponse) (read, write, w
 
 	switch {
 	case promptDetails != nil:
-		read, write = promptDetails.CachedReadTokens, promptDetails.CachedWriteTokens
-		if d := promptDetails.CachedWriteTokenDetails; d != nil {
-			write5m, write1h = d.CachedWriteTokens5m, d.CachedWriteTokens1h
-		}
+		read, write, tiers = promptDetails.CachedReadTokens, promptDetails.CachedWriteTokens, promptDetails.CachedWriteTokenDetails
 	case inputDetails != nil:
-		read, write = inputDetails.CachedReadTokens, inputDetails.CachedWriteTokens
-		if d := inputDetails.CachedWriteTokenDetails; d != nil {
-			write5m, write1h = d.CachedWriteTokens5m, d.CachedWriteTokens1h
-		}
+		read, write, tiers = inputDetails.CachedReadTokens, inputDetails.CachedWriteTokens, inputDetails.CachedWriteTokenDetails
 	}
 	return
 }
@@ -1515,19 +1505,14 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			// Record provider-side prompt cache tokens (Anthropic/OpenAI/Gemini prompt
 			// caching). Distinct from the cache-hit counter below, which tracks Bifrost's
 			// own semantic cache. 5m/1h are an Anthropic-only TTL breakdown of the write total.
-			cacheRead, cacheWrite, cacheWrite5m, cacheWrite1h := extractProviderCacheTokens(result)
+			cacheRead, cacheWrite, cacheWriteTiers := extractProviderCacheTokens(result)
 			if cacheRead > 0 {
 				p.CacheReadInputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(cacheRead))
 			}
 			if cacheWrite > 0 {
 				p.CacheWriteInputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(cacheWrite))
 			}
-			if cacheWrite5m > 0 {
-				p.CacheWriteInputTokens5mTotal.WithLabelValues(promLabelValues...).Add(float64(cacheWrite5m))
-			}
-			if cacheWrite1h > 0 {
-				p.CacheWriteInputTokens1hTotal.WithLabelValues(promLabelValues...).Add(float64(cacheWrite1h))
-			}
+			p.recordCacheWriteTiers(cacheWriteTiers, promLabelValues)
 
 			// Record cache hits with cache type
 			if extraFields.CacheDebug != nil && extraFields.CacheDebug.CacheHit {
@@ -1551,14 +1536,7 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				if d.CachedWriteTokens > 0 {
 					p.CacheWriteInputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(d.CachedWriteTokens))
 				}
-				if w := d.CachedWriteTokenDetails; w != nil {
-					if w.CachedWriteTokens5m > 0 {
-						p.CacheWriteInputTokens5mTotal.WithLabelValues(promLabelValues...).Add(float64(w.CachedWriteTokens5m))
-					}
-					if w.CachedWriteTokens1h > 0 {
-						p.CacheWriteInputTokens1hTotal.WithLabelValues(promLabelValues...).Add(float64(w.CachedWriteTokens1h))
-					}
-				}
+				p.recordCacheWriteTiers(d.CachedWriteTokenDetails, promLabelValues)
 			}
 		}
 	}()
@@ -1742,4 +1720,18 @@ func (p *PrometheusPlugin) Cleanup() error {
 		})
 	}
 	return nil
+}
+
+// recordCacheWriteTiers adds every non-zero cache-write lifetime tier to its counter.
+func (p *PrometheusPlugin) recordCacheWriteTiers(tiers *schemas.ChatCachedWriteTokenDetails, labelValues []string) {
+	if tiers == nil {
+		return
+	}
+	for _, tier := range schemas.CachedWriteTiers {
+		if n := tiers.Tokens(tier); n > 0 {
+			if c := p.CacheWriteInputTokensByTier[tier]; c != nil {
+				c.WithLabelValues(labelValues...).Add(float64(n))
+			}
+		}
+	}
 }

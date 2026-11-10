@@ -1155,3 +1155,68 @@ func TestActiveRequestsTransportHookWithoutLLMHooks(t *testing.T) {
 		t.Fatalf("gauge = %v, want 0", got)
 	}
 }
+
+// TXE-6959: OpenAI's 30m and 12h cache-write tiers reach their own counters on the chat and
+// Responses success paths and on a cancelled stream's billed usage; 5m/1h stay untouched.
+func TestCacheWriteTierCountersCoverOpenAITiers(t *testing.T) {
+	tiers := func() *schemas.ChatCachedWriteTokenDetails {
+		return &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens30m: 50, CachedWriteTokens12h: 30}
+	}
+	check := func(t *testing.T, p *PrometheusPlugin) {
+		t.Helper()
+		waitForCounter(t, p.registry, "bifrost_cache_write_input_tokens_30m_total", 50)
+		waitForCounter(t, p.registry, "bifrost_cache_write_input_tokens_12h_total", 30)
+		for _, name := range []string{"bifrost_cache_write_input_tokens_5m_total", "bifrost_cache_write_input_tokens_1h_total"} {
+			if got := counterTotal(t, p.registry, name); got != 0 {
+				t.Errorf("%s = %v, want 0", name, got)
+			}
+		}
+	}
+
+	t.Run("chat", func(t *testing.T) {
+		p := newTestPlugin(t)
+		resp := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{
+			PromptTokens: 100, CompletionTokens: 1, TotalTokens: 101,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedWriteTokens: 80, CachedWriteTokenDetails: tiers()},
+		}}}
+		resp.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-5.6", "gpt-5.6")
+		if _, _, err := p.PostLLMHook(newHookContext(schemas.ChatCompletionRequest), resp, nil); err != nil {
+			t.Fatalf("PostLLMHook: %v", err)
+		}
+		check(t, p)
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		p := newTestPlugin(t)
+		resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Usage: &schemas.ResponsesResponseUsage{
+			InputTokens: 100, OutputTokens: 1, TotalTokens: 101,
+			InputTokensDetails: &schemas.ResponsesResponseInputTokens{CachedWriteTokens: 80, CachedWriteTokenDetails: tiers()},
+		}}}
+		resp.PopulateExtraFields(schemas.ResponsesRequest, schemas.OpenAI, "gpt-5.6", "gpt-5.6")
+		if _, _, err := p.PostLLMHook(newHookContext(schemas.ResponsesRequest), resp, nil); err != nil {
+			t.Fatalf("PostLLMHook: %v", err)
+		}
+		check(t, p)
+	})
+
+	t.Run("cancelled stream billed usage", func(t *testing.T) {
+		p := newTestPlugin(t)
+		cancelErr := &schemas.BifrostError{
+			StatusCode: new(499),
+			Error:      &schemas.ErrorField{Message: "Request cancelled: client disconnected", Type: new(schemas.RequestCancelled)},
+		}
+		cancelErr.ExtraFields.RequestType = schemas.ChatCompletionStreamRequest
+		cancelErr.ExtraFields.Provider = schemas.OpenAI
+		cancelErr.ExtraFields.OriginalModelRequested = "gpt-5.6"
+		cancelErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{
+			PromptTokens: 100, CompletionTokens: 1, TotalTokens: 101,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedWriteTokens: 80, CachedWriteTokenDetails: tiers()},
+		}
+		ctx := newHookContext(schemas.ChatCompletionStreamRequest)
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		if _, _, err := p.PostLLMHook(ctx, nil, cancelErr); err != nil {
+			t.Fatalf("PostLLMHook: %v", err)
+		}
+		check(t, p)
+	})
+}

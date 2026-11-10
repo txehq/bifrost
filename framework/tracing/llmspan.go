@@ -185,22 +185,7 @@ func PopulateErrorAttributes(err *schemas.BifrostError) map[string]any {
 			if d.CachedWriteTokens > 0 {
 				attrs[schemas.AttrUsageCacheCreationInputTokens] = d.CachedWriteTokens
 			}
-			if wd := d.CachedWriteTokenDetails; wd != nil {
-				if wd.CachedWriteTokens5m > 0 {
-					if isResponses {
-						attrs[schemas.AttrInputTokenDetailsCachedWrite5m] = wd.CachedWriteTokens5m
-					} else {
-						attrs[schemas.AttrPromptTokenDetailsCachedWrite5m] = wd.CachedWriteTokens5m
-					}
-				}
-				if wd.CachedWriteTokens1h > 0 {
-					if isResponses {
-						attrs[schemas.AttrInputTokenDetailsCachedWrite1h] = wd.CachedWriteTokens1h
-					} else {
-						attrs[schemas.AttrPromptTokenDetailsCachedWrite1h] = wd.CachedWriteTokens1h
-					}
-				}
-			}
+			setCachedWriteTierAttrs(attrs, isResponses, d.CachedWriteTokenDetails)
 		}
 	}
 
@@ -387,14 +372,7 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 			if resp.Usage.PromptTokensDetails.CachedWriteTokens > 0 {
 				attrs[schemas.AttrUsageCacheCreationInputTokens] = resp.Usage.PromptTokensDetails.CachedWriteTokens
 			}
-			if d := resp.Usage.PromptTokensDetails.CachedWriteTokenDetails; d != nil {
-				if d.CachedWriteTokens5m > 0 {
-					attrs[schemas.AttrPromptTokenDetailsCachedWrite5m] = d.CachedWriteTokens5m
-				}
-				if d.CachedWriteTokens1h > 0 {
-					attrs[schemas.AttrPromptTokenDetailsCachedWrite1h] = d.CachedWriteTokens1h
-				}
-			}
+			setCachedWriteTierAttrs(attrs, false, resp.Usage.PromptTokensDetails.CachedWriteTokenDetails)
 		}
 
 		if resp.Usage.Cost != nil {
@@ -943,14 +921,7 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 			if d.CachedWriteTokens > 0 {
 				attrs[schemas.AttrUsageCacheCreationInputTokens] = d.CachedWriteTokens
 			}
-			if wd := d.CachedWriteTokenDetails; wd != nil {
-				if wd.CachedWriteTokens5m > 0 {
-					attrs[schemas.AttrInputTokenDetailsCachedWrite5m] = wd.CachedWriteTokens5m
-				}
-				if wd.CachedWriteTokens1h > 0 {
-					attrs[schemas.AttrInputTokenDetailsCachedWrite1h] = wd.CachedWriteTokens1h
-				}
-			}
+			setCachedWriteTierAttrs(attrs, true, d.CachedWriteTokenDetails)
 		}
 
 		if d := resp.Usage.OutputTokensDetails; d != nil {
@@ -1856,4 +1827,17 @@ func extractResponsesReasoning(r *schemas.ResponsesReasoning) string {
 // thin wrapper because tracer.go uses it for root-span propagation.
 func extractMessageContent(content *schemas.ChatMessageContent) string {
 	return schemas.ExtractChatContentText(content)
+}
+
+// setCachedWriteTierAttrs records every non-zero cache-write lifetime tier (schemas.CachedWriteTiers)
+// under its chat (prompt_token_details) or Responses (input_token_details) span attribute.
+func setCachedWriteTierAttrs(attrs map[string]any, responses bool, d *schemas.ChatCachedWriteTokenDetails) {
+	if d == nil {
+		return
+	}
+	for _, tier := range schemas.CachedWriteTiers {
+		if n := d.Tokens(tier); n > 0 {
+			attrs[schemas.CachedWriteTierAttr(responses, tier)] = n
+		}
+	}
 }

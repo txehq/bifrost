@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/capsohq/bifrost/core/network"
+	"github.com/capsohq/bifrost/core/schemas"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
@@ -48,10 +49,10 @@ type MetricsExporter struct {
 
 	// Provider-side prompt cache token counters (distinct from cacheHitsTotal, which
 	// counts Bifrost's own semantic-cache hits).
-	cacheReadInputTokensTotal    *syncInt64Counter
-	cacheWriteInputTokensTotal   *syncInt64Counter
-	cacheWriteInputTokens5mTotal *syncInt64Counter
-	cacheWriteInputTokens1hTotal *syncInt64Counter
+	cacheReadInputTokensTotal  *syncInt64Counter
+	cacheWriteInputTokensTotal *syncInt64Counter
+	// One counter per cache-write lifetime tier (schemas.CachedWriteTiers).
+	cacheWriteInputTokensByTier map[string]*syncInt64Counter
 
 	// Bifrost metrics - float counters (for cost)
 	costTotal *syncFloat64Counter
@@ -388,18 +389,14 @@ func (m *MetricsExporter) initMetrics() {
 		meter: m.meter,
 	}
 
-	m.cacheWriteInputTokens5mTotal = &syncInt64Counter{
-		name:  "bifrost_cache_write_input_tokens_5m_total",
-		desc:  "Provider-side prompt-cache write input tokens with a 5-minute TTL (Anthropic only). Subset of bifrost_cache_write_input_tokens_total — do not sum with it",
-		unit:  "{token}",
-		meter: m.meter,
-	}
-
-	m.cacheWriteInputTokens1hTotal = &syncInt64Counter{
-		name:  "bifrost_cache_write_input_tokens_1h_total",
-		desc:  "Provider-side prompt-cache write input tokens with a 1-hour TTL (Anthropic only). Subset of bifrost_cache_write_input_tokens_total — do not sum with it",
-		unit:  "{token}",
-		meter: m.meter,
+	m.cacheWriteInputTokensByTier = make(map[string]*syncInt64Counter, len(schemas.CachedWriteTiers))
+	for _, tier := range schemas.CachedWriteTiers {
+		m.cacheWriteInputTokensByTier[tier] = &syncInt64Counter{
+			name:  "bifrost_cache_write_input_tokens_" + tier + "_total",
+			desc:  "Provider-side prompt-cache write input tokens with a " + tier + " TTL (" + schemas.CachedWriteTierVendors(tier) + "). Subset of bifrost_cache_write_input_tokens_total — do not sum with it",
+			unit:  "{token}",
+			meter: m.meter,
+		}
 	}
 
 	m.costTotal = &syncFloat64Counter{
@@ -556,14 +553,12 @@ func (m *MetricsExporter) RecordCacheWriteInputTokens(ctx context.Context, count
 	m.cacheWriteInputTokensTotal.Add(ctx, count, metric.WithAttributes(attrs...))
 }
 
-// RecordCacheWriteInputTokens5m records the 5-minute-TTL subset of cache-write input tokens.
-func (m *MetricsExporter) RecordCacheWriteInputTokens5m(ctx context.Context, count int64, attrs ...attribute.KeyValue) {
-	m.cacheWriteInputTokens5mTotal.Add(ctx, count, metric.WithAttributes(attrs...))
-}
-
-// RecordCacheWriteInputTokens1h records the 1-hour-TTL subset of cache-write input tokens.
-func (m *MetricsExporter) RecordCacheWriteInputTokens1h(ctx context.Context, count int64, attrs ...attribute.KeyValue) {
-	m.cacheWriteInputTokens1hTotal.Add(ctx, count, metric.WithAttributes(attrs...))
+// RecordCacheWriteInputTokensTier records the cache-write input tokens of one lifetime tier
+// (a schemas.CachedWriteTiers entry); an unknown tier is ignored.
+func (m *MetricsExporter) RecordCacheWriteInputTokensTier(ctx context.Context, tier string, count int64, attrs ...attribute.KeyValue) {
+	if c := m.cacheWriteInputTokensByTier[tier]; c != nil {
+		c.Add(ctx, count, metric.WithAttributes(attrs...))
+	}
 }
 
 // RecordCost records cost metric

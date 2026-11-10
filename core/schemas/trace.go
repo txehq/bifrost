@@ -1086,18 +1086,20 @@ const (
 	// Chat completion usage detail attributes. These non-cached fields have no OTel
 	// spec equivalent and stay as-is; cache tokens use the flat gen_ai.usage.cache_*
 	// keys (AttrUsageCacheReadInputTokens / AttrUsageCacheCreationInputTokens).
-	AttrPromptTokenDetailsText          = "gen_ai.usage.prompt_token_details.text_tokens"
-	AttrPromptTokenDetailsAudio         = "gen_ai.usage.prompt_token_details.audio_tokens"
-	AttrPromptTokenDetailsImage         = "gen_ai.usage.prompt_token_details.image_tokens"
-	AttrPromptTokenDetailsCachedWrite5m = "gen_ai.usage.prompt_token_details.cached_write_tokens_5m"
-	AttrPromptTokenDetailsCachedWrite1h = "gen_ai.usage.prompt_token_details.cached_write_tokens_1h"
-	AttrCompletionTokenDetailsText      = "gen_ai.usage.completion_token_details.text_tokens"
-	AttrCompletionTokenDetailsAudio     = "gen_ai.usage.completion_token_details.audio_tokens"
-	AttrCompletionTokenDetailsImage     = "gen_ai.usage.completion_token_details.image_tokens"
-	AttrCompletionTokenDetailsAccept    = "gen_ai.usage.completion_token_details.accepted_prediction_tokens"
-	AttrCompletionTokenDetailsReject    = "gen_ai.usage.completion_token_details.rejected_prediction_tokens"
-	AttrCompletionTokenDetailsCite      = "gen_ai.usage.completion_token_details.citation_tokens"
-	AttrCompletionTokenDetailsSearch    = "gen_ai.usage.completion_token_details.num_search_queries"
+	AttrPromptTokenDetailsText           = "gen_ai.usage.prompt_token_details.text_tokens"
+	AttrPromptTokenDetailsAudio          = "gen_ai.usage.prompt_token_details.audio_tokens"
+	AttrPromptTokenDetailsImage          = "gen_ai.usage.prompt_token_details.image_tokens"
+	AttrPromptTokenDetailsCachedWrite5m  = "gen_ai.usage.prompt_token_details.cached_write_tokens_5m"
+	AttrPromptTokenDetailsCachedWrite1h  = "gen_ai.usage.prompt_token_details.cached_write_tokens_1h"
+	AttrPromptTokenDetailsCachedWrite30m = "gen_ai.usage.prompt_token_details.cached_write_tokens_30m"
+	AttrPromptTokenDetailsCachedWrite12h = "gen_ai.usage.prompt_token_details.cached_write_tokens_12h"
+	AttrCompletionTokenDetailsText       = "gen_ai.usage.completion_token_details.text_tokens"
+	AttrCompletionTokenDetailsAudio      = "gen_ai.usage.completion_token_details.audio_tokens"
+	AttrCompletionTokenDetailsImage      = "gen_ai.usage.completion_token_details.image_tokens"
+	AttrCompletionTokenDetailsAccept     = "gen_ai.usage.completion_token_details.accepted_prediction_tokens"
+	AttrCompletionTokenDetailsReject     = "gen_ai.usage.completion_token_details.rejected_prediction_tokens"
+	AttrCompletionTokenDetailsCite       = "gen_ai.usage.completion_token_details.citation_tokens"
+	AttrCompletionTokenDetailsSearch     = "gen_ai.usage.completion_token_details.num_search_queries"
 
 	// Error Attributes
 	AttrError     = "gen_ai.error"
@@ -1194,17 +1196,19 @@ const (
 	AttrInputTokenDetailsAudio = "gen_ai.usage.input_token_details.audio_tokens"
 
 	// Responses API usage detail attributes
-	AttrInputTokenDetailsImage         = "gen_ai.usage.input_token_details.image_tokens"
-	AttrInputTokenDetailsCachedWrite   = "gen_ai.usage.input_token_details.cached_write_tokens"
-	AttrInputTokenDetailsCachedWrite5m = "gen_ai.usage.input_token_details.cached_write_tokens_5m"
-	AttrInputTokenDetailsCachedWrite1h = "gen_ai.usage.input_token_details.cached_write_tokens_1h"
-	AttrOutputTokenDetailsText         = "gen_ai.usage.output_token_details.text_tokens"
-	AttrOutputTokenDetailsAudio        = "gen_ai.usage.output_token_details.audio_tokens"
-	AttrOutputTokenDetailsImage        = "gen_ai.usage.output_token_details.image_tokens"
-	AttrOutputTokenDetailsAccept       = "gen_ai.usage.output_token_details.accepted_prediction_tokens"
-	AttrOutputTokenDetailsReject       = "gen_ai.usage.output_token_details.rejected_prediction_tokens"
-	AttrOutputTokenDetailsCite         = "gen_ai.usage.output_token_details.citation_tokens"
-	AttrOutputTokenDetailsSearch       = "gen_ai.usage.output_token_details.num_search_queries"
+	AttrInputTokenDetailsImage          = "gen_ai.usage.input_token_details.image_tokens"
+	AttrInputTokenDetailsCachedWrite    = "gen_ai.usage.input_token_details.cached_write_tokens"
+	AttrInputTokenDetailsCachedWrite5m  = "gen_ai.usage.input_token_details.cached_write_tokens_5m"
+	AttrInputTokenDetailsCachedWrite1h  = "gen_ai.usage.input_token_details.cached_write_tokens_1h"
+	AttrInputTokenDetailsCachedWrite30m = "gen_ai.usage.input_token_details.cached_write_tokens_30m"
+	AttrInputTokenDetailsCachedWrite12h = "gen_ai.usage.input_token_details.cached_write_tokens_12h"
+	AttrOutputTokenDetailsText          = "gen_ai.usage.output_token_details.text_tokens"
+	AttrOutputTokenDetailsAudio         = "gen_ai.usage.output_token_details.audio_tokens"
+	AttrOutputTokenDetailsImage         = "gen_ai.usage.output_token_details.image_tokens"
+	AttrOutputTokenDetailsAccept        = "gen_ai.usage.output_token_details.accepted_prediction_tokens"
+	AttrOutputTokenDetailsReject        = "gen_ai.usage.output_token_details.rejected_prediction_tokens"
+	AttrOutputTokenDetailsCite          = "gen_ai.usage.output_token_details.citation_tokens"
+	AttrOutputTokenDetailsSearch        = "gen_ai.usage.output_token_details.num_search_queries"
 
 	// Tool execution attributes (OTel GenAI spec) used on MCP tool spans.
 	AttrToolName          = "gen_ai.tool.name"
@@ -1429,4 +1433,32 @@ func IsSensitiveHeader(name string) bool {
 		strings.HasPrefix(normalized, "x-amzn-oidc-") ||
 		strings.HasSuffix(normalized, "-token") ||
 		strings.HasSuffix(normalized, "_token")
+}
+
+// CachedWriteTierAttr returns the span attribute key for a cache-write lifetime tier, in the
+// Responses (input_token_details) or chat (prompt_token_details) namespace; "" for an unknown tier.
+func CachedWriteTierAttr(responses bool, tier string) string {
+	switch tier {
+	case CachedWriteTier5m:
+		if responses {
+			return AttrInputTokenDetailsCachedWrite5m
+		}
+		return AttrPromptTokenDetailsCachedWrite5m
+	case CachedWriteTier1h:
+		if responses {
+			return AttrInputTokenDetailsCachedWrite1h
+		}
+		return AttrPromptTokenDetailsCachedWrite1h
+	case CachedWriteTier30m:
+		if responses {
+			return AttrInputTokenDetailsCachedWrite30m
+		}
+		return AttrPromptTokenDetailsCachedWrite30m
+	case CachedWriteTier12h:
+		if responses {
+			return AttrInputTokenDetailsCachedWrite12h
+		}
+		return AttrPromptTokenDetailsCachedWrite12h
+	}
+	return ""
 }

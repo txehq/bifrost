@@ -1006,9 +1006,9 @@ func computeTextCost(pricing *configstoreTables.TableModelPricing, usage *schema
 	if usage.PromptTokensDetails != nil {
 		cachedReadTokens = usage.PromptTokensDetails.CachedReadTokens
 		cachedWriteTokens = usage.PromptTokensDetails.CachedWriteTokens
-		if usage.PromptTokensDetails.CachedWriteTokenDetails != nil {
-			cachedWriteTokensAbove1hr = usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h
-		}
+		// Every tier longer than one hour (Anthropic's 1h, OpenAI's 12h) is priced at the
+		// above-1hr cache-write rate; 5m and 30m stay at the base cache-write rate.
+		cachedWriteTokensAbove1hr = usage.PromptTokensDetails.CachedWriteTokenDetails.TokensAbove1h()
 	}
 
 	// Long-context pricing tiers are selected by input context size. Once
@@ -1164,9 +1164,7 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 		if usage.PromptTokensDetails != nil {
 			cachedReadTokens = usage.PromptTokensDetails.CachedReadTokens
 			cachedWriteTokens = usage.PromptTokensDetails.CachedWriteTokens
-			if usage.PromptTokensDetails.CachedWriteTokenDetails != nil {
-				cachedWriteTokensAbove1hr = usage.PromptTokensDetails.CachedWriteTokenDetails.CachedWriteTokens1h
-			}
+			cachedWriteTokensAbove1hr = usage.PromptTokensDetails.CachedWriteTokenDetails.TokensAbove1h()
 		}
 		cachedReadTokens = min(max(cachedReadTokens, 0), promptTokens)
 		cachedWriteTokens = min(max(cachedWriteTokens, 0), promptTokens-cachedReadTokens)
