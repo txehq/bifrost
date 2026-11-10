@@ -136,10 +136,11 @@ import yaml
 REPO_ROOT = os.environ["REPO_ROOT"]
 COLLECTION = os.path.join(REPO_ROOT, "tests/e2e/api/collections/provider-harness.json")
 PROVIDER_CONFIG = os.path.join(REPO_ROOT, "tests/integrations/python/config.json")
+PROVIDER_DEFAULT_HOSTS = os.path.join(REPO_ROOT, ".github/workflows/provider-default-hosts.json")
 
 # A missing input means this check verified nothing, which must be an error and
 # not a silent pass - that is the exact failure mode the REPO_ROOT export fixes.
-for required_input in (COLLECTION, PROVIDER_CONFIG):
+for required_input in (COLLECTION, PROVIDER_CONFIG, PROVIDER_DEFAULT_HOSTS):
     if not os.path.exists(required_input):
         print(f"::error::egress check input not found: {required_input}", file=sys.stderr)
         sys.exit(1)
@@ -267,7 +268,8 @@ def hosts_in_collection(path):
     return hosts_in_text(text)
 
 
-# Provider endpoints Bifrost builds in Go rather than reading from config, which
+# Provider endpoints Bifrost builds in Go beyond a provider's one default host
+# (those come from default_hosts_of_profile_providers below), which
 # is why scanning the seeded config alone is not enough: discoveryengine
 # (the Vertex reranker backend) is assembled in core/providers/vertex and appears
 # in no config file, so it was missing from two workflows' allowlists at once.
@@ -292,7 +294,63 @@ def hosts_in_go(root):
     return found
 
 
-required = hosts_in_collection(COLLECTION) | hosts_in(PROVIDER_CONFIG) | hosts_in_go(REPO_ROOT)
+def default_hosts_of_profile_providers(config_path, hosts_path):
+    """The host each provider in the harness profile dials when it sets no base_url.
+
+    A provider configured without network_config.base_url uses the default its Go
+    constructor sets, and that default is in neither the collection nor the config:
+    moonshot was added to the profile and api.moonshot.ai was dialled from jobs whose
+    allowlist nobody had been told to extend (TXE-6547, TXE-6981). The defaults are
+    listed in provider-default-hosts.json, which a core test regenerates from the
+    constructors themselves (TestProviderDefaultHostsFileIsCurrent), so this needs no
+    parsing of Go and a new provider is covered without a change here.
+
+    A custom provider dials its base provider's host. A provider the list does not
+    know is an error, not a skip: it means the list is stale, and skipping would pass
+    the provider this check exists to catch.
+    """
+    with open(config_path, encoding="utf-8") as fh:
+        providers = (json.load(fh).get("providers") or {})
+    with open(hosts_path, encoding="utf-8") as fh:
+        default_hosts = json.load(fh)
+
+    hosts, unknown = set(), []
+    for name, provider in sorted(providers.items()):
+        provider = provider or {}
+        if (provider.get("network_config") or {}).get("base_url"):
+            continue  # an explicit base_url is in the config, which hosts_in() scans
+        base = (provider.get("custom_provider_config") or {}).get("base_provider_type") or name
+        if base not in default_hosts:
+            unknown.append((name, base))
+            continue
+        if default_hosts[base]:
+            hosts.add(default_hosts[base])
+    return hosts, unknown
+
+
+profile_default_hosts, unknown_providers = default_hosts_of_profile_providers(
+    PROVIDER_CONFIG, PROVIDER_DEFAULT_HOSTS
+)
+if unknown_providers:
+    for name, base in unknown_providers:
+        print(
+            f"FAIL harness profile provider '{name}' (base provider '{base}') has no entry in "
+            f".github/workflows/provider-default-hosts.json",
+            file=sys.stderr,
+        )
+    print(
+        "\nThat file lists the host each provider dials by default. Regenerate it from core:\n"
+        "  BIFROST_UPDATE_PROVIDER_DEFAULT_HOSTS=1 go test . -run TestProviderDefaultHostsFileIsCurrent",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+required = (
+    hosts_in_collection(COLLECTION)
+    | hosts_in(PROVIDER_CONFIG)
+    | hosts_in_go(REPO_ROOT)
+    | profile_default_hosts
+)
 required -= set(NOT_DIALLED_HOSTS)
 required = {h for h in required if h not in ("localhost",)}
 
@@ -351,9 +409,10 @@ for path, job_name, missing in failures:
 if failures:
     print(
         "\nEach host above appears in the provider harness collection or its seeded\n"
-        "provider config. Either add it to that job's allowed-endpoints, or - if the\n"
-        "provider dereferences it server-side and the runner never dials it - add it to\n"
-        "NOT_DIALLED_HOSTS in this script with the reason.",
+        "provider config, or is the default host of a provider in that config\n"
+        "(.github/workflows/provider-default-hosts.json). Either add it to that job's\n"
+        "allowed-endpoints, or - if the provider dereferences it server-side and the\n"
+        "runner never dials it - add it to NOT_DIALLED_HOSTS in this script with the reason.",
         file=sys.stderr,
     )
     sys.exit(1)

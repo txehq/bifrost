@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Tests the provider-harness rule of check-egress-allowlist.sh against small
-# collections of its own (TXE-6978).
+# collections and provider profiles of its own (TXE-6978, TXE-6981).
 #
 # The rule reads every external host in the harness collection as a host the runner
 # dials, except in text that is documentation by construction: Postman description
@@ -23,15 +23,19 @@ trap 'rm -rf "$WORK"' EXIT
 
 failures=0
 
-# run_case <name> <pass|fail> <host expected in the failure, or ""> <collection json>
+# run_case <name> <pass|fail> <text expected in the failure, or ""> <collection json>
+#          [provider config json] [provider default hosts json]
 run_case() {
   local name="$1" want="$2" host="$3" collection="$4"
+  local config="${5:-{\"providers\":{\}\}}"
+  local default_hosts="${6:-{\}}"
   local root="$WORK/$name"
   mkdir -p "$root/.github/workflows/scripts" "$root/tests/e2e/api/collections" \
     "$root/tests/integrations/python" "$root/core/providers"
   cp "$SCRIPT_DIR/check-egress-allowlist.sh" "$root/.github/workflows/scripts/"
   printf '%s\n' "$collection" > "$root/tests/e2e/api/collections/provider-harness.json"
-  printf '{"providers":{}}\n' > "$root/tests/integrations/python/config.json"
+  printf '%s\n' "$config" > "$root/tests/integrations/python/config.json"
+  printf '%s\n' "$default_hosts" > "$root/.github/workflows/provider-default-hosts.json"
   cat > "$root/.github/workflows/harness.yml" <<'YAML'
 jobs:
   test-core:
@@ -56,7 +60,7 @@ YAML
       echo "FAIL $name: expected the check to fail on $host, it passed"
       failures=$((failures + 1)); return
     fi
-    if ! grep -q "omits .*$host" <<<"$out"; then
+    if ! grep -q -- "$host" <<<"$out"; then
       echo "FAIL $name: the check failed, but not on $host:"; echo "$out" | sed 's/^/    /'
       failures=$((failures + 1)); return
     fi
@@ -116,6 +120,24 @@ run_case "host-in-trailing-comment-of-a-code-line" fail "trailing.unlisted.test"
   "$(collection '' '"var x = 1; // https://trailing.unlisted.test/still-counted",')"
 run_case "host-in-a-key-that-only-resembles-description" fail "tool.unlisted.test" \
   "$(collection '"description_url": "https://tool.unlisted.test/spec",' '')"
+
+# A provider in the harness profile without a base_url dials the default its Go
+# constructor sets, which is in neither the collection nor the config. The check reads
+# it from provider-default-hosts.json (TXE-6981).
+DEFAULT_HOSTS='{"acme": "api.acme.test", "allowed": "api.allowed.test", "nodefault": ""}'
+run_case "profile-provider-default-host-not-allowlisted" fail "omits api.acme.test" "$(collection '' '')" \
+  '{"providers": {"acme": {"keys": []}}}' "$DEFAULT_HOSTS"
+run_case "profile-provider-default-host-allowlisted" pass "" "$(collection '' '')" \
+  '{"providers": {"allowed": {"keys": []}}}' "$DEFAULT_HOSTS"
+run_case "profile-provider-without-a-default-host" pass "" "$(collection '' '')" \
+  '{"providers": {"nodefault": {"keys": []}}}' "$DEFAULT_HOSTS"
+run_case "custom-provider-dials-its-base-providers-host" fail "omits api.acme.test" "$(collection '' '')" \
+  '{"providers": {"acme_custom": {"custom_provider_config": {"base_provider_type": "acme"}}}}' "$DEFAULT_HOSTS"
+run_case "profile-provider-with-its-own-base-url" pass "" "$(collection '' '')" \
+  '{"providers": {"acme": {"network_config": {"base_url": "https://api.allowed.test/v1"}}}}' "$DEFAULT_HOSTS"
+# A provider the list does not know means the list is stale; that is an error, not a skip.
+run_case "profile-provider-missing-from-the-list" fail "'newcomer' (base provider 'newcomer') has no entry" "$(collection '' '')" \
+  '{"providers": {"newcomer": {"keys": []}}}' "$DEFAULT_HOSTS"
 
 if [[ $failures -gt 0 ]]; then
   echo ""

@@ -9,6 +9,8 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"reflect"
 	"runtime"
 	"slices"
@@ -3699,6 +3701,60 @@ func TestAgentLoopContinuationStaysOnServingFallback(t *testing.T) {
 // routing rule retargeting a Claude Code request to a non-Claude model on a multi-family
 // provider (Vertex/Azure/Bedrock Mantle), which sent the raw Anthropic body to that provider's
 // OpenAI/Gemini surface.
+// providerDefaultHostsFile lists, for every standard provider, the host of the base URL
+// its constructor sets when the configuration names none ("" when there is no default).
+// .github/workflows/scripts/check-egress-allowlist.sh reads it: a provider in the harness
+// profile without a base_url dials this host, and no other file says which host that is.
+const providerDefaultHostsFile = "../.github/workflows/provider-default-hosts.json"
+
+// TXE-6981: the committed list of provider default hosts is what the constructors set
+// today. The egress allowlist check cannot see a default that exists only in Go, so a
+// provider added to the harness profile was dialled from a job whose allowlist nobody
+// had been told to extend (api.moonshot.ai, after TXE-6547). The hosts are read from
+// the constructors themselves, not parsed from source, so a default kept in a constant
+// or built from parts is found too. Regenerate the file with
+// BIFROST_UPDATE_PROVIDER_DEFAULT_HOSTS=1 go test . -run TestProviderDefaultHostsFileIsCurrent
+func TestProviderDefaultHostsFileIsCurrent(t *testing.T) {
+	client := &Bifrost{logger: NewNoOpLogger()}
+	hosts := make(map[string]string, len(schemas.StandardProviders))
+	for _, provider := range schemas.StandardProviders {
+		config := &schemas.ProviderConfig{}
+		if _, err := client.createBaseProvider(provider, config); err != nil {
+			t.Fatalf("construct %s with an empty configuration: %v", provider, err)
+		}
+		host := ""
+		if base := config.NetworkConfig.BaseURL; base != "" {
+			parsed, err := url.Parse(base)
+			if err != nil || parsed.Host == "" {
+				t.Fatalf("%s default base URL %q has no host (%v)", provider, base, err)
+			}
+			host = parsed.Hostname()
+		}
+		hosts[string(provider)] = host
+	}
+	// encoding/json writes map keys sorted, so the file is stable.
+	want, err := json.MarshalIndent(hosts, "", "  ")
+	if err != nil {
+		t.Fatalf("encode hosts: %v", err)
+	}
+	want = append(want, '\n')
+
+	if os.Getenv("BIFROST_UPDATE_PROVIDER_DEFAULT_HOSTS") == "1" {
+		if err := os.WriteFile(providerDefaultHostsFile, want, 0o644); err != nil {
+			t.Fatalf("write %s: %v", providerDefaultHostsFile, err)
+		}
+		return
+	}
+	got, err := os.ReadFile(providerDefaultHostsFile)
+	if err != nil {
+		t.Fatalf("read %s: %v", providerDefaultHostsFile, err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("%s is stale; regenerate it with BIFROST_UPDATE_PROVIDER_DEFAULT_HOSTS=1 go test . -run TestProviderDefaultHostsFileIsCurrent, "+
+			"then allowlist any new host in the jobs check-egress-allowlist.sh names.\n got: %s\nwant: %s", providerDefaultHostsFile, got, want)
+	}
+}
+
 // TXE-6965: a passthrough attempt on the Anthropic integration forwards native Messages
 // bytes to a provider that serves them (xAI, Moonshot), so the native redaction codecs
 // still match what is sent and returned and must survive the per-attempt clear. Every
