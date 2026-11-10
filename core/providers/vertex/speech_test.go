@@ -184,6 +184,22 @@ func TestVertexSpeechPCMIsReturnedAsSent(t *testing.T) {
 	assert.Equal(t, "audio/L16;codec=pcm;rate=24000", resp.ContentType)
 }
 
+// Large-response passthrough hands the caller the vendor's bytes. A speech answer is base64
+// audio inside JSON, so it is always read whole and converted, whatever the threshold.
+func TestVertexSpeechConvertsTheAnswerWhenLargeResponseModeIsOn(t *testing.T) {
+	upstream := newVertexSpeechUpstream(t, vertexSpeechFinalChunk, false)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(1))
+
+	resp, bErr := upstream.provider.Speech(ctx, vertexSpeechAPIKey(), vertexSpeechRequest(vertexSpeechVoice(schemas.SpeechParameters{ResponseFormat: "pcm"})))
+	require.Nil(t, bErr)
+	assert.Equal(t, []byte{0, 1, 2, 3, 4, 5}, resp.Audio)
+	require.NotNil(t, resp.Usage)
+	assert.Equal(t, 50, resp.Usage.OutputTokens)
+	isLarge, _ := ctx.Value(schemas.BifrostContextKeyLargeResponseMode).(bool)
+	assert.False(t, isLarge, "the vendor envelope is never passed through as the speech response")
+}
+
 // A key with service-account credentials authenticates with its OAuth2 token and no key
 // query parameter.
 func TestVertexSpeechAuthenticatesWithTheKeyCredentials(t *testing.T) {
@@ -350,4 +366,64 @@ func TestVertexSpeechStreamEndsOnAnErrorWhenBlockedOrTruncated(t *testing.T) {
 			assert.Equal(t, 1, upstream.snapshot().calls, "one upstream call per request")
 		})
 	}
+}
+
+// The request-path work a Vertex speech request adds before the upstream call: building the
+// body (the Gemini conversion plus the Vertex marshal) and resolving the URL and credentials
+// for an API key. "gemini body" is the Gemini API path's conversion and marshal, for scale.
+func BenchmarkVertexGeminiSpeechRequest(b *testing.B) {
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	req := vertexSpeechRequest(vertexSpeechVoice(schemas.SpeechParameters{MaxOutputTokens: schemas.Ptr(2048)}))
+	key := vertexSpeechAPIKey()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	b.Run("body", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := vertexGeminiSpeechRequestBody(req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("gemini body", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			body, err := gemini.ToGeminiSpeechRequest(req)
+			if err != nil {
+				b.Fatal(err)
+			}
+			if _, err := sonic.Marshal(body); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	for name, stream := range map[string]bool{"target": false, "target stream": true} {
+		method := ":generateContent"
+		if stream {
+			method = ":streamGenerateContent"
+		}
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, bErr := provider.geminiSpeechTarget(ctx, key, req.Model, method, stream); bErr != nil {
+					b.Fatal(bErr.Error.Message)
+				}
+			}
+		})
+	}
+	b.Run("declared fields check", func(b *testing.B) {
+		fields, _ := provider.SupportedUnifiedFields(schemas.SpeechRequest)
+		bifrostReq := &schemas.BifrostRequest{RequestType: schemas.SpeechRequest, SpeechRequest: req}
+		b.ReportAllocs()
+		for b.Loop() {
+			if bErr := schemas.CheckUnifiedFields(bifrostReq, fields); bErr != nil {
+				b.Fatal(bErr.Error.Message)
+			}
+		}
+	})
 }

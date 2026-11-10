@@ -81,14 +81,18 @@ func (provider *VertexProvider) geminiSpeechTarget(ctx *schemas.BifrostContext, 
 		url:     getCompleteURLForGeminiEndpoint(model, region, projectID, projectNumber, method),
 		headers: map[string]string{},
 	}
-	query := url.Values{}
+	// query is "alt=sse", "key=<key>", both joined, or empty.
+	query := ""
 	if stream {
-		query.Set("alt", "sse")
+		query = "alt=sse"
 		target.headers["Accept"] = "text/event-stream"
 		target.headers["Cache-Control"] = "no-cache"
 	}
 	if apiKey := key.Value.GetValue(); apiKey != "" {
-		query.Set("key", apiKey)
+		if query != "" {
+			query += "&"
+		}
+		query += "key=" + url.QueryEscape(apiKey)
 	} else {
 		tokenSource, err := provider.getAuthTokenSource(key)
 		if err != nil {
@@ -100,8 +104,8 @@ func (provider *VertexProvider) geminiSpeechTarget(ctx *schemas.BifrostContext, 
 		}
 		target.headers["Authorization"] = "Bearer " + token.AccessToken
 	}
-	if encoded := query.Encode(); encoded != "" {
-		target.url += "?" + encoded
+	if query != "" {
+		target.url += "?" + query
 	}
 	return target, nil
 }
@@ -130,12 +134,7 @@ func (provider *VertexProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	respOwned := true
-	defer func() {
-		if respOwned {
-			fasthttp.ReleaseResponse(resp)
-		}
-	}()
+	defer fasthttp.ReleaseResponse(resp)
 
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
@@ -149,8 +148,9 @@ func (provider *VertexProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 		req.SetBody(jsonBody)
 	}
 
-	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
+	// The answer is always read whole and converted: the audio is base64 inside the vendor's
+	// JSON, so large-response passthrough would hand the caller that envelope instead of audio.
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
@@ -162,7 +162,6 @@ func (provider *VertexProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		// Remove client from pool for authentication/authorization errors
 		if resp.StatusCode() == fasthttp.StatusUnauthorized || resp.StatusCode() == fasthttp.StatusForbidden {
 			provider.removeVertexClient(key)
@@ -170,18 +169,9 @@ func (provider *VertexProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 		return nil, providerUtils.EnrichError(ctx, parseVertexError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
-	responseBody, isLargeResp, decodeErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
+	responseBody, decodeErr := providerUtils.CheckAndDecodeBody(resp)
 	if decodeErr != nil {
-		return nil, providerUtils.EnrichError(ctx, decodeErr, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
-	}
-	if isLargeResp {
-		respOwned = false
-		return &schemas.BifrostSpeechResponse{
-			ExtraFields: schemas.BifrostResponseExtraFields{
-				Latency:                 latency.Milliseconds(),
-				ProviderResponseHeaders: providerResponseHeaders,
-			},
-		}, nil
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, decodeErr), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	geminiResponse := gemini.GenerateContentResponse{}
