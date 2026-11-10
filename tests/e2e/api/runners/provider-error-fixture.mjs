@@ -448,6 +448,15 @@ const vercelImageAnswer = (body) => {
 	return { created: 1, data: Array.from({ length: n }, () => ({ b64_json: "iVBORw0KGgo=" })) };
 };
 
+// Imagen answers three predictions with the middle one blocked, TXE-6536 (contract C6).
+const imagenPartiallyBlocked = {
+	predictions: [
+		{ bytesBase64Encoded: "aW1hZ2Ux", mimeType: "image/png" },
+		{ raiFilteredReason: "Unable to show generated images. Support codes: 58061214" },
+		{ bytesBase64Encoded: "aW1hZ2Uy", mimeType: "image/png" },
+	],
+};
+
 const wireAnswer = (path, body) => {
 	if (path === "/pp/bounds/v1/chat/completions") {
 		return { status: 200, body: JSON.stringify({ id: "chatcmpl_bounds", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
@@ -461,6 +470,7 @@ const wireAnswer = (path, body) => {
 		if (body.stream === true) return { status: 200, stream: anthropicMessageStream(body.model) };
 		return { status: 200, body: JSON.stringify(anthropicMessage(body.model)) };
 	}
+	if (path.endsWith(":predict")) return { status: 200, body: JSON.stringify(imagenPartiallyBlocked) };
 	if (path.endsWith(":generateContent")) return { status: 200, body: JSON.stringify(geminiCodeExecution) };
 	if (path.endsWith(":streamGenerateContent")) return { status: 200, stream: `data: ${JSON.stringify(geminiCodeExecution)}\n\n` };
 	if (path === "/pp/cloudflare/accounts/acct-1/ai/run/@cf/cloudflare/clef-flash") return { status: 200, body: JSON.stringify(clefAnswer) };

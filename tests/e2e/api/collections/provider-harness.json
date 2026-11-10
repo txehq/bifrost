@@ -299598,6 +299598,646 @@
           ]
         }
       ]
+    },
+    {
+      "name": "314. Imagen filtered images and unsupported fields on every /v1/images route (vertex endpoint fixture, provider error fixture) [SERIAL]",
+      "description": "Pins contract C4 and C6 for Imagen (TXE-6536) against the local Vertex fixture; no network traffic leaves the machine. Run tests/e2e/api/runners/vertex-endpoint-fixture.mjs --app-dir <dir>, start an isolated gateway with -app-dir <dir>, and run with vertexEndpointFixture=1; every case is skipped otherwise. The fixture answers :predict with three predictions, the middle one blocked. Keys are selected with x-bf-api-key. Cases 314.6 to 314.9 cover the gemini provider instead: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the upstream, which answers :predict the same way; every one of those is skipped otherwise. Covered on generation and edit, for both providers: one of three images blocked returns the two delivered images, content_filter with the vendor reason verbatim and usage.output_images 2, in exactly one upstream call; quality or background returns 400 caller_unsupported_parameter with no upstream call. Red before the change: the blocked image was an empty item with no content_filter, and quality and background were dropped and the request sent.",
+      "item": [
+        {
+          "name": "314.1 vertex/imagen-4.0-generate-001 with one of three images blocked reports two delivered and the vendor reason, in one upstream call (imagen filtered images)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/imagen-4.0-generate-001\",\n  \"prompt\": \"a small red circle on a white background\",\n  \"n\": 3,\n  \"includeRaiReason\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('200 with the two delivered images and no slot for the blocked one', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200);",
+                  "  pm.expect(j.data.map(function (d) { return d.b64_json; })).to.eql(['aW1hZ2Ux', 'aW1hZ2Uy']);",
+                  "});",
+                  "pm.test('content_filter carries the count and the vendor reason verbatim', function () { pm.expect(j.content_filter).to.eql({ filtered_count: 1, reasons: ['Unable to show generated images. Support codes: 58061214'] }); });",
+                  "pm.test('usage.output_images is the delivered count', function () { pm.expect(j.usage.output_images).to.equal(2); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = (res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:predict/.test(q.path); });",
+                  "  pm.test('exactly one :predict call reached Vertex', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(1); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "314.2 [EXPECT-400] vertex/imagen-4.0-generate-001 with quality is rejected before any upstream call (imagen unsupported fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/imagen-4.0-generate-001\",\n  \"prompt\": \"a small red circle on a white background\",\n  \"n\": 1,\n  \"quality\": \"high\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('400 caller_unsupported_parameter naming quality', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(400);",
+                  "  pm.expect(j.extra_fields.error_type, pm.response.text().slice(0, 400)).to.equal('caller_unsupported_parameter');",
+                  "  pm.expect(j.error.param).to.equal('quality');",
+                  "});",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = (res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:predict/.test(q.path); });",
+                  "  pm.test('a rejected request makes no upstream call', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(0); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "314.3 [EXPECT-400] vertex/imagen-4.0-generate-001 with background is rejected before any upstream call (imagen unsupported fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/imagen-4.0-generate-001\",\n  \"prompt\": \"a small red circle on a white background\",\n  \"n\": 1,\n  \"background\": \"transparent\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('400 caller_unsupported_parameter naming background', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(400);",
+                  "  pm.expect(j.extra_fields.error_type, pm.response.text().slice(0, 400)).to.equal('caller_unsupported_parameter');",
+                  "  pm.expect(j.error.param).to.equal('background');",
+                  "});",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = (res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:predict/.test(q.path); });",
+                  "  pm.test('a rejected request makes no upstream call', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(0); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "314.4 /v1/images/edits vertex/imagen-3.0-capability-001 with one of three images blocked reports two delivered and the vendor reason, in one upstream call (imagen filtered images)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "vertex/imagen-3.0-capability-001",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "make the background a deep blue",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                },
+                {
+                  "key": "includeRaiReason",
+                  "value": "true",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('200 with the two delivered images and no slot for the blocked one', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200);",
+                  "  pm.expect(j.data.map(function (d) { return d.b64_json; })).to.eql(['aW1hZ2Ux', 'aW1hZ2Uy']);",
+                  "});",
+                  "pm.test('content_filter carries the count and the vendor reason verbatim', function () { pm.expect(j.content_filter).to.eql({ filtered_count: 1, reasons: ['Unable to show generated images. Support codes: 58061214'] }); });",
+                  "pm.test('usage.output_images is the delivered count', function () { pm.expect(j.usage.output_images).to.equal(2); });",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = (res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:predict/.test(q.path); });",
+                  "  pm.test('exactly one :predict call reached the vendor', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(1); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "314.5 [EXPECT-400] /v1/images/edits vertex/imagen-3.0-capability-001 with background is rejected before any upstream call (imagen unsupported fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "vertex/imagen-3.0-capability-001",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "make the background a deep blue",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                },
+                {
+                  "key": "background",
+                  "value": "transparent",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('400 caller_unsupported_parameter naming background', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(400);",
+                  "  pm.expect(j.extra_fields.error_type, pm.response.text().slice(0, 400)).to.equal('caller_unsupported_parameter');",
+                  "  pm.expect(j.error.param).to.equal('background');",
+                  "});",
+                  "pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = (res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:predict/.test(q.path); });",
+                  "  pm.test('a rejected request makes no upstream call', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.equal(0); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "314.6 /v1/images/generations gemini/imagen-4.0-generate-001 with one of three images blocked reports two delivered and the vendor reason, in one upstream call (imagen filtered images)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/imagen-4.0-generate-001\",\n  \"prompt\": \"a small red circle on a white background\",\n  \"n\": 3,\n  \"includeRaiReason\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('200 with the two delivered images and no slot for the blocked one', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200);",
+                  "  pm.expect(j.data.map(function (d) { return d.b64_json; })).to.eql(['aW1hZ2Ux', 'aW1hZ2Uy']);",
+                  "});",
+                  "pm.test('content_filter carries the count and the vendor reason verbatim', function () { pm.expect(j.content_filter).to.eql({ filtered_count: 1, reasons: ['Unable to show generated images. Support codes: 58061214'] }); });",
+                  "pm.test('usage.output_images is the delivered count', function () { pm.expect(j.usage.output_images).to.equal(2); });",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].calls.filter(function (c) { return /:predict$/.test(c.path); });",
+                  "  pm.test('exactly one :predict call reached the vendor', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.path; }))).to.equal(1); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "314.7 [EXPECT-400] /v1/images/generations gemini/imagen-4.0-generate-001 with quality is rejected before any upstream call (imagen unsupported fields)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/imagen-4.0-generate-001\",\n  \"prompt\": \"a small red circle on a white background\",\n  \"n\": 1,\n  \"quality\": \"high\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('400 caller_unsupported_parameter naming quality', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(400);",
+                  "  pm.expect(j.extra_fields.error_type, pm.response.text().slice(0, 400)).to.equal('caller_unsupported_parameter');",
+                  "  pm.expect(j.error.param).to.equal('quality');",
+                  "});",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].calls.filter(function (c) { return /:predict$/.test(c.path); });",
+                  "  pm.test('a rejected request makes no upstream call', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.path; }))).to.equal(0); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "314.8 /v1/images/edits gemini/imagen-3.0-capability-001 with one of three images blocked reports two delivered and the vendor reason, in one upstream call (imagen filtered images)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "gemini/imagen-3.0-capability-001",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "make the background a deep blue",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('200 with the two delivered images and no slot for the blocked one', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200);",
+                  "  pm.expect(j.data.map(function (d) { return d.b64_json; })).to.eql(['aW1hZ2Ux', 'aW1hZ2Uy']);",
+                  "});",
+                  "pm.test('content_filter carries the count and the vendor reason verbatim', function () { pm.expect(j.content_filter).to.eql({ filtered_count: 1, reasons: ['Unable to show generated images. Support codes: 58061214'] }); });",
+                  "pm.test('usage.output_images is the delivered count', function () { pm.expect(j.usage.output_images).to.equal(2); });",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].calls.filter(function (c) { return /:predict$/.test(c.path); });",
+                  "  pm.test('exactly one :predict call reached the vendor', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.path; }))).to.equal(1); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "314.9 [EXPECT-400] /v1/images/edits gemini/imagen-3.0-capability-001 with quality is rejected before any upstream call (imagen unsupported fields)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "gemini/imagen-3.0-capability-001",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "make the background a deep blue",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                },
+                {
+                  "key": "quality",
+                  "value": "high",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "} else {",
+                  "  pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function () {});",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('400 caller_unsupported_parameter naming quality', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(400);",
+                  "  pm.expect(j.extra_fields.error_type, pm.response.text().slice(0, 400)).to.equal('caller_unsupported_parameter');",
+                  "  pm.expect(j.error.param).to.equal('quality');",
+                  "});",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+                  "  pm.test('fixture reachable', function () { pm.expect(err, String(err)).to.equal(null); });",
+                  "  var calls = res.json().data[0].calls.filter(function (c) { return /:predict$/.test(c.path); });",
+                  "  pm.test('a rejected request makes no upstream call', function () { pm.expect(calls.length, JSON.stringify(calls.map(function (c) { return c.path; }))).to.equal(0); });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

@@ -7,7 +7,7 @@ import { argValue, createInterceptProxy } from "./lib/tls-intercept-proxy.mjs";
 //
 // Vertex hardcodes https://<host>/... with no base-URL override, so the fixture works as the
 // gateway's HTTP proxy instead (see lib/tls-intercept-proxy.mjs): it terminates TLS for the
-// requested host, records the decrypted request, and replies with a canned Gemini or Claude body, or a finished Veo operation.
+// requested host, records the decrypted request, and replies with a canned Gemini, Claude or Imagen body, or a finished Veo operation.
 //
 //   node vertex-endpoint-fixture.mjs --app-dir <dir> [--port 8792]
 //
@@ -37,6 +37,13 @@ const claudeBody = JSON.stringify({
 	stop_reason: "end_turn",
 	usage: { input_tokens: 1, output_tokens: 1 },
 });
+const imagenBody = JSON.stringify({
+	predictions: [
+		{ bytesBase64Encoded: "aW1hZ2Ux", mimeType: "image/png" },
+		{ raiFilteredReason: "Unable to show generated images. Support codes: 58061214" },
+		{ bytesBase64Encoded: "aW1hZ2Uy", mimeType: "image/png" },
+	],
+});
 
 const fixtureVideo = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.from("fixture-video")]).toString("base64");
 
@@ -53,6 +60,7 @@ const proxy = createInterceptProxy({
 	respond: (req, body) => {
 		if (/:generateContent/.test(req.url)) return { status: 200, body: geminiBody };
 		if (/:rawPredict/.test(req.url)) return { status: 200, body: claudeBody };
+		if (/:predict(\?|$)/.test(req.url)) return { status: 200, body: imagenBody };
 		// The video is inline so download needs no second fetch; the WebM magic marks it binary to the harness shape check.
 		if (/:fetchPredictOperation/.test(req.url)) return { status: 200, body: JSON.stringify({ name: (body.match(/"operationName":"([^"]+)"/) || [])[1], done: true, response: { videos: [{ bytesBase64Encoded: fixtureVideo, mimeType: "video/webm" }] } }) };
 		return { status: 404, body: JSON.stringify({ error: { code: 404, message: "fixture does not serve " + req.url, status: "NOT_FOUND" } }) };
