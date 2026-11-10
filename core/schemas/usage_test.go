@@ -1,6 +1,9 @@
 package schemas
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestMergeBifrostLLMUsage(t *testing.T) {
 	base := &BifrostLLMUsage{
@@ -166,5 +169,152 @@ func TestToolUsageAddHandlesNilOperands(t *testing.T) {
 	}
 	if got := (&ToolUsage{}).Add(one).WebSearch.NumRequests; got != 2 {
 		t.Fatalf("empty + one = %d, want 2", got)
+	}
+}
+
+// usageRoundTrip marshals v, checks every want substring appears, unmarshals into a fresh value
+// and marshals that again: the second encoding must equal the first.
+func usageRoundTrip[T any](t *testing.T, v *T, want ...string) *T {
+	t.Helper()
+	out, err := Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, w := range want {
+		if !strings.Contains(string(out), w) {
+			t.Fatalf("%s missing from %s", w, out)
+		}
+	}
+	back := new(T)
+	if err := Unmarshal(out, back); err != nil {
+		t.Fatalf("unmarshal %s: %v", out, err)
+	}
+	again, err := Marshal(back)
+	if err != nil {
+		t.Fatalf("re-marshal: %v", err)
+	}
+	if string(again) != string(out) {
+		t.Fatalf("round trip changed the encoding:\n first %s\nsecond %s", out, again)
+	}
+	return back
+}
+
+func assertNoKeys(t *testing.T, v any, keys ...string) {
+	t.Helper()
+	out, err := Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, k := range keys {
+		if strings.Contains(string(out), `"`+k+`"`) {
+			t.Fatalf("empty %s serialised in %s", k, out)
+		}
+	}
+}
+
+// TXE-6518 (contract C5 BF6): the six new image usage fields serialise, survive a round trip and
+// are omitted when the vendor reported none. A vendor-reported zero is kept, not dropped.
+func TestImageUsageVendorFields(t *testing.T) {
+	u := &ImageUsage{
+		InputTokens:         10,
+		OutputTokens:        1290,
+		OutputTokensDetails: &ImageTokenDetails{ImageTokens: 1290, ReasoningTokens: new(212)},
+		OutputImages:        new(2),
+		InputImages:         new(0),
+		OutputMegapixels:    new(2.1),
+		InputMegapixels:     new(1.05),
+		VendorCost:          &VendorCost{Amount: 0.08, Unit: VendorCostUnitUSD},
+	}
+	back := usageRoundTrip(t, u,
+		`"output_images":2`, `"input_images":0`, `"output_megapixels":2.1`, `"input_megapixels":1.05`,
+		`"reasoning_tokens":212`, `"vendor_cost":{"amount":0.08,"unit":"usd"}`)
+	if back.OutputTokensDetails.ReasoningTokens == nil || *back.OutputTokensDetails.ReasoningTokens != 212 {
+		t.Fatalf("reasoning_tokens lost: %+v", back.OutputTokensDetails)
+	}
+
+	empty := &ImageUsage{InputTokens: 10, OutputTokensDetails: &ImageTokenDetails{ImageTokens: 5}, NumInputImages: 3}
+	assertNoKeys(t, empty, "output_images", "input_images", "output_megapixels", "input_megapixels", "reasoning_tokens", "vendor_cost")
+}
+
+// DeepCopy must not share the new pointers: cost calculation derives values from a copy.
+func TestImageUsageDeepCopyVendorFields(t *testing.T) {
+	u := &ImageUsage{
+		OutputTokensDetails: &ImageTokenDetails{ReasoningTokens: new(1)},
+		InputTokensDetails:  &ImageTokenDetails{ReasoningTokens: new(1)},
+		OutputImages:        new(1), InputImages: new(1),
+		OutputMegapixels: new(1.0), InputMegapixels: new(1.0),
+		VendorCost: &VendorCost{Amount: 1, Unit: VendorCostUnitCredit},
+	}
+	c := u.DeepCopy()
+	*c.OutputTokensDetails.ReasoningTokens = 9
+	*c.InputTokensDetails.ReasoningTokens = 9
+	*c.OutputImages, *c.InputImages = 9, 9
+	*c.OutputMegapixels, *c.InputMegapixels = 9, 9
+	c.VendorCost.Amount = 9
+	if *u.OutputTokensDetails.ReasoningTokens != 1 || *u.InputTokensDetails.ReasoningTokens != 1 ||
+		*u.OutputImages != 1 || *u.InputImages != 1 || *u.OutputMegapixels != 1 || *u.InputMegapixels != 1 ||
+		u.VendorCost.Amount != 1 {
+		t.Fatalf("DeepCopy shares state with the original: %+v", u)
+	}
+}
+
+// TXE-6518 (contract C5 BF6): the task object's six new usage fields.
+func TestVideoUsageVendorFields(t *testing.T) {
+	u := &VideoUsage{
+		OutputTokens:   new(108900),
+		OutputSeconds:  new(5.0),
+		InputSeconds:   new(2.5),
+		InputImages:    new(1),
+		ComputeSeconds: new(41.7),
+		VendorCost:     &VendorCost{Amount: 140, Unit: VendorCostUnitUnit},
+	}
+	usageRoundTrip(t, u,
+		`"output_tokens":108900`, `"output_seconds":5`, `"input_seconds":2.5`, `"input_images":1`,
+		`"compute_seconds":41.7`, `"vendor_cost":{"amount":140,"unit":"unit"}`)
+	assertNoKeys(t, &VideoUsage{Cost: &BifrostCost{TotalCost: 0.5}},
+		"output_tokens", "output_seconds", "input_seconds", "input_images", "compute_seconds", "vendor_cost")
+
+	// The task object carries it under usage.
+	out, err := Marshal(&BifrostVideoGenerationResponse{ID: "v", Usage: &VideoUsage{OutputSeconds: new(5.0)}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"usage":{"output_seconds":5}`) {
+		t.Fatalf("task usage = %s", out)
+	}
+}
+
+// TXE-6518 (contract C5 BF6): TTS usage's two new fields, next to Bifrost's own input_chars.
+func TestSpeechUsageVendorFields(t *testing.T) {
+	u := &SpeechUsage{InputChars: 11, BilledCharacters: new(12), VendorCost: &VendorCost{Amount: 12, Unit: VendorCostUnitCredit}}
+	back := usageRoundTrip(t, u, `"input_chars":11`, `"billed_characters":12`, `"vendor_cost":{"amount":12,"unit":"credit"}`)
+	if back.InputChars != 11 || *back.BilledCharacters != 12 {
+		t.Fatalf("input_chars and billed_characters must stay separate: %+v", back)
+	}
+	assertNoKeys(t, &SpeechUsage{InputChars: 11, AudioSeconds: 3}, "billed_characters", "vendor_cost")
+
+	// The SSE done event carries it under usage.
+	out, err := Marshal(&BifrostSpeechStreamResponse{Type: SpeechStreamResponseTypeDone, Usage: &SpeechUsage{BilledCharacters: new(5)}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"billed_characters":5`) {
+		t.Fatalf("done event = %s", out)
+	}
+}
+
+// A reported zero charge is kept as amount 0; the four contract units are the only valid ones.
+func TestVendorCost(t *testing.T) {
+	usageRoundTrip(t, &VendorCost{Amount: 0, Unit: VendorCostUnitUSDTicks}, `{"amount":0,"unit":"usd_ticks"}`)
+	usageRoundTrip(t, &VendorCost{Amount: 12345678901, Unit: VendorCostUnitUSDTicks}, `"amount":12345678901`)
+	for _, u := range []VendorCostUnit{VendorCostUnitUSD, VendorCostUnitUSDTicks, VendorCostUnitCredit, VendorCostUnitUnit} {
+		if !u.IsValid() {
+			t.Errorf("%q should be valid", u)
+		}
+	}
+	for _, u := range []VendorCostUnit{"", "USD", "eur", "credits"} {
+		if u.IsValid() {
+			t.Errorf("%q should not be valid", u)
+		}
 	}
 }

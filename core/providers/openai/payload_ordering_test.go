@@ -86,7 +86,7 @@ func TestParseImageEditFormDataBodyFromRequest_OrdersMetadataBeforeFiles(t *test
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	require.Nil(t, parseImageEditFormDataBodyFromRequest(writer, req, schemas.OpenAI))
+	require.Nil(t, parseImageEditFormDataBodyFromRequest(writer, req, schemas.OpenAI, false))
 
 	order := multipartPartOrder(t, writer.FormDataContentType(), body.Bytes())
 	assert.Equal(t,

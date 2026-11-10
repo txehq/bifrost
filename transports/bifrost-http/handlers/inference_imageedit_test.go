@@ -291,3 +291,38 @@ func TestPrepareImageEditRequest_MultipartAspectRatio(t *testing.T) {
 		t.Fatalf("aspect_ratio = %v, want 16:9", req.Params.AspectRatio)
 	}
 }
+
+// TXE-6518 (contract C4 BF3): resolution parses from both bodies of /v1/images/edits and stays an
+// extra param under its own name.
+func TestPrepareImageEditRequest_Resolution(t *testing.T) {
+	t.Run("multipart", func(t *testing.T) {
+		_, req, err := prepareImageEditRequest(multipartImageEditCtx(t, map[string]string{
+			"model":      "gemini/gemini-3-pro-image-preview",
+			"prompt":     "widen the scene",
+			"image_url":  "https://example.com/teapot.jpg",
+			"resolution": "4K",
+		}, nil), nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if req.Params.Resolution == nil || *req.Params.Resolution != "4K" {
+			t.Fatalf("resolution = %v, want 4K", req.Params.Resolution)
+		}
+		if req.Params.ExtraParams["resolution"] != "4K" {
+			t.Fatalf("ExtraParams resolution = %v, want 4K", req.Params.ExtraParams["resolution"])
+		}
+	})
+	t.Run("json", func(t *testing.T) {
+		_, req, err := prepareImageEditRequest(jsonImageEditCtx(
+			`{"model":"gemini/gemini-3-pro-image-preview","images":["https://example.com/teapot.jpg"],"prompt":"widen","resolution":"1K"}`), nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if req.Params.Resolution == nil || *req.Params.Resolution != "1K" {
+			t.Fatalf("resolution = %v, want 1K", req.Params.Resolution)
+		}
+		if req.Params.ExtraParams["resolution"] != "1K" {
+			t.Fatalf("ExtraParams resolution = %v, want 1K", req.Params.ExtraParams["resolution"])
+		}
+	})
+}

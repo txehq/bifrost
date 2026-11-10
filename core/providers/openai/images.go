@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"mime/multipart"
 	"net/http"
+	"sort"
 	"strconv"
 
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
@@ -24,6 +25,10 @@ func ToOpenAIImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 	if bifrostReq.Params != nil {
 		req.ImageGenerationParameters = *bifrostReq.Params
 	}
+	// The unified resolution tier is not an OpenAI images field; each OpenAI-shaped provider maps it
+	// to its own field in its vendor ticket. Until then the body is what it was before the field
+	// existed: the value reaches the vendor only through the extra-param channel (TXE-6518).
+	req.ImageGenerationParameters.Resolution = nil
 
 	switch bifrostReq.Provider {
 	case schemas.XAI:
@@ -122,7 +127,11 @@ func ToOpenAIImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Open
 	return req
 }
 
-func parseImageEditFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAIImageEditRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
+// parseImageEditFormDataBodyFromRequest writes an image edit as a multipart form. When
+// passthroughExtraParams is set (x-bf-passthrough-extra-params: true), every extra param is also
+// written as a form field, as the JSON paths merge them into the body (fork, TXE-6518, contract C4
+// BF5); see writeImageEditExtraParamFields.
+func parseImageEditFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAIImageEditRequest, providerName schemas.ModelProvider, passthroughExtraParams bool) *schemas.BifrostError {
 	// Add model field (required)
 	if err := writer.WriteField("model", openaiReq.Model); err != nil {
 		return providerUtils.NewBifrostOperationError("failed to write model field", err)
@@ -201,6 +210,13 @@ func parseImageEditFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *
 		}
 	}
 
+	// Extra params go with the other fields, before the file parts.
+	if passthroughExtraParams {
+		if bifrostErr := writeImageEditExtraParamFields(writer, openaiReq.ExtraParams); bifrostErr != nil {
+			return bifrostErr
+		}
+	}
+
 	// Add image[] fields (one for each image)
 	for i, imageInput := range openaiReq.Input.Images {
 		fieldName := "image[]"
@@ -272,6 +288,62 @@ func parseImageEditFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *
 		return providerUtils.NewBifrostOperationError("failed to close multipart writer", err)
 	}
 
+	return nil
+}
+
+// passthroughExtraParamsEnabled reports whether the caller sent x-bf-passthrough-extra-params:
+// true, the same switch providerUtils uses to merge extra params into a JSON body.
+func passthroughExtraParamsEnabled(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	enabled, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool)
+	return enabled
+}
+
+// imageEditFormFieldNames are the form fields parseImageEditFormDataBodyFromRequest writes from the
+// typed request. An extra param with one of these names is not written a second time: the typed
+// value is the one sent, so the form never carries a field twice.
+var imageEditFormFieldNames = map[string]bool{
+	"model": true, "prompt": true, "stream": true, "n": true, "size": true, "response_format": true,
+	"quality": true, "background": true, "input_fidelity": true, "partial_images": true,
+	"output_format": true, "output_compression": true, "user": true, "image": true, "image[]": true,
+	"mask": true,
+}
+
+// writeImageEditExtraParamFields writes each extra param as one form field, keys sorted so the form
+// is deterministic. A string is written verbatim, as the multipart route received it; any other
+// value (a number, a bool, an object or an array from a JSON request) is written as its JSON
+// encoding, since a form field is a string. A nil value is skipped.
+func writeImageEditExtraParamFields(writer *multipart.Writer, extraParams map[string]interface{}) *schemas.BifrostError {
+	if len(extraParams) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(extraParams))
+	for key := range extraParams {
+		if !imageEditFormFieldNames[key] {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		var fieldValue string
+		switch v := extraParams[key].(type) {
+		case nil:
+			continue
+		case string:
+			fieldValue = v
+		default:
+			encoded, err := schemas.MarshalSorted(v)
+			if err != nil {
+				return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to encode %s field", key), err)
+			}
+			fieldValue = string(encoded)
+		}
+		if err := writer.WriteField(key, fieldValue); err != nil {
+			return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to write %s field", key), err)
+		}
+	}
 	return nil
 }
 

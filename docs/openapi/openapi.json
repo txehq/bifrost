@@ -2577,6 +2577,34 @@
                         },
                         "total_tokens": {
                           "type": "integer"
+                        },
+                        "billed_characters": {
+                          "type": "integer",
+                          "description": "Characters the provider reported it billed. Absent when the provider reported none; never Bifrost's own count of the input"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                            }
+                          }
                         }
                       }
                     },
@@ -2853,6 +2881,10 @@
                         "type": "string",
                         "description": "Aspect ratio of the generated image (e.g. `16:9`), for providers that accept one in place of `size`"
                       },
+                      "resolution": {
+                        "type": "string",
+                        "description": "Resolution tier of the generated image (e.g. `1K`, `2K`, `4K`), one name on every provider.\nEach provider maps it to its own field; a provider that has not mapped it yet receives it\nonly through `x-bf-passthrough-extra-params: true`, under this name.\n"
+                      },
                       "type": {
                         "type": "string",
                         "description": "Operation selector for providers that expose more than one generation task\n(e.g. `vectorize` for text-to-SVG on Runware). Omit for standard generation.\n"
@@ -3036,6 +3068,23 @@
                       ],
                       "description": "Size of the generated image"
                     },
+                    "content_filter": {
+                      "type": "object",
+                      "description": "Images the provider blocked while answering 200. Blocked images take no slot in `data`;\n`filtered_count` is how many were blocked and `reasons` are the provider's reason codes\nverbatim. When every image was blocked, `data` is an empty array.\n",
+                      "properties": {
+                        "filtered_count": {
+                          "type": "integer",
+                          "description": "Number of items filtered"
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Human-readable reasons for filtering"
+                        }
+                      }
+                    },
                     "usage": {
                       "type": "object",
                       "properties": {
@@ -3053,6 +3102,10 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
                             }
                           }
                         },
@@ -3074,6 +3127,50 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "output_images": {
+                          "type": "integer",
+                          "description": "Images the provider reported it billed for. Absent when the provider reported none; never Bifrost's own count"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "output_megapixels": {
+                          "type": "number",
+                          "description": "Output megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "input_megapixels": {
+                          "type": "number",
+                          "description": "Input megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
                             }
                           }
                         }
@@ -3177,6 +3274,10 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
                             }
                           }
                         },
@@ -3198,6 +3299,50 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "output_images": {
+                          "type": "integer",
+                          "description": "Images the provider reported it billed for. Absent when the provider reported none; never Bifrost's own count"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "output_megapixels": {
+                          "type": "number",
+                          "description": "Output megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "input_megapixels": {
+                          "type": "number",
+                          "description": "Input megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
                             }
                           }
                         }
@@ -3443,6 +3588,10 @@
                     "type": "string",
                     "description": "What to avoid in the edit"
                   },
+                  "resolution": {
+                    "type": "string",
+                    "description": "Resolution tier of the edited image (e.g. `1K`, `2K`, `4K`); see the generation request's `resolution`"
+                  },
                   "user": {
                     "type": "string",
                     "description": "User identifier for tracking"
@@ -3619,6 +3768,10 @@
                     "type": "string",
                     "description": "What to avoid in the edit"
                   },
+                  "resolution": {
+                    "type": "string",
+                    "description": "Resolution tier of the edited image (e.g. `1K`, `2K`, `4K`); see the generation request's `resolution`"
+                  },
                   "user": {
                     "type": "string",
                     "description": "User identifier for tracking"
@@ -3739,6 +3892,23 @@
                       ],
                       "description": "Size of the generated image"
                     },
+                    "content_filter": {
+                      "type": "object",
+                      "description": "Images the provider blocked while answering 200. Blocked images take no slot in `data`;\n`filtered_count` is how many were blocked and `reasons` are the provider's reason codes\nverbatim. When every image was blocked, `data` is an empty array.\n",
+                      "properties": {
+                        "filtered_count": {
+                          "type": "integer",
+                          "description": "Number of items filtered"
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Human-readable reasons for filtering"
+                        }
+                      }
+                    },
                     "usage": {
                       "type": "object",
                       "properties": {
@@ -3756,6 +3926,10 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
                             }
                           }
                         },
@@ -3777,6 +3951,50 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "output_images": {
+                          "type": "integer",
+                          "description": "Images the provider reported it billed for. Absent when the provider reported none; never Bifrost's own count"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "output_megapixels": {
+                          "type": "number",
+                          "description": "Output megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "input_megapixels": {
+                          "type": "number",
+                          "description": "Input megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
                             }
                           }
                         }
@@ -3870,6 +4088,10 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
                             }
                           }
                         },
@@ -3891,6 +4113,50 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "output_images": {
+                          "type": "integer",
+                          "description": "Images the provider reported it billed for. Absent when the provider reported none; never Bifrost's own count"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "output_megapixels": {
+                          "type": "number",
+                          "description": "Output megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "input_megapixels": {
+                          "type": "number",
+                          "description": "Input megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
                             }
                           }
                         }
@@ -4120,6 +4386,23 @@
                       ],
                       "description": "Size of the generated image"
                     },
+                    "content_filter": {
+                      "type": "object",
+                      "description": "Images the provider blocked while answering 200. Blocked images take no slot in `data`;\n`filtered_count` is how many were blocked and `reasons` are the provider's reason codes\nverbatim. When every image was blocked, `data` is an empty array.\n",
+                      "properties": {
+                        "filtered_count": {
+                          "type": "integer",
+                          "description": "Number of items filtered"
+                        },
+                        "reasons": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          },
+                          "description": "Human-readable reasons for filtering"
+                        }
+                      }
+                    },
                     "usage": {
                       "type": "object",
                       "properties": {
@@ -4137,6 +4420,10 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
                             }
                           }
                         },
@@ -4158,6 +4445,50 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "output_images": {
+                          "type": "integer",
+                          "description": "Images the provider reported it billed for. Absent when the provider reported none; never Bifrost's own count"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "output_megapixels": {
+                          "type": "number",
+                          "description": "Output megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "input_megapixels": {
+                          "type": "number",
+                          "description": "Input megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
                             }
                           }
                         }
@@ -4278,6 +4609,25 @@
                   "audio": {
                     "type": "boolean",
                     "description": "Enable audio generation in the video (supported by select providers/models)"
+                  },
+                  "aspect_ratio": {
+                    "type": "string",
+                    "description": "Aspect ratio of the video (e.g. `16:9`, `9:16`), one name on every provider"
+                  },
+                  "resolution": {
+                    "type": "string",
+                    "description": "Resolution tier of the video (e.g. `480p`, `720p`, `1080p`), one name on every provider"
+                  },
+                  "last_frame": {
+                    "type": "string",
+                    "description": "Last frame of the video, as a URL or a base64 data URL (the first frame is `input_reference`)"
+                  },
+                  "reference_images": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Reference images, each a URL or a base64 data URL. Each provider maps these four fields\nto its own; a provider that has not mapped one yet receives it only through\n`x-bf-passthrough-extra-params: true`, under the same name.\n"
                   },
                   "fallbacks": {
                     "type": "array",
@@ -4419,6 +4769,59 @@
                             "type": "string"
                           },
                           "description": "Human-readable reasons for filtering"
+                        }
+                      }
+                    },
+                    "usage": {
+                      "type": "object",
+                      "description": "The billable quantities the provider reported for the task. A field the provider did not\nreport is absent: Bifrost never fills one from its own count, the request or a default.\n",
+                      "properties": {
+                        "cost": {
+                          "$ref": "#/components/schemas/BifrostCost"
+                        },
+                        "output_tokens": {
+                          "type": "integer",
+                          "description": "Tokens the provider bills the output by (e.g. Seedance `completion_tokens`)"
+                        },
+                        "output_seconds": {
+                          "type": "number",
+                          "description": "Seconds of output the provider billed"
+                        },
+                        "input_seconds": {
+                          "type": "number",
+                          "description": "Seconds of input media the provider billed"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider billed"
+                        },
+                        "compute_seconds": {
+                          "type": "number",
+                          "description": "Run time a hosting platform bills by (e.g. Replicate `metrics.predict_time`)"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                            }
+                          }
                         }
                       }
                     },
@@ -4817,6 +5220,59 @@
                             "type": "string"
                           },
                           "description": "Human-readable reasons for filtering"
+                        }
+                      }
+                    },
+                    "usage": {
+                      "type": "object",
+                      "description": "The billable quantities the provider reported for the task. A field the provider did not\nreport is absent: Bifrost never fills one from its own count, the request or a default.\n",
+                      "properties": {
+                        "cost": {
+                          "$ref": "#/components/schemas/BifrostCost"
+                        },
+                        "output_tokens": {
+                          "type": "integer",
+                          "description": "Tokens the provider bills the output by (e.g. Seedance `completion_tokens`)"
+                        },
+                        "output_seconds": {
+                          "type": "number",
+                          "description": "Seconds of output the provider billed"
+                        },
+                        "input_seconds": {
+                          "type": "number",
+                          "description": "Seconds of input media the provider billed"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider billed"
+                        },
+                        "compute_seconds": {
+                          "type": "number",
+                          "description": "Run time a hosting platform bills by (e.g. Replicate `metrics.predict_time`)"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                            }
+                          }
                         }
                       }
                     },
@@ -5228,6 +5684,59 @@
                         }
                       }
                     },
+                    "usage": {
+                      "type": "object",
+                      "description": "The billable quantities the provider reported for the task. A field the provider did not\nreport is absent: Bifrost never fills one from its own count, the request or a default.\n",
+                      "properties": {
+                        "cost": {
+                          "$ref": "#/components/schemas/BifrostCost"
+                        },
+                        "output_tokens": {
+                          "type": "integer",
+                          "description": "Tokens the provider bills the output by (e.g. Seedance `completion_tokens`)"
+                        },
+                        "output_seconds": {
+                          "type": "number",
+                          "description": "Seconds of output the provider billed"
+                        },
+                        "input_seconds": {
+                          "type": "number",
+                          "description": "Seconds of input media the provider billed"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider billed"
+                        },
+                        "compute_seconds": {
+                          "type": "number",
+                          "description": "Run time a hosting platform bills by (e.g. Replicate `metrics.predict_time`)"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                            }
+                          }
+                        }
+                      }
+                    },
                     "extra_fields": {
                       "$ref": "#/components/schemas/BifrostResponseExtraFields"
                     }
@@ -5556,6 +6065,59 @@
                             "type": "string"
                           },
                           "description": "Human-readable reasons for filtering"
+                        }
+                      }
+                    },
+                    "usage": {
+                      "type": "object",
+                      "description": "The billable quantities the provider reported for the task. A field the provider did not\nreport is absent: Bifrost never fills one from its own count, the request or a default.\n",
+                      "properties": {
+                        "cost": {
+                          "$ref": "#/components/schemas/BifrostCost"
+                        },
+                        "output_tokens": {
+                          "type": "integer",
+                          "description": "Tokens the provider bills the output by (e.g. Seedance `completion_tokens`)"
+                        },
+                        "output_seconds": {
+                          "type": "number",
+                          "description": "Seconds of output the provider billed"
+                        },
+                        "input_seconds": {
+                          "type": "number",
+                          "description": "Seconds of input media the provider billed"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider billed"
+                        },
+                        "compute_seconds": {
+                          "type": "number",
+                          "description": "Run time a hosting platform bills by (e.g. Replicate `metrics.predict_time`)"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                            }
+                          }
                         }
                       }
                     },
@@ -10837,6 +11399,10 @@
                         "type": "string",
                         "description": "Aspect ratio of the generated image (e.g. `16:9`), for providers that accept one in place of `size`"
                       },
+                      "resolution": {
+                        "type": "string",
+                        "description": "Resolution tier of the generated image (e.g. `1K`, `2K`, `4K`), one name on every provider.\nEach provider maps it to its own field; a provider that has not mapped it yet receives it\nonly through `x-bf-passthrough-extra-params: true`, under this name.\n"
+                      },
                       "type": {
                         "type": "string",
                         "description": "Operation selector for providers that expose more than one generation task\n(e.g. `vectorize` for text-to-SVG on Runware). Omit for standard generation.\n"
@@ -11162,6 +11728,10 @@
                     "type": "string",
                     "description": "What to avoid in the edit"
                   },
+                  "resolution": {
+                    "type": "string",
+                    "description": "Resolution tier of the edited image (e.g. `1K`, `2K`, `4K`); see the generation request's `resolution`"
+                  },
                   "user": {
                     "type": "string",
                     "description": "User identifier for tracking"
@@ -11337,6 +11907,10 @@
                   "negative_prompt": {
                     "type": "string",
                     "description": "What to avoid in the edit"
+                  },
+                  "resolution": {
+                    "type": "string",
+                    "description": "Resolution tier of the edited image (e.g. `1K`, `2K`, `4K`); see the generation request's `resolution`"
                   },
                   "user": {
                     "type": "string",
@@ -18700,6 +19274,34 @@
                         },
                         "total_tokens": {
                           "type": "integer"
+                        },
+                        "billed_characters": {
+                          "type": "integer",
+                          "description": "Characters the provider reported it billed. Absent when the provider reported none; never Bifrost's own count of the input"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                            }
+                          }
                         }
                       }
                     },
@@ -18835,6 +19437,34 @@
                         },
                         "total_tokens": {
                           "type": "integer"
+                        },
+                        "billed_characters": {
+                          "type": "integer",
+                          "description": "Characters the provider reported it billed. Absent when the provider reported none; never Bifrost's own count of the input"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                            }
+                          }
                         }
                       }
                     },
@@ -19840,6 +20470,10 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
                             }
                           }
                         },
@@ -19861,6 +20495,50 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "output_images": {
+                          "type": "integer",
+                          "description": "Images the provider reported it billed for. Absent when the provider reported none; never Bifrost's own count"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "output_megapixels": {
+                          "type": "number",
+                          "description": "Output megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "input_megapixels": {
+                          "type": "number",
+                          "description": "Input megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
                             }
                           }
                         }
@@ -19933,6 +20611,10 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
                             }
                           }
                         },
@@ -19954,6 +20636,50 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "output_images": {
+                          "type": "integer",
+                          "description": "Images the provider reported it billed for. Absent when the provider reported none; never Bifrost's own count"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "output_megapixels": {
+                          "type": "number",
+                          "description": "Output megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "input_megapixels": {
+                          "type": "number",
+                          "description": "Input megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
                             }
                           }
                         }
@@ -20211,6 +20937,10 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
                             }
                           }
                         },
@@ -20232,6 +20962,50 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "output_images": {
+                          "type": "integer",
+                          "description": "Images the provider reported it billed for. Absent when the provider reported none; never Bifrost's own count"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "output_megapixels": {
+                          "type": "number",
+                          "description": "Output megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "input_megapixels": {
+                          "type": "number",
+                          "description": "Input megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
                             }
                           }
                         }
@@ -20304,6 +21078,10 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
                             }
                           }
                         },
@@ -20325,6 +21103,50 @@
                             "text_tokens": {
                               "type": "integer",
                               "description": "Tokens used for text"
+                            },
+                            "reasoning_tokens": {
+                              "type": "integer",
+                              "description": "Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none"
+                            }
+                          }
+                        },
+                        "output_images": {
+                          "type": "integer",
+                          "description": "Images the provider reported it billed for. Absent when the provider reported none; never Bifrost's own count"
+                        },
+                        "input_images": {
+                          "type": "integer",
+                          "description": "Input images the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "output_megapixels": {
+                          "type": "number",
+                          "description": "Output megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "input_megapixels": {
+                          "type": "number",
+                          "description": "Input megapixels the provider reported it billed for. Absent when the provider reported none"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
                             }
                           }
                         }
@@ -32446,6 +33268,34 @@
                         },
                         "total_tokens": {
                           "type": "integer"
+                        },
+                        "billed_characters": {
+                          "type": "integer",
+                          "description": "Characters the provider reported it billed. Absent when the provider reported none; never Bifrost's own count of the input"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                            }
+                          }
                         }
                       }
                     },
@@ -35598,6 +36448,34 @@
                         },
                         "total_tokens": {
                           "type": "integer"
+                        },
+                        "billed_characters": {
+                          "type": "integer",
+                          "description": "Characters the provider reported it billed. Absent when the provider reported none; never Bifrost's own count of the input"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                            }
+                          }
                         }
                       }
                     },
@@ -38861,6 +39739,34 @@
                         },
                         "total_tokens": {
                           "type": "integer"
+                        },
+                        "billed_characters": {
+                          "type": "integer",
+                          "description": "Characters the provider reported it billed. Absent when the provider reported none; never Bifrost's own count of the input"
+                        },
+                        "vendor_cost": {
+                          "type": "object",
+                          "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                          "required": [
+                            "amount",
+                            "unit"
+                          ],
+                          "properties": {
+                            "amount": {
+                              "type": "number",
+                              "description": "The amount, in `unit`. A reported zero is kept as 0"
+                            },
+                            "unit": {
+                              "type": "string",
+                              "enum": [
+                                "usd",
+                                "usd_ticks",
+                                "credit",
+                                "unit"
+                              ],
+                              "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                            }
+                          }
                         }
                       }
                     },
@@ -118941,6 +119847,34 @@
               },
               "total_tokens": {
                 "type": "integer"
+              },
+              "billed_characters": {
+                "type": "integer",
+                "description": "Characters the provider reported it billed. Absent when the provider reported none; never Bifrost's own count of the input"
+              },
+              "vendor_cost": {
+                "type": "object",
+                "description": "Money or credits the provider reported, copied from its response in its own unit. Never\ncomputed by Bifrost; the catalog-priced `cost` is a separate field.\n",
+                "required": [
+                  "amount",
+                  "unit"
+                ],
+                "properties": {
+                  "amount": {
+                    "type": "number",
+                    "description": "The amount, in `unit`. A reported zero is kept as 0"
+                  },
+                  "unit": {
+                    "type": "string",
+                    "enum": [
+                      "usd",
+                      "usd_ticks",
+                      "credit",
+                      "unit"
+                    ],
+                    "description": "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"
+                  }
+                }
               }
             }
           },

@@ -99,6 +99,15 @@ type VideoGenerationParameters struct {
 	Audio          *bool          `json:"audio,omitempty"`
 	ExtraParams    map[string]any `json:"-"`
 
+	// Fork (TXE-6518, contract C4 BF3): unified video fields with one name on every vendor. A
+	// provider converts each one to its vendor's own field; until it does, the value also stays in
+	// ExtraParams under the same name (see UnifiedVideoGenerationFields), so a provider that read it
+	// from there keeps working unchanged.
+	AspectRatio     *string              `json:"aspect_ratio,omitempty"`     // e.g. "16:9", "9:16", "1:1"
+	Resolution      *string              `json:"resolution,omitempty"`       // tier, e.g. "480p", "720p", "1080p"
+	LastFrame       *string              `json:"last_frame,omitempty"`       // last frame: a URL or a data URL, like input_reference
+	ReferenceImages VideoReferenceImages `json:"reference_images,omitempty"` // reference images: URLs or data URLs
+
 	// Upscale operations (type "upscale"); mutually exclusive.
 	UpscaleFactor    *int `json:"upscale_factor,omitempty"`
 	TargetMegapixels *int `json:"target_megapixels,omitempty"`
@@ -129,12 +138,49 @@ type BifrostVideoGenerationResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields,omitempty"`
 }
 
+// VideoReferenceImages is the unified reference_images list: each entry a URL or a data URL.
+//
+// It decodes only an array of strings. Any other JSON value (Runway's [{"uri": ..., "tag": ...}]
+// objects, which callers sent as an extra param before the field was unified) leaves the list empty
+// instead of failing the request: the handlers keep the raw value in ExtraParams, where the provider
+// that understands that shape reads it, exactly as before the field existed.
+type VideoReferenceImages []string
+
+// UnmarshalJSON implements json.Unmarshaler; see VideoReferenceImages.
+func (v *VideoReferenceImages) UnmarshalJSON(data []byte) error {
+	var list []string
+	if err := Unmarshal(data, &list); err != nil {
+		*v = nil
+		return nil
+	}
+	*v = list
+	return nil
+}
+
+// UnifiedVideoGenerationFields are the video create fields that became unified in the fork
+// (TXE-6518). The HTTP handlers parse them into VideoGenerationParameters and also keep them in
+// ExtraParams under the same name: before they were unified they reached providers only as extra
+// params, and several providers (byteplus, minimax, and every provider that forwards its extra
+// params) still read them from there. A provider that converts the typed field deletes the extra.
+var UnifiedVideoGenerationFields = []string{"aspect_ratio", "resolution", "last_frame", "reference_images"}
+
 // VideoUsage carries provider-reported usage for a video (or other async media) generation job.
-// Currently only the provider-computed cost is modeled; providers that report an exact price
-// (e.g. Runware's per-task cost) populate Cost so pricing uses it verbatim instead of a datasheet
-// estimate.
+// Providers that report an exact price (e.g. Runware's per-task cost) populate Cost so pricing uses
+// it verbatim instead of a datasheet estimate.
+//
+// Fork (TXE-6518, contract C5 BF6): the other fields are the billable quantities the vendor
+// reported for the task. Each one is set only from the vendor's own report: Bifrost never fills
+// one with a value it counted, a request parameter or a default, so a nil field means the vendor
+// did not report it. Cost keeps its upstream meaning and may be computed by Bifrost.
 type VideoUsage struct {
 	Cost *BifrostCost `json:"cost,omitempty"`
+
+	OutputTokens   *int        `json:"output_tokens,omitempty"`   // tokens the vendor bills the output by (Seedance completion_tokens)
+	OutputSeconds  *float64    `json:"output_seconds,omitempty"`  // seconds of output the vendor billed
+	InputSeconds   *float64    `json:"input_seconds,omitempty"`   // seconds of input media the vendor billed
+	InputImages    *int        `json:"input_images,omitempty"`    // input images the vendor billed
+	ComputeSeconds *float64    `json:"compute_seconds,omitempty"` // run time a hosting platform bills by (Replicate metrics.predict_time)
+	VendorCost     *VendorCost `json:"vendor_cost,omitempty"`     // money or credits the vendor reported
 }
 
 // getSecondsFromVideoRequest extracts Seconds from video-related requests.

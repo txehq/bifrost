@@ -5594,7 +5594,7 @@ func HandleOpenAIImageEditRequest(
 	mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	if err := parseImageEditFormDataBodyFromRequest(writer, openaiReq, providerName); err != nil {
+	if err := parseImageEditFormDataBodyFromRequest(writer, openaiReq, providerName, passthroughExtraParamsEnabled(ctx)); err != nil {
 		if mt != nil {
 			mt.EndSpan(mh, schemas.SpanStatusError, "multipart encode failed")
 		}
@@ -5727,7 +5727,7 @@ func HandleOpenAIImageEditStreamRequest(
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 
-	if bifrostErr := parseImageEditFormDataBodyFromRequest(writer, reqBody, providerName); bifrostErr != nil {
+	if bifrostErr := parseImageEditFormDataBodyFromRequest(writer, reqBody, providerName, passthroughExtraParamsEnabled(ctx)); bifrostErr != nil {
 		if mt != nil {
 			mt.EndSpan(mh, schemas.SpanStatusError, "multipart encode failed")
 		}

@@ -66,6 +66,12 @@ ImageGenerationRequest:
         aspect_ratio:
           type: string
           description: Aspect ratio of the generated image (e.g. `16:9`), for providers that accept one in place of `size`
+        resolution:
+          type: string
+          description: |
+            Resolution tier of the generated image (e.g. `1K`, `2K`, `4K`), one name on every provider.
+            Each provider maps it to its own field; a provider that has not mapped it yet receives it
+            only through `x-bf-passthrough-extra-params: true`, under this name.
         type:
           type: string
           description: |
@@ -170,6 +176,12 @@ ImageGenerationResponse:
         - "1024x1536"
         - "auto"
       description: Size of the generated image
+    content_filter:
+      $ref: "./videos.yaml#/VideoContentFilter"
+      description: |
+        Images the provider blocked while answering 200. Blocked images take no slot in `data`;
+        `filtered_count` is how many were blocked and `reasons` are the provider's reason codes
+        verbatim. When every image was blocked, `data` is an empty array.
     usage:
       $ref: "#/ImageUsage"
     extra_fields:
@@ -243,6 +255,20 @@ ImageUsage:
       description: Number of output tokens
     output_tokens_details:
       $ref: "#/ImageTokenDetails"
+    output_images:
+      type: integer
+      description: Images the provider reported it billed for. Absent when the provider reported none; never Bifrost's own count
+    input_images:
+      type: integer
+      description: Input images the provider reported it billed for. Absent when the provider reported none
+    output_megapixels:
+      type: number
+      description: Output megapixels the provider reported it billed for. Absent when the provider reported none
+    input_megapixels:
+      type: number
+      description: Input megapixels the provider reported it billed for. Absent when the provider reported none
+    vendor_cost:
+      $ref: "./usage.yaml#/VendorCost"
 
 ImageTokenDetails:
   type: object
@@ -253,6 +279,9 @@ ImageTokenDetails:
     text_tokens:
       type: integer
       description: Tokens used for text
+    reasoning_tokens:
+      type: integer
+      description: Reasoning (thinking) tokens the provider reported, on `output_tokens_details`. Absent when the provider reported none
 
 ImageGenerationStreamResponse:
   type: object
@@ -508,6 +537,9 @@ ImageEditRequest:
     negative_prompt:
       type: string
       description: What to avoid in the edit
+    resolution:
+      type: string
+      description: Resolution tier of the edited image (e.g. `1K`, `2K`, `4K`); see the generation request's `resolution`
     user:
       type: string
       description: User identifier for tracking
@@ -672,6 +704,9 @@ ImageEditMultipartRequest:
     negative_prompt:
       type: string
       description: What to avoid in the edit
+    resolution:
+      type: string
+      description: Resolution tier of the edited image (e.g. `1K`, `2K`, `4K`); see the generation request's `resolution`
     user:
       type: string
       description: User identifier for tracking

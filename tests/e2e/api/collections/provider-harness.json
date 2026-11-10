@@ -294322,6 +294322,133 @@
           }
         }
       ]
+    },
+    {
+      "name": "289. Multipart image edit forwards extra form fields with the passthrough header (image edit passthrough)",
+      "description": "Pins contract C4 BF5 (TXE-6518): on a multipart /v1/images/edits request, a field outside the unified structure is written into the multipart form sent to the vendor when the request carries x-bf-passthrough-extra-params: true, the way the JSON routes merge extra params into the body. Before the change the OpenAI-shaped multipart writer (core/providers/openai/images.go, shared by openai and azure) dropped every extra field. The probe field bf_harness_probe is one OpenAI does not accept, so its arrival is observable: with the header OpenAI rejects the request naming the field (red before the change, when the field was dropped and the edit succeeded); without the header the field is not forwarded and the edit succeeds.",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai/gpt-image-1 multipart image edit with x-bf-passthrough-extra-params: true forwards an extra form field (image edit passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the extra form field reached OpenAI, which rejects it by name', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'expected OpenAI to reject the forwarded probe field; got: ' + t.slice(0, 400)).to.equal(400);",
+                  "  pm.expect(t, 'the 400 does not name the probe field, so it may not be the forwarded field: ' + t.slice(0, 400)).to.include('bf_harness_probe');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/gpt-image-1",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "make the background a deep blue",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                },
+                {
+                  "key": "bf_harness_probe",
+                  "value": "txe-6518",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-image-1 multipart image edit without the passthrough header does not forward the extra form field (image edit passthrough)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the extra form field stays at the gateway and the edit succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data && j.data[0] && (j.data[0].b64_json || j.data[0].url), pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/gpt-image-1",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "make the background a deep blue",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                },
+                {
+                  "key": "bf_harness_probe",
+                  "value": "txe-6518",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

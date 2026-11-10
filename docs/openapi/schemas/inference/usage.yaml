@@ -103,3 +103,24 @@ BifrostCost:
       type: number
     total_cost:
       type: number
+
+VendorCost:
+  type: object
+  description: |
+    Money or credits the provider reported, copied from its response in its own unit. Never
+    computed by Bifrost; the catalog-priced `cost` is a separate field.
+  required:
+    - amount
+    - unit
+  properties:
+    amount:
+      type: number
+      description: The amount, in `unit`. A reported zero is kept as 0
+    unit:
+      type: string
+      enum:
+        - usd
+        - usd_ticks
+        - credit
+        - unit
+      description: "`usd`; `usd_ticks` (xAI, 1e-10 USD each); `credit` (BFL; ElevenLabs character-cost); `unit` (Kling)"

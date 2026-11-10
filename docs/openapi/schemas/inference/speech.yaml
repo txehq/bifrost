@@ -100,6 +100,11 @@ SpeechUsage:
       type: integer
     total_tokens:
       type: integer
+    billed_characters:
+      type: integer
+      description: Characters the provider reported it billed. Absent when the provider reported none; never Bifrost's own count of the input
+    vendor_cost:
+      $ref: './usage.yaml#/VendorCost'
 
 SpeechAlignment:
   type: object
