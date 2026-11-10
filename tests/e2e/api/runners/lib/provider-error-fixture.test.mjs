@@ -377,3 +377,15 @@ test("compatible chat requests are recorded, and the azure content filter answer
   assert.deepEqual(sheet["oc-tiered"].service_tiers, ["default", "priority"]);
   assert.equal(sheet["oc-tiered"].provider, "moonshot");
 });
+
+// Folder 429 (TXE-7044): gpt-image-drop is read and recorded, then loses its connection unanswered.
+test("gpt-image-drop is recorded on the wire and its connection dropped without a response", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  await fetch(`${base}/__reset`, { method: "POST" });
+  await assert.rejects(fetch(`${base}/v1/images/generations`, { method: "POST", body: JSON.stringify({ model: "gpt-image-drop", prompt: "a dog" }) }));
+  const ok = await post({ model: "gpt-image-1.5", prompt: "a dog" }, "/v1/images/generations");
+  assert.equal(ok.status, 200);
+  const calls = (await (await fetch(`${base}/__wire`)).json()).data[0].calls;
+  assert.deepEqual(calls.map((c) => JSON.parse(c.body).model), ["gpt-image-drop", "gpt-image-1.5"]);
+});

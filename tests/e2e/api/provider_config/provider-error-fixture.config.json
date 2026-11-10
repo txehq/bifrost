@@ -68,7 +68,9 @@
             "upstream-idle-stream",
             "upstream-ok~batch",
             "gpt-image-1.5",
-            "gpt-image-blocked"
+            "gpt-image-blocked",
+            "gpt-image-drop",
+            "upstream-cut"
           ],
           "use_for_batch_api": true,
           "weight": 1

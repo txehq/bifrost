@@ -551,6 +551,9 @@ const formField = (bytes, name) => {
 const openAIImageAnswer = (body, bytes, isEdit) => {
 	const model = typeof body.model === "string" ? body.model : formField(bytes, "model");
 	if (model === "gpt-image-blocked") return { status: 400, body: openAIImageModerationBlocked };
+	// gpt-image-drop is read in full and then loses its connection without a response byte: an upstream that
+	// has the request and never answers, which a write-once request must not be sent to twice (folder 429, TXE-7044).
+	if (model === "gpt-image-drop") return { drop: true };
 	const requested = Number.isInteger(body.n) ? body.n : Number(formField(bytes, "n"));
 	const n = Number.isInteger(requested) && requested > 0 ? requested : 1;
 	// A streamed edit (stream: true in either body) is answered as OpenAI streams it: one partial image, then the
@@ -870,6 +873,8 @@ const server = http.createServer((req, res) => {
 			let parsed = {};
 			try { parsed = JSON.parse(bytes) || {}; } catch {}
 			const answer = wireAnswer(path, parsed, bytes);
+			// The request was read in full; the connection dies before any response byte.
+			if (answer.drop) return req.socket.destroy();
 			if (answer.stream !== undefined) {
 				res.writeHead(answer.status, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
 				return res.end(answer.stream);
