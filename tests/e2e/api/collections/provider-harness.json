@@ -294156,53 +294156,6 @@
           }
         },
         {
-          "name": "/v1/chat/completions - content-safety flags input_sensitive/output_sensitive - minimax/MiniMax-M3",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('MiniMax sensitivity flags reach the unified response', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
-                  "  var j = pm.response.json();",
-                  "  pm.expect(j.extra_fields.provider).to.eql('minimax');",
-                  "  pm.expect(j.input_sensitive, 'input_sensitive missing: ' + pm.response.text().slice(0, 500)).to.be.a('boolean');",
-                  "  pm.expect(j.output_sensitive, 'output_sensitive missing').to.be.a('boolean');",
-                  "  pm.expect(j.input_sensitive_type, 'input_sensitive_type missing').to.be.a('number');",
-                  "  pm.expect(j.output_sensitive_type, 'output_sensitive_type missing').to.be.a('number');",
-                  "  pm.expect(j.input_sensitive).to.eql(false);",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Name one primary color.\"\n    }\n  ]\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/chat/completions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "chat",
-                "completions"
-              ]
-            }
-          }
-        },
-        {
           "name": "/v1/responses - native MiniMax /v1/responses - minimax/MiniMax-M3",
           "event": [
             {
@@ -316920,6 +316873,59 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "313. MiniMax chat content-safety flags (minimax sensitivity flags)",
+      "description": "TXE-6595 (vendor sheet B1, contract C6): MiniMax reports whether its content filter fired in top-level input_sensitive, output_sensitive, input_sensitive_type and output_sensitive_type on every chat response (platform.minimax.io/docs/api-reference/text-chat-openai). Bifrost returns them under the same names on the unified chat response. A benign prompt must come back with all four present and input_sensitive false. The streamed terminal chunk carrying the flags is pinned by TestMiniMaxChatStreamCarriesSensitivityFlags in core/providers/minimax. The native /v1/responses and /anthropic/v1/messages cases for the same ticket stay in folder 284 next to the cases they replaced.",
+      "item": [
+        {
+          "name": "/v1/chat/completions - content-safety flags input_sensitive/output_sensitive - minimax/MiniMax-M3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('MiniMax sensitivity flags reach the unified response', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields.provider).to.eql('minimax');",
+                  "  pm.expect(j.input_sensitive, 'input_sensitive missing: ' + pm.response.text().slice(0, 500)).to.be.a('boolean');",
+                  "  pm.expect(j.output_sensitive, 'output_sensitive missing').to.be.a('boolean');",
+                  "  pm.expect(j.input_sensitive_type, 'input_sensitive_type missing').to.be.a('number');",
+                  "  pm.expect(j.output_sensitive_type, 'output_sensitive_type missing').to.be.a('number');",
+                  "  pm.expect(j.input_sensitive).to.eql(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Name one primary color.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
         }
       ]
     }
