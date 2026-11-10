@@ -88,7 +88,7 @@ func checkVoiceFamily(model string, params *schemas.SpeechParameters) *schemas.B
 	if !ok {
 		return schemas.NewUnsupportedParameterError("voice", fmt.Sprintf("voice %q is not a Cloud Text-to-Speech voice name of the form <language>-<REGION>-<family>-<variant>, so google-cloud-tts cannot tell that it belongs to model %q", voiceName, model))
 	}
-	if !strings.EqualFold(family, model) {
+	if !sameFamily(family, model) {
 		return schemas.NewUnsupportedParameterError("voice", fmt.Sprintf("voice %q is a %s voice and the request's model is %q: the model must name the voice's family", voiceName, strings.ToLower(family), model))
 	}
 	return nil
@@ -137,12 +137,12 @@ func checkSSMLVoices(model, ssml string) *schemas.BifrostError {
 		case xml.Directive:
 			return ssmlVoiceError(model, "the SSML carries a document type declaration")
 		case xml.StartElement:
-			if !strings.EqualFold(element.Name.Local, "voice") {
+			if !equalFoldASCII(element.Name.Local, "voice") {
 				continue
 			}
 			named := false
 			for _, attr := range element.Attr {
-				if !strings.EqualFold(attr.Name.Local, "name") {
+				if !equalFoldASCII(attr.Name.Local, "name") {
 					continue
 				}
 				named = true
@@ -150,7 +150,7 @@ func checkSSMLVoices(model, ssml string) *schemas.BifrostError {
 				if !ok {
 					return ssmlVoiceError(model, fmt.Sprintf("<voice name=%q> is not a Cloud Text-to-Speech voice name of the form <language>-<REGION>-<family>-<variant>", attr.Value))
 				}
-				if !strings.EqualFold(family, model) {
+				if !sameFamily(family, model) {
 					return ssmlVoiceError(model, fmt.Sprintf("<voice name=%q> selects a %s voice", attr.Value, strings.ToLower(family)))
 				}
 			}
@@ -169,7 +169,7 @@ func ssmlVoiceError(model, what string) *schemas.BifrostError {
 // s, comparing ASCII letters without regard to case, or -1.
 func indexFoldASCII(s, needle string) int {
 	for i := 0; i+len(needle) <= len(s); i++ {
-		if strings.EqualFold(s[i:i+len(needle)], needle) {
+		if equalFoldASCII(s[i:i+len(needle)], needle) {
 			return i
 		}
 	}
@@ -303,4 +303,37 @@ func ToGoogleCloudTTSSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *Go
 	synthesizeReq.AudioConfig.SpeakingRate = params.Speed
 
 	return synthesizeReq
+}
+
+// sameFamily reports whether a voice's family is the request's model. Only ASCII letters are
+// compared without regard to case, and a name holding any other byte is never the same:
+// Unicode folding would take "ſtandard" (long s) for "standard", while the governance and
+// pricing lookups, which lower-case the model, would not, so the request would be served
+// outside the limits and the price of the model it is.
+func sameFamily(family, model string) bool {
+	return equalFoldASCII(family, model)
+}
+
+// equalFoldASCII reports whether a and b are the same ASCII string, comparing letters without
+// regard to case. A string with a byte outside ASCII equals nothing.
+func equalFoldASCII(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		x, y := a[i], b[i]
+		if x >= 0x80 || y >= 0x80 {
+			return false
+		}
+		if 'A' <= x && x <= 'Z' {
+			x += 'a' - 'A'
+		}
+		if 'A' <= y && y <= 'Z' {
+			y += 'a' - 'A'
+		}
+		if x != y {
+			return false
+		}
+	}
+	return true
 }

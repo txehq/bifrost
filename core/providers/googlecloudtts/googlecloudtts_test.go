@@ -354,6 +354,8 @@ func TestSpeechRefusesAVoiceOutsideTheModelFamily(t *testing.T) {
 		{"a Chirp-HD voice under chirp3-hd", "chirp3-hd", voice("en-US-Chirp-HD-F")},
 		{"a WaveNet voice under a model that is no family", "tts-1", voice("en-US-Wavenet-D")},
 		{"a named voice under instant-custom-voice", "instant-custom-voice", voice("en-US-Wavenet-D")},
+		{"a model that only Unicode folding takes for standard", "\u017ftandard", voice("en-US-Standard-B")},
+		{"a model and a voice family with the same non-ASCII letter", "\u017ftandard", voice("en-US-\u017ftandard-B")},
 		{"a name with no family", "wavenet", voice("alloy")},
 		{"a name with an empty part", "wavenet", voice("en-US--D")},
 		{"an empty voice name", "wavenet", voice("")},
