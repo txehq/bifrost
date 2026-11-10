@@ -225,3 +225,14 @@ test("upstream-idle-stream pauses between its events and records the bytes it se
   const cleared = (await (await fetch(`${base}/__sent?model=upstream-idle-stream`)).json()).data[0];
   assert.equal(cleared.body, null, "a reset clears the recorded stream");
 });
+
+// upstream-speech-empty is a speech 200 with no audio and no error object, which Bifrost turns into
+// 502 provider_empty_result (provider-harness folder 330).
+test("upstream-speech-empty answers 200 with an empty audio body and a vendor request id", async (t) => {
+  const post = await startFixture(t);
+  const res = await post({ model: "upstream-speech-empty", input: "hi", voice: "alloy" }, "/v1/audio/speech");
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("content-type"), "audio/mpeg");
+  assert.equal(res.headers.get("x-request-id"), "fixture-speech-empty");
+  assert.equal((await res.arrayBuffer()).byteLength, 0);
+});

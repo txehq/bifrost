@@ -26,6 +26,10 @@ const behaviours = {
 	"upstream-503": () => ({ status: 503, headers: {}, body: errorBody("service unavailable", "server_error", "service_unavailable") }),
 	"upstream-429": () => ({ status: 429, headers: { "Retry-After": "7" }, body: errorBody("rate limit exceeded", "rate_limit_error", "rate_limit_exceeded") }),
 	"upstream-429-ms": () => ({ status: 429, headers: { "retry-after-ms": "2500" }, body: errorBody("rate limit exceeded", "rate_limit_error", "rate_limit_exceeded") }),
+	// A content block under a 403, OpenAI's shape: the caller's content, not the key (contract C6).
+	// A speech 200 with an empty body and no error object: the vendor's fault (contract C6).
+	"upstream-speech-empty": () => ({ status: 200, headers: { "Content-Type": "audio/mpeg", "x-request-id": "fixture-speech-empty" }, body: "" }),
+	"upstream-403-content-block": () => ({ status: 403, headers: {}, body: errorBody("Your request was rejected as a result of our safety system.", "invalid_request_error", "content_policy_violation") }),
 	"upstream-ok": () => ({
 		status: 200,
 		headers: {},
@@ -769,6 +773,11 @@ const server = http.createServer((req, res) => {
 			if (Object.hasOwn(behaviours, speechName) && behaviours[speechName]().status !== 200) {
 				const failing = behaviours[speechName]();
 				return send(failing.status, failing.headers, failing.body);
+			}
+			// TXE-6517: a 200 with no audio and no error object, which Bifrost turns into 502 provider_empty_result.
+			if (speechName === "upstream-speech-empty") {
+				const empty = behaviours[speechName]();
+				return send(empty.status, empty.headers, empty.body);
 			}
 			if (speechName !== "upstream-gapped") {
 				return send(404, {}, errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found"));

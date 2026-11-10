@@ -754,6 +754,13 @@ func namedProjectNothingScoped(ctx *schemas.BifrostContext) (string, bool) {
 //   - *EvaluationResult: The governance evaluation result
 //   - *schemas.BifrostError: The error to return if request is not allowed, nil if allowed
 func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest) (*EvaluationResult, *schemas.BifrostError) {
+	result, refusal := p.evaluate(ctx, evaluationRequest)
+	declarePolicyErrorType(refusal)
+	return result, refusal
+}
+
+// evaluate is Evaluate before its refusal is stamped with a policy error type.
+func (p *GovernancePlugin) evaluate(ctx *schemas.BifrostContext, evaluationRequest *EvaluationRequest) (*EvaluationResult, *schemas.BifrostError) {
 	// Evaluation reads what a request may reach rather than working it out, and not every caller
 	// arrives through a hook that has already worked it out. A request with no grant cannot be
 	// evaluated at all: nothing settled who it is, so there is nothing to evaluate it as.
@@ -808,7 +815,7 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 		}
 		p.cfgMutex.RUnlock()
 		return nil, &schemas.BifrostError{
-			Type:       new("virtual_key_required"),
+			Type:       new(virtualKeyRequiredType),
 			StatusCode: new(401),
 			Error: &schemas.ErrorField{
 				Message: message,
@@ -1187,6 +1194,15 @@ func (p *GovernancePlugin) PreRequestHook(ctx *schemas.BifrostContext, req *sche
 //   - *schemas.LLMPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	req, shortCircuit, err := p.preLLMHook(ctx, req)
+	if shortCircuit != nil {
+		declarePolicyErrorType(shortCircuit.Error)
+	}
+	return req, shortCircuit, err
+}
+
+// preLLMHook is PreLLMHook before its refusal is stamped with a policy error type.
+func (p *GovernancePlugin) preLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	// Validate required headers are present
 	if headerErr := p.validateRequiredHeaders(ctx); headerErr != nil {
 		return req, &schemas.LLMPluginShortCircuit{Error: headerErr}, nil
@@ -1458,6 +1474,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				ExtraFields: schemas.BifrostErrorExtraFields{
 					RequestType: requestType,
 					Provider:    provider,
+					ErrorType:   schemas.ErrorTypeBifrostInternal,
 				},
 			}, nil
 		}
@@ -1567,6 +1584,15 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 //   - *schemas.MCPPluginShortCircuit: The plugin short circuit if the request is not allowed
 //   - error: Any error that occurred during processing
 func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
+	req, shortCircuit, err := p.preMCPHook(ctx, req)
+	if shortCircuit != nil {
+		declarePolicyErrorType(shortCircuit.Error)
+	}
+	return req, shortCircuit, err
+}
+
+// preMCPHook is PreMCPHook before its refusal is stamped with a policy error type.
+func (p *GovernancePlugin) preMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
 	toolName := req.GetToolName()
 
 	// Skip for non tool execution requests
@@ -1779,6 +1805,15 @@ func (p *GovernancePlugin) defaultAgentPermit(identity schemas.Identity) schemas
 // from the request's settled grant before any upstream effect. Anonymous requests pass through;
 // identified requests resolve access through the same path as every other governed request.
 func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
+	req, shortCircuit, err := p.preA2AHook(ctx, req)
+	if shortCircuit != nil {
+		declarePolicyErrorType(shortCircuit.Error)
+	}
+	return req, shortCircuit, err
+}
+
+// preA2AHook is PreA2AHook before its refusal is stamped with a policy error type.
+func (p *GovernancePlugin) preA2AHook(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
 	if req == nil {
 		return req, nil, nil
 	}

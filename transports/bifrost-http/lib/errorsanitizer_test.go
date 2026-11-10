@@ -78,3 +78,32 @@ func TestSanitizeBifrostErrorForClientPreservesNonSensitiveServerMessage(t *test
 		t.Fatalf("expected non-sensitive server message to be preserved, got %q", sanitized.Error.Message)
 	}
 }
+
+// BF8: the copy a client receives always carries extra_fields.error_type, and the
+// caller's error is left as it was.
+func TestSanitizeBifrostErrorForClientResolvesErrorType(t *testing.T) {
+	status := fasthttp.StatusForbidden
+	err := &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "forbidden"}}
+	sanitized := SanitizeBifrostErrorForClient(err)
+	if got := sanitized.ExtraFields.ErrorType; got != schemas.ErrorTypeProviderAuthFailed {
+		t.Fatalf("error_type = %q, want %q", got, schemas.ErrorTypeProviderAuthFailed)
+	}
+	if err.ExtraFields.ErrorType != "" {
+		t.Fatalf("the caller's error was changed: %q", err.ExtraFields.ErrorType)
+	}
+	declared := &schemas.BifrostError{StatusCode: &status, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypePolicyModelBlocked}}
+	if got := SanitizeBifrostErrorForClient(declared).ExtraFields.ErrorType; got != schemas.ErrorTypePolicyModelBlocked {
+		t.Fatalf("a declaration was not kept: %q", got)
+	}
+}
+
+// SanitizeBifrostErrorForClient runs once per error a client receives; it now also
+// resolves the error type on its copy.
+func BenchmarkSanitizeBifrostErrorForClient(b *testing.B) {
+	status := fasthttp.StatusTooManyRequests
+	err := &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "Rate limit reached for requests"}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = SanitizeBifrostErrorForClient(err)
+	}
+}

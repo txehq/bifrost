@@ -293,11 +293,14 @@ func ApplyBifrostErrorResponseHeaders(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 		ConvertedRequestType:      extra.ConvertedRequestType,
 		DroppedCompatPluginParams: extra.DroppedCompatPluginParams,
 	}, false)
-	if !ExtraFieldsInHeaders(ctx) {
-		return
-	}
+	// Written in both placements: a route that answers in a vendor's native error envelope
+	// (/anthropic/v1/messages, /genai/...) has no extra_fields to carry it, and the header is
+	// then the only place the classification reaches the client.
 	if extra.ErrorType != "" {
 		ctx.Response.Header.Set(HeaderBifrostErrorType, string(extra.ErrorType))
+	}
+	if !ExtraFieldsInHeaders(ctx) {
+		return
 	}
 	if extra.RetryAfter > 0 {
 		ctx.Response.Header.Set(HeaderBifrostRetryAfterMs, strconv.FormatInt(extra.RetryAfter, 10))

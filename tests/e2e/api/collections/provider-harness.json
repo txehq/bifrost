@@ -294482,6 +294482,293 @@
       ]
     },
     {
+      "name": "330. Every error carries extra_fields.error_type (fork error types)",
+      "description": "Contract C6 (Bifrost-Tokun, BF8/BF9): every error response carries extra_fields.error_type from the closed vocabulary, so a client classifies a failure by one field and never by its text. A governance refusal is policy_*, never provider_auth_failed although it is a 401/403. A route that answers in a vendor-native error envelope (/anthropic/v1/messages) has no extra_fields, so the x-bifrost-error-type header carries the same value on every error. A vendor 403 content block is caller_content_filtered and is not a key failure: it reaches the upstream once (no same-key retry, no rotation). A speech 200 with no audio and no error object is 502 provider_empty_result, with the vendor headers kept. The fixture cases run only against the provider error fixture.",
+      "item": [
+        {
+          "name": "330.1 [EXPECT-401] openai/gpt-4o-mini an unknown virtual key is policy_access_denied, not provider_auth_failed (fork error types)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-harness-error-type-unknown"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 refusal carries policy_access_denied in the body and the header', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(401);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('policy_access_denied');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'header').to.eql('policy_access_denied');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "330.2 [EXPECT-401] anthropic/claude-haiku-4-5 the Anthropic route carries the refusal type in x-bifrost-error-type (fork error types)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "sk-bf-harness-error-type-unknown"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the Anthropic route\\'s 401 carries policy_access_denied in x-bifrost-error-type', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(401);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'header: ' + pm.response.text()).to.eql('policy_access_denied');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "330.3 [EXPECT-4XX] openai/gpt-harness-no-such-model a vendor or routing 4xx nobody declared still carries a caller_* error_type (fork error types)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-harness-no-such-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an unknown model is the caller\\'s error, classified', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.be.within(400, 499);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.match(/^caller_/);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'header').to.eql(j.extra_fields.error_type);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "330.4 [EXPECT-403] openai upstream 403 content block is caller_content_filtered (fork error types)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-403-content-block\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a 403 content block reaches the client as caller_content_filtered', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(403);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_content_filtered');",
+                  "  pm.expect(j.error && j.error.code, 'vendor code: ' + pm.response.text()).to.eql('content_policy_violation');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "330.6 [EXPECT-502] openai upstream speech 200 with no audio is provider_empty_result and keeps the vendor headers (fork error types)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-speech-empty\",\n  \"input\": \"hi\",\n  \"voice\": \"alloy\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a speech 200 without audio is the vendor\\'s fault, 502 provider_empty_result', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(502);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_empty_result');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-error-type'), 'header').to.eql('provider_empty_result');",
+                  "  pm.expect(pm.response.headers.get('x-request-id'), 'vendor header lost').to.eql('fixture-speech-empty');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "330.5 fixture hit counts prove a 403 content block made one upstream call (fork error types)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "http://127.0.0.1:8791/__hits"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var h = pm.response.json().data[0].hits;",
+                  "pm.test('the content block was not retried on the same key or another', function () {",
+                  "  pm.expect(h['upstream-403-content-block'], JSON.stringify(h)).to.equal(1);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "289. Multipart image edit forwards extra form fields (image edit passthrough)",
       "description": "Pins contract C4 BF5 (TXE-6518): on a multipart /v1/images/edits request, a field outside the unified structure is written into the multipart form sent to the vendor, the way the JSON routes merge extra params into the body. Before the change the OpenAI-shaped multipart writer (core/providers/openai/images.go, shared by openai and azure) dropped every extra field. The writer forwards extra fields when passthrough is on; the /v1/images/edits handler turns passthrough on for every request (upstream #3572, as /v1/images/generations does), so the field is forwarded with or without x-bf-passthrough-extra-params, and both rows pin that. The probe field bf_harness_probe is one OpenAI does not accept, so its arrival is observable: OpenAI rejects the request naming the field. Red before the change, when the field was dropped and each edit returned 200. The writer's own gate (no extra fields when passthrough is off) is pinned offline by TestImageEditMultipartPassthroughExtraParams, since no HTTP route reaches the writer with passthrough off and extra params set.",
       "item": [

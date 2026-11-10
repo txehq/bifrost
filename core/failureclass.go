@@ -233,8 +233,27 @@ func ClassifyFailure(err *schemas.BifrostError) schemas.FailureClass {
 			return schemas.FailureClassCancelled
 		}
 	}
+	// These declarations say nothing about the key: the same request fails the same way on
+	// every key, so none is rotated on or retried. They run before the status rules because
+	// a vendor reports a content block under a 403 (which would otherwise mark the key dead)
+	// as readily as under a 400 (contract C6).
+	switch err.ExtraFields.ErrorType {
+	case schemas.ErrorTypeCallerContentFiltered:
+		// The vendor refused the caller's content: the request's problem, so an inferred
+		// fallback chain does not run either (shouldTryFallbacks).
+		return schemas.FailureClassCallerFault
+	case schemas.ErrorTypeCallerUnsupportedParameter:
+		// This provider cannot take the field; another provider in an inferred chain may.
+		return schemas.FailureClassUnknown
+	case schemas.ErrorTypeProviderEmptyResult, schemas.ErrorTypeProviderCancelUnsupported:
+		// The vendor answered; a second call is a second charge (contract C3).
+		return schemas.FailureClassUnknown
+	}
 	if err.IsBifrostError {
 		return schemas.FailureClassUnknown
+	}
+	if schemas.IsContentFilterError(err) {
+		return schemas.FailureClassCallerFault
 	}
 	status := 0
 	if err.StatusCode != nil {
@@ -309,8 +328,8 @@ func ClassifyFailure(err *schemas.BifrostError) schemas.FailureClass {
 	}
 
 	// Any other 403 is a permission problem with the key, as the retry loop has always
-	// treated it. That includes a guardrail or moderation refusal: guardrails can be set
-	// per key or per workspace, so another key may serve the same request.
+	// treated it. A moderation or safety block of the caller's content is not: it was
+	// classed as a caller fault above, from its code or the provider's declaration.
 	if status == 403 {
 		return schemas.FailureClassCredential
 	}

@@ -317,6 +317,9 @@ func TestEveryVocabularyValueIsReachable(t *testing.T) {
 	}
 	record(&BifrostError{IsBifrostError: true}, ChatCompletionRequest)
 	record(&BifrostError{}, ChatCompletionRequest)
+	for _, code := range contentFilterCodes {
+		record(&BifrostError{StatusCode: statusPtr(403), Error: &ErrorField{Code: Ptr(code)}}, ChatCompletionRequest)
+	}
 
 	// Declaration-only: no status or marker infers these, because inference could not
 	// tell them from a superficially identical upstream failure.
@@ -329,6 +332,9 @@ func TestEveryVocabularyValueIsReachable(t *testing.T) {
 		ErrorTypePolicyRateLimited:            true,
 		ErrorTypePolicyToolBlocked:            true,
 		ErrorTypeProviderCredentialsExhausted: true,
+		ErrorTypeCallerUnsupportedParameter:   true,
+		ErrorTypeProviderEmptyResult:          true,
+		ErrorTypeProviderCancelUnsupported:    true,
 	}
 	for _, v := range ErrorTypes {
 		if declarationOnly[v] || inferable[v] {
@@ -665,5 +671,91 @@ func TestRootSpanErrorAttributes(t *testing.T) {
 	// a real label meaning "we did not look".
 	if _, ok := RootSpanErrorAttributes(err, "")[AttrBifrostErrorType]; ok {
 		t.Errorf("%s present when the error type is empty", AttrBifrostErrorType)
+	}
+}
+
+// Contract C6 (BF9): the four values the Bifrost–Tokun contract adds are published, so a
+// producer declaring one is not turned into _OTHER.
+func TestContractErrorTypesArePublishedAndValidate(t *testing.T) {
+	for _, want := range []ErrorType{
+		"caller_content_filtered",
+		"caller_unsupported_parameter",
+		"provider_empty_result",
+		"provider_cancel_unsupported",
+	} {
+		if _, ok := validErrorTypes[want]; !ok {
+			t.Errorf("%q is not accepted as a declaration", want)
+		}
+		if got := ClassifyErrorType(declared(want, statusPtr(500)), ImageGenerationRequest); got != want {
+			t.Errorf("declared %q classified as %q", want, got)
+		}
+	}
+}
+
+// A vendor content block is caller_content_filtered whatever status carries it, and in
+// particular not provider_auth_failed under a 403.
+func TestContentBlockCodesClassifyAsContentFiltered(t *testing.T) {
+	for _, code := range contentFilterCodes {
+		for _, status := range []int{400, 403, 422} {
+			e := &BifrostError{StatusCode: statusPtr(status), Error: &ErrorField{Code: Ptr(code), Message: "blocked"}}
+			if got := ClassifyErrorType(e, ImageGenerationRequest); got != ErrorTypeCallerContentFiltered {
+				t.Errorf("code %q status %d classified as %q, want %q", code, status, got, ErrorTypeCallerContentFiltered)
+			}
+		}
+	}
+	// A Bifrost-built error is never a vendor block, whatever code it carries.
+	own := &BifrostError{IsBifrostError: true, StatusCode: statusPtr(400), Error: &ErrorField{Code: Ptr("content_filter")}}
+	if got := ClassifyErrorType(own, ChatCompletionRequest); got == ErrorTypeCallerContentFiltered {
+		t.Errorf("a Bifrost-built error was classified as a vendor content block")
+	}
+}
+
+// BF8: ResolveErrorType writes a value from the vocabulary for every family, one case each.
+func TestResolveErrorTypeWritesEveryFamily(t *testing.T) {
+	cases := []struct {
+		name string
+		err  *BifrostError
+		want ErrorType
+	}{
+		{"vendor error, nothing declared", &BifrostError{StatusCode: statusPtr(429), ExtraFields: BifrostErrorExtraFields{RequestType: ChatCompletionRequest}}, ErrorTypeProviderRateLimited},
+		{"caller error, nothing declared", &BifrostError{StatusCode: statusPtr(400)}, ErrorTypeCallerInvalidRequest},
+		{"bifrost failure", &BifrostError{IsBifrostError: true, Error: &ErrorField{Message: "boom"}}, ErrorTypeBifrostInternal},
+		{"governance refusal declared", declared(ErrorTypePolicyModelBlocked, statusPtr(403)), ErrorTypePolicyModelBlocked},
+		{"invalid declaration", declared("made_up", statusPtr(403)), ErrorTypeOther},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.err.ResolveErrorType(); got != tc.want {
+				t.Fatalf("ResolveErrorType() = %q, want %q", got, tc.want)
+			}
+			if tc.err.ExtraFields.ErrorType != tc.want {
+				t.Fatalf("ExtraFields.ErrorType = %q, want %q", tc.err.ExtraFields.ErrorType, tc.want)
+			}
+		})
+	}
+	var nilErr *BifrostError
+	if got := nilErr.ResolveErrorType(); got != "" {
+		t.Fatalf("nil error resolved to %q", got)
+	}
+}
+
+// ResolveErrorType runs once per error a client receives.
+func BenchmarkResolveErrorType(b *testing.B) {
+	cases := []struct {
+		name string
+		err  BifrostError
+	}{
+		{"declared", *declared(ErrorTypePolicyModelBlocked, statusPtr(403))},
+		{"inferred_status", BifrostError{StatusCode: statusPtr(429), Error: &ErrorField{Message: "slow down"}}},
+		{"content_filter_code", BifrostError{StatusCode: statusPtr(403), Error: &ErrorField{Code: Ptr("content_policy_violation")}}},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				e := tc.err
+				_ = e.ResolveErrorType()
+			}
+		})
 	}
 }

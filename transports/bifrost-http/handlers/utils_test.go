@@ -555,3 +555,45 @@ func TestPeriodLocationRejectsLocal(t *testing.T) {
 		t.Fatalf("periodLocation(\"Asia/Kolkata\") = %v, want Asia/Kolkata", got)
 	}
 }
+
+func sentErrorType(t *testing.T, ctx *fasthttp.RequestCtx) string {
+	t.Helper()
+	var body struct {
+		ExtraFields struct {
+			ErrorType string `json:"error_type"`
+		} `json:"extra_fields"`
+	}
+	if err := json.Unmarshal(ctx.Response.Body(), &body); err != nil {
+		t.Fatalf("error body is not JSON: %v: %s", err, ctx.Response.Body())
+	}
+	return body.ExtraFields.ErrorType
+}
+
+// BF8: every error response carries extra_fields.error_type from the vocabulary, one case
+// per family: a vendor error nobody classified, a Bifrost failure, a governance refusal,
+// and a caller error.
+func TestSendBifrostErrorWritesErrorTypeForEveryFamily(t *testing.T) {
+	cases := []struct {
+		name string
+		err  *schemas.BifrostError
+		want schemas.ErrorType
+	}{
+		{"vendor 429, undeclared", &schemas.BifrostError{StatusCode: new(429), Error: &schemas.ErrorField{Message: "slow down"}}, schemas.ErrorTypeProviderRateLimited},
+		{"vendor 403 content block", &schemas.BifrostError{StatusCode: new(403), Error: &schemas.ErrorField{Message: "blocked", Code: new("content_policy_violation")}}, schemas.ErrorTypeCallerContentFiltered},
+		{"bifrost failure", &schemas.BifrostError{IsBifrostError: true, Error: &schemas.ErrorField{Message: "conversion failed"}}, schemas.ErrorTypeBifrostInternal},
+		{"governance refusal", &schemas.BifrostError{Type: new("model_blocked"), StatusCode: new(403), Error: &schemas.ErrorField{Message: "Model 'm' is not allowed"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypePolicyModelBlocked}}, schemas.ErrorTypePolicyModelBlocked},
+		{"unsupported parameter", schemas.NewUnsupportedParameterError("n", ""), schemas.ErrorTypeCallerUnsupportedParameter},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			SendBifrostError(ctx, tc.err)
+			if got := sentErrorType(t, ctx); got != string(tc.want) {
+				t.Fatalf("extra_fields.error_type = %q, want %q", got, tc.want)
+			}
+			if got := string(ctx.Response.Header.Peek(lib.HeaderBifrostErrorType)); got != string(tc.want) {
+				t.Fatalf("%s = %q, want %q", lib.HeaderBifrostErrorType, got, tc.want)
+			}
+		})
+	}
+}

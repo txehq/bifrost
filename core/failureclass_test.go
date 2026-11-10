@@ -37,6 +37,16 @@ func TestClassifyFailure(t *testing.T) {
 		{"openai account flagged 403", providerError(403, "access_terminated", "", "Your account was flagged for potential abuse. If you feel this is an error, please contact us at help.openai.com."), schemas.FailureClassCredential},
 		{"azure content policy resource block 403", providerError(403, "", "Forbidden", "Your resource has been temporarily blocked because we detected behavior that may violate our content policy."), schemas.FailureClassCredential},
 
+		// A vendor content block is the caller's content, never the key (contract C6, BF9),
+		// whatever status carries it.
+		{"openai 403 content_policy_violation", providerError(403, "invalid_request_error", "content_policy_violation", "Your request was rejected as a result of our safety system."), schemas.FailureClassCallerFault},
+		{"gpt-image 400 moderation_blocked", providerError(400, "image_generation_user_error", "moderation_blocked", "Your request was rejected by the safety system."), schemas.FailureClassCallerFault},
+		{"azure 400 content_filter", providerError(400, "", "content_filter", "The response was filtered due to the prompt triggering Azure OpenAI's content management policy."), schemas.FailureClassCallerFault},
+		{"declared content block under a 403", declaredFailure(providerError(403, "", "", "blocked"), schemas.ErrorTypeCallerContentFiltered), schemas.FailureClassCallerFault},
+		{"declared unsupported parameter", declaredFailure(providerError(400, "invalid_request_error", "", "n is not supported"), schemas.ErrorTypeCallerUnsupportedParameter), schemas.FailureClassUnknown},
+		{"declared empty result under a 502 is not retried", declaredFailure(providerError(502, "", "", "no audio"), schemas.ErrorTypeProviderEmptyResult), schemas.FailureClassUnknown},
+		{"declared cancel unsupported", declaredFailure(providerError(409, "", "", "cannot cancel"), schemas.ErrorTypeProviderCancelUnsupported), schemas.FailureClassUnknown},
+
 		// quota, checked before rate limit because its message matches the rate-limit patterns
 		{"openai insufficient_quota", providerError(429, "insufficient_quota", "insufficient_quota", "You exceeded your current quota, please check your plan and billing details."), schemas.FailureClassQuota},
 		{"402 payment required", providerError(402, "", "", "Payment Required"), schemas.FailureClassQuota},
@@ -332,6 +342,8 @@ func TestScenarioFailureClassLadder(t *testing.T) {
 		{name: "410", reply: failureReplies["410 retired"], want: outcome{trail: 2, bothKeys: true, class: schemas.FailureClassModelGone, fallback: true}},
 		{name: "403 region", reply: failureReplies["403 region"], want: outcome{trail: 2, bothKeys: true, class: schemas.FailureClassRegionBlocked, fallback: true}},
 		{name: "400", reply: failureReplies["400 caller fault"], want: outcome{trail: 1, class: schemas.FailureClassCallerFault, fallback: true}},
+		// A 403 content block is not a key failure: one upstream call, no move to the other key.
+		{name: "403 content block", reply: scenarioReply{status: 403, body: `{"error":{"message":"Your request was rejected as a result of our safety system.","type":"invalid_request_error","code":"content_policy_violation"}}`}, want: outcome{trail: 1, class: schemas.FailureClassCallerFault, fallback: true}},
 		// The three below end the attempt on Bifrost's side, before the provider answers. The retry loop
 		// stops on them, and labels the attempt: a provider timeout and a request deadline are timeouts,
 		// a caller's cancel is cancelled (see TestScenarioTimedOutAttemptCarriesItsClass for the fields).
@@ -467,6 +479,34 @@ func TestScenarioTimedOutAttemptCarriesItsClass(t *testing.T) {
 				t.Fatalf("the attempt should carry no fail_reason, got %q", *got.FailReason)
 			case tc.failReason != "" && (got.FailReason == nil || *got.FailReason != tc.failReason):
 				t.Fatalf("the attempt should carry fail_reason %q, got %v", tc.failReason, got.FailReason)
+			}
+		})
+	}
+}
+
+// declaredFailure sets the classification a provider's error parsing declares.
+func declaredFailure(err *schemas.BifrostError, errorType schemas.ErrorType) *schemas.BifrostError {
+	err.ExtraFields.ErrorType = errorType
+	return err
+}
+
+// ClassifyFailure runs on every failed attempt; the declared-type switch and the
+// content-block check sit in front of the status rules.
+func BenchmarkClassifyFailure(b *testing.B) {
+	cases := []struct {
+		name string
+		err  *schemas.BifrostError
+	}{
+		{"429", providerError(429, "requests", "rate_limit_exceeded", "Rate limit reached for requests")},
+		{"401", providerError(401, "invalid_request_error", "invalid_api_key", "Incorrect API key provided")},
+		{"400", providerError(400, "invalid_request_error", "", "Invalid value for 'temperature'")},
+		{"403_content_block", providerError(403, "invalid_request_error", "content_policy_violation", "Your request was rejected as a result of our safety system.")},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = ClassifyFailure(tc.err)
 			}
 		})
 	}

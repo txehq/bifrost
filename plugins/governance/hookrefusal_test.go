@@ -30,7 +30,7 @@ const refusalTestUnknownVKValue = "sk-bf-refusal-revoked"
 // unusable. Mandatory authentication is off throughout this file, so nothing here is refused for
 // failing to present a credential: every refusal below is the funnel answering for what the presented
 // one resolved to.
-func refusalTestPlugin(t *testing.T, mutate func(vk *configstoreTables.TableVirtualKey)) *GovernancePlugin {
+func refusalTestPlugin(t testing.TB, mutate func(vk *configstoreTables.TableVirtualKey)) *GovernancePlugin {
 	t.Helper()
 	vk := buildVKForMCPStamping([]string{"read_file"})
 	if mutate != nil {

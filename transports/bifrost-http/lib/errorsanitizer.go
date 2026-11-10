@@ -10,12 +10,17 @@ const ClientSafeInternalErrorMessage = "internal server error"
 
 // SanitizeBifrostErrorForClient returns a copy safe to serialize to API clients.
 // Internal errors can contain stack traces or database details; keep those in logs only.
+//
+// Every error a client receives passes through here, so this is also where the copy gets
+// its extra_fields.error_type: the producer's declaration, or what ClassifyErrorType
+// infers when it declared none (contract C6, BF8). The caller's error is not changed.
 func SanitizeBifrostErrorForClient(err *schemas.BifrostError) *schemas.BifrostError {
 	if err == nil {
 		return nil
 	}
 
 	sanitized := *err
+	sanitized.ResolveErrorType()
 	if err.Error != nil {
 		errorField := *err.Error
 		if shouldHideErrorDetails(err, err.Error) {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	schemas "github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -230,5 +231,45 @@ func TestUnifiedFieldsAreNotKnownFields(t *testing.T) {
 		if imageEditParamsKnownFields[name] {
 			t.Errorf("%s is in imageEditParamsKnownFields", name)
 		}
+	}
+}
+
+// A vendor 200 with no audio is 502 provider_empty_result, not the caller's 400, and keeps
+// the vendor's response headers.
+func TestWriteSpeechAudioMissingAudioIsProviderEmptyResult(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	resp := &schemas.BifrostSpeechResponse{ExtraFields: schemas.BifrostResponseExtraFields{
+		RequestType:             schemas.SpeechRequest,
+		Provider:                schemas.Elevenlabs,
+		ProviderResponseHeaders: map[string]string{"request-id": "el-123"},
+	}}
+	// What the speech handler does before writing the body.
+	lib.ApplyBifrostResponseHeaders(ctx, nil, resp.ExtraFields)
+	writeSpeechAudio(ctx, resp, "speech.mp3")
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", got)
+	}
+	if got := sentErrorType(t, ctx); got != string(schemas.ErrorTypeProviderEmptyResult) {
+		t.Fatalf("error_type = %q", got)
+	}
+	if got := string(ctx.Response.Header.Peek("request-id")); got != "el-123" {
+		t.Fatalf("vendor header request-id = %q, want el-123", got)
+	}
+	if got := string(ctx.Response.Header.Peek(lib.HeaderBifrostProvider)); got != "elevenlabs" {
+		t.Fatalf("provider header = %q", got)
+	}
+
+	// An empty body is no audio too: a vendor 200 whose body is empty.
+	empty := &fasthttp.RequestCtx{}
+	writeSpeechAudio(empty, &schemas.BifrostSpeechResponse{Audio: []byte{}}, "speech.mp3")
+	if got := empty.Response.StatusCode(); got != fasthttp.StatusBadGateway {
+		t.Fatalf("empty audio: status = %d, want 502", got)
+	}
+
+	ok := &fasthttp.RequestCtx{}
+	writeSpeechAudio(ok, &schemas.BifrostSpeechResponse{Audio: []byte("ID3")}, "speech.mp3")
+	if ok.Response.StatusCode() != fasthttp.StatusOK || string(ok.Response.Body()) != "ID3" {
+		t.Fatalf("audio response: status %d body %q", ok.Response.StatusCode(), ok.Response.Body())
 	}
 }
