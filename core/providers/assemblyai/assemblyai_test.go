@@ -41,6 +41,9 @@ func TestAssemblyAI(t *testing.T) {
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:           schemas.AssemblyAI,
 		TranscriptionModel: "universal-3-5-pro",
+		// AssemblyAI has no text-to-speech: the round-trip cases synthesize their audio with OpenAI.
+		ExternalTTSProvider: schemas.OpenAI,
+		ExternalTTSModel:    "gpt-4o-mini-tts",
 		Scenarios: llmtests.TestScenarios{
 			Transcription: true,
 		},
