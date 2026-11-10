@@ -1,0 +1,11 @@
+# expect: job test-core: reads GROQ_API_KEY, OPENAI_API_KEY, and the job names no environment
+# A '}}' inside a string literal does not end the expression that reads the key.
+on: push
+jobs:
+  test-core:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: make test-core
+        env:
+          OPENAI_API_KEY: ${{ '}}' && secrets.OPENAI_API_KEY }}
+          OTHER: ${{ 'it''s }}' && secrets['GROQ_API_KEY'] }}

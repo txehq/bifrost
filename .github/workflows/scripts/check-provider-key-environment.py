@@ -38,7 +38,7 @@ environment requires a reviewer, is a setting this check cannot read with a pull
 request's token: see AGENTS.md step 6.
 
 Usage: check-provider-key-environment.py [workflow.yml ...]
-  With no arguments, checks every workflow in .github/workflows.
+  With no arguments, checks every workflow (*.yml and *.yaml) in .github/workflows.
 """
 import glob
 import os
@@ -61,8 +61,6 @@ OTHER_PROVIDER_CREDENTIALS = {
     "VERTEX_CREDENTIALS",  # Vertex service-account JSON
 }
 
-# An expression, `${{ ... }}`. The secrets context exists only inside one.
-EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
 # Every use of the secrets context: `secrets.NAME` and `secrets['NAME']` name one secret;
 # anything else (`toJSON(secrets)`, `secrets[x]`, `secrets.*`) can reach any secret.
 SECRETS_USE = re.compile(
@@ -93,11 +91,31 @@ def strings(node, path):
         yield path, node
 
 
+def expressions(text):
+    """Yields the body of each `${{ ... }}` in text, the only place the secrets context
+    exists. A `}}` inside a quoted string does not end the expression: GitHub strings are
+    single-quoted, with '' for a quote. An expression left open runs to the end of text."""
+    start = text.find("${{")
+    while start != -1:
+        i, quoted = start + 3, False
+        while i < len(text):
+            if text[i] == "'":
+                if quoted and text.startswith("''", i):
+                    i += 2
+                    continue
+                quoted = not quoted
+            elif not quoted and text.startswith("}}", i):
+                break
+            i += 1
+        yield text[start + 3:i]
+        start = text.find("${{", i + 2)
+
+
 def secret_reads(node, path):
     """Yields (path, name) for each provider credential read under node, and
     (path, None) for each dynamic read of the secrets context, which can reach any."""
     for where, text in strings(node, path):
-        for expression in EXPRESSION.findall(text):
+        for expression in expressions(text):
             for use in SECRETS_USE.finditer(expression):
                 name = use.group("dotted") or use.group("quoted")
                 if name is None:
@@ -185,7 +203,9 @@ def problems(path):
 
 def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    files = sys.argv[1:] or sorted(glob.glob(os.path.join(root, "*.yml")))
+    files = sys.argv[1:] or sorted(
+        glob.glob(os.path.join(root, "*.yml")) + glob.glob(os.path.join(root, "*.yaml"))
+    )
     found = [p for f in files for p in problems(f)]
     for p in found:
         print(f"FAIL: {p}", file=sys.stderr)

@@ -1,0 +1,14 @@
+# Quotes in a gated job, and a string that only looks like a read in an ungated one.
+on: push
+jobs:
+  test-core:
+    environment: live-providers
+    runs-on: ubuntu-24.04
+    steps:
+      - run: make test-core
+        env:
+          OPENAI_API_KEY: ${{ '}}' && secrets.OPENAI_API_KEY }}
+  label:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "${{ format('{0}}', 'done') }} secrets.OPENAI_API_KEY is only prose here"
