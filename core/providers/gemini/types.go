@@ -13,7 +13,6 @@ import (
 
 	"cloud.google.com/go/civil"
 	"github.com/bytedance/sonic"
-	"github.com/bytedance/sonic/ast"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -2907,7 +2906,8 @@ type GeminiBatchRequestItem struct {
 // InputIndex and InputCount are set on the requests of an embedding line that carries
 // several inputs: one EmbedContentRequest embeds one content, so such a line is sent as
 // InputCount consecutive requests, and its results are put back together as one line. They
-// are decimal strings, like every other value in this metadata.
+// are decimal strings, like every other value in this metadata. GeminiBatchMetadata reads
+// the same four fields back from an inline response.
 type GeminiBatchRequestMetadata struct {
 	Key        string `json:"key,omitempty"`
 	Endpoint   string `json:"bifrost_endpoint,omitempty"`
@@ -2990,22 +2990,18 @@ type GeminiBatchMetadataInputConfig struct {
 
 // GeminiBatchMetadataOutputConfig represents the output config in batch job metadata.
 type GeminiBatchMetadataOutputConfig struct {
-	ResponsesFile    string                  `json:"responsesFile,omitempty"`
-	InlinedResponses *GeminiInlinedResponses `json:"inlinedResponses,omitempty"`
-	// InlinedEmbedContentResponses is where Google's SDKs read an embedding batch's inline
-	// responses; the REST reference names inlinedResponses for both kinds. Either is read.
-	InlinedEmbedContentResponses *GeminiInlinedResponses `json:"inlinedEmbedContentResponses,omitempty"`
+	ResponsesFile                string                  `json:"responsesFile,omitempty"`
+	InlinedResponses             *GeminiInlinedResponses `json:"inlinedResponses,omitempty"`
+	InlinedEmbedContentResponses *GeminiInlinedResponses `json:"inlinedEmbedContentResponses,omitempty"` // see geminiBatchOutput
 }
 
 // GeminiBatchMetadata contains metadata for tracking batch requests.
 type GeminiBatchMetadata struct {
 	Key string `json:"key"`
 	// Endpoint is the line's url, echoed from GeminiBatchRequestMetadata on an inline response.
-	Endpoint string `json:"bifrost_endpoint,omitempty"`
-	// InputIndex and InputCount are echoed from GeminiBatchRequestMetadata on the inline
-	// responses of an embedding line that was sent as several requests.
-	InputIndex  string                           `json:"bifrost_input_index,omitempty"`
-	InputCount  string                           `json:"bifrost_input_count,omitempty"`
+	Endpoint    string                           `json:"bifrost_endpoint,omitempty"`
+	InputIndex  string                           `json:"bifrost_input_index,omitempty"` // see GeminiBatchRequestMetadata
+	InputCount  string                           `json:"bifrost_input_count,omitempty"` // see GeminiBatchRequestMetadata
 	Type        string                           `json:"@type"`
 	Model       string                           `json:"model"`
 	DisplayName string                           `json:"displayName"`
@@ -3033,11 +3029,10 @@ type GeminiBatchJobResponse struct {
 // GenerateContentBatchOutput union returned under the Operation's response field
 // (and metadata.output): either a responses file or a set of inline responses.
 type GeminiBatchOutput struct {
-	Type             string                  `json:"@type,omitempty"`
-	ResponsesFile    string                  `json:"responsesFile,omitempty"`
-	InlinedResponses *GeminiInlinedResponses `json:"inlinedResponses,omitempty"`
-	// InlinedEmbedContentResponses: see GeminiBatchMetadataOutputConfig.
-	InlinedEmbedContentResponses *GeminiInlinedResponses `json:"inlinedEmbedContentResponses,omitempty"`
+	Type                         string                  `json:"@type,omitempty"`
+	ResponsesFile                string                  `json:"responsesFile,omitempty"`
+	InlinedResponses             *GeminiInlinedResponses `json:"inlinedResponses,omitempty"`
+	InlinedEmbedContentResponses *GeminiInlinedResponses `json:"inlinedEmbedContentResponses,omitempty"` // see geminiBatchOutput
 }
 
 // GeminiBatchDest is the client-SDK-facing output shape (dest.fileName) emitted when
@@ -3053,65 +3048,14 @@ type GeminiInlinedResponses struct {
 	InlinedResponses []GeminiInlinedResponse `json:"inlinedResponses,omitempty"`
 }
 
-// GeminiInlinedResponse represents a single response in the batch output. A generateContent
-// batch answers a line with a GenerateContentResponse (Response); an embedding batch answers
-// it with an EmbedContentResponse (EmbedResponse). Both arrive under "response", and which
-// one a response is is read from the response itself: only an EmbedContentResponse has an
-// "embedding".
+// GeminiInlinedResponse represents a single response in the batch output. Response is
+// decoded directly, as a generateContent batch's line. EmbedResponse is set only for the
+// lines of an embedding batch, by sniffGeminiEmbeddingResponses.
 type GeminiInlinedResponse struct {
 	Response      *GenerateContentResponse `json:"response,omitempty"`
 	EmbedResponse *GeminiEmbeddingResponse `json:"-"`
 	Error         *GeminiBatchErrorInfo    `json:"error,omitempty"`
 	Metadata      *GeminiBatchMetadata     `json:"metadata,omitempty"`
-}
-
-// UnmarshalJSON decodes "response" as the kind of response it is.
-func (r *GeminiInlinedResponse) UnmarshalJSON(data []byte) error {
-	var raw struct {
-		Response sonic.NoCopyRawMessage `json:"response,omitempty"`
-		Error    *GeminiBatchErrorInfo  `json:"error,omitempty"`
-		Metadata *GeminiBatchMetadata   `json:"metadata,omitempty"`
-	}
-	if err := sonic.Unmarshal(data, &raw); err != nil {
-		return err
-	}
-	*r = GeminiInlinedResponse{Error: raw.Error, Metadata: raw.Metadata}
-	if len(raw.Response) == 0 || string(raw.Response) == "null" {
-		return nil
-	}
-	if isGeminiEmbedContentResponse(raw.Response) {
-		r.EmbedResponse = &GeminiEmbeddingResponse{}
-		return sonic.Unmarshal(raw.Response, r.EmbedResponse)
-	}
-	r.Response = &GenerateContentResponse{}
-	return sonic.Unmarshal(raw.Response, r.Response)
-}
-
-// MarshalJSON writes whichever response the line has under "response".
-func (r GeminiInlinedResponse) MarshalJSON() ([]byte, error) {
-	out := struct {
-		Response any                   `json:"response,omitempty"`
-		Error    *GeminiBatchErrorInfo `json:"error,omitempty"`
-		Metadata *GeminiBatchMetadata  `json:"metadata,omitempty"`
-	}{Error: r.Error, Metadata: r.Metadata}
-	switch {
-	case r.EmbedResponse != nil:
-		out.Response = r.EmbedResponse
-	case r.Response != nil:
-		out.Response = r.Response
-	}
-	return providerUtils.MarshalSorted(out)
-}
-
-// isGeminiEmbedContentResponse reports whether a batch line's response is an
-// EmbedContentResponse: it has an embedding, which a GenerateContentResponse never has.
-func isGeminiEmbedContentResponse(response []byte) bool {
-	// A lazy lookup: the response (an image, a long answer) is skipped over, not decoded.
-	node, err := sonic.Get(response, "embedding")
-	if err != nil || !node.Exists() {
-		return false
-	}
-	return node.TypeSafe() == ast.V_OBJECT
 }
 
 // GeminiBatchErrorInfo represents error information.

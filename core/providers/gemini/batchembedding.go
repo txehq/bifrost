@@ -1,11 +1,14 @@
 package gemini
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/bytedance/sonic"
+	"github.com/bytedance/sonic/ast"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 )
@@ -134,6 +137,94 @@ func geminiEmbeddingBatchRequestItems(request *schemas.BifrostBatchCreateRequest
 		}
 	}
 	return items, nil
+}
+
+// geminiEmbeddingKey is the key only an EmbedContentResponse has. As a JSON key or value
+// its quotes are unescaped, so a body without these bytes holds no embedding response.
+var geminiEmbeddingKey = []byte(`"embedding"`)
+
+// isGeminiEmbedContentResponse reports whether a batch line's response is an
+// EmbedContentResponse: it has an embedding, which a GenerateContentResponse never has.
+// The scan for the key costs nothing for a response without it; the lookup that follows
+// skips over the response's values without decoding them.
+func isGeminiEmbedContentResponse(response []byte) bool {
+	if !bytes.Contains(response, geminiEmbeddingKey) {
+		return false
+	}
+	node, err := sonic.Get(response, "embedding")
+	if err != nil || !node.Exists() {
+		return false
+	}
+	return node.TypeSafe() == ast.V_OBJECT
+}
+
+// geminiSniffedInlinedResponse is an inline response with its response kept as raw JSON.
+type geminiSniffedInlinedResponse struct {
+	Response sonic.NoCopyRawMessage `json:"response,omitempty"`
+}
+
+type geminiSniffedInlinedResponses struct {
+	InlinedResponses []geminiSniffedInlinedResponse `json:"inlinedResponses,omitempty"`
+}
+
+type geminiSniffedBatchOutput struct {
+	InlinedResponses             *geminiSniffedInlinedResponses `json:"inlinedResponses,omitempty"`
+	InlinedEmbedContentResponses *geminiSniffedInlinedResponses `json:"inlinedEmbedContentResponses,omitempty"`
+}
+
+type geminiSniffedBatchJob struct {
+	Response *geminiSniffedBatchOutput `json:"response,omitempty"`
+	Metadata *struct {
+		Output *geminiSniffedBatchOutput `json:"output,omitempty"`
+	} `json:"metadata,omitempty"`
+}
+
+// sniffGeminiEmbeddingResponses sets EmbedResponse on the inline responses of a batch job
+// that are EmbedContentResponses. body is the job as the vendor sent it and inlined the
+// responses geminiBatchOutput read from it. A job is decoded directly, as a generateContent
+// batch; only a body that holds the embedding key is read a second time, with each response
+// kept raw, to find the responses that are embeddings. A generateContent job therefore costs
+// one scan of its body and no allocation here.
+func sniffGeminiEmbeddingResponses(body []byte, inlined []GeminiInlinedResponse) error {
+	if len(inlined) == 0 || !bytes.Contains(body, geminiEmbeddingKey) {
+		return nil
+	}
+	var job geminiSniffedBatchJob
+	if err := sonic.Unmarshal(body, &job); err != nil {
+		return err
+	}
+	// The same choice geminiBatchOutput made, so the raw responses line up with inlined.
+	pick := func(output *geminiSniffedBatchOutput) []geminiSniffedInlinedResponse {
+		if output == nil {
+			return nil
+		}
+		if output.InlinedResponses != nil && len(output.InlinedResponses.InlinedResponses) > 0 {
+			return output.InlinedResponses.InlinedResponses
+		}
+		if output.InlinedEmbedContentResponses != nil {
+			return output.InlinedEmbedContentResponses.InlinedResponses
+		}
+		return nil
+	}
+	raw := pick(job.Response)
+	if len(raw) == 0 && job.Metadata != nil {
+		raw = pick(job.Metadata.Output)
+	}
+	if len(raw) != len(inlined) {
+		return fmt.Errorf("gemini batch job has %d inline responses, read %d", len(raw), len(inlined))
+	}
+	for i := range raw {
+		if !isGeminiEmbedContentResponse(raw[i].Response) {
+			continue
+		}
+		embedResponse := &GeminiEmbeddingResponse{}
+		if err := sonic.Unmarshal(raw[i].Response, embedResponse); err != nil {
+			return err
+		}
+		inlined[i].EmbedResponse = embedResponse
+		inlined[i].Response = nil
+	}
+	return nil
 }
 
 // geminiInlinedLine is the half-open range of inline responses that answer one batch line.

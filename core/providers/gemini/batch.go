@@ -455,8 +455,9 @@ func geminiBatchOutput(resp *GeminiBatchJobResponse) (fileName string, inlined [
 	if resp == nil {
 		return "", nil
 	}
-	// An embedding batch's inline responses are documented under inlinedResponses and read
-	// by Google's SDKs from inlinedEmbedContentResponses; whichever is present is used.
+	// An embedding batch's inline responses are documented (REST reference) under
+	// inlinedResponses, the key a generateContent batch uses, and read by Google's SDKs from
+	// inlinedEmbedContentResponses; whichever is present is used.
 	pick := func(responses, embedResponses *GeminiInlinedResponses) []GeminiInlinedResponse {
 		if responses != nil && len(responses.InlinedResponses) > 0 {
 			return responses.InlinedResponses
