@@ -1355,3 +1355,95 @@ func TestAzureImageEditRejectsUndeliverableFields(t *testing.T) {
 		t.Fatalf("upstream calls = %v, want one to /openai/v1/images/edits", paths)
 	}
 }
+
+// TXE-6984: Azure's image streams run on the same OpenAI handlers, so the completed frame of a
+// streamed Azure generation or edit carries usage.output_images too: 1 for the one finished image,
+// with two previews in the stream, next to the token usage Azure reported.
+func TestAzureImageStreamReportsOutputImages(t *testing.T) {
+	for _, kind := range []string{"image_generation", "image_edit"} {
+		t.Run(kind, func(t *testing.T) {
+			sse := "data: " + `{"type":"` + kind + `.partial_image","b64_json":"cDA=","partial_image_index":0,"sequence_number":1}` + "\n\n" +
+				"data: " + `{"type":"` + kind + `.partial_image","b64_json":"cDE=","partial_image_index":1,"sequence_number":2}` + "\n\n" +
+				"data: " + `{"type":"` + kind + `.completed","b64_json":"aGk=","sequence_number":3,"usage":{"input_tokens":12,"output_tokens":272,"total_tokens":284}}` + "\n\n"
+			var mu sync.Mutex
+			var paths []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				paths = append(paths, r.URL.Path)
+				mu.Unlock()
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, sse)
+			}))
+			defer server.Close()
+			provider := newAzureDecisionProvider(t)
+			key := newAzureDecisionKey(server.URL)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			postHook := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return resp, err
+			}
+			var stream chan *schemas.BifrostStreamChunk
+			var bifrostErr *schemas.BifrostError
+			wantPath := "/openai/v1/images/generations"
+			if kind == "image_generation" {
+				stream, bifrostErr = provider.ImageGenerationStream(ctx, postHook, nil, key, &schemas.BifrostImageGenerationRequest{
+					Provider: schemas.Azure,
+					Model:    "gpt-image-1.5",
+					Input:    &schemas.ImageGenerationInput{Prompt: "a fox"},
+					Params:   &schemas.ImageGenerationParameters{PartialImages: schemas.Ptr(2)},
+				})
+			} else {
+				wantPath = "/openai/v1/images/edits"
+				stream, bifrostErr = provider.ImageEditStream(ctx, postHook, nil, key, &schemas.BifrostImageEditRequest{
+					Provider: schemas.Azure,
+					Model:    "gpt-image-1.5",
+					Input:    &schemas.ImageEditInput{Prompt: "add a hat", Images: []schemas.ImageInput{{Image: []byte("\x89PNG\r\n\x1a\nfake")}}},
+					Params:   &schemas.ImageEditParameters{PartialImages: schemas.Ptr(2)},
+				})
+			}
+			if bifrostErr != nil {
+				t.Fatalf("stream setup: %+v", bifrostErr.Error)
+			}
+			var frames []*schemas.BifrostImageGenerationStreamResponse
+			timeout := time.After(20 * time.Second)
+		collect:
+			for {
+				select {
+				case chunk, ok := <-stream:
+					if !ok {
+						break collect
+					}
+					if chunk == nil {
+						continue
+					}
+					if chunk.BifrostError != nil {
+						t.Fatalf("stream error: %+v", chunk.BifrostError.Error)
+					}
+					frames = append(frames, chunk.BifrostImageGenerationStreamResponse)
+				case <-timeout:
+					t.Fatal("the stream did not close")
+				}
+			}
+			if len(frames) != 3 {
+				t.Fatalf("frames = %d, want 3 (two previews, completed)", len(frames))
+			}
+			for i, frame := range frames[:2] {
+				if frame == nil || frame.Usage != nil {
+					t.Fatalf("preview %d = %+v, want a preview frame with no usage", i, frame)
+				}
+			}
+			final := frames[2]
+			if final == nil || final.Usage == nil || final.Usage.OutputImages == nil || *final.Usage.OutputImages != 1 {
+				t.Fatalf("completed frame usage = %+v, want output_images 1", final)
+			}
+			if final.Usage.InputTokens != 12 || final.Usage.OutputTokens != 272 || final.Usage.TotalTokens != 284 {
+				t.Fatalf("usage = %+v, want Azure's 12/272/284 kept", final.Usage)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(paths) != 1 || paths[0] != wantPath {
+				t.Fatalf("upstream calls = %v, want one to %s", paths, wantPath)
+			}
+		})
+	}
+}
