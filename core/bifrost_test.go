@@ -9437,11 +9437,7 @@ func TestNonChatRequestsReachTheVendorOnce(t *testing.T) {
 	// Providers whose requests need cloud credentials minted elsewhere (a token exchange or a
 	// signature with real secrets) cannot be driven with a test key; they share the same
 	// transport, which TestContextTransport_WriteOnceRequestIsNeverResent pins directly.
-	skipped := []schemas.ModelProvider{schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex, schemas.Azure, schemas.GithubCopilot, schemas.Databricks, schemas.SGL,
-		// Replicate dereferences prediction.URLs on a 200 that carries none (replicate.go,
-		// pollPrediction's argument), which the fixture's empty JSON answer is: it panics the
-		// worker instead of returning an error. That is TXE-7056, which removes this entry.
-		schemas.Replicate}
+	skipped := []schemas.ModelProvider{schemas.Bedrock, schemas.BedrockMantle, schemas.Vertex, schemas.Azure, schemas.GithubCopilot, schemas.Databricks, schemas.SGL}
 
 	account := NewMockAccount()
 	var providers []schemas.ModelProvider
