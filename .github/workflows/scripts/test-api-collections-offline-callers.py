@@ -9,6 +9,11 @@ the script, that the script still runs both suites, that no other workflow scrip
 suite of its own instead, and that the pull-request trigger has no paths filter: a
 filtered required check never reports on a PR outside its paths, which blocks its merge.
 
+The job that runs the script, which is the required check, also runs schemasync
+(validate-schema-sync.sh). A provider const registered without its config.schema.json enum
+entry otherwise passed every PR check and failed the chart release on main (TXE-7064, run
+42894713908), so this checks that the step stays in that job.
+
 Usage: test-api-collections-offline-callers.py
 """
 import glob
@@ -23,6 +28,7 @@ SCRIPTS = os.path.join(WORKFLOWS, "scripts")
 SCRIPT = "test-api-collections-offline.sh"
 WORKFLOW = "api-collections-offline.yml"
 RELEASE_CALLER = "test-api-integrations.sh"
+SCHEMA_SYNC = "validate-schema-sync.sh"
 SUITES = ("collections/collection-scripts.test.mjs", "runners/newman-exit-when-done.test.mjs")
 # A direct run of one of the suites, which belongs in SCRIPT alone.
 SUITE_RUN = re.compile(r"\bnode\s+\S*tests/e2e/api/\S+\.test\.mjs")
@@ -59,13 +65,16 @@ def main():
         for key in ("paths", "paths-ignore", "branches", "branches-ignore"):
             if key in filters:
                 failures.append(f"{WORKFLOW} filters pull_request on {key}; the suites must run on every PR")
-    runs_script = any(
-        SCRIPT in (step.get("run") or "")
-        for job in (doc.get("jobs") or {}).values() if isinstance(job, dict)
-        for step in (job.get("steps") or []) if isinstance(step, dict)
-    )
-    if not runs_script:
+    def runs(job, name):
+        return any(name in (step.get("run") or "") for step in (job.get("steps") or []) if isinstance(step, dict))
+
+    suite_jobs = [
+        job for job in (doc.get("jobs") or {}).values() if isinstance(job, dict) and runs(job, SCRIPT)
+    ]
+    if not suite_jobs:
         failures.append(f"no job in {WORKFLOW} runs {SCRIPT}")
+    elif not any(runs(job, SCHEMA_SYNC) for job in suite_jobs):
+        failures.append(f"the job in {WORKFLOW} that runs {SCRIPT} no longer runs {SCHEMA_SYNC}")
 
     for f in failures:
         print(f"FAIL {f}")

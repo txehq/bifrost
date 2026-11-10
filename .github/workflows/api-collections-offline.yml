@@ -15,6 +15,13 @@ name: API collections offline
 # both callers on it and this trigger unfiltered. No paths filter on purpose: the
 # redaction invariant spans core/schemas and tests/e2e/api, and a path-filtered required
 # check never reports on a PR outside its paths, which blocks that PR's merge.
+#
+# The same job runs schemasync (validate-schema-sync.sh), for the same reason (TXE-7064).
+# A provider const added to core/schemas without its config.schema.json enum entry passed
+# every PR check, and the next chart release and release pipeline on main failed at
+# schemasync with "schema missing Go consts [bfl dashscope]" (run 42894713908). Here it
+# fails the PR that adds the const. It is in this job because this job is the required
+# check; test-api-collections-offline-callers.py keeps the step here.
 
 on:
   pull_request:
@@ -39,7 +46,7 @@ jobs:
     # scripts/test-approval-environment.py.
     environment: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'pr-testing' || 'ci-trusted-branch' }}
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43 # v2.22.3
@@ -47,13 +54,18 @@ jobs:
           egress-policy: block
           # setup-node resolves and downloads Node (api.github.com, github.com,
           # release-assets.githubusercontent.com, nodejs.org); npm ci fetches the pinned
-          # tools (registry.npmjs.org). Nothing else leaves the runner.
+          # tools (registry.npmjs.org). setup-go downloads Go, and schemasync loads the
+          # workspace's modules (proxy.golang.org, sum.golang.org, storage.googleapis.com),
+          # the hosts the chart release's schemasync step uses. Nothing else leaves the runner.
           allowed-endpoints: >
             api.github.com:443
             github.com:443
             nodejs.org:443
+            proxy.golang.org:443
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
+            storage.googleapis.com:443
+            sum.golang.org:443
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -77,3 +89,15 @@ jobs:
 
       - name: Run the offline API collection suites
         run: bash .github/workflows/scripts/test-api-collections-offline.sh
+
+      # The Go the chart release and release pipeline run schemasync with.
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.3"
+          cache: false
+
+      # Go config types, transports/config.schema.json and the chart's values schema
+      # agree, every Go enum const included (TXE-7064). The chart release runs it too.
+      - name: Validate Go ↔ config.schema.json ↔ helm-chart sync (schemasync)
+        run: bash .github/workflows/scripts/validate-schema-sync.sh

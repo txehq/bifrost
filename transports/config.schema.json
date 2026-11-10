@@ -12925,7 +12925,9 @@
             "wafer",
             "cloudflare",
             "tencent",
-            "typesafe"
+            "typesafe",
+            "dashscope",
+            "bfl"
           ],
           "description": "Base provider type to extend"
         },
