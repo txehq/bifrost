@@ -1,6 +1,6 @@
 {
   "name": "312. BytePlus Seedream per-image refusals reach the client as content_filter (seedream content filter) [SERIAL]",
-  "description": "TXE-6605 regression, contract C5, C6. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. The byteplus provider there points at /pp/byteplus, where the fixture answers /api/v3/images/generations with Ark's 200 shape: data[] mixing delivered images with per-image error objects (OutputImageSensitiveContentDetected), selected by model. A refused image is counted in content_filter, every image refused is still a 200 with data [], and a 200 with neither images nor refusals is 502 provider_empty_result. 312.4 and 312.5 pin the same on /v1/images/edits (multipart, with a reference image), and 312.4 also pins the resolution tier reaching Ark as size. 312.1 and 312.4 read the bytes that reached the fixture from /__wire. 312.6 to 312.9 pin the other C6 path: Ark refusing over HTTP (400, InputTextSensitiveContentDetected) on generation and edit, streamed and not, must keep Ark's status and code and carry extra_fields.error_type caller_content_filtered; 312.10 is the control, an Ark 400 InvalidParameter that must not be classed as a content filter. Run the whole folder in order.",
+  "description": "TXE-6605 regression, contract C5, C6. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. The byteplus provider there points at /pp/byteplus, where the fixture answers /api/v3/images/generations with Ark's 200 shape: data[] mixing delivered images with per-image error objects (OutputImageSensitiveContentDetected), selected by model. A refused image is counted in content_filter, every image refused is still a 200 with data [], and a 200 with neither images nor refusals is 502 provider_empty_result. 312.4 and 312.5 pin the same on /v1/images/edits (multipart, with a reference image), and 312.4 also pins the resolution tier reaching Ark as size. 312.1 and 312.4 read the bytes that reached the fixture from /__wire. 312.6 to 312.9 pin the other C6 path: Ark refusing over HTTP (400, InputTextSensitiveContentDetected) on generation and edit, streamed and not, must keep Ark's status and code and carry extra_fields.error_type caller_content_filtered; 312.10 is the control, an Ark 400 InvalidParameter that must not be classed as a content filter. 312.11 and 312.12 pin the in-stream path: Ark accepts a stream (generation and edit) with a 200 and refuses every image with image_generation.partial_failed events. No frame has reached the client, so the gateway answers with a JSON 400 carrying Ark's code, error.type content_filter and error_type caller_content_filtered. Run the whole folder in order.",
   "item": [
     {
       "name": "312.1 byteplus/seedream-partly-filtered /v1/images/generations: Ark delivers 2 of 3 images and refuses one, the client gets 200 with the 2 images, content_filter counting the refusal with Ark's code, and usage.output_images 2 (seedream content filter)",
@@ -739,6 +739,171 @@
               "pm.test('the client gets Ark\\'s 400 as JSON, not a stream', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); pm.expect(pm.response.headers.get('Content-Type') || '', pm.response.text()).to.include('application/json'); });",
               "pm.test('error.code is Ark\\'s InvalidParameter', function () { pm.expect(body.error, pm.response.text()).to.be.an('object'); pm.expect(body.error.code, pm.response.text()).to.equal('InvalidParameter'); });",
               "pm.test('a parameter error is not classed as a content filter', function () { var et = (body.extra_fields || {}).error_type; pm.expect(et, pm.response.text()).to.not.equal('caller_content_filtered'); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 312.11 byteplus/seedream-all-filtered /v1/images/generations stream: Ark accepts the stream and refuses every image with image_generation.partial_failed before any image; the refusal reaches the client as a JSON 400 (no frame was sent) with Ark's code, error.type content_filter and error_type caller_content_filtered (seedream content filter)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\": \"byteplus/seedream-all-filtered\", \"prompt\": \"four seasons of one garden\", \"stream\": true}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/generations",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "generations"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('seedream content filter setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.json();",
+              "pm.test('no frame was sent, so the refusal is a JSON 400, not a 200 stream', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); pm.expect(pm.response.headers.get('Content-Type') || '', pm.response.text()).to.include('application/json'); });",
+              "pm.test('error carries Ark\\'s refusal code from the partial_failed event, typed content_filter', function () { pm.expect(body.error, pm.response.text()).to.be.an('object'); pm.expect(body.error.code, pm.response.text()).to.equal('OutputImageSensitiveContentDetected'); pm.expect(body.error.type, pm.response.text()).to.equal('content_filter'); });",
+              "pm.test('extra_fields.error_type is caller_content_filtered', function () { pm.expect(body.extra_fields, pm.response.text()).to.be.an('object'); pm.expect(body.extra_fields.error_type, pm.response.text()).to.equal('caller_content_filtered'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('exactly one call reached Ark, and it asked for a stream', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/byteplus/api/v3/images/generations'; });",
+              "    pm.expect(calls, JSON.stringify(res.json())).to.have.length(1);",
+              "    var sent = JSON.parse(calls[0].body);",
+              "    pm.expect(sent.model, calls[0].body).to.equal('seedream-all-filtered');",
+              "    pm.expect(sent.stream, calls[0].body).to.equal(true);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 312.12 byteplus/seedream-all-filtered /v1/images/edits stream: Ark accepts the stream and refuses every image with image_generation.partial_failed before any image; the refusal reaches the client as a JSON 400 (no frame was sent) with Ark's code, error.type content_filter and error_type caller_content_filtered (seedream content filter)",
+      "protocolProfileBehavior": {
+        "followRedirects": false,
+        "disableCookies": true
+      },
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "model",
+              "value": "byteplus/seedream-all-filtered",
+              "type": "text"
+            },
+            {
+              "key": "prompt",
+              "value": "make the background a deep blue",
+              "type": "text"
+            },
+            {
+              "key": "stream",
+              "value": "true",
+              "type": "text"
+            },
+            {
+              "key": "image",
+              "src": "tests/e2e/api/fixtures/sample.png",
+              "type": "file"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/images/edits",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "images",
+            "edits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+              "  pm.test('seedream content filter setup: the fixture was reset', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(res.code).to.equal(200);",
+              "  });",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var body = pm.response.json();",
+              "pm.test('no frame was sent, so the refusal is a JSON 400, not a 200 stream', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); pm.expect(pm.response.headers.get('Content-Type') || '', pm.response.text()).to.include('application/json'); });",
+              "pm.test('error carries Ark\\'s refusal code from the partial_failed event, typed content_filter', function () { pm.expect(body.error, pm.response.text()).to.be.an('object'); pm.expect(body.error.code, pm.response.text()).to.equal('OutputImageSensitiveContentDetected'); pm.expect(body.error.type, pm.response.text()).to.equal('content_filter'); });",
+              "pm.test('extra_fields.error_type is caller_content_filtered', function () { pm.expect(body.extra_fields, pm.response.text()).to.be.an('object'); pm.expect(body.extra_fields.error_type, pm.response.text()).to.equal('caller_content_filtered'); });",
+              "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__wire', method: 'GET' }, function (err, res) {",
+              "  pm.test('exactly one call reached Ark, and it asked for a stream', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    var calls = res.json().data[0].calls.filter(function (c) { return c.path === '/pp/byteplus/api/v3/images/generations'; });",
+              "    pm.expect(calls, JSON.stringify(res.json())).to.have.length(1);",
+              "    var sent = JSON.parse(calls[0].body);",
+              "    pm.expect(sent.model, calls[0].body).to.equal('seedream-all-filtered');",
+              "    pm.expect(sent.stream, calls[0].body).to.equal(true);",
+              "  });",
+              "});"
             ]
           }
         }

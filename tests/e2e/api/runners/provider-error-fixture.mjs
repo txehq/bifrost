@@ -1041,7 +1041,8 @@ const xaiResponsesAnswer = (body) => {
 // seedream-partly-filtered delivers two images and refuses one, seedream-all-filtered refuses its only image, and
 // seedream-empty delivers nothing and refuses nothing. seedream-moderated and seedream-invalid-param are refused over
 // HTTP instead: a 400 carrying Ark's error object, a moderation code and a parameter code, on every request including a
-// stream, since Ark refuses before it sends a frame.
+// stream, since Ark refuses before it sends a frame. A streamed request for the other models gets the result as Ark's
+// image_generation events (seedreamStream).
 const seedreamRefusal = { error: { code: "OutputImageSensitiveContentDetected", message: "The request failed because the output image may contain sensitive information." } };
 const seedreamImage = (i) => ({ url: `https://fixture.invalid/seedream/${i}.png`, size: "2048x2048" });
 const seedreamUsage = (n) => ({ generated_images: n, output_tokens: 16384 * n, total_tokens: 16384 * n });
@@ -1059,7 +1060,21 @@ const seedreamAnswer = (body) => {
 	if (refused) return { status: 400, body: JSON.stringify({ error: { ...refused, param: "", type: "BadRequest" } }) };
 	const answer = seedreamAnswers[body.model];
 	if (!answer) return { status: 404, body: errorBody(`unknown fixture model ${body.model}`, "invalid_request_error", "model_not_found") };
-	return { status: 200, body: JSON.stringify({ model: body.model, created: 1, ...answer() }) };
+	const result = answer();
+	if (body.stream === true) return { status: 200, stream: seedreamStream(body.model, result) };
+	return { status: 200, body: JSON.stringify({ model: body.model, created: 1, ...result }) };
+};
+// A streamed Seedream request gets the same result as Ark streams it: one event per image, image_generation.partial_succeeded
+// for a delivered image and image_generation.partial_failed carrying the refusal's error object, then
+// image_generation.completed with the usage, then [DONE].
+const seedreamStream = (model, result) => {
+	const events = result.data.map((item, i) =>
+		item.error
+			? { type: "image_generation.partial_failed", model, created: 1, image_index: i, error: item.error }
+			: { type: "image_generation.partial_succeeded", model, created: 1, image_index: i, ...item },
+	);
+	events.push({ type: "image_generation.completed", model, created: 1, usage: result.usage });
+	return events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n";
 };
 
 const wireAnswer = (path, body, bytes) => {

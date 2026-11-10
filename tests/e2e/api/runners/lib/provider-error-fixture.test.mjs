@@ -962,6 +962,12 @@ test("seedream answers a 200 that mixes delivered images with per-image refusals
   const empty = await (await post({ model: "seedream-empty", prompt: "p" }, path)).json();
   assert.deepEqual(empty.data, []);
   assert.equal((await post({ model: "seedream-unknown", prompt: "p" }, path)).status, 404);
+  const streamed = await (await post({ model: "seedream-all-filtered", prompt: "p", stream: true }, path)).text();
+  const events = streamed.split("\n\n").filter((f) => f.startsWith("data: {")).map((f) => JSON.parse(f.slice(6)));
+  assert.deepEqual(events.map((e) => e.type), ["image_generation.partial_failed", "image_generation.completed"]);
+  assert.equal(events[0].error.code, "OutputImageSensitiveContentDetected");
+  assert.equal(events[0].image_index, 0);
+  assert.ok(streamed.endsWith("data: [DONE]\n\n"));
   for (const [model, code] of [["seedream-moderated", "InputTextSensitiveContentDetected"], ["seedream-invalid-param", "InvalidParameter"]]) {
     for (const stream of [false, true]) {
       const res = await post({ model, prompt: "p", stream }, path);
