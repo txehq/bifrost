@@ -24,27 +24,8 @@ import (
 // Every "not open" answer makes the caller close the connection and take another,
 // before anything was written on it.
 func pooledConnIsOpen(conn net.Conn) bool {
-	// A TLS connection is checked on the socket under it: an encrypted
-	// close_notify shows up there as readable bytes.
-	for unwrapped := true; unwrapped; {
-		switch wrapper := conn.(type) {
-		case interface{ NetConn() net.Conn }: // *tls.Conn
-			conn = wrapper.NetConn()
-		case interface{ UnderlyingConn() net.Conn }: // the proxy tunnel wrappers of core/network
-			conn = wrapper.UnderlyingConn()
-		default:
-			unwrapped = false
-		}
-		if conn == nil {
-			return false
-		}
-	}
-	sc, ok := conn.(syscall.Conn)
+	raw, ok := pooledRawConn(conn)
 	if !ok {
-		return false
-	}
-	raw, err := sc.SyscallConn()
-	if err != nil {
 		return false
 	}
 	var (
@@ -64,4 +45,40 @@ func pooledConnIsOpen(conn net.Conn) bool {
 	// A read that would block reports n = -1 with EAGAIN: nothing has arrived and the peer
 	// has not closed. n = 0 with no error is the end of the stream; n > 0 is unsolicited data.
 	return n < 0 && (errors.Is(readErr, syscall.EAGAIN) || errors.Is(readErr, syscall.EWOULDBLOCK))
+}
+
+// pooledConnInspectable reports whether pooledConnIsOpen can inspect conn at all. A
+// connection with no file descriptor behind it (an in-memory pipe, a custom dialer's
+// wrapper) cannot be, and pooledConnIsOpen answers false for it without knowing.
+func pooledConnInspectable(conn net.Conn) bool {
+	_, ok := pooledRawConn(conn)
+	return ok
+}
+
+// pooledRawConn returns the socket under conn.
+func pooledRawConn(conn net.Conn) (syscall.RawConn, bool) {
+	// A TLS connection is checked on the socket under it: an encrypted
+	// close_notify shows up there as readable bytes.
+	for unwrapped := true; unwrapped; {
+		switch wrapper := conn.(type) {
+		case interface{ NetConn() net.Conn }: // *tls.Conn
+			conn = wrapper.NetConn()
+		case interface{ UnderlyingConn() net.Conn }: // the proxy tunnel wrappers of core/network
+			conn = wrapper.UnderlyingConn()
+		default:
+			unwrapped = false
+		}
+		if conn == nil {
+			return nil, false
+		}
+	}
+	sc, ok := conn.(syscall.Conn)
+	if !ok {
+		return nil, false
+	}
+	raw, err := sc.SyscallConn()
+	if err != nil {
+		return nil, false
+	}
+	return raw, true
 }

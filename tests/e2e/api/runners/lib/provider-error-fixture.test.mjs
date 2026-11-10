@@ -390,6 +390,22 @@ test("gpt-image-drop is recorded on the wire and its connection dropped without 
   assert.deepEqual(calls.map((c) => JSON.parse(c.body).model), ["gpt-image-drop", "gpt-image-1.5"]);
 });
 
+// Folder 471 (TXE-7071): the stale-get probe. Pointed at the fixture itself as the "gateway", every held GET
+// is one connection, all are answered together and then closed, and the last GET is counted once.
+test("the stale-get probe holds its burst on separate connections, closes them and counts the last GET", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  const probe = await post({ base_url: base, hold_path: "/v1/videos/video_stale_hold", path: "/v1/videos/video_stale_after", count: 4 }, "/__probe/stale-get");
+  assert.equal(probe.status, 200);
+  const r = (await probe.json()).data[0];
+  assert.deepEqual(r.burst, [200, 200, 200, 200]);
+  assert.equal(r.connections, 4);
+  assert.equal(r.after.status, 200);
+  assert.equal(r.after_upstream_requests, 1);
+  // Outside a probe the held task answers at once.
+  assert.equal((await fetch(`${base}/v1/videos/video_stale_hold`)).status, 200);
+});
+
 // Folder 421 (TXE-6431): BFL's submit answers AsyncResponse and is kept on the wire, and get_result answers per
 // task id with BFL's statuses, counted under "bfl get_result <id>".
 test("the BFL stand-in answers a submit and the task query by id", async (t) => {

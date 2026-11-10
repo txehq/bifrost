@@ -150,12 +150,20 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	// A write-once request (every request but chat, contract C3) must reach the
 	// upstream at most once. See acquireOpenConn and retryOn below.
 	writeOnce := isWriteOnce(ctx, req)
+	// A GET or HEAD may be sent twice, so it keeps the retry, but the retry gives
+	// up after a few dead sockets (network.StaleConnectionRetryIfErr) and a pool can
+	// hold more than that: startup model discovery alone leaves four per two-key
+	// provider. So it also gets the walk before the write, which has no such bound
+	// (TXE-7071). A connection the check cannot inspect is replaced for a
+	// write-once request, which cannot risk it, and kept for a GET, which still
+	// has the retry.
+	checkOpen := writeOnce || req.Header.IsGet() || req.Header.IsHead()
 	cc, err := acquireWithContext(ctx, abort, reqTimeout, hc.AcquireConn, req.ConnectionClose(), releaseAbandoned)
 	if err != nil {
 		return false, err
 	}
-	if writeOnce {
-		if cc, err = acquireOpenConn(ctx, abort, reqTimeout, cc, hc.AcquireConn, req.ConnectionClose(), releaseAbandoned, hc.CloseConn); err != nil {
+	if checkOpen {
+		if cc, err = acquireOpenConn(ctx, abort, reqTimeout, cc, !writeOnce, hc.AcquireConn, req.ConnectionClose(), releaseAbandoned, hc.CloseConn); err != nil {
 			return false, err
 		}
 	}
@@ -306,7 +314,8 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 // core marked its context (BifrostContextKeyWriteOnce, every request type but the
 // chat family) and its method is not one a server may safely see twice. A GET or
 // HEAD (a task query, a list, a download) changes nothing upstream, so it keeps
-// the stale-connection retry.
+// the stale-connection retry. RoundTrip still checks its pooled connection before
+// the write, as it does for a write-once request.
 func isWriteOnce(ctx context.Context, req *fasthttp.Request) bool {
 	if req.Header.IsGet() || req.Header.IsHead() {
 		return false
@@ -315,9 +324,9 @@ func isWriteOnce(ctx context.Context, req *fasthttp.Request) bool {
 	return marked
 }
 
-// acquireOpenConn returns a connection a write-once request can be written to: cc
-// when it was dialed for this request or is still open, else the next pooled or
-// newly dialed connection that is. A reused connection the upstream has closed
+// acquireOpenConn returns a connection a write-once request, a GET or a HEAD can be
+// written to: cc when it was dialed for this request or is still open, else the
+// next pooled or newly dialed connection that is. A reused connection the upstream has closed
 // (or that holds bytes nobody asked for) is closed and replaced before anything
 // is written, which is the one moment a replacement is provably not a resend.
 // That is what the stale-connection retry does for chat after the fact; here it
@@ -327,6 +336,9 @@ func isWriteOnce(ctx context.Context, req *fasthttp.Request) bool {
 // cannot tell (a platform or a connection type it cannot inspect), the reused
 // connection is not trusted and is replaced, so the request still goes out once,
 // on a connection dialed for it.
+// keepUninspectable, set for a GET or HEAD that is not write-once, keeps such a
+// connection instead: the request may be resent, so an unknown connection costs it
+// at most the retry it always had, and replacing it would cost a dial every time.
 //
 // The walk has no budget of its own. Every connection it rejects is closed, which
 // takes it out of the pool, so it ends when the pool holds an open connection or is
@@ -334,9 +346,9 @@ func isWriteOnce(ctx context.Context, req *fasthttp.Request) bool {
 // expired a whole burst of connections therefore costs one close per dead socket
 // (no I/O to the upstream) and then one dial, never a failed request. The request
 // context still bounds it: each acquisition goes through acquireWithContext.
-func acquireOpenConn[C pooledConn](ctx context.Context, abort *AttemptAbort, reqTimeout time.Duration, cc C, acquire func(timeout time.Duration, connectionClose bool) (C, error), connectionClose bool, release func(C), closeConn func(C)) (C, error) {
+func acquireOpenConn[C pooledConn](ctx context.Context, abort *AttemptAbort, reqTimeout time.Duration, cc C, keepUninspectable bool, acquire func(timeout time.Duration, connectionClose bool) (C, error), connectionClose bool, release func(C), closeConn func(C)) (C, error) {
 	for {
-		if cc.LastUseTime().IsZero() || pooledConnIsOpen(cc.Conn()) {
+		if cc.LastUseTime().IsZero() || pooledConnIsOpen(cc.Conn()) || (keepUninspectable && !pooledConnInspectable(cc.Conn())) {
 			return cc, nil
 		}
 		closeConn(cc)

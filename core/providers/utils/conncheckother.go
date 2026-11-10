@@ -10,3 +10,8 @@ import "net"
 func pooledConnIsOpen(net.Conn) bool {
 	return false
 }
+
+// pooledConnInspectable is false on this platform: no connection can be inspected.
+func pooledConnInspectable(net.Conn) bool {
+	return false
+}
