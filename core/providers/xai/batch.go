@@ -320,10 +320,10 @@ func ToXAIBatchRequests(ctx *schemas.BifrostContext, endpoint schemas.BatchEndpo
 		if item.Method != "" && !strings.EqualFold(item.Method, http.MethodPost) {
 			return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("requests[%d].method must be POST", i))
 		}
-		if len(item.Body) == 0 {
+		if len(item.RequestBody()) == 0 {
 			return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("requests[%d].body is required", i))
 		}
-		body, err := toXAIBatchChatBody(ctx, item.Body)
+		body, err := toXAIBatchChatBody(ctx, item)
 		if err != nil {
 			return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("requests[%d].body: %v", i, err))
 		}
@@ -335,29 +335,28 @@ func ToXAIBatchRequests(ctx *schemas.BifrostContext, endpoint schemas.BatchEndpo
 	return out, nil
 }
 
-// toXAIBatchChatBody runs one OpenAI chat body through the sync route's conversion.
-func toXAIBatchChatBody(ctx *schemas.BifrostContext, body map[string]any) (json.RawMessage, error) {
-	raw, err := providerUtils.MarshalSorted(body)
+// toXAIBatchChatBody runs one chat line through the sync route's conversion: the shared
+// line decoder (schemas.BatchRequestItem.ToBifrostChatRequest: messages, chat parameters,
+// every unmodelled field as an extra param), the OpenAI converter with provider xai, and
+// the sync encoder, which merges the extra params only when passthrough is enabled, as
+// the sync route does. xAI runs a model per request, so the line's own model is used,
+// with an xai/ prefix stripped.
+func toXAIBatchChatBody(ctx *schemas.BifrostContext, item schemas.BatchRequestItem) (json.RawMessage, error) {
+	lineModel, _ := item.RequestBody()["model"].(string)
+	_, model := schemas.ParseModelString(strings.TrimSpace(lineModel), schemas.XAI)
+	if model == "" {
+		return nil, fmt.Errorf("model is required")
+	}
+	bifrostReq, err := item.ToBifrostChatRequest(schemas.XAI, model)
 	if err != nil {
 		return nil, err
 	}
-	var openAIReq openai.OpenAIChatRequest
-	if err := sonic.Unmarshal(raw, &openAIReq); err != nil {
-		return nil, err
-	}
-	if len(openAIReq.Messages) == 0 {
-		return nil, fmt.Errorf("messages is required")
-	}
-	bifrostReq := openAIReq.ToBifrostChatRequest(ctx)
-	if bifrostReq.Model == "" {
-		return nil, fmt.Errorf("model is required")
-	}
-	bifrostReq.Provider = schemas.XAI
 	xaiReq := openai.ToOpenAIChatRequest(ctx, bifrostReq)
 	if xaiReq == nil {
 		return nil, fmt.Errorf("messages is required")
 	}
-	converted, err := providerUtils.MarshalSorted(xaiReq)
+	mergeExtraParams := ctx != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true
+	converted, err := providerUtils.MarshalConvertedRequestBody(xaiReq, mergeExtraParams)
 	if err != nil {
 		return nil, err
 	}
@@ -453,7 +452,7 @@ func toBatchChatBody(raw []byte) (map[string]any, error) {
 		return nil, err
 	}
 	normalizeXAIChatUsage(&chat)
-	encoded, err := sonic.Marshal(&chat)
+	encoded, err := providerUtils.MarshalSorted(&chat)
 	if err != nil {
 		return nil, err
 	}

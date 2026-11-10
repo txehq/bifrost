@@ -11,9 +11,9 @@ import (
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
-// Upload sends the JSONL as the multipart file part, xAI's only documented field, with the
-// key's bearer token, and returns the file id a batch's input_file_id names (TXE-6664).
-func TestFileUploadSendsOnlyTheFilePart(t *testing.T) {
+// Upload sends the purpose and the JSONL as multipart parts with the key's bearer token, and
+// returns the file id a batch's input_file_id names (TXE-6664).
+func TestFileUploadSendsPurposeAndFile(t *testing.T) {
 	var gotParts map[string]string
 	var gotFilename, gotAuth, gotPath string
 	stub := &batchStub{}
@@ -49,8 +49,8 @@ func TestFileUploadSendsOnlyTheFilePart(t *testing.T) {
 	if gotPath != "/v1/files" || gotAuth != "Bearer sk-xai" {
 		t.Fatalf("path=%s auth=%s", gotPath, gotAuth)
 	}
-	if len(gotParts) != 1 || gotParts["file"] != string(jsonl) || gotFilename != "batch_requests.jsonl" {
-		t.Fatalf("parts = %v (filename %q), want only the file part", gotParts, gotFilename)
+	if len(gotParts) != 2 || gotParts["purpose"] != "batch" || gotParts["file"] != string(jsonl) || gotFilename != "batch_requests.jsonl" {
+		t.Fatalf("parts = %v (filename %q), want purpose=batch and the file part", gotParts, gotFilename)
 	}
 	if resp.ID != "file-abc123" || resp.Bytes != 96 || resp.CreatedAt != 1794283200 || resp.Purpose != schemas.FilePurposeBatch {
 		t.Fatalf("upload response = %+v", resp)

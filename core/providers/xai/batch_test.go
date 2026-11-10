@@ -175,6 +175,34 @@ func TestBatchCreateInlineChatLines(t *testing.T) {
 	}
 }
 
+// A line's unmodelled fields are extra params, as on the sync chat route: they reach xAI
+// only when passthrough extra params is enabled, and are dropped otherwise, the same gate
+// the sync route applies (review finding on PR 151).
+func TestBatchLineExtraParamsFollowPassthrough(t *testing.T) {
+	item := schemas.BatchRequestItem{CustomID: "line-1", URL: "/v1/chat/completions", Body: map[string]any{
+		"model":             "grok-4.3",
+		"messages":          []any{map[string]any{"role": "user", "content": "hi"}},
+		"search_parameters": map[string]any{"mode": "off"},
+	}}
+	chatBody := func(passthrough bool) map[string]any {
+		ctx := batchTestCtx()
+		if passthrough {
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		}
+		lines, bErr := ToXAIBatchRequests(ctx, schemas.BatchEndpointChatCompletions, []schemas.BatchRequestItem{item})
+		if bErr != nil {
+			t.Fatalf("ToXAIBatchRequests: %+v", bErr.Error)
+		}
+		return decodeJSON(t, string(lines[0].BatchRequest[xaiBatchChatKey]))
+	}
+	if got := chatBody(true); got["search_parameters"] == nil {
+		t.Fatalf("passthrough on: body = %v, want search_parameters forwarded", got)
+	}
+	if got := chatBody(false); got["search_parameters"] != nil {
+		t.Fatalf("passthrough off: body = %v, want search_parameters dropped as on the sync route", got)
+	}
+}
+
 // A file batch is one call naming the uploaded JSONL file.
 func TestBatchCreateWithInputFile(t *testing.T) {
 	stub := &batchStub{}
@@ -570,6 +598,41 @@ func TestXAITimestampForms(t *testing.T) {
 		var ts xaiTimestamp
 		if err := sonic.UnmarshalString(raw, &ts); err != nil || ts.unix != nil {
 			t.Fatalf("%s: unix=%v err=%v, want unset", raw, ts.unix, err)
+		}
+	}
+}
+
+// Request-path cost of an inline batch: converting one chat line, and mapping one result
+// line with usage. Run: go test ./providers/xai/ -run '^$' -bench 'XAIBatch' -benchmem
+func BenchmarkXAIBatchLineConversion(b *testing.B) {
+	ctx := batchTestCtx()
+	items := []schemas.BatchRequestItem{{CustomID: "line-1", URL: "/v1/chat/completions", Body: map[string]any{
+		"model": "grok-4.3", "temperature": 0.2, "max_tokens": 64,
+		"messages": []any{map[string]any{"role": "system", "content": "Be terse."}, map[string]any{"role": "user", "content": "Classify: late delivery"}},
+	}}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, bErr := ToXAIBatchRequests(ctx, schemas.BatchEndpointChatCompletions, items); bErr != nil {
+			b.Fatal(bErr.Error.Message)
+		}
+	}
+}
+
+func BenchmarkXAIBatchResultItem(b *testing.B) {
+	var result XAIBatchResult
+	raw := `{"batch_request_id":"line-1","batch_result":{"response":{"chat_get_completion":{
+		"id":"chatcmpl-1","object":"chat.completion","created":1794283200,"model":"grok-4.3",
+		"choices":[{"index":0,"message":{"role":"assistant","content":"positive"},"finish_reason":"stop"}],
+		"usage":{"prompt_tokens":32,"completion_tokens":1,"total_tokens":60,
+			"prompt_tokens_details":{"cached_tokens":16},"completion_tokens_details":{"reasoning_tokens":27},
+			"cost_in_usd_ticks":123450}}}}}`
+	if err := sonic.UnmarshalString(raw, &result); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if item := result.ToBifrostBatchResultItem(); item.Response == nil {
+			b.Fatal("no response")
 		}
 	}
 }

@@ -90,8 +90,8 @@ func (f *XAIFile) ToBifrostFileObject(purpose schemas.FilePurpose) schemas.FileO
 	}
 }
 
-// FileUpload uploads a file with POST /v1/files. Only the file part is sent: xAI documents
-// no purpose field, so the request's purpose is echoed back rather than forwarded.
+// FileUpload uploads a file with POST /v1/files as multipart: the request's purpose, which
+// xAI stores and echoes for OpenAI compatibility, then the file part.
 func (provider *XAIProvider) FileUpload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostFileUploadRequest) (*schemas.BifrostFileUploadResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.XAI, provider.customProviderConfig, schemas.FileUploadRequest); err != nil {
 		return nil, err
@@ -111,6 +111,11 @@ func (provider *XAIProvider) FileUpload(ctx *schemas.BifrostContext, key schemas
 	filename := request.Filename
 	if filename == "" {
 		filename = "batch_requests.jsonl"
+	}
+	if request.Purpose != "" {
+		if err := writer.WriteField("purpose", string(request.Purpose)); err != nil {
+			return nil, providerUtils.NewBifrostOperationError("failed to write purpose field", err)
+		}
 	}
 	part, err := writer.CreateFormFile("file", filename)
 	if err != nil {
