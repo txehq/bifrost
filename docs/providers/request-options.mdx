@@ -679,6 +679,16 @@ This flag affects only what is written to the log record (messages, params, tool
 
 Enable passthrough mode for extra parameters. When enabled, any parameters in `extra_params` (or provider-specific extra parameter fields) will be merged directly into the request sent to the provider.
 
+An extra parameter can add a field the request left unset. It can never replace a field Bifrost already set from the request. A request whose extra parameter names such a field is refused with `400` (`caller_invalid_request`), with the extra parameter in `error.param`, before anything is sent to the provider:
+
+- `model` is never accepted as an extra parameter, on any provider.
+- The input or messages, and every field mapped from a typed parameter (`size`, `max_tokens`, `stream`, ...), keep the request's value.
+- Field names are compared ignoring case and underscores, so `Model` or `maxTokens` cannot stand in for `model` or `max_tokens`.
+- When both values are JSON objects, the rule applies inside the object, so an extra parameter can still add a sub-field.
+- An extra parameter that repeats the request's own value exactly is accepted and changes nothing.
+
+To change a field Bifrost sets, send it in the request itself.
+
 How parameters are collected depends on the entrypoint:
 
 - Standard inference routes such as `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, and `/v1/images/generations` collect all unknown top-level JSON fields as extra parameters.

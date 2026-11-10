@@ -696,3 +696,54 @@ func BenchmarkFillTranscriptionDurationUsage(b *testing.B) {
 		})
 	}
 }
+
+// TXE-7018: a request whose extra params name a form field written from the typed request
+// is refused before anything is sent: a form that carried model twice would let the
+// upstream pick either one.
+func TestParseTranscriptionFormDataBodyFromRequest_ExtraParamsNeverRepeatATypedField(t *testing.T) {
+	request := func(extra map[string]interface{}) *OpenAITranscriptionRequest {
+		return &OpenAITranscriptionRequest{
+			Model:    "allowed-model",
+			File:     []byte("audio-bytes"),
+			Filename: "sample.mp3",
+			TranscriptionParameters: schemas.TranscriptionParameters{
+				Language:    schemas.Ptr("en"),
+				ExtraParams: extra,
+			},
+		}
+	}
+	for param, value := range map[string]interface{}{
+		"model": "denied-model", "Model": "denied-model", "file": "other-bytes", "FILE": "other-bytes", "language": "fr",
+	} {
+		t.Run("refused "+param, func(t *testing.T) {
+			var body bytes.Buffer
+			bifrostErr := ParseTranscriptionFormDataBodyFromRequest(multipart.NewWriter(&body), request(map[string]interface{}{param: value, "chunking_strategy": "auto"}), schemas.OpenAI)
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+				t.Fatalf("want a 400, got %+v", bifrostErr)
+			}
+			if bifrostErr.Error.Param != param || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest {
+				t.Errorf("param/error_type = %v/%q, want %q/%q", bifrostErr.Error.Param, bifrostErr.ExtraFields.ErrorType, param, schemas.ErrorTypeCallerInvalidRequest)
+			}
+		})
+	}
+
+	// A typed field the request left unset is still the caller's to send as an extra param.
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if bifrostErr := ParseTranscriptionFormDataBodyFromRequest(writer, request(map[string]interface{}{"prompt": "names: Ada", "chunking_strategy": "auto"}), schemas.OpenAI); bifrostErr != nil {
+		t.Fatalf("unexpected bifrost error: %v", bifrostErr.Error.Message)
+	}
+	contentType := writer.FormDataContentType()
+	counts := map[string]int{}
+	for _, name := range multipartPartOrder(t, contentType, body.Bytes()) {
+		counts[name]++
+	}
+	for _, name := range []string{"model", "file", "language", "prompt", "chunking_strategy"} {
+		if counts[name] != 1 {
+			t.Errorf("field %s written %d times, want once", name, counts[name])
+		}
+	}
+	if got := multipartFieldValue(t, contentType, body.Bytes(), "prompt"); got != "names: Ada" {
+		t.Errorf("prompt = %q, want the extra param's value", got)
+	}
+}

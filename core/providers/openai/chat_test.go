@@ -2573,6 +2573,35 @@ func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
 		require.NoError(t, sonic.Unmarshal(b, &m), string(b))
 		require.Equalf(t, 4, countBreakpoints(m), "raw=%s", string(b))
 	})
+
+	t.Run("passthrough cannot replace a typed mode, and still adds an unset sub-field", func(t *testing.T) {
+		// TXE-7018: an extra param never replaces a field the request set. The marker
+		// ceiling follows the typed implicit mode, and the merge refuses the request.
+		build := func(extra map[string]interface{}) ([]byte, error) {
+			req := overMarked()
+			req.Params.PromptCacheOptions = &schemas.PromptCacheOptions{Mode: schemas.Ptr("implicit")}
+			req.Params.ExtraParams = map[string]interface{}{"prompt_cache_options": extra}
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			out := ToOpenAIChatRequest(ctx, req)
+			require.NotNil(t, out)
+			return providerUtils.MarshalConvertedRequestBody(out, true)
+		}
+		_, err := build(map[string]interface{}{"mode": "explicit"})
+		bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+		require.Truef(t, ok, "want a bad-request refusal, got %v", err)
+		require.Equal(t, "prompt_cache_options.mode", bifrostErr.Error.Param)
+
+		b, err := build(map[string]interface{}{"ttl": "30m"})
+		require.NoError(t, err)
+		var m map[string]any
+		require.NoError(t, sonic.Unmarshal(b, &m), string(b))
+		require.Equalf(t, 3, countBreakpoints(m), "raw=%s", string(b))
+		opts, _ := m["prompt_cache_options"].(map[string]any)
+		require.Equalf(t, "implicit", opts["mode"], "raw=%s", string(b))
+		require.Equalf(t, "30m", opts["ttl"], "raw=%s", string(b))
+	})
 }
 
 // The /openai integration keeps OpenAI's chat shape, which has no reasoning.summary:

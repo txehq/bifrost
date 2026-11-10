@@ -67,6 +67,38 @@ func ToOpenAITranscriptionURLRequest(bifrostReq *schemas.BifrostTranscriptionReq
 	return openaiReq
 }
 
+// transcriptionFormFieldsWritten lists the form fields ParseTranscriptionFormDataBodyFromRequest
+// writes from the typed request. A request whose extra params name one of them is refused (the
+// extra-params rule, providerUtils.MergeExtraParamsIntoJSON): a form that carried a field twice
+// would let the upstream pick either, and the typed value - the routed model above all - is the
+// one the gateway authorized. It is built only for a request that has extra params.
+func transcriptionFormFieldsWritten(openaiReq *OpenAITranscriptionRequest) []string {
+	written := make([]string, 0, 12)
+	written = append(written, "model", "file")
+	if openaiReq.Language != nil {
+		written = append(written, "language")
+	}
+	if openaiReq.Prompt != nil {
+		written = append(written, "prompt")
+	}
+	if openaiReq.ResponseFormat != nil {
+		written = append(written, "response_format")
+	}
+	if openaiReq.Temperature != nil {
+		written = append(written, "temperature")
+	}
+	if len(openaiReq.TimestampGranularities) > 0 {
+		written = append(written, "timestamp_granularities[]", "timestamp_granularities")
+	}
+	if len(openaiReq.Include) > 0 {
+		written = append(written, "include[]", "include")
+	}
+	if openaiReq.Stream != nil && *openaiReq.Stream {
+		written = append(written, "stream")
+	}
+	return written
+}
+
 // ParseTranscriptionFormDataBodyFromRequest parses the transcription request and writes it to the multipart form.
 func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAITranscriptionRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
 	// Add model field before the file so upstreams can route without buffering the audio payload.
@@ -124,6 +156,10 @@ func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 	// are sorted so the emitted form is deterministic.
 	if len(openaiReq.ExtraParams) > 0 {
 		extraKeys := make([]string, 0, len(openaiReq.ExtraParams))
+		if param, field, repeats := utils.ExtraParamNamingASetField(openaiReq.ExtraParams, transcriptionFormFieldsWritten(openaiReq)); repeats {
+			bifrostErr, _ := utils.AsBifrostBadRequestError(utils.ExtraParamConflictError(param, field))
+			return bifrostErr
+		}
 		for key := range openaiReq.ExtraParams {
 			extraKeys = append(extraKeys, key)
 		}

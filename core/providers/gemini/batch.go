@@ -628,6 +628,10 @@ func ConvertBatchLine(ctx *schemas.BifrostContext, item schemas.BatchRequestItem
 		}
 		mergeExtraParams := ctx != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true
 		encoded, err := providerUtils.MarshalConvertedRequestBody(converted, mergeExtraParams)
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok && badRequest.Error != nil {
+			// An extra param naming a field the line already sets is the line's fault.
+			return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: badRequest.Error.Message}
+		}
 		if err != nil {
 			return nil, "", err
 		}
@@ -645,6 +649,10 @@ func ConvertBatchLine(ctx *schemas.BifrostContext, item schemas.BatchRequestItem
 			return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: err.Error()}
 		}
 		encoded, err := providerUtils.MarshalConvertedRequestBody(converted, true)
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok && badRequest.Error != nil {
+			// An extra param naming a field the line already sets is the line's fault.
+			return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "body", Message: badRequest.Error.Message}
+		}
 		if err != nil {
 			return nil, "", err
 		}

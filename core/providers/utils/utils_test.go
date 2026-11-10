@@ -1261,28 +1261,303 @@ func TestMergeExtraParamsIntoJSON_PreservesKeyOrder(t *testing.T) {
 	}
 }
 
-func TestMergeExtraParamsIntoJSON_OverwriteExistingKey(t *testing.T) {
-	jsonBody := []byte(`{"z_first": "original", "a_second": "original"}`)
+// TestMergeExtraParamsIntoJSON_NeverReplacesAConvertedField pins the extra-params rule:
+// an extra param may add a field the converter left unset; a request whose extra param
+// names a field the converter set, or the routed model, is refused with a 400
+// caller_invalid_request naming the extra param.
+func TestMergeExtraParamsIntoJSON_NeverReplacesAConvertedField(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		extra     map[string]interface{}
+		want      string // the body sent, when the request is accepted
+		wantParam string // error.param, when it is refused
+	}{
+		{
+			name:      "model is refused",
+			body:      `{"model":"allowed","input":"hi"}`,
+			extra:     map[string]interface{}{"model": "denied"},
+			wantParam: "model",
+		},
+		{
+			name:      "model is refused even with the request's own value",
+			body:      `{"model":"allowed"}`,
+			extra:     map[string]interface{}{"model": "allowed"},
+			wantParam: "model",
+		},
+		{
+			name:      "model is refused when the URL carries it and the body has none",
+			body:      `{"contents":[]}`,
+			extra:     map[string]interface{}{"model": "denied"},
+			wantParam: "model",
+		},
+		{name: "Model", body: `{"model":"allowed"}`, extra: map[string]interface{}{"Model": "denied"}, wantParam: "Model"},
+		{name: "MODEL", body: `{"contents":[]}`, extra: map[string]interface{}{"MODEL": "denied"}, wantParam: "MODEL"},
+		{name: "_model", body: `{"model":"allowed"}`, extra: map[string]interface{}{"_model": "denied"}, wantParam: "_model"},
+		{
+			// Go's encoding/json reads the long s as s and the Kelvin sign as k.
+			name:      "a Unicode spelling a case-folding decoder reads as the field",
+			body:      `{"stream":true}`,
+			extra:     map[string]interface{}{"\u017ftream": false},
+			wantParam: "\u017ftream",
+		},
+		{
+			name:      "the Kelvin sign for k",
+			body:      `{"max_tokens":10}`,
+			extra:     map[string]interface{}{"max_to\u212aens": 99},
+			wantParam: "max_to\u212aens",
+		},
+		{
+			name:      "the input is refused",
+			body:      `{"model":"allowed","input":["original"]}`,
+			extra:     map[string]interface{}{"input": "other"},
+			wantParam: "input",
+		},
+		{
+			name:      "the messages are refused",
+			body:      `{"model":"allowed","messages":[{"role":"user","content":"original"}]}`,
+			extra:     map[string]interface{}{"Messages": []interface{}{}},
+			wantParam: "Messages",
+		},
+		{
+			name:      "a mapped field is refused",
+			body:      `{"size":"1024x1024","n":1}`,
+			extra:     map[string]interface{}{"size": "4096x4096"},
+			wantParam: "size",
+		},
+		{
+			name:      "a field set to false is still set",
+			body:      `{"stream":false}`,
+			extra:     map[string]interface{}{"stream": true},
+			wantParam: "stream",
+		},
+		{
+			name:      "a field set to null is still set",
+			body:      `{"stop":null}`,
+			extra:     map[string]interface{}{"stop": "x"},
+			wantParam: "stop",
+		},
+		{
+			name:      "camelCase names a snake_case field",
+			body:      `{"max_tokens":10}`,
+			extra:     map[string]interface{}{"maxTokens": 99},
+			wantParam: "maxTokens",
+		},
+		{
+			name:      "a set sub-field is refused by its path",
+			body:      `{"generationConfig":{"maxOutputTokens":5}}`,
+			extra:     map[string]interface{}{"generation_config": map[string]interface{}{"max_output_tokens": 99, "topK": 3}},
+			wantParam: "generation_config.max_output_tokens",
+		},
+		{
+			name:      "an object does not replace a scalar",
+			body:      `{"a":1}`,
+			extra:     map[string]interface{}{"a": map[string]interface{}{"k": 1}},
+			wantParam: "a",
+		},
+		{
+			name:      "a scalar does not replace an object",
+			body:      `{"b":{"k":1}}`,
+			extra:     map[string]interface{}{"b": 2},
+			wantParam: "b",
+		},
+		{
+			name:      "two extra params spelling one field differently",
+			body:      `{}` + " ",
+			extra:     map[string]interface{}{"top_k": 1, "topK": 2},
+			wantParam: "top_k",
+		},
+		{
+			name:  "an unset field is added, after the converted ones and in sorted order",
+			body:  `{"model":"allowed","messages":[]}`,
+			extra: map[string]interface{}{"top_k": 3, "guardrailConfig": map[string]interface{}{"id": "g"}},
+			want:  `{"model":"allowed","messages":[],"guardrailConfig":{"id":"g"},"top_k":3}`,
+		},
+		{
+			name:  "an object gains unset sub-fields at any depth and keeps its order",
+			body:  `{"outer":{"b":2,"a":1,"inner":{"x":1}}}`,
+			extra: map[string]interface{}{"outer": map[string]interface{}{"c": 3, "inner": map[string]interface{}{"y": 2}}},
+			want:  `{"outer":{"b":2,"a":1,"inner":{"x":1,"y":2},"c":3}}`,
+		},
+		{
+			name:  "a nested model is the provider's own field",
+			body:  `{"model":"allowed","input":{"prompt":"p"}}`,
+			extra: map[string]interface{}{"input": map[string]interface{}{"model": "dev"}},
+			want:  `{"model":"allowed","input":{"prompt":"p","model":"dev"}}`,
+		},
+		{
+			name:  "the converter's own value repeated replaces nothing and is dropped",
+			body:  `{"n":1,"size":"1024x1024","opts":{"mode":"typed"},"tags":["a","b"]}`,
+			extra: map[string]interface{}{"n": 1, "Size": "1024x1024", "opts": map[string]interface{}{"mode": "typed"}, "tags": []interface{}{"a", "b"}},
+			want:  `{"n":1,"size":"1024x1024","opts":{"mode":"typed"},"tags":["a","b"]}`,
+		},
+		{
+			name: "a typed object value is merged like a map",
+			body: `{"opts":{"mode":"typed"}}`,
+			extra: map[string]interface{}{"opts": struct {
+				TTL string `json:"ttl"`
+			}{"1h"}},
+			want: `{"opts":{"mode":"typed","ttl":"1h"}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := MergeExtraParamsIntoJSON([]byte(tc.body), tc.extra)
+			if tc.wantParam == "" {
+				if err != nil {
+					t.Fatalf("MergeExtraParamsIntoJSON() error: %v", err)
+				}
+				if string(got) != tc.want {
+					t.Fatalf("body sent upstream\n got: %s\nwant: %s", got, tc.want)
+				}
+				return
+			}
+			assertExtraParamRefusal(t, err, tc.wantParam)
+			if got != nil {
+				t.Fatalf("a refused request still produced a body: %s", got)
+			}
+		})
+	}
+}
 
-	extraParams := map[string]interface{}{
-		"z_first": "overwritten",
+// assertExtraParamRefusal checks err is the extra-params refusal: a 400
+// caller_invalid_request whose error.param is the extra param.
+func assertExtraParamRefusal(t *testing.T, err error, wantParam string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("want a refusal naming %q, got none", wantParam)
+	}
+	bifrostErr, ok := AsBifrostBadRequestError(err)
+	if !ok || bifrostErr == nil || bifrostErr.Error == nil {
+		t.Fatalf("want a bad-request refusal, got %v", err)
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+		t.Errorf("status = %v, want 400", bifrostErr.StatusCode)
+	}
+	if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest {
+		t.Errorf("error_type = %q, want %q", bifrostErr.ExtraFields.ErrorType, schemas.ErrorTypeCallerInvalidRequest)
+	}
+	if bifrostErr.Error.Param != wantParam {
+		t.Errorf("error.param = %v, want %q", bifrostErr.Error.Param, wantParam)
+	}
+	if !strings.Contains(bifrostErr.Error.Message, wantParam) {
+		t.Errorf("message %q does not name %q", bifrostErr.Error.Message, wantParam)
+	}
+}
+
+// TestMarshalConvertedRequestBody_RefusalIsABadRequest: the refusal leaves the shared
+// request-body path as the caller's 400, not as a marshal failure (500), and only
+// when the request asked for its extra params to be passed through.
+func TestMarshalConvertedRequestBody_RefusalIsABadRequest(t *testing.T) {
+	body := &extraParamsGuardBody{Model: "allowed", Input: "hi", extra: map[string]interface{}{"model": "denied"}}
+	if _, err := MarshalConvertedRequestBody(body, true); err == nil {
+		t.Fatal("want a refusal with passthrough on")
+	} else {
+		assertExtraParamRefusal(t, err, "model")
+	}
+	got, err := MarshalConvertedRequestBody(body, false)
+	if err != nil || string(got) != `{"model":"allowed","input":"hi"}` {
+		t.Fatalf("without passthrough extra params are not sent at all: got %s, %v", got, err)
 	}
 
-	result, err := MergeExtraParamsIntoJSON(jsonBody, extraParams)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	_, bifrostErr := CheckContextAndGetRequestBody(ctx, &extraParamsGuardRequest{}, func() (RequestBodyWithExtraParams, error) { return body, nil })
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 || bifrostErr.Error.Param != "model" {
+		t.Fatalf("CheckContextAndGetRequestBody: want a 400 naming model, got %+v", bifrostErr)
+	}
+}
+
+type extraParamsGuardBody struct {
+	Model string `json:"model"`
+	Input string `json:"input"`
+	extra map[string]interface{}
+}
+
+func (b *extraParamsGuardBody) GetExtraParams() map[string]interface{} { return b.extra }
+
+type extraParamsGuardRequest struct{}
+
+func (*extraParamsGuardRequest) GetRawRequestBody() []byte { return nil }
+
+// TestMergeExtraParamsIntoJSONObject_HasNoReservedField: inside a nested object the
+// caller may add a field named model; a set field is still refused.
+func TestMergeExtraParamsIntoJSONObject_HasNoReservedField(t *testing.T) {
+	got, err := MergeExtraParamsIntoJSONObject([]byte(`{"prompt":"p"}`), map[string]interface{}{"model": "dev"})
 	if err != nil {
-		t.Fatalf("MergeExtraParamsIntoJSON() error: %v", err)
+		t.Fatalf("MergeExtraParamsIntoJSONObject() error: %v", err)
 	}
-
-	// z_first should still come before a_second (preserving original position)
-	zIdx := bytes.Index(result, []byte(`"z_first"`))
-	aIdx := bytes.Index(result, []byte(`"a_second"`))
-	if zIdx >= aIdx {
-		t.Fatalf("Overwritten key should preserve its position. Result: %s", string(result))
+	if want := `{"prompt":"p","model":"dev"}`; string(got) != want {
+		t.Fatalf("got %s, want %s", got, want)
 	}
+	_, err = MergeExtraParamsIntoJSONObject([]byte(`{"prompt":"p"}`), map[string]interface{}{"Prompt": "other"})
+	assertExtraParamRefusal(t, err, "Prompt")
+}
 
-	// z_first should have the new value
-	if !bytes.Contains(result, []byte(`"overwritten"`)) {
-		t.Fatalf("Value should be overwritten. Result: %s", string(result))
+// TestMergeExtraParams_NeverReplacesASetKey is the same rule on the map form.
+func TestMergeExtraParams_NeverReplacesASetKey(t *testing.T) {
+	body := map[string]interface{}{"a": 1, "obj": map[string]interface{}{"x": 1}}
+	if err := MergeExtraParams(body, map[string]interface{}{"a": 1, "b": 3, "obj": map[string]interface{}{"y": 2}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := MarshalSorted(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"a":1,"b":3,"obj":{"x":1,"y":2}}`; string(got) != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+	assertExtraParamRefusal(t, MergeExtraParams(map[string]interface{}{"maxTokens": 5}, map[string]interface{}{"max_tokens": 9}), "max_tokens")
+	assertExtraParamRefusal(t, MergeExtraParams(map[string]interface{}{"obj": map[string]interface{}{"x": 1}}, map[string]interface{}{"obj": map[string]interface{}{"X": 2}}), "obj.X")
+}
+
+func TestExtraParamNamingASetField(t *testing.T) {
+	param, field, found := ExtraParamNamingASetField(map[string]interface{}{"voice": "a", "Model": "x", "FILE": "y"}, []string{"model", "file"})
+	if !found || param != "FILE" || field != "file" {
+		t.Fatalf("got %q/%q/%v, want the first in sorted order: FILE/file/true", param, field, found)
+	}
+	if _, _, found := ExtraParamNamingASetField(map[string]interface{}{"voice": "a"}, []string{"model", "file"}); found {
+		t.Fatal("an extra param naming no set field was reported")
+	}
+}
+
+func BenchmarkMergeExtraParamsIntoJSON(b *testing.B) {
+	body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"Summarise the attached report in three bullet points."}],"temperature":0.2,"max_tokens":512,"stream":true,"stream_options":{"include_usage":true},"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}}]}`)
+	b.Run("one new field", func(b *testing.B) {
+		extra := map[string]interface{}{"top_k": 40}
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := MergeExtraParamsIntoJSON(body, extra); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("a nested addition", func(b *testing.B) {
+		extra := map[string]interface{}{"stream_options": map[string]interface{}{"include_obfuscation": false}}
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := MergeExtraParamsIntoJSON(body, extra); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("a refused model", func(b *testing.B) {
+		extra := map[string]interface{}{"model": "other"}
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := MergeExtraParamsIntoJSON(body, extra); err == nil {
+				b.Fatal("want a refusal")
+			}
+		}
+	})
+}
+
+func BenchmarkSameJSONField(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if !sameJSONField("max_output_tokens", "maxOutputTokens") || sameJSONField("model", "messages") {
+			b.Fatal("wrong answer")
+		}
 	}
 }
 

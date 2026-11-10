@@ -98,7 +98,7 @@ func (r *ReplicatePredictionRequestInput) MarshalJSON() ([]byte, error) {
 	}
 
 	// Use order-preserving merge to avoid destroying key ordering in the serialized JSON.
-	return providerUtils.MergeExtraParamsIntoJSON(aliasData, r.ExtraParams)
+	return providerUtils.MergeExtraParamsIntoJSONObject(aliasData, r.ExtraParams)
 }
 
 // UnmarshalJSON implements custom JSON unmarshalling for ReplicatePredictionRequestInput.

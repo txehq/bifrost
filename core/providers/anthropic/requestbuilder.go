@@ -430,6 +430,10 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 			extraParams := reqBody.GetExtraParams()
 			if len(extraParams) > 0 {
 				jsonBody, err = providerUtils.MergeExtraParamsIntoJSON(jsonBody, extraParams)
+				if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+					// An extra param naming a field the request sets: the caller's 400.
+					return nil, badRequest
+				}
 				if err != nil {
 					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 				}
@@ -749,6 +753,10 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 			extraParams := reqBody.GetExtraParams()
 			if len(extraParams) > 0 {
 				jsonBody, err = providerUtils.MergeExtraParamsIntoJSON(jsonBody, extraParams)
+				if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+					// An extra param naming a field the request sets: the caller's 400.
+					return nil, badRequest
+				}
 				if err != nil {
 					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 				}

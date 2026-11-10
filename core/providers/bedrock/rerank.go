@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -32,6 +33,11 @@ func resolveBedrockRerankModelARN(ctx *schemas.BifrostContext, key schemas.Key, 
 
 	return fmt.Sprintf("arn:%s:bedrock:%s::foundation-model/%s", awsPartitionForRegion(region), region, bareModel)
 }
+
+// rerankModelRequestFieldsFromTheRequest are the reranker model's request fields that
+// Bedrock fills from the typed rerank request: the model (modelArn), the query and the
+// documents. A request whose extra params name one of them is refused.
+var rerankModelRequestFieldsFromTheRequest = []string{"model", "query", "documents"}
 
 // ToBedrockRerankRequest converts a Bifrost rerank request into Bedrock Agent Runtime format.
 func ToBedrockRerankRequest(bifrostReq *schemas.BifrostRerankRequest, modelARN string) (*BedrockRerankRequest, error) {
@@ -109,8 +115,19 @@ func ToBedrockRerankRequest(bifrostReq *schemas.BifrostRerankRequest, modelARN s
 	if bifrostReq.Params.MaxTokensPerDoc != nil {
 		additionalFields["max_tokens_per_doc"] = *bifrostReq.Params.MaxTokensPerDoc
 	}
+	// The extra-params rule (providerUtils.MergeExtraParams): an extra param may add a
+	// field, and one naming a field the request sets is refused. AWS merges these fields
+	// into the reranker model's own request, whose model, query and documents are built
+	// from the typed request, so an extra param naming one of those is refused too.
+	if param, field, names := providerUtils.ExtraParamNamingASetField(bifrostReq.Params.ExtraParams, rerankModelRequestFieldsFromTheRequest); names {
+		return nil, providerUtils.ExtraParamConflictError(param, field)
+	}
+	extra := make(map[string]interface{}, len(bifrostReq.Params.ExtraParams))
 	for k, v := range bifrostReq.Params.ExtraParams {
-		additionalFields[k] = v
+		extra[k] = v
+	}
+	if err := providerUtils.MergeExtraParams(additionalFields, extra); err != nil {
+		return nil, err
 	}
 	if len(additionalFields) > 0 {
 		bedrockReq.RerankingConfiguration.BedrockRerankingConfiguration.ModelConfiguration.AdditionalModelRequestFields = additionalFields

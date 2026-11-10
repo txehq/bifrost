@@ -131,15 +131,26 @@ func (provider *BytePlusProvider) Embedding(ctx *schemas.BifrostContext, key sch
 	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
 		return nil, providerUtils.NewBifrostBadRequestError("large payload passthrough is not supported for byteplus embeddings")
 	}
-	// Fork: extra params must not name a model, on the request or on any item (see rejectModelInExtraParams).
+	// Fork: extra params must not name a model, on the request or on any item. Every
+	// other BytePlus request gets this from the shared extra-params rule where extra
+	// params join the body (providerUtils.MergeExtraParamsIntoJSON). Embeddings do not
+	// pass extra params through, so the merge never runs here and the refusal is made
+	// with the same shared helpers.
+	refuseModel := func(extraParams map[string]interface{}) *schemas.BifrostError {
+		if param, field, names := providerUtils.ExtraParamNamingASetField(extraParams, []string{"model"}); names {
+			bifrostErr, _ := providerUtils.AsBifrostBadRequestError(providerUtils.ExtraParamConflictError(param, field))
+			return bifrostErr
+		}
+		return nil
+	}
 	if request.Params != nil {
-		if bifrostErr := rejectModelInExtraParams(request.Params.ExtraParams); bifrostErr != nil {
+		if bifrostErr := refuseModel(request.Params.ExtraParams); bifrostErr != nil {
 			return nil, bifrostErr
 		}
 	}
 	for i := range request.Input {
 		if params := request.Input[i].Params; params != nil {
-			if bifrostErr := rejectModelInExtraParams(params.ExtraParams); bifrostErr != nil {
+			if bifrostErr := refuseModel(params.ExtraParams); bifrostErr != nil {
 				return nil, bifrostErr
 			}
 		}

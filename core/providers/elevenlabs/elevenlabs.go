@@ -813,6 +813,13 @@ func writeTranscriptionExtraFields(writer *multipart.Writer, reqBody *Elevenlabs
 		if key == "model_id" || key == "file" || (key == "language_code" && languageWritten) {
 			continue
 		}
+		// The extra-params rule (providerUtils.MergeExtraParamsIntoJSON, TXE-7018): an
+		// extra param never names the model. "model", or another spelling of model_id or
+		// file, would sit in the form beside the field Bifrost wrote.
+		if providerUtils.ExtraParamNamesField(key, "model", "model_id", "file") {
+			bifrostErr, _ := providerUtils.AsBifrostBadRequestError(providerUtils.ExtraParamConflictError(key, "model"))
+			return bifrostErr
+		}
 		var fieldValue string
 		switch v := extra[key].(type) {
 		case nil:

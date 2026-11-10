@@ -327,10 +327,14 @@ func promptCacheBreakpointCeiling(ctx *schemas.BifrostContext, openAIFamily bool
 }
 
 // effectivePromptCacheMode returns the prompt_cache_options.mode the provider will see.
-// With passthrough on, ExtraParams is merged into the serialized body after the typed
-// fields (providerUtils.CheckContextAndGetRequestBody), so a mode there overrides the
-// typed one. The Anthropic ingress carries a caller's prompt_cache_options only that way.
+// The typed mode is the one sent when it is set: with passthrough on, ExtraParams may
+// only add fields the typed request left unset (providerUtils.MergeExtraParamsIntoJSON),
+// so a mode there is sent only when there is no typed one. The Anthropic ingress
+// carries a caller's prompt_cache_options only that way.
 func effectivePromptCacheMode(ctx *schemas.BifrostContext, options *schemas.PromptCacheOptions, extraParams map[string]interface{}) string {
+	if options != nil && options.Mode != nil {
+		return *options.Mode
+	}
 	if ctx != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
 		switch v := extraParams["prompt_cache_options"].(type) {
 		case map[string]interface{}:
@@ -346,9 +350,6 @@ func effectivePromptCacheMode(ctx *schemas.BifrostContext, options *schemas.Prom
 				return *v.Mode
 			}
 		}
-	}
-	if options != nil && options.Mode != nil {
-		return *options.Mode
 	}
 	return ""
 }
