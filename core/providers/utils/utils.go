@@ -1925,6 +1925,69 @@ func GetRequestPath(ctx context.Context, defaultPath string, customProviderConfi
 	return defaultPath, false
 }
 
+// ResourcePathPlaceholders lists the request types whose URL names one resource by its id,
+// with the placeholder a request_path_overrides entry for that type must carry. An override
+// replaces the whole default path, so for these types it is a template: the placeholder is
+// where the id goes. It is the one list both the request path (GetResourceRequestPath) and
+// the provider configuration check (ValidateResourcePathOverride) read.
+var ResourcePathPlaceholders = map[schemas.RequestType]string{
+	schemas.BatchRetrieveRequest: "{batch_id}",
+	schemas.BatchCancelRequest:   "{batch_id}",
+	schemas.BatchResultsRequest:  "{batch_id}",
+	schemas.FileRetrieveRequest:  "{file_id}",
+	schemas.FileDeleteRequest:    "{file_id}",
+	schemas.FileContentRequest:   "{file_id}",
+}
+
+// ValidateResourcePathOverride reports whether a non-blank request_path_overrides entry for a
+// request type listed in ResourcePathPlaceholders carries that type's placeholder. Other
+// request types and blank overrides pass.
+func ValidateResourcePathOverride(requestType schemas.RequestType, override string) error {
+	placeholder, ok := ResourcePathPlaceholders[requestType]
+	if !ok || strings.TrimSpace(override) == "" {
+		return nil
+	}
+	if !strings.Contains(override, placeholder) {
+		return fmt.Errorf("request_path_overrides.%s must contain %s where the id goes (for example %q), got %q", requestType, placeholder, "/v1/resources/"+placeholder, override)
+	}
+	return nil
+}
+
+// GetResourceRequestPath is GetRequestPath for a call that names one resource by its id.
+// defaultPath already holds the escaped id. requestTypes are tried in order and the first
+// one with a non-blank override wins: its placeholder (ResourcePathPlaceholders) is replaced
+// by escapedID. Every requestType must be listed in ResourcePathPlaceholders. An override
+// without its placeholder is an error, so a misconfigured provider never sends a request to
+// a path that lost the id. A path set in the context wins over every override, as in
+// GetRequestPath.
+func GetResourceRequestPath(ctx context.Context, defaultPath string, customProviderConfig *schemas.CustomProviderConfig, escapedID string, requestTypes ...schemas.RequestType) (string, bool, error) {
+	if _, inContext := ctx.Value(schemas.BifrostContextKeyURLPath).(string); !inContext && customProviderConfig != nil {
+		for _, requestType := range requestTypes {
+			override := strings.TrimSpace(customProviderConfig.RequestPathOverrides[requestType])
+			if override == "" {
+				continue
+			}
+			placeholder, ok := ResourcePathPlaceholders[requestType]
+			if !ok {
+				return "", false, fmt.Errorf("request type %s has no resource path placeholder", requestType)
+			}
+			if err := ValidateResourcePathOverride(requestType, override); err != nil {
+				return "", false, err
+			}
+			override = strings.ReplaceAll(override, placeholder, escapedID)
+			if IsAbsoluteRequestURL(override) {
+				return override, true, nil
+			}
+			if !strings.HasPrefix(override, "/") {
+				override = "/" + override
+			}
+			return override, false, nil
+		}
+	}
+	path, isCompleteURL := GetRequestPath(ctx, defaultPath, nil, "")
+	return path, isCompleteURL, nil
+}
+
 type RequestBodyGetter interface {
 	GetRawRequestBody() []byte
 }

@@ -371,6 +371,7 @@ import (
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/mcp"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/capsohq/bifrost/framework"
 	"github.com/capsohq/bifrost/framework/configstore"
@@ -25068,6 +25069,38 @@ func TestValidateCustomProvider_BaseProviderTypes(t *testing.T) {
 	}, "my-vertex")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported base_provider_type")
+}
+
+// On the openai base an override for a call that names a batch or a file by id must say
+// where the id goes; one that does not is refused when the provider is written. Other
+// base types do not read these overrides and are not checked.
+func TestValidateCustomProvider_ResourcePathOverrides(t *testing.T) {
+	withOverrides := func(base schemas.ModelProvider, overrides map[schemas.RequestType]string) configstore.ProviderConfig {
+		return configstore.ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: base, RequestPathOverrides: overrides}}
+	}
+	require.NoError(t, ValidateCustomProvider(withOverrides(schemas.OpenAI, map[schemas.RequestType]string{
+		schemas.BatchCreateRequest:    "/api/paas/v4/batches",
+		schemas.BatchListRequest:      "/api/paas/v4/batches",
+		schemas.BatchRetrieveRequest:  "/api/paas/v4/batches/{batch_id}",
+		schemas.BatchCancelRequest:    "/api/paas/v4/batches/{batch_id}/cancel",
+		schemas.BatchResultsRequest:   "/api/paas/v4/batches/{batch_id}",
+		schemas.FileUploadRequest:     "/api/paas/v4/files",
+		schemas.FileListRequest:       "/api/paas/v4/files",
+		schemas.FileRetrieveRequest:   "/api/paas/v4/files/{file_id}",
+		schemas.FileDeleteRequest:     "/api/paas/v4/files/{file_id}",
+		schemas.FileContentRequest:    "https://open.bigmodel.cn/api/paas/v4/files/{file_id}/content",
+		schemas.ChatCompletionRequest: "/api/paas/v4/chat/completions",
+	}), "tkp_bigmodel"))
+
+	for requestType := range providerUtils.ResourcePathPlaceholders {
+		err := ValidateCustomProvider(withOverrides(schemas.OpenAI, map[schemas.RequestType]string{requestType: "/api/paas/v4/batches"}), "tkp_bigmodel")
+		require.Error(t, err, "%s", requestType)
+		assert.Contains(t, err.Error(), "request_path_overrides."+string(requestType), "%s", requestType)
+		assert.Contains(t, err.Error(), providerUtils.ResourcePathPlaceholders[requestType], "%s", requestType)
+
+		require.NoError(t, ValidateCustomProvider(withOverrides(schemas.Anthropic, map[schemas.RequestType]string{requestType: "/v1/files"}), "my-anthropic"), "%s on a base that does not read it", requestType)
+		require.NoError(t, ValidateCustomProvider(withOverrides(schemas.OpenAI, map[schemas.RequestType]string{requestType: ""}), "tkp_bigmodel"), "%s blank", requestType)
+	}
 }
 
 // Tests the upstream main backmerge (#7869) dropped while the code they cover stayed;

@@ -116,6 +116,24 @@ func (provider *OpenAIProvider) buildRequestURL(ctx *schemas.BifrostContext, def
 	return provider.networkConfig.BaseURL + path
 }
 
+// buildResourceURL constructs the URL of a call that names one resource (a batch or a file)
+// by its id. Without an override it is the provider's base URL plus defaultPath, which
+// already holds the id. A custom provider's request_path_overrides entry for such a call is
+// a template: its placeholder ({batch_id} or {file_id}, see
+// providerUtils.ResourcePathPlaceholders) is replaced by the escaped id. requestTypes are
+// tried in order and the first one that has an override wins; an override without its
+// placeholder is a configuration error, never a request to a path that lost the id.
+func (provider *OpenAIProvider) buildResourceURL(ctx *schemas.BifrostContext, defaultPath string, escapedID string, requestTypes ...schemas.RequestType) (string, *schemas.BifrostError) {
+	path, isCompleteURL, err := providerUtils.GetResourceRequestPath(ctx, defaultPath, provider.customProviderConfig, escapedID, requestTypes...)
+	if err != nil {
+		return "", providerUtils.NewConfigurationError(err.Error())
+	}
+	if isCompleteURL {
+		return path, nil
+	}
+	return provider.networkConfig.BaseURL + path, nil
+}
+
 func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ListModelsRequest); err != nil {
 		return nil, err
@@ -6470,6 +6488,10 @@ func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := provider.buildResourceURL(ctx, "/v1/files/"+escapedFileID, escapedFileID, schemas.FileRetrieveRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -6489,7 +6511,7 @@ func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID)
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -6557,6 +6579,10 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := provider.buildResourceURL(ctx, "/v1/files/"+escapedFileID, escapedFileID, schemas.FileDeleteRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -6576,7 +6602,7 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID)
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodDelete)
 		req.Header.SetContentType("application/json")
 
@@ -6661,6 +6687,10 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := provider.buildResourceURL(ctx, "/v1/files/"+escapedFileID+"/content", escapedFileID, schemas.FileContentRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -6677,7 +6707,7 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID + "/content")
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodGet)
 
 		if key.Value.GetValue() != "" {
@@ -7098,7 +7128,17 @@ func (provider *OpenAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := provider.buildResourceURL(ctx, "/v1/batches/"+escapedBatchID, escapedBatchID, schemas.BatchRetrieveRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
+	return provider.retrieveBatch(ctx, keys, requestURL)
+}
 
+// retrieveBatch reads one batch object from requestURL, trying each key until one can read
+// it. BatchRetrieve and the first leg of BatchResults share it; they differ only in which
+// request_path_overrides entry built requestURL.
+func (provider *OpenAIProvider) retrieveBatch(ctx *schemas.BifrostContext, keys []schemas.Key, requestURL string) (*schemas.BifrostBatchRetrieveResponse, *schemas.BifrostError) {
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
@@ -7117,7 +7157,7 @@ func (provider *OpenAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/batches/" + escapedBatchID)
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodGet)
 		req.Header.SetContentType("application/json")
 
@@ -7183,6 +7223,10 @@ func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 	if idErr != nil {
 		return nil, idErr
 	}
+	requestURL, urlErr := provider.buildResourceURL(ctx, "/v1/batches/"+escapedBatchID+"/cancel", escapedBatchID, schemas.BatchCancelRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
@@ -7202,7 +7246,7 @@ func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 
 		// Set headers
 		providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-		req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/batches/" + escapedBatchID + "/cancel")
+		req.SetRequestURI(requestURL)
 		req.Header.SetMethod(http.MethodPost)
 		req.Header.SetContentType("application/json")
 
@@ -7293,7 +7337,9 @@ func (provider *OpenAIProvider) BatchDelete(ctx *schemas.BifrostContext, keys []
 // previous page's NextCursor.
 //
 // One call is a batch retrieve (for the two file ids) plus one file download, or two when
-// the page crosses from the output file into the error file.
+// the page crosses from the output file into the error file. On a custom provider the
+// retrieve leg is built from the batch_results path override, or from the batch_retrieve
+// one when batch_results has none, and each download from the file_content override.
 func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.BatchResultsRequest); err != nil {
 		return nil, err
@@ -7303,11 +7349,20 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 		return nil, providerUtils.NewBifrostOperationError("batch_id is required", nil)
 	}
 
-	// First, retrieve the batch to get the output_file_id (this already iterates over keys)
-	batchResp, bifrostErr := provider.BatchRetrieve(ctx, keys, &schemas.BifrostBatchRetrieveRequest{
-		Provider: request.Provider,
-		BatchID:  request.BatchID,
-	})
+	// First, retrieve the batch to get the output_file_id (this already iterates over keys).
+	// Reading results has always needed batch_retrieve allowed as well.
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.BatchRetrieveRequest); err != nil {
+		return nil, err
+	}
+	escapedBatchID, idErr := providerUtils.EscapeResourceID(request.BatchID, "batch_id")
+	if idErr != nil {
+		return nil, idErr
+	}
+	retrieveURL, urlErr := provider.buildResourceURL(ctx, "/v1/batches/"+escapedBatchID, escapedBatchID, schemas.BatchResultsRequest, schemas.BatchRetrieveRequest)
+	if urlErr != nil {
+		return nil, urlErr
+	}
+	batchResp, bifrostErr := provider.retrieveBatch(ctx, keys, retrieveURL)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -7334,7 +7389,11 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 		if idErr != nil {
 			return nil, providerUtils.NewBifrostOperationError("provider returned an invalid "+file.field, nil)
 		}
-		sources = append(sources, provider.batchResultFileSource(ctx, keys, escapedFileID))
+		fileURL, urlErr := provider.buildResourceURL(ctx, "/v1/files/"+escapedFileID+"/content", escapedFileID, schemas.FileContentRequest)
+		if urlErr != nil {
+			return nil, urlErr
+		}
+		sources = append(sources, provider.batchResultFileSource(ctx, keys, fileURL))
 	}
 
 	batchResultsResp, bifrostErr := ReadBatchResults(sources, request, schemas.BatchEndpoint(batchResp.Endpoint), provider.logger)
@@ -7350,7 +7409,7 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 // batchResultFileSource opens a batch output or error file as a streamed download, trying
 // each key until one can read it: a file belongs to the key that created the batch. With a
 // key the caller named, keys holds only that key.
-func (provider *OpenAIProvider) batchResultFileSource(ctx *schemas.BifrostContext, keys []schemas.Key, escapedFileID string) providerUtils.BatchResultsSource {
+func (provider *OpenAIProvider) batchResultFileSource(ctx *schemas.BifrostContext, keys []schemas.Key, fileURL string) providerUtils.BatchResultsSource {
 	return func(offset int64) (*providerUtils.ResultStream, *schemas.BifrostError) {
 		var lastErr *schemas.BifrostError
 		for _, key := range keys {
@@ -7364,7 +7423,7 @@ func (provider *OpenAIProvider) batchResultFileSource(ctx *schemas.BifrostContex
 			}
 			stream, bifrostErr := providerUtils.OpenResultStream(ctx, provider.streamingClient, offset, func(req *fasthttp.Request) {
 				providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-				req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/files/" + escapedFileID + "/content")
+				req.SetRequestURI(fileURL)
 				req.Header.SetMethod(http.MethodGet)
 				if key.Value.GetValue() != "" {
 					req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())

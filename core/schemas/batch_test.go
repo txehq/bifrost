@@ -130,6 +130,27 @@ func TestUnifyBatchResultUsage(t *testing.T) {
 		t.Errorf("responses usage = %v, want input_tokens 9 and output_tokens 3", usage)
 	}
 
+	// Zhipu bigmodel names the chat operation "/v4/chat/completions": the same unified usage.
+	v4 := map[string]any{"usage": map[string]any{"prompt_tokens": 94, "completion_tokens": 22, "total_tokens": 116, "prompt_tokens_details": map[string]any{"cached_tokens": 64}}}
+	usage = UnifyBatchResultUsage(BatchEndpoint("/v4/chat/completions"), v4)["usage"].(map[string]any)
+	if fmt.Sprint(usage["prompt_tokens_details"].(map[string]any)["cached_read_tokens"]) != "64" {
+		t.Errorf("a /v4 chat endpoint must get the chat operation's unified usage, got %v", usage)
+	}
+	for endpoint, want := range map[BatchEndpoint]BatchEndpoint{
+		"/v1/chat/completions":   "/v1/chat/completions",
+		"/v4/chat/completions":   "/v1/chat/completions",
+		"/v12/embeddings":        "/v1/embeddings",
+		"/v4":                    "/v4",
+		"/v/chat/completions":    "/v/chat/completions",
+		"/videos/v4/generations": "/videos/v4/generations",
+		"v4/chat/completions":    "v4/chat/completions",
+		"":                       "",
+	} {
+		if got := endpoint.canonical(); got != want {
+			t.Errorf("canonical(%q) = %q, want %q", endpoint, got, want)
+		}
+	}
+
 	untouched := map[string]any{"usage": map[string]any{"vendor_units": 3}}
 	if got := UnifyBatchResultUsage(BatchEndpoint("/v1/audio/speech"), untouched)["usage"].(map[string]any); fmt.Sprint(got["vendor_units"]) != "3" {
 		t.Errorf("an endpoint with no unified usage must keep the vendor's usage, got %v", got)
