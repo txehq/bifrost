@@ -363,7 +363,7 @@ newman run tests/e2e/api/collections/provider-harness.json \
 ## Deepgram
 
 Folder 403 pins the `deepgram` provider against the same local fixture, with no live provider calls in
-rows 403.1 to 403.8: with `x-bf-api-key` one request is exactly one call to the vendor under the named
+any row but 403.9: with `x-bf-api-key` one request is exactly one call to the vendor under the named
 key, for a transcript and for a vendor error; the options sent as form fields arrive as query parameters
 under their own names; a file arrives as the request body and a `url` with no `file` as the JSON body
 `{"url": ...}`; `usage.seconds` is `metadata.duration` times `metadata.channels`; a vendor 402 keeps its
@@ -386,10 +386,17 @@ newman run tests/e2e/api/collections/provider-harness.json \
   --env-var providerErrorFixtureUrl=http://127.0.0.1:8791
 ```
 
-Rows 403.1 to 403.8 are skipped unless `providerErrorFixture=1`. Row 403.9 is the live row: one Nova-3
-transcription of Deepgram's public sample by URL. In the live run it needs `DEEPGRAM_API_KEY`; while that
-variable is unset the row is skipped by the keyless-provider rule, which reads the `model` field of a
-multipart form as it reads the `model` of a JSON body. Against the fixture the row passes too.
+Rows 403.1 to 403.8, 403.10 and 403.11 are skipped unless `providerErrorFixture=1`. Row 403.9 is the live
+row: one Nova-3 transcription of Deepgram's public sample by URL. In the live run it needs
+`DEEPGRAM_API_KEY`; while that variable is unset the row is skipped by the keyless-provider rule, which
+reads the `model` field of a multipart form as it reads the `model` of a JSON body. Against the fixture the
+row passes too.
+
+Rows 403.10 and 403.11 are the async route: 403.10 submits a url-only job to
+`POST /v1/async/audio/transcriptions` and keeps its id, and 403.11 reads
+`GET /v1/async/audio/transcriptions/{job_id}` three seconds later and expects the job completed, with the
+transcript, the duration usage and exactly one call in `/__wire`. Run them together and in order, as the
+folder does.
 
 ## Fork deployment switches: provider job accounting off and passthrough heartbeat off
 
