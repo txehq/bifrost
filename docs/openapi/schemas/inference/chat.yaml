@@ -477,6 +477,18 @@ ChatCompletionResponse:
       type: array
       items:
         type: string
+    input_sensitive:
+      type: boolean
+      description: MiniMax only. Whether the input contained sensitive content.
+    output_sensitive:
+      type: boolean
+      description: MiniMax only. Whether the output contained sensitive content.
+    input_sensitive_type:
+      type: integer
+      description: "MiniMax only. Type of sensitive content in the input: 1 severe violation, 2 pornography, 3 advertising, 4 prohibited, 5 abusive, 6 terrorism/violence, 7 other; 0 when nothing fired."
+    output_sensitive_type:
+      type: integer
+      description: MiniMax only. Type of sensitive content in the output, same codes as input_sensitive_type.
 
 BifrostResponseChoice:
   type: object

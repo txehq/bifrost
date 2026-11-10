@@ -293973,7 +293973,7 @@
     },
     {
       "name": "284. MiniMax provider (minimax provider)",
-      "description": "MiniMax is reached through its OpenAI-compatible chat API, its /v1/image_generation API its /v2/video_generation task API, /v1/t2a_v2 for speech and /v1/speech_to_text for transcription. Bifrost sends reasoning_split true on chat so thinking comes back in reasoning_content instead of <think> tags inside the answer, maps reasoning_effort none to thinking disabled (dropped on M3.1, which always thinks), and turns a non-zero base_resp.status_code on a 200 into an error. Video generation is billed per output second, so it is covered by Go tests and not by a live case here. Speech audio comes back hex-encoded and Bifrost decodes it; an unknown voice is a 200 with base_resp 2054 that Bifrost turns into a 400.",
+      "description": "MiniMax is reached through its OpenAI-compatible chat API, its /v1/image_generation API its /v2/video_generation task API, /v1/t2a_v2 for speech and /v1/speech_to_text for transcription. Bifrost sends reasoning_split true on chat so thinking comes back in reasoning_content instead of <think> tags inside the answer, maps reasoning_effort none to thinking disabled (dropped on M3.1, which always thinks), and turns a non-zero base_resp.status_code on a 200 into an error. Chat responses carry MiniMax's top-level input_sensitive, output_sensitive, input_sensitive_type and output_sensitive_type flags unchanged (TXE-6595). /v1/responses goes to MiniMax's native /v1/responses, and /anthropic/v1/messages is forwarded byte-for-byte to MiniMax's /anthropic/v1/messages; live bytes cannot show which path served them, so the routing is pinned by the Go recording-server tests in core/providers/minimax and transports/bifrost-http/integrations. Video generation is billed per output second, so it is covered by Go tests and not by a live case here. Speech audio comes back hex-encoded and Bifrost decodes it; an unknown voice is a 200 with base_resp 2054 that Bifrost turns into a 400.",
       "item": [
         {
           "name": "/v1/chat/completions - thinking arrives as reasoning, not <think> tags - minimax/MiniMax-M3",
@@ -294156,7 +294156,54 @@
           }
         },
         {
-          "name": "/v1/responses - Responses shape via chat - minimax/MiniMax-M3",
+          "name": "/v1/chat/completions - content-safety flags input_sensitive/output_sensitive - minimax/MiniMax-M3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('MiniMax sensitivity flags reach the unified response', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields.provider).to.eql('minimax');",
+                  "  pm.expect(j.input_sensitive, 'input_sensitive missing: ' + pm.response.text().slice(0, 500)).to.be.a('boolean');",
+                  "  pm.expect(j.output_sensitive, 'output_sensitive missing').to.be.a('boolean');",
+                  "  pm.expect(j.input_sensitive_type, 'input_sensitive_type missing').to.be.a('number');",
+                  "  pm.expect(j.output_sensitive_type, 'output_sensitive_type missing').to.be.a('number');",
+                  "  pm.expect(j.input_sensitive).to.eql(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/MiniMax-M3\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Name one primary color.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses - native MiniMax /v1/responses - minimax/MiniMax-M3",
           "event": [
             {
               "listen": "test",
@@ -294170,6 +294217,14 @@
                   "  var msg = j.output.filter(function (o) { return o.type === 'message'; })[0];",
                   "  pm.expect(msg, 'no message item: ' + pm.response.text().slice(0, 500)).to.exist;",
                   "  pm.expect(msg.content[0].text).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('native Responses object from minimax with usage', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields.provider).to.eql('minimax');",
+                  "  pm.expect(j.object).to.eql('response');",
+                  "  pm.expect(j.status).to.eql('completed');",
+                  "  pm.expect(j.usage.input_tokens).to.be.above(0);",
+                  "  pm.expect(j.usage.output_tokens).to.be.above(0);",
                   "});"
                 ]
               }
@@ -294242,7 +294297,7 @@
           }
         },
         {
-          "name": "/anthropic/v1/messages - Anthropic drop-in route - minimax/MiniMax-M3",
+          "name": "/anthropic/v1/messages - forwarded to MiniMax /anthropic/v1/messages - minimax/MiniMax-M3",
           "event": [
             {
               "listen": "test",
@@ -294255,6 +294310,13 @@
                   "  var text = blocks.filter(function (b) { return b.type === 'text'; })[0];",
                   "  pm.expect(text, 'no text block: ' + pm.response.text().slice(0, 500)).to.exist;",
                   "  pm.expect(text.text).to.not.include('<think>');",
+                  "});",
+                  "pm.test('MiniMax Messages response carries type and usage', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.type).to.eql('message');",
+                  "  pm.expect(j.role).to.eql('assistant');",
+                  "  pm.expect(j.usage.input_tokens).to.be.above(0);",
+                  "  pm.expect(j.usage.output_tokens).to.be.above(0);",
                   "});"
                 ]
               }

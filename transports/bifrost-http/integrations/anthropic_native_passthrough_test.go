@@ -616,6 +616,7 @@ var nativeMessagesProviders = []struct {
 	{schemas.XAI, "grok-4.5", "/v1/messages"},
 	{schemas.Moonshot, "kimi-k3.1-pro", "/anthropic/v1/messages"},
 	{schemas.DeepSeek, "deepseek-v4-flash", "/anthropic/v1/messages"},
+	{schemas.MiniMax, "MiniMax-M3", "/anthropic/v1/messages"},
 }
 
 const (
@@ -1109,5 +1110,70 @@ func TestNativeMessagesProvidersMatchHarnessCheck(t *testing.T) {
 	sort.Strings(listed)
 	if !slices.Equal(implementers, listed) {
 		t.Fatalf("collection-scripts.test.mjs nativeMessagesProviders = %v, but the Go table nativeMessagesProviders names %v", listed, implementers)
+	}
+}
+
+// TXE-6595: /anthropic/v1/messages for a minimax model is forwarded to MiniMax's own
+// Anthropic-compatible endpoint (POST /anthropic/v1/messages, Bearer auth) instead of being
+// converted through chat completions, and MiniMax's response bytes come back unchanged.
+func TestAnthropicMessagesRouteNativeMiniMaxEndToEnd(t *testing.T) {
+	requestBody := []byte(`{"model":"minimax/MiniMax-M3","max_tokens":64,"output_config":{"effort":"max"},"messages":[{"role":"user","content":"hi"}]}`)
+	wantUpstream := []byte(`{"model":"MiniMax-M3","max_tokens":64,"output_config":{"effort":"max"},"messages":[{"role":"user","content":"hi"}]}`)
+	responseBody := []byte(`{"id":"msg_mm","type":"message","role":"assistant","model":"MiniMax-M3","content":[{"type":"thinking","thinking":"short"},{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":3}}`)
+
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path != "/anthropic/v1/messages" {
+			t.Errorf("upstream path = %q, want /anthropic/v1/messages", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer minimax-secret" {
+			t.Errorf("Authorization = %q", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		if !bytes.Equal(body, wantUpstream) {
+			t.Errorf("upstream body:\n got: %s\nwant: %s", body, wantUpstream)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(responseBody)
+	}))
+	defer upstream.Close()
+
+	account := &nativeMessagesTestAccount{
+		configs: map[schemas.ModelProvider]*schemas.ProviderConfig{
+			schemas.MiniMax: {NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true}},
+		},
+		keys: map[schemas.ModelProvider][]schemas.Key{
+			schemas.MiniMax: {{ID: "minimax-key", Value: schemas.SecretVar{Val: "minimax-secret"}, Models: schemas.WhiteList{"*"}, Weight: 1}},
+		},
+	}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: account, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("init Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	route := createAnthropicMessagesRouteConfig("/anthropic", bifrost.NewNoOpLogger())[0]
+	handler := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger()).createHandler(route)
+	httpCtx := &fasthttp.RequestCtx{}
+	httpCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+	httpCtx.Request.SetRequestURI("/anthropic/v1/messages")
+	httpCtx.Request.Header.Set("anthropic-version", "2023-06-01")
+	httpCtx.Request.SetBody(requestBody)
+	handler(httpCtx)
+
+	if httpCtx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("status = %d, body = %s", httpCtx.Response.StatusCode(), httpCtx.Response.Body())
+	}
+	if !bytes.Equal(httpCtx.Response.Body(), responseBody) {
+		t.Fatalf("response bytes changed:\n got: %s\nwant: %s", httpCtx.Response.Body(), responseBody)
+	}
+	if calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", calls)
 	}
 }

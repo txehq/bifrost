@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/capsohq/bifrost/core/providers/anthropicmsg"
 	"github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
@@ -138,11 +139,44 @@ func (provider *MiniMaxProvider) chatCompletionStream(ctx *schemas.BifrostContex
 		miniMaxChatResponseHandler,
 		parseMiniMaxError,
 		nil,
-		nil,
+		newMiniMaxSensitivityCarrier(),
 		nil,
 		provider.logger,
 		postHookSpanFinalizer,
 	)
+}
+
+// newMiniMaxSensitivityCarrier returns a per-stream chunk converter that keeps the latest content-safety
+// flags MiniMax sent and copies them onto chunks that carry none. MiniMax reports the complete set
+// (input_sensitive included) on its last frame, which holds only finish_reason and usage; the shared
+// OpenAI stream handler does not forward that frame but emits a synthetic terminal chunk in its place,
+// so without this the terminal chunk would lose the flags (TXE-6595).
+func newMiniMaxSensitivityCarrier() func(*schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
+	var inputSensitive, outputSensitive *bool
+	var inputType, outputType *int
+	return func(response *schemas.BifrostChatResponse) *schemas.BifrostChatResponse {
+		if response == nil {
+			return response
+		}
+		if response.InputSensitive == nil && response.OutputSensitive == nil && response.InputSensitiveType == nil && response.OutputSensitiveType == nil {
+			response.InputSensitive, response.OutputSensitive = inputSensitive, outputSensitive
+			response.InputSensitiveType, response.OutputSensitiveType = inputType, outputType
+			return response
+		}
+		if response.InputSensitive != nil {
+			inputSensitive = response.InputSensitive
+		}
+		if response.OutputSensitive != nil {
+			outputSensitive = response.OutputSensitive
+		}
+		if response.InputSensitiveType != nil {
+			inputType = response.InputSensitiveType
+		}
+		if response.OutputSensitiveType != nil {
+			outputType = response.OutputSensitiveType
+		}
+		return response
+	}
 }
 
 // checkAllowed applies a custom provider's allowed_requests (base_provider_type minimax) before any
@@ -465,34 +499,77 @@ func (provider *MiniMaxProvider) VideoDelete(ctx *schemas.BifrostContext, key sc
 	return bifrostResp, nil
 }
 
-// Responses performs a responses request to the MiniMax API by bridging it through chat completions.
+// miniMaxResponsesPath is MiniMax's OpenAI Responses-compatible endpoint
+// (platform.minimax.io/docs/api-reference/responses-create: POST https://api.minimax.io/v1/responses,
+// Bearer auth, streaming as SSE response.* events).
+const miniMaxResponsesPath = "/v1/responses"
+
+// Responses performs a request to MiniMax's native /v1/responses API (TXE-6595; earlier it was bridged
+// through chat completions).
 func (provider *MiniMaxProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if bifrostErr := provider.checkAllowed(schemas.ResponsesRequest); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	chatResponse, err := provider.chatCompletion(ctx, key, request.ToChatRequest())
-	if err != nil {
-		return nil, err
-	}
-
-	response := chatResponse.ToBifrostResponsesResponse()
-
-	return response, nil
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	return openai.HandleOpenAIResponsesRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, miniMaxResponsesPath),
+		request,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		miniMaxResponsesResponseHandler,
+		parseMiniMaxError,
+		nil,
+		provider.logger,
+	)
 }
 
-// ResponsesStream performs a streaming responses request to the MiniMax API.
+// ResponsesStream performs a streaming request to MiniMax's native /v1/responses API.
 func (provider *MiniMaxProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if bifrostErr := provider.checkAllowed(schemas.ResponsesStreamRequest); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-	return provider.chatCompletionStream(
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
+		provider.streamingClient,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, miniMaxResponsesPath),
+		request,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
 		postHookRunner,
+		miniMaxResponsesStreamResponseHandler,
+		parseMiniMaxError,
+		nil,
+		nil,
+		nil,
+		provider.logger,
 		postHookSpanFinalizer,
-		key,
-		request.ToChatRequest(),
 	)
+}
+
+// miniMaxResponsesResponseHandler surfaces a non-zero base_resp on a 200 as an error before decoding.
+func miniMaxResponsesResponseHandler(body []byte, response *schemas.BifrostResponsesResponse, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (interface{}, interface{}, *schemas.BifrostError) {
+	if bifrostErr := miniMaxBaseRespErrorFromBody(body); bifrostErr != nil {
+		return nil, nil, bifrostErr
+	}
+	return providerUtils.HandleProviderResponse(body, response, requestBody, sendBackRawRequest, sendBackRawResponse)
+}
+
+// miniMaxResponsesStreamResponseHandler does the same for each Responses stream event.
+func miniMaxResponsesStreamResponseHandler(body []byte, response *schemas.BifrostResponsesStreamResponse, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (interface{}, interface{}, *schemas.BifrostError) {
+	if bifrostErr := miniMaxBaseRespErrorFromBody(body); bifrostErr != nil {
+		return nil, nil, bifrostErr
+	}
+	return providerUtils.HandleProviderResponse(body, response, requestBody, sendBackRawRequest, sendBackRawResponse)
 }
 
 // Embedding is not supported by the MiniMax provider.
@@ -665,13 +742,41 @@ func (provider *MiniMaxProvider) ContainerFileDelete(_ *schemas.BifrostContext, 
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
 }
 
-// Passthrough is not supported by the MiniMax provider.
-func (provider *MiniMaxProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
+// miniMaxAnthropicPathPrefix is where MiniMax serves its Anthropic-compatible API
+// (platform.minimax.io/docs/api-reference/text-anthropic-api: base URL https://api.minimax.io/anthropic,
+// POST /anthropic/v1/messages, Authorization: Bearer <key>).
+const miniMaxAnthropicPathPrefix = "/anthropic"
+
+// AnthropicMessagesEndpoint advertises MiniMax's native Anthropic-compatible endpoint, resolved
+// against the base URL's origin as the text generation endpoint is, so /anthropic/v1/messages
+// requests are forwarded to it unchanged instead of being converted through chat (TXE-6595).
+func (provider *MiniMaxProvider) AnthropicMessagesEndpoint() (string, bool) {
+	return provider.baseOrigin + miniMaxAnthropicPathPrefix, provider.baseOrigin != ""
 }
 
-func (provider *MiniMaxProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+func (provider *MiniMaxProvider) anthropicMessagesConfig() anthropicmsg.Config {
+	endpoint, _ := provider.AnthropicMessagesEndpoint()
+	return anthropicmsg.Config{
+		Provider: provider.GetProviderKey(), Endpoint: endpoint,
+		APIKeyHeader: "Authorization", APIKeyPrefix: "Bearer ",
+		NetworkConfig: provider.networkConfig, CustomProviderConfig: provider.customProviderConfig, Logger: provider.logger,
+	}
+}
+
+// Passthrough forwards a native Messages body to MiniMax byte-for-byte. Only /v1/messages is served.
+func (provider *MiniMaxProvider) Passthrough(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+	if !anthropicmsg.IsMessagesPath(req.Path) {
+		return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
+	}
+	return anthropicmsg.Passthrough(ctx, provider.client, key, req, provider.anthropicMessagesConfig())
+}
+
+// PassthroughStream forwards the body byte-for-byte as Passthrough does and relays the SSE stream.
+func (provider *MiniMaxProvider) PassthroughStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, req *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if !anthropicmsg.IsMessagesPath(req.Path) {
+		return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+	}
+	return anthropicmsg.PassthroughStream(ctx, postHookRunner, postHookSpanFinalizer, provider.streamingClient, key, req, provider.anthropicMessagesConfig())
 }
 
 // Speech performs a text-to-speech request to MiniMax's /v1/t2a_v2 API.
