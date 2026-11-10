@@ -258,6 +258,47 @@ func TestFetchVideoContentStalledRefusalTimesOut(t *testing.T) {
 	}
 }
 
+// TestFetchVideoContentStalledGzipHeaderTimesOut: a vendor that announces a gzip body and then
+// stalls before sending the gzip header must not hold the request. Building the gzip decoder
+// reads that header from the socket, so the idle timeout has to be on the stream first; the
+// stall then surfaces as a read error on the body instead of a hang.
+func TestFetchVideoContentStalledGzipHeaderTimesOut(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(func() { close(release); srv.Close() })
+
+	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+	req.SetRequestURI(srv.URL + "/stalled-gzip")
+	started := time.Now()
+	resp, bifrostErr := FetchVideoContent(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), VideoContentFetch{
+		Request: req, Client: &fasthttp.Client{}, StreamingClient: BuildStreamingClient(&fasthttp.Client{}),
+		Stream: true, VideoID: "v", StreamIdleTimeoutSeconds: 1,
+		ParseError: func(resp *fasthttp.Response) *schemas.BifrostError {
+			return NewBifrostOperationError("unexpected", nil)
+		},
+	})
+	if bifrostErr == nil {
+		_, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err == nil {
+			t.Fatal("a body whose gzip header never arrived must fail to read")
+		}
+	}
+	if elapsed := time.Since(started); elapsed > 8*time.Second {
+		t.Fatalf("a stalled gzip header held the request for %s", elapsed)
+	}
+}
+
 // TestFetchVideoContentCancelledRequestReturns: a request whose context ends while the vendor has
 // not answered returns an error, having waited for the request goroutine before the response is
 // released (the race detector is the assertion on the ordering).
@@ -305,6 +346,11 @@ func TestFetchVideoContentDecodesContentEncodings(t *testing.T) {
 	brw := brotli.NewWriter(&br)
 	_, _ = brw.Write(file)
 	_ = brw.Close()
+	// A chain: Brotli applied first, gzip on top of it.
+	var chained bytes.Buffer
+	chainw := gzip.NewWriter(&chained)
+	_, _ = chainw.Write(br.Bytes())
+	_ = chainw.Close()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "video/mp4")
 		switch r.URL.Path {
@@ -314,11 +360,14 @@ func TestFetchVideoContentDecodesContentEncodings(t *testing.T) {
 		case "/br":
 			w.Header().Set("Content-Encoding", "br")
 			_, _ = w.Write(br.Bytes())
+		case "/chain":
+			w.Header().Set("Content-Encoding", "br, gzip")
+			_, _ = w.Write(chained.Bytes())
 		}
 	}))
 	t.Cleanup(srv.Close)
 
-	for path, wantLength := range map[string]int64{"/gzip": 0, "/br": int64(len(file))} {
+	for path, wantLength := range map[string]int64{"/gzip": 0, "/br": int64(len(file)), "/chain": int64(len(file))} {
 		for _, stream := range []bool{true, false} {
 			resp, bifrostErr := videoFetch(t, srv.URL+path, stream)
 			if bifrostErr != nil {

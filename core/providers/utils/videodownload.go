@@ -96,6 +96,8 @@ func FetchVideoContent(ctx *schemas.BifrostContext, f VideoContentFetch) (*schem
 		// vendor that stalls after its headers trips the idle timeout, and a caller that hangs
 		// up closes the socket. Only a bounded part is kept for ParseError; the rest is
 		// abandoned with the connection, not drained.
+		// The header is copied after the wrap, which drops Content-Encoding once it decodes
+		// gzip, so ParseError is not told to decode the body a second time.
 		guarded := WrapStreamingResponseBody(ctx, resp)
 		errResp := fasthttp.AcquireResponse()
 		defer fasthttp.ReleaseResponse(errResp)
@@ -156,7 +158,9 @@ func decodeEncodedVideoStream(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 	decodeResp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(decodeResp)
 	resp.Header.CopyTo(&decodeResp.Header)
-	guarded := WrapStreamingResponseBody(ctx, resp)
+	// The raw bytes, with every layer of the encoding still on them: CheckAndDecodeBody below
+	// removes the layers the copied header names, a gzip layer of a chain included.
+	guarded := WrapRawStreamingResponseBody(ctx, resp)
 	encoded, err := io.ReadAll(io.LimitReader(guarded, mediaFetchLimits.maxBytes+1))
 	_ = guarded.Close()
 	if err != nil {
