@@ -110,7 +110,9 @@ func (e veoExtras) unifiedString(param, typed string, keys ...string) (*string, 
 	if value == "" {
 		return nil, nil
 	}
-	return &value, nil
+	// A copy escapes, not value itself: an absent parameter then allocates nothing.
+	out := value
+	return &out, nil
 }
 
 // veoImage converts a unified frame or reference image (a data URL, or a URL) into the vendor's
@@ -437,10 +439,14 @@ func toVeoVideoGenerationRequest(bifrostReq *schemas.BifrostVideoGenerationReque
 			params.DurationSeconds = &seconds
 		}
 
-		// The caller's map is not changed: the converter works on a copy.
-		extras := make(veoExtras, len(p.ExtraParams))
-		for key, value := range p.ExtraParams {
-			extras[key] = value
+		// The caller's map is not changed: the converter works on a copy. A request with no
+		// extra params copies nothing; every read and delete below is safe on the nil map.
+		var extras veoExtras
+		if len(p.ExtraParams) > 0 {
+			extras = make(veoExtras, len(p.ExtraParams))
+			for key, value := range p.ExtraParams {
+				extras[key] = value
+			}
 		}
 
 		var err error
