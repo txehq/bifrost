@@ -3058,6 +3058,40 @@ type GeminiInlinedResponse struct {
 	Metadata      *GeminiBatchMetadata     `json:"metadata,omitempty"`
 }
 
+// GeminiInlinedLine is the half-open range of inline responses that answer one batch line.
+type GeminiInlinedLine struct {
+	Start, End int
+}
+
+// GeminiRawInlinedResponse is an inline response with its response kept as raw JSON. The
+// GeminiRaw* types read a batch job a second time, when it holds an embedding response, to
+// decode the lines that are EmbedContentResponses (sniffGeminiEmbeddingResponses).
+type GeminiRawInlinedResponse struct {
+	Response sonic.NoCopyRawMessage `json:"response,omitempty"`
+}
+
+// GeminiRawInlinedResponses wraps the array of raw inline responses.
+type GeminiRawInlinedResponses struct {
+	InlinedResponses []GeminiRawInlinedResponse `json:"inlinedResponses,omitempty"`
+}
+
+// GeminiRawBatchOutput is a batch job's output with its inline responses kept raw.
+type GeminiRawBatchOutput struct {
+	InlinedResponses             *GeminiRawInlinedResponses `json:"inlinedResponses,omitempty"`
+	InlinedEmbedContentResponses *GeminiRawInlinedResponses `json:"inlinedEmbedContentResponses,omitempty"`
+}
+
+// GeminiRawBatchMetadata is the part of a batch job's metadata that holds its output.
+type GeminiRawBatchMetadata struct {
+	Output *GeminiRawBatchOutput `json:"output,omitempty"`
+}
+
+// GeminiRawBatchJob is a batch job with its inline responses kept raw.
+type GeminiRawBatchJob struct {
+	Response *GeminiRawBatchOutput   `json:"response,omitempty"`
+	Metadata *GeminiRawBatchMetadata `json:"metadata,omitempty"`
+}
+
 // GeminiBatchErrorInfo represents error information.
 type GeminiBatchErrorInfo struct {
 	Code    int    `json:"code,omitempty"`

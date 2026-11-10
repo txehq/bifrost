@@ -3710,7 +3710,7 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		// An embedding line with several inputs was sent as several requests; its responses
 		// are one line again here, so a page is counted in lines, not vendor responses. A
 		// batch with no such line (every generateContent batch) is paged directly.
-		var lines []geminiInlinedLine
+		var lines []GeminiInlinedLine
 		total := len(inlinedResponses)
 		if hasGeminiMultiInputLines(inlinedResponses) {
 			lines = groupGeminiInlinedResponses(inlinedResponses)
@@ -3722,11 +3722,11 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		}
 		model := geminiBatchModelName(geminiResp.Metadata)
 		for i := start; i < end; i++ {
-			line := geminiInlinedLine{start: i, end: i + 1}
+			line := GeminiInlinedLine{Start: i, End: i + 1}
 			if lines != nil {
 				line = lines[i]
 			}
-			batchResultsResp.Results = append(batchResultsResp.Results, geminiInlinedLineToBatchResultItem(inlinedResponses[line.start:line.end], fmt.Sprintf("request-%d", line.start), model, includeRaw))
+			batchResultsResp.Results = append(batchResultsResp.Results, geminiInlinedLineToBatchResultItem(inlinedResponses[line.Start:line.End], fmt.Sprintf("request-%d", line.Start), model, includeRaw))
 		}
 		batchResultsResp.HasMore = nextCursor != nil
 		batchResultsResp.NextCursor = nextCursor

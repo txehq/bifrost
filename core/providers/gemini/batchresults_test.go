@@ -1514,7 +1514,7 @@ func BenchmarkGeminiEmbeddingBatchLineConversion(b *testing.B) {
 				b.Fatalf("lines=%d", len(lines))
 			}
 			for _, l := range lines {
-				_ = geminiInlinedLineToBatchResultItem(inlined[l.start:l.end], "request", "gemini-embedding-001", false)
+				_ = geminiInlinedLineToBatchResultItem(inlined[l.Start:l.End], "request", "gemini-embedding-001", false)
 			}
 		}
 	})
