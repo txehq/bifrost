@@ -1019,3 +1019,19 @@ func TestGeminiBatchListReturnsDisplayNameAndBothStateSpellings(t *testing.T) {
 		assert.Equal(t, want, ToBifrostBatchStatus(state), state)
 	}
 }
+
+// BenchmarkNewBatchLineBadRequestError measures the 400 built for a refused batch line, for
+// both classifications: a field the batch cannot take and a malformed line.
+func BenchmarkNewBatchLineBadRequestError(b *testing.B) {
+	for name, unsupported := range map[string]bool{"unsupported_parameter": true, "invalid_request": false} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				lineErr := &schemas.BatchLineError{CustomID: "line-1", Param: "url", Unsupported: unsupported, Message: "url /v1/embeddings cannot run in a generateContent batch"}
+				if bifrostErr := NewBatchLineBadRequestError(1, lineErr); bifrostErr.StatusCode == nil {
+					b.Fatal("no status code")
+				}
+			}
+		})
+	}
+}

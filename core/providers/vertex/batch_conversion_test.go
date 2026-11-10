@@ -3,6 +3,7 @@ package vertex
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -898,4 +899,25 @@ func TestVertexBatchLineModelMatchesPublisherPath(t *testing.T) {
 	require.NoError(t, sonic.UnmarshalString(`{"custom_id":"l-1","url":"/v1/chat/completions","body":{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}}`, &item))
 	_, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{item}, "publishers/google/models/gemini-2.5-flash", schemas.BatchEndpointChatCompletions)
 	require.NoError(t, err)
+}
+
+// BenchmarkVertexLabelErrorBifrostError measures the 400 built for batch metadata or labels
+// Vertex cannot hold, for both classifications.
+func BenchmarkVertexLabelErrorBifrostError(b *testing.B) {
+	for name, unsupported := range map[string]bool{"unsupported_parameter": true, "invalid_request": false} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_, _, err := vertexBatchJobLabels(&schemas.BifrostBatchCreateRequest{Metadata: map[string]string{"tokun_batch_id": "Not A Label"}})
+				var labelErr *vertexLabelError
+				if !errors.As(err, &labelErr) {
+					b.Fatal("no label error")
+				}
+				labelErr.Unsupported = unsupported
+				if bifrostErr := labelErr.bifrostError(); bifrostErr.StatusCode == nil {
+					b.Fatal("no status code")
+				}
+			}
+		})
+	}
 }

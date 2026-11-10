@@ -665,9 +665,11 @@ func ConvertBatchLine(ctx *schemas.BifrostContext, item schemas.BatchRequestItem
 }
 
 // NewBatchLineBadRequestError answers a batch line the caller got wrong with a 400 that
-// names the line and the field in error.param. A field this provider's batch cannot take
-// is error_type caller_unsupported_parameter (contract C4); a malformed line is
-// caller_invalid_request.
+// names the line and the field in error.param. A line error marked Unsupported is a
+// well-formed field this provider's batch cannot take (a url it cannot run, an Imagen model
+// on an image line, a second model, a second url): error_type caller_unsupported_parameter
+// (contract C4). Any other is a malformed line (a missing body, a body the operation cannot
+// parse, neither a url nor messages): caller_invalid_request.
 func NewBatchLineBadRequestError(index int, err error) *schemas.BifrostError {
 	var lineErr *schemas.BatchLineError
 	if !errors.As(err, &lineErr) {
