@@ -108,8 +108,10 @@ type BytePlusVideoGenerationRequest struct {
 	Seed          *int                       `json:"seed,omitempty"`
 	GenerateAudio *bool                      `json:"generate_audio,omitempty"`
 	CallbackURL   *string                    `json:"callback_url,omitempty"`
-	OutputFormat  *string                    `json:"output_format,omitempty"` // "mp4" or "mov"
-	ExtraParams   map[string]interface{}     `json:"-"`
+	// ExecutionExpiresAfter is the task's total deadline in seconds from creation (3600 to 259200).
+	ExecutionExpiresAfter *int                   `json:"execution_expires_after,omitempty"`
+	OutputFormat          *string                `json:"output_format,omitempty"` // "mp4" or "mov"
+	ExtraParams           map[string]interface{} `json:"-"`
 }
 
 func (r *BytePlusVideoGenerationRequest) GetExtraParams() map[string]interface{} {

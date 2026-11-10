@@ -824,13 +824,22 @@ func TestBytePlusVideoListRejectsAfterCursor(t *testing.T) {
 }
 
 func TestToBifrostVideoGenerationResponseTerminalStatuses(t *testing.T) {
-	for _, status := range []byteplus.BytePlusVideoTaskStatus{byteplus.BytePlusVideoTaskStatusFailed, byteplus.BytePlusVideoTaskStatusCancelled, byteplus.BytePlusVideoTaskStatusExpired} {
+	// Fork (TXE-6426): Ark's cancelled and expired are their own statuses; only failed carries an error.
+	want := map[byteplus.BytePlusVideoTaskStatus]schemas.VideoStatus{
+		byteplus.BytePlusVideoTaskStatusFailed:    schemas.VideoStatusFailed,
+		byteplus.BytePlusVideoTaskStatusCancelled: schemas.VideoStatusCancelled,
+		byteplus.BytePlusVideoTaskStatusExpired:   schemas.VideoStatusExpired,
+	}
+	for status, mapped := range want {
 		resp, bifrostErr := byteplus.ToBifrostVideoGenerationResponse(&byteplus.BytePlusVideoTask{ID: "t", Status: status})
 		if bifrostErr != nil {
 			t.Fatalf("unexpected error: %+v", bifrostErr)
 		}
-		if resp.Status != schemas.VideoStatusFailed || resp.Error == nil || resp.Error.Code != string(status) {
-			t.Errorf("%s: status=%s error=%+v", status, resp.Status, resp.Error)
+		if resp.Status != mapped || resp.ProviderStatus != string(status) || !resp.Status.IsTerminal() {
+			t.Errorf("%s: status=%s provider_status=%q", status, resp.Status, resp.ProviderStatus)
+		}
+		if failed := status == byteplus.BytePlusVideoTaskStatusFailed; (resp.Error != nil) != failed {
+			t.Errorf("%s: error=%+v", status, resp.Error)
 		}
 	}
 }
