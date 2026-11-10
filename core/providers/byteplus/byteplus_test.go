@@ -430,18 +430,21 @@ func TestToBytePlusImageGenerationRequest(t *testing.T) {
 		Model: "seedream-4-5-251128",
 		Input: &schemas.ImageGenerationInput{Prompt: "a cat"},
 		Params: &schemas.ImageGenerationParameters{
-			N:              schemas.Ptr(3),
+			N:              schemas.Ptr(1),
 			Size:           schemas.Ptr("2048x2048"),
 			ResponseFormat: schemas.Ptr("b64_json"),
 			InputImages:    []string{"https://example.com/ref.png"},
-			ExtraParams:    map[string]interface{}{"watermark": false, "guidance_scale": 5.5},
+			ExtraParams: map[string]interface{}{
+				"watermark": false, "guidance_scale": 5.5,
+				"sequential_image_generation": "auto", "sequential_image_generation_options": map[string]interface{}{"max_images": 3},
+			},
 		},
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if req.SequentialImageGeneration == nil || *req.SequentialImageGeneration != "auto" || req.SequentialImageGenerationOptions == nil || req.SequentialImageGenerationOptions.MaxImages != 3 {
-		t.Errorf("n=3 should enable sequential generation with max_images 3: %+v %+v", req.SequentialImageGeneration, req.SequentialImageGenerationOptions)
+		t.Errorf("Seedream's own group-generation fields should be lifted: %+v %+v", req.SequentialImageGeneration, req.SequentialImageGenerationOptions)
 	}
 	if req.Size == nil || *req.Size != "2048x2048" || req.ResponseFormat == nil || *req.ResponseFormat != "b64_json" {
 		t.Errorf("size/response_format not mapped: %+v %+v", req.Size, req.ResponseFormat)
@@ -494,27 +497,26 @@ func TestBytePlusImageGenerationAndEdit(t *testing.T) {
 	}
 }
 
-// Converter refusals are the caller's mistake, so they must surface as a 400 with the reason, not a conversion failure.
 // background is a typed OpenAI-shaped field, so the HTTP layer never puts it in ExtraParams.
-func TestToBytePlusImageGenerationRequestDropsInvalidSequentialOptions(t *testing.T) {
+// A sequential_image_generation_options value that does not decode is left for Ark to judge.
+func TestToBytePlusImageGenerationRequestPassesUndecodableSequentialOptions(t *testing.T) {
 	for name, invalid := range map[string]interface{}{"string": "bogus", "zero max_images": map[string]interface{}{"max_images": 0}} {
 		t.Run(name, func(t *testing.T) {
 			req, err := byteplus.ToBytePlusImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
 				Model: "seedream-4-5-251128",
 				Input: &schemas.ImageGenerationInput{Prompt: "a cat"},
 				Params: &schemas.ImageGenerationParameters{
-					N:           schemas.Ptr(2),
 					ExtraParams: map[string]interface{}{"sequential_image_generation_options": invalid},
 				},
 			})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if req.SequentialImageGenerationOptions == nil || req.SequentialImageGenerationOptions.MaxImages != 2 {
-				t.Errorf("n=2 should keep max_images 2: %+v", req.SequentialImageGenerationOptions)
+			if req.SequentialImageGenerationOptions != nil {
+				t.Errorf("an undecodable value must not become typed options: %+v", req.SequentialImageGenerationOptions)
 			}
-			if _, ok := req.ExtraParams["sequential_image_generation_options"]; ok {
-				t.Errorf("invalid passthrough value would overwrite the typed options at merge time: %v", req.ExtraParams)
+			if _, ok := req.ExtraParams["sequential_image_generation_options"]; !ok {
+				t.Errorf("the caller's value should pass through to Ark: %v", req.ExtraParams)
 			}
 		})
 	}
@@ -568,6 +570,9 @@ func TestBytePlusConverterRefusalsAreBadRequests(t *testing.T) {
 		Params:   &schemas.ImageEditParameters{Mask: []byte("mask")},
 	})
 	check("image edit mask", bifrostErr, "mask is not supported")
+	if bifrostErr != nil && (bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error.Param != "mask") {
+		t.Errorf("image edit mask: error_type = %q, param = %q", bifrostErr.ExtraFields.ErrorType, bifrostErr.Error.Param)
+	}
 
 	_, bifrostErr = provider.VideoGeneration(ctx, testKey(), &schemas.BifrostVideoGenerationRequest{
 		Provider: schemas.BytePlus,
@@ -582,21 +587,33 @@ func TestBytePlusConverterRefusalsAreBadRequests(t *testing.T) {
 	}
 }
 
+// Contract C6: a Seedream 200 whose every image was refused is a 200 with an empty data array
+// and the refusals counted in content_filter, not an error Bifrost fabricates.
 func TestBytePlusImageGenerationAllImagesFailed(t *testing.T) {
 	provider, _, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
-		"POST /api/v3/images/generations": jsonResponse(http.StatusOK, `{"model":"seedream-4-5-251128","created":1,"data":[{"error":{"code":"OutputImageSensitiveContentDetected","message":"blocked"}}]}`),
+		"POST /api/v3/images/generations": jsonResponse(http.StatusOK, `{"model":"seedream-4-5-251128","created":1,"data":[{"error":{"code":"OutputImageSensitiveContentDetected","message":"blocked"}}],"usage":{"generated_images":0,"output_tokens":0,"total_tokens":0}}`),
 	})
 
-	_, bifrostErr := provider.ImageGeneration(testContext(t), testKey(), &schemas.BifrostImageGenerationRequest{
+	resp, bifrostErr := provider.ImageGeneration(testContext(t), testKey(), &schemas.BifrostImageGenerationRequest{
 		Provider: schemas.BytePlus,
 		Model:    "seedream-4-5-251128",
 		Input:    &schemas.ImageGenerationInput{Prompt: "a cat"},
 	})
-	if bifrostErr == nil {
-		t.Fatal("expected an error when every image failed")
+	if bifrostErr != nil {
+		t.Fatalf("every image refused should be a 200, got %+v", bifrostErr.Error)
 	}
-	if bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "OutputImageSensitiveContentDetected" {
-		t.Errorf("error code = %v", bifrostErr.Error.Code)
+	if resp.Data == nil || len(resp.Data) != 0 {
+		t.Errorf("data should be an empty array, got %#v", resp.Data)
+	}
+	if cf := resp.ContentFilter; cf == nil || cf.FilteredCount != 1 || len(cf.Reasons) != 1 || cf.Reasons[0] != "OutputImageSensitiveContentDetected" {
+		t.Errorf("content_filter = %+v", resp.ContentFilter)
+	}
+	body, _ := json.Marshal(resp)
+	if got := gjson.GetBytes(body, "data"); !got.IsArray() || len(got.Array()) != 0 {
+		t.Errorf("data must serialise as [], got %s", body)
+	}
+	if got := gjson.GetBytes(body, "usage.output_images"); !got.Exists() || got.Int() != 0 {
+		t.Errorf("usage.output_images should carry Ark's 0, got %s", body)
 	}
 }
 
@@ -896,7 +913,9 @@ func TestBytePlusImageGenerationStream(t *testing.T) {
 		Provider: schemas.BytePlus,
 		Model:    "seedream-4-5-251128",
 		Input:    &schemas.ImageGenerationInput{Prompt: "four seasons"},
-		Params:   &schemas.ImageGenerationParameters{N: schemas.Ptr(3)},
+		Params: &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{
+			"sequential_image_generation": "auto", "sequential_image_generation_options": map[string]interface{}{"max_images": 3},
+		}},
 	})
 	if bifrostErr != nil {
 		t.Fatalf("ImageGenerationStream error: %+v", bifrostErr.Error)
@@ -925,6 +944,9 @@ func TestBytePlusImageGenerationStream(t *testing.T) {
 	}
 	if final.Usage == nil || final.Usage.OutputTokens != 32768 || final.Usage.OutputTokensDetails == nil || final.Usage.OutputTokensDetails.NImages != 2 {
 		t.Errorf("completed usage not mapped: %+v", final.Usage)
+	}
+	if final.Usage != nil && (final.Usage.OutputImages == nil || *final.Usage.OutputImages != 2) {
+		t.Errorf("completed usage.output_images should be Ark's generated_images 2, got %v", final.Usage.OutputImages)
 	}
 	if final.URL != "https://cdn.example/2.jpeg" {
 		t.Errorf("completed chunk should carry the last image, got %q", final.URL)
@@ -958,14 +980,15 @@ func TestBytePlusImageEditStreamUsesEditEvents(t *testing.T) {
 // Ark stops the stream after an internal error, so it ends the Bifrost stream too. A moderation miss on one image does not.
 func TestBytePlusImageGenerationStreamErrors(t *testing.T) {
 	cases := []struct {
-		name     string
-		events   []string
-		wantCode string
-		wantType string
+		name          string
+		events        []string
+		wantCode      string
+		wantType      string
+		wantErrorType schemas.ErrorType
 	}{
-		{"internal error ends the stream", []string{seedreamStreamImage0, `{"type":"image_generation.partial_failed","model":"seedream-4-5-251128","created":1,"image_index":1,"error":{"code":"InternalServiceError","message":"internal"}}`}, "InternalServiceError", "server_error"},
-		{"every image failed", []string{seedreamStreamFailed, `{"type":"image_generation.completed","model":"seedream-4-5-251128","created":1,"usage":{"generated_images":0,"output_tokens":0,"total_tokens":0}}`}, "OutputImageSensitiveContentDetected", "content_filter"},
-		{"request-level error event", []string{`{"error":{"code":"BadRequest","message":"missing required parameter"}}`}, "BadRequest", "invalid_request_error"},
+		{"internal error ends the stream", []string{seedreamStreamImage0, `{"type":"image_generation.partial_failed","model":"seedream-4-5-251128","created":1,"image_index":1,"error":{"code":"InternalServiceError","message":"internal"}}`}, "InternalServiceError", "server_error", ""},
+		{"every image failed", []string{seedreamStreamFailed, `{"type":"image_generation.completed","model":"seedream-4-5-251128","created":1,"usage":{"generated_images":0,"output_tokens":0,"total_tokens":0}}`}, "OutputImageSensitiveContentDetected", "content_filter", schemas.ErrorTypeCallerContentFiltered},
+		{"request-level error event", []string{`{"error":{"code":"BadRequest","message":"missing required parameter"}}`}, "BadRequest", "invalid_request_error", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -990,6 +1013,9 @@ func TestBytePlusImageGenerationStreamErrors(t *testing.T) {
 			}
 			if last.Error.Type == nil || *last.Error.Type != tc.wantType {
 				t.Errorf("error type = %v, want %s", last.Error.Type, tc.wantType)
+			}
+			if last.ExtraFields.ErrorType != tc.wantErrorType {
+				t.Errorf("extra_fields.error_type = %q, want %q", last.ExtraFields.ErrorType, tc.wantErrorType)
 			}
 		})
 	}
@@ -2006,5 +2032,229 @@ func TestBytePlusVideoDeliversTheUnifiedAspectRatio(t *testing.T) {
 	}
 	if sdk.Ratio == nil || *sdk.Ratio != "9:16" {
 		t.Fatalf("without extra params: ratio = %v, want the unified aspect_ratio 9:16", sdk.Ratio)
+	}
+}
+
+// Contract C5 and C6 (TXE-6605): a recorded Seedream response with one of three images refused
+// is a 200 carrying the two delivered images, the refusal in content_filter with Ark's code, and
+// Ark's generated_images as usage.output_images.
+func TestBytePlusImageGenerationPartlyRefusedReportsContentFilter(t *testing.T) {
+	provider, _, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v3/images/generations": jsonResponse(http.StatusOK, `{"model":"seedream-4-5-251128","created":1757321139,"data":[`+
+			`{"url":"https://cdn.example/0.png","size":"2048x2048"},`+
+			`{"error":{"code":"OutputImageSensitiveContentDetected","message":"The request failed because the output image may contain sensitive information."}},`+
+			`{"url":"https://cdn.example/2.png","size":"2048x2048"}],`+
+			`"usage":{"generated_images":2,"output_tokens":32768,"total_tokens":32768}}`),
+	})
+	resp, bifrostErr := provider.ImageGeneration(testContext(t), testKey(), &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.BytePlus,
+		Model:    "seedream-4-5-251128",
+		Input:    &schemas.ImageGenerationInput{Prompt: "four seasons"},
+		Params: &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{
+			"sequential_image_generation": "auto", "sequential_image_generation_options": map[string]interface{}{"max_images": 3},
+		}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("partly refused should be a 200, got %+v", bifrostErr.Error)
+	}
+	body, _ := json.Marshal(resp)
+	if got := gjson.GetBytes(body, "data.#").Int(); got != 2 {
+		t.Fatalf("data should hold the 2 delivered images, got %s", body)
+	}
+	if gjson.GetBytes(body, "data.0.url").String() != "https://cdn.example/0.png" || gjson.GetBytes(body, "data.1.url").String() != "https://cdn.example/2.png" || gjson.GetBytes(body, "data.1.index").Int() != 1 {
+		t.Errorf("delivered images out of order or mis-indexed: %s", body)
+	}
+	if gjson.GetBytes(body, "content_filter.filtered_count").Int() != 1 || gjson.GetBytes(body, "content_filter.reasons.0").String() != "OutputImageSensitiveContentDetected" {
+		t.Errorf("content_filter should count the refusal with Ark's code: %s", body)
+	}
+	if gjson.GetBytes(body, "usage.output_images").Int() != 2 {
+		t.Errorf("usage.output_images should be Ark's generated_images: %s", body)
+	}
+}
+
+// A response with every image delivered carries no content_filter.
+func TestBytePlusImageGenerationNoRefusalHasNoContentFilter(t *testing.T) {
+	resp, bifrostErr := byteplus.ToBifrostImageGenerationResponse(&byteplus.BytePlusImageGenerationResponse{
+		Model: "seedream-4-5-251128", Created: 1,
+		Data:  []byteplus.BytePlusImageData{{URL: "https://cdn.example/0.png"}},
+		Usage: &byteplus.BytePlusImageUsage{GeneratedImages: 1, OutputTokens: 16384, TotalTokens: 16384},
+	}, "seedream-4-5-251128")
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %+v", bifrostErr.Error)
+	}
+	if resp.ContentFilter != nil {
+		t.Errorf("content_filter should be absent, got %+v", resp.ContentFilter)
+	}
+	if resp.Usage == nil || resp.Usage.OutputImages == nil || *resp.Usage.OutputImages != 1 {
+		t.Errorf("usage.output_images = %+v", resp.Usage)
+	}
+	if usage := byteplus.ToBifrostImageUsage(nil); usage != nil {
+		t.Errorf("no Ark usage must stay empty, got %+v", usage)
+	}
+}
+
+// Contract C6: an Ark 200 that is not a normal response is an error with the right owner.
+func TestBytePlusImageGenerationResponseWithoutImages(t *testing.T) {
+	cases := []struct {
+		name          string
+		resp          byteplus.BytePlusImageGenerationResponse
+		wantStatus    int
+		wantErrorType schemas.ErrorType
+		wantCode      string
+	}{
+		{"no images and no errors", byteplus.BytePlusImageGenerationResponse{Model: "m", Data: []byteplus.BytePlusImageData{}}, 502, schemas.ErrorTypeProviderEmptyResult, ""},
+		{"only an internal error", byteplus.BytePlusImageGenerationResponse{Model: "m", Data: []byteplus.BytePlusImageData{{Error: &byteplus.BytePlusError{Code: "InternalServiceError", Message: "internal"}}}}, 502, schemas.ErrorTypeProviderServerError, "InternalServiceError"},
+		{"top-level refusal", byteplus.BytePlusImageGenerationResponse{Error: &byteplus.BytePlusError{Code: "InputTextSensitiveContentDetected", Message: "sensitive"}}, 400, schemas.ErrorTypeCallerContentFiltered, "InputTextSensitiveContentDetected"},
+		{"top-level parameter error", byteplus.BytePlusImageGenerationResponse{Error: &byteplus.BytePlusError{Code: "InvalidParameter", Message: "bad size"}}, 400, schemas.ErrorTypeCallerInvalidRequest, "InvalidParameter"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := tc.resp
+			_, bifrostErr := byteplus.ToBifrostImageGenerationResponse(&resp, "m")
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tc.wantStatus {
+				t.Fatalf("want status %d, got %+v", tc.wantStatus, bifrostErr)
+			}
+			if bifrostErr.ExtraFields.ErrorType != tc.wantErrorType {
+				t.Errorf("error_type = %q, want %q", bifrostErr.ExtraFields.ErrorType, tc.wantErrorType)
+			}
+			if tc.wantCode != "" && (bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != tc.wantCode) {
+				t.Errorf("error.code = %v, want %s", bifrostErr.Error.Code, tc.wantCode)
+			}
+		})
+	}
+}
+
+// Contract C4: a unified image field Seedream cannot take as given is a 400
+// caller_unsupported_parameter naming the field, on every image route, with no call to Ark.
+func TestBytePlusImageUnsupportedFieldsAreRefusedBeforeArk(t *testing.T) {
+	cases := []struct {
+		param string
+		gen   *schemas.ImageGenerationParameters
+		edit  *schemas.ImageEditParameters
+	}{
+		{"quality", &schemas.ImageGenerationParameters{Quality: schemas.Ptr("high")}, &schemas.ImageEditParameters{Quality: schemas.Ptr("high")}},
+		{"aspect_ratio", &schemas.ImageGenerationParameters{AspectRatio: schemas.Ptr("16:9")}, &schemas.ImageEditParameters{AspectRatio: schemas.Ptr("16:9")}},
+		{"negative_prompt", &schemas.ImageGenerationParameters{NegativePrompt: schemas.Ptr("blur")}, &schemas.ImageEditParameters{NegativePrompt: schemas.Ptr("blur")}},
+		{"num_inference_steps", &schemas.ImageGenerationParameters{NumInferenceSteps: schemas.Ptr(30)}, &schemas.ImageEditParameters{NumInferenceSteps: schemas.Ptr(30)}},
+		{"n", &schemas.ImageGenerationParameters{N: schemas.Ptr(16)}, &schemas.ImageEditParameters{N: schemas.Ptr(16)}},
+		{"n", &schemas.ImageGenerationParameters{N: schemas.Ptr(4)}, &schemas.ImageEditParameters{N: schemas.Ptr(4)}},
+		{"n", &schemas.ImageGenerationParameters{N: schemas.Ptr(0)}, &schemas.ImageEditParameters{N: schemas.Ptr(0)}},
+		{"mask", nil, &schemas.ImageEditParameters{Mask: []byte("mask")}},
+		{"resolution", &schemas.ImageGenerationParameters{Size: schemas.Ptr("2048x2048"), Resolution: "2K"}, &schemas.ImageEditParameters{Size: schemas.Ptr("2048x2048"), Resolution: "2K"}},
+	}
+	provider, captured, _ := newMockBytePlus(t, nil)
+	ctx := testContext(t)
+	check := func(route, param string, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s %s: want a 400, got %+v", route, param, bifrostErr)
+			return
+		}
+		if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error == nil || bifrostErr.Error.Param != param {
+			t.Errorf("%s %s: error_type = %q, param = %q", route, param, bifrostErr.ExtraFields.ErrorType, bifrostErr.Error.Param)
+		}
+	}
+	for _, tc := range cases {
+		if tc.gen != nil {
+			genReq := &schemas.BifrostImageGenerationRequest{Provider: schemas.BytePlus, Model: "seedream-4-5-251128", Input: &schemas.ImageGenerationInput{Prompt: "a cat"}, Params: tc.gen}
+			_, bifrostErr := provider.ImageGeneration(ctx, testKey(), genReq)
+			check("generation", tc.param, bifrostErr)
+			_, bifrostErr = provider.ImageGenerationStream(ctx, passthroughPostHook, nil, testKey(), genReq)
+			check("generation stream", tc.param, bifrostErr)
+		}
+		editReq := &schemas.BifrostImageEditRequest{Provider: schemas.BytePlus, Model: "seedream-4-5-251128", Input: &schemas.ImageEditInput{Prompt: "make it blue", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}}, Params: tc.edit}
+		_, bifrostErr := provider.ImageEdit(ctx, testKey(), editReq)
+		check("edit", tc.param, bifrostErr)
+		_, bifrostErr = provider.ImageEditStream(ctx, passthroughPostHook, nil, testKey(), editReq)
+		check("edit stream", tc.param, bifrostErr)
+	}
+	if n := len(captured()); n != 0 {
+		t.Errorf("refused requests must not reach Ark, got %d calls", n)
+	}
+	// The converter refuses the same requests for a caller that skips the entry points.
+	if _, err := byteplus.ToBytePlusImageGenerationRequest(&schemas.BifrostImageGenerationRequest{Model: "m", Input: &schemas.ImageGenerationInput{Prompt: "a"}, Params: &schemas.ImageGenerationParameters{N: schemas.Ptr(3)}}); err == nil {
+		t.Error("converter should refuse n=3 rather than send up to 3 images")
+	}
+	// n=1, seed and an "auto" size are taken.
+	if bifrostErr := byteplus.ValidateBytePlusImageParams(&schemas.ImageGenerationParameters{N: schemas.Ptr(1), Seed: schemas.Ptr(7), Size: schemas.Ptr("auto"), Resolution: "2K"}, nil); bifrostErr != nil {
+		t.Errorf("n=1, seed, size auto with resolution should pass, got %+v", bifrostErr.Error)
+	}
+}
+
+// Contract C4 (BF3): the unified resolution tier reaches Ark as size, on generation and edit,
+// and the copy the HTTP layer keeps in the extra params does not also reach Ark.
+func TestBytePlusImageResolutionReachesArkAsSize(t *testing.T) {
+	provider, captured, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v3/images/generations": jsonResponse(http.StatusOK, `{"model":"seedream-4-5-251128","created":1,"data":[{"url":"https://cdn.example/1.png"}],"usage":{"generated_images":1,"output_tokens":16384,"total_tokens":16384}}`),
+	})
+	ctx := testContext(t)
+	if _, bifrostErr := provider.ImageGeneration(ctx, testKey(), &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.BytePlus, Model: "seedream-4-5-251128", Input: &schemas.ImageGenerationInput{Prompt: "a cat"},
+		Params: &schemas.ImageGenerationParameters{Resolution: "4K", ExtraParams: map[string]interface{}{"resolution": "4K"}},
+	}); bifrostErr != nil {
+		t.Fatalf("ImageGeneration error: %+v", bifrostErr.Error)
+	}
+	if _, bifrostErr := provider.ImageEdit(ctx, testKey(), &schemas.BifrostImageEditRequest{
+		Provider: schemas.BytePlus, Model: "seedream-4-5-251128",
+		Input:  &schemas.ImageEditInput{Prompt: "make it blue", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}},
+		Params: &schemas.ImageEditParameters{Size: schemas.Ptr("auto"), Resolution: "2K", ExtraParams: map[string]interface{}{"resolution": "2K"}},
+	}); bifrostErr != nil {
+		t.Fatalf("ImageEdit error: %+v", bifrostErr.Error)
+	}
+	calls := captured()
+	for i, want := range []string{"4K", "2K"} {
+		body := calls[i].body
+		if got := gjson.GetBytes(body, "size").String(); got != want {
+			t.Errorf("call %d: size = %q, want %q (body %s)", i, got, want, body)
+		}
+		if gjson.GetBytes(body, "resolution").Exists() {
+			t.Errorf("call %d: resolution must not reach Ark as an unknown field: %s", i, body)
+		}
+	}
+	// A resolution that arrives only as an extra param is converted the same way.
+	req, err := byteplus.ToBytePlusImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
+		Model: "m", Input: &schemas.ImageGenerationInput{Prompt: "a"},
+		Params: &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"resolution": "1K"}},
+	})
+	if err != nil || req.Size == nil || *req.Size != "1K" {
+		t.Errorf("extra-param resolution should become size: %+v %v", req, err)
+	}
+}
+
+// Contract C6 (B5): an Ark HTTP error that is a moderation refusal is caller_content_filtered and
+// keeps Ark's status; any other Ark error is left for the shared classification.
+func TestBytePlusImageModerationHTTPErrorIsContentFiltered(t *testing.T) {
+	cases := []struct {
+		name          string
+		status        int
+		code          string
+		wantErrorType schemas.ErrorType
+	}{
+		{"input text refused", http.StatusBadRequest, "InputTextSensitiveContentDetected", schemas.ErrorTypeCallerContentFiltered},
+		{"input image refused", http.StatusBadRequest, "InputImageSensitiveContentDetected", schemas.ErrorTypeCallerContentFiltered},
+		{"sub-coded refusal", http.StatusBadRequest, "SensitiveContentDetected.SevereViolation", schemas.ErrorTypeCallerContentFiltered},
+		{"parameter error", http.StatusBadRequest, "InvalidParameter", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			arkErr := `{"error":{"code":"` + tc.code + `","message":"refused","param":"","type":"BadRequest"}}`
+			provider, _, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+				"POST /api/v3/images/generations": jsonResponse(tc.status, arkErr),
+			})
+			req := &schemas.BifrostImageGenerationRequest{Provider: schemas.BytePlus, Model: "seedream-4-5-251128", Input: &schemas.ImageGenerationInput{Prompt: "a cat"}}
+			_, syncErr := provider.ImageGeneration(testContext(t), testKey(), req)
+			_, streamErr := provider.ImageGenerationStream(testContext(t), passthroughPostHook, nil, testKey(), req)
+			for route, bifrostErr := range map[string]*schemas.BifrostError{"sync": syncErr, "stream": streamErr} {
+				if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tc.status {
+					t.Fatalf("%s: want Ark's status %d, got %+v", route, tc.status, bifrostErr)
+				}
+				if bifrostErr.ExtraFields.ErrorType != tc.wantErrorType {
+					t.Errorf("%s: error_type = %q, want %q", route, bifrostErr.ExtraFields.ErrorType, tc.wantErrorType)
+				}
+				if bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != tc.code {
+					t.Errorf("%s: error.code should stay Ark's %s, got %+v", route, tc.code, bifrostErr.Error)
+				}
+			}
+		})
 	}
 }

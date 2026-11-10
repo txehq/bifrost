@@ -258,6 +258,11 @@ func (provider *BytePlusProvider) doBytePlusRequest(ctx *schemas.BifrostContext,
 // ImageGeneration performs a Seedream image generation request to Ark's /images/generations API.
 // Extra params pass through so Seedream-only fields such as background reach the wire.
 func (provider *BytePlusProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if request.Params != nil {
+		if bifrostErr := ValidateBytePlusImageParams(request.Params, nil); bifrostErr != nil {
+			return nil, bifrostErr
+		}
+	}
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -274,6 +279,11 @@ func (provider *BytePlusProvider) ImageGeneration(ctx *schemas.BifrostContext, k
 // ImageEdit performs a Seedream image-to-image request. Seedream edits through the same
 // /images/generations endpoint, with the source images sent as reference images.
 func (provider *BytePlusProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	if request.Params != nil {
+		if bifrostErr := ValidateBytePlusImageParams(nil, request.Params); bifrostErr != nil {
+			return nil, bifrostErr
+		}
+	}
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -294,7 +304,7 @@ func (provider *BytePlusProvider) doImageRequest(ctx *schemas.BifrostContext, ke
 
 	body, latency, bifrostErr := provider.doBytePlusRequest(ctx, key, http.MethodPost, "/api/v3/images/generations", "", jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, MarkBytePlusContentFilterError(bifrostErr)
 	}
 
 	var bytePlusResp BytePlusImageGenerationResponse
@@ -572,6 +582,11 @@ func (provider *BytePlusProvider) TranscriptionStream(ctx *schemas.BifrostContex
 // ImageGenerationStream streams a Seedream generation, one event per finished image. Ark streams
 // only on Seedream 5.0 lite, 4.5 and 4.0; other models reject the stream field with a 400.
 func (provider *BytePlusProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if request.Params != nil {
+		if bifrostErr := ValidateBytePlusImageParams(request.Params, nil); bifrostErr != nil {
+			return nil, bifrostErr
+		}
+	}
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -592,6 +607,11 @@ func (provider *BytePlusProvider) ImageGenerationStream(ctx *schemas.BifrostCont
 
 // ImageEditStream streams a Seedream image-to-image generation through the same endpoint as ImageGenerationStream.
 func (provider *BytePlusProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if request.Params != nil {
+		if bifrostErr := ValidateBytePlusImageParams(nil, request.Params); bifrostErr != nil {
+			return nil, bifrostErr
+		}
+	}
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -666,7 +686,7 @@ func (provider *BytePlusProvider) doImageStream(ctx *schemas.BifrostContext, pos
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
 		providerUtils.MaterializeStreamErrorBody(ctx, resp)
-		return nil, providerUtils.EnrichError(ctx, openai.ParseOpenAIError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		return nil, providerUtils.EnrichError(ctx, MarkBytePlusContentFilterError(openai.ParseOpenAIError(resp)), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
