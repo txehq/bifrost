@@ -2,9 +2,12 @@ package googlecloudtts
 
 // Request and response bodies of text:synthesize, from
 // https://docs.cloud.google.com/text-to-speech/docs/reference/rest/v1/text/synthesize.
-// Only the fields the unified speech request maps to are typed; every other vendor field
-// (pitch, volumeGainDb, sampleRateHertz, effectsProfileId, ssmlGender, customVoice, ...)
-// reaches the vendor through the extra-params channel, merged into these objects.
+// Only the fields the unified speech request maps to are typed. A vendor field outside
+// them reaches the vendor through the extra-params channel: a top-level object the unified
+// request does not name, such as audioConfig (pitch, volumeGainDb, sampleRateHertz,
+// effectsProfileId) or advancedVoiceOptions, is merged into the body. The unified voice
+// field is the voice name, so the other voice fields (ssmlGender, customVoice) have no
+// way in.
 
 // GoogleCloudTTSSynthesizeRequest is the SynthesizeSpeechRequest body.
 type GoogleCloudTTSSynthesizeRequest struct {
