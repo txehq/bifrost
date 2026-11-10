@@ -155,7 +155,9 @@ func ReadEmbedContentConfig(extra map[string]interface{}) *GeminiEmbedContentCon
 // applyGeminiEmbeddingParams copies the embedding parameters onto one requests[] entry.
 // The first-class task_type/title fields win; the Gemini-native "taskType"/"title"
 // extra params are honoured as aliases so a request-level value fans out to every entry
-// (issue #7812).
+// (issue #7812). The request worker refuses a "taskType" that the typed task_type does
+// not repeat (schemas.VendorPriceFieldNames, TXE-7076), so the alias adds nothing here
+// for a request that came through it.
 func applyGeminiEmbeddingParams(req *GeminiEmbeddingRequest, params *schemas.EmbeddingParameters) {
 	if params == nil {
 		return

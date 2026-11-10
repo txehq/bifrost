@@ -12639,7 +12639,6 @@ var unmappedVendorPriceNames = map[string]string{
 	"gemini/sampleImageSize":                       "Imagen's size tier; the genai route converts it to the unified size, and the converter reads the unified resolution",
 	"gemini/compressionQuality":                    "Veo's output compression; C4's video table has no quality field",
 	"gemini/media_resolution":                      "input media resolution on chat and responses, which are outside C4's table",
-	"gemini/taskType":                              "the OpenAI SDK's extra_body spelling of task_type on embeddings, which harness folder 142 pins as supported; left for a decision, since mapping it turns those requests into 400s",
 	"gemini/candidate_count":                       "the number of candidates on chat and responses, which are outside C4's table",
 	"byteplus/reference_videos":                    "Seedance reference videos; C4's video table lists reference_images only",
 	"byteplus/reference_audios":                    "Seedance reference audio; C4's video table lists reference_images only",

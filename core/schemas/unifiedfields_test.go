@@ -454,6 +454,12 @@ func TestCheckExtraParamPriceFieldsForVendorNameBesideTheUnifiedField(t *testing
 		return &BifrostRequest{RequestType: SpeechRequest,
 			SpeechRequest: &BifrostSpeechRequest{Input: &SpeechInput{Input: "hi"}, Params: params}}
 	}
+	embedding := func(params *EmbeddingParameters, items ...EmbeddingInputItem) *BifrostRequest {
+		text := "hi"
+		input := append(EmbeddingInput{{Content: EmbeddingContent{{Type: EmbeddingContentPartTypeText, Text: &text}}}}, items...)
+		return &BifrostRequest{RequestType: EmbeddingRequest,
+			EmbeddingRequest: &BifrostEmbeddingRequest{Input: input, Params: params}}
+	}
 	voice := "anushka"
 	accepted := []struct {
 		name     string
@@ -468,6 +474,10 @@ func TestCheckExtraParamPriceFieldsForVendorNameBesideTheUnifiedField(t *testing
 			VoiceConfig: &SpeechVoiceInput{Voice: &voice}, ExtraParams: map[string]interface{}{"speaker": "anushka"}})},
 		{"reference objects under Runway's own name, which the unified list cannot hold", Runway, video(&VideoGenerationParameters{
 			ExtraParams: map[string]interface{}{"references": []interface{}{map[string]interface{}{"uri": "https://example.invalid/a.png", "tag": "fox"}}}})},
+		{"Gemini's task type beside the typed task_type", Gemini, embedding(&EmbeddingParameters{
+			TaskType: Ptr("RETRIEVAL_DOCUMENT"), ExtraParams: map[string]interface{}{"taskType": "RETRIEVAL_DOCUMENT"}})},
+		{"the task type name on a provider whose converter does not read it", OpenAI, embedding(&EmbeddingParameters{
+			ExtraParams: map[string]interface{}{"taskType": "RETRIEVAL_DOCUMENT"}})},
 		{"an operation the name is not read on", Runware, imageReq(&ImageGenerationParameters{
 			ExtraParams: map[string]interface{}{"outputFormat": "WEBP"}})},
 	}
@@ -486,6 +496,12 @@ func TestCheckExtraParamPriceFieldsForVendorNameBesideTheUnifiedField(t *testing
 	}{
 		{"the vendor's name with another value than the request sent", MiniMax, video(&VideoGenerationParameters{
 			AspectRatio: "16:9", ExtraParams: map[string]interface{}{"ratio": "9:16"}}), "ratio"},
+		{"Gemini's task type without the typed task_type", Gemini, embedding(&EmbeddingParameters{
+			ExtraParams: map[string]interface{}{"taskType": "RETRIEVAL_DOCUMENT"}}), "taskType"},
+		{"Gemini's task type with another value than the typed task_type", Gemini, embedding(&EmbeddingParameters{
+			TaskType: Ptr("RETRIEVAL_QUERY"), ExtraParams: map[string]interface{}{"taskType": "RETRIEVAL_DOCUMENT"}}), "taskType"},
+		{"Gemini's task type in one input item's own params", Gemini, embedding(nil, EmbeddingInputItem{
+			Params: &EmbeddingParameters{ExtraParams: map[string]interface{}{"taskType": "RETRIEVAL_DOCUMENT"}}}), "taskType"},
 		{"in any letter case", Gemini, video(&VideoGenerationParameters{
 			ExtraParams: map[string]interface{}{"ASPECTRATIO": "9:16"}}), "ASPECTRATIO"},
 		{"a pace that differs from the speed the request sent", Sarvam, speech(&SpeechParameters{

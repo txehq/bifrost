@@ -2194,6 +2194,8 @@ var ingressSamples = []ingressSample{
 		body: `{"taskType":"TEXT_IMAGE","textToImageParams":{"text":"a red square"},"imageGenerationConfig":{"numberOfImages":2,"width":1024,"height":1024,"quality":"premium"}}`},
 	{name: "genai embedContent", path: "/genai/v1beta/models/gemini/gemini-embedding-001:embedContent",
 		body: `{"content":{"parts":[{"text":"ok"}]},"taskType":"RETRIEVAL_QUERY","outputDimensionality":256}`},
+	{name: "genai batchEmbedContents with a task type per request", path: "/genai/v1beta/models/gemini/gemini-embedding-001:batchEmbedContents",
+		body: `{"requests":[{"content":{"parts":[{"text":"ok"}]},"taskType":"RETRIEVAL_QUERY"},{"content":{"parts":[{"text":"ok"}]},"taskType":"RETRIEVAL_DOCUMENT"}]}`},
 	{name: "genai Veo video", path: "/genai/v1beta/models/gemini/veo-3.1-generate-preview:predictLongRunning",
 		body: `{"instances":[{"prompt":"a paper boat"}],"parameters":{"aspectRatio":"16:9","resolution":"1080p","durationSeconds":8,"sampleCount":1,"generateAudio":true}}`},
 	{name: "genai Imagen image", path: "/genai/v1beta/models/gemini/imagen-4.0-generate-001:predict",

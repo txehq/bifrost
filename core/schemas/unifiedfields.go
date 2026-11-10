@@ -187,6 +187,7 @@ var vendorPriceFieldNames = func() []VendorPriceFieldName {
 	speech := []RequestType{SpeechRequest, SpeechStreamRequest}
 	transcription := []RequestType{TranscriptionRequest, TranscriptionStreamRequest}
 	return []VendorPriceFieldName{
+		{Gemini, "taskType", "task_type", []RequestType{EmbeddingRequest}},
 		{BytePlus, "ratio", "aspect_ratio", video},
 		{BFL, "duration", "seconds", video},
 		{BFL, "generate_audio", "audio", video},

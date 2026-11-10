@@ -1,12 +1,12 @@
 {
   "name": "142. Gemini embeddings request-level taskType and title fan-out (#7812) (gemini-embedding-tasktype)",
-  "description": "Issue #7812: a /v1/embeddings request to gemini-embedding-001 with several inputs and a request-level taskType (and/or title) must embed EVERY input with that task type. v2.2.4 applied it to the first entry only (the converter deleted the key from a map shared across the loop); after the multimodal-embedding refactor the Gemini-native extra-param spelling `taskType`/`title` was dropped from every entry, and with x-bf-passthrough-extra-params it leaked to the batch top level, where Gemini rejects unknown fields. Nothing errors in the silent case: the vectors come from the wrong embedding space (RETRIEVAL_QUERY instead of RETRIEVAL_DOCUMENT), so the response body cannot tell right from wrong. Both rows therefore assert on extra_fields.raw_request: taskType and title present on each of the three requests[] entries and absent at the top level. 142.A1 is the reporter's exact shape (OpenAI SDK extra_body => camelCase extra params; red pre-fix). 142.A2 is the first-class snake_case task_type/title, pinned so the two spellings cannot drift apart. Run with PROVIDER=gemini FEATURE=\"gemini-embedding-tasktype\".",
+  "description": "Issue #7812: a /v1/embeddings request to gemini-embedding-001 with several inputs and a request-level taskType (and/or title) must embed EVERY input with that task type. v2.2.4 applied it to the first entry only (the converter deleted the key from a map shared across the loop); after the multimodal-embedding refactor the Gemini-native extra-param spelling `taskType`/`title` was dropped from every entry, and with x-bf-passthrough-extra-params it leaked to the batch top level, where Gemini rejects unknown fields. Nothing errors in the silent case: the vectors come from the wrong embedding space (RETRIEVAL_QUERY instead of RETRIEVAL_DOCUMENT), so the response body cannot tell right from wrong. 142.A1 and 142.A2 therefore assert on extra_fields.raw_request: taskType and title present on each of the three requests[] entries and absent at the top level. 142.A1 is the reporter's shape (OpenAI SDK extra_body => camelCase extra params; red pre-fix) with the typed task_type beside it: since TXE-7076 taskType alone is refused, because task_type is a price-affecting field (contract C4) and must show on the request. 142.A3 pins that refusal. 142.A2 is the first-class snake_case task_type/title, pinned so the two spellings cannot drift apart. Run with PROVIDER=gemini FEATURE=\"gemini-embedding-tasktype\".",
   "item": [
     {
       "name": "142.A Request-level task type fans out to every :batchEmbedContents entry",
       "item": [
         {
-          "name": "142.A1 gemini/gemini-embedding-001 - request-level taskType extra param reaches every requests[] entry - #7812",
+          "name": "142.A1 gemini/gemini-embedding-001 - request-level taskType beside the same task_type reaches every requests[] entry - #7812",
           "request": {
             "method": "POST",
             "header": [
@@ -25,7 +25,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": [\n    \"Biodegradable Hydraulic Ester Fluid 46\",\n    \"stainless steel ball valves\",\n    \"contract manufacturing of injection moulded parts\"\n  ],\n  \"dimensions\": 256,\n  \"taskType\": \"RETRIEVAL_DOCUMENT\",\n  \"title\": \"Industrial catalogue\"\n}"
+              "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": [\n    \"Biodegradable Hydraulic Ester Fluid 46\",\n    \"stainless steel ball valves\",\n    \"contract manufacturing of injection moulded parts\"\n  ],\n  \"dimensions\": 256,\n  \"task_type\": \"RETRIEVAL_DOCUMENT\",\n  \"taskType\": \"RETRIEVAL_DOCUMENT\",\n  \"title\": \"Industrial catalogue\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/embeddings",
@@ -44,10 +44,12 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// #7812: a request-level taskType / title (Gemini-native extra params, the OpenAI SDK extra_body spelling) on /v1/embeddings must reach EVERY requests[] entry of",
+                  "// #7812: a request-level taskType / title (the OpenAI SDK extra_body spelling) on /v1/embeddings must reach EVERY requests[] entry of",
                   "// :batchEmbedContents. Pre-fix the extra-param spelling was dropped from every entry (and, with",
                   "// x-bf-passthrough-extra-params, leaked to the batch top level where Gemini returns 400).",
                   "// raw_request is the only place the per-entry fan-out is visible: a vector comes back either way.",
+                  "// TXE-7076: task_type is a price-affecting field (contract C4), so taskType is accepted only beside the typed task_type with the",
+                  "// same value, which this row sends. 142.A3 is the refusal of taskType alone.",
                   "var txt = pm.response.text() || '';",
                   "pm.test('embedding succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 300)).to.eql(200);",
@@ -145,6 +147,63 @@
                   "  }",
                   "  pm.expect(rr.taskType, 'taskType leaked to the batch top level').to.be.undefined;",
                   "  pm.expect(rr.title, 'title leaked to the batch top level').to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] 142.A3 gemini/gemini-embedding-001 - request-level taskType without task_type is refused",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": [\n    \"Biodegradable Hydraulic Ester Fluid 46\",\n    \"stainless steel ball valves\",\n    \"contract manufacturing of injection moulded parts\"\n  ],\n  \"dimensions\": 256,\n  \"taskType\": \"RETRIEVAL_DOCUMENT\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// TXE-7076: taskType is Gemini's own name for the unified task_type, a price-affecting field (contract C4). Sent alone among the",
+                  "// extra params it is refused before any upstream call; the caller sends task_type.",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('taskType alone is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'not refused: ' + txt.slice(0, 600)).to.eql(400);",
+                  "});",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { j = {}; }",
+                  "var err = j.error || {};",
+                  "pm.test('the refusal is caller_unsupported_parameter, names taskType and says to send task_type', function () {",
+                  "  pm.expect(txt, txt.slice(0, 600)).to.include('caller_unsupported_parameter');",
+                  "  pm.expect(err.param, txt.slice(0, 600)).to.eql('taskType');",
+                  "  pm.expect(String(err.message), txt.slice(0, 600)).to.include('task_type');",
                   "});"
                 ]
               }
