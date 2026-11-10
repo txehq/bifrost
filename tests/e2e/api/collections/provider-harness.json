@@ -293148,6 +293148,1069 @@
       ]
     },
     {
+      "name": "330. Azure AI Speech: SSML speech, streamed speech and fast transcription (azure speech provider) [SERIAL]",
+      "description": "TXE-6542 (contract C3, C4, C5, C6, C10, C12; Microsoft vendor sheet TTS · Azure AI Speech B1, B2 and STT · Azure AI Speech B1), local fixture regression with no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json, whose azurespeech key carries the fixture as its resource endpoint (azure_key_config.endpoint), and enable providerErrorFixture=1 (README: Azure AI Speech). Every case is skipped otherwise. The fixture serves the text to speech API on /tts/cognitiveservices/v1 and fast transcription on /speechtotext/transcriptions:transcribe, and keeps every call in /__wire; each case resets the fixture first and reads back what reached it. Speech: the request reaches the vendor once, as SSML (voice name as given, speed as prosody rate, input escaped) with X-Microsoft-OutputFormat, and the audio bytes come back, on /v1 and on the OpenAI-compatible route. Streamed speech: the fixture writes three audio chunks 600ms apart and /__probe/stream-gaps times each speech.audio.delta, so each chunk must reach the client before the vendor writes the next one. Transcription: the multipart audio + definition (enhancedMode model, locales, an extra field merged in through x-bf-passthrough-extra-params) reaches the vendor once and text, usage{type: duration, seconds} and raw_response come back, on both routes. Refusals: instructions, an out-of-range speed and response_format srt return 400 caller_unsupported_parameter with nothing sent. Errors: a vendor 429 (also before the first frame of a stream) and a vendor 422 keep their status and carry error_type after exactly one upstream call, and a 200 with no audio is 502 provider_empty_result.",
+      "item": [
+        {
+          "name": "330.1 azurespeech /v1/audio/speech azurespeech/mai-voice-2.1-flash voice, speed and response_format mp3 reach Azure AI Speech as SSML and X-Microsoft-OutputFormat, once, and the audio comes back (azure speech provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('azure speech setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var TTS = '/tts/cognitiveservices/v1';",
+                  "var STT = '/speechtotext/transcriptions:transcribe';",
+                  "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === TTS || c.path === STT; })); }); }",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('the client gets 200 and the vendor audio bytes', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(raw, 'body: ' + raw).to.equal('ID3-azure-speech-fixture-audio');",
+                  "});",
+                  "pm.test('the response names the provider and the key that served (contract C12)', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal('azurespeech');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal('azure-speech-fixture');",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('exactly one upstream call, to the text to speech path (contract C3)', function () {",
+                  "    pm.expect(calls, JSON.stringify(calls)).to.have.length(1);",
+                  "    pm.expect(calls[0].path, JSON.stringify(calls)).to.equal(TTS);",
+                  "  });",
+                  "  pm.test('the body is the SSML: voice name as given, speed as prosody rate, input escaped as text', function () {",
+                  "    pm.expect(calls[0].body, JSON.stringify(calls)).to.equal(\"<speak version=\\\"1.0\\\" xmlns=\\\"http://www.w3.org/2001/10/synthesis\\\" xml:lang=\\\"en-US\\\"><voice name=\\\"en-US-Harper:MAI-Voice-2.1-Flash\\\"><prosody rate=\\\"1.25\\\">Tom &amp; Jerry &lt;3 speech</prosody></voice></speak>\");",
+                  "  });",
+                  "  pm.test('the output format, content type and resource key travel in headers', function () {",
+                  "    var h = calls[0].headers;",
+                  "    pm.expect(h.output_format, JSON.stringify(h)).to.equal(\"audio-24khz-48kbitrate-mono-mp3\");",
+                  "    pm.expect(h.content_type, JSON.stringify(h)).to.equal('application/ssml+xml');",
+                  "    pm.expect(h.subscription_key, JSON.stringify(h)).to.equal('test-key');",
+                  "    pm.expect(h.authorization, 'the resource key must not be sent as a bearer: ' + JSON.stringify(h)).to.equal('');",
+                  "    pm.expect(h.user_agent, 'User-Agent is required by the API: ' + JSON.stringify(h)).to.not.equal('');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "azure-speech-fixture"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azurespeech/mai-voice-2.1-flash\",\n  \"input\": \"Tom & Jerry <3 speech\",\n  \"voice\": \"en-US-Harper:MAI-Voice-2.1-Flash\",\n  \"speed\": 1.25,\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "330.2 azurespeech /openai/v1/audio/speech azurespeech/mai-voice-2.1-flash voice, speed and response_format wav reach Azure AI Speech as SSML and X-Microsoft-OutputFormat, once, and the audio comes back (azure speech provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('azure speech setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var TTS = '/tts/cognitiveservices/v1';",
+                  "var STT = '/speechtotext/transcriptions:transcribe';",
+                  "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === TTS || c.path === STT; })); }); }",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test('the client gets 200 and the vendor audio bytes', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(raw, 'body: ' + raw).to.equal('ID3-azure-speech-fixture-audio');",
+                  "});",
+                  "pm.test('the response names the provider and the key that served (contract C12)', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal('azurespeech');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal('azure-speech-fixture');",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('exactly one upstream call, to the text to speech path (contract C3)', function () {",
+                  "    pm.expect(calls, JSON.stringify(calls)).to.have.length(1);",
+                  "    pm.expect(calls[0].path, JSON.stringify(calls)).to.equal(TTS);",
+                  "  });",
+                  "  pm.test('the body is the SSML: voice name as given, speed as prosody rate, input escaped as text', function () {",
+                  "    pm.expect(calls[0].body, JSON.stringify(calls)).to.equal(\"<speak version=\\\"1.0\\\" xmlns=\\\"http://www.w3.org/2001/10/synthesis\\\" xml:lang=\\\"en-US\\\"><voice name=\\\"en-US-Harper:MAI-Voice-2.1-Flash\\\"><prosody rate=\\\"1.25\\\">Tom &amp; Jerry &lt;3 speech</prosody></voice></speak>\");",
+                  "  });",
+                  "  pm.test('the output format, content type and resource key travel in headers', function () {",
+                  "    var h = calls[0].headers;",
+                  "    pm.expect(h.output_format, JSON.stringify(h)).to.equal(\"riff-24khz-16bit-mono-pcm\");",
+                  "    pm.expect(h.content_type, JSON.stringify(h)).to.equal('application/ssml+xml');",
+                  "    pm.expect(h.subscription_key, JSON.stringify(h)).to.equal('test-key');",
+                  "    pm.expect(h.authorization, 'the resource key must not be sent as a bearer: ' + JSON.stringify(h)).to.equal('');",
+                  "    pm.expect(h.user_agent, 'User-Agent is required by the API: ' + JSON.stringify(h)).to.not.equal('');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "azure-speech-fixture"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azurespeech/mai-voice-2.1-flash\",\n  \"input\": \"Tom & Jerry <3 speech\",\n  \"voice\": \"en-US-Harper:MAI-Voice-2.1-Flash\",\n  \"speed\": 1.25,\n  \"response_format\": \"wav\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "330.3 azurespeech /v1/audio/speech stream_format sse azurespeech/mai-voice-2.1-flash audio chunks arriving with gaps are forwarded on arrival as speech.audio.delta, then speech.audio.done (azure speech provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "if (!pm.variables.get('providerErrorFixtureUrl')) { pm.variables.set('providerErrorFixtureUrl', 'http://127.0.0.1:8791'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.expect(pm.response.code, 'probe failed: ' + pm.response.text()).to.equal(200);",
+                  "var r = pm.response.json().data[0];",
+                  "var markers = ['gap-0', 'gap-1', 'gap-2'].map(function (m) { return btoa(m); });",
+                  "pm.test('the gateway answered 200 with an SSE stream', function () {",
+                  "  pm.expect(r.status, JSON.stringify(r)).to.equal(200);",
+                  "  pm.expect(r.content_type, JSON.stringify(r)).to.include('text/event-stream');",
+                  "  pm.expect(r.sends.length, 'the fixture wrote ' + r.sends.length + ' audio chunks: ' + JSON.stringify(r)).to.equal(markers.length);",
+                  "});",
+                  "var arrivals = markers.map(function (m) {",
+                  "  var e = r.events.find(function (ev) { return ev.text.indexOf(m) !== -1; });",
+                  "  return e ? e.at : null;",
+                  "});",
+                  "pm.test('each audio chunk reaches the client before the vendor sends the next one (contract C10)', function () {",
+                  "  arrivals.forEach(function (at, i) {",
+                  "    pm.expect(at, 'chunk ' + markers[i] + ' never arrived: ' + JSON.stringify(r)).to.be.a('number');",
+                  "    if (i + 1 < r.sends.length) {",
+                  "      pm.expect(at, 'chunk ' + i + ' arrived at ' + at + 'ms, after the vendor wrote chunk ' + (i + 1) + ' at ' + r.sends[i + 1] + 'ms: ' + JSON.stringify({ sends: r.sends, arrivals: arrivals })).to.be.below(r.sends[i + 1]);",
+                  "    }",
+                  "  });",
+                  "});",
+                  "pm.test('the gaps between chunks are kept', function () {",
+                  "  for (var i = 1; i < arrivals.length; i++) {",
+                  "    pm.expect(arrivals[i] - arrivals[i - 1], 'gap ' + i + ': ' + JSON.stringify({ gap_ms: r.gap_ms, sends: r.sends, arrivals: arrivals })).to.be.at.least(r.gap_ms / 2);",
+                  "  }",
+                  "});",
+                  "pm.test('speech.audio.done is the final frame and no frame is an error', function () {",
+                  "  var frames = r.events.map(function (e) { return e.text; }).filter(function (t) { return /^data: \\{/m.test(t); });",
+                  "  var last = frames[frames.length - 1] || '';",
+                  "  pm.expect(last, 'last data frame: ' + last).to.include('speech.audio.done');",
+                  "  frames.forEach(function (f) { pm.expect(f, 'an error frame was sent: ' + f).to.not.include('\"error\"'); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"base_url\": \"{{baseUrl}}\",\n  \"path\": \"/v1/audio/speech\",\n  \"headers\": {\n    \"x-bf-api-key\": \"azure-speech-fixture\"\n  },\n  \"body\": {\n    \"model\": \"azurespeech/mai-voice-2.1-flash\",\n    \"input\": \"hi\",\n    \"voice\": \"azure-speech-gapped\",\n    \"stream_format\": \"sse\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{providerErrorFixtureUrl}}/__probe/stream-gaps",
+              "host": [
+                "{{providerErrorFixtureUrl}}"
+              ],
+              "path": [
+                "__probe",
+                "stream-gaps"
+              ]
+            }
+          }
+        },
+        {
+          "name": "330.4 azurespeech /v1/audio/transcriptions azurespeech/mai-transcribe-2 language and extra fields reach fast transcription as the multipart audio + definition, once, and text and usage.seconds come back from durationMilliseconds (azure speech provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('azure speech setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var TTS = '/tts/cognitiveservices/v1';",
+                  "var STT = '/speechtotext/transcriptions:transcribe';",
+                  "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === TTS || c.path === STT; })); }); }",
+                  "var raw = pm.response.text() || '';",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 200 with the joined text', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(body.text, raw).to.equal('Good afternoon. This is Sam.');",
+                  "});",
+                  "pm.test('usage is the vendor duration in seconds (contract C5)', function () {",
+                  "  pm.expect(body.usage, raw).to.be.an('object');",
+                  "  pm.expect(body.usage.type, raw).to.equal('duration');",
+                  "  pm.expect(body.usage.seconds, raw).to.equal(182.439);",
+                  "  pm.expect(body.usage.input_tokens, 'the vendor reports no tokens: ' + raw).to.equal(undefined);",
+                  "});",
+                  "pm.test('the vendor body is in extra_fields.raw_response', function () {",
+                  "  var rr = body.extra_fields && body.extra_fields.raw_response;",
+                  "  pm.expect(rr, raw).to.be.an('object');",
+                  "  pm.expect(rr.durationMilliseconds, raw).to.equal(182439);",
+                  "});",
+                  "pm.test('the response names the provider and the key that served (contract C12)', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal('azurespeech');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal('azure-speech-fixture');",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('exactly one upstream call, to the fast transcription path with its api-version (contract C3)', function () {",
+                  "    pm.expect(calls, JSON.stringify(calls)).to.have.length(1);",
+                  "    pm.expect(calls[0].path, JSON.stringify(calls)).to.equal(STT);",
+                  "    pm.expect(calls[0].query, JSON.stringify(calls)).to.equal('?api-version=2025-10-15');",
+                  "    pm.expect(calls[0].headers.subscription_key, JSON.stringify(calls)).to.equal('test-key');",
+                  "    pm.expect(calls[0].headers.content_type, JSON.stringify(calls)).to.include('multipart/form-data');",
+                  "  });",
+                  "  pm.test('the form carries the audio part and the definition', function () {",
+                  "    pm.expect(calls[0].audio_bytes, JSON.stringify(calls)).to.be.above(0);",
+                  "    var def = JSON.parse(calls[0].body);",
+                  "    pm.expect(def.enhancedMode, calls[0].body).to.eql({ enabled: true, model: 'MAI-Transcribe-2' });",
+                  "    pm.expect(def.locales, calls[0].body).to.eql(['en']);",
+                  "    pm.expect(def.phraseList, calls[0].body).to.eql({ phrases: ['Contoso', 'Sam'] });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "azure-speech-fixture"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azurespeech/mai-transcribe-2",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "language",
+                  "value": "en",
+                  "type": "text"
+                },
+                {
+                  "key": "phraseList",
+                  "value": "{\"phrases\":[\"Contoso\",\"Sam\"]}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "330.5 azurespeech /openai/v1/audio/transcriptions azurespeech/mai-transcribe-2 language and extra fields reach fast transcription as the multipart audio + definition, once, and text and usage.seconds come back from durationMilliseconds (azure speech provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('azure speech setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var TTS = '/tts/cognitiveservices/v1';",
+                  "var STT = '/speechtotext/transcriptions:transcribe';",
+                  "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === TTS || c.path === STT; })); }); }",
+                  "var raw = pm.response.text() || '';",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 200 with the joined text', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(body.text, raw).to.equal('Good afternoon. This is Sam.');",
+                  "});",
+                  "pm.test('usage is the vendor duration in seconds (contract C5)', function () {",
+                  "  pm.expect(body.usage, raw).to.be.an('object');",
+                  "  pm.expect(body.usage.type, raw).to.equal('duration');",
+                  "  pm.expect(body.usage.seconds, raw).to.equal(182.439);",
+                  "  pm.expect(body.usage.input_tokens, 'the vendor reports no tokens: ' + raw).to.equal(undefined);",
+                  "});",
+                  "pm.test('the vendor body is in extra_fields.raw_response', function () {",
+                  "  var rr = body.extra_fields && body.extra_fields.raw_response;",
+                  "  pm.expect(rr, raw).to.be.an('object');",
+                  "  pm.expect(rr.durationMilliseconds, raw).to.equal(182439);",
+                  "});",
+                  "pm.test('the response names the provider and the key that served (contract C12)', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal('azurespeech');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal('azure-speech-fixture');",
+                  "});",
+                  "wire(function (calls) {",
+                  "  pm.test('exactly one upstream call, to the fast transcription path with its api-version (contract C3)', function () {",
+                  "    pm.expect(calls, JSON.stringify(calls)).to.have.length(1);",
+                  "    pm.expect(calls[0].path, JSON.stringify(calls)).to.equal(STT);",
+                  "    pm.expect(calls[0].query, JSON.stringify(calls)).to.equal('?api-version=2025-10-15');",
+                  "    pm.expect(calls[0].headers.subscription_key, JSON.stringify(calls)).to.equal('test-key');",
+                  "    pm.expect(calls[0].headers.content_type, JSON.stringify(calls)).to.include('multipart/form-data');",
+                  "  });",
+                  "  pm.test('the form carries the audio part and the definition', function () {",
+                  "    pm.expect(calls[0].audio_bytes, JSON.stringify(calls)).to.be.above(0);",
+                  "    var def = JSON.parse(calls[0].body);",
+                  "    pm.expect(def.enhancedMode, calls[0].body).to.eql({ enabled: true, model: 'MAI-Transcribe-2' });",
+                  "    pm.expect(def.locales, calls[0].body).to.eql(['en']);",
+                  "    pm.expect(def.phraseList, calls[0].body).to.eql({ phrases: ['Contoso', 'Sam'] });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "azure-speech-fixture"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azurespeech/mai-transcribe-2",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "language",
+                  "value": "en",
+                  "type": "text"
+                },
+                {
+                  "key": "phraseList",
+                  "value": "{\"phrases\":[\"Contoso\",\"Sam\"]}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] 330.6 azurespeech /v1/audio/speech azurespeech/mai-voice-2.1-flash with instructions, a unified field Azure AI Speech has no place for, is refused with caller_unsupported_parameter before any upstream call (azure speech provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('azure speech setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var TTS = '/tts/cognitiveservices/v1';",
+                  "var STT = '/speechtotext/transcriptions:transcribe';",
+                  "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === TTS || c.path === STT; })); }); }",
+                  "var raw = pm.response.text() || '';",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 400 caller_unsupported_parameter naming the field (contract C4)', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(400);",
+                  "  pm.expect(body.extra_fields && body.extra_fields.error_type, raw).to.equal('caller_unsupported_parameter');",
+                  "  pm.expect(body.error && body.error.param, raw).to.equal(\"instructions\");",
+                  "});",
+                  "wire(function (calls) { pm.test('nothing reached Azure AI Speech', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(0); }); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "azure-speech-fixture"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azurespeech/mai-voice-2.1-flash\",\n  \"input\": \"hi\",\n  \"voice\": \"en-US-Harper:MAI-Voice-2.1-Flash\",\n  \"instructions\": \"speak warmly\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] 330.7 azurespeech /v1/audio/speech azurespeech/mai-voice-2.1-flash with speed 3, outside the prosody rate range and never clamped, is refused with caller_unsupported_parameter before any upstream call (azure speech provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('azure speech setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var TTS = '/tts/cognitiveservices/v1';",
+                  "var STT = '/speechtotext/transcriptions:transcribe';",
+                  "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === TTS || c.path === STT; })); }); }",
+                  "var raw = pm.response.text() || '';",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 400 caller_unsupported_parameter naming the field (contract C4)', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(400);",
+                  "  pm.expect(body.extra_fields && body.extra_fields.error_type, raw).to.equal('caller_unsupported_parameter');",
+                  "  pm.expect(body.error && body.error.param, raw).to.equal(\"speed\");",
+                  "});",
+                  "wire(function (calls) { pm.test('nothing reached Azure AI Speech', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(0); }); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "azure-speech-fixture"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azurespeech/mai-voice-2.1-flash\",\n  \"input\": \"hi\",\n  \"voice\": \"en-US-Harper:MAI-Voice-2.1-Flash\",\n  \"speed\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] 330.8 azurespeech /v1/audio/transcriptions azurespeech/mai-transcribe-2 with response_format srt, which the JSON-only API cannot produce, is refused with caller_unsupported_parameter before any upstream call (azure speech provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('azure speech setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var TTS = '/tts/cognitiveservices/v1';",
+                  "var STT = '/speechtotext/transcriptions:transcribe';",
+                  "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === TTS || c.path === STT; })); }); }",
+                  "var raw = pm.response.text() || '';",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 400 caller_unsupported_parameter naming the field (contract C4)', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(400);",
+                  "  pm.expect(body.extra_fields && body.extra_fields.error_type, raw).to.equal('caller_unsupported_parameter');",
+                  "  pm.expect(body.error && body.error.param, raw).to.equal(\"response_format\");",
+                  "});",
+                  "wire(function (calls) { pm.test('nothing reached Azure AI Speech', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(0); }); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "azure-speech-fixture"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azurespeech/mai-transcribe-2",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "response_format",
+                  "value": "srt",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-429] 330.9 azurespeech /v1/audio/speech azurespeech/mai-voice-2.1-flash a vendor 429 keeps the vendor status 429 and carries error_type provider_rate_limited, after one upstream call (azure speech provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('azure speech setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var TTS = '/tts/cognitiveservices/v1';",
+                  "var STT = '/speechtotext/transcriptions:transcribe';",
+                  "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === TTS || c.path === STT; })); }); }",
+                  "var raw = pm.response.text() || '';",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets the vendor status as a JSON error, not a stream', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(429);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', raw).to.include('application/json');",
+                  "  pm.expect(body.error, raw).to.be.an('object');",
+                  "});",
+                  "pm.test('the error carries extra_fields.error_type (contract C6)', function () {",
+                  "  pm.expect(body.extra_fields && body.extra_fields.error_type, raw).to.equal(\"provider_rate_limited\");",
+                  "});",
+                  "pm.test('a vendor error is not reported as Bifrost\\'s own', function () { pm.expect(body.is_bifrost_error, raw).to.not.equal(true); });",
+                  "wire(function (calls) { pm.test('exactly one upstream call: no retry and no key switch (contract C3)', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(1); }); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "azure-speech-fixture"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azurespeech/mai-voice-2.1-flash\",\n  \"input\": \"hi\",\n  \"voice\": \"azure-speech-429\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-429] 330.10 azurespeech /v1/audio/speech stream_format sse azurespeech/mai-voice-2.1-flash a vendor 429 before the first frame keeps the vendor status 429 and carries error_type provider_rate_limited, after one upstream call (azure speech provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('azure speech setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var TTS = '/tts/cognitiveservices/v1';",
+                  "var STT = '/speechtotext/transcriptions:transcribe';",
+                  "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === TTS || c.path === STT; })); }); }",
+                  "var raw = pm.response.text() || '';",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets the vendor status as a JSON error, not a stream', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(429);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', raw).to.include('application/json');",
+                  "  pm.expect(body.error, raw).to.be.an('object');",
+                  "});",
+                  "pm.test('the error carries extra_fields.error_type (contract C6)', function () {",
+                  "  pm.expect(body.extra_fields && body.extra_fields.error_type, raw).to.equal(\"provider_rate_limited\");",
+                  "});",
+                  "pm.test('a vendor error is not reported as Bifrost\\'s own', function () { pm.expect(body.is_bifrost_error, raw).to.not.equal(true); });",
+                  "pm.test('no SSE frame was sent', function () { pm.expect(raw, raw).to.not.match(/^data:/m); });",
+                  "wire(function (calls) { pm.test('exactly one upstream call: no retry and no key switch (contract C3)', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(1); }); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "azure-speech-fixture"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azurespeech/mai-voice-2.1-flash\",\n  \"input\": \"hi\",\n  \"voice\": \"azure-speech-429\",\n  \"stream_format\": \"sse\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-422] 330.11 azurespeech /v1/audio/transcriptions azurespeech/azure-speech-422 a vendor 422 keeps the vendor status 422 and carries error_type caller_invalid_request, after one upstream call (azure speech provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('azure speech setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var TTS = '/tts/cognitiveservices/v1';",
+                  "var STT = '/speechtotext/transcriptions:transcribe';",
+                  "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === TTS || c.path === STT; })); }); }",
+                  "var raw = pm.response.text() || '';",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets the vendor status as a JSON error, not a stream', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(422);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', raw).to.include('application/json');",
+                  "  pm.expect(body.error, raw).to.be.an('object');",
+                  "});",
+                  "pm.test('the error carries extra_fields.error_type (contract C6)', function () {",
+                  "  pm.expect(body.extra_fields && body.extra_fields.error_type, raw).to.equal(\"caller_invalid_request\");",
+                  "});",
+                  "pm.test('a vendor error is not reported as Bifrost\\'s own', function () { pm.expect(body.is_bifrost_error, raw).to.not.equal(true); });",
+                  "pm.test('error.code and error.message are the vendor\\'s', function () {",
+                  "  pm.expect(body.error.code, raw).to.equal('InvalidRequest');",
+                  "  pm.expect(body.error.message, raw).to.include('The request is invalid.');",
+                  "});",
+                  "wire(function (calls) { pm.test('exactly one upstream call: no retry and no key switch (contract C3)', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(1); }); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "azure-speech-fixture"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "azurespeech/azure-speech-422",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-502] 330.12 azurespeech /v1/audio/speech azurespeech/mai-voice-2.1-flash a vendor 200 with no audio and no error object is answered 502 and carries error_type provider_empty_result, after one upstream call (azure speech provider)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "pm.sendRequest({ url: FX + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('azure speech setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl') || 'http://127.0.0.1:8791';",
+                  "var TTS = '/tts/cognitiveservices/v1';",
+                  "var STT = '/speechtotext/transcriptions:transcribe';",
+                  "// wire: the requests that reached the fixture's Azure AI Speech paths since this case reset it.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls.filter(function (c) { return c.path === TTS || c.path === STT; })); }); }",
+                  "var raw = pm.response.text() || '';",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets the vendor status as a JSON error, not a stream', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(502);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', raw).to.include('application/json');",
+                  "  pm.expect(body.error, raw).to.be.an('object');",
+                  "});",
+                  "pm.test('the error carries extra_fields.error_type (contract C6)', function () {",
+                  "  pm.expect(body.extra_fields && body.extra_fields.error_type, raw).to.equal(\"provider_empty_result\");",
+                  "});",
+                  "pm.test('a vendor error is not reported as Bifrost\\'s own', function () { pm.expect(body.is_bifrost_error, raw).to.not.equal(true); });",
+                  "wire(function (calls) { pm.test('exactly one upstream call: no retry and no key switch (contract C3)', function () { pm.expect(calls, JSON.stringify(calls)).to.have.length(1); }); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "azure-speech-fixture"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azurespeech/mai-voice-2.1-flash\",\n  \"input\": \"hi\",\n  \"voice\": \"azure-speech-empty\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "280. OpenAI passthrough Responses stream ends on response.completed (PR #9177) (passthrough responses end event)",
       "description": "Codex CLI and Codex Desktop close the connection as soon as they read response.completed. The OpenAI passthrough stream used to finish only on upstream EOF, so a client that hung up first was logged as cancelled (499, 'Request cancelled: client disconnected') with no usage. core/providers/utils/passthrough_stream.go now finishes the stream on a provider end event (PassthroughStreamParams.EndsStream; OpenAI matches response.completed, response.failed, response.incomplete and error) and abandons the upstream body instead of draining it. newman reads the stream to EOF, so it cannot reproduce the early hangup; that is pinned by TestStreamPassthrough_EndsStreamFinalizesBeforeClientHangup and TestStreamPassthrough_EndsStreamAbandonsParkedUpstream. This case pins the wire path: a streamed Responses request through /openai_passthrough completes, and its log row ends as success with the usage from response.completed.",
       "item": [

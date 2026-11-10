@@ -387,6 +387,33 @@ To see the folder red, start the gateway on a copy of the config with both switc
 reports the switches off, the video sweeper polls `GET /v1/videos/{id}` within a minute, and the
 passthrough body carries `: heartbeat` lines.
 
+## Azure AI Speech
+
+Folder 330 pins the `azurespeech` provider against the same local fixture, with no live provider calls:
+the SSML and `X-Microsoft-OutputFormat` of a speech request, audio chunks forwarded on arrival for a
+streamed one, the multipart `audio` + `definition` of a transcription and the `usage.seconds` read from
+`durationMilliseconds`, the `caller_unsupported_parameter` refusals, and vendor errors that keep their
+status. The fixture serves the text to speech API on `/tts/cognitiveservices/v1` and fast transcription on
+`/speechtotext/transcriptions:transcribe`, the paths a resource endpoint serves them on; the config's
+`azurespeech` key names the fixture in `azure_key_config.endpoint`. The voice name in the SSML picks the
+speech behaviour (`azure-speech-429`, `azure-speech-empty`, `azure-speech-gapped`; any other voice answers
+audio) and `definition.enhancedMode.model` picks the transcription behaviour (`MAI-Transcribe-2` answers
+the quickstart response, `azure-speech-422` a 422 error body). Each call is kept in `GET /__wire` with its
+headers; a transcription call is kept as its definition and the size of its audio part.
+
+Start the fixture and the isolated gateway as in the provider error fixture section above, then run:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "330. Azure AI Speech: SSML speech, streamed speech and fast transcription (azure speech provider) [SERIAL]" \
+  --working-dir . \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1 \
+  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791
+```
+
+The cases are skipped unless `providerErrorFixture=1`.
+
 ## Vertex endpoint selection and header forwarding
 
 These deterministic cases use a local TLS-intercepting proxy and an isolated gateway. No traffic
