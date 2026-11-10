@@ -788,3 +788,167 @@ func TestSearchContextSizeSurvivesCopyMergeAndResponsesConversion(t *testing.T) 
 		t.Fatalf("ToBifrostLLMUsage lost the tier or the per-tool counts: %+v", back)
 	}
 }
+
+// stepFunChatBody is a chat completion in the shape of StepFun's API reference for its
+// international site (platform.stepfun.ai, chat completion object): the cache-hit count is a
+// top-level usage.cached_tokens and there is no prompt_tokens_details object. The usage numbers
+// are the ones in StepFun's prompt-cache guide: 512 of the 591 prompt tokens came from the cache.
+// No response recorded from a real request exists yet (the vendor keys are not issued).
+const stepFunChatBody = `{"id":"0190f7e2c1b27c1a9a0f6d1f3b2a4c5d","object":"chat.completion","created":1762761600,"model":"step-5-preview","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"cached_tokens":512,"prompt_tokens":591,"completion_tokens":120,"total_tokens":711}}`
+
+// A top-level usage.cached_tokens (StepFun) must land in prompt_tokens_details.cached_read_tokens
+// once the usage is normalized, in a whole response and in a streamed frame (StepFun sends usage
+// on its chunks in the same four fields), and must be served back at the unified path only
+// (contract C5).
+func TestBifrostLLMUsageNormalizeCachedTokens(t *testing.T) {
+	streamFrame := `{"id":"0190f7e2","object":"chat.completion.chunk","created":1762761600,"model":"step-5-preview","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"cached_tokens":512,"prompt_tokens":591,"completion_tokens":120,"total_tokens":711}}`
+	for label, body := range map[string]string{"response": stepFunChatBody, "stream frame": streamFrame} {
+		var resp BifrostChatResponse
+		if err := Unmarshal([]byte(body), &resp); err != nil {
+			t.Fatalf("%s: decode: %v", label, err)
+		}
+		resp.Usage.NormalizeVendorSpellings()
+		u := resp.Usage
+		if u == nil || u.PromptTokensDetails == nil {
+			t.Fatalf("%s: usage = %+v, want prompt_tokens_details set", label, u)
+		}
+		if got := u.PromptTokensDetails.CachedReadTokens; got != 512 {
+			t.Errorf("%s: cached_read_tokens = %d, want 512", label, got)
+		}
+		if u.CachedTokens != 0 {
+			t.Errorf("%s: top-level cached_tokens = %d after normalizing, want it cleared", label, u.CachedTokens)
+		}
+		if u.PromptTokens != 591 || u.CompletionTokens != 120 || u.TotalTokens != 711 {
+			t.Errorf("%s: token counts = %d/%d/%d, want 591/120/711", label, u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+		}
+		out, err := Marshal(u)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", label, err)
+		}
+		var served struct {
+			CachedTokens        *int `json:"cached_tokens"`
+			PromptTokensDetails struct {
+				CachedReadTokens int `json:"cached_read_tokens"`
+				CachedTokens     int `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+		}
+		if err := json.Unmarshal(out, &served); err != nil {
+			t.Fatalf("%s: decode served usage: %v", label, err)
+		}
+		if served.PromptTokensDetails.CachedReadTokens != 512 || served.PromptTokensDetails.CachedTokens != 512 {
+			t.Errorf("%s: served usage = %s, want cached_read_tokens and cached_tokens 512 under prompt_tokens_details", label, out)
+		}
+		if served.CachedTokens != nil {
+			t.Errorf("%s: served usage = %s, want no top-level cached_tokens", label, out)
+		}
+	}
+}
+
+// The top-level count is a fallback only: a cached-read count nested under prompt_tokens_details
+// wins, and a vendor that reports zero or nothing gets no prompt_tokens_details invented for it.
+func TestBifrostLLMUsageNormalizeCachedTokensPrecedence(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        string
+		wantDetails bool
+		wantRead    int
+		wantWrite   int
+		wantText    int
+	}{
+		{"nested cached_tokens wins", `{"prompt_tokens":10,"cached_tokens":9,"prompt_tokens_details":{"cached_tokens":4}}`, true, 4, 0, 0},
+		{"nested cached_read_tokens wins", `{"prompt_tokens":10,"cached_tokens":9,"prompt_tokens_details":{"cached_read_tokens":3}}`, true, 3, 0, 0},
+		{"nested details without a cached count take the top-level one", `{"prompt_tokens":10,"cached_tokens":9,"prompt_tokens_details":{"text_tokens":10}}`, true, 9, 0, 10},
+		{"nested cache writes are kept beside the top-level read", `{"prompt_tokens":10,"cached_tokens":9,"prompt_tokens_details":{"cached_write_tokens":2}}`, true, 9, 2, 0},
+		{"top-level zero creates nothing", `{"prompt_tokens":10,"cached_tokens":0}`, false, 0, 0, 0},
+		{"top-level null creates nothing", `{"prompt_tokens":10,"cached_tokens":null}`, false, 0, 0, 0},
+		{"absent creates nothing", `{"prompt_tokens":10}`, false, 0, 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var u BifrostLLMUsage
+			if err := Unmarshal([]byte(tc.body), &u); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			u.NormalizeVendorSpellings()
+			if u.PromptTokens != 10 {
+				t.Errorf("prompt_tokens = %d, want 10", u.PromptTokens)
+			}
+			if u.CachedTokens != 0 {
+				t.Errorf("top-level cached_tokens = %d after normalizing, want it cleared", u.CachedTokens)
+			}
+			if !tc.wantDetails {
+				if u.PromptTokensDetails != nil {
+					t.Fatalf("prompt_tokens_details = %+v, want nil", u.PromptTokensDetails)
+				}
+				return
+			}
+			if u.PromptTokensDetails == nil {
+				t.Fatal("prompt_tokens_details = nil")
+			}
+			d := u.PromptTokensDetails
+			if d.CachedReadTokens != tc.wantRead || d.CachedWriteTokens != tc.wantWrite || d.TextTokens != tc.wantText {
+				t.Errorf("details read/write/text = %d/%d/%d, want %d/%d/%d", d.CachedReadTokens, d.CachedWriteTokens, d.TextTokens, tc.wantRead, tc.wantWrite, tc.wantText)
+			}
+		})
+	}
+	var nilUsage *BifrostLLMUsage
+	nilUsage.NormalizeCachedTokens()
+	nilUsage.NormalizeVendorSpellings()
+}
+
+// StepFun sends usage on every streamed chunk. Each frame is normalized as it is decoded, so the
+// accumulated usage carries the cached count at the unified path and never the top-level one.
+func TestMergeStreamFrameCarriesNormalizedCachedTokens(t *testing.T) {
+	acc := &BifrostLLMUsage{}
+	for _, body := range []string{
+		`{"cached_tokens":512,"prompt_tokens":591,"completion_tokens":1,"total_tokens":592}`,
+		`{"cached_tokens":512,"prompt_tokens":591,"completion_tokens":120,"total_tokens":711}`,
+	} {
+		var frame BifrostLLMUsage
+		if err := Unmarshal([]byte(body), &frame); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		frame.NormalizeVendorSpellings()
+		acc.MergeStreamFrame(&frame)
+	}
+	if acc.PromptTokensDetails == nil || acc.PromptTokensDetails.CachedReadTokens != 512 {
+		t.Fatalf("accumulated details = %+v, want cached_read_tokens 512", acc.PromptTokensDetails)
+	}
+	if acc.CachedTokens != 0 || acc.CompletionTokens != 120 || acc.TotalTokens != 711 {
+		t.Errorf("accumulated usage = %+v, want no top-level cached_tokens, completion 120, total 711", acc)
+	}
+}
+
+// BenchmarkBifrostLLMUsageNormalizeVendorSpellings measures the response-path cost of decoding a
+// usage object and normalizing it (TXE-6439). A usage with no top-level vendor spelling, which
+// is every vendor but SGLang and StepFun, must pay nothing beyond the decode: the normalizer is
+// two integer comparisons there. Only the StepFun row allocates, for the details object it fills.
+func BenchmarkBifrostLLMUsageNormalizeVendorSpellings(b *testing.B) {
+	bodies := map[string][]byte{
+		"tokens-only":      []byte(`{"prompt_tokens":591,"completion_tokens":120,"total_tokens":711}`),
+		"nested-details":   []byte(`{"prompt_tokens":591,"completion_tokens":120,"total_tokens":711,"prompt_tokens_details":{"cached_tokens":512,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":4,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}}`),
+		"top-level-cached": []byte(`{"cached_tokens":512,"prompt_tokens":591,"completion_tokens":120,"total_tokens":711}`),
+	}
+	for _, name := range []string{"tokens-only", "nested-details", "top-level-cached"} {
+		body := bodies[name]
+		b.Run("decode/"+name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var u BifrostLLMUsage
+				if err := Unmarshal(body, &u); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run("decode-and-normalize/"+name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var u BifrostLLMUsage
+				if err := Unmarshal(body, &u); err != nil {
+					b.Fatal(err)
+				}
+				u.NormalizeVendorSpellings()
+			}
+		})
+	}
+}

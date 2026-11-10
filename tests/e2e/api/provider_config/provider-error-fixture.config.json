@@ -261,6 +261,110 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "tencent_tokenhub": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false,
+        "allowed_requests": {
+          "chat_completion": true,
+          "chat_completion_stream": true,
+          "responses": true,
+          "responses_stream": true
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/tencent",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "stepfun": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false,
+        "allowed_requests": {
+          "chat_completion": true,
+          "chat_completion_stream": true,
+          "speech": true
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/stepfun",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "stepfun_cn": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false,
+        "allowed_requests": {
+          "chat_completion": true,
+          "chat_completion_stream": true,
+          "transcription": true
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/stepfun-cn",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "xiaomi": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false,
+        "allowed_requests": {
+          "chat_completion": true,
+          "chat_completion_stream": true
+        }
+      },
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/xiaomi",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
     "xai": {
       "keys": [
         {

@@ -644,12 +644,49 @@ const bflResult = (id) => {
 	}
 };
 
+// Tencent, StepFun and Xiaomi chat on openai-based custom providers, TXE-6439 (contract C5, C12). The fixture gateway
+// config points one custom provider per vendor site at /pp/<site>, written as Tokun's reconciler writes them, and each
+// site answers with the usage shape its vendor documents:
+//   stepfun     international site (api.stepfun.ai): the cache hits are a top-level usage.cached_tokens with no
+//               prompt_tokens_details, and a stream carries usage on every chunk. The numbers are the ones in
+//               StepFun's prompt-cache guide (512 of 591 prompt tokens from the cache).
+//   stepfun-cn  domestic site (api.stepfun.com): the same count nested as prompt_tokens_details.cached_tokens.
+//   tencent     TokenHub: the usage block of TokenHub's response reference.
+//   xiaomi      the three token counts only; Xiaomi's full usage page was not found.
+// No response recorded from a real request exists for any of them yet, so these are the documented shapes.
+const vendorChatUsage = {
+	stepfun: { cached_tokens: 512, prompt_tokens: 591, completion_tokens: 120, total_tokens: 711 },
+	"stepfun-cn": { prompt_tokens: 591, completion_tokens: 120, total_tokens: 711, prompt_tokens_details: { cached_tokens: 512 } },
+	tencent: { prompt_tokens: 25, completion_tokens: 120, total_tokens: 145, completion_tokens_details: { reasoning_tokens: 0 }, prompt_tokens_details: { cached_tokens: 0 } },
+	xiaomi: { prompt_tokens: 25, completion_tokens: 120, total_tokens: 145 },
+};
+const vendorChatAnswer = (site, body) => {
+	const usage = vendorChatUsage[site];
+	const base = { id: `chatcmpl_${site}`, created: 1, model: body.model };
+	if (body.stream !== true) {
+		return { status: 200, body: JSON.stringify({ ...base, object: "chat.completion", choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage }) };
+	}
+	// StepFun sends usage on every chunk; the others send it once, on a trailing frame with no choices, and only
+	// when stream_options.include_usage asks for it.
+	const everyChunk = site === "stepfun";
+	const chunk = (choices, withUsage) => ({ ...base, object: "chat.completion.chunk", choices, ...(withUsage ? { usage } : {}) });
+	const chunks = [
+		chunk([{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }], everyChunk),
+		chunk([{ index: 0, delta: { content: "hello" }, finish_reason: null }], everyChunk),
+		chunk([{ index: 0, delta: {}, finish_reason: "stop" }], everyChunk),
+	];
+	if (!everyChunk && body.stream_options && body.stream_options.include_usage) chunks.push(chunk([], true));
+	return { status: 200, stream: chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n" };
+};
+
 const wireAnswer = (path, body, bytes) => {
 	if (path.startsWith("/pp/bfl/v1/")) return { status: 200, body: JSON.stringify(bflSubmitAnswer()) };
 	if (isOpenAIImagePath(path)) return openAIImageAnswer(body, bytes, path === "/v1/images/edits");
 	const geminiImage = geminiImageAnswerFor(path);
 	if (geminiImage) return geminiImage;
 	if (path === "/pp/gemini/files") return geminiFileUpload();
+	const vendorChat = /^\/pp\/(tencent|stepfun|stepfun-cn|xiaomi)\/v1\/chat\/completions$/.exec(path);
+	if (vendorChat) return vendorChatAnswer(vendorChat[1], body);
 	if (path === "/pp/bounds/v1/chat/completions") {
 		return { status: 200, body: JSON.stringify({ id: "chatcmpl_bounds", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
 	}
@@ -906,6 +943,11 @@ const server = http.createServer((req, res) => {
 			// plugin would drop or lower for them shows in the request the fixture records.
 			"cp-capped": { provider: "cp_plain", mode: "chat", max_output_tokens: 64, supported_endpoints: ["/v1/chat/completions", "/v1/responses"] },
 			"oc-capped": { provider: "moonshot", mode: "chat", max_output_tokens: 64 },
+			// TXE-6439: a capability record on each vendor custom provider that lists its service tiers, so a tier
+			// outside the list is one the model cannot take (folder 408).
+			"hy-tiered": { provider: "tencent_tokenhub", mode: "chat", service_tiers: ["default", "priority"] },
+			"step-tiered": { provider: "stepfun", mode: "chat", service_tiers: ["default", "priority"] },
+			"mimo-tiered": { provider: "xiaomi", mode: "chat", service_tiers: ["default", "priority"] },
 		}));
 	}
 	if (req.method === "POST" && path === "/__reset") {

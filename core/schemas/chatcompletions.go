@@ -1953,6 +1953,7 @@ type BifrostLLMUsage struct {
 	CompletionTokens        int                          `json:"completion_tokens,omitempty"`
 	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
 	ReasoningTokens         int                          `json:"reasoning_tokens,omitempty"` // SGLang's top-level spelling; folded by NormalizeReasoningTokens
+	CachedTokens            int                          `json:"cached_tokens,omitempty"`    // StepFun's top-level spelling; folded by NormalizeCachedTokens
 	TotalTokens             int                          `json:"total_tokens"`
 	// AudioSeconds carries duration-based audio usage when a provider reports
 	// seconds instead of tokens.
@@ -2039,6 +2040,32 @@ func (u *BifrostLLMUsage) NormalizeReasoningTokens() {
 		u.CompletionTokensDetails.ReasoningTokens = u.ReasoningTokens
 	}
 	u.ReasoningTokens = 0
+}
+
+// NormalizeCachedTokens folds a top-level cached_tokens into PromptTokensDetails.CachedReadTokens,
+// keeping a nested value if set. StepFun's international site reports its cache hits there, with
+// no prompt_tokens_details object (Bifrost-Tokun contract C5). A zero or absent count creates
+// nothing: a field the vendor did not report stays empty.
+func (u *BifrostLLMUsage) NormalizeCachedTokens() {
+	if u == nil || u.CachedTokens == 0 {
+		return
+	}
+	if u.PromptTokensDetails == nil {
+		u.PromptTokensDetails = &ChatPromptTokensDetails{}
+	}
+	if u.PromptTokensDetails.CachedReadTokens == 0 {
+		u.PromptTokensDetails.CachedReadTokens = u.CachedTokens
+	}
+	u.CachedTokens = 0
+}
+
+// NormalizeVendorSpellings moves every top-level field an OpenAI-compatible vendor reports under
+// its own name into the unified location, and clears it. Decode sites call this one method, so a
+// spelling added later needs no new call. It costs two integer comparisons on a usage that
+// carries none of them.
+func (u *BifrostLLMUsage) NormalizeVendorSpellings() {
+	u.NormalizeReasoningTokens()
+	u.NormalizeCachedTokens()
 }
 
 type ChatPromptTokensDetails struct {
