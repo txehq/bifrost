@@ -3824,6 +3824,11 @@ func HandleOpenAIImageGenerationRequest(
 		}, nil
 	}
 
+	// A unified field OpenAI's images API cannot take is refused, never dropped (TXE-6528).
+	if fieldErr := checkOpenAIImageGenerationFields(ctx, request); fieldErr != nil {
+		return nil, fieldErr
+	}
+
 	// Use centralized converter
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
@@ -3962,6 +3967,11 @@ func HandleOpenAIImageGenerationStreaming(
 	if authHeader != nil {
 		// Copy auth header to headers
 		maps.Copy(headers, authHeader)
+	}
+
+	// A unified field OpenAI's images API cannot take is refused, never dropped (TXE-6528).
+	if fieldErr := checkOpenAIImageGenerationFields(ctx, request); fieldErr != nil {
+		return nil, fieldErr
 	}
 
 	jsonBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
@@ -5571,11 +5581,11 @@ func HandleOpenAIImageEditRequest(
 	// Create multipart form
 	// Time the multipart encode as the request-marshal phase.
 	mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	if err := parseImageEditFormDataBodyFromRequest(writer, openaiReq, providerName, passthroughExtraParamsEnabled(ctx)); err != nil {
+	// Multipart, or OpenAI's JSON edit body when an input image is only a URL (TXE-6528).
+	bodyData, bodyContentType, err := buildImageEditRequestBody(openaiReq, providerName, passthroughExtraParamsEnabled(ctx))
+	if err != nil {
 		if mt != nil {
-			mt.EndSpan(mh, schemas.SpanStatusError, "multipart encode failed")
+			mt.EndSpan(mh, schemas.SpanStatusError, "request body encode failed")
 		}
 		return nil, err
 	}
@@ -5583,8 +5593,7 @@ func HandleOpenAIImageEditRequest(
 		mt.EndSpan(mh, schemas.SpanStatusOk, "")
 	}
 
-	req.Header.SetContentType(writer.FormDataContentType())
-	bodyData := body.Bytes()
+	req.Header.SetContentType(bodyContentType)
 	timedSetBody(ctx, req, bodyData)
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
@@ -5703,12 +5712,11 @@ func HandleOpenAIImageEditStreamRequest(
 	// Create multipart form
 	// Time the multipart encode as the request-marshal phase.
 	mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-
-	if bifrostErr := parseImageEditFormDataBodyFromRequest(writer, reqBody, providerName, passthroughExtraParamsEnabled(ctx)); bifrostErr != nil {
+	// Multipart, or OpenAI's JSON edit body when an input image is only a URL (TXE-6528).
+	bodyData, bodyContentType, bifrostErr := buildImageEditRequestBody(reqBody, providerName, passthroughExtraParamsEnabled(ctx))
+	if bifrostErr != nil {
 		if mt != nil {
-			mt.EndSpan(mh, schemas.SpanStatusError, "multipart encode failed")
+			mt.EndSpan(mh, schemas.SpanStatusError, "request body encode failed")
 		}
 		return nil, bifrostErr
 	}
@@ -5718,7 +5726,7 @@ func HandleOpenAIImageEditStreamRequest(
 
 	// Prepare OpenAI headers
 	headers := map[string]string{
-		"Content-Type":  writer.FormDataContentType(),
+		"Content-Type":  bodyContentType,
 		"Accept":        "text/event-stream",
 		"Cache-Control": "no-cache",
 	}
@@ -5744,7 +5752,7 @@ func HandleOpenAIImageEditStreamRequest(
 		req.Header.Set(key, value)
 	}
 
-	req.SetBody(body.Bytes())
+	req.SetBody(bodyData)
 
 	startTime := time.Now()
 	// Make the request

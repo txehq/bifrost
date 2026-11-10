@@ -236,3 +236,44 @@ test("upstream-speech-empty answers 200 with an empty audio body and a vendor re
   assert.equal(res.headers.get("x-request-id"), "fixture-speech-empty");
   assert.equal((await res.arrayBuffer()).byteLength, 0);
 });
+
+// TXE-6528: the openai provider's images API. A JSON or multipart request to /v1/images/generations or
+// /v1/images/edits is recorded on /__wire with its Content-Type, answered with n images and OpenAI's token usage
+// (no image count), and gpt-image-blocked gets OpenAI's moderation block.
+test("OpenAI image paths answer in the gpt-image shape, record the wire, and block gpt-image-blocked", async (t) => {
+  const post = await startFixture(t);
+  const generated = await post({ model: "gpt-image-1.5", prompt: "a fox", n: 2 }, "/v1/images/generations");
+  assert.equal(generated.status, 200);
+  const body = await generated.json();
+  assert.equal(body.data.length, 2);
+  assert.deepEqual(body.usage, { input_tokens: 12, input_tokens_details: { image_tokens: 0, text_tokens: 12 }, output_tokens: 544, output_tokens_details: { image_tokens: 544, text_tokens: 0 }, total_tokens: 556 });
+  assert.equal(body.usage.output_images, undefined, "OpenAI reports no image count");
+
+  const form = new FormData();
+  form.set("model", "gpt-image-blocked");
+  form.set("prompt", "blocked");
+  form.set("image[]", new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: "image/png" }), "image0.png");
+  const blocked = await fetch(`http://127.0.0.1:${post.port}/v1/images/edits`, { method: "POST", body: form });
+  assert.equal(blocked.status, 400);
+  assert.equal((await blocked.json()).error.code, "moderation_blocked");
+
+  const edited = new FormData();
+  edited.set("model", "gpt-image-1.5");
+  edited.set("prompt", "two hats");
+  edited.set("n", "2");
+  const twice = await fetch(`http://127.0.0.1:${post.port}/v1/images/edits`, { method: "POST", body: edited });
+  assert.equal((await twice.json()).data.length, 2, "n is read from a multipart form");
+
+  const streamed = await post({ model: "gpt-image-1.5", prompt: "a hat", images: [{ image_url: "https://images.example.invalid/a.png" }], stream: true }, "/v1/images/edits");
+  assert.equal(streamed.status, 200);
+  assert.match(streamed.headers.get("content-type"), /^text\/event-stream/);
+  const events = (await streamed.text()).split("\n\n").filter(Boolean).map((e) => JSON.parse(e.split("\ndata: ")[1]));
+  assert.deepEqual(events.map((e) => e.type), ["image_edit.partial_image", "image_edit.completed"]);
+  assert.equal(events[1].usage.total_tokens, 284);
+
+  const wire = await (await fetch(`http://127.0.0.1:${post.port}/__wire`)).json();
+  const calls = wire.data[0].calls;
+  assert.deepEqual(calls.map((c) => c.path), ["/v1/images/generations", "/v1/images/edits", "/v1/images/edits", "/v1/images/edits"]);
+  assert.equal(calls[0].contentType, "application/json");
+  assert.match(calls[1].contentType, /^multipart\/form-data/);
+});

@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"bytes"
+	"encoding/base64"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -53,6 +55,50 @@ func filterOpenAISpecificParameters(req *OpenAIImageGenerationRequest) {
 	req.ImageGenerationParameters.Seed = nil
 	req.NumInferenceSteps = nil
 	req.NegativePrompt = nil
+}
+
+// checkOpenAIImageGenerationFields refuses an image generation request to OpenAI or Azure that
+// carries a unified field their images API has no field for (fork, TXE-6528, contract C4): 400
+// caller_unsupported_parameter with error.param naming the field, before any upstream call. These
+// fields change what is generated and what it costs, so they are never dropped: aspect_ratio,
+// input_images, resolution and type. The first one set, in alphabetical order, is the one named,
+// as schemas.CheckUnifiedFields names it. seed, negative_prompt and num_inference_steps are still
+// dropped by filterOpenAISpecificParameters: the contract does not count them as price-affecting.
+//
+// Other providers that share ToOpenAIImageGenerationRequest are not checked here. A request whose
+// body Bifrost does not build (raw request body, large payload passthrough) is not checked either:
+// the caller's body reaches the vendor as sent, so nothing is dropped.
+func checkOpenAIImageGenerationFields(ctx *schemas.BifrostContext, request *schemas.BifrostImageGenerationRequest) *schemas.BifrostError {
+	if request == nil || request.Params == nil {
+		return nil
+	}
+	if request.Provider != schemas.OpenAI && request.Provider != schemas.Azure {
+		return nil
+	}
+	params := request.Params
+	var param string
+	switch {
+	case params.AspectRatio != nil:
+		param = "aspect_ratio"
+	case len(params.InputImages) > 0:
+		param = "input_images"
+	case params.Resolution != "":
+		param = "resolution"
+	case params.Type != nil:
+		param = "type"
+	default:
+		return nil
+	}
+	// Only a request about to be refused pays for the context lookups.
+	if ctx != nil {
+		if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+			return nil
+		}
+		if _, raw := providerUtils.CheckAndGetRawRequestBody(ctx, request); raw {
+			return nil
+		}
+	}
+	return schemas.NewUnsupportedParameterError(param, "")
 }
 
 // ToBifrostImageGenerationRequest converts an OpenAI image generation request to Bifrost format
@@ -125,6 +171,145 @@ func ToOpenAIImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Open
 	}
 
 	return req
+}
+
+// OpenAIImageEditJSONRequest is the JSON body of OpenAI's POST /v1/images/edits: the same edit as
+// the multipart form, with every input image given as a reference (a URL or a data URL) instead of
+// an uploaded file (fork, TXE-6528, contract C4).
+type OpenAIImageEditJSONRequest struct {
+	Model             string                     `json:"model"`
+	Prompt            string                     `json:"prompt"`
+	Images            []OpenAIImageEditReference `json:"images"`
+	Mask              *OpenAIImageEditReference  `json:"mask,omitempty"`
+	Stream            *bool                      `json:"stream,omitempty"`
+	N                 *int                       `json:"n,omitempty"`
+	Size              *string                    `json:"size,omitempty"`
+	ResponseFormat    *string                    `json:"response_format,omitempty"`
+	Quality           *string                    `json:"quality,omitempty"`
+	Background        *string                    `json:"background,omitempty"`
+	InputFidelity     *string                    `json:"input_fidelity,omitempty"`
+	PartialImages     *int                       `json:"partial_images,omitempty"`
+	OutputFormat      *string                    `json:"output_format,omitempty"`
+	OutputCompression *int                       `json:"output_compression,omitempty"`
+	User              *string                    `json:"user,omitempty"`
+	ExtraParams       map[string]interface{}     `json:"-"`
+}
+
+// OpenAIImageEditReference is one image of a JSON image edit: a fully qualified URL or a base64
+// data URL.
+type OpenAIImageEditReference struct {
+	ImageURL string `json:"image_url"`
+}
+
+// GetExtraParams implements providerUtils.RequestBodyWithExtraParams.
+func (r *OpenAIImageEditJSONRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// imageEditHasURLOnlyInput reports whether any input image carries a URL and no bytes. Such an
+// image cannot be written as a multipart file part without downloading it.
+func imageEditHasURLOnlyInput(openaiReq *OpenAIImageEditRequest) bool {
+	if openaiReq == nil || openaiReq.Input == nil {
+		return false
+	}
+	for i := range openaiReq.Input.Images {
+		if len(openaiReq.Input.Images[i].Image) == 0 && openaiReq.Input.Images[i].URL != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// imageBytesDataURL encodes image bytes as a base64 data URL, with the MIME type the multipart
+// path would give the file part (PNG when the bytes are not a recognised image).
+func imageBytesDataURL(image []byte) string {
+	mimeType := http.DetectContentType(image)
+	if mimeType != "image/png" && mimeType != "image/jpeg" && mimeType != "image/webp" {
+		mimeType = "image/png"
+	}
+	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(image)
+}
+
+// toOpenAIImageEditJSONRequest converts an image edit into OpenAI's JSON edit body. A URL input
+// goes out exactly as the caller gave it: Bifrost does not download it or rewrite it. An input
+// that came as bytes in the same request (and a mask, which is always bytes) is sent as a data
+// URL, because a JSON body has no file parts. The scalar fields are the ones the multipart form
+// carries.
+func toOpenAIImageEditJSONRequest(openaiReq *OpenAIImageEditRequest) *OpenAIImageEditJSONRequest {
+	jsonReq := &OpenAIImageEditJSONRequest{
+		Model:             openaiReq.Model,
+		Prompt:            openaiReq.Input.Prompt,
+		Images:            make([]OpenAIImageEditReference, 0, len(openaiReq.Input.Images)),
+		Stream:            openaiReq.Stream,
+		N:                 openaiReq.N,
+		Size:              openaiReq.Size,
+		ResponseFormat:    openaiReq.ResponseFormat,
+		Quality:           openaiReq.Quality,
+		Background:        openaiReq.Background,
+		InputFidelity:     openaiReq.InputFidelity,
+		PartialImages:     openaiReq.PartialImages,
+		OutputFormat:      openaiReq.OutputFormat,
+		OutputCompression: openaiReq.OutputCompression,
+		User:              openaiReq.User,
+		ExtraParams:       openaiReq.ExtraParams,
+	}
+	if jsonReq.Stream != nil && !*jsonReq.Stream {
+		jsonReq.Stream = nil
+	}
+	for i := range openaiReq.Input.Images {
+		input := &openaiReq.Input.Images[i]
+		if len(input.Image) > 0 {
+			jsonReq.Images = append(jsonReq.Images, OpenAIImageEditReference{ImageURL: imageBytesDataURL(input.Image)})
+			continue
+		}
+		jsonReq.Images = append(jsonReq.Images, OpenAIImageEditReference{ImageURL: input.URL})
+	}
+	if len(openaiReq.Mask) > 0 {
+		jsonReq.Mask = &OpenAIImageEditReference{ImageURL: imageBytesDataURL(openaiReq.Mask)}
+	}
+	return jsonReq
+}
+
+// buildImageEditRequestBody builds the upstream body of an image edit and returns it with its
+// Content-Type. It is the multipart form (parseImageEditFormDataBodyFromRequest) unless the
+// provider is OpenAI and an input image is only a URL: then it is OpenAI's JSON edit body, so the
+// URL reaches the vendor as a link (fork, TXE-6528, contract C4). Before this, such an image was
+// written as an empty file part, which OpenAI rejects. Extra params are merged into the JSON body
+// under the same switch that writes them as form fields.
+//
+// Only the openai provider takes the JSON body: the other providers that share this handler
+// (Azure deployments, OpenAI-compatible vendors) are not known to accept it and keep the form.
+func buildImageEditRequestBody(openaiReq *OpenAIImageEditRequest, providerName schemas.ModelProvider, passthroughExtraParams bool) ([]byte, string, *schemas.BifrostError) {
+	if providerName == schemas.OpenAI && imageEditHasURLOnlyInput(openaiReq) {
+		jsonReq := toOpenAIImageEditJSONRequest(openaiReq)
+		jsonBody, err := providerUtils.MarshalProviderRequest(jsonReq)
+		if err != nil {
+			return nil, "", providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+		}
+		if passthroughExtraParams && len(jsonReq.ExtraParams) > 0 {
+			extraParams := make(map[string]interface{}, len(jsonReq.ExtraParams))
+			for key, value := range jsonReq.ExtraParams {
+				// As in the form: a typed field is the one sent, never a same-named extra.
+				if !imageEditFormFieldNames[key] && key != "images" {
+					extraParams[key] = value
+				}
+			}
+			if len(extraParams) > 0 {
+				jsonBody, err = providerUtils.MergeExtraParamsIntoJSON(jsonBody, extraParams)
+				if err != nil {
+					return nil, "", providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+				}
+			}
+		}
+		return jsonBody, "application/json", nil
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if bifrostErr := parseImageEditFormDataBodyFromRequest(writer, openaiReq, providerName, passthroughExtraParams); bifrostErr != nil {
+		return nil, "", bifrostErr
+	}
+	return body.Bytes(), writer.FormDataContentType(), nil
 }
 
 // parseImageEditFormDataBodyFromRequest writes an image edit as a multipart form. When
