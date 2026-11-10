@@ -362,7 +362,9 @@ func getSecondsFromVideoRequest(req *BifrostRequest) *string {
 		if req.VideoGenerationRequest.Params != nil {
 			seconds = req.VideoGenerationRequest.Params.Seconds
 		}
-		if seconds == nil && useDefaultForSeconds(req.VideoGenerationRequest.Provider) {
+		// The default is Veo's. An Omni model picks its own duration when the request names
+		// none, so nothing is filled in for it (fork, TXE-6538).
+		if seconds == nil && useDefaultForSeconds(req.VideoGenerationRequest.Provider) && !IsGeminiOmniModel(req.VideoGenerationRequest.Model) {
 			seconds = Ptr(DefaultVideoDuration)
 		}
 		return seconds

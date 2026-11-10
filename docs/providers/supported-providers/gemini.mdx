@@ -904,6 +904,45 @@ If Gemini filters content for safety, `status` is `failed` and `content_filter` 
 
 Video Delete, List, and Remix are not supported.
 
+### Gemini Omni models (Interactions API)
+
+A model whose name contains `gemini-omni` (for example `gemini-omni-1.1-flash`) generates video through Google's [Interactions API](https://ai.google.dev/api/interactions-api), not through `predictLongRunning`. The unified routes stay the same; Bifrost creates a background interaction and the task `id` names the kind (`interactions%2F{interaction id}:gemini`), so a query of an Omni task and of a Veo operation each reach their own API.
+
+| Operation | Endpoint | Vendor call |
+|-----------|----------|-------------|
+| Create | `POST /v1/videos` | `POST /v1beta/interactions` with `background: true` |
+| Get status | `GET /v1/videos/{id}` | `GET /v1beta/interactions/{id}` |
+| Cancel | `POST /v1/videos/{id}/cancel` | `GET` the interaction, then `POST /v1beta/interactions/{id}/cancel` only while it is `in_progress` |
+| Download | `GET /v1/videos/{id}/content` | The inline video of the interaction, or its Gemini Files file fetched with the key |
+
+**Create fields**
+
+| Unified field | Interactions field |
+|---------------|--------------------|
+| `prompt` | a `text` block of `input` |
+| `input_reference` | the first `image` block of `input` (first frame); sets `generation_config.video_config.task` to `image_to_video` |
+| `last_frame` | the second `image` block (last frame); needs `input_reference` |
+| `reference_images` | `image` blocks; sets the task to `reference_to_video`; cannot be combined with `input_reference` |
+| `video_uri` | a `video` block |
+| `seconds` | `response_format.duration` (`"8"` is sent as `"8s"`) |
+| `aspect_ratio`, `resolution` | `response_format.aspect_ratio`, `response_format.resolution`, as given |
+| `seed` | `generation_config.seed` |
+| `callback_url` | `webhook_config.uris` |
+| `client_reference_id` | `webhook_config.user_metadata.client_reference_id` |
+| `delivery` (extra param: `inline` or `uri`) | `response_format.delivery`; `uri` when not given |
+
+An image given as a URL is sent as `uri` unchanged; a data URL is sent as `data` and `mime_type`. `size`, `audio`, `output_format`, `type`, `upscale_factor`, `target_megapixels`, `expires_after_seconds` and `output_storage_uri` have no Interactions field: a request carrying one is refused with 400 `caller_unsupported_parameter`. `negative_prompt` is ignored.
+
+**Task object**
+
+- `status` is `in_progress`, `completed`, `failed` or `cancelled`, and `provider_status` is the interaction's own status. The statuses `requires_action`, `incomplete`, `budget_exceeded` and `requires_continuation` are reported as `in_progress` with the vendor's word in `provider_status`.
+- `videos[]` holds one `{ "type": "content", "content_type": ... }` entry: the video needs the key, so it is fetched through `GET /v1/videos/{id}/content`.
+- `usage.output_tokens` is the `video` entry of the interaction's `usage.output_tokens_by_modality`.
+- `expires_at` is `completed_at` plus 48 hours when the video is a Gemini Files file.
+- A cancel of an interaction that is not `in_progress` returns 400 `provider_cancel_unsupported`.
+
+Google does not document how an interaction blocked by its safety filters is reported, so `content_filter` is not set for Omni tasks: a blocked request surfaces as the vendor's error on create or as a `failed` task with the vendor's error.
+
 ---
 
 ## Content Type Support

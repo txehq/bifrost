@@ -7,23 +7,31 @@ import (
 )
 
 func TestBifrostVideoGenerationResponseBackfillSeconds(t *testing.T) {
-	request := func(provider ModelProvider, seconds *string) *BifrostRequest {
-		req := &BifrostVideoGenerationRequest{Provider: provider, Model: "m"}
+	modelRequest := func(provider ModelProvider, model string, seconds *string) *BifrostRequest {
+		req := &BifrostVideoGenerationRequest{Provider: provider, Model: model}
 		if seconds != nil {
 			req.Params = &VideoGenerationParameters{Seconds: seconds}
 		}
 		return &BifrostRequest{VideoGenerationRequest: req}
+	}
+	request := func(provider ModelProvider, seconds *string) *BifrostRequest {
+		return modelRequest(provider, "m", seconds)
 	}
 	cases := []struct {
 		name     string
 		reported *string
 		req      *BifrostRequest
 		want     *string
+		model    string // the model the response is backfilled with; "m" when empty
 	}{
 		{name: "provider-reported duration is kept", reported: Ptr("5"), req: request(MiniMax, Ptr("2")), want: Ptr("5")},
 		{name: "missing duration comes from the request", req: request(OpenAI, Ptr("8")), want: Ptr("8")},
 		{name: "missing duration on Gemini gets the default", req: request(Gemini, nil), want: Ptr(DefaultVideoDuration)},
 		{name: "nothing to backfill", req: request(OpenAI, nil), want: nil},
+		// The Gemini and Vertex default is Veo's; an Omni model picks its own duration.
+		{name: "missing duration on a Gemini Omni model stays empty", req: modelRequest(Gemini, "gemini-omni-1.1-flash", nil), want: nil, model: "gemini-omni-1.1-flash"},
+		{name: "missing duration on a Vertex Omni model stays empty", req: modelRequest(Vertex, "gemini-omni-1.1-flash-preview", nil), want: nil, model: "gemini-omni-1.1-flash-preview"},
+		{name: "a duration the Omni request names is kept", req: modelRequest(Gemini, "gemini-omni-1.1-flash", Ptr("12")), want: Ptr("12"), model: "gemini-omni-1.1-flash"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -35,8 +43,12 @@ func TestBifrostVideoGenerationResponseBackfillSeconds(t *testing.T) {
 			case tc.want != nil && (resp.Seconds == nil || *resp.Seconds != *tc.want):
 				t.Errorf("seconds = %v, want %q", resp.Seconds, *tc.want)
 			}
-			if resp.Model != "m" {
-				t.Errorf("model = %q, want backfilled m", resp.Model)
+			wantModel := tc.model
+			if wantModel == "" {
+				wantModel = "m"
+			}
+			if resp.Model != wantModel {
+				t.Errorf("model = %q, want backfilled %q", resp.Model, wantModel)
 			}
 		})
 	}

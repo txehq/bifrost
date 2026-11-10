@@ -1566,8 +1566,8 @@ Model listing is paginated automatically. If more than 100 models exist, `next_p
 Vertex AI routes video generation through Gemini's Veo models using the `predictLongRunning` endpoint. All parameters are identical to [Gemini Video Generation](/providers/supported-providers/gemini#video-generation).
 
 <Note>
-  Only Veo models are supported (e.g., `veo-2.0-generate-001`). Passing a
-  non-Veo model name returns a configuration error.
+  Veo models (e.g., `veo-2.0-generate-001`) and Gemini Omni models (see below)
+  are supported. Passing any other model name returns a configuration error.
 </Note>
 
 **Supported Operations**
@@ -1580,3 +1580,14 @@ Vertex AI routes video generation through Gemini's Veo models using the `predict
 | Delete    | ❌        | Not supported                 |
 | List      | ❌        | Not supported                 |
 | Remix     | ❌        | Not supported                 |
+
+### Gemini Omni models (Interactions API)
+
+A model whose name contains `gemini-omni` (for example `gemini-omni-1.1-flash-preview`) generates video through the Vertex Interactions API, with the same fields and task object as [Gemini Omni on the Gemini API](/providers/supported-providers/gemini#gemini-omni-models-interactions-api). What differs on Vertex:
+
+- **Endpoint**: `POST https://aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/interactions`, then `GET .../interactions/{id}` and `POST .../interactions/{id}/cancel`. The Interactions API serves only the locations `global`, `us` and `eu`; a key or alias with any other region gets a configuration error.
+- **Task id**: `projects/{project}/locations/{location}/interactions/{id}` (URL-encoded) followed by `:vertex`, so a query goes to the interaction's own location whatever key is selected.
+- **Webhooks**: Google documents no `webhook_config` for Vertex, so `callback_url` and `client_reference_id` are refused with 400 `caller_unsupported_parameter`.
+- **Delivery**: no `delivery` is sent unless the request names one, and only an inline video is returned by `GET /v1/videos/{id}/content`.
+- **Cancel**: `POST /v1/videos/{id}/cancel` works for an Omni task that is `in_progress`; a Veo operation has no cancel API.
+- **`expires_at`**: `created_at` plus 7 days, the time Vertex keeps a stored interaction.

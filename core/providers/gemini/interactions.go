@@ -112,7 +112,7 @@ func IsOmniVideoModel(ctx *schemas.BifrostContext, model string) bool {
 }
 
 func isOmniModelName(model string) bool {
-	return strings.Contains(strings.ToLower(NormalizeModelName(model)), "gemini-omni")
+	return schemas.IsGeminiOmniModel(NormalizeModelName(model))
 }
 
 // GeminiInteractionRequest is the body of POST /interactions for a model interaction
