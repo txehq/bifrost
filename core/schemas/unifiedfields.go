@@ -127,9 +127,8 @@ func PriceAffectingUnifiedFields(requestType RequestType) []string {
 //
 //   - A field the request did send, with the same value. The HTTP handlers also keep some
 //     unified fields in the extra params under the same name (UnifiedImageFields,
-//     UnifiedVideoGenerationFields), and converters read them there. A string copy that
-//     differs from the string the request sent is refused: the converter would send the
-//     vendor the copy.
+//     UnifiedVideoGenerationFields), and converters read them there. A copy that differs
+//     from what the request sent is refused: the converter would send the vendor the copy.
 //   - A value the unified field cannot hold. Those fields decode tolerantly (TolerantString,
 //     VideoReferenceImages): Runware 3D's numeric resolution and Runway's reference image
 //     objects leave the typed field empty and travel as an extra param by design. Only a
@@ -195,7 +194,7 @@ func checkExtraParamPriceFields(req *BifrostRequest, table []string, params refl
 			// params for the converters that read it there. A copy that says something
 			// else is not a copy: the converter would send the vendor a value the
 			// unified field does not show.
-			if planted, isString := value.(string); !isString || sent == "" || planted == sent {
+			if sent.sameValueAs(value) {
 				continue
 			}
 		} else if !unifiedFieldWouldHold(params, field, value) {
@@ -213,16 +212,53 @@ func checkExtraParamPriceFields(req *BifrostRequest, table []string, params refl
 		refused, refusedField, refusedField))
 }
 
+// sentUnifiedField is the value of a unified field the request sent.
+type sentUnifiedField struct {
+	text   string        // the value, when it is a string
+	isText bool          // whether it is a string
+	value  reflect.Value // the field itself, otherwise
+}
+
+// sameValueAs reports whether an extra param's value is a copy of the field the request
+// sent. Two strings are compared directly, which is the copy the handlers keep. Anything
+// else is compared as JSON, so 2 and 2.0, or a []string and the []interface{} a JSON body
+// decodes to, are the same value; a value that cannot be compared is not a copy.
+func (f sentUnifiedField) sameValueAs(extra interface{}) bool {
+	if planted, isString := extra.(string); isString && f.isText {
+		return planted == f.text
+	}
+	var sent interface{} = f.text
+	if !f.isText {
+		if !f.value.IsValid() || !f.value.CanInterface() {
+			return false
+		}
+		sent = f.value.Interface()
+	}
+	sentJSON, err := MarshalSorted(sent)
+	if err != nil {
+		return false
+	}
+	extraJSON, err := MarshalSorted(extra)
+	if err != nil {
+		return false
+	}
+	var sentValue, extraValue interface{}
+	if Unmarshal(sentJSON, &sentValue) != nil || Unmarshal(extraJSON, &extraValue) != nil {
+		return false
+	}
+	return reflect.DeepEqual(sentValue, extraValue)
+}
+
 // unifiedFieldSent reports whether the request sent the unified field named field (a
 // Params field that is set, or the one C4 field that lives on the request's input), and
-// its value when that value is a string, "" otherwise.
-func unifiedFieldSent(req *BifrostRequest, params reflect.Value, field string) (value string, isSet bool) {
+// the value it sent.
+func unifiedFieldSent(req *BifrostRequest, params reflect.Value, field string) (sentUnifiedField, bool) {
 	if field == "input_reference" && req.VideoGenerationRequest != nil {
 		input := req.VideoGenerationRequest.Input
 		if input == nil || input.InputReference == nil || *input.InputReference == "" {
-			return "", false
+			return sentUnifiedField{}, false
 		}
-		return *input.InputReference, true
+		return sentUnifiedField{text: *input.InputReference, isText: true}, true
 	}
 	for _, f := range unifiedParamFields(params.Type()) {
 		if f.name != field {
@@ -230,17 +266,17 @@ func unifiedFieldSent(req *BifrostRequest, params reflect.Value, field string) (
 		}
 		fv, ok := fieldByIndex(params, f.index)
 		if !ok || fieldIsUnset(fv) {
-			return "", false
+			return sentUnifiedField{}, false
 		}
 		if fv.Kind() == reflect.Pointer {
 			fv = fv.Elem()
 		}
 		if fv.Kind() == reflect.String {
-			return fv.String(), true
+			return sentUnifiedField{text: fv.String(), isText: true}, true
 		}
-		return "", true
+		return sentUnifiedField{value: fv}, true
 	}
-	return "", false
+	return sentUnifiedField{}, false
 }
 
 // unifiedFieldWouldHold reports whether the unified field named field would have taken

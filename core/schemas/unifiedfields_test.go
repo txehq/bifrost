@@ -253,9 +253,15 @@ func TestCheckExtraParamPriceFieldsLeavesEverythingElseAlone(t *testing.T) {
 			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p", InputReference: &inputReference},
 				Params: &VideoGenerationParameters{ExtraParams: map[string]interface{}{"input_reference": inputReference}}},
 		}},
-		{"the request sent a non-string field; its copy is not compared", imageReq(&ImageGenerationParameters{
-			N: Ptr(2), ExtraParams: map[string]interface{}{"n": 2},
+		{"a copy of a number the request sent, as an int and as the float a JSON body decodes to", imageReq(&ImageGenerationParameters{
+			N: Ptr(2), ExtraParams: map[string]interface{}{"n": 2, "N": float64(2)},
 		})},
+		{"a copy of a list the request sent", &BifrostRequest{
+			RequestType: VideoGenerationRequest,
+			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"},
+				Params: &VideoGenerationParameters{ReferenceImages: VideoReferenceImages{"https://example.invalid/a.png"},
+					ExtraParams: map[string]interface{}{"reference_images": []interface{}{"https://example.invalid/a.png"}}}},
+		}},
 		{"a nil value", imageReq(&ImageGenerationParameters{ExtraParams: map[string]interface{}{"size": nil}})},
 		{"an operation outside the C4 table", &BifrostRequest{
 			RequestType: ChatCompletionRequest,
@@ -290,6 +296,15 @@ func TestCheckExtraParamPriceFieldsSpecificRefusals(t *testing.T) {
 		{"a copy that differs from a pointer field the request sent", imageReq(&ImageGenerationParameters{
 			Size: Ptr("1024x1024"), ExtraParams: map[string]interface{}{"Size": "4096x4096"},
 		}), "Size"},
+		{"a copy that differs from a number the request sent", imageReq(&ImageGenerationParameters{
+			N: Ptr(1), ExtraParams: map[string]interface{}{"n": 8},
+		}), "n"},
+		{"a copy that differs from a list the request sent", &BifrostRequest{
+			RequestType: VideoGenerationRequest,
+			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"},
+				Params: &VideoGenerationParameters{ReferenceImages: VideoReferenceImages{"https://example.invalid/a.png"},
+					ExtraParams: map[string]interface{}{"reference_images": []interface{}{"https://example.invalid/b.png"}}}},
+		}, "reference_images"},
 		{"an input_reference that differs from the one on the input", &BifrostRequest{
 			RequestType: VideoGenerationRequest,
 			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p", InputReference: Ptr("https://example.invalid/first.png")},
