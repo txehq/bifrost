@@ -3708,15 +3708,24 @@ func (provider *GeminiProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	} else if len(inlinedResponses) > 0 {
 		// Inline results arrive whole inside the batch object; a page is a slice of them.
 		// An embedding line with several inputs was sent as several requests; its responses
-		// are one line again here, so a page is counted in lines, not vendor responses.
-		lines := groupGeminiInlinedResponses(inlinedResponses)
-		start, end, nextCursor, pageErr := providerUtils.PageBatchResultItems(len(lines), request.After, request.Limit)
+		// are one line again here, so a page is counted in lines, not vendor responses. A
+		// batch with no such line (every generateContent batch) is paged directly.
+		var lines []geminiInlinedLine
+		total := len(inlinedResponses)
+		if hasGeminiMultiInputLines(inlinedResponses) {
+			lines = groupGeminiInlinedResponses(inlinedResponses)
+			total = len(lines)
+		}
+		start, end, nextCursor, pageErr := providerUtils.PageBatchResultItems(total, request.After, request.Limit)
 		if pageErr != nil {
 			return nil, providerUtils.NewInvalidResultsCursorError(pageErr)
 		}
 		model := geminiBatchModelName(geminiResp.Metadata)
 		for i := start; i < end; i++ {
-			line := lines[i]
+			line := geminiInlinedLine{start: i, end: i + 1}
+			if lines != nil {
+				line = lines[i]
+			}
 			batchResultsResp.Results = append(batchResultsResp.Results, geminiInlinedLineToBatchResultItem(inlinedResponses[line.start:line.end], fmt.Sprintf("request-%d", line.start), model, includeRaw))
 		}
 		batchResultsResp.HasMore = nextCursor != nil
