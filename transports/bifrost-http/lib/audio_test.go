@@ -103,6 +103,25 @@ func TestNonEmptyFormValues(t *testing.T) {
 	if got := NonEmptyFormValues([]string{""}); len(got) != 0 {
 		t.Fatalf("NonEmptyFormValues = %v, want none", got)
 	}
+	if got := NonEmptyFormValues([]string{"", "only"}); !slices.Equal(got, []string{"only"}) {
+		t.Fatalf("NonEmptyFormValues = %v, want [only]", got)
+	}
+	// A repeated field's result is a copy: changing it cannot reach the parsed form.
+	form := []string{"a", "b"}
+	got := NonEmptyFormValues(form)
+	got[0] = "changed"
+	if form[0] != "a" {
+		t.Fatalf("NonEmptyFormValues aliased the form's slice for a repeated field")
+	}
+}
+
+// A single-valued field is the common extra-param case and must not allocate (AGENTS.md: the
+// common case must not regress).
+func TestNonEmptyFormValuesSingleValueDoesNotAllocate(t *testing.T) {
+	single := []string{"logprobs"}
+	if allocs := testing.AllocsPerRun(100, func() { _ = NonEmptyFormValues(single) }); allocs != 0 {
+		t.Fatalf("NonEmptyFormValues allocated %v times for one value, want 0", allocs)
+	}
 }
 
 func TestSpeechFilenameForMuLaw(t *testing.T) {

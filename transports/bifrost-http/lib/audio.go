@@ -193,8 +193,24 @@ func speechFilenameForContentType(contentType, responseFormat string) string {
 // field the caller repeated (include[]=a&include[]=b) as the []string this returns, which
 // openai.ParseTranscriptionFormDataBodyFromRequest writes back as repeated form fields, so no
 // value is lost on the way to the vendor (TXE-6530, contract C4).
+//
+// The common case, a field with one non-empty value, allocates nothing: it returns a one-element
+// sub-slice of values, which callers only read. A copy is made only for a field the caller
+// repeated, the result a caller may keep.
 func NonEmptyFormValues(values []string) []string {
-	out := make([]string, 0, len(values))
+	n, last := 0, -1
+	for i, v := range values {
+		if v != "" {
+			n, last = n+1, i
+		}
+	}
+	switch n {
+	case 0:
+		return nil
+	case 1:
+		return values[last : last+1 : last+1]
+	}
+	out := make([]string, 0, n)
 	for _, v := range values {
 		if v != "" {
 			out = append(out, v)

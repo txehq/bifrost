@@ -96,6 +96,10 @@ func BenchmarkPrepareTranscriptionRequest(b *testing.B) {
 	}{
 		{name: "no_granularities", fields: [][2]string{{"model", "openai/whisper-1"}, {"response_format", "json"}}},
 		{name: "granularities", fields: [][2]string{{"model", "openai/whisper-1"}, {"response_format", "verbose_json"}, {"timestamp_granularities[]", "word"}, {"timestamp_granularities[]", "segment"}}},
+		// An unknown field with one value is the common extra-param case; it must not pay for the
+		// repeated-field path (TXE-6530).
+		{name: "single_extra_field", fields: [][2]string{{"model", "openai/gpt-4o-transcribe"}, {"include[]", "logprobs"}}},
+		{name: "repeated_extra_field", fields: [][2]string{{"model", "openai/gpt-4o-transcribe"}, {"include[]", "logprobs"}, {"include[]", "segments"}}},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			template := multipartTranscriptionCtx(b, tc.fields)
