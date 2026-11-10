@@ -18,13 +18,15 @@ environment's secrets. This check enforces the workflow half of that. It fails w
     (a literal, not an expression, so no event can route the job to an unprotected
     environment); this includes the original finding, a key in the job-level env of a
     job that checks out a caller-chosen ref;
-  * the workflow-level `env:` reads a provider credential, or reads secrets dynamically
-    (`secrets[...]`, `toJSON(secrets)`), which hands it to every job;
-  * a reusable-workflow call passes a provider credential or `secrets: inherit`: a
-    calling job cannot name an environment, so the called workflow's job must name
-    live-providers and read the secret itself;
-  * a job outside live-providers reads secrets dynamically (`secrets[...]`,
-    `toJSON(secrets)`), which can reach any credential.
+  * the workflow-level `env:` reads a provider credential, which hands it to every job;
+  * a reusable-workflow call passes a provider credential, in `secrets:` or `with:`, or
+    uses `secrets: inherit`: a calling job cannot name an environment, so the called
+    workflow's job must name live-providers and read the secret itself.
+
+A read is any use of the secrets context inside `${{ }}`, the only place it exists, in
+every scope above. `secrets.NAME` and `secrets['NAME']` read the secret they name. Any
+other use (`toJSON(secrets)`, `secrets[expr]`, `secrets.*`) can reach every secret, so it
+counts as reading a provider credential.
 
 A provider credential is a secret whose name ends in `_API_KEY`, or one of
 OTHER_PROVIDER_CREDENTIALS below: the vendor credentials that are not called API keys.
@@ -59,8 +61,16 @@ OTHER_PROVIDER_CREDENTIALS = {
     "VERTEX_CREDENTIALS",  # Vertex service-account JSON
 }
 
-SECRET_REF = re.compile(r"\bsecrets\.([A-Za-z_][A-Za-z0-9_]*)")
-DYNAMIC_SECRETS = re.compile(r"\bsecrets\s*\[|toJSON\(\s*secrets\s*\)", re.IGNORECASE)
+# An expression, `${{ ... }}`. The secrets context exists only inside one.
+EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
+# Every use of the secrets context: `secrets.NAME` and `secrets['NAME']` name one secret;
+# anything else (`toJSON(secrets)`, `secrets[x]`, `secrets.*`) can reach any secret.
+SECRETS_USE = re.compile(
+    r"(?<![\w.])secrets\b"
+    r"(?:\s*\.\s*(?P<dotted>[A-Za-z_][A-Za-z0-9_-]*)"
+    r"|\s*\[\s*(?P<q>['\"])(?P<quoted>[A-Za-z_][A-Za-z0-9_-]*)(?P=q)\s*\])?",
+    re.IGNORECASE,
+)
 
 
 def is_provider_credential(name):
@@ -83,12 +93,29 @@ def strings(node, path):
         yield path, node
 
 
-def credentials(node, path):
-    """Yields (path, secret name) for every provider credential read under node."""
+def secret_reads(node, path):
+    """Yields (path, name) for each provider credential read under node, and
+    (path, None) for each dynamic read of the secrets context, which can reach any."""
     for where, text in strings(node, path):
-        for name in SECRET_REF.findall(text):
-            if is_provider_credential(name):
-                yield where, name
+        for expression in EXPRESSION.findall(text):
+            for use in SECRETS_USE.finditer(expression):
+                name = use.group("dotted") or use.group("quoted")
+                if name is None:
+                    yield where, None
+                elif is_provider_credential(name):
+                    yield where, name
+
+
+def summarize(reads):
+    """Describes reads: the credentials named, then dynamic access if any."""
+    names = sorted({n for _, n in reads if n is not None})
+    parts = []
+    if names:
+        shown = ", ".join(names[:4])
+        parts.append(shown + (f" and {len(names) - 4} more" if len(names) > 4 else ""))
+    if any(n is None for _, n in reads):
+        parts.append("secrets dynamically (secrets[...], toJSON(secrets)), which can reach any provider credential")
+    return " and ".join(parts)
 
 
 def environment_name(job):
@@ -96,12 +123,6 @@ def environment_name(job):
     if isinstance(env, dict):
         env = env.get("name")
     return env
-
-
-def describe(names):
-    names = sorted(set(names))
-    shown = ", ".join(names[:4])
-    return shown + (f" and {len(names) - 4} more" if len(names) > 4 else "")
 
 
 def checkout_refs(job):
@@ -117,19 +138,11 @@ def problems(path):
         doc = yaml.safe_load(fh) or {}
     name = os.path.basename(path)
 
-    top_env = doc.get("env") or {}
-    top = list(credentials(top_env, "env"))
+    top = list(secret_reads(doc.get("env") or {}, "env"))
     if top:
-        yield (f"{name}: the workflow-level env reads {describe(n for _, n in top)}, which every "
-               f"job inherits; read provider credentials only in jobs that name "
+        yield (f"{name}: the workflow-level env reads {summarize(top)}, which every job "
+               f"inherits; read provider credentials only in jobs that name "
                f"`environment: {ENVIRONMENT}`")
-    for _, text in strings(top_env, "env"):
-        if DYNAMIC_SECRETS.search(text):
-            yield (f"{name}: the workflow-level env reads secrets dynamically "
-                   f"({text.strip()[:60]!r}), which every job inherits and which can reach any "
-                   f"provider credential; read provider credentials only in jobs that name "
-                   f"`environment: {ENVIRONMENT}`")
-            break
 
     for job_id, job in (doc.get("jobs") or {}).items():
         if not isinstance(job, dict):
@@ -137,48 +150,37 @@ def problems(path):
         where = f"{name}: job {job_id}"
 
         if "uses" in job:  # a reusable-workflow call: it cannot name an environment
-            passed = job.get("secrets")
-            if passed == "inherit":
+            if job.get("secrets") == "inherit":
                 yield (f"{where}: `secrets: inherit` hands every provider credential to the "
                        f"called workflow; its job must name `environment: {ENVIRONMENT}` "
                        f"and read the secret itself")
-            else:
-                found = list(credentials(passed or {}, "secrets"))
-                if found:
-                    yield (f"{where}: passes {describe(n for _, n in found)} to a reusable "
-                           f"workflow; a calling job cannot name an environment, so the "
-                           f"called workflow's job must name `environment: {ENVIRONMENT}` "
-                           f"and read the secret itself")
+            found = list(secret_reads({k: v for k, v in job.items() if k != "uses"}, "call"))
+            if found:
+                yield (f"{where}: passes {summarize(found)} to a reusable workflow; a calling "
+                       f"job cannot name an environment, so the called workflow's job must "
+                       f"name `environment: {ENVIRONMENT}` and read the secret itself")
             continue
 
         if environment_name(job) == ENVIRONMENT:
             continue
 
-        found = list(credentials(job, "job"))
-        if found:
-            env_level = sorted({n for p, n in found if p.startswith("job.env.")})
-            named = environment_name(job)
-            gate = (f"names environment {named!r}" if named is not None
-                    else "names no environment")
-            refs = checkout_refs(job)
-            ref_text = f", checks out {' and '.join(refs)}" if refs else ""
-            if env_level:
-                yield (f"{where}: job-level env reads {describe(env_level)}{ref_text}, and the "
-                       f"job {gate}: name `environment: {ENVIRONMENT}` so a reviewer approves "
-                       f"the run before the job gets the keys")
-            rest = sorted({n for p, n in found if not p.startswith("job.env.")})
-            if rest:
-                yield (f"{where}: reads {describe(rest)}{ref_text}, and the job {gate}: name "
-                       f"`environment: {ENVIRONMENT}` so a reviewer approves the run before "
-                       f"the job gets the keys")
+        found = list(secret_reads(job, "job"))
+        if not found:
             continue
-
-        for _, text in strings(job, "job"):
-            if DYNAMIC_SECRETS.search(text):
-                yield (f"{where}: reads secrets dynamically ({text.strip()[:60]!r}), which "
-                       f"can reach any provider credential; name the secrets it needs, or "
-                       f"name `environment: {ENVIRONMENT}`")
-                break
+        named = environment_name(job)
+        gate = f"names environment {named!r}" if named is not None else "names no environment"
+        refs = checkout_refs(job)
+        ref_text = f", checks out {' and '.join(refs)}" if refs else ""
+        job_env = [r for r in found if r[0].startswith("job.env.")]
+        rest = [r for r in found if not r[0].startswith("job.env.")]
+        if job_env:
+            yield (f"{where}: job-level env reads {summarize(job_env)}{ref_text}, and the job "
+                   f"{gate}: name `environment: {ENVIRONMENT}` so a reviewer approves the run "
+                   f"before the job gets the keys")
+        if rest:
+            yield (f"{where}: reads {summarize(rest)}{ref_text}, and the job {gate}: name "
+                   f"`environment: {ENVIRONMENT}` so a reviewer approves the run before the "
+                   f"job gets the keys")
 
 
 def main():

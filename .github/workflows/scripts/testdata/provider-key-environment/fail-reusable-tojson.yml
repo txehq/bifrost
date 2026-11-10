@@ -1,0 +1,7 @@
+# expect: job call-tests: passes secrets dynamically (secrets[...], toJSON(secrets)), which can reach any provider credential to a reusable workflow
+on: workflow_dispatch
+jobs:
+  call-tests:
+    uses: ./.github/workflows/run-core-tests.yml
+    with:
+      config: ${{ toJSON(secrets) }}

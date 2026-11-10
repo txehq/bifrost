@@ -1,5 +1,5 @@
-# expect: the workflow-level env reads secrets dynamically ("${{ secrets['OPENAI_API_KEY'] }}")
-# Bracket access in the workflow-level env reaches every job, gated or not.
+# expect: the workflow-level env reads OPENAI_API_KEY, which every job inherits
+# secrets['NAME'] is the same read as secrets.NAME, and the workflow-level env reaches every job.
 on: push
 env:
   OPENAI_API_KEY: ${{ secrets['OPENAI_API_KEY'] }}

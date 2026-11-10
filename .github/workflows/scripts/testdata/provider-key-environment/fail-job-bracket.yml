@@ -1,0 +1,9 @@
+# expect: job test-core: reads GROQ_API_KEY, and the job names no environment
+on: push
+jobs:
+  test-core:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: make test-core
+        env:
+          GROQ_API_KEY: ${{ secrets[ "GROQ_API_KEY" ] }}
