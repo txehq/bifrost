@@ -113195,6 +113195,18 @@
             "type": "integer",
             "description": "Number of input images the provider billed (Cohere embeddings report it as meta.billed_units.images). Present only when the provider reports it.\n"
           },
+          "processed_tokens": {
+            "type": "object",
+            "description": "Token counts the provider processed, present only when it reports them apart from the billed counts in prompt_tokens and completion_tokens (Cohere chat: usage.tokens next to usage.billed_units).\n",
+            "properties": {
+              "prompt_tokens": {
+                "type": "integer"
+              },
+              "completion_tokens": {
+                "type": "integer"
+              }
+            }
+          },
           "tool_usage": {
             "type": "object",
             "description": "Counts of provider-hosted (server-side) tool calls billed per call.\n",

@@ -573,3 +573,86 @@ func TestCohereNonStreamResponsesCarriesStopReason(t *testing.T) {
 	require.NotNil(t, response.StopReason, "non-streaming Responses must map the Cohere finish reason")
 	assert.Equal(t, "stop", *response.StopReason)
 }
+
+// cohereBilledUsageSample is the usage block of Cohere's documented /v2/chat response:
+// billed_units differ from the processed tokens (the system preamble is not billed).
+const cohereBilledUsageSample = `{"billed_units":{"input_tokens":5,"output_tokens":418},"tokens":{"input_tokens":71,"output_tokens":418},"cached_tokens":0}`
+
+func TestCohereChatUsage_BilledUnitsFillPromptAndCompletion(t *testing.T) {
+	var usage CohereUsage
+	require.NoError(t, json.Unmarshal([]byte(cohereBilledUsageSample), &usage))
+
+	body := `{"id":"c1","finish_reason":"COMPLETE","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]},"usage":` + cohereBilledUsageSample + `}`
+	var resp CohereChatResponse
+	require.NoError(t, json.Unmarshal([]byte(body), &resp))
+	nonStream := resp.ToBifrostChatResponse("command-a-03-2025").Usage
+
+	end := CohereStreamEvent{Type: StreamEventMessageEnd, Delta: &CohereStreamDelta{FinishReason: resp.FinishReason, Usage: &usage}}
+	streamed, bifrostErr, _ := end.ToBifrostChatCompletionStream()
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, streamed)
+
+	for name, u := range map[string]*schemas.BifrostLLMUsage{"non-stream": nonStream, "stream": streamed.Usage} {
+		require.NotNil(t, u, name)
+		assert.Equal(t, 5, u.PromptTokens, name+" prompt_tokens = billed input")
+		assert.Equal(t, 418, u.CompletionTokens, name+" completion_tokens = billed output")
+		assert.Equal(t, 423, u.TotalTokens, name)
+		require.NotNil(t, u.ProcessedTokens, name+" processed_tokens")
+		assert.Equal(t, schemas.ProcessedTokenUsage{PromptTokens: 71, CompletionTokens: 418}, *u.ProcessedTokens, name)
+	}
+	out, err := schemas.Marshal(nonStream)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"processed_tokens":{"prompt_tokens":71,"completion_tokens":418}`)
+}
+
+func TestCohereChatUsage_WithoutBilledUnitsKeepsProcessedCounts(t *testing.T) {
+	in, out := 12, 7
+	u := (&CohereUsage{Tokens: &CohereTokenUsage{InputTokens: &in, OutputTokens: &out}}).ToBifrostChatUsage()
+	assert.Equal(t, 12, u.PromptTokens)
+	assert.Equal(t, 7, u.CompletionTokens)
+	assert.Nil(t, u.ProcessedTokens, "one set of counts leaves processed_tokens absent")
+
+	// billed_units without token counts (e.g. search_units only) is not a billed token count.
+	su := 1
+	u = (&CohereUsage{BilledUnits: &CohereBilledUnits{SearchUnits: &su}, Tokens: &CohereTokenUsage{InputTokens: &in, OutputTokens: &out}}).ToBifrostChatUsage()
+	assert.Equal(t, 12, u.PromptTokens)
+	assert.Nil(t, u.ProcessedTokens)
+}
+
+func TestToCohereChatResponse_RoundTripsBilledAndProcessed(t *testing.T) {
+	var usage CohereUsage
+	require.NoError(t, json.Unmarshal([]byte(cohereBilledUsageSample), &usage))
+	back := ToCohereChatResponse(&schemas.BifrostChatResponse{Usage: usage.ToBifrostChatUsage()}).Usage
+	require.NotNil(t, back.BilledUnits)
+	require.NotNil(t, back.Tokens)
+	assert.Equal(t, 5, *back.BilledUnits.InputTokens)
+	assert.Equal(t, 418, *back.BilledUnits.OutputTokens)
+	assert.Equal(t, 71, *back.Tokens.InputTokens)
+	assert.Equal(t, 418, *back.Tokens.OutputTokens)
+}
+
+// Request-path cost of Cohere chat usage conversion (TXE-6596).
+var cohereUsageSink *schemas.BifrostLLMUsage
+
+func cohereBenchUsage() *CohereUsage {
+	bi, bo, ti, to := 5, 418, 71, 418
+	return &CohereUsage{BilledUnits: &CohereBilledUnits{InputTokens: &bi, OutputTokens: &bo}, Tokens: &CohereTokenUsage{InputTokens: &ti, OutputTokens: &to}}
+}
+
+func BenchmarkCohereChatResponseUsage(b *testing.B) {
+	resp := &CohereChatResponse{ID: "c1", Usage: cohereBenchUsage()}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		cohereUsageSink = resp.ToBifrostChatResponse("command-a-03-2025").Usage
+	}
+}
+
+func BenchmarkCohereChatStreamEndUsage(b *testing.B) {
+	fr := CohereFinishReason("COMPLETE")
+	ev := &CohereStreamEvent{Type: StreamEventMessageEnd, Delta: &CohereStreamDelta{FinishReason: &fr, Usage: cohereBenchUsage()}}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		r, _, _ := ev.ToBifrostChatCompletionStream()
+		cohereUsageSink = r.Usage
+	}
+}

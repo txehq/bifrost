@@ -1965,9 +1965,13 @@ type BifrostLLMUsage struct {
 	// meta.billed_units.images), contract C5. Set only from the vendor's own report, never
 	// counted by Bifrost: nil means the vendor did not report it. Same name and meaning as
 	// the image operations' usage.input_images.
-	InputImages *int         `json:"input_images,omitempty"`
-	ToolUsage   *ToolUsage   `json:"tool_usage,omitempty"`
-	Cost        *BifrostCost `json:"cost,omitempty"` // Only for the providers which support cost calculation
+	InputImages *int `json:"input_images,omitempty"`
+	// ProcessedTokens carries the token counts the vendor processed when it reports them
+	// apart from the billed counts in PromptTokens/CompletionTokens (Cohere's usage.tokens
+	// next to usage.billed_units). Absent when the vendor reports only one set (contract C5).
+	ProcessedTokens *ProcessedTokenUsage `json:"processed_tokens,omitempty"`
+	ToolUsage       *ToolUsage           `json:"tool_usage,omitempty"`
+	Cost            *BifrostCost         `json:"cost,omitempty"` // Only for the providers which support cost calculation
 	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
 	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
 	// Laya decision usage: state token accounting and truncation, reported on /v1/decisions.
@@ -2326,10 +2330,32 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 	}
 
 	merged.InputImages = sumOptionalInts(base.InputImages, add.InputImages)
+	merged.ProcessedTokens = base.ProcessedTokens.Add(add.ProcessedTokens)
 	merged.ToolUsage = base.ToolUsage.Add(add.ToolUsage)
 	merged.Cost = base.Cost.Add(add.Cost)
 
 	return merged
+}
+
+// ProcessedTokenUsage is the vendor's processed (not billed) token count.
+type ProcessedTokenUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+}
+
+// Add returns the sum of p and o as an owned value; nil when both are nil.
+func (p *ProcessedTokenUsage) Add(o *ProcessedTokenUsage) *ProcessedTokenUsage {
+	if p == nil && o == nil {
+		return nil
+	}
+	sum := &ProcessedTokenUsage{}
+	for _, x := range []*ProcessedTokenUsage{p, o} {
+		if x != nil {
+			sum.PromptTokens += x.PromptTokens
+			sum.CompletionTokens += x.CompletionTokens
+		}
+	}
+	return sum
 }
 
 // ToolUsage counts provider-hosted (server-side) tool calls billed per call.
@@ -2709,6 +2735,7 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 		c.SearchUnits = &su
 	}
 	c.InputImages = copyIntPtr(u.InputImages)
+	c.ProcessedTokens = u.ProcessedTokens.Add(nil)
 	c.ToolUsage = u.ToolUsage.DeepCopy()
 	c.Cost = u.Cost.DeepCopy()
 	if u.CostInUsdTicks != nil {
