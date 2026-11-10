@@ -288,6 +288,12 @@ func RunSpeechSynthesisStreamAdvancedTest(t *testing.T, client *bifrost.Bifrost,
 				Fallbacks: testConfig.SpeechSynthesisFallbacks,
 			}
 
+			// Gemini has no field for instructions and refuses the request with
+			// caller_unsupported_parameter instead of dropping them.
+			if testConfig.Provider == schemas.Gemini {
+				request.Params.Instructions = ""
+			}
+
 			retryConfig := GetTestRetryConfigForScenario("SpeechSynthesisStreamHD", testConfig)
 			retryContext := TestRetryContext{
 				ScenarioName: "SpeechSynthesisStreamHD_LongText",

@@ -518,6 +518,29 @@ func BenchmarkGeminiSpeechChunkChecks(b *testing.B) {
 	})
 }
 
+// Core runs the unified-field check on every request before a key is chosen. For Gemini it is
+// one switch for an operation the provider does not declare (chat and every other one), and a
+// walk of the set params for speech and transcription.
+func BenchmarkGeminiDeclaredUnifiedFieldsCheck(b *testing.B) {
+	provider := NewGeminiProvider(&schemas.ProviderConfig{}, testNoopLogger{})
+	chat := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+		Provider: schemas.Gemini, Model: "gemini-2.5-flash", Params: &schemas.ChatParameters{Temperature: schemas.Ptr(0.2)},
+	}}
+	speech := &schemas.BifrostRequest{RequestType: schemas.SpeechStreamRequest, SpeechRequest: geminiSpeechTestRequest(&schemas.SpeechParameters{
+		VoiceConfig: &schemas.SpeechVoiceInput{Voice: schemas.Ptr("Kore")}, MaxOutputTokens: schemas.Ptr(1024),
+	})}
+	for name, req := range map[string]*schemas.BifrostRequest{"chat (undeclared)": chat, "speech (declared)": speech} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if schemas.CheckDeclaredUnifiedFields(provider, req) != nil {
+					b.Fatal("unexpected refusal")
+				}
+			}
+		})
+	}
+}
+
 // Gemini speech is returned as WAV unless pcm is named (TXE-6539). The transport labels the audio from
 // BifrostSpeechResponse.ContentType, so the converter must record the format it returns
 // (TXE-6530); without it a raw PCM body went out as audio/mpeg.
