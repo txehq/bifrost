@@ -86,10 +86,13 @@ type AnthropicBatchResultData struct {
 	Error   *AnthropicBatchError   `json:"error,omitempty"`
 }
 
-// AnthropicBatchError represents an error in batch results.
+// AnthropicBatchError represents an error in batch results. An errored line carries
+// Anthropic's error envelope, {"type":"error","error":{"type":...,"message":...}}: the
+// specific type and message are in Error.
 type AnthropicBatchError struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
+	Type    string               `json:"type"`
+	Message string               `json:"message,omitempty"`
+	Error   *AnthropicBatchError `json:"error,omitempty"`
 }
 
 // ToBifrostBatchStatus converts Anthropic processing_status to Bifrost status.
@@ -100,7 +103,9 @@ func ToBifrostBatchStatus(status string) schemas.BatchStatus {
 	case "canceling":
 		return schemas.BatchStatusCancelling
 	case "ended":
-		return schemas.BatchStatusEnded
+		// Contract C8: the batch object reports a finished batch as completed; the vendor's
+		// own word stays in processing_status.
+		return schemas.BatchStatusCompleted
 	default:
 		return schemas.BatchStatus(status)
 	}

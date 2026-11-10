@@ -702,7 +702,7 @@ func TestVertexBatchLinesAreTheSyncRequest(t *testing.T) {
 			assert.Equal(t, tc.param, lineErr.Param, name)
 			assert.Contains(t, lineErr.Message, tc.text, name)
 
-			bifrostErr := gemini.NewBatchLineBadRequestError(lineErr.Index, lineErr)
+			bifrostErr := providerUtils.NewBatchLineBadRequestError(lineErr.Index, lineErr)
 			require.NotNil(t, bifrostErr.StatusCode, name)
 			assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode, name)
 			assert.Equal(t, "requests[1]."+tc.param, bifrostErr.Error.Param, name)
@@ -1163,7 +1163,7 @@ func TestVertexBatchCustomIDRoundTripsThroughLabels(t *testing.T) {
 		_, err := vertexConvertRequestsToJSONL(ctx, schemas.Key{}, []schemas.BatchRequestItem{chatLine("ok"), chatLine(tooLong)}, "gemini-2.5-flash", schemas.BatchEndpointChatCompletions)
 		var lineErr *schemas.BatchLineError
 		require.ErrorAs(t, err, &lineErr)
-		bifrostErr := gemini.NewBatchLineBadRequestError(lineErr.Index, lineErr)
+		bifrostErr := providerUtils.NewBatchLineBadRequestError(lineErr.Index, lineErr)
 		require.NotNil(t, bifrostErr.StatusCode)
 		assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
 		assert.Equal(t, "requests[1].custom_id", bifrostErr.Error.Param)

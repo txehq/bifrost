@@ -1,0 +1,587 @@
+{
+  "name": "347. Anthropic Message Batches: inline OpenAI-shape chat lines, file input refused, named key (anthropic-batches)",
+  "description": "Wire-level pins for Anthropic Message Batches on the batch contract (TXE-6597; contract clauses C3, C4, C8). Rows: (1) input_file_id is a 400 caller_unsupported_parameter naming input_file_id: Anthropic batches take inline requests only, and a vendor call would have answered differently. (2) a line whose url is not a chat operation, and (3) a line naming a model other than the batch's, are refused naming the line; nothing is sent upstream. (4) [PREVIEW] an inline OpenAI-shape chat line reaches Anthropic through the sync chat converter: the echoed request carries the system prompt as Messages' top-level system, no system-role message, and max_tokens; Anthropic would refuse the unconverted body. The batch is cancelled at once. (5) batch retrieve, cancel and results call upstream with the key the caller names and with no other key: a run-scoped provider on the Anthropic base has a dead key and a live key, and a batch id that does not exist is answered 401 by the dead key and 404 by the live one, so the status says which key was called. (6) Claude on Vertex shares the converter: a line whose url names a chat completion is converted even without OpenAI-only markers in its body, so a chat line with no messages is a 400 naming the line before anything is uploaded; before, it was passed through unconverted. (7) the unified results route returns OpenAI-shape lines, paged: against the provider error fixture's settled batch (msgbatch_fixture_settled, served at /pp/anthropic), page 1 with limit=2 holds the succeeded Message as a chat.completion with the unified usage (cache read and write details) and the raw Message, and the errored line as failed with the vendor's inner error; next_cursor leads to page 2 with the expired line and no more pages. The row runs only with providerErrorFixture=1. (8) [PREVIEW] the same route on a real settled batch, read from anthropicSettledBatchId (see folder 155): one line per page with a contract status, a succeeded line as a chat.completion with usage and the raw Message, and next_cursor leading to the next line. The Go tests in core/providers/anthropic/anthropic_test.go pin the same conversion against a stand-in vendor. Run with FEATURE=\"anthropic-batches\".",
+  "item": [
+    {
+      "name": "347.1 [EXPECT-400] anthropic/claude-haiku-4-5 batch create with input_file_id is caller_unsupported_parameter (anthropic-batches)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('input_file_id is a 400 caller_unsupported_parameter naming input_file_id', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.error || {}).param, pm.response.text()).to.eql('input_file_id');",
+              "  pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"input_file_id\": \"file-harness-anthropic-batches\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "347.2 [EXPECT-400] anthropic/claude-haiku-4-5 a line whose url is not a chat operation is refused naming the line (anthropic-batches)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('an embeddings line in a Messages batch is a 400 naming requests[1].url', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.error || {}).param, pm.response.text()).to.eql('requests[1].url');",
+              "  pm.expect(pm.response.text()).to.include('/v1/embeddings');",
+              "  pm.expect(pm.response.text()).to.include('ab-url-2');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"requests\": [\n    {\n      \"custom_id\": \"ab-url-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"claude-haiku-4-5\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    },\n    {\n      \"custom_id\": \"ab-url-2\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"claude-haiku-4-5\",\n        \"input\": \"hello\"\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "347.3 [EXPECT-400] anthropic/claude-haiku-4-5 a line naming a model other than the batch's is refused (anthropic-batches)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a line naming another model is a 400 naming requests[0].body.model', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.error || {}).param, pm.response.text()).to.eql('requests[0].body.model');",
+              "  pm.expect(pm.response.text()).to.include('claude-sonnet-4-5');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"requests\": [\n    {\n      \"custom_id\": \"ab-model-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"claude-sonnet-4-5\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "347.4 [PREVIEW] anthropic/claude-haiku-4-5 an inline OpenAI-shape chat line reaches Anthropic through the sync chat converter (anthropic-batches)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var BASE = pm.variables.get('baseUrl');",
+              "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "pm.test('the batch is created, its id is the vendor\\'s and it is in progress', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(j.id, pm.response.text()).to.be.a('string').and.match(/^msgbatch_/);",
+              "  pm.expect(j.status, pm.response.text()).to.eql('in_progress');",
+              "});",
+              "var raw = (j.extra_fields || {}).raw_request || {};",
+              "if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = {}; } }",
+              "var lines = raw.requests || [];",
+              "var params = (lines[0] || {}).params || {};",
+              "pm.test('the line sent to Anthropic is a Messages body: top-level system, no system-role message, max_tokens kept', function () {",
+              "  pm.expect(lines.length, 'raw_request: ' + JSON.stringify(raw)).to.eql(1);",
+              "  pm.expect((lines[0] || {}).custom_id, JSON.stringify(lines[0])).to.eql('ab-inline-1');",
+              "  pm.expect(JSON.stringify(params.system || ''), JSON.stringify(params)).to.include('Answer in one word.');",
+              "  pm.expect((params.messages || []).filter(function (m) { return m.role === 'system'; }), JSON.stringify(params)).to.eql([]);",
+              "  pm.expect(params.max_tokens, JSON.stringify(params)).to.eql(8);",
+              "  pm.expect(params.model, JSON.stringify(params)).to.eql('claude-haiku-4-5');",
+              "});",
+              "// Cancel at once: the row pins the request, not the answer.",
+              "if (j.id) {",
+              "  pm.sendRequest({ url: BASE + '/v1/batches/' + encodeURIComponent(j.id) + '/cancel?provider=anthropic', method: 'POST', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: '{}' } }, function (err, res) {",
+              "    pm.test('cleanup: the batch is cancelled', function () { pm.expect(res && res.code, err ? String(err) : res.text()).to.be.below(500); });",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"requests\": [\n    {\n      \"custom_id\": \"ab-inline-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"claude-haiku-4-5\",\n        \"messages\": [\n          {\n            \"role\": \"system\",\n            \"content\": \"Answer in one word.\"\n          },\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8,\n        \"temperature\": 0\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "347.5 [EXPECT-401] anthropic batch retrieve, cancel and results call upstream with the named key only and report it (anthropic-batches)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var PREFIX = 'harness-anthbatchkey-';",
+              "var BAD = 'sk-harness-anthbatchkey-invalid';",
+              "function call(method, path, body, headers, cb) {",
+              "  var h = { 'Content-Type': 'application/json' }; for (var k in (headers || {})) { h[k] = headers[k]; }",
+              "  var req = { url: BASE + path, method: method, header: h };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "function expectOk(label, res) {",
+              "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+              "  return !!(res && res.code === 200);",
+              "}",
+              "function cleanup(state) {",
+              "  var names = (state.providers || []).slice();",
+              "  (function next() { if (!names.length) { return; } var p = names.shift(); call('DELETE', '/api/providers/' + encodeURIComponent(p), null, null, function (res) { expectOk('cleanup: run-scoped provider deleted', res); next(); }); })();",
+              "}",
+              "function isStale(name) {",
+              "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+              "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+              "}",
+              "function seq(steps, done) { var i = 0; (function next(ok) { if (ok === false || i >= steps.length) { return done(ok !== false); } steps[i++](next); })(); }",
+              "var run = 'run-' + Date.now();",
+              "var state = { run: run, providers: [], keys: {} };",
+              "var name = PREFIX + 'a-' + run;",
+              "// A live key carries the real credential, a dead one a value the provider refuses for free.",
+              "// Both are enabled for batches, so only the key the caller names decides which is used.",
+              "function key(label, dead, cb) {",
+              "  var body = { name: name + '-' + label, value: dead ? BAD : 'env.ANTHROPIC_API_KEY', models: ['*'], weight: 1, use_for_batch_api: true };",
+              "  call('POST', '/api/providers/' + encodeURIComponent(name) + '/keys', body, null, function (res, k) {",
+              "    if (!expectOk('setup: created key ' + label, res)) { return cb(false); }",
+              "    state.keys[label] = { id: k.id, name: k.name }; cb();",
+              "  });",
+              "}",
+              "call('GET', '/api/providers', null, null, function (r0, j0) {",
+              "  var stale = ((j0 && j0.providers) || []).filter(function (p) { return isStale(p.name); });",
+              "  (function sweep() {",
+              "    if (stale.length) { return call('DELETE', '/api/providers/' + encodeURIComponent(stale.shift().name), null, null, function () { sweep(); }); }",
+              "    seq([",
+              "      function (next) {",
+              "        call('POST', '/api/providers', { provider: name, custom_provider_config: { base_provider_type: 'anthropic', is_key_less: false } }, null, function (res) {",
+              "          if (!expectOk('setup: created the run-scoped provider', res)) { return next(false); }",
+              "          state.providers.push(name); state.provider = name; next();",
+              "        });",
+              "      },",
+              "      function (next) { key('dead', true, next); },",
+              "      function (next) { key('live', false, next); }",
+              "    ], function () {",
+              "      pm.collectionVariables.set('abNamedKeyState', JSON.stringify(state));",
+              "      pm.collectionVariables.set('abNamedKeyProvider', state.provider || 'missing');",
+              "      pm.collectionVariables.set('abNamedKeyDead', (state.keys.dead || {}).name || 'missing');",
+              "    });",
+              "  })();",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// ---- in-script management calls (see the folder description) ----",
+              "var BASE = pm.variables.get('baseUrl');",
+              "var PREFIX = 'harness-anthbatchkey-';",
+              "var BAD = 'sk-harness-anthbatchkey-invalid';",
+              "function call(method, path, body, headers, cb) {",
+              "  var h = { 'Content-Type': 'application/json' }; for (var k in (headers || {})) { h[k] = headers[k]; }",
+              "  var req = { url: BASE + path, method: method, header: h };",
+              "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+              "  pm.sendRequest(req, function (err, res) {",
+              "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+              "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+              "    cb(res, json);",
+              "  });",
+              "}",
+              "function expectOk(label, res) {",
+              "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+              "  return !!(res && res.code === 200);",
+              "}",
+              "function cleanup(state) {",
+              "  var names = (state.providers || []).slice();",
+              "  (function next() { if (!names.length) { return; } var p = names.shift(); call('DELETE', '/api/providers/' + encodeURIComponent(p), null, null, function (res) { expectOk('cleanup: run-scoped provider deleted', res); next(); }); })();",
+              "}",
+              "var state = JSON.parse(pm.collectionVariables.get('abNamedKeyState') || '{}');",
+              "var dead = (state.keys || {}).dead || {}; var live = (state.keys || {}).live || {};",
+              "var BATCH = 'msgbatch_harness_anthropic_batches_missing';",
+              "var P = encodeURIComponent(state.provider || 'missing');",
+              "var json = {}; try { json = pm.response.json() || {}; } catch (e) { json = {}; }",
+              "// The named key is dead: one upstream call with it is the provider's own 401. Walking the",
+              "// provider's keys instead would also call the live key, whose answer for this id is a 404.",
+              "pm.test('the dead key the caller named answered: the provider\\'s own 401, not the live key\\'s 404', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(401);",
+              "});",
+              "pm.test('the response reports the named key in x-bifrost-routing-info-key and in routing_info', function () {",
+              "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'failed: ' + pm.response.text()).to.eql(dead.name);",
+              "  pm.expect(((json.extra_fields || {}).routing_info || {}).key, 'failed: ' + pm.response.text()).to.eql(dead.name);",
+              "});",
+              "// Each follow-up names a key and expects that key alone to have been called.",
+              "var rows = [",
+              "  { label: 'retrieve, live key by name', method: 'GET', path: '/v1/batches/' + BATCH + '?provider=' + P, headers: { 'x-bf-api-key': live.name }, status: 404, key: live.name },",
+              "  { label: 'retrieve, live key by id', method: 'GET', path: '/v1/batches/' + BATCH + '?provider=' + P, headers: { 'x-bf-api-key-id': live.id }, status: 404, key: live.name },",
+              "  { label: 'retrieve, key id wins over key name', method: 'GET', path: '/v1/batches/' + BATCH + '?provider=' + P, headers: { 'x-bf-api-key-id': dead.id, 'x-bf-api-key': live.name }, status: 401, key: dead.name },",
+              "  { label: 'cancel, dead key by name', method: 'POST', path: '/v1/batches/' + BATCH + '/cancel?provider=' + P, headers: { 'x-bf-api-key': dead.name }, status: 401, key: dead.name },",
+              "  { label: 'cancel, live key by name', method: 'POST', path: '/v1/batches/' + BATCH + '/cancel?provider=' + P, headers: { 'x-bf-api-key': live.name }, status: 404, key: live.name },",
+              "  { label: 'results, dead key by name', method: 'GET', path: '/v1/batches/' + BATCH + '/results?provider=' + P + '&limit=10', headers: { 'x-bf-api-key': dead.name }, status: 401, key: dead.name },",
+              "  { label: 'results, live key by name', method: 'GET', path: '/v1/batches/' + BATCH + '/results?provider=' + P + '&limit=10', headers: { 'x-bf-api-key': live.name }, status: 404, key: live.name }",
+              "];",
+              "(function next() {",
+              "  if (!rows.length) {",
+              "    // A name that is no key of the provider is refused before any upstream call.",
+              "    return call('GET', '/v1/batches/' + BATCH + '?provider=' + P, null, { 'x-bf-api-key': 'harness-anthbatchkey-no-such-key' }, function (res) {",
+              "      pm.test('a named key that is not a batch-enabled key of the provider is a 400 naming it', function () {",
+              "        pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(400);",
+              "        pm.expect(res.text()).to.include('harness-anthbatchkey-no-such-key');",
+              "      });",
+              "      cleanup(state);",
+              "    });",
+              "  }",
+              "  var row = rows.shift();",
+              "  call(row.method, row.path, row.method === 'POST' ? {} : null, row.headers, function (res) {",
+              "    pm.test(row.label + ': only the named key was called (status ' + row.status + ')', function () {",
+              "      pm.expect(res && res.code, res ? res.text() : 'no response').to.eql(row.status);",
+              "    });",
+              "    pm.test(row.label + ': the response reports the named key', function () {",
+              "      pm.expect(res && res.headers.get('x-bifrost-routing-info-key'), res ? res.text() : 'no response').to.eql(row.key);",
+              "    });",
+              "    next();",
+              "  });",
+              "})();"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-api-key",
+            "value": "{{abNamedKeyDead}}"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/msgbatch_harness_anthropic_batches_missing?provider={{abNamedKeyProvider}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "msgbatch_harness_anthropic_batches_missing"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "{{abNamedKeyProvider}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "347.6 [EXPECT-400] vertex/claude-opus-4-7 a Claude-on-Vertex line the url names a chat completion goes through the shared converter (anthropic-batches)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a chat line with no messages is a 400 naming requests[0].body, before anything is uploaded', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect((j.error || {}).param, pm.response.text()).to.eql('requests[0].body');",
+              "  pm.expect(pm.response.text()).to.include('messages is required');",
+              "  pm.expect(pm.response.text()).to.include('ab-vertex-1');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"vertex/claude-opus-4-7\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"output_folder\": {\n    \"url\": \"gs://{{vertexGcsBucket}}/harness-anthropic-batches/output/\"\n  },\n  \"requests\": [\n    {\n      \"custom_id\": \"ab-vertex-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/chat/completions\",\n      \"body\": {\n        \"model\": \"claude-opus-4-7\",\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches"
+          ]
+        }
+      }
+    },
+    {
+      "name": "347.7 anthropic unified batch results on the fixture's settled batch are paged OpenAI-shape lines (provider error fixture, anthropic-batches)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var BASE = pm.variables.get('baseUrl');",
+              "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "var rows = j.results || [];",
+              "pm.test('page 1 holds two lines and a cursor to the rest', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(rows.length, pm.response.text()).to.eql(2);",
+              "  pm.expect(j.has_more, pm.response.text()).to.eql(true);",
+              "  pm.expect(j.next_cursor, pm.response.text()).to.be.a('string').and.not.empty;",
+              "});",
+              "var ok = rows[0] || {}; var body = (ok.response || {}).body || {}; var usage = body.usage || {}; var details = usage.prompt_tokens_details || {};",
+              "pm.test('a succeeded Message comes back as the sync route\\'s chat.completion with unified usage', function () {",
+              "  pm.expect(ok.custom_id, JSON.stringify(ok)).to.eql('fx-1');",
+              "  pm.expect(ok.status, JSON.stringify(ok)).to.eql('succeeded');",
+              "  pm.expect((ok.response || {}).status_code, JSON.stringify(ok)).to.eql(200);",
+              "  pm.expect(body.object, JSON.stringify(body)).to.eql('chat.completion');",
+              "  pm.expect((((body.choices || [])[0] || {}).message || {}).content, JSON.stringify(body)).to.eql('ok');",
+              "  pm.expect(usage.prompt_tokens, JSON.stringify(usage)).to.eql(18);",
+              "  pm.expect(usage.completion_tokens, JSON.stringify(usage)).to.eql(4);",
+              "  pm.expect(details.cached_read_tokens, JSON.stringify(usage)).to.eql(6);",
+              "  pm.expect(details.cached_write_tokens, JSON.stringify(usage)).to.eql(2);",
+              "  pm.expect(ok.result, 'no Messages-shape result on the unified route').to.eql(undefined);",
+              "});",
+              "pm.test('the original Message is kept in raw_response for reconciliation', function () {",
+              "  pm.expect(((body.extra_fields || {}).raw_response || {}).id, JSON.stringify(body.extra_fields)).to.eql('msg_fx_1');",
+              "});",
+              "pm.test('an errored line is failed with the vendor\\'s inner error', function () {",
+              "  var bad = rows[1] || {};",
+              "  pm.expect(bad.custom_id, JSON.stringify(bad)).to.eql('fx-2');",
+              "  pm.expect(bad.status, JSON.stringify(bad)).to.eql('failed');",
+              "  pm.expect((bad.error || {}).code, JSON.stringify(bad)).to.eql('invalid_request_error');",
+              "});",
+              "if (j.next_cursor) {",
+              "  pm.sendRequest({ url: BASE + '/v1/batches/msgbatch_fixture_settled/results?provider=anthropic&limit=2&after=' + encodeURIComponent(j.next_cursor), method: 'GET' }, function (err, res) {",
+              "    var k = {}; try { k = res.json() || {}; } catch (e) { k = {}; }",
+              "    pm.test('page 2 from next_cursor holds the expired line and ends the results', function () {",
+              "      pm.expect(res && res.code, err ? String(err) : res.text()).to.eql(200);",
+              "      pm.expect((k.results || []).length, res.text()).to.eql(1);",
+              "      pm.expect(k.results[0].custom_id, res.text()).to.eql('fx-3');",
+              "      pm.expect(k.results[0].status, res.text()).to.eql('expired');",
+              "      pm.expect(k.has_more === true, res.text()).to.eql(false);",
+              "    });",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-send-back-raw-response",
+            "value": "true"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/msgbatch_fixture_settled/results?provider=anthropic&limit=2",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "msgbatch_fixture_settled",
+            "results"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "anthropic"
+            },
+            {
+              "key": "limit",
+              "value": "2"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "347.8 [PREVIEW] anthropic unified batch results for a settled batch are paged OpenAI-shape lines (anthropic-batches)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var BASE = pm.variables.get('baseUrl');",
+              "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+              "var rows = j.results || [];",
+              "var line = rows[0] || {};",
+              "pm.test('one line with a contract status', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(rows.length, pm.response.text()).to.eql(1);",
+              "  pm.expect(['succeeded', 'failed', 'expired', 'cancelled'], JSON.stringify(line)).to.include(line.status);",
+              "  pm.expect(line.result, 'no Messages-shape result on the unified route').to.eql(undefined);",
+              "});",
+              "pm.test('a succeeded line is a chat.completion with unified usage and the raw Message; any other carries the vendor error', function () {",
+              "  if (line.status === 'succeeded') {",
+              "    var body = (line.response || {}).body || {};",
+              "    pm.expect(body.object, JSON.stringify(body)).to.eql('chat.completion');",
+              "    pm.expect((body.usage || {}).prompt_tokens, JSON.stringify(body.usage)).to.be.a('number').and.above(0);",
+              "    pm.expect((body.usage || {}).completion_tokens, JSON.stringify(body.usage)).to.be.a('number');",
+              "    pm.expect(((body.extra_fields || {}).raw_response || {}).type, JSON.stringify(body.extra_fields)).to.eql('message');",
+              "  } else {",
+              "    pm.expect(line.error, JSON.stringify(line)).to.be.an('object');",
+              "  }",
+              "});",
+              "if (j.has_more && j.next_cursor) {",
+              "  pm.sendRequest({ url: BASE + '/v1/batches/' + encodeURIComponent(pm.variables.get('anthropicSettledBatchId')) + '/results?provider=anthropic&limit=1&after=' + encodeURIComponent(j.next_cursor), method: 'GET' }, function (err, res) {",
+              "    var k = {}; try { k = res.json() || {}; } catch (e) { k = {}; }",
+              "    pm.test('the next page from next_cursor holds the next line', function () {",
+              "      pm.expect(res && res.code, err ? String(err) : res.text()).to.eql(200);",
+              "      pm.expect(((k.results || [])[0] || {}).custom_id, res.text()).to.be.a('string').and.not.eql(line.custom_id);",
+              "    });",
+              "  });",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-bf-send-back-raw-response",
+            "value": "true"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/batches/{{anthropicSettledBatchId}}/results?provider=anthropic&limit=1",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "batches",
+            "{{anthropicSettledBatchId}}",
+            "results"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "anthropic"
+            },
+            {
+              "key": "limit",
+              "value": "1"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

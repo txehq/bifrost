@@ -127,12 +127,12 @@ func ToGeminiEmbeddingBatchLineRequests(item schemas.BatchRequestItem, batchEndp
 func geminiEmbeddingBatchRequestItems(request *schemas.BifrostBatchCreateRequest, model string, resolve func(string) string) ([]GeminiBatchRequestItem, *schemas.BifrostError) {
 	items := make([]GeminiBatchRequestItem, 0, len(request.Requests))
 	for i, line := range request.Requests {
-		if err := CheckBatchLineModel(line, schemas.Gemini, model, resolve); err != nil {
-			return nil, NewBatchLineBadRequestError(i, err)
+		if err := providerUtils.CheckBatchLineModel(line, schemas.Gemini, model, resolve); err != nil {
+			return nil, providerUtils.NewBatchLineBadRequestError(i, err)
 		}
 		lineRequests, err := ToGeminiEmbeddingBatchLineRequests(line, request.Endpoint, schemas.Gemini, model)
 		if err != nil {
-			return nil, NewBatchLineBadRequestError(i, err)
+			return nil, providerUtils.NewBatchLineBadRequestError(i, err)
 		}
 		for inputIndex, lineRequest := range lineRequests {
 			metadata := &GeminiBatchRequestMetadata{
