@@ -1,0 +1,8 @@
+# expect: job call-tests: passes OPENAI_API_KEY to a reusable workflow
+# Bracket access names the key as plainly as secrets.OPENAI_API_KEY.
+on: workflow_dispatch
+jobs:
+  call-tests:
+    uses: ./.github/workflows/run-core-tests.yml
+    secrets:
+      key: ${{ secrets['OPENAI_API_KEY'] }}

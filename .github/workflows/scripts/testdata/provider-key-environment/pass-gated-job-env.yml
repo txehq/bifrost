@@ -1,0 +1,17 @@
+# The finding's job, gated: a reviewer approves the run before the job gets the keys.
+on:
+  workflow_dispatch:
+    inputs:
+      branch: {required: true, type: string}
+jobs:
+  run-core-tests:
+    environment: live-providers
+    runs-on: ubuntu-24.04
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.branch }}
+      - run: ./.github/workflows/scripts/test-core.sh

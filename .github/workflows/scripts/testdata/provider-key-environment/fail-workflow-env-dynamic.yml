@@ -1,0 +1,10 @@
+# expect: the workflow-level env reads OPENAI_API_KEY, which every job inherits
+# secrets['NAME'] is the same read as secrets.NAME, and the workflow-level env reaches every job.
+on: push
+env:
+  OPENAI_API_KEY: ${{ secrets['OPENAI_API_KEY'] }}
+jobs:
+  test-core:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: make test-core

@@ -1,0 +1,15 @@
+# expect: job run-tests: reads GROQ_API_KEY, checks out ${{ github.sha }}, and the job names environment 'pr-testing'
+# An environment other than live-providers does not hold the keys or their reviewers.
+on: workflow_dispatch
+jobs:
+  run-tests:
+    runs-on: ubuntu-24.04
+    environment:
+      name: pr-testing
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+      - run: make test-core
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}

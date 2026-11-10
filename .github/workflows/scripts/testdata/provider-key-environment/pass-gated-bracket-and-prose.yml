@@ -1,0 +1,18 @@
+# A gated job may read keys in any form; prose that says "secrets" outside an expression
+# reads nothing, and inputs.secrets is not the secrets context.
+on:
+  workflow_dispatch:
+    inputs:
+      secrets: {required: false, type: string}
+jobs:
+  test-core:
+    environment: live-providers
+    runs-on: ubuntu-24.04
+    steps:
+      - run: make test-core
+        env:
+          OPENAI_API_KEY: ${{ secrets['OPENAI_API_KEY'] }}
+  docs:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "no secrets.OPENAI_API_KEY here, and secrets[0] is not an expression; ${{ inputs.secrets }}"

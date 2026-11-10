@@ -1,0 +1,13 @@
+# The mapping form of environment, as pr-tests.yml writes it.
+on: workflow_dispatch
+jobs:
+  run-tests:
+    runs-on: ubuntu-24.04
+    environment:
+      name: live-providers
+      url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v6
+      - run: make test-core
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

@@ -1,0 +1,8 @@
+# expect: job dump: reads secrets dynamically
+# Any use of the secrets context that does not name one secret can reach all of them.
+on: push
+jobs:
+  dump:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "${{ join(secrets.*, ',') }}" | wc -c

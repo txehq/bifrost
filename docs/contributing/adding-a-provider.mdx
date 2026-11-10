@@ -1733,41 +1733,27 @@ case schemas.ProviderName:
 
 ### Step 8: Add CI/CD Environment Variables
 
-Add your provider's API key to all GitHub Actions workflow files that run tests.
+Your provider's API key is a secret of the `live-providers` GitHub environment, never a repository or organization secret. A workflow job runs the code of whatever ref triggered it, so anyone who can push a branch could read a repository secret. The environment's required reviewers approve each run before a job receives its secrets.
 
-#### Files to Update:
+- Name the secret `PROVIDER_NAME_API_KEY`. If the vendor's credential is not an API key, add its secret name to `OTHER_PROVIDER_CREDENTIALS` in `.github/workflows/scripts/check-provider-key-environment.py`.
+- Read it only in jobs that name `environment: live-providers`: `run-tests` in `.github/workflows/pr-tests.yml`, `run-core-tests` in `.github/workflows/run-core-tests.yml`, and the live test and release jobs in `.github/workflows/release-pipeline.yml`. The workflow-lint job fails a provider credential read in any other job.
+- If no test needs the key yet, leave it out of the workflows.
 
-1. **`.github/workflows/pr-tests.yml`**
-2. **`.github/workflows/release-pipeline.yml`** (multiple jobs)
-
-#### Changes Required:
-
-Add the environment variable to the `env:` section:
+Add the variable to the `env:` of a step (or job) in one of those jobs:
 
 ```yaml
-env:
-    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-    # ... other API keys
-    PROVIDER_NAME_API_KEY: ${{ secrets.PROVIDER_NAME_API_KEY }}
+jobs:
+  run-tests:
+    environment: live-providers
+    steps:
+      - name: Run tests
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # ... other API keys
+          PROVIDER_NAME_API_KEY: ${{ secrets.PROVIDER_NAME_API_KEY }}
 ```
 
-**Example from pr-tests.yml**:
-```yaml
-env:
-    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-    AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
-    HUGGING_FACE_API_KEY: ${{ secrets.HUGGING_FACE_API_KEY }}
-```
-
-**Locations in release-pipeline.yml**:
-- `core-release` job
-- `framework-release` job
-- `plugins-release` job
-- `bifrost-http-release` job
-
-**Note**: Repository maintainers need to add the actual secret value in GitHub repository settings under `Settings > Secrets and variables > Actions`.
+**Note**: A repository maintainer stores the value as an environment secret: `gh secret set PROVIDER_NAME_API_KEY --env live-providers`, or `Settings > Environments > live-providers > Environment secrets`.
 
 ---
 
@@ -1785,8 +1771,7 @@ Before submitting your PR, verify all UI changes:
 - ✅ Provider listed in UI README (`ui/README.md`)
 - ✅ Provider import added to `core/bifrost.go`
 - ✅ Provider case added to `createBaseProvider` in `core/bifrost.go`
-- ✅ Environment variable added to `.github/workflows/pr-tests.yml`
-- ✅ Environment variable added to `.github/workflows/release-pipeline.yml` (4 jobs)
+- ✅ API key read only in `live-providers` jobs (`pr-tests.yml`, `run-core-tests.yml`, `release-pipeline.yml`), stored as a `live-providers` environment secret
 
 ---
 

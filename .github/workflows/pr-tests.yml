@@ -52,10 +52,12 @@ jobs:
     name: Run Tests (Awaiting Approval)
     runs-on: ${{ vars.BIFROST_RUNNER_AMD64 || 'ubuntu-24.04' }}
 
-    # Environment with protection rules - requires admin approval
-    # Note: You need to configure this environment in repo settings
+    # Provider credentials are secrets of the live-providers environment, never
+    # repository secrets: this job runs the code of whatever ref it is dispatched on,
+    # so only the environment's required reviewers gate the keys (TXE-6975,
+    # check-provider-key-environment.py).
     environment:
-      name: pr-testing
+      name: live-providers
       url: ${{ github.event.pull_request.html_url || github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
     permissions:
