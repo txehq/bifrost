@@ -2056,6 +2056,77 @@ type ChatCachedWriteTokenDetails struct {
 	CachedWriteTokens12h int `json:"cached_write_tokens_12h,omitempty"`
 }
 
+// Cache-write lifetime tier names. Each is the suffix of the tier's JSON field
+// (cached_write_tokens_<tier>), span attribute and metric name.
+const (
+	CachedWriteTier5m  = "5m"
+	CachedWriteTier1h  = "1h"
+	CachedWriteTier30m = "30m"
+	CachedWriteTier12h = "12h"
+)
+
+// CachedWriteTiers lists every cache-write lifetime tier, in reporting order. It is the one
+// enumeration that cost, span attributes and metrics loop over, so a tier added to
+// ChatCachedWriteTokenDetails reaches all of them once it is listed here; a test fails when a
+// tier field has no entry.
+var CachedWriteTiers = [...]string{CachedWriteTier5m, CachedWriteTier1h, CachedWriteTier30m, CachedWriteTier12h}
+
+// CachedWriteTierVendors names the vendors that report a cache-write lifetime tier, for metric
+// and attribute descriptions.
+func CachedWriteTierVendors(tier string) string {
+	switch tier {
+	case CachedWriteTier5m, CachedWriteTier1h:
+		return "Anthropic and Bedrock"
+	case CachedWriteTier30m, CachedWriteTier12h:
+		return "OpenAI"
+	}
+	return "vendor-reported"
+}
+
+// Tokens returns the cache-write tokens reported for tier: 0 for nil details or an unknown tier.
+func (d *ChatCachedWriteTokenDetails) Tokens(tier string) int {
+	if d == nil {
+		return 0
+	}
+	switch tier {
+	case CachedWriteTier5m:
+		return d.CachedWriteTokens5m
+	case CachedWriteTier1h:
+		return d.CachedWriteTokens1h
+	case CachedWriteTier30m:
+		return d.CachedWriteTokens30m
+	case CachedWriteTier12h:
+		return d.CachedWriteTokens12h
+	}
+	return 0
+}
+
+// Plus returns the tier-by-tier sum of d and o; either may be nil.
+func (d *ChatCachedWriteTokenDetails) Plus(o *ChatCachedWriteTokenDetails) ChatCachedWriteTokenDetails {
+	var sum ChatCachedWriteTokenDetails
+	for _, x := range [2]*ChatCachedWriteTokenDetails{d, o} {
+		if x == nil {
+			continue
+		}
+		sum.CachedWriteTokens5m += x.CachedWriteTokens5m
+		sum.CachedWriteTokens1h += x.CachedWriteTokens1h
+		sum.CachedWriteTokens30m += x.CachedWriteTokens30m
+		sum.CachedWriteTokens12h += x.CachedWriteTokens12h
+	}
+	return sum
+}
+
+// TokensAbove1h returns the cache-write tokens priced at the catalog's
+// cache_creation_input_token_cost_above_1hr rate: every tier whose lifetime exceeds one hour
+// (Anthropic's 1h and OpenAI's 12h). The 5m and 30m tiers are each vendor's base cache-write
+// tier and stay at cache_creation_input_token_cost.
+func (d *ChatCachedWriteTokenDetails) TokensAbove1h() int {
+	if d == nil {
+		return 0
+	}
+	return d.CachedWriteTokens1h + d.CachedWriteTokens12h
+}
+
 // openAICacheWriteTokensDetails is OpenAI's wire shape for the per-lifetime split of cache
 // writes: cache_write_tokens_details under prompt_tokens_details (Chat Completions) or
 // input_tokens_details (Responses).
@@ -2228,12 +2299,8 @@ func MergeBifrostLLMUsage(base, add *BifrostLLMUsage) *BifrostLLMUsage {
 			CachedWriteTokens: baseDetails.CachedWriteTokens + addDetails.CachedWriteTokens,
 		}
 		if baseDetails.CachedWriteTokenDetails != nil || addDetails.CachedWriteTokenDetails != nil {
-			merged.PromptTokensDetails.CachedWriteTokenDetails = &ChatCachedWriteTokenDetails{
-				CachedWriteTokens5m:  cachedWriteTokens5m(baseDetails) + cachedWriteTokens5m(addDetails),
-				CachedWriteTokens1h:  cachedWriteTokens1h(baseDetails) + cachedWriteTokens1h(addDetails),
-				CachedWriteTokens30m: cachedWriteTokens30m(baseDetails) + cachedWriteTokens30m(addDetails),
-				CachedWriteTokens12h: cachedWriteTokens12h(baseDetails) + cachedWriteTokens12h(addDetails),
-			}
+			sum := baseDetails.CachedWriteTokenDetails.Plus(addDetails.CachedWriteTokenDetails)
+			merged.PromptTokensDetails.CachedWriteTokenDetails = &sum
 		}
 	}
 
@@ -2329,34 +2396,6 @@ func (t *ToolUsage) DeepCopy() *ToolUsage {
 		}
 	}
 	return &c
-}
-
-func cachedWriteTokens5m(details *ChatPromptTokensDetails) int {
-	if details == nil || details.CachedWriteTokenDetails == nil {
-		return 0
-	}
-	return details.CachedWriteTokenDetails.CachedWriteTokens5m
-}
-
-func cachedWriteTokens1h(details *ChatPromptTokensDetails) int {
-	if details == nil || details.CachedWriteTokenDetails == nil {
-		return 0
-	}
-	return details.CachedWriteTokenDetails.CachedWriteTokens1h
-}
-
-func cachedWriteTokens30m(details *ChatPromptTokensDetails) int {
-	if details == nil || details.CachedWriteTokenDetails == nil {
-		return 0
-	}
-	return details.CachedWriteTokenDetails.CachedWriteTokens30m
-}
-
-func cachedWriteTokens12h(details *ChatPromptTokensDetails) int {
-	if details == nil || details.CachedWriteTokenDetails == nil {
-		return 0
-	}
-	return details.CachedWriteTokenDetails.CachedWriteTokens12h
 }
 
 func sumOptionalInts(base, add *int) *int {

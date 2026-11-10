@@ -950,6 +950,39 @@ func TestComputeTextCost_With1hrCacheCreationTokens(t *testing.T) {
 	assert.InDelta(t, 0.0165, cost, 1e-12)
 }
 
+// TXE-6531/TXE-6959: OpenAI reports its cache writes as a 30-minute and a 12-hour tier. The 30m
+// tier is OpenAI's base cache write (cache_creation_input_token_cost, 1.25x input); the 12h tier
+// is longer than an hour and takes cache_creation_input_token_cost_above_1hr (2.5x input).
+func TestComputeTextCost_OpenAI30mAnd12hCacheWriteTiers(t *testing.T) {
+	p := chatPricing(0.000001, 0.000008)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.00000125)
+	p.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(0.0000025)
+
+	usage := &schemas.BifrostLLMUsage{
+		PromptTokens:     10000,
+		CompletionTokens: 100,
+		TotalTokens:      10100,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokens: 8000,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens30m: 6000,
+				CachedWriteTokens12h: 2000,
+			},
+		},
+	}
+
+	// Input (non-cached): 2000*1e-6 = 0.002
+	// Cache write 30m (base rate): 6000*1.25e-6 = 0.0075
+	// Cache write 12h (above-1hr rate): 2000*2.5e-6 = 0.005
+	// Output: 100*8e-6 = 0.0008
+	assert.InDelta(t, 0.0153, computeTextCostTotal(&p, usage, serviceTier{}), 1e-12)
+
+	// Without an above-1hr rate the 12h tier falls back to the base cache-write rate, as the
+	// 1h tier does.
+	p.CacheCreationInputTokenCostAbove1hr = nil
+	assert.InDelta(t, 0.002+8000*0.00000125+0.0008, computeTextCostTotal(&p, usage, serviceTier{}), 1e-12)
+}
+
 func TestComputeTextCost_StandardCacheCreationPricingLesserThan1hr(t *testing.T) {
 	// Standard (5-min TTL) cache creation is cheaper than 1hr TTL cache creation.
 	// 1hr rate ($7.50/M) is 2x the standard rate ($3.75/M).
@@ -5707,6 +5740,41 @@ func TestCalculateCostForUsage_BatchCacheRatesStackWithBatchDiscount(t *testing.
 	assert.InDelta(t, 0.001935, cost, 1e-12)
 }
 
+// TXE-6959: the batch path prices OpenAI's 12h cache-write tier at the above-1hr rate and the
+// 30m tier at the base cache-write rate, each scaled by the batch discount.
+func TestCalculateCostForUsage_BatchOpenAICacheWriteTiers(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey("gpt-batch", "openai", "chat"): {
+			Model:                               "gpt-batch",
+			Provider:                            "openai",
+			Mode:                                "chat",
+			InputCostPerToken:                   bifrost.Ptr(0.000001),
+			OutputCostPerToken:                  bifrost.Ptr(0.000008),
+			InputCostPerTokenBatches:            bifrost.Ptr(0.0000005),
+			OutputCostPerTokenBatches:           bifrost.Ptr(0.000004),
+			CacheCreationInputTokenCost:         bifrost.Ptr(0.00000125),
+			CacheCreationInputTokenCostAbove1hr: bifrost.Ptr(0.0000025),
+		},
+	})
+
+	details := s.CalculateBatchCostDetailsForUsage(&schemas.BifrostLLMUsage{
+		PromptTokens:     10000,
+		CompletionTokens: 100,
+		TotalTokens:      10100,
+		PromptTokensDetails: &schemas.ChatPromptTokensDetails{
+			CachedWriteTokens: 8000,
+			CachedWriteTokenDetails: &schemas.ChatCachedWriteTokenDetails{
+				CachedWriteTokens30m: 6000,
+				CachedWriteTokens12h: 2000,
+			},
+		},
+	}, schemas.OpenAI, "gpt-batch", schemas.ChatCompletionRequest, nil)
+
+	require.True(t, details.Priced)
+	// Batch ratio 0.5. Input: 2000*0.5e-6 + 6000*0.625e-6 + 2000*1.25e-6. Output: 100*4e-6.
+	assert.InDelta(t, 0.001+0.00375+0.0025+0.0004, details.Cost, 1e-12)
+}
+
 func TestCalculateCostForUsage_BatchAbove200kTierScalesWithBatchDiscount(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-5.x-batch", "openai", "chat"): {
@@ -8113,6 +8181,31 @@ func BenchmarkVideoCostInputs(b *testing.B) {
 				if s.CalculateCost(result, nil) <= 0 {
 					b.Fatal("unpriced")
 				}
+			}
+		})
+	}
+}
+
+// TXE-6959: text cost per cache-write tier shape.
+func BenchmarkComputeTextCostCacheWriteTiers(b *testing.B) {
+	p := chatPricing(0.000001, 0.000008)
+	p.CacheCreationInputTokenCost = bifrost.Ptr(0.00000125)
+	p.CacheCreationInputTokenCostAbove1hr = bifrost.Ptr(0.0000025)
+	cases := []struct {
+		name  string
+		tiers *schemas.ChatCachedWriteTokenDetails
+	}{
+		{"no_tiers", nil},
+		{"anthropic_5m_1h", &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens5m: 6000, CachedWriteTokens1h: 2000}},
+		{"openai_30m_12h", &schemas.ChatCachedWriteTokenDetails{CachedWriteTokens30m: 6000, CachedWriteTokens12h: 2000}},
+	}
+	for _, tc := range cases {
+		usage := &schemas.BifrostLLMUsage{PromptTokens: 10000, CompletionTokens: 100, TotalTokens: 10100,
+			PromptTokensDetails: &schemas.ChatPromptTokensDetails{CachedWriteTokens: 8000, CachedWriteTokenDetails: tc.tiers}}
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = computeTextCostTotal(&p, usage, serviceTier{})
 			}
 		})
 	}

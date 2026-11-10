@@ -1494,8 +1494,8 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 	// Record provider-side prompt cache tokens (cache_read / cache_creation). Unlike the
 	// cache-hit counter, these ride real upstream calls, so the values are on the final
 	// attempt span just like input/output tokens. The read/write totals share unified
-	// span-attr keys across the chat and responses APIs; the 5m/1h breakdown uses
-	// API-family-specific keys that are mutually exclusive per request, so a fallback read
+	// span-attr keys across the chat and responses APIs; the per-lifetime tier breakdown
+	// (schemas.CachedWriteTiers) uses API-family-specific keys that are mutually exclusive per request, so a fallback read
 	// covers both.
 	if n := schemas.GetIntAttr(attrs, schemas.AttrUsageCacheReadInputTokens); n > 0 {
 		exporter.RecordCacheReadInputTokens(ctx, int64(n), otelAttrs...)
@@ -1503,19 +1503,14 @@ func (p *OtelPlugin) recordMetricsFromTrace(ctx context.Context, exporter *Metri
 	if n := schemas.GetIntAttr(attrs, schemas.AttrUsageCacheCreationInputTokens); n > 0 {
 		exporter.RecordCacheWriteInputTokens(ctx, int64(n), otelAttrs...)
 	}
-	cacheWrite5m := schemas.GetIntAttr(attrs, schemas.AttrPromptTokenDetailsCachedWrite5m)
-	if cacheWrite5m == 0 {
-		cacheWrite5m = schemas.GetIntAttr(attrs, schemas.AttrInputTokenDetailsCachedWrite5m)
-	}
-	if cacheWrite5m > 0 {
-		exporter.RecordCacheWriteInputTokens5m(ctx, int64(cacheWrite5m), otelAttrs...)
-	}
-	cacheWrite1h := schemas.GetIntAttr(attrs, schemas.AttrPromptTokenDetailsCachedWrite1h)
-	if cacheWrite1h == 0 {
-		cacheWrite1h = schemas.GetIntAttr(attrs, schemas.AttrInputTokenDetailsCachedWrite1h)
-	}
-	if cacheWrite1h > 0 {
-		exporter.RecordCacheWriteInputTokens1h(ctx, int64(cacheWrite1h), otelAttrs...)
+	for _, tier := range schemas.CachedWriteTiers {
+		n := schemas.GetIntAttr(attrs, schemas.CachedWriteTierAttr(false, tier))
+		if n == 0 {
+			n = schemas.GetIntAttr(attrs, schemas.CachedWriteTierAttr(true, tier))
+		}
+		if n > 0 {
+			exporter.RecordCacheWriteInputTokensTier(ctx, tier, int64(n), otelAttrs...)
+		}
 	}
 }
 

@@ -423,10 +423,8 @@ func (d *LLMSpanData) appendUsage(attrs map[string]any) {
 
 	if pd := u.PromptTokensDetails; pd != nil {
 		textKey, audioKey, imageKey := AttrPromptTokenDetailsText, AttrPromptTokenDetailsAudio, AttrPromptTokenDetailsImage
-		write5m, write1h := AttrPromptTokenDetailsCachedWrite5m, AttrPromptTokenDetailsCachedWrite1h
 		if responsesNS {
 			textKey, audioKey, imageKey = AttrInputTokenDetailsText, AttrInputTokenDetailsAudio, AttrInputTokenDetailsImage
-			write5m, write1h = AttrInputTokenDetailsCachedWrite5m, AttrInputTokenDetailsCachedWrite1h
 		}
 		setIfPositive(attrs, textKey, pd.TextTokens)
 		setIfPositive(attrs, audioKey, pd.AudioTokens)
@@ -434,8 +432,9 @@ func (d *LLMSpanData) appendUsage(attrs map[string]any) {
 		setIfPositive(attrs, AttrUsageCacheReadInputTokens, pd.CachedReadTokens)
 		setIfPositive(attrs, AttrUsageCacheCreationInputTokens, pd.CachedWriteTokens)
 		if wd := pd.CachedWriteTokenDetails; wd != nil {
-			setIfPositive(attrs, write5m, wd.CachedWriteTokens5m)
-			setIfPositive(attrs, write1h, wd.CachedWriteTokens1h)
+			for _, tier := range CachedWriteTiers {
+				setIfPositive(attrs, CachedWriteTierAttr(responsesNS, tier), wd.Tokens(tier))
+			}
 		}
 	}
 

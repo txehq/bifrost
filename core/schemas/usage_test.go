@@ -558,3 +558,113 @@ func BenchmarkToolUsageAdd_AllTools(b *testing.B) {
 		toolUsageSink = x.Add(y)
 	}
 }
+
+// TXE-6959: CachedWriteTiers is the one enumeration of cache-write lifetime tiers that cost,
+// span attributes and metrics loop over. A tier field added to ChatCachedWriteTokenDetails
+// without an entry here (or without Tokens, Plus, a span attribute or a vendor name) fails.
+func TestCachedWriteTiersCoverEveryField(t *testing.T) {
+	typ := reflect.TypeOf(ChatCachedWriteTokenDetails{})
+	listed := map[string]bool{}
+	for _, tier := range CachedWriteTiers {
+		listed[tier] = true
+	}
+	if typ.NumField() != len(CachedWriteTiers) {
+		t.Fatalf("ChatCachedWriteTokenDetails has %d fields but CachedWriteTiers lists %d", typ.NumField(), len(CachedWriteTiers))
+	}
+
+	// Give every field a distinct value through reflection, so a Tokens/Plus case that reads
+	// the wrong field cannot pass.
+	var d ChatCachedWriteTokenDetails
+	v := reflect.ValueOf(&d).Elem()
+	want := map[string]int{}
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		if f.Type.Kind() != reflect.Int {
+			t.Fatalf("field %s is %s; every tier field must be an int", f.Name, f.Type)
+		}
+		tag := strings.Split(f.Tag.Get("json"), ",")[0]
+		tier, ok := strings.CutPrefix(tag, "cached_write_tokens_")
+		if !ok || !listed[tier] {
+			t.Fatalf("field %s (json %q) has no entry in CachedWriteTiers", f.Name, tag)
+		}
+		v.Field(i).SetInt(int64(10 * (i + 1)))
+		want[tier] = 10 * (i + 1)
+	}
+
+	sum := d.Plus(&d)
+	attrs := map[string]bool{}
+	for _, tier := range CachedWriteTiers {
+		if got := d.Tokens(tier); got != want[tier] {
+			t.Errorf("Tokens(%q) = %d, want %d", tier, got, want[tier])
+		}
+		if got := sum.Tokens(tier); got != 2*want[tier] {
+			t.Errorf("Plus: tier %q = %d, want %d", tier, got, 2*want[tier])
+		}
+		for _, responses := range []bool{false, true} {
+			key := CachedWriteTierAttr(responses, tier)
+			if !strings.HasSuffix(key, ".cached_write_tokens_"+tier) || attrs[key] {
+				t.Errorf("CachedWriteTierAttr(%v, %q) = %q: missing, misnamed or duplicated", responses, tier, key)
+			}
+			attrs[key] = true
+		}
+		if CachedWriteTierVendors(tier) == "vendor-reported" {
+			t.Errorf("CachedWriteTierVendors(%q) names no vendor", tier)
+		}
+	}
+	if got := d.TokensAbove1h(); got != want[CachedWriteTier1h]+want[CachedWriteTier12h] {
+		t.Errorf("TokensAbove1h = %d, want the 1h and 12h tiers", got)
+	}
+	var nilDetails *ChatCachedWriteTokenDetails
+	if nilDetails.Tokens(CachedWriteTier1h) != 0 || nilDetails.TokensAbove1h() != 0 || nilDetails.Plus(nil) != (ChatCachedWriteTokenDetails{}) {
+		t.Error("nil details must read as zero")
+	}
+}
+
+// TXE-6959: span usage carries OpenAI's 30m and 12h cache-write tiers in the namespace of the
+// request family.
+func TestLLMSpanDataCarriesEveryCacheWriteTier(t *testing.T) {
+	usage := &BifrostLLMUsage{PromptTokens: 100, PromptTokensDetails: &ChatPromptTokensDetails{
+		CachedWriteTokens:       80,
+		CachedWriteTokenDetails: &ChatCachedWriteTokenDetails{CachedWriteTokens30m: 50, CachedWriteTokens12h: 30},
+	}}
+	for _, rt := range []RequestType{ChatCompletionRequest, ResponsesRequest} {
+		attrs := (&LLMSpanData{RequestType: rt, Usage: usage}).Attributes()
+		responses := rt == ResponsesRequest
+		if got := attrs[CachedWriteTierAttr(responses, CachedWriteTier30m)]; got != 50 {
+			t.Errorf("%s: 30m attribute = %v, want 50", rt, got)
+		}
+		if got := attrs[CachedWriteTierAttr(responses, CachedWriteTier12h)]; got != 30 {
+			t.Errorf("%s: 12h attribute = %v, want 30", rt, got)
+		}
+		for _, tier := range []string{CachedWriteTier5m, CachedWriteTier1h} {
+			if _, ok := attrs[CachedWriteTierAttr(responses, tier)]; ok {
+				t.Errorf("%s: unreported %s tier emitted", rt, tier)
+			}
+		}
+	}
+}
+
+// TXE-6959: span usage attributes per cache-write tier shape.
+func BenchmarkLLMSpanDataCacheWriteTierAttributes(b *testing.B) {
+	cases := []struct {
+		name  string
+		tiers *ChatCachedWriteTokenDetails
+	}{
+		{"no_tiers", nil},
+		{"anthropic_5m_1h", &ChatCachedWriteTokenDetails{CachedWriteTokens5m: 50, CachedWriteTokens1h: 30}},
+		{"openai_30m_12h", &ChatCachedWriteTokenDetails{CachedWriteTokens30m: 50, CachedWriteTokens12h: 30}},
+	}
+	for _, tc := range cases {
+		d := &LLMSpanData{RequestType: ChatCompletionRequest, Usage: &BifrostLLMUsage{
+			PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110,
+			PromptTokensDetails: &ChatPromptTokensDetails{CachedWriteTokens: 80, CachedWriteTokenDetails: tc.tiers},
+		}}
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				attrs := make(map[string]any, 16)
+				d.appendUsage(attrs)
+			}
+		})
+	}
+}

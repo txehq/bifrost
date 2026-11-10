@@ -1182,8 +1182,10 @@ These are the same **Prometheus-style metrics** from the telemetry plugin, pushe
 | `bifrost_cache_hits_total` | Counter | Cache hits |
 | `bifrost_cache_read_input_tokens_total` | Counter | Provider-side prompt-cache read (cached) input tokens, billed by the provider at a reduced rate |
 | `bifrost_cache_write_input_tokens_total` | Counter | Provider-side prompt-cache creation (write) input tokens |
-| `bifrost_cache_write_input_tokens_5m_total` | Counter | Cache-write input tokens with a 5-minute TTL (Anthropic only). Subset of `bifrost_cache_write_input_tokens_total` — do not sum with it |
-| `bifrost_cache_write_input_tokens_1h_total` | Counter | Cache-write input tokens with a 1-hour TTL (Anthropic only). Subset of `bifrost_cache_write_input_tokens_total` — do not sum with it |
+| `bifrost_cache_write_input_tokens_5m_total` | Counter | Cache-write input tokens with a 5-minute TTL (Anthropic and Bedrock). Subset of `bifrost_cache_write_input_tokens_total` — do not sum with it |
+| `bifrost_cache_write_input_tokens_1h_total` | Counter | Cache-write input tokens with a 1-hour TTL (Anthropic and Bedrock). Subset of `bifrost_cache_write_input_tokens_total` — do not sum with it |
+| `bifrost_cache_write_input_tokens_30m_total` | Counter | Cache-write input tokens with a 30-minute TTL (OpenAI). Subset of `bifrost_cache_write_input_tokens_total` — do not sum with it |
+| `bifrost_cache_write_input_tokens_12h_total` | Counter | Cache-write input tokens with a 12-hour TTL (OpenAI). Subset of `bifrost_cache_write_input_tokens_total` — do not sum with it |
 | `bifrost_cost_total` | Counter | Total cost in USD |
 | `bifrost_upstream_latency_seconds` | Histogram | Upstream request latency |
 | `bifrost_overhead_latency_microseconds` | Histogram | Total Bifrost overhead per request in microseconds (excludes upstream provider time) |
