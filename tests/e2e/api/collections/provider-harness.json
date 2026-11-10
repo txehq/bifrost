@@ -276570,7 +276570,7 @@
     },
     {
       "name": "251. Custom OpenAI base serves every model once decisions are allowed (decisions opt-in)",
-      "description": "A custom provider on the OpenAI base whose allowed_requests set decisions to true forwards every model to its upstream's /v1/decisions. Before the fix, OpenAIProvider.Decision checked the model first (a supports_decisions datasheet row, which custom providers never have, or the gpt-6-luna name) and refused anything else with 400 unsupported_operation, so the opt-in was never read and nothing reached the upstream. The profile's openai_decisions_optin provider allows decisions and maps the key alias kserve-decider (canonical name kserve-decider, wire model gpt-6-luna), so the gate sees a name it does not recognize while OpenAI still answers on /v1/decisions. Each case expects 200 with a predicate answer reported under the custom provider: red before the fix (400 unsupported_operation: decisions is not supported by openai_decisions_optin provider), green after. Covered routes: /v1/decisions and the OpenAI SDK route /openai/v1/decisions. The Go SDK enters at the same neutral request and is pinned by TestOpenAIProviderDecisionCustomProviderOptIn.",
+      "description": "A custom provider on the OpenAI base whose allowed_requests set decisions to true forwards every model to its upstream's /v1/decisions. Before the fix, OpenAIProvider.Decision checked the model first (a supports_decisions datasheet row, which custom providers never have, or the gpt-6-luna name) and refused anything else with 400 unsupported_operation, so the opt-in was never read and nothing reached the upstream. The profile's openai_decisions_optin provider allows decisions and maps the key alias kserve-decider (canonical name kserve-decider, wire model gpt-6-luna), so the gate sees a name it does not recognize while OpenAI still answers on /v1/decisions. Each case expects 200 with a predicate answer reported under the custom provider: red before the fix (400 unsupported_operation: decisions is not supported by openai_decisions_optin provider), green after. Covered routes: /v1/decisions and the OpenAI SDK route /openai/v1/decisions. The Go SDK enters at the same neutral request and is pinned by TestOpenAIProviderDecisionCustomProviderOptIn. The same provider pins the other side of allowed_requests (TXE-6437, the shape Tokun's reconciler writes for an OpenAI-compatible custom provider such as DeepInfra): a request type the list does not allow, here speech and chat_completion, is refused with 400 unsupported_operation naming the custom provider, and the refusal carries no vendor raw_response, because the base provider checks the list before it makes the call.",
       "item": [
         {
           "name": "/v1/decisions - opted-in custom provider forwards an unrecognized model - openai_decisions_optin/kserve-decider",
@@ -276671,6 +276671,110 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"openai_decisions_optin/kserve-decider\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/audio/speech - speech is not in allowed_requests, so it is refused before any upstream call - openai_decisions_optin/kserve-decider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('speech is refused with 400 unsupported_operation for the custom provider', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + text).to.eql(400);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.error && body.error.code, text).to.eql('unsupported_operation');",
+                  "  pm.expect(body.error.message, text).to.include('speech is not supported by openai_decisions_optin provider');",
+                  "});",
+                  "pm.test('no upstream answered: no vendor raw response on the refusal', function () {",
+                  "  var extra = pm.response.json().extra_fields || {};",
+                  "  pm.expect(extra.raw_response, 'a raw_response means the request reached OpenAI: ' + pm.response.text()).to.be.oneOf([undefined, null, '']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_decisions_optin/kserve-decider\",\n  \"input\": \"Hello world\",\n  \"voice\": \"alloy\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/chat/completions - chat_completion is not in allowed_requests, so it is refused before any upstream call - openai_decisions_optin/kserve-decider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat is refused with 400 unsupported_operation for the custom provider', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + text).to.eql(400);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.error && body.error.code, text).to.eql('unsupported_operation');",
+                  "  pm.expect(body.error.message, text).to.include('chat_completion is not supported by openai_decisions_optin provider');",
+                  "});",
+                  "pm.test('no upstream answered: no vendor raw response on the refusal', function () {",
+                  "  var extra = pm.response.json().extra_fields || {};",
+                  "  pm.expect(extra.raw_response, 'a raw_response means the request reached OpenAI: ' + pm.response.text()).to.be.oneOf([undefined, null, '']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_decisions_optin/kserve-decider\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
             }
           }
         }
