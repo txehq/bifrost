@@ -68,22 +68,24 @@ func TestMoonshot(t *testing.T) {
 
 // kimiResponsesWebSearchRequest is the web search request from Kimi's Responses
 // documentation (https://platform.kimi.ai/docs/api/responses.md, "Web search"), with
-// the tool's documented domain filter and content types, the include value that
-// returns sources, and Kimi's cache write options.
+// every field its web_search tool documents (domain filter, content types, image
+// settings), the include values that return sources and image results, and Kimi's
+// cache write options.
 const kimiResponsesWebSearchRequest = `{
   "model": "moonshot/kimi-k3.1-pro",
   "input": "What are the top news stories today?",
   "tools": [
-    {"type": "web_search", "filters": {"allowed_domains": ["example.com"]}, "search_content_types": ["text", "image"]}
+    {"type": "web_search", "filters": {"allowed_domains": ["example.com"]}, "search_content_types": ["text", "image"], "image_settings": {"max_results": 5, "caption": true}}
   ],
-  "include": ["web_search_call.action.sources"],
+  "include": ["web_search_call.action.sources", "web_search_call.results"],
   "prompt_cache_options": {"mode": "implicit", "ttl": "1h"}
 }`
 
 // kimiResponsesWebSearchResponse carries the web_search_call item from the same page
 // at the front of output, and usage in the shape of its ResponsesUsage schema.
 const kimiResponsesWebSearchResponse = `{"id":"resp_kimi","object":"response","created_at":1,"status":"completed","model":"kimi-k3.1-pro",` +
-	`"output":[{"type":"web_search_call","id":"ws_dackjbcdo9rs73fo3oig","status":"completed","action":{"type":"search","query":"top news September 3 2026","sources":[{"type":"url","url":"https://example.com/news/1","title":"News headline"}]}},` +
+	`"output":[{"type":"web_search_call","id":"ws_dackjbcdo9rs73fo3oig","status":"completed","action":{"type":"search","query":"top news September 3 2026","sources":[{"type":"url","url":"https://example.com/news/1","title":"News headline"}]},` +
+	`"results":[{"type":"image_result","image_url":"https://example.com/i.png","thumbnail_url":"https://example.com/t.png","source_website_url":"https://example.com/news/1","caption":"A headline photo"}]},` +
 	`{"type":"message","id":"msg_kimi","role":"assistant","status":"completed","content":[{"type":"output_text","text":"Here are today's top stories.","annotations":[]}]}],` +
 	`"usage":{"input_tokens":2048,"input_tokens_details":{"cached_tokens":1024,"cache_write_tokens":512},"output_tokens":64,"output_tokens_details":{"reasoning_tokens":16},"total_tokens":2112}}`
 
@@ -380,17 +382,12 @@ func TestMoonshotMessagesPassthroughToKimiAnthropicEndpoint(t *testing.T) {
 	})
 }
 
-// assertWebSearchCall checks that item is the web_search_call Kimi returned: the item
-// Tokun counts as one web search, with the query and sources Kimi reported.
+// assertWebSearchCall checks that item is the web_search_call Kimi returned, whole: the
+// item Tokun counts as one web search, with the query, sources and image results Kimi
+// reported and no field Kimi did not send (TXE-6958).
 func assertWebSearchCall(t *testing.T, item gjson.Result) {
 	t.Helper()
-	want := gjson.Get(kimiResponsesWebSearchResponse, "output.0")
-	for _, field := range []string{"type", "id", "status"} {
-		if got := item.Get(field).String(); got != want.Get(field).String() {
-			t.Errorf("web_search_call %s = %q, want %q", field, got, want.Get(field).String())
-		}
-	}
-	assertSameJSON(t, "web_search_call action", item.Get("action").Raw, want.Get("action").Raw)
+	assertSameJSON(t, "web_search_call", item.Raw, gjson.Get(kimiResponsesWebSearchResponse, "output.0").Raw)
 }
 
 // assertSameJSON compares two JSON documents by value, ignoring key order and spacing.

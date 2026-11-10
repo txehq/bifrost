@@ -1532,6 +1532,12 @@ type ResponsesMessage struct {
 	// not ResponsesMCPListTools.Tools, because the entries are ResponsesTool-shaped.
 	ToolSearchOutputTools json.RawMessage `json:"-"`
 
+	// Results of a web_search_call item, as the vendor sent them (Kimi returns image
+	// search results here). Held as raw JSON because the embedded
+	// ResponsesFileSearchToolCall owns the "results" key and would decode them into the
+	// file-search result type, emptying every entry.
+	WebSearchResults json.RawMessage `json:"-"`
+
 	// Tools declared by a codex additional_tools item, surfaced so providers that
 	// reject the item type can hoist them into the top-level tools param.
 	AdditionalTools json.RawMessage `json:"-"`
@@ -1700,7 +1706,30 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		}
 	}
 
+	if m.Type != nil && *m.Type == ResponsesMessageTypeWebSearchCall {
+		m.keepWebSearchResults(data)
+	}
+
 	return nil
+}
+
+// keepWebSearchResults undoes the embedded ResponsesFileSearchToolCall decode on a
+// web_search_call item. That struct owns the "results" and "queries" keys: it decodes
+// a vendor's web search results (Kimi's image results) into the file-search result
+// type, which empties every entry, and once allocated it emits a "queries": null the
+// vendor never sent. The results are kept as raw JSON instead, and the struct stays
+// only when the vendor did send queries.
+func (m *ResponsesMessage) keepWebSearchResults(data []byte) {
+	if m.ResponsesToolMessage == nil || m.ResponsesFileSearchToolCall == nil {
+		return
+	}
+	if results := gjson.GetBytes(data, "results"); results.Exists() && results.Type != gjson.Null {
+		m.WebSearchResults = json.RawMessage(results.Raw)
+	}
+	m.ResponsesFileSearchToolCall.Results = nil
+	if m.ResponsesFileSearchToolCall.Queries == nil {
+		m.ResponsesFileSearchToolCall = nil
+	}
 }
 
 // liftReasoningWrapper reads a reasoning item's {"reasoning":{"summary":[...],
@@ -1805,6 +1834,27 @@ func (m ResponsesMessage) MarshalJSON() ([]byte, error) {
 		}
 		if m.ResponsesToolMessage != nil && m.Arguments != nil {
 			aux.Arguments = json.RawMessage(*m.Arguments)
+		}
+		return MarshalSorted(aux)
+	}
+
+	// Re-emit a web_search_call's results as the vendor sent them. The outer field
+	// shadows the embedded file-search results, which keepWebSearchResults cleared.
+	if len(m.WebSearchResults) > 0 && m.Type != nil && *m.Type == ResponsesMessageTypeWebSearchCall {
+		aux := &struct {
+			Arguments json.RawMessage `json:"arguments,omitempty"`
+			Results   json.RawMessage `json:"results,omitempty"`
+			*Alias
+		}{
+			Results: m.WebSearchResults,
+			Alias:   (*Alias)(&m),
+		}
+		if m.ResponsesToolMessage != nil && m.Arguments != nil {
+			encoded, err := Marshal(*m.Arguments)
+			if err != nil {
+				return nil, err
+			}
+			aux.Arguments = encoded
 		}
 		return MarshalSorted(aux)
 	}
@@ -4029,6 +4079,10 @@ type ResponsesToolWebSearch struct {
 	SearchContentTypes []string                            `json:"search_content_types,omitempty"` // "text" | "image"
 	SearchContextSize  *string                             `json:"search_context_size,omitempty"`  // "low" | "medium" | "high"
 	UserLocation       *ResponsesToolWebSearchUserLocation `json:"user_location,omitempty"`        // The approximate location of the user
+
+	// Kimi only: image search settings (max_results, caption), used when
+	// search_content_types includes "image". Raw JSON so every field the caller sent arrives.
+	ImageSettings json.RawMessage `json:"image_settings,omitempty"`
 
 	// Anthropic only
 	MaxUses *int `json:"max_uses,omitempty"` // Maximum number of uses for the search

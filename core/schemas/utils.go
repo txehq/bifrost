@@ -1442,6 +1442,9 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 	if original.ToolSearchOutputTools != nil {
 		copy.ToolSearchOutputTools = append(json.RawMessage(nil), original.ToolSearchOutputTools...)
 	}
+	if original.WebSearchResults != nil {
+		copy.WebSearchResults = append(json.RawMessage(nil), original.WebSearchResults...)
+	}
 	if original.AdditionalTools != nil {
 		copy.AdditionalTools = append(json.RawMessage(nil), original.AdditionalTools...)
 	}

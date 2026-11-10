@@ -2592,3 +2592,142 @@ func BenchmarkMarshalResponsesResponseUnary(b *testing.B) {
 		}
 	}
 }
+
+// kimiWebSearchCallWithImageResults is the web_search_call item of Kimi's Responses API
+// with image search results (https://platform.kimi.ai/docs/api/responses.md,
+// ResponsesOutputWebSearchCallItem). It has no top-level queries field.
+const kimiWebSearchCallWithImageResults = `{"type":"web_search_call","id":"ws_dackjbcdo9rs73fo3oig","status":"completed",` +
+	`"action":{"type":"search","query":"red pandas","sources":[{"type":"url","url":"https://example.com/a","title":"A"}]},` +
+	`"results":[{"type":"image_result","image_url":"https://example.com/i.png","thumbnail_url":"https://example.com/t.png","source_website_url":"https://example.com/a","caption":"A red panda"},` +
+	`{"type":"image_result","image_url":"https://example.com/j.png","vendor_extra":{"width":640}}]}`
+
+// TXE-6958: a web_search_call item keeps its results as the vendor sent them. They
+// were decoded into the file-search result type, which has none of their fields, so
+// every entry came back as {}, and the item gained a "queries": null the vendor never sent.
+func TestResponsesWebSearchCallKeepsVendorResults(t *testing.T) {
+	roundTrip := func(t *testing.T, raw string) []byte {
+		t.Helper()
+		var msg ResponsesMessage
+		require.NoError(t, Unmarshal([]byte(raw), &msg))
+		encoded, err := MarshalSorted(msg)
+		require.NoError(t, err)
+		// A copy must carry the same item: retries and plugins work on copies.
+		copied, err := MarshalSorted(DeepCopyResponsesMessage(msg))
+		require.NoError(t, err)
+		assert.JSONEq(t, string(encoded), string(copied), "deep copy changed the item")
+		return encoded
+	}
+
+	t.Run("image results survive and no queries field is added", func(t *testing.T) {
+		encoded := roundTrip(t, kimiWebSearchCallWithImageResults)
+		assert.JSONEq(t, kimiWebSearchCallWithImageResults, string(encoded))
+		assert.False(t, gjson.GetBytes(encoded, "queries").Exists(), "queries was added: %s", encoded)
+	})
+
+	t.Run("an item without results gains neither results nor queries", func(t *testing.T) {
+		const raw = `{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"q"}}`
+		encoded := roundTrip(t, raw)
+		assert.JSONEq(t, raw, string(encoded))
+	})
+
+	t.Run("queries the vendor did send are kept", func(t *testing.T) {
+		const raw = `{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"q"},"queries":["q"],"results":[{"type":"image_result","image_url":"https://example.com/i.png"}]}`
+		encoded := roundTrip(t, raw)
+		assert.JSONEq(t, raw, string(encoded))
+	})
+
+	t.Run("an empty results array stays an empty array", func(t *testing.T) {
+		const raw = `{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"q"},"results":[]}`
+		encoded := roundTrip(t, raw)
+		assert.JSONEq(t, raw, string(encoded))
+	})
+
+	t.Run("in a response and in the completed stream event", func(t *testing.T) {
+		response := `{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"kimi-k3.1-pro","output":[` + kimiWebSearchCallWithImageResults + `]}`
+		var unary BifrostResponsesResponse
+		require.NoError(t, Unmarshal([]byte(response), &unary))
+		encoded, err := MarshalSorted(unary)
+		require.NoError(t, err)
+		assert.JSONEq(t, kimiWebSearchCallWithImageResults, gjson.GetBytes(encoded, "output.0").Raw)
+
+		var done BifrostResponsesStreamResponse
+		require.NoError(t, Unmarshal([]byte(`{"type":"response.output_item.done","sequence_number":5,"output_index":0,"item":`+kimiWebSearchCallWithImageResults+`}`), &done))
+		encoded, err = MarshalSorted(done)
+		require.NoError(t, err)
+		assert.JSONEq(t, kimiWebSearchCallWithImageResults, gjson.GetBytes(encoded, "item").Raw)
+
+		var completed BifrostResponsesStreamResponse
+		require.NoError(t, Unmarshal([]byte(`{"type":"response.completed","sequence_number":7,"response":`+response+`}`), &completed))
+		encoded, err = MarshalSorted(completed)
+		require.NoError(t, err)
+		assert.JSONEq(t, kimiWebSearchCallWithImageResults, gjson.GetBytes(encoded, "response.output.0").Raw)
+	})
+
+	// OpenAI's file_search_call is where queries and results come from; it must not change.
+	t.Run("file_search_call still decodes typed results and always sends queries", func(t *testing.T) {
+		const raw = `{"type":"file_search_call","id":"fs_1","status":"completed","queries":["q"],"results":[{"file_id":"file_1","filename":"a.txt","score":0.5,"text":"hit"}]}`
+		var msg ResponsesMessage
+		require.NoError(t, Unmarshal([]byte(raw), &msg))
+		require.NotNil(t, msg.ResponsesToolMessage)
+		require.NotNil(t, msg.ResponsesFileSearchToolCall)
+		require.Len(t, msg.ResponsesFileSearchToolCall.Results, 1)
+		assert.Equal(t, "file_1", *msg.ResponsesFileSearchToolCall.Results[0].FileID)
+		assert.Nil(t, msg.WebSearchResults)
+		encoded, err := MarshalSorted(msg)
+		require.NoError(t, err)
+		assert.JSONEq(t, raw, string(encoded))
+
+		// An item with results and no queries keeps the queries key OpenAI requires.
+		var noQueries ResponsesMessage
+		require.NoError(t, Unmarshal([]byte(`{"type":"file_search_call","id":"fs_1","status":"completed","results":[{"file_id":"file_1"}]}`), &noQueries))
+		encoded, err = MarshalSorted(noQueries)
+		require.NoError(t, err)
+		assert.True(t, gjson.GetBytes(encoded, "queries").Exists(), "file_search_call lost queries: %s", encoded)
+		assert.Equal(t, "file_1", gjson.GetBytes(encoded, "results.0.file_id").String())
+	})
+}
+
+// TXE-6958: a web_search tool keeps image_settings, the settings of Kimi's image
+// search, through decode and encode. The tool decoded only the fields it named.
+func TestResponsesWebSearchToolKeepsImageSettings(t *testing.T) {
+	const raw = `{"type":"web_search","filters":{"allowed_domains":["example.com"]},"search_content_types":["text","image"],"image_settings":{"max_results":5,"caption":true,"vendor_extra":"x"}}`
+	var tool ResponsesTool
+	require.NoError(t, Unmarshal([]byte(raw), &tool))
+	require.NotNil(t, tool.ResponsesToolWebSearch)
+	assert.JSONEq(t, `{"max_results":5,"caption":true,"vendor_extra":"x"}`, string(tool.ResponsesToolWebSearch.ImageSettings))
+	encoded, err := MarshalSorted(tool)
+	require.NoError(t, err)
+	assert.JSONEq(t, raw, string(encoded))
+
+	// A tool without it gains nothing.
+	const plain = `{"type":"web_search","search_content_types":["text"]}`
+	var plainTool ResponsesTool
+	require.NoError(t, Unmarshal([]byte(plain), &plainTool))
+	encoded, err = MarshalSorted(plainTool)
+	require.NoError(t, err)
+	assert.JSONEq(t, plain, string(encoded))
+}
+
+// BenchmarkResponsesWebSearchCallRoundTrip decodes and re-encodes one web_search_call
+// item, the per-item cost on a Responses response that used web search: without results
+// (every vendor) and with image results (Kimi).
+func BenchmarkResponsesWebSearchCallRoundTrip(b *testing.B) {
+	for name, raw := range map[string]string{
+		"no_results":    `{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"q","sources":[{"type":"url","url":"https://example.com/a","title":"A"}]}}`,
+		"image_results": kimiWebSearchCallWithImageResults,
+	} {
+		data := []byte(raw)
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var msg ResponsesMessage
+				if err := Unmarshal(data, &msg); err != nil {
+					b.Fatal(err)
+				}
+				if _, err := MarshalSorted(msg); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

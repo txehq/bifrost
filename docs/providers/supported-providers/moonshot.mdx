@@ -35,6 +35,17 @@ curl --location 'http://localhost:8080/openai/v1/responses' \
 }'
 ```
 
+Kimi's image search is set on the same tool. `search_content_types` with `image` turns it on, `image_settings` sets `max_results` and `caption`, and `web_search_call.results` in `include` returns the images. Bifrost sends `image_settings` to Kimi as the caller wrote it and returns each `results` entry as Kimi sent it.
+
+```json
+{
+  "model": "moonshot/kimi-k3.1-pro",
+  "input": "Find a photo of a red panda.",
+  "tools": [{"type": "web_search", "search_content_types": ["text", "image"], "image_settings": {"max_results": 3, "caption": true}}],
+  "include": ["web_search_call.action.sources", "web_search_call.results"]
+}
+```
+
 ## Anthropic Messages API
 
 A request to `/anthropic/v1/messages` with a `moonshot/<model>` model is passed through to Kimi's Anthropic-compatible [Messages API](https://platform.kimi.ai/docs/api/messages.md) at `{base_url}/anthropic/v1/messages`. With the default base URL that is `https://api.moonshot.ai/anthropic/v1/messages`.

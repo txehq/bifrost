@@ -2368,6 +2368,7 @@ func TestToOpenAIResponsesRequest_WebSearchContentTypesProviderGating(t *testing
 			}
 
 			searchContentTypes := []string{"text", "image"}
+			const imageSettings = `{"max_results":5,"caption":true}`
 			request := &schemas.BifrostResponsesRequest{
 				Provider: tc.provider,
 				Model:    "openai.gpt-5.6-luna",
@@ -2379,6 +2380,7 @@ func TestToOpenAIResponsesRequest_WebSearchContentTypesProviderGating(t *testing
 					Type: schemas.ResponsesToolTypeWebSearch,
 					ResponsesToolWebSearch: &schemas.ResponsesToolWebSearch{
 						SearchContentTypes: searchContentTypes,
+						ImageSettings:      json.RawMessage(imageSettings),
 					},
 				}}},
 			}
@@ -2395,6 +2397,15 @@ func TestToOpenAIResponsesRequest_WebSearchContentTypesProviderGating(t *testing
 			require.NotNil(t, result.Tools[0].ResponsesToolWebSearch)
 			require.Equal(t, tc.want, result.Tools[0].ResponsesToolWebSearch.SearchContentTypes)
 			require.Equal(t, searchContentTypes, request.Params.Tools[0].ResponsesToolWebSearch.SearchContentTypes,
+				"conversion must not mutate the caller's tool")
+			// TXE-6958: image_settings configures the image search that content types
+			// turn on, so it is kept where they are kept and dropped where they are dropped.
+			if tc.want != nil {
+				require.JSONEq(t, imageSettings, string(result.Tools[0].ResponsesToolWebSearch.ImageSettings))
+			} else {
+				require.Empty(t, result.Tools[0].ResponsesToolWebSearch.ImageSettings)
+			}
+			require.JSONEq(t, imageSettings, string(request.Params.Tools[0].ResponsesToolWebSearch.ImageSettings),
 				"conversion must not mutate the caller's tool")
 		})
 	}
