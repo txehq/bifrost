@@ -30,6 +30,12 @@ const klingDefaultBaseURL = "https://api-singapore.klingai.com"
 // klingTasksPath serves both queries: GET by id, POST by cursor.
 const klingTasksPath = "/tasks"
 
+// The two query parameters of GET /tasks: Kling's task id, or the id the caller gave the task.
+const (
+	klingTaskIDsParam         = "task_ids"
+	klingExternalTaskIDsParam = "external_task_ids"
+)
+
 // klingListMaxLimit is the largest page POST /tasks returns.
 const klingListMaxLimit = 500
 
@@ -156,7 +162,7 @@ func (provider *KlingProvider) VideoRetrieve(ctx *schemas.BifrostContext, key sc
 	if request.IDType == schemas.VideoIDTypeClientReference {
 		return provider.VideoRetrieveByClientReferenceID(ctx, key, request)
 	}
-	return provider.queryTask(ctx, key, "task_ids", "task id", request.ID)
+	return provider.queryTask(ctx, key, klingTaskIDsParam, "task id", request.ID)
 }
 
 // VideoRetrieveByClientReferenceID queries a task by the client_reference_id it was created with
@@ -164,7 +170,7 @@ func (provider *KlingProvider) VideoRetrieve(ctx *schemas.BifrostContext, key sc
 // task object as VideoRetrieve, whose id is Kling's task id. It implements
 // schemas.VideoClientReferenceRetriever.
 func (provider *KlingProvider) VideoRetrieveByClientReferenceID(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	return provider.queryTask(ctx, key, "external_task_ids", "client_reference_id", request.ID)
+	return provider.queryTask(ctx, key, klingExternalTaskIDsParam, "client_reference_id", request.ID)
 }
 
 // queryTask is the query by either id. param is Kling's query parameter and idKind names the id
@@ -175,7 +181,12 @@ func (provider *KlingProvider) queryTask(ctx *schemas.BifrostContext, key schema
 		return nil, bifrostErr
 	}
 	providerName := provider.GetProviderKey()
-	id := providerUtils.StripVideoIDProviderSuffix(rawID, providerName)
+	// A task id arrives as Bifrost returned it, with its provider suffix and URL-escaped. A
+	// client reference is the caller's own string and is sent to Kling exactly as given.
+	id := rawID
+	if param == klingTaskIDsParam {
+		id = providerUtils.StripVideoIDProviderSuffix(rawID, providerName)
+	}
 	if strings.TrimSpace(id) == "" {
 		return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("kling: %s is required", idKind))
 	}
@@ -220,10 +231,10 @@ func (provider *KlingProvider) queryTask(ctx *schemas.BifrostContext, key schema
 // returned no task.
 func klingTaskFor(tasks []KlingTask, param, id string) *KlingTask {
 	for i := range tasks {
-		if param == "external_task_ids" && tasks[i].ExternalID == id {
+		if param == klingExternalTaskIDsParam && tasks[i].ExternalID == id {
 			return &tasks[i]
 		}
-		if param == "task_ids" && tasks[i].ID == id {
+		if param == klingTaskIDsParam && tasks[i].ID == id {
 			return &tasks[i]
 		}
 	}
@@ -313,7 +324,7 @@ func (provider *KlingProvider) VideoDownload(ctx *schemas.BifrostContext, key sc
 	if bifrostErr := providerUtils.CheckOperationAllowed(schemas.Kling, provider.customProviderConfig, schemas.VideoDownloadRequest); bifrostErr != nil {
 		return nil, bifrostErr
 	}
-	task, bifrostErr := provider.queryTask(ctx, key, "task_ids", "task id", request.ID)
+	task, bifrostErr := provider.queryTask(ctx, key, klingTaskIDsParam, "task id", request.ID)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}

@@ -510,6 +510,25 @@ func TestKlingVideoRetrieveByEitherID(t *testing.T) {
 	}
 }
 
+// A client reference is the caller's own string: it reaches Kling exactly as given, even when it
+// looks like a provider-suffixed or URL-escaped task id.
+func TestKlingVideoRetrieveSendsTheClientReferenceAsGiven(t *testing.T) {
+	provider, captured := newMockKling(t, nil, http.StatusOK, emptyQueryBody)
+	for reference, wantQuery := range map[string]string{
+		"order-7:kling": "external_task_ids=order-7%3Akling",
+		"100%25":        "external_task_ids=100%2525",
+		"a b/c":         "external_task_ids=a+b%2Fc",
+	} {
+		_, _ = provider.VideoRetrieveByClientReferenceID(testContext(t), testKey(), &schemas.BifrostVideoRetrieveRequest{
+			Provider: schemas.Kling, ID: reference, IDType: schemas.VideoIDTypeClientReference,
+		})
+		reqs := captured()
+		if got := reqs[len(reqs)-1].query; got != wantQuery {
+			t.Errorf("reference %q: query = %q, want %q", reference, got, wantQuery)
+		}
+	}
+}
+
 // Kling's four statuses map one to one, with the vendor's string in provider_status. A string
 // the table does not know is in_progress, never a terminal state.
 func TestKlingVideoStatusMapping(t *testing.T) {
