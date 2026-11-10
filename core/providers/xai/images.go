@@ -6,6 +6,7 @@ package xai
 // both JSON (the edit endpoint does not take multipart).
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"maps"
@@ -37,6 +38,9 @@ var xaiImageModelsWithQuality = []string{"grok-imagine-image-2.0"}
 // xaiImageResolutions are the resolution tiers xAI takes, in its own lower-case spelling.
 // The unified field is written upper case ("1K", "2K"); any other tier is refused.
 var xaiImageResolutions = []string{"1k", "1.5k", "2k"}
+
+// xaiRespectModerationKey marks a response whose images carry xAI's moderation flag.
+var xaiRespectModerationKey = []byte(`"respect_moderation"`)
 
 // xaiImageEditFields are the unified image edit fields the edit body carries. Every other
 // price-affecting field on an edit (size, mask, background, output_format, ...) has no xAI
@@ -295,7 +299,15 @@ func (provider *XAIProvider) doXAIImageRequest(ctx *schemas.BifrostContext, key 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
+	// A response over the configured large-response threshold is handed to the transport as a
+	// stream (LargeResponseReader), which then owns resp; every other path releases it here.
+	respOwned := true
+	defer func() {
+		if respOwned {
+			fasthttp.ReleaseResponse(resp)
+		}
+	}()
+	activeClient := providerUtils.PrepareResponseStreaming(ctx, provider.client, resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, path))
@@ -306,7 +318,7 @@ func (provider *XAIProvider) doXAIImageRequest(ctx *schemas.BifrostContext, key 
 	}
 	req.SetBody(jsonData)
 
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, activeClient, req, resp)
 	defer wait()
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
@@ -315,24 +327,38 @@ func (provider *XAIProvider) doXAIImageRequest(ctx *schemas.BifrostContext, key 
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
 	if resp.StatusCode() < fasthttp.StatusOK || resp.StatusCode() >= fasthttp.StatusMultipleChoices {
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
 		return nil, providerUtils.EnrichError(ctx, ParseXAIError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
-	body, err := providerUtils.CheckAndDecodeBody(resp)
-	if err != nil {
-		rawErrBody := append([]byte(nil), resp.Body()...)
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
+	// The returned body is an owned copy (or nil when the response is large).
+	body, isLarge, bifrostErr := providerUtils.FinalizeResponseWithLargeDetection(ctx, resp, provider.logger)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
-	body = append([]byte(nil), body...)
+	if isLarge {
+		// The transport streams xAI's body to the caller unchanged, as the OpenAI-shaped
+		// handler did before this handler existed; the C5/C6 normalisation below needs the
+		// whole body in memory, which the configured threshold forbids.
+		respOwned = false
+		return &schemas.BifrostImageGenerationResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{Latency: latency.Milliseconds(), ProviderResponseHeaders: providerResponseHeaders},
+		}, nil
+	}
 
 	response := &schemas.BifrostImageGenerationResponse{}
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, response, jsonData, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
 	}
-	var flags xaiImageModerationFlags
-	if err := sonic.Unmarshal(body, &flags); err != nil {
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
+	// The moderation flags are decoded only when xAI sent one, so an ordinary response pays
+	// a byte scan, not a second decode or an allocation.
+	var flags *xaiImageModerationFlags
+	if bytes.Contains(body, xaiRespectModerationKey) {
+		flags = &xaiImageModerationFlags{}
+		if err := sonic.Unmarshal(body, flags); err != nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 	}
 	normalizeXAIImageResponse(response, flags)
 
@@ -354,12 +380,12 @@ func (provider *XAIProvider) doXAIImageRequest(ctx *schemas.BifrostContext, key 
 //     response and which counts the images left in data, so a blocked image is not counted;
 //   - usage.vendor_cost is cost_in_usd_ticks, in unit usd_ticks, when xAI reported it, and
 //     usage.cost is derived from it as before.
-func normalizeXAIImageResponse(response *schemas.BifrostImageGenerationResponse, flags xaiImageModerationFlags) {
+func normalizeXAIImageResponse(response *schemas.BifrostImageGenerationResponse, flags *xaiImageModerationFlags) {
 	if response == nil {
 		return
 	}
 	filtered := 0
-	if len(flags.Data) == len(response.Data) {
+	if flags != nil && len(flags.Data) == len(response.Data) {
 		delivered := make([]schemas.ImageData, 0, len(response.Data))
 		for i, image := range response.Data {
 			if respect := flags.Data[i].RespectModeration; respect != nil && !*respect {

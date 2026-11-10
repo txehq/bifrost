@@ -264694,10 +264694,10 @@
     },
     {
       "name": "305. xAI image generation and edit on the Bifrost–Tokun contract (xai image contract)",
-      "description": "Pins TXE-6606 (contract C4, C5, C6) for xai on /v1/images/generations and /v1/images/edits. quality reaches xAI on grok-imagine-image-2.0, the only model xAI documents as taking it, and is refused with 400 caller_unsupported_parameter (error.param quality) on any other model; deferred is refused (error.param deferred) because the sync image routes make one upstream call; an edit is sent to xAI's JSON /v1/images/edits (before the change xai answered image edit as an unsupported operation) and refuses a price-affecting field xAI's edit has no counterpart for, such as size. A successful response carries usage.vendor_cost {amount: cost_in_usd_ticks, unit: usd_ticks} and usage.output_images equal to the delivered images. The three refusal cases make no upstream call and cost nothing; the two 200 cases are paid (one 1k image each). Unit tests in core/providers/xai/xai_test.go pin the request bodies, the data-URI conversion of byte sources, respect_moderation:false blocks filling content_filter, and caller_content_filtered on a block error.",
+      "description": "Pins TXE-6606 (contract C4, C5, C6) for xai on every route that reaches its image methods: /v1/images/generations (JSON), /v1/images/edits (JSON and multipart), and the OpenAI integration routes /openai/v1/images/generations (JSON) and /openai/v1/images/edits (multipart). quality reaches xAI on grok-imagine-image-2.0, the only model xAI documents as taking it, and is refused with 400 caller_unsupported_parameter (error.param quality) on any other model; deferred is refused (error.param deferred) because the sync image routes make one upstream call; an edit is sent to xAI's JSON /v1/images/edits whatever the inbound shape (before the change xai answered image edit as an unsupported operation), an uploaded file becoming a data URI, and a price-affecting field xAI's edit has no counterpart for, such as size, is refused; a resolution tier xAI does not offer (4K) is refused, which on /openai/v1/images/edits also pins that the multipart parser now carries resolution (before the change it was dropped and the edit billed at xAI's default tier). A successful response carries usage.vendor_cost {amount: cost_in_usd_ticks, unit: usd_ticks} and usage.output_images equal to the delivered images. The refusal cases make no upstream call and cost nothing; the 200 cases are paid (one 1k image each). Unit tests pin the wire bodies: core/providers/xai/xai_test.go for the provider, transports/bifrost-http/handlers/inference_xai_image_test.go and integrations/openai_xai_image_test.go from each route's parser to xAI's wire.",
       "item": [
         {
-          "name": "[EXPECT-400] xai/grok-imagine-image generation with quality is refused, the model does not take it (xai image contract)",
+          "name": "[EXPECT-400] /v1/images/generations - xai/grok-imagine-image with quality is refused, the model does not take it (xai image contract)",
           "event": [
             {
               "listen": "test",
@@ -264746,7 +264746,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] xai/grok-imagine-image-2.0 generation with deferred is refused (xai image contract)",
+          "name": "[EXPECT-400] /v1/images/generations - xai/grok-imagine-image-2.0 with deferred is refused (xai image contract)",
           "event": [
             {
               "listen": "test",
@@ -264795,56 +264795,7 @@
           }
         },
         {
-          "name": "[EXPECT-400] xai/grok-imagine-image-2.0 JSON image edit with size is refused, xAI edit has no size (xai image contract)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('size on an xAI edit is refused with caller_unsupported_parameter before any upstream call', function () {",
-                  "  var t = pm.response.text();",
-                  "  pm.expect(pm.response.code, 'expected 400; got: ' + t.slice(0, 400)).to.equal(400);",
-                  "  var j = pm.response.json();",
-                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + t.slice(0, 400)).to.equal('caller_unsupported_parameter');",
-                  "  pm.expect(j.error && j.error.param, 'error.param: ' + t.slice(0, 400)).to.equal('size');",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"xai/grok-imagine-image-2.0\",\n  \"prompt\": \"make the background blue\",\n  \"images\": [\n    \"https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/320px-Cat03.jpg\"\n  ],\n  \"size\": \"1024x1024\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
-            "url": {
-              "raw": "{{baseUrl}}/v1/images/edits",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "v1",
-                "images",
-                "edits"
-              ]
-            }
-          }
-        },
-        {
-          "name": "xai/grok-imagine-image-2.0 generation with quality low reports vendor_cost and output_images (xai image contract)",
+          "name": "/v1/images/generations - xai/grok-imagine-image-2.0 with quality low reports vendor_cost and output_images (xai image contract)",
           "event": [
             {
               "listen": "test",
@@ -264898,7 +264849,56 @@
           }
         },
         {
-          "name": "xai/grok-imagine-image-2.0 JSON image edit with a URL source reports vendor_cost and output_images (xai image contract)",
+          "name": "[EXPECT-400] /v1/images/edits JSON - xai/grok-imagine-image-2.0 with size is refused, xAI edit has no size (xai image contract)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('size on an xAI edit is refused with caller_unsupported_parameter before any upstream call', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'expected 400; got: ' + t.slice(0, 400)).to.equal(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + t.slice(0, 400)).to.equal('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'error.param: ' + t.slice(0, 400)).to.equal('size');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-imagine-image-2.0\",\n  \"prompt\": \"make the background blue\",\n  \"images\": [\n    \"https://upload.wikimedia.org/wikipedia/commons/thumb/3/3a/Cat03.jpg/320px-Cat03.jpg\"\n  ],\n  \"size\": \"1024x1024\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/images/edits JSON - xai/grok-imagine-image-2.0 from a URL source reports vendor_cost and output_images (xai image contract)",
           "event": [
             {
               "listen": "test",
@@ -264944,6 +264944,373 @@
                 "{{baseUrl}}"
               ],
               "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/images/edits multipart - xai/grok-imagine-image-2.0 with size is refused, xAI edit has no size (xai image contract)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('size on a multipart xAI edit is refused with caller_unsupported_parameter before any upstream call', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'expected 400; got: ' + t.slice(0, 400)).to.equal(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + t.slice(0, 400)).to.equal('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'error.param: ' + t.slice(0, 400)).to.equal('size');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "xai/grok-imagine-image-2.0",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "make the background blue",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                },
+                {
+                  "key": "size",
+                  "value": "1024x1024",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/images/edits multipart - xai/grok-imagine-image-2.0 from an uploaded file reports vendor_cost and output_images (xai image contract)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a multipart edit from an uploaded file returns images with vendor_cost in usd_ticks and output_images', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + t.slice(0, 400)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data, 'data: ' + t.slice(0, 400)).to.be.an('array');",
+                  "  pm.expect(j.usage, 'usage: ' + t.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(j.usage.output_images, 'output_images counts the delivered images').to.equal(j.data.length);",
+                  "  pm.expect(j.usage.vendor_cost, 'vendor_cost: ' + JSON.stringify(j.usage)).to.be.an('object');",
+                  "  pm.expect(j.usage.vendor_cost.unit).to.equal('usd_ticks');",
+                  "  pm.expect(j.usage.vendor_cost.amount, 'vendor_cost.amount is xAI cost_in_usd_ticks').to.equal(j.usage.cost_in_usd_ticks);",
+                  "  if (j.data.length < 1) { pm.expect(j.content_filter, 'an empty data must carry content_filter: ' + t.slice(0, 400)).to.be.an('object'); }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "xai/grok-imagine-image-2.0",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "make the background blue",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                },
+                {
+                  "key": "n",
+                  "value": "1",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "url",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/images/generations - xai/grok-imagine-image with quality is refused, the model does not take it (xai image contract)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('quality on grok-imagine-image through the OpenAI route is refused with caller_unsupported_parameter before any upstream call', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'expected 400; got: ' + t.slice(0, 400)).to.equal(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + t.slice(0, 400)).to.equal('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'error.param: ' + t.slice(0, 400)).to.equal('quality');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-imagine-image\",\n  \"prompt\": \"a red apple on a white table\",\n  \"n\": 1,\n  \"quality\": \"low\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/images/generations - xai/grok-imagine-image-2.0 with quality low reports vendor_cost and output_images (xai image contract)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a generation through the OpenAI route returns images with vendor_cost in usd_ticks and output_images', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + t.slice(0, 400)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data, 'data: ' + t.slice(0, 400)).to.be.an('array');",
+                  "  pm.expect(j.usage, 'usage: ' + t.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(j.usage.output_images, 'output_images counts the delivered images').to.equal(j.data.length);",
+                  "  pm.expect(j.usage.vendor_cost, 'vendor_cost: ' + JSON.stringify(j.usage)).to.be.an('object');",
+                  "  pm.expect(j.usage.vendor_cost.unit).to.equal('usd_ticks');",
+                  "  pm.expect(j.usage.vendor_cost.amount, 'vendor_cost.amount is xAI cost_in_usd_ticks').to.equal(j.usage.cost_in_usd_ticks);",
+                  "  if (j.data.length < 1) { pm.expect(j.content_filter, 'an empty data must carry content_filter: ' + t.slice(0, 400)).to.be.an('object'); }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-imagine-image-2.0\",\n  \"prompt\": \"a red apple on a white table\",\n  \"n\": 1,\n  \"quality\": \"low\",\n  \"response_format\": \"url\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /openai/v1/images/edits multipart - xai/grok-imagine-image-2.0 with resolution 4K is refused, the route carries resolution (xai image contract)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a resolution tier xAI does not offer through the OpenAI edit route is refused with caller_unsupported_parameter before any upstream call', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'expected 400; got: ' + t.slice(0, 400)).to.equal(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + t.slice(0, 400)).to.equal('caller_unsupported_parameter');",
+                  "  pm.expect(j.error && j.error.param, 'error.param: ' + t.slice(0, 400)).to.equal('resolution');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "xai/grok-imagine-image-2.0",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "make the background blue",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                },
+                {
+                  "key": "resolution",
+                  "value": "4K",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/images/edits multipart - xai/grok-imagine-image-2.0 from an uploaded file reports vendor_cost and output_images (xai image contract)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a multipart edit through the OpenAI route returns images with vendor_cost in usd_ticks and output_images', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + t.slice(0, 400)).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.data, 'data: ' + t.slice(0, 400)).to.be.an('array');",
+                  "  pm.expect(j.usage, 'usage: ' + t.slice(0, 400)).to.be.an('object');",
+                  "  pm.expect(j.usage.output_images, 'output_images counts the delivered images').to.equal(j.data.length);",
+                  "  pm.expect(j.usage.vendor_cost, 'vendor_cost: ' + JSON.stringify(j.usage)).to.be.an('object');",
+                  "  pm.expect(j.usage.vendor_cost.unit).to.equal('usd_ticks');",
+                  "  pm.expect(j.usage.vendor_cost.amount, 'vendor_cost.amount is xAI cost_in_usd_ticks').to.equal(j.usage.cost_in_usd_ticks);",
+                  "  if (j.data.length < 1) { pm.expect(j.content_filter, 'an empty data must carry content_filter: ' + t.slice(0, 400)).to.be.an('object'); }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "xai/grok-imagine-image-2.0",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "make the background blue",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                },
+                {
+                  "key": "n",
+                  "value": "1",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "url",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
                 "v1",
                 "images",
                 "edits"

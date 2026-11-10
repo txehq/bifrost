@@ -458,3 +458,135 @@ func TestXAIImageErrorsMarkContentBlocks(t *testing.T) {
 		})
 	}
 }
+
+// The large-response threshold still bounds memory on xAI image responses: a body over it is
+// handed to the transport as a stream, unchanged, and is never materialised; a body under it
+// is normalised as usual; an error body is read and parsed with xAI's error shape.
+func TestXAIImageLargeResponseThreshold(t *testing.T) {
+	t.Parallel()
+	request := &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.XAI,
+		Model:    "grok-imagine-image-2.0",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse"},
+	}
+
+	t.Run("over the threshold streams xAI's body", func(t *testing.T) {
+		t.Parallel()
+		recorder := &xaiImageRecorder{response: xaiRecordedImageResponse}
+		provider := newXAIImageProvider(t, recorder.serve(t).URL)
+		ctx := xaiImageCtx()
+		ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(64))
+
+		response, bifrostErr := provider.ImageGeneration(ctx, xaiImageKey, request)
+		require.Nil(t, bifrostErr)
+		require.Nil(t, response.Data, "a large body is streamed, not decoded")
+		require.Equal(t, true, ctx.Value(schemas.BifrostContextKeyLargeResponseMode))
+		reader, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseReader).(io.ReadCloser)
+		require.True(t, ok, "the transport gets a reader over xAI's body")
+		streamed, err := io.ReadAll(reader)
+		require.NoError(t, err)
+		require.NoError(t, reader.Close())
+		require.JSONEq(t, xaiRecordedImageResponse, string(streamed))
+	})
+
+	t.Run("under the threshold is normalised", func(t *testing.T) {
+		t.Parallel()
+		recorder := &xaiImageRecorder{response: xaiRecordedImageResponse}
+		provider := newXAIImageProvider(t, recorder.serve(t).URL)
+		ctx := xaiImageCtx()
+		ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(1<<20))
+
+		response, bifrostErr := provider.ImageGeneration(ctx, xaiImageKey, request)
+		require.Nil(t, bifrostErr)
+		require.Nil(t, ctx.Value(schemas.BifrostContextKeyLargeResponseReader))
+		require.Len(t, response.Data, 2)
+		requireVendorUsage(t, response, 2)
+	})
+
+	t.Run("an error body is parsed while streaming is on", func(t *testing.T) {
+		t.Parallel()
+		recorder := &xaiImageRecorder{status: http.StatusForbidden, response: `{"code":"content_policy_violation","error":"blocked"}`}
+		provider := newXAIImageProvider(t, recorder.serve(t).URL)
+		ctx := xaiImageCtx()
+		ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(16))
+
+		_, bifrostErr := provider.ImageGeneration(ctx, xaiImageKey, request)
+		require.NotNil(t, bifrostErr)
+		require.Equal(t, schemas.Ptr(http.StatusForbidden), bifrostErr.StatusCode)
+		require.Equal(t, schemas.ErrorTypeCallerContentFiltered, bifrostErr.ExtraFields.ErrorType)
+		require.Equal(t, "blocked", bifrostErr.Error.Message)
+	})
+}
+
+// benchXAIImageServer answers every request with body, for the request-path benchmarks.
+func benchXAIImageServer(b *testing.B, body string) string {
+	b.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		_, _ = io.Copy(io.Discard, req.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	b.Cleanup(server.Close)
+	return server.URL
+}
+
+func benchXAIImageProvider(b *testing.B, body string) *xai.XAIProvider {
+	b.Helper()
+	provider, err := xai.NewXAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: benchXAIImageServer(b, body), DefaultRequestTimeoutInSeconds: 30},
+	}, bifrost.NewNoOpLogger())
+	if err != nil {
+		b.Fatal(err)
+	}
+	return provider
+}
+
+// BenchmarkXAIImageGeneration measures one generation through the provider against a loopback
+// server: the ordinary response (no moderation flags) and one carrying respect_moderation.
+func BenchmarkXAIImageGeneration(b *testing.B) {
+	request := &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.XAI,
+		Model:    "grok-imagine-image",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a lighthouse"},
+		Params:   &schemas.ImageGenerationParameters{N: schemas.Ptr(2), AspectRatio: schemas.Ptr("16:9")},
+	}
+	flagged := strings.Replace(xaiRecordedImageResponse, `"mime_type":"image/jpeg"}`, `"mime_type":"image/jpeg","respect_moderation":true}`, -1)
+	for _, bc := range []struct{ name, body string }{
+		{"ordinary", xaiRecordedImageResponse},
+		{"with_moderation_flags", flagged},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			provider := benchXAIImageProvider(b, bc.body)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if _, bifrostErr := provider.ImageGeneration(ctx, xaiImageKey, request); bifrostErr != nil {
+					b.Fatal(bifrostErr.Error.Message)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkXAIImageEdit measures one JSON edit from a URL source (no before: xAI image edit was
+// an unsupported operation).
+func BenchmarkXAIImageEdit(b *testing.B) {
+	provider := benchXAIImageProvider(b, xaiRecordedImageResponse)
+	request := &schemas.BifrostImageEditRequest{
+		Provider: schemas.XAI,
+		Model:    "grok-imagine-image-2.0",
+		Input: &schemas.ImageEditInput{
+			Prompt: "make it blue",
+			Images: []schemas.ImageInput{{URL: "https://example.com/source.png"}},
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := provider.ImageEdit(ctx, xaiImageKey, request); bifrostErr != nil {
+			b.Fatal(bifrostErr.Error.Message)
+		}
+	}
+}
