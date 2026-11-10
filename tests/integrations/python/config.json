@@ -17,6 +17,53 @@
     ]
   },
   "providers": {
+    "deepinfra": {
+      "keys": [
+        {
+          "name": "DeepInfra API Key",
+          "value": "env.DEEPINFRA_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "base_url": "https://api.deepinfra.com",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 120
+      },
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false,
+        "allowed_requests": {
+          "embedding": true
+        },
+        "request_path_overrides": {
+          "embedding": "/v1/openai/embeddings"
+        }
+      }
+    },
+    "vercel_ai_gateway": {
+      "keys": [
+        {
+          "name": "Vercel AI Gateway API Key",
+          "value": "env.VERCEL_AI_GATEWAY_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "base_url": "https://ai-gateway.vercel.sh",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 120
+      },
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false,
+        "allowed_requests": {
+          "embedding": true
+        }
+      }
+    },
     "openai": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,

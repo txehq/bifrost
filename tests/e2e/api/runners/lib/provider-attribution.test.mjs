@@ -2,6 +2,11 @@
 // No test framework needed (the tests/e2e/api dir has no test runner configured), same shape as
 // chained-vars.test.mjs next door.
 import assert from "node:assert";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { makeMatchProvider, providerOfItem, providerOfLogLine } from "./provider-attribution.mjs";
 
 let passed = 0;
@@ -87,6 +92,41 @@ test("a Vertex heading that also mentions Gemini stays with vertex", () => {
     providerOfLogLine("post http://x/y [200 ok, 1kb, 9ms]", "Vertex Backlog Round 2 (Gemini-on-Vertex variants)", match),
     "vertex"
   );
+});
+
+// Custom providers that resell other vendors' models name that vendor in the model id. Each
+// row must land in its reseller's partition only - in filter-collection's --provider split that
+// the parallel sweep runs, and in attribution - even when one folder holds rows for both
+// resellers and the folder name mentions both.
+test("reseller rows belong only to their reseller's partition and column", () => {
+  const FOLDER = "321. Embeddings on DeepInfra and Vercel AI Gateway custom providers";
+  const row = (name, model) => ({
+    name,
+    request: { method: "POST", body: { mode: "raw", raw: JSON.stringify({ model, input: "hi" }) }, url: { raw: "{{baseUrl}}/v1/embeddings" } },
+  });
+  const collection = {
+    info: { name: "t", schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json" },
+    item: [{ name: FOLDER, item: [row("di", "deepinfra/BAAI/bge-m3"), row("vg", "vercel_ai_gateway/cohere/embed-v4.0"), row("co", "cohere/embed-v4.0")] }],
+  };
+  const dir = mkdtempSync(join(tmpdir(), "reseller-"));
+  const src = join(dir, "c.json");
+  writeFileSync(src, JSON.stringify(collection));
+  const filter = resolve(dirname(fileURLToPath(import.meta.url)), "../filter-collection.mjs");
+  const names = (provider) => {
+    const out = join(dir, `${provider}.json`);
+    execFileSync(process.execPath, [filter, "--source", src, "--out", out, "--provider", provider], { stdio: "ignore" });
+    const kept = [];
+    const walk = (items) => items.forEach((i) => (i.item ? walk(i.item) : kept.push(i.name)));
+    walk(JSON.parse(readFileSync(out, "utf8")).item || []);
+    return kept;
+  };
+  assert.deepStrictEqual(names("deepinfra"), ["di"]);
+  assert.deepStrictEqual(names("vercel_ai_gateway"), ["vg"]);
+  assert.deepStrictEqual(names("cohere"), ["co"], "a reseller's cohere row is not cohere's to run");
+
+  const all = makeMatchProvider((p) => ["deepinfra", "vercel_ai_gateway", "cohere", "openai"].includes(p));
+  assert.strictEqual(all("vercel_ai_gateway/cohere/embed-v4.0"), "vercel_ai_gateway");
+  assert.strictEqual(all("deepinfra/baai/bge-m3"), "deepinfra");
 });
 
 console.log(`\n${passed} passed`);

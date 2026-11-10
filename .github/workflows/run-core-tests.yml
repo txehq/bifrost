@@ -66,6 +66,8 @@ jobs:
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
       TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+      DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
+      VERCEL_AI_GATEWAY_API_KEY: ${{ secrets.VERCEL_AI_GATEWAY_API_KEY }}
       DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
       DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -101,11 +103,13 @@ jobs:
             127.0.0.1:8080
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             accounts.google.com:443
+            ai-gateway.vercel.sh:443
             aiplatform.googleapis.com:443
             api.anthropic.com:443
             api.cerebras.ai:443
             api.cloudflare.com:443
             api.cohere.ai:443
+            api.deepinfra.com:443
             api.deepseek.com:443
             api.elevenlabs.io:443
             api.fireworks.ai:443

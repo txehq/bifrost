@@ -316,3 +316,137 @@ func TestEmbeddingParamsKnownFieldsCoverModelledFields(t *testing.T) {
 		require.True(t, embeddingParamsKnownFields[name], "%q is missing from embeddingParamsKnownFields", name)
 	}
 }
+
+// reconcilerCustomProviderAccount serves one OpenAI-compatible custom provider configured the
+// way Tokun's reconciler writes it (contract C12): base_provider_type openai, max_retries 0
+// (C3), allowed_requests embedding only, and an optional request_path_overrides entry.
+type reconcilerCustomProviderAccount struct {
+	name      schemas.ModelProvider
+	baseURL   string
+	embedPath string
+}
+
+func (a reconcilerCustomProviderAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{a.name}, nil
+}
+
+func (a reconcilerCustomProviderAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "tk-key-1", Name: "tk-key-1", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 1}}, nil
+}
+
+func (a reconcilerCustomProviderAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	cfg := &schemas.ProviderConfig{
+		NetworkConfig:            schemas.DefaultNetworkConfig,
+		ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			BaseProviderType: schemas.OpenAI,
+			AllowedRequests:  &schemas.AllowedRequests{Embedding: true},
+		},
+	}
+	cfg.NetworkConfig.BaseURL = a.baseURL
+	cfg.NetworkConfig.MaxRetries = 0
+	cfg.NetworkConfig.AllowPrivateNetwork = true
+	if a.embedPath != "" {
+		cfg.CustomProviderConfig.RequestPathOverrides = map[schemas.RequestType]string{schemas.EmbeddingRequest: a.embedPath}
+	}
+	return cfg, nil
+}
+
+// TestEmbeddingsThroughReconcilerCustomProviders pins TXE-6638 at layer 1 (contract C14): an
+// embeddings request on /v1/embeddings, sent the way Tokun sends it, through a custom provider
+// configured like the reconciler's DeepInfra and Vercel AI Gateway entries, reaches the vendor
+// path once with the model id intact and returns usage.prompt_tokens as a built-in provider does.
+// The upstream answers with the vendor's documented OpenAI-compatible embeddings shape.
+func TestEmbeddingsThroughReconcilerCustomProviders(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, tc := range []struct {
+		name      string
+		provider  schemas.ModelProvider
+		embedPath string
+		model     string
+		wantPath  string
+		upstream  string
+	}{
+		{
+			name:      "DeepInfra entry, OpenAI-compatible path under /v1/openai",
+			provider:  "deepinfra",
+			embedPath: "/v1/openai/embeddings",
+			model:     "BAAI/bge-m3",
+			wantPath:  "/v1/openai/embeddings",
+			upstream:  `{"object":"list","model":"BAAI/bge-m3","data":[{"object":"embedding","index":0,"embedding":[0.01,-0.02,0.03]}],"usage":{"prompt_tokens":11,"total_tokens":11}}`,
+		},
+		{
+			name:     "Vercel AI Gateway entry, standard /v1/embeddings path",
+			provider: "vercel_ai_gateway",
+			model:    "cohere/embed-v4.0",
+			wantPath: "/v1/embeddings",
+			upstream: `{"object":"list","model":"cohere/embed-v4.0","data":[{"object":"embedding","index":0,"embedding":[0.04,0.05]}],"usage":{"prompt_tokens":9,"total_tokens":9}}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var calls int
+			var gotPath, gotAuth string
+			var gotBody map[string]any
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				mu.Lock()
+				calls++
+				gotPath, gotAuth = r.URL.Path, r.Header.Get("Authorization")
+				gotBody = nil
+				_ = json.Unmarshal(raw, &gotBody)
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.upstream))
+			}))
+			defer upstream.Close()
+
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account: reconcilerCustomProviderAccount{name: tc.provider, baseURL: upstream.URL, embedPath: tc.embedPath},
+				Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+			})
+			require.NoError(t, err)
+			defer client.Shutdown()
+			h := &CompletionHandler{client: client, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.Header.Set("x-bf-passthrough-extra-params", "true")
+			ctx.Request.SetBodyString(`{"model":"` + string(tc.provider) + `/` + tc.model + `","input":"The quick brown fox"}`)
+
+			h.embeddings(ctx)
+
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			mu.Lock()
+			require.Equal(t, 1, calls, "one request, one upstream call (C3)")
+			require.Equal(t, tc.wantPath, gotPath)
+			require.Equal(t, "Bearer sk-test", gotAuth)
+			require.Equal(t, tc.model, gotBody["model"], "the vendor model id keeps its own slash")
+			require.Equal(t, "The quick brown fox", gotBody["input"])
+			mu.Unlock()
+
+			var out struct {
+				Data  []map[string]any `json:"data"`
+				Usage struct {
+					PromptTokens int `json:"prompt_tokens"`
+					TotalTokens  int `json:"total_tokens"`
+				} `json:"usage"`
+				ExtraFields struct {
+					Provider string `json:"provider"`
+				} `json:"extra_fields"`
+			}
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &out), string(ctx.Response.Body()))
+			require.Len(t, out.Data, 1)
+			var upstreamUsage struct {
+				Usage struct {
+					PromptTokens int `json:"prompt_tokens"`
+				} `json:"usage"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(tc.upstream), &upstreamUsage))
+			require.Equal(t, upstreamUsage.Usage.PromptTokens, out.Usage.PromptTokens, "usage.prompt_tokens comes through the custom provider")
+			require.Equal(t, upstreamUsage.Usage.PromptTokens, out.Usage.TotalTokens)
+			require.Equal(t, string(tc.provider), out.ExtraFields.Provider)
+		})
+	}
+}

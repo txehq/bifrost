@@ -164,6 +164,10 @@ const PROVIDER_KEYWORDS = {
   typesafe: ["typesafe", "/typesafe", "jev-"],
 };
 
+// Custom providers in the harness profile that resell other vendors' models; see
+// itemMatchesProvider. Each is also a HARNESS_PROVIDERS partition in the Makefile.
+const RESELLER_PROVIDERS = ["deepinfra", "vercel_ai_gateway"];
+
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness
 // taxonomy ("Structured Output cross-cut", "Vertex Features", ...) so PROVIDER and
 // FEATURE filters need to see them, otherwise a row named "openai/gpt-4o-mini" inside
@@ -333,6 +337,17 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isRunware = haystack.includes("runware");
   if (provider === "runware") return isRunware;
   if (isRunware) return false;
+  // OpenAI-compatible custom providers that resell other vendors' models name that vendor in the
+  // model id ("vercel_ai_gateway/cohere/embed-v4.0", "deepinfra/BAAI/bge-m3"), so a cohere- or
+  // openai-filtered run would otherwise claim their rows - same collision class as openrouter.
+  // Route each exclusively to its own partition. Matched on the body's model prefix, not a haystack
+  // substring: one folder can hold rows for several resellers, and folder names are in the haystack.
+  const model = /"model"\s*:\s*"([^"/]+)\//.exec(item.request?.body?.raw || "")?.[1];
+  for (const reseller of RESELLER_PROVIDERS) {
+    const isReseller = model === reseller;
+    if (provider === reseller) return isReseller;
+    if (isReseller) return false;
+  }
   // bedrock_openai rows (token-parity-matrix.mjs's "one more model per provider" addition -
   // gpt-oss-family models on Bedrock) contain "openai" in the backend key/model, so they'd
   // otherwise be claimed by the openai partition too - same collision class as above. Route

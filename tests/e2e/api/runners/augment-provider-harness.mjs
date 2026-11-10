@@ -10,6 +10,7 @@ import { buildCrossProviderCacheMatrixFolder } from "./lib/crossprovider-cache-m
 import { buildDirectCacheParityFolder } from "./lib/direct-cache-parity.mjs";
 import { injectChainedVarGuards } from "./lib/chained-vars.mjs";
 import { routeScriptCallsThroughSetupToken, setupTokenRowPrerequest } from "./lib/setup-token.mjs";
+import { describeKeylessSkips, findKeylessProviders, injectKeylessProviderSkips } from "./lib/keyless-providers.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -24,6 +25,9 @@ const args = Object.fromEntries(
 
 const source = args.source;
 const out = args.out;
+// The provider profile Bifrost runs with, read only to find providers whose key env vars are
+// all unset (lib/keyless-providers.mjs). Defaults to the shared harness profile.
+const profilePath = args.profile || new URL("../../../integrations/python/config.json", import.meta.url).pathname;
 
 if (!source || !out) {
   console.error("[augment-provider-harness] --source and --out are required");
@@ -379,6 +383,19 @@ cachingFolder.item.push(...cachingItems);
 // See lib/chained-vars.mjs.
 const guardedCount = injectChainedVarGuards(collection);
 
+// A provider in the profile whose key env vars are all unset would fail every case aimed at it
+// on credentials, which turns a secret nobody has provisioned yet into a red live run. Those
+// requests are skipped instead, each with a passing "skipped: no key (<VAR> unset)" assertion,
+// and the skip is printed below. See lib/keyless-providers.mjs.
+let keylessLines = [];
+try {
+  const keyless = findKeylessProviders(JSON.parse(readFileSync(profilePath, "utf8")), process.env);
+  keylessLines = describeKeylessSkips(keyless, injectKeylessProviderSkips(collection, keyless));
+} catch (err) {
+  console.error(`[augment-provider-harness] cannot read provider profile ${profilePath}: ${err.message}`);
+  process.exit(1);
+}
+
 // OSS setup lock: while dashboard auth is not active, the gateway refuses every /api call
 // that lacks the operator's setup token. Management rows (routing rules, is-auth-enabled,
 // ...) run against the python profile, which sets setup_token and has no admin account, so
@@ -409,3 +426,4 @@ const tokenRoutedScripts = routeScriptCallsThroughSetupToken(collection, SETUP_T
 writeFileSync(out, `${JSON.stringify(collection, null, 2)}\n`);
 const generatedCount = generatedFolders.reduce((sum, folder) => sum + folder.item.length, 0) + cachingItems.length;
 console.error(`[augment-provider-harness] wrote ${out} with ${generatedCount} generated requests, ${guardedCount} chained-var guards, ${tokenRoutedScripts} scripts sending the setup token`);
+for (const line of keylessLines) console.error(`[augment-provider-harness] ${line}`);
