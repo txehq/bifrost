@@ -5,7 +5,7 @@ import { argValue, createInterceptProxy, writeFixtureGatewayConfig } from "./lib
 //
 // Vertex hardcodes https://<host>/... with no base-URL override, so the fixture works as the
 // gateway's HTTP proxy instead (see lib/tls-intercept-proxy.mjs): it terminates TLS for the
-// requested host, records the decrypted request, and replies with a canned Gemini, Claude or Imagen body, a finished Veo operation, or an Omni interaction.
+// requested host, records the decrypted request, and replies with a canned Gemini, Claude, Imagen or Gemini text-to-speech body, a finished Veo operation, or an Omni interaction.
 //
 //   node vertex-endpoint-fixture.mjs --app-dir <dir> [--port 8792]
 //
@@ -44,6 +44,38 @@ const imagenBody = JSON.stringify({
 		{ bytesBase64Encoded: "aW1hZ2Uy", mimeType: "image/png" },
 	],
 });
+
+// Gemini text-to-speech on Vertex, TXE-6540 (contract C3, C4, C5, C6, C10). The model in the path selects the
+// answer, in the generateContent shape a Gemini TTS model gives: gemini-tts-ok is six bytes of PCM that end on
+// finishReason STOP with every usage detail the vendor reports; gemini-tts-blocked is a prompt refused before
+// generation; gemini-tts-truncated streams one audio chunk and ends with no finishReason. No Vertex TTS response
+// has been recorded for these: the shapes are the ones the fork's Gemini types decode.
+const speechPCMPart = { inlineData: { mimeType: "audio/L16;codec=pcm;rate=24000", data: "AAECAwQF" } };
+const speechAudioChunk = { candidates: [{ index: 0, content: { role: "model", parts: [speechPCMPart] } }] };
+const speechFrames = {
+	"gemini-tts-ok": [
+		speechAudioChunk,
+		{
+			candidates: [{ index: 0, finishReason: "STOP", content: { role: "model", parts: [speechPCMPart] } }],
+			usageMetadata: {
+				promptTokenCount: 7, candidatesTokenCount: 50, totalTokenCount: 69, thoughtsTokenCount: 12,
+				promptTokensDetails: [{ modality: "TEXT", tokenCount: 7 }],
+				candidatesTokensDetails: [{ modality: "AUDIO", tokenCount: 50 }],
+			},
+		},
+	],
+	"gemini-tts-blocked": [{ promptFeedback: { blockReason: "SAFETY", blockReasonMessage: "The prompt is blocked due to safety" }, usageMetadata: { promptTokenCount: 7, totalTokenCount: 7 } }],
+	"gemini-tts-truncated": [speechAudioChunk],
+};
+// speechAnswer answers .../models/<model>:generateContent with the model's last frame and :streamGenerateContent
+// with all of them as SSE; undefined for any other path or model.
+const speechAnswer = (url) => {
+	const m = /\/models\/([^:/]+):(generateContent|streamGenerateContent)(\?|$)/.exec(url);
+	const frames = m && speechFrames[m[1]];
+	if (!frames) return undefined;
+	if (m[2] === "streamGenerateContent") return { status: 200, headers: { "Content-Type": "text/event-stream" }, chunks: frames.map((f) => ({ data: `data: ${JSON.stringify(f)}\n\n` })) };
+	return { status: 200, body: JSON.stringify(frames[frames.length - 1]) };
+};
 
 const fixtureVideo = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.from("fixture-video")]).toString("base64");
 
@@ -142,6 +174,8 @@ const proxy = createInterceptProxy({
 	respond: (req, body) => {
 		const batch = vertexBatchRespond(req, body);
 		if (batch) return batch;
+		const speech = speechAnswer(req.url);
+		if (speech) return speech;
 		if (/:generateContent/.test(req.url)) return { status: 200, body: geminiBody };
 		if (/:rawPredict/.test(req.url)) return { status: 200, body: claudeBody };
 		if (/:predict(\?|$)/.test(req.url)) return { status: 200, body: imagenBody };

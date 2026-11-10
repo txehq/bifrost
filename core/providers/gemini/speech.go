@@ -237,6 +237,25 @@ func (response *GenerateContentResponse) SpeechBlockError() *schemas.BifrostErro
 	return nil
 }
 
+// SpeechResponseFromGenerateContent turns the decoded generateContent answer to a speech
+// request into the Bifrost speech response. A blocked speech is the caller's content block,
+// not an empty audio (contract C6): it returns the content-filter error, carrying the usage
+// the vendor counted before it blocked as billed usage. The audio is returned in the
+// request's response_format. The Gemini API and Vertex share it; the caller enriches the
+// error and sets the response's extra fields.
+func SpeechResponseFromGenerateContent(ctx *schemas.BifrostContext, request *schemas.BifrostSpeechRequest, geminiResponse *GenerateContentResponse) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+	if blockErr := geminiResponse.SpeechBlockError(); blockErr != nil {
+		blockErr.ExtraFields.BilledUsage = speechBilledUsage(geminiResponse.UsageMetadata)
+		return nil, blockErr
+	}
+	ctx.SetValue(BifrostContextKeyResponseFormat, ResolveSpeechResponseFormat(request.Params))
+	response, convErr := geminiResponse.ToBifrostSpeechResponse(ctx)
+	if convErr != nil {
+		return nil, utils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, convErr)
+	}
+	return response, nil
+}
+
 // speechBilledUsage returns the usage the vendor counted for a speech that ends on an error,
 // for the error's BilledUsage, and nil when it counted no tokens.
 func speechBilledUsage(metadata *GenerateContentResponseUsageMetadata) *schemas.BifrostLLMUsage {

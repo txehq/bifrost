@@ -682,6 +682,11 @@ service-tier shared request type header (global endpoint only), and extra-header
 is how Provisioned Throughput spend-limit ids (`x-goog-spend-limit-id`) are sent.
 The fixture also serves the pricing and model-parameters datasheets a fresh gateway downloads on first start. The model-parameters row `claude-opus-4-7: { provider: vertex, vertex_multi_region_only: true }` is load-bearing: the promotion from an unpinned `us-central1` key to the `us` pool (161.7) is decided by that catalog flag, so without it exactly that case fails. As with the Bedrock fixture, start the gateway with `HTTPS_PROXY=http://127.0.0.1:9` to prove nothing leaves the machine.
 
+Folder 433 runs against the same fixture and gateway: Gemini text-to-speech on Vertex (TXE-6540). The fixture
+answers the models `gemini-tts-ok`, `gemini-tts-blocked` and `gemini-tts-truncated` on `:generateContent` and
+`:streamGenerateContent`. The config the fixture writes turns `client.enforce_auth_on_inference` off, because a fresh
+gateway otherwise refuses these requests for lacking a virtual key.
+
 The cases are skipped unless `vertexEndpointFixture=1`.
 
 The same fixture stands in for a Vertex batch (TXE-6971). It keeps what the gateway uploads to Cloud Storage

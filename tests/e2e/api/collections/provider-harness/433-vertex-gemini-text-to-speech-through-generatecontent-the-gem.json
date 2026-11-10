@@ -1,0 +1,849 @@
+{
+  "name": "433. Vertex Gemini text-to-speech through generateContent: the Gemini body, usage, content blocks, undeliverable fields, truncated streams (vertex endpoint fixture) [SERIAL]",
+  "description": "TXE-6540 regression, contract C3, C4, C5, C6, C10. Local fixture regression, no network traffic leaves the machine: run tests/e2e/api/runners/vertex-endpoint-fixture.mjs --app-dir <dir>, start an isolated gateway with -app-dir <dir>, and run with vertexEndpointFixture=1; every case is skipped otherwise. The rows cover every inbound route the change reaches: /v1/audio/speech buffered and streamed, the OpenAI drop-in speech route, and the native GenAI generateContent and streamGenerateContent addressed to vertex/. The fixture answers the models gemini-tts-ok, gemini-tts-blocked and gemini-tts-truncated on :generateContent and :streamGenerateContent in the generateContent shape; no Vertex TTS response has been recorded for these rows. Every row names the key with x-bf-api-key and reads back the requests that reached the fixture from /__connects, so it also pins one upstream call per request on the named key's region (none for a refused request). Before the change every vertex speech request was refused as an unsupported operation. Run the whole folder in order.",
+  "item": [
+    {
+      "name": "433.1 vertex/gemini-tts-ok /v1/audio/speech stream_format sse with max_output_tokens: the Gemini body reaches :streamGenerateContent and speech.audio.done carries every usage detail, from one upstream call (vertex gemini speech)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"vertex/gemini-tts-ok\",\"input\":\"Say hello.\",\"voice\":\"Kore\",\"stream_format\":\"sse\",\"max_output_tokens\":1024}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function (err, res) {",
+              "    pm.test('vertex gemini speech setup: the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "// vertexCalls: the model calls that reached the fixture standing in for Vertex, as they arrived.",
+              "function vertexCalls(cb) { pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__connects', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb((res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); })); }); }",
+              "pm.test('the client gets 200 with an SSE stream', function () { pm.expect(pm.response.code, raw).to.equal(200); pm.expect(pm.response.headers.get('content-type') || '', raw).to.include('text/event-stream'); });",
+              "var frames = raw.split(/\\n\\n/).map(function (f) { var m = /^data: (\\{.*\\})$/m.exec(f); return m ? JSON.parse(m[1]) : null; }).filter(Boolean);",
+              "var done = frames[frames.length - 1] || {};",
+              "pm.test('two audio deltas, then speech.audio.done as the final frame', function () { pm.expect(frames.map(function (f) { return f.type; }), raw).to.eql(['speech.audio.delta', 'speech.audio.delta', 'speech.audio.done']); });",
+              "pm.test('usage is the vendor\\'s: output_tokens without the thought tokens, total_tokens with them', function () { pm.expect(done.usage, raw).to.be.an('object'); pm.expect(done.usage.input_tokens, raw).to.equal(7); pm.expect(done.usage.output_tokens, raw).to.equal(50); pm.expect(done.usage.total_tokens, raw).to.equal(69); });",
+              "pm.test('usage.output_token_details carries candidatesTokensDetails and thoughtsTokenCount', function () { pm.expect(done.usage.output_token_details, raw).to.eql({ audio_tokens: 50, reasoning_tokens: 12 }); pm.expect(done.usage.input_token_details, raw).to.eql({ text_tokens: 7 }); });",
+              "vertexCalls(function (calls) { pm.test('exactly one upstream call, to the named key\\'s region with its credentials', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.have.length(1); pm.expect(calls[0].host, calls[0].host).to.equal('us-central1-aiplatform.googleapis.com'); pm.expect(calls[0].path.split('?')[0], calls[0].path).to.equal('/v1/projects/fixture-project/locations/us-central1/publishers/google/models/gemini-tts-ok:streamGenerateContent'); pm.expect(calls[0].path, calls[0].path).to.include('key=REDACTED'); }); });",
+              "vertexCalls(function (calls) { pm.test('the body is the Gemini speech request: the bound as generationConfig.maxOutputTokens, audio modality, the voice', function () { var sent = JSON.parse(calls[0].body); pm.expect(sent.generationConfig.maxOutputTokens, calls[0].body).to.equal(1024); pm.expect(sent.generationConfig.responseModalities, calls[0].body).to.eql(['AUDIO']); pm.expect(calls[0].body, calls[0].body).to.match(/voiceName.{1,5}Kore/); pm.expect(sent.contents[0].parts[0].text, calls[0].body).to.equal('Say hello.'); pm.expect(sent.max_output_tokens, calls[0].body).to.equal(undefined); pm.expect(calls[0].path, calls[0].path).to.include('alt=sse'); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "433.2 vertex/gemini-tts-ok /v1/audio/speech with no response_format answers WAV with the usage header, from one upstream call on the named key (vertex gemini speech)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"vertex/gemini-tts-ok\",\"input\":\"Say hello.\",\"voice\":\"Kore\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function (err, res) {",
+              "    pm.test('vertex gemini speech setup: the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "// vertexCalls: the model calls that reached the fixture standing in for Vertex, as they arrived.",
+              "function vertexCalls(cb) { pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__connects', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb((res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); })); }); }",
+              "pm.test('the client gets 200', function () { pm.expect(pm.response.code, raw).to.equal(200); });",
+              "pm.test('the audio is a WAV file labeled audio/wav, not bare PCM', function () { pm.expect(raw.slice(0, 4), 'first bytes: ' + JSON.stringify(raw.slice(0, 16))).to.equal('RIFF'); pm.expect(raw.slice(8, 12), 'first bytes: ' + JSON.stringify(raw.slice(0, 16))).to.equal('WAVE'); pm.expect(pm.response.headers.get('content-type') || '').to.include('audio/wav'); });",
+              "pm.test('x-bifrost-usage carries the vendor\\'s token counts', function () { var h = pm.response.headers.get('x-bifrost-usage'); pm.expect(h, JSON.stringify(pm.response.headers.toObject())).to.be.a('string'); var u = JSON.parse(h); pm.expect(u.input_tokens, h).to.equal(7); pm.expect(u.output_tokens, h).to.equal(50); pm.expect(u.total_tokens, h).to.equal(69); pm.expect(u.output_token_details, h).to.eql({ audio_tokens: 50, reasoning_tokens: 12 }); });",
+              "pm.test('the named key served the request', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), JSON.stringify(pm.response.headers.toObject())).to.equal('vertex-us-central1'); });",
+              "vertexCalls(function (calls) { pm.test('exactly one upstream call, to the named key\\'s region with its credentials', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.have.length(1); pm.expect(calls[0].host, calls[0].host).to.equal('us-central1-aiplatform.googleapis.com'); pm.expect(calls[0].path.split('?')[0], calls[0].path).to.equal('/v1/projects/fixture-project/locations/us-central1/publishers/google/models/gemini-tts-ok:generateContent'); pm.expect(calls[0].path, calls[0].path).to.include('key=REDACTED'); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "433.3 vertex/gemini-tts-ok /v1/audio/speech response_format pcm answers the bare PCM Vertex sent, labeled audio/L16 (vertex gemini speech)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"vertex/gemini-tts-ok\",\"input\":\"Say hello.\",\"voice\":\"Kore\",\"response_format\":\"pcm\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function (err, res) {",
+              "    pm.test('vertex gemini speech setup: the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "// vertexCalls: the model calls that reached the fixture standing in for Vertex, as they arrived.",
+              "function vertexCalls(cb) { pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__connects', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb((res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); })); }); }",
+              "pm.test('the client gets 200 with the six PCM bytes', function () { pm.expect(pm.response.code, raw).to.equal(200); pm.expect(pm.response.stream.length, 'audio bytes').to.equal(6); pm.expect(Array.prototype.slice.call(pm.response.stream), 'audio bytes').to.eql([0, 1, 2, 3, 4, 5]); });",
+              "pm.test('Content-Type is the vendor\\'s audio/L16 type', function () { pm.expect(pm.response.headers.get('content-type') || '').to.match(/^audio\\/L16/i); });",
+              "vertexCalls(function (calls) { pm.test('exactly one upstream call, to the named key\\'s region with its credentials', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.have.length(1); pm.expect(calls[0].host, calls[0].host).to.equal('us-central1-aiplatform.googleapis.com'); pm.expect(calls[0].path.split('?')[0], calls[0].path).to.equal('/v1/projects/fixture-project/locations/us-central1/publishers/google/models/gemini-tts-ok:generateContent'); pm.expect(calls[0].path, calls[0].path).to.include('key=REDACTED'); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 433.4 vertex/gemini-tts-blocked /v1/audio/speech a prompt Vertex blocks with a 200 returns 400 caller_content_filtered with the raw blockReason (vertex gemini speech)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"vertex/gemini-tts-blocked\",\"input\":\"Say hello.\",\"voice\":\"Kore\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function (err, res) {",
+              "    pm.test('vertex gemini speech setup: the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "// vertexCalls: the model calls that reached the fixture standing in for Vertex, as they arrived.",
+              "function vertexCalls(cb) { pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__connects', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb((res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); })); }); }",
+              "pm.test('the vendor\\'s 200 block is a 400', function () { pm.expect(pm.response.code, raw).to.equal(400); });",
+              "pm.test('a JSON error, not an SSE stream with an error frame', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, ct + ': ' + raw).to.include('application/json'); pm.expect(raw, raw).to.not.match(/^data:/m); });",
+              "pm.test('error_type is caller_content_filtered with the vendor\\'s blockReason verbatim', function () { var j = pm.response.json(); pm.expect(j.extra_fields && j.extra_fields.error_type, raw).to.equal('caller_content_filtered'); pm.expect(j.error && j.error.code, raw).to.equal('SAFETY'); pm.expect(j.error.message, raw).to.include('blocked due to safety'); pm.expect(j.is_bifrost_error, raw).to.not.equal(true); });",
+              "vertexCalls(function (calls) { pm.test('exactly one upstream call, to the named key\\'s region with its credentials', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.have.length(1); pm.expect(calls[0].host, calls[0].host).to.equal('us-central1-aiplatform.googleapis.com'); pm.expect(calls[0].path.split('?')[0], calls[0].path).to.equal('/v1/projects/fixture-project/locations/us-central1/publishers/google/models/gemini-tts-blocked:generateContent'); pm.expect(calls[0].path, calls[0].path).to.include('key=REDACTED'); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 433.5 vertex/gemini-tts-blocked /v1/audio/speech stream_format sse a blocked prompt returns 400 caller_content_filtered, no 200 and no done frame (vertex gemini speech)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"vertex/gemini-tts-blocked\",\"input\":\"Say hello.\",\"voice\":\"Kore\",\"stream_format\":\"sse\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function (err, res) {",
+              "    pm.test('vertex gemini speech setup: the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "// vertexCalls: the model calls that reached the fixture standing in for Vertex, as they arrived.",
+              "function vertexCalls(cb) { pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__connects', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb((res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); })); }); }",
+              "pm.test('the vendor\\'s 200 block is a 400', function () { pm.expect(pm.response.code, raw).to.equal(400); });",
+              "pm.test('a JSON error, not an SSE stream with an error frame', function () { var ct = pm.response.headers.get('content-type') || ''; pm.expect(ct, ct + ': ' + raw).to.include('application/json'); pm.expect(raw, raw).to.not.match(/^data:/m); });",
+              "pm.test('error_type is caller_content_filtered with the vendor\\'s blockReason verbatim', function () { var j = pm.response.json(); pm.expect(j.extra_fields && j.extra_fields.error_type, raw).to.equal('caller_content_filtered'); pm.expect(j.error && j.error.code, raw).to.equal('SAFETY'); pm.expect(j.error.message, raw).to.include('blocked due to safety'); pm.expect(j.is_bifrost_error, raw).to.not.equal(true); });",
+              "pm.test('no speech.audio.done', function () { pm.expect(raw, raw).to.not.include('speech.audio.done'); });",
+              "vertexCalls(function (calls) { pm.test('exactly one upstream call, to the named key\\'s region with its credentials', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.have.length(1); pm.expect(calls[0].host, calls[0].host).to.equal('us-central1-aiplatform.googleapis.com'); pm.expect(calls[0].path.split('?')[0], calls[0].path).to.equal('/v1/projects/fixture-project/locations/us-central1/publishers/google/models/gemini-tts-blocked:streamGenerateContent'); pm.expect(calls[0].path, calls[0].path).to.include('key=REDACTED'); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "433.6 vertex/gemini-tts-truncated /v1/audio/speech stream_format sse an upstream stream that ends without finishReason ends on an error frame, never on speech.audio.done (vertex gemini speech)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"vertex/gemini-tts-truncated\",\"input\":\"Say hello.\",\"voice\":\"Kore\",\"stream_format\":\"sse\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function (err, res) {",
+              "    pm.test('vertex gemini speech setup: the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "// vertexCalls: the model calls that reached the fixture standing in for Vertex, as they arrived.",
+              "function vertexCalls(cb) { pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__connects', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb((res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); })); }); }",
+              "pm.test('the stream had started: 200 and the audio delta that arrived', function () { pm.expect(pm.response.code, raw).to.equal(200); pm.expect(raw, raw).to.include('speech.audio.delta'); });",
+              "pm.test('no speech.audio.done: a truncated stream must not look complete', function () { pm.expect(raw, raw).to.not.include('speech.audio.done'); });",
+              "var frames = raw.split(/\\n\\n/).map(function (f) { var m = /^data: (\\{.*\\})$/m.exec(f); return m ? JSON.parse(m[1]) : null; }).filter(Boolean);",
+              "pm.test('the stream ends on an error frame classed as the vendor\\'s failure', function () { var last = frames[frames.length - 1] || {}; pm.expect(last.error, raw).to.be.an('object'); pm.expect(last.is_bifrost_error, raw).to.not.equal(true); pm.expect(String(last.extra_fields && last.extra_fields.error_type), raw).to.match(/^provider_/); });",
+              "vertexCalls(function (calls) { pm.test('exactly one upstream call, to the named key\\'s region with its credentials', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.have.length(1); pm.expect(calls[0].host, calls[0].host).to.equal('us-central1-aiplatform.googleapis.com'); pm.expect(calls[0].path.split('?')[0], calls[0].path).to.equal('/v1/projects/fixture-project/locations/us-central1/publishers/google/models/gemini-tts-truncated:streamGenerateContent'); pm.expect(calls[0].path, calls[0].path).to.include('key=REDACTED'); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 433.7 vertex/gemini-tts-ok /v1/audio/speech speed is refused naming the field, with no upstream call (vertex gemini speech)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"vertex/gemini-tts-ok\",\"input\":\"Say hello.\",\"voice\":\"Kore\",\"speed\":1.5}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function (err, res) {",
+              "    pm.test('vertex gemini speech setup: the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "// vertexCalls: the model calls that reached the fixture standing in for Vertex, as they arrived.",
+              "function vertexCalls(cb) { pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__connects', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb((res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); })); }); }",
+              "pm.test('400, not a dropped field', function () { pm.expect(pm.response.code, raw).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names speed', function () { var j = pm.response.json(); pm.expect(j.extra_fields && j.extra_fields.error_type, raw).to.equal('caller_unsupported_parameter'); pm.expect(j.error && j.error.param, raw).to.equal('speed'); });",
+              "vertexCalls(function (calls) { pm.test('the refused request made no upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 433.8 vertex/gemini-tts-ok /v1/audio/speech stream_format sse instructions is refused naming the field, with no upstream call (vertex gemini speech)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"vertex/gemini-tts-ok\",\"input\":\"Say hello.\",\"voice\":\"Kore\",\"stream_format\":\"sse\",\"instructions\":\"Speak slowly.\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function (err, res) {",
+              "    pm.test('vertex gemini speech setup: the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "// vertexCalls: the model calls that reached the fixture standing in for Vertex, as they arrived.",
+              "function vertexCalls(cb) { pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__connects', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb((res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); })); }); }",
+              "pm.test('400, not a dropped field', function () { pm.expect(pm.response.code, raw).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names instructions', function () { var j = pm.response.json(); pm.expect(j.extra_fields && j.extra_fields.error_type, raw).to.equal('caller_unsupported_parameter'); pm.expect(j.error && j.error.param, raw).to.equal('instructions'); });",
+              "vertexCalls(function (calls) { pm.test('the refused request made no upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 433.9 vertex/gemini-tts-ok /v1/audio/speech response_format mp3 is refused naming the field, with no upstream call (vertex gemini speech)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"vertex/gemini-tts-ok\",\"input\":\"Say hello.\",\"voice\":\"Kore\",\"response_format\":\"mp3\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function (err, res) {",
+              "    pm.test('vertex gemini speech setup: the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "// vertexCalls: the model calls that reached the fixture standing in for Vertex, as they arrived.",
+              "function vertexCalls(cb) { pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__connects', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb((res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); })); }); }",
+              "pm.test('400, not a dropped field', function () { pm.expect(pm.response.code, raw).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names response_format', function () { var j = pm.response.json(); pm.expect(j.extra_fields && j.extra_fields.error_type, raw).to.equal('caller_unsupported_parameter'); pm.expect(j.error && j.error.param, raw).to.equal('response_format'); });",
+              "vertexCalls(function (calls) { pm.test('the refused request made no upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "[EXPECT-400] 433.10 vertex/gemini-tts-ok /openai/v1/audio/speech language_code is refused naming the field on the OpenAI drop-in route, with no upstream call (vertex gemini speech)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"model\":\"vertex/gemini-tts-ok\",\"input\":\"Say hello.\",\"voice\":\"Kore\",\"language_code\":\"en-US\"}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/openai/v1/audio/speech",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "openai",
+            "v1",
+            "audio",
+            "speech"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function (err, res) {",
+              "    pm.test('vertex gemini speech setup: the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "// vertexCalls: the model calls that reached the fixture standing in for Vertex, as they arrived.",
+              "function vertexCalls(cb) { pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__connects', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb((res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); })); }); }",
+              "pm.test('400, not a dropped field', function () { pm.expect(pm.response.code, raw).to.equal(400); });",
+              "pm.test('error_type is caller_unsupported_parameter and error.param names language_code', function () { var j = pm.response.json(); pm.expect(j.extra_fields && j.extra_fields.error_type, raw).to.equal('caller_unsupported_parameter'); pm.expect(j.error && j.error.param, raw).to.equal('language_code'); });",
+              "vertexCalls(function (calls) { pm.test('the refused request made no upstream call', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.have.length(0); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "433.11 vertex /genai/v1beta/models/vertex/gemini-tts-ok:generateContent the native route keeps generationConfig.maxOutputTokens, answers the bare PCM and returns the output token details as usageMetadata (vertex gemini speech)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Say hello.\"}]}],\"generationConfig\":{\"responseModalities\":[\"AUDIO\"],\"maxOutputTokens\":2048,\"speechConfig\":{\"voiceConfig\":{\"prebuiltVoiceConfig\":{\"voiceName\":\"Kore\"}}}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-tts-ok:generateContent",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "gemini-tts-ok:generateContent"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function (err, res) {",
+              "    pm.test('vertex gemini speech setup: the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "// vertexCalls: the model calls that reached the fixture standing in for Vertex, as they arrived.",
+              "function vertexCalls(cb) { pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__connects', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb((res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); })); }); }",
+              "pm.test('the client gets 200 in the GenAI shape with the bare PCM Vertex sent, not a WAV file', function () { pm.expect(pm.response.code, raw).to.equal(200); var blob = pm.response.json().candidates[0].content.parts[0].inlineData; pm.expect(blob.data, raw.slice(0, 400)).to.equal('AAECAwQF'); pm.expect(blob.mimeType, raw.slice(0, 400)).to.equal('audio/L16;codec=pcm;rate=24000'); });",
+              "pm.test('usageMetadata keeps candidatesTokensDetails and thoughtsTokenCount', function () { var u = pm.response.json().usageMetadata; pm.expect(u, raw.slice(-600)).to.be.an('object'); pm.expect(u.candidatesTokenCount, raw.slice(-600)).to.equal(50); pm.expect(u.thoughtsTokenCount, raw.slice(-600)).to.equal(12); pm.expect(u.candidatesTokensDetails, raw.slice(-600)).to.eql([{ modality: 'AUDIO', tokenCount: 50 }]); });",
+              "vertexCalls(function (calls) { pm.test('exactly one upstream call, to the named key\\'s region with its credentials', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.have.length(1); pm.expect(calls[0].host, calls[0].host).to.equal('us-central1-aiplatform.googleapis.com'); pm.expect(calls[0].path.split('?')[0], calls[0].path).to.equal('/v1/projects/fixture-project/locations/us-central1/publishers/google/models/gemini-tts-ok:generateContent'); pm.expect(calls[0].path, calls[0].path).to.include('key=REDACTED'); }); });",
+              "vertexCalls(function (calls) { pm.test('generationConfig.maxOutputTokens reached Vertex unchanged', function () { var sent = JSON.parse(calls[0].body); pm.expect(sent.generationConfig.maxOutputTokens, calls[0].body).to.equal(2048); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "433.12 vertex /genai/v1beta/models/vertex/gemini-tts-ok:streamGenerateContent the native stream sends the bare PCM and ends on finishReason STOP with the output token details, from one upstream call (vertex gemini speech)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Say hello.\"}]}],\"generationConfig\":{\"responseModalities\":[\"AUDIO\"],\"maxOutputTokens\":2048,\"speechConfig\":{\"voiceConfig\":{\"prebuiltVoiceConfig\":{\"voiceName\":\"Kore\"}}}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-tts-ok:streamGenerateContent?alt=sse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "gemini-tts-ok:streamGenerateContent"
+          ],
+          "query": [
+            {
+              "key": "alt",
+              "value": "sse"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function (err, res) {",
+              "    pm.test('vertex gemini speech setup: the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "// vertexCalls: the model calls that reached the fixture standing in for Vertex, as they arrived.",
+              "function vertexCalls(cb) { pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__connects', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb((res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); })); }); }",
+              "pm.test('the client gets 200 with an SSE stream', function () { pm.expect(pm.response.code, raw).to.equal(200); pm.expect(pm.response.headers.get('content-type') || '', raw).to.include('text/event-stream'); });",
+              "var frames = raw.split(/\\n\\n/).map(function (f) { var m = /^data: (\\{.*\\})$/m.exec(f); return m ? JSON.parse(m[1]) : null; }).filter(Boolean);",
+              "pm.test('the audio chunks are the bare PCM Vertex sent', function () { var blob = frames[0].candidates[0].content.parts[0].inlineData; pm.expect(blob.data, raw).to.equal('AAECAwQF'); pm.expect(blob.mimeType, raw).to.equal('audio/L16;codec=pcm;rate=24000'); });",
+              "pm.test('the final frame carries finishReason STOP and every usage detail', function () { var last = frames[frames.length - 1] || {}; pm.expect(last.candidates && last.candidates[0].finishReason, raw).to.equal('STOP'); var u = last.usageMetadata; pm.expect(u, raw).to.be.an('object'); pm.expect(u.candidatesTokenCount, raw).to.equal(50); pm.expect(u.thoughtsTokenCount, raw).to.equal(12); pm.expect(u.candidatesTokensDetails, raw).to.eql([{ modality: 'AUDIO', tokenCount: 50 }]); });",
+              "vertexCalls(function (calls) { pm.test('exactly one upstream call, to the named key\\'s region with its credentials', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.have.length(1); pm.expect(calls[0].host, calls[0].host).to.equal('us-central1-aiplatform.googleapis.com'); pm.expect(calls[0].path.split('?')[0], calls[0].path).to.equal('/v1/projects/fixture-project/locations/us-central1/publishers/google/models/gemini-tts-ok:streamGenerateContent'); pm.expect(calls[0].path, calls[0].path).to.include('key=REDACTED'); }); });",
+              "vertexCalls(function (calls) { pm.test('generationConfig.maxOutputTokens reached Vertex unchanged', function () { var sent = JSON.parse(calls[0].body); pm.expect(sent.generationConfig.maxOutputTokens, calls[0].body).to.equal(2048); }); });"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "433.13 vertex /genai/v1beta/models/vertex/gemini-tts-truncated:streamGenerateContent a native stream that ends without finishReason ends on an error frame, never on finishReason STOP (vertex gemini speech)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-api-key",
+            "value": "vertex-us-central1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Say hello.\"}]}],\"generationConfig\":{\"responseModalities\":[\"AUDIO\"],\"maxOutputTokens\":2048,\"speechConfig\":{\"voiceConfig\":{\"prebuiltVoiceConfig\":{\"voiceName\":\"Kore\"}}}}}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-tts-truncated:streamGenerateContent?alt=sse",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "genai",
+            "v1beta",
+            "models",
+            "vertex",
+            "gemini-tts-truncated:streamGenerateContent"
+          ],
+          "query": [
+            {
+              "key": "alt",
+              "value": "sse"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('vertexEndpointFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "} else {",
+              "  pm.sendRequest({ url: 'http://127.0.0.1:8792/__reset', method: 'POST' }, function (err, res) {",
+              "    pm.test('vertex gemini speech setup: the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+              "  });",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var raw = pm.response.text() || '';",
+              "// vertexCalls: the model calls that reached the fixture standing in for Vertex, as they arrived.",
+              "function vertexCalls(cb) { pm.sendRequest({ url: 'http://127.0.0.1:8792/__connects', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__connects', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb((res.json().data || []).reduce(function (all, c) { return all.concat(c.requests); }, []).filter(function (q) { return q.method === 'POST' && /:(generateContent|streamGenerateContent)/.test(q.path); })); }); }",
+              "pm.test('the stream had started: 200 and the audio that arrived', function () { pm.expect(pm.response.code, raw).to.equal(200); pm.expect(raw, raw).to.include('AAECAwQF'); });",
+              "pm.test('no finishReason STOP: a truncated stream must not look complete', function () { pm.expect(raw, raw).to.not.include('\"STOP\"'); });",
+              "var frames = raw.split(/\\n\\n/).map(function (f) { var m = /^data: (\\{.*\\})$/m.exec(f); return m ? JSON.parse(m[1]) : null; }).filter(Boolean);",
+              "pm.test('the stream ends on an error frame', function () { var last = frames[frames.length - 1] || {}; pm.expect(last.error, raw).to.be.an('object'); });",
+              "vertexCalls(function (calls) { pm.test('exactly one upstream call, to the named key\\'s region with its credentials', function () { pm.expect(calls, JSON.stringify(calls.map(function (c) { return c.host + c.path; }))).to.have.length(1); pm.expect(calls[0].host, calls[0].host).to.equal('us-central1-aiplatform.googleapis.com'); pm.expect(calls[0].path.split('?')[0], calls[0].path).to.equal('/v1/projects/fixture-project/locations/us-central1/publishers/google/models/gemini-tts-truncated:streamGenerateContent'); pm.expect(calls[0].path, calls[0].path).to.include('key=REDACTED'); }); });"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

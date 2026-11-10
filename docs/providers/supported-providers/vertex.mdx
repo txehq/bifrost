@@ -29,13 +29,13 @@ Vertex AI is Google's unified ML platform providing access to Google's Gemini mo
 | Image Variation      | ❌            | -         | Not supported                             |
 | List Models          | ✅            | -         | `/models`                                 |
 | Text Completions     | ❌            | ❌        | -                                         |
-| Speech (TTS)         | ❌            | ❌        | -                                         |
+| Speech (TTS)         | ✅            | ✅        | `/generateContent` (Gemini TTS models)    |
 | Transcriptions (STT) | ❌            | ❌        | -                                         |
 | Files                | ❌            | ❌        | -                                         |
 | Batch                | ❌            | ❌        | -                                         |
 
 <Note>
-**Unsupported Operations** (❌): Text Completions, Speech, Transcriptions, Files, and Batch are not supported by Vertex AI. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Text Completions, Transcriptions, Files, and Batch are not supported by Vertex AI. These return `UnsupportedOperationError`.
 
 **Vertex-specific**: Endpoints vary by model type. Responses API available for both Gemini and Anthropic models.
 
@@ -1359,7 +1359,30 @@ Image variation is not supported by Vertex AI.
 
 ---
 
-# 6. List Models
+# 6. Speech (Text-to-Speech)
+
+Vertex serves Gemini text-to-speech models (for example `gemini-3.8-flash-tts`) through the same `generateContent` request the Gemini API takes. The request body, the audio and usage conversion, and the errors are the ones described for [Gemini speech](./gemini#3-speech-text-to-speech); only the endpoint and the credentials are Vertex's.
+
+- **Endpoint**: `/v1/projects/{project}/locations/{region}/publishers/google/models/{model}:generateContent`, or `:streamGenerateContent?alt=sse` when streaming. One upstream call per request, with the selected key (API key as the `key` query parameter, otherwise the key's OAuth2 token).
+- **Models**: Gemini models only. Speech on any other Vertex model returns `UnsupportedOperationError`.
+- **Parameters**: `input`, `voice`, `response_format` (`wav`, `pcm`, or unset = `wav`), `max_output_tokens` (→ `generationConfig.maxOutputTokens`) and `stream_format`. Any other speech field (`speed`, `instructions`, `language_code`, ...), another `response_format`, or a `max_output_tokens` below 1 is rejected with HTTP 400, `extra_fields.error_type: "caller_unsupported_parameter"` and the field name in `error.param`. Nothing is sent to Vertex.
+- **Usage**: `usageMetadata` → `input_tokens`, `output_tokens`, `total_tokens`, `input_token_details` and `output_token_details` (`text_tokens`, `audio_tokens`, `reasoning_tokens`). When streaming, usage is on the `speech.audio.done` event.
+- **Blocked content**: a 200 with `promptFeedback.blockReason` and no candidates, or a candidate that ends on a safety `finishReason`, returns HTTP 400 with `extra_fields.error_type: "caller_content_filtered"` and the vendor's reason in `error.code`. On a stream the error replaces `speech.audio.done`.
+- **Truncated stream**: a stream that ends before a `finishReason` ends on an error event (502), never on `speech.audio.done`.
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vertex/gemini-3.8-flash-tts",
+    "input": "Hello from Vertex through Bifrost.",
+    "voice": "Kore"
+  }' --output speech.wav
+```
+
+---
+
+# 7. List Models
 
 ## Request Parameters
 
