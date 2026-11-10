@@ -295614,6 +295614,95 @@
           }
         }
       ]
+    },
+    {
+      "name": "319. Cohere errors carry error_type and keep Cohere's status (cohere error type)",
+      "description": "Pins contract C6 for Cohere: Cohere's error status reaches the client unchanged, and the error carries extra_fields.error_type from Cohere's own status table (docs.cohere.com/reference/errors). Cohere's v2 error body is a flat {\"id\", \"message\"}, so the status is what the type is read from. An unknown model is the error a live request can trigger deterministically: Cohere answers 404, which on chat and embeddings can only mean the model, so the type is caller_model_unknown on both routes (the generic rule would call a chat 404 caller_invalid_request).",
+      "item": [
+        {
+          "name": "[EXPECT-404] /v1/chat/completions - unknown model keeps Cohere's 404 and carries error_type caller_model_unknown - cohere/command-does-not-exist",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Cohere 404 on chat is returned as 404 with error_type caller_model_unknown', function () {",
+                  "  pm.expect(pm.response.code, 'expected 404: ' + pm.response.text()).to.eql(404);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.extra_fields && body.extra_fields.error_type, 'extra_fields.error_type: ' + pm.response.text()).to.eql('caller_model_unknown');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/command-does-not-exist\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] /v1/embeddings - unknown model keeps Cohere's 404 and carries error_type caller_model_unknown - cohere/embed-does-not-exist",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Cohere 404 on embeddings is returned as 404 with error_type caller_model_unknown', function () {",
+                  "  pm.expect(pm.response.code, 'expected 404: ' + pm.response.text()).to.eql(404);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.extra_fields && body.extra_fields.error_type, 'extra_fields.error_type: ' + pm.response.text()).to.eql('caller_model_unknown');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/embed-does-not-exist\",\n  \"input\": \"hi\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

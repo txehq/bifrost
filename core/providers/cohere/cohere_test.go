@@ -2,6 +2,7 @@ package cohere_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -164,5 +165,83 @@ func TestToCohereResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
 			require.Equal(t, tc.want, *out.Messages[0].Content.StringContent)
 			require.Equal(t, "user", out.Messages[1].Role)
 		})
+	}
+}
+
+// Cohere's documented error statuses (docs.cohere.com/reference/errors), each with the flat
+// {"id", "message"} body the v2 API returns. Chat, its stream and embeddings all parse
+// errors in one place; each must carry the matching extra_fields.error_type and keep
+// Cohere's status unchanged (contract C6).
+func TestCohereErrorsCarryErrorType(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		status int
+		want   schemas.ErrorType
+	}{
+		{400, schemas.ErrorTypeCallerInvalidRequest},
+		{401, schemas.ErrorTypeProviderAuthFailed},
+		{402, schemas.ErrorTypeProviderBilling},
+		{404, schemas.ErrorTypeCallerModelUnknown},
+		{422, schemas.ErrorTypeCallerInvalidRequest},
+		{429, schemas.ErrorTypeProviderRateLimited},
+		{498, schemas.ErrorTypeProviderAuthFailed}, // invalid token: the generic 4xx rule would blame the caller
+		{499, schemas.ErrorTypeCallerCancelled},
+		{500, schemas.ErrorTypeProviderServerError},
+		{501, schemas.ErrorTypeProviderServerError},
+		{503, schemas.ErrorTypeProviderOverloaded},
+		{504, schemas.ErrorTypeProviderTimeout},
+	}
+	calls := map[string]func(p *cohere.CohereProvider, ctx *schemas.BifrostContext, key schemas.Key) *schemas.BifrostError{
+		"chat": func(p *cohere.CohereProvider, ctx *schemas.BifrostContext, key schemas.Key) *schemas.BifrostError {
+			_, err := p.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{
+				Provider: schemas.Cohere,
+				Model:    "command-a-03-2025",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			})
+			return err
+		},
+		"chat stream": func(p *cohere.CohereProvider, ctx *schemas.BifrostContext, key schemas.Key) *schemas.BifrostError {
+			_, err := p.ChatCompletionStream(ctx, func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return r, e
+			}, func(context.Context) {}, key, &schemas.BifrostChatRequest{
+				Provider: schemas.Cohere,
+				Model:    "command-a-03-2025",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+			})
+			return err
+		},
+		"embedding": func(p *cohere.CohereProvider, ctx *schemas.BifrostContext, key schemas.Key) *schemas.BifrostError {
+			_, err := p.Embedding(ctx, key, &schemas.BifrostEmbeddingRequest{
+				Provider: schemas.Cohere,
+				Model:    "embed-v4.0",
+				Input: []schemas.EmbeddingInputItem{
+					{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("hi")}}},
+				},
+			})
+			return err
+		},
+	}
+	for _, tc := range cases {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(`{"id":"8a5e9f3c-1b2d-4e6f-9a0b-c1d2e3f4a5b6","message":"cohere says no"}`))
+		}))
+		provider, err := cohere.NewCohereProvider(&schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+		}, bifrost.NewNoOpLogger())
+		require.NoError(t, err)
+		for name, call := range calls {
+			t.Run(fmt.Sprintf("%s/%d", name, tc.status), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				bifrostErr := call(provider, ctx, schemas.Key{Value: *schemas.NewSecretVar("co-test")})
+				require.NotNil(t, bifrostErr, "status %d must be an error", tc.status)
+				require.NotNil(t, bifrostErr.StatusCode)
+				require.Equal(t, tc.status, *bifrostErr.StatusCode, "Cohere's status is returned unchanged")
+				require.Equal(t, tc.want, bifrostErr.ExtraFields.ErrorType, "status %d", tc.status)
+				require.Equal(t, "cohere says no", bifrostErr.Error.Message)
+			})
+		}
+		server.Close()
 	}
 }
