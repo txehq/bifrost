@@ -708,3 +708,29 @@ func TestAnthropicMessagesEndpointLeavesChatAndResponsesOnChatCompletions(t *tes
 		}
 	}
 }
+
+// BenchmarkDeepSeekMessagesPassthrough is one buffered native Messages request, from
+// the provider call to the decoded response, against an in-process DeepSeek stand-in
+// over a kept-alive loopback connection (TXE-6548).
+func BenchmarkDeepSeekMessagesPassthrough(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(deepSeekMessagesResponse))
+	}))
+	defer server.Close()
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		b.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	key := schemas.Key{Value: schemas.SecretVar{Val: "ds-secret"}}
+	request := &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: "/v1/messages", Body: []byte(deepSeekMessagesRequest)}
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := provider.Passthrough(ctx, key, request); bifrostErr != nil {
+			b.Fatalf("Passthrough: %+v", bifrostErr)
+		}
+		ctx.Cancel()
+	}
+}

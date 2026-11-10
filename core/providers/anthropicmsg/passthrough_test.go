@@ -387,3 +387,40 @@ func TestPassthroughAppliesResolvedKeyAliasToModel(t *testing.T) {
 		t.Fatalf("a non-Messages path changed:\n got: %s\nwant: %s", got, countTokens)
 	}
 }
+
+// BenchmarkRequestBody measures the native Messages body builder every buffered and
+// streamed passthrough runs (TXE-6548). no_alias is the common case: the only added work
+// is a path check and one context lookup, with no allocation. alias_rewrite is a key
+// alias resolved for this attempt; alias_other_model is an alias on the context whose key
+// the body does not spell, which must not rewrite.
+func BenchmarkRequestBody(b *testing.B) {
+	body := []byte(`{"model":"flash-anthropic","max_tokens":1024,"system":[{"type":"text","text":"You are Claude Code.","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"look it up"}]}],"metadata":{"user_id":"u-1"}}`)
+	other := []byte(`{"model":"deepseek-v4-pro","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`)
+	alias := &schemas.ResolvedAlias{Key: "flash-anthropic", Config: &schemas.AliasConfig{ModelID: "deepseek-v4-flash"}}
+	cfg := Config{Provider: schemas.DeepSeek, Endpoint: "https://api.deepseek.com/anthropic"}
+	cases := []struct {
+		name  string
+		body  []byte
+		alias *schemas.ResolvedAlias
+	}{
+		{name: "no_alias", body: body},
+		{name: "alias_rewrite", body: body, alias: alias},
+		{name: "alias_other_model", body: other, alias: alias},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			if tc.alias != nil {
+				ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, tc.alias)
+			}
+			req := &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: "/v1/messages", Body: tc.body}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, bifrostErr := cfg.requestBody(ctx, req); bifrostErr != nil {
+					b.Fatalf("requestBody: %+v", bifrostErr)
+				}
+			}
+		})
+	}
+}

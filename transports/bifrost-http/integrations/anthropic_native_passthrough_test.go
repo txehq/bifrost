@@ -950,6 +950,18 @@ func BenchmarkAnthropicNativeMessagesSelection(b *testing.B) {
 // prefix, or a key alias resolved to its model id), DeepSeek's bytes come back
 // unchanged, and its Anthropic usage reaches the plugins.
 func TestAnthropicMessagesRouteDeepSeekForwardsBodyByteExact(t *testing.T) {
+	// DeepSeek serves deepseek-v4-flash as deepseek-flash and its Anthropic endpoint
+	// echoes the requested id, so the datasheet's server_side_model is what pricing and
+	// the routing-info header must carry on the native path, as on the bridge.
+	served := "deepseek-flash"
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider != schemas.DeepSeek || model != "deepseek-v4-flash" {
+			return nil
+		}
+		return &schemas.ModelCapabilities{ServerSideModel: &served}
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
 	cases := []struct {
 		name, callerModel string
 		stream            bool
@@ -967,9 +979,10 @@ func TestAnthropicMessagesRouteDeepSeekForwardsBodyByteExact(t *testing.T) {
 				t.Fatalf("fixture must carry the model value exactly once")
 			}
 			want := bytes.Replace(requestBody, from, []byte(`"model":"deepseek-v4-flash"`), 1)
-			contentType, responseBody := "application/json", []byte(xaiByteExactResponse)
+			// DeepSeek's Anthropic endpoint echoes the requested id in its responses.
+			contentType, responseBody := "application/json", []byte(strings.ReplaceAll(xaiByteExactResponse, "grok-4.5", "deepseek-v4-flash"))
 			if tc.stream {
-				contentType, responseBody = "text/event-stream", []byte(xaiByteExactSSE)
+				contentType, responseBody = "text/event-stream", []byte(strings.ReplaceAll(xaiByteExactSSE, "grok-4.5", "deepseek-v4-flash"))
 			}
 
 			var mu sync.Mutex
@@ -1046,6 +1059,9 @@ func TestAnthropicMessagesRouteDeepSeekForwardsBodyByteExact(t *testing.T) {
 			}
 			if got := string(httpCtx.Response.Header.Peek("x-bifrost-provider")); got != string(schemas.DeepSeek) {
 				t.Errorf("x-bifrost-provider = %q, want deepseek", got)
+			}
+			if got := string(httpCtx.Response.Header.Peek("x-bifrost-routing-info-server-side-fallback-model")); got != served {
+				t.Errorf("x-bifrost-routing-info-server-side-fallback-model = %q, want %q", got, served)
 			}
 
 			mu.Lock()

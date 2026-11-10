@@ -315262,7 +315262,7 @@
     },
     {
       "name": "311. DeepSeek native Messages passes through to the Anthropic-compatible endpoint (TXE-6548) (deepseek-native-messages)",
-      "description": "Fork contract (TXE-6548, Bifrost-Tokun contract C2, C5, C11): DeepSeek implements AnthropicMessagesEndpoint ({base}/anthropic), so POST /anthropic/v1/messages with a deepseek/ model takes the byte-preserving native passthrough to https://api.deepseek.com/anthropic/v1/messages instead of the Responses bridge, which dropped every Anthropic field the Responses structure has no slot for. Only the model value changes (the provider prefix comes off, and a key alias becomes its model id); DeepSeek's status, headers and body come back unchanged, including its Anthropic-shape usage. The routed-identity header x-bifrost-request-type names the path (passthrough, passthrough_stream). Because the body is no longer rewritten, a named tool_choice now reaches DeepSeek with thinking at its default (on), and DeepSeek answers 400 (api-docs.deepseek.com/guides/anthropic_api); the third case pins that the 400 is DeepSeek's own. Byte-exactness is pinned offline by TestAnthropicMessagesRouteDeepSeekForwardsBodyByteExact in transports/bifrost-http/integrations. Run with FEATURE=deepseek-native-messages.",
+      "description": "Fork contract (TXE-6548, Bifrost-Tokun contract C2, C5, C11): DeepSeek implements AnthropicMessagesEndpoint ({base}/anthropic), so POST /anthropic/v1/messages with a deepseek/ model takes the byte-preserving native passthrough to https://api.deepseek.com/anthropic/v1/messages instead of the Responses bridge, which dropped every Anthropic field the Responses structure has no slot for. Only the model value changes (the provider prefix comes off, and a key alias becomes its model id); DeepSeek's status, headers and body come back unchanged, including its Anthropic-shape usage. The routed-identity header x-bifrost-request-type names the path (passthrough, passthrough_stream). Because the body is no longer rewritten, a named tool_choice now reaches DeepSeek with thinking at its default (on), and DeepSeek answers 400 (api-docs.deepseek.com/guides/anthropic_api); the fourth case pins that the 400 is DeepSeek's own. The third case goes through the harness profile's deepseek-v4-flash-anthropic key alias: core resolves aliases per key, and the shared Messages client now swaps the alias name in the body for its model id. The unary, stream and alias cases also pin x-bifrost-routing-info-server-side-fallback-model: DeepSeek serves deepseek-v4-flash as deepseek-flash and echoes the requested id, so the datasheet's server_side_model is stamped for pricing on this path as on the bridge. Byte-exactness is pinned offline by TestAnthropicMessagesRouteDeepSeekForwardsBodyByteExact in transports/bifrost-http/integrations. Run with FEATURE=deepseek-native-messages.",
       "item": [
         {
           "name": "deepseek/deepseek-v4-flash /anthropic/v1/messages takes the native passthrough and returns DeepSeek's usage - TXE-6548",
@@ -315291,6 +315291,11 @@
                   "  pm.expect(u.output_tokens, 'output_tokens: ' + JSON.stringify(u)).to.be.a('number').and.above(0);",
                   "  pm.expect(u, 'OpenAI-shape usage means the body was converted: ' + JSON.stringify(u)).to.not.have.property('prompt_tokens');",
                   "  if ('cache_read_input_tokens' in u) pm.expect(u.cache_read_input_tokens).to.be.a('number');",
+                  "});",
+                  "pm.test('deepseek native Messages: the served model is stamped for pricing, as on the bridge (TXE-6548)', function () {",
+                  "  // DeepSeek serves deepseek-v4-flash as deepseek-flash and its Anthropic endpoint echoes the requested id,",
+                  "  // so the datasheet's server_side_model is the only source; the native body is the vendor's, so only the header carries it.",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), 'served model not stamped on the native path').to.eql('deepseek-flash');",
                   "});"
                 ]
               }
@@ -315346,6 +315351,11 @@
                   "  pm.expect(delta.length, 'no message_delta frame: ' + out.slice(-400)).to.be.above(0);",
                   "  var u = JSON.parse(delta[delta.length - 1].slice(6)).usage || {};",
                   "  pm.expect(u.output_tokens, 'final usage: ' + JSON.stringify(u)).to.be.a('number').and.above(0);",
+                  "});",
+                  "pm.test('deepseek native Messages: the served model is stamped for pricing, as on the bridge (TXE-6548)', function () {",
+                  "  // DeepSeek serves deepseek-v4-flash as deepseek-flash and its Anthropic endpoint echoes the requested id,",
+                  "  // so the datasheet's server_side_model is the only source; the native body is the vendor's, so only the header carries it.",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), 'served model not stamped on the native path').to.eql('deepseek-flash');",
                   "});"
                 ]
               }
@@ -315366,6 +315376,67 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"max_tokens\": 256,\n  \"stream\": true,\n  \"thinking\": {\n    \"type\": \"disabled\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from 1 to 5, separated by spaces.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic (key alias) /anthropic/v1/messages reaches DeepSeek as the alias's model id - TXE-6548",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text();",
+                  "pm.test('deepseek native Messages via key alias: 200 from the native passthrough (TXE-6548)', function () {",
+                  "  // deepseek-v4-flash-anthropic is a key alias in the harness profile (model_id deepseek-v4-flash). Core resolves it per key,",
+                  "  // but the passthrough body kept the alias name until the shared Messages client learned to swap it: DeepSeek then",
+                  "  // rejected an unknown model. A 200 here means DeepSeek received deepseek-v4-flash.",
+                  "  pm.expect(pm.response.code, 'failed - the alias name probably reached DeepSeek: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-type'), 'took the Responses bridge, not the native passthrough: ' + txt.slice(0, 300)).to.eql('passthrough');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'answered by another provider').to.eql('deepseek');",
+                  "});",
+                  "pm.test('deepseek native Messages via key alias: DeepSeek answered for the model id, not the alias', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.type, txt.slice(0, 300)).to.eql('message');",
+                  "  pm.expect(j.model, 'DeepSeek echoed the alias name, so it was sent unresolved: ' + txt.slice(0, 300)).to.not.eql('deepseek-v4-flash-anthropic');",
+                  "  pm.expect(j.model, txt.slice(0, 300)).to.include('deepseek');",
+                  "});",
+                  "pm.test('deepseek native Messages: the served model is stamped for pricing, as on the bridge (TXE-6548)', function () {",
+                  "  // DeepSeek serves deepseek-v4-flash as deepseek-flash and its Anthropic endpoint echoes the requested id,",
+                  "  // so the datasheet's server_side_model is the only source; the native body is the vendor's, so only the header carries it.",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-server-side-fallback-model'), 'served model not stamped on the native path').to.eql('deepseek-flash');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"max_tokens\": 256,\n  \"thinking\": {\n    \"type\": \"disabled\"\n  },\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"Answer with just the number.\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is 17 * 23?\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/anthropic/v1/messages",

@@ -523,3 +523,95 @@ func TestResponses_DowngradesJSONSchemaTextFormat(t *testing.T) {
 	}
 	assertJSONSchemaDowngraded(t, captured)
 }
+
+// TXE-6548: /anthropic/v1/messages now passes through to DeepSeek's Anthropic endpoint
+// instead of the Responses bridge. The bridge stamped the served model for pricing; the
+// native path must too, from the same sources: the response's model when it names
+// another one, else the datasheet's server_side_model (the endpoint echoes the id).
+func servedModelPassthroughRequest(stream bool) *schemas.BifrostPassthroughRequest {
+	body := `{"model":"` + requestedModel + `","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`
+	if stream {
+		body = `{"model":"` + requestedModel + `","stream":true,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`
+	}
+	return &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: "/v1/messages", Model: requestedModel, Body: []byte(body)}
+}
+
+func TestPassthrough_AnthropicEndpointUsesDatasheetServerSideModel(t *testing.T) {
+	useDatasheetServedModel(t, servedModel)
+
+	server := newServedModelServer(t, "application/json", echoedAnthropicResponse)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Passthrough(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, servedModelPassthroughRequest(false))
+	if bifrostErr != nil {
+		t.Fatalf("Passthrough: %v", bifrostErr.Error.Message)
+	}
+	if string(resp.Body) != echoedAnthropicResponse {
+		t.Fatalf("stamping changed the vendor body: %s", resp.Body)
+	}
+	assertServedModel(t, "RoutingInfo", resp.ExtraFields.RoutingInfo.ServerSideFallbackModel)
+	assertServedModel(t, "Usage", resp.PassthroughUsage.LLMUsage.ServerSideFallbackModel)
+}
+
+func TestPassthroughStream_AnthropicEndpointUsesDatasheetServerSideModel(t *testing.T) {
+	useDatasheetServedModel(t, servedModel)
+
+	server := newServedModelServer(t, "text/event-stream", echoedAnthropicStream)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	last := collectStream(t, func(runner schemas.PostHookRunner) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		return provider.PassthroughStream(ctx, runner, func(context.Context) {}, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, servedModelPassthroughRequest(true))
+	})
+	if last.PassthroughResponse == nil {
+		t.Fatalf("final result is not a passthrough chunk: %#v", last)
+	}
+	assertServedModel(t, "RoutingInfo", last.PassthroughResponse.ExtraFields.RoutingInfo.ServerSideFallbackModel)
+	if usage := last.PassthroughResponse.PassthroughUsage; usage == nil || usage.LLMUsage == nil {
+		t.Fatalf("final chunk carries no usage: %#v", last.PassthroughResponse)
+	} else {
+		assertServedModel(t, "Usage", usage.LLMUsage.ServerSideFallbackModel)
+	}
+}
+
+// A key alias reaches DeepSeek as its model id, so the datasheet is consulted for that
+// id, not for the alias name.
+func TestPassthrough_ResolvedKeyAliasLooksUpItsModelID(t *testing.T) {
+	useDatasheetServedModel(t, servedModel)
+
+	server := newServedModelServer(t, "application/json", echoedAnthropicResponse)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: "flash-anthropic", Config: &schemas.AliasConfig{ModelID: requestedModel}})
+	req := &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: "/v1/messages", Model: "flash-anthropic",
+		Body: []byte(`{"model":"flash-anthropic","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`)}
+	resp, bifrostErr := provider.Passthrough(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, req)
+	if bifrostErr != nil {
+		t.Fatalf("Passthrough: %v", bifrostErr.Error.Message)
+	}
+	assertServedModel(t, "RoutingInfo", resp.ExtraFields.RoutingInfo.ServerSideFallbackModel)
+}
+
+func TestPassthrough_WithoutDatasheetServerSideModelStaysUnset(t *testing.T) {
+	server := newServedModelServer(t, "application/json", echoedAnthropicResponse)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Passthrough(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, servedModelPassthroughRequest(false))
+	if bifrostErr != nil {
+		t.Fatalf("Passthrough: %v", bifrostErr.Error.Message)
+	}
+	if got := resp.ExtraFields.RoutingInfo.ServerSideFallbackModel; got != nil {
+		t.Fatalf("ServerSideFallbackModel = %q, want nil without a datasheet server_side_model", *got)
+	}
+}
