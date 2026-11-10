@@ -174,7 +174,13 @@ func TestCheckExtraParamPriceFieldsRefusesEveryC4FieldOfEveryOperation(t *testin
 		for _, field := range fields {
 			for _, spelling := range []string{field, strings.ToUpper(field), strings.ToUpper(field[:1]) + field[1:]} {
 				t.Run(string(requestType)+"/"+spelling, func(t *testing.T) {
-					req := extraOnlyRequest(t, requestType, map[string]interface{}{spelling: "planted", "watermark": false})
+					// A value the unified field would have taken: a list of URLs for the one
+					// list field, a string for every other.
+					var planted interface{} = "planted"
+					if field == "reference_images" {
+						planted = []interface{}{"https://example.invalid/a.png"}
+					}
+					req := extraOnlyRequest(t, requestType, map[string]interface{}{spelling: planted, "watermark": false})
 					bifrostErr := CheckExtraParamPriceFields(req)
 					if bifrostErr == nil {
 						t.Fatalf("extra param %q was not refused", spelling)
@@ -224,6 +230,18 @@ func TestCheckExtraParamPriceFieldsLeavesEverythingElseAlone(t *testing.T) {
 			RequestType: VideoGenerationRequest,
 			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"},
 				Params: &VideoGenerationParameters{ExtraParams: map[string]interface{}{"resolution": 1024}}},
+		}},
+		{"reference image objects, which the unified list cannot hold, travel as an extra param by design", &BifrostRequest{
+			RequestType: VideoGenerationRequest,
+			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"},
+				Params: &VideoGenerationParameters{ExtraParams: map[string]interface{}{
+					"reference_images": []interface{}{map[string]interface{}{"uri": "https://example.invalid/a.png", "tag": "fox"}},
+				}}},
+		}},
+		{"a non-array reference_images value", &BifrostRequest{
+			RequestType: VideoGenerationRequest,
+			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"},
+				Params: &VideoGenerationParameters{ExtraParams: map[string]interface{}{"reference_images": "https://example.invalid/a.png"}}},
 		}},
 		{"a vendor's own name for the field", &BifrostRequest{
 			RequestType: VideoGenerationRequest,
@@ -282,6 +300,11 @@ func TestCheckExtraParamPriceFieldsSpecificRefusals(t *testing.T) {
 			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"},
 				Params: &VideoGenerationParameters{ExtraParams: map[string]interface{}{"resolution": "1080p"}}},
 		}, "resolution"},
+		{"reference image URLs the unified list would have held", &BifrostRequest{
+			RequestType: VideoGenerationRequest,
+			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"},
+				Params: &VideoGenerationParameters{ExtraParams: map[string]interface{}{"reference_images": []interface{}{"https://example.invalid/a.png"}}}},
+		}, "reference_images"},
 		{"a task control field", &BifrostRequest{
 			RequestType: VideoGenerationRequest,
 			VideoGenerationRequest: &BifrostVideoGenerationRequest{Input: &VideoGenerationInput{Prompt: "p"},

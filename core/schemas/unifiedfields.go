@@ -130,10 +130,10 @@ func PriceAffectingUnifiedFields(requestType RequestType) []string {
 //     UnifiedVideoGenerationFields), and converters read them there. A string copy that
 //     differs from the string the request sent is refused: the converter would send the
 //     vendor the copy.
-//   - A value the unified field cannot hold. Those fields decode tolerantly (TolerantString):
-//     Runware 3D's numeric resolution leaves the typed field empty and travels as an extra
-//     param by design. Only a value the field would have taken is the field under another
-//     route.
+//   - A value the unified field cannot hold. Those fields decode tolerantly (TolerantString,
+//     VideoReferenceImages): Runware 3D's numeric resolution and Runway's reference image
+//     objects leave the typed field empty and travel as an extra param by design. Only a
+//     value the field would have taken is the field under another route.
 //   - A vendor's own name for the field (BytePlus ratio, Gemini aspectRatio). The name is
 //     compared ignoring letter case only, so "Size" is size but "aspectRatio" is not
 //     aspect_ratio.
@@ -244,17 +244,36 @@ func unifiedFieldSent(req *BifrostRequest, params reflect.Value, field string) (
 }
 
 // unifiedFieldWouldHold reports whether the unified field named field would have taken
-// value had the request sent it there. A TolerantString takes only a string; every other
-// field is taken to hold what it is given.
+// value had the request sent it there. The fork's tolerant types take one shape only and
+// leave anything else to the extra params: a TolerantString takes a string, and
+// VideoReferenceImages an array of strings (Runway's [{"uri": ..., "tag": ...}] objects
+// travel as an extra param by design). Every other field is taken to hold what it is given.
 func unifiedFieldWouldHold(params reflect.Value, field string, value interface{}) bool {
 	for _, f := range unifiedParamFields(params.Type()) {
 		if f.name != field {
 			continue
 		}
 		fv, ok := fieldByIndex(params, f.index)
-		if ok && fv.Type() == reflect.TypeOf(TolerantString("")) {
+		if !ok {
+			return true
+		}
+		switch fv.Type() {
+		case reflect.TypeOf(TolerantString("")):
 			_, isString := value.(string)
 			return isString
+		case reflect.TypeOf(VideoReferenceImages(nil)):
+			switch list := value.(type) {
+			case []string:
+				return true
+			case []interface{}:
+				for _, entry := range list {
+					if _, isString := entry.(string); !isString {
+						return false
+					}
+				}
+				return true
+			}
+			return false
 		}
 		return true
 	}
