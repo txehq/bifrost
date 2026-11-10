@@ -133,7 +133,8 @@ These return `400` with `extra_fields.error_type: "caller_unsupported_parameter"
 - `speed` outside `0.25` to `2.0`
 - `voice` given as a multi-speaker list
 - `voice` of another family than the model, or a name that carries no family
-- `input` as SSML with a `<voice>` element that names a voice of another family, or that selects its voice without a name
+- `input` as SSML with a `<voice>` element that names a voice of another family, or that selects its voice without a name; SSML that names a `<voice>` element and is not well-formed XML
+- `voice` or `input` sent as a vendor-specific field
 
 ### Model and Voice Family
 
@@ -153,6 +154,8 @@ Voices that are not selected by name (an instant custom voice, which takes a voi
 ### Vendor-specific Fields
 
 With the `x-bf-passthrough-extra-params: true` header, top-level request fields outside the unified structure are merged into the `text:synthesize` body, objects recursively. For example `"audioConfig": {"pitch": -2.0, "sampleRateHertz": 16000}` adds `pitch` and `sampleRateHertz` next to the mapped `audioEncoding`.
+
+`voice` and `input` cannot be set this way: Bifrost checks them against the model before sending (see above), so a vendor-specific `voice` or `input` is refused with `caller_unsupported_parameter`. For the same reason the provider always builds the body from the request's own fields and never sends a caller-supplied raw body in its place.
 
 ### Response and Usage
 

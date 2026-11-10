@@ -121,14 +121,13 @@ func (provider *GoogleCloudTTSProvider) Speech(ctx *schemas.BifrostContext, key 
 		req.Header.Set(apiKeyHeader, key.Value.GetValue())
 	}
 
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToGoogleCloudTTSSpeechRequest(request), nil
-		})
-	if bifrostErr != nil {
-		return nil, bifrostErr
+	// The body is always built from the unified request. The caller's own body is never sent
+	// in its place (the raw-request-body switch other providers honour), because the checks
+	// above bind the voice family to the model and a body they did not see would undo them.
+	mergeExtraParams, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool)
+	jsonData, err := providerUtils.MarshalConvertedRequestBody(ToGoogleCloudTTSSpeechRequest(request), mergeExtraParams)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 	}
 	req.SetBody(jsonData)
 

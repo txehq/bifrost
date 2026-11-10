@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -294,8 +295,11 @@ func TestSpeechMergesExtraParamsIntoTheBody(t *testing.T) {
 		VoiceConfig:    voice("en-US-Wavenet-D"),
 		LanguageCode:   schemas.Ptr("en-US"),
 		ResponseFormat: "wav",
+		// The speech route leaves language_code among the extra params as well as parsing it;
+		// it is mapped to voice.languageCode and must not reach the vendor a second time.
 		ExtraParams: map[string]any{
-			"audioConfig": map[string]any{"pitch": -2.0, "sampleRateHertz": 16000.0},
+			"audioConfig":   map[string]any{"pitch": -2.0, "sampleRateHertz": 16000.0},
+			"language_code": "en-US",
 		},
 	}))
 	if bifrostErr != nil {
@@ -424,20 +428,27 @@ func TestSpeechTakesAVoiceOfTheModelFamily(t *testing.T) {
 func TestSpeechRefusesAnSSMLVoiceOutsideTheModelFamily(t *testing.T) {
 	tests := map[string]string{
 		"a Studio voice inside a wavenet request": `<speak><voice name="en-US-Studio-O">Hello</voice></speak>`,
-		"single quotes":                            `<speak><voice name='en-US-Studio-O'>Hello</voice></speak>`,
-		"spaces around the equals sign":            `<speak><voice name = "en-US-Studio-O">Hello</voice></speak>`,
-		"the name after another attribute":         `<speak><voice language="en-US" name="en-US-Neural2-A">Hello</voice></speak>`,
-		"a greater-than sign in another attribute": `<speak><voice variant="a>b" name="en-US-Studio-O">Hello</voice></speak>`,
-		"an upper-case tag":                        `<speak><VOICE NAME="en-US-Studio-O">Hello</VOICE></speak>`,
-		"the second of two voices":                 `<speak><voice name="en-US-Wavenet-A">Hi</voice><voice name="en-US-Studio-O">Hello</voice></speak>`,
-		"a voice selected by gender":               `<speak><voice gender="female">Hello</voice></speak>`,
-		"a voice with no attributes":               `<speak><voice>Hello</voice></speak>`,
-		"a name with no family":                    `<speak><voice name="alloy">Hello</voice></speak>`,
-		"an entity reference in the name":          `<speak><voice name="en-US-Wavenet-&#65;">Hello</voice></speak>`,
-		"an unquoted value":                        `<speak><voice name=en-US-Wavenet-A>Hello</voice></speak>`,
-		"an unterminated value":                    `<speak><voice name="en-US-Wavenet-A>Hello</voice></speak>`,
-		"a tag cut off at the end":                 `<speak>Hello <voice`,
-		"behind an XML declaration":                `<?xml version="1.0"?><speak><voice name="en-US-Studio-O">Hello</voice></speak>`,
+		"single quotes":                                    `<speak><voice name='en-US-Studio-O'>Hello</voice></speak>`,
+		"spaces around the equals sign":                    `<speak><voice name = "en-US-Studio-O">Hello</voice></speak>`,
+		"the name after another attribute":                 `<speak><voice language="en-US" name="en-US-Neural2-A">Hello</voice></speak>`,
+		"a greater-than sign in another attribute":         `<speak><voice variant="a>b" name="en-US-Studio-O">Hello</voice></speak>`,
+		"an upper-case tag":                                `<speak><VOICE NAME="en-US-Studio-O">Hello</VOICE></speak>`,
+		"the second of two voices":                         `<speak><voice name="en-US-Wavenet-A">Hi</voice><voice name="en-US-Studio-O">Hello</voice></speak>`,
+		"a voice selected by gender":                       `<speak><voice gender="female">Hello</voice></speak>`,
+		"a voice with no attributes":                       `<speak><voice>Hello</voice></speak>`,
+		"a name with no family":                            `<speak><voice name="alloy">Hello</voice></speak>`,
+		"a character reference that spells another family": `<speak><voice name="en-US-&#83;tudio-O">Hello</voice></speak>`,
+		"an undefined entity in the name":                  `<speak><voice name="en-US-Wavenet-&who;">Hello</voice></speak>`,
+		// A commented-out <voice whose unclosed attribute would swallow the real element in a
+		// scanner that does not know XML comments.
+		"a real voice element between two comments": `<speak><!-- <voice name="en-US-Wavenet-B" x=" --><voice name='en-US-Studio-O'>Hello</voice><!-- " > --></speak>`,
+		"a voice element after a CDATA section":     `<speak><![CDATA[<voice name="en-US-Wavenet-A" x="]]><voice name="en-US-Studio-O">Hello</voice></speak>`,
+		"a namespace prefix":                        `<speak xmlns:s="urn:s"><s:voice name="en-US-Studio-O">Hello</s:voice></speak>`,
+		"a document type inside the document":       `<speak><!DOCTYPE speak [<!ENTITY v "x">]>Hello</speak>`,
+		"an unquoted value":                         `<speak><voice name=en-US-Wavenet-A>Hello</voice></speak>`,
+		"an unterminated value":                     `<speak><voice name="en-US-Wavenet-A>Hello</voice></speak>`,
+		"a tag cut off at the end":                  `<speak>Hello <voice`,
+		"behind an XML declaration":                 `<?xml version="1.0"?><speak><voice name="en-US-Studio-O">Hello</voice></speak>`,
 	}
 	for name, ssml := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -461,7 +472,14 @@ func TestSpeechTakesSSMLVoicesOfTheModelFamily(t *testing.T) {
 		"two wavenet voices":                  {`<speak><voice name="en-US-Wavenet-A">Hi</voice> <voice name='en-GB-Wavenet-B' >Hello</voice></speak>`, "ssml"},
 		"another element starting with voice": {`<speak><voiceover>Hi</voiceover></speak>`, "ssml"},
 		"an escaped tag is text":              {`<speak>Write &lt;voice name="en-US-Studio-O"&gt; to switch.</speak>`, "ssml"},
-		"plain text is not scanned":           {`To switch, write <voice name="en-US-Studio-O">.`, "text"},
+		"a voice element inside a comment":    {`<speak><!-- <voice name="en-US-Studio-O"> -->Hello</speak>`, "ssml"},
+		"a voice element inside CDATA":        {`<speak><![CDATA[<voice name="en-US-Studio-O">]]>Hello</speak>`, "ssml"},
+		"a character reference in the name":   {`<speak><voice name="en-US-Wavenet-&#65;">Hello</voice></speak>`, "ssml"},
+		// A document that opens with a document type is not taken as SSML at all: it goes to
+		// input.text, where Google reads no markup.
+		"a document type before the root is text": {`<!DOCTYPE speak [<!ENTITY v "&#60;voice name='en-US-Studio-O'&#62;Hello&#60;/voice&#62;">]><speak>&v;</speak>`, "text"},
+		"a mid-document doctype word is text":     {`Write <!DOCTYPE speak> before <voice name="en-US-Studio-O">.`, "text"},
+		"plain text is not scanned":               {`To switch, write <voice name="en-US-Studio-O">.`, "text"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -477,6 +495,47 @@ func TestSpeechTakesSSMLVoicesOfTheModelFamily(t *testing.T) {
 				t.Errorf("upstream input = %v, want %s as given", got, tt.field)
 			}
 		})
+	}
+}
+
+// The extra-params channel merges caller fields into the body after the voice and the SSML
+// have been checked, so it may not carry voice or input, whether or not the merge is on.
+func TestSpeechRefusesProtectedFieldsAsExtraParams(t *testing.T) {
+	for _, field := range []string{"voice", "input"} {
+		for _, passthrough := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s passthrough=%v", field, passthrough), func(t *testing.T) {
+				provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+				ctx := testContext(t)
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, passthrough)
+				_, bifrostErr := provider.Speech(ctx, testKey(), speechRequest("hi", &schemas.SpeechParameters{
+					VoiceConfig: voice("en-US-Wavenet-D"),
+					ExtraParams: map[string]any{field: map[string]any{"name": "en-US-Chirp3-HD-Achernar", "ssml": `<speak><voice name="en-US-Studio-O">hi</voice></speak>`}},
+				}))
+				assertUnsupportedParameter(t, bifrostErr, field)
+				if n := len(captured()); n != 0 {
+					t.Errorf("made %d upstream calls for a refused request, want 0", n)
+				}
+			})
+		}
+	}
+}
+
+// The body is built from the unified request even when the caller asks for its own body to be
+// sent as it is: a body the checks did not see could name any voice.
+func TestSpeechNeverSendsTheCallersRawBody(t *testing.T) {
+	provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+	ctx := testContext(t)
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	req := speechRequest("hi", &schemas.SpeechParameters{VoiceConfig: voice("en-US-Wavenet-D")})
+	req.RawRequestBody = []byte(`{"input":{"text":"hi"},"voice":{"name":"en-US-Chirp3-HD-Achernar"},"audioConfig":{"audioEncoding":"MP3"}}`)
+	if _, bifrostErr := provider.Speech(ctx, testKey(), req); bifrostErr != nil {
+		t.Fatalf("Speech error: %+v", bifrostErr.Error)
+	}
+	want := map[string]any{
+		"input": map[string]any{"text": "hi"}, "voice": map[string]any{"name": "en-US-Wavenet-D"}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
+	}
+	if got := sentBody(t, captured()); !reflect.DeepEqual(got, want) {
+		t.Errorf("upstream body = %v, want the body built from the unified request %v", got, want)
 	}
 }
 
