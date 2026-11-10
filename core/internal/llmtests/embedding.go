@@ -125,9 +125,7 @@ func RunEmbeddingTest(t *testing.T, client *bifrost.Bifrost, ctx context.Context
 				Input: []schemas.EmbeddingInputItem{
 					{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}},
 				},
-				Params: &schemas.EmbeddingParameters{
-					EncodingFormat: bifrost.Ptr("float"),
-				},
+				Params:    floatEmbeddingParams(testConfig),
 				Fallbacks: testConfig.EmbeddingFallbacks,
 			}
 
@@ -299,7 +297,7 @@ func RunMultimodalEmbeddingTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 			Input: []schemas.EmbeddingInputItem{
 				makeTextContent("The quick brown fox jumps over the lazy dog."),
 			},
-			Params: &schemas.EmbeddingParameters{EncodingFormat: bifrost.Ptr("float")},
+			Params: floatEmbeddingParams(testConfig),
 		}, 1)
 
 		// ── 2. Batch text ─────────────────────────────────────────────────────────
@@ -313,7 +311,7 @@ func RunMultimodalEmbeddingTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 					makeTextContent("Dogs are loyal companions."),
 					makeTextContent("The sky is blue."),
 				},
-				Params: &schemas.EmbeddingParameters{EncodingFormat: bifrost.Ptr("float")},
+				Params: floatEmbeddingParams(testConfig),
 			}, 3)
 		}
 
@@ -324,7 +322,7 @@ func RunMultimodalEmbeddingTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 			Input: []schemas.EmbeddingInputItem{
 				makeImageDataContent(testImageDataURI),
 			},
-			Params: &schemas.EmbeddingParameters{EncodingFormat: bifrost.Ptr("float")},
+			Params: floatEmbeddingParams(testConfig),
 		}, 1)
 
 		// ── 4. Single multimodal content (text + image → 1 aggregated embedding) ─
@@ -334,7 +332,7 @@ func RunMultimodalEmbeddingTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 			Input: []schemas.EmbeddingInputItem{
 				makeMultimodalContent("A red pixel.", testImageDataURI),
 			},
-			Params: &schemas.EmbeddingParameters{EncodingFormat: bifrost.Ptr("float")},
+			Params: floatEmbeddingParams(testConfig),
 		}, 1)
 
 		if vertexNoBatch {
@@ -350,7 +348,7 @@ func RunMultimodalEmbeddingTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 				makeImageDataContent(testImageDataURI),
 				makeImageDataContent(testImageDataURI),
 			},
-			Params: &schemas.EmbeddingParameters{EncodingFormat: bifrost.Ptr("float")},
+			Params: floatEmbeddingParams(testConfig),
 		}, 2)
 
 		// ── 6. Batch multimodal (text+image per entry) ────────────────────────────
@@ -361,7 +359,7 @@ func RunMultimodalEmbeddingTest(t *testing.T, client *bifrost.Bifrost, ctx conte
 				makeMultimodalContent("First image description.", testImageDataURI),
 				makeMultimodalContent("Second image description.", testImageDataURI),
 			},
-			Params: &schemas.EmbeddingParameters{EncodingFormat: bifrost.Ptr("float")},
+			Params: floatEmbeddingParams(testConfig),
 		}, 2)
 	}) // end t.Run("MultimodalEmbedding")
 }
@@ -402,4 +400,16 @@ func validateNonEmptyVectors(t *testing.T, resp *schemas.BifrostEmbeddingRespons
 		}
 	}
 	t.Logf("✅ %d embedding vector(s), %d dimensions each", len(resp.Data), dim)
+}
+
+// floatEmbeddingParams are the parameters every embedding scenario sends: float vectors,
+// plus the provider's EmbeddingTaskType when its config names one. Providers whose API
+// requires a task type (Cohere's input_type) refuse a request without it rather than
+// having Bifrost pick one.
+func floatEmbeddingParams(testConfig ComprehensiveTestConfig) *schemas.EmbeddingParameters {
+	params := &schemas.EmbeddingParameters{EncodingFormat: bifrost.Ptr("float")}
+	if testConfig.EmbeddingTaskType != "" {
+		params.TaskType = bifrost.Ptr(testConfig.EmbeddingTaskType)
+	}
+	return params
 }

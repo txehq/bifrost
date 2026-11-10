@@ -96,15 +96,98 @@ func isSingleImageContent(content schemas.EmbeddingContent) (string, bool) {
 	return cohereImageURL(content[0].Image)
 }
 
+// cohereInputTypes maps a unified task_type onto Cohere's input_type. Cohere's own values
+// pass through; the task types of the Gemini dialect (which callers on the /genai and
+// LangChain routes send) map onto their Cohere equivalent. Matching ignores case.
+var cohereInputTypes = map[string]string{
+	"search_document":    "search_document",
+	"search_query":       "search_query",
+	"classification":     "classification",
+	"clustering":         "clustering",
+	"image":              "image",
+	"retrieval_document": "search_document",
+	"retrieval_query":    "search_query",
+}
+
+// cohereEmbeddingInputType resolves Cohere's input_type, which every v3+ embed model
+// requires (contract C4). The unified field task_type is converted through
+// cohereInputTypes; a caller that already speaks Cohere may send input_type itself as an
+// extra field (the native /cohere/v2/embed route arrives that way), and it is sent as
+// given. Bifrost adds no value the caller did not send: with neither, or with a task_type
+// Cohere has no equivalent for, the request is refused as caller_unsupported_parameter on
+// task_type, before any upstream call, instead of being embedded under an input type the
+// caller never asked for (the input type changes the vectors returned).
+func cohereEmbeddingInputType(params *schemas.EmbeddingParameters) (string, error) {
+	var taskType, extraInputType string
+	if params != nil {
+		if params.TaskType != nil {
+			taskType = *params.TaskType
+		}
+		if v, ok := schemas.SafeExtractString(params.ExtraParams["input_type"]); ok {
+			extraInputType = v
+		}
+	}
+	if taskType == "" {
+		if extraInputType != "" {
+			return extraInputType, nil
+		}
+		return "", providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError("task_type",
+			"task_type is required for Cohere embeddings: it is sent as Cohere's input_type (search_document, search_query, classification, clustering or image), and Bifrost does not choose one for the caller"))
+	}
+	inputType, ok := cohereInputTypes[strings.ToLower(taskType)]
+	if !ok {
+		return "", providerUtils.ConverterBifrostError(schemas.NewUnsupportedParameterError("task_type",
+			fmt.Sprintf("task_type %q has no Cohere input_type equivalent; use search_document, search_query, classification, clustering or image", taskType)))
+	}
+	if extraInputType != "" && extraInputType != inputType {
+		return "", providerUtils.InvalidRequestErrorf("task_type %q (Cohere input_type %q) and input_type %q disagree; send one of them", taskType, inputType, extraInputType)
+	}
+	return inputType, nil
+}
+
+// cohereInternalEmbeddingInputType is the input_type Bifrost's own embedding requests
+// (semantic cache, routing, Warp index) get when they name no task: search_document, the
+// value Bifrost sent for every request before callers had to choose, so vectors stored
+// before this change stay comparable with new ones.
+const cohereInternalEmbeddingInputType = "search_document"
+
+// withInternalEmbeddingInputType gives an internal embedding request that names no task
+// Cohere's documented default. A caller's request is returned unchanged and is refused by
+// ToCohereEmbeddingRequest when it names none (contract C4); see
+// bifrost.MarkInternalEmbeddingRequest.
+func withInternalEmbeddingInputType(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) *schemas.BifrostEmbeddingRequest {
+	if ctx == nil || req == nil {
+		return req
+	}
+	if internal, _ := ctx.Value(schemas.BifrostContextKeyInternalEmbeddingRequest).(bool); !internal {
+		return req
+	}
+	if req.Params != nil && (req.Params.TaskType != nil || req.Params.ExtraParams["input_type"] != nil) {
+		return req
+	}
+	params := &schemas.EmbeddingParameters{}
+	if req.Params != nil {
+		params = req.Params.Clone()
+	}
+	params.TaskType = schemas.Ptr(cohereInternalEmbeddingInputType)
+	withDefault := *req
+	withDefault.Params = params
+	return &withDefault
+}
+
 // ToCohereEmbeddingRequest converts a Bifrost embedding request to Cohere format.
 func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*CohereEmbeddingRequest, error) {
 	if bifrostReq == nil || len(bifrostReq.Input) == 0 {
 		return nil, providerUtils.InvalidRequestErrorf("embedding input is not provided")
 	}
 
+	inputType, inputTypeErr := cohereEmbeddingInputType(bifrostReq.Params)
+	if inputTypeErr != nil {
+		return nil, inputTypeErr
+	}
 	cohereReq := &CohereEmbeddingRequest{
 		Model:     bifrostReq.Model,
-		InputType: "search_document",
+		InputType: inputType,
 	}
 	if bifrostReq.Params != nil {
 		cohereReq.OutputDimension = bifrostReq.Params.Dimensions
@@ -118,10 +201,8 @@ func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*Coh
 				delete(cohereReq.ExtraParams, "embedding_types")
 				cohereReq.EmbeddingTypes = embeddingTypes
 			}
-			if inputType, ok := schemas.SafeExtractString(bifrostReq.Params.ExtraParams["input_type"]); ok {
-				delete(cohereReq.ExtraParams, "input_type")
-				cohereReq.InputType = inputType
-			}
+			// Already resolved into InputType above; never sent twice.
+			delete(cohereReq.ExtraParams, "input_type")
 			if priority, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["priority"]); ok {
 				delete(cohereReq.ExtraParams, "priority")
 				cohereReq.Priority = priority
@@ -248,6 +329,49 @@ func (req *CohereEmbeddingRequest) ToBifrostEmbeddingRequest(ctx *schemas.Bifros
 	return bifrostReq, nil
 }
 
+// cohereEmbeddingUsage fills the unified usage from what Cohere bills (contract C5).
+// meta.billed_units is the settlement source: prompt_tokens is the billed input_tokens, the
+// image counters land in prompt_tokens_details.image_tokens and input_images. meta.tokens
+// (processed counts, which can differ from what is billed) is read only when Cohere sent no
+// billed_units at all. Nil when Cohere reported neither.
+func cohereEmbeddingUsage(meta *CohereEmbeddingMeta) *schemas.BifrostLLMUsage {
+	var usage *schemas.BifrostLLMUsage
+	if billed := meta.BilledUnits; billed != nil {
+		usage = &schemas.BifrostLLMUsage{}
+		if billed.InputTokens != nil {
+			usage.PromptTokens = *billed.InputTokens
+		}
+		if billed.OutputTokens != nil {
+			usage.CompletionTokens = *billed.OutputTokens
+		}
+		// Images bill on their own counters, outside input_tokens. Kept out of
+		// PromptTokens so text pricing never counts them.
+		if billed.ImageTokens != nil && *billed.ImageTokens > 0 {
+			usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{ImageTokens: *billed.ImageTokens}
+		}
+		if billed.Images != nil {
+			images := *billed.Images
+			usage.InputImages = &images
+		}
+	} else if tokens := meta.Tokens; tokens != nil {
+		usage = &schemas.BifrostLLMUsage{}
+		if tokens.InputTokens != nil {
+			usage.PromptTokens = *tokens.InputTokens
+		}
+		if tokens.OutputTokens != nil {
+			usage.CompletionTokens = *tokens.OutputTokens
+		}
+	}
+	if usage == nil {
+		return nil
+	}
+	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+	if usage.PromptTokensDetails != nil {
+		usage.TotalTokens += usage.PromptTokensDetails.ImageTokens
+	}
+	return usage
+}
+
 // ToBifrostEmbeddingResponse converts a Cohere embedding response to Bifrost format
 func (response *CohereEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.BifrostEmbeddingResponse {
 	if response == nil {
@@ -312,39 +436,7 @@ func (response *CohereEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.B
 	}
 
 	if response.Meta != nil {
-		var usage *schemas.BifrostLLMUsage
-		if response.Meta.Tokens != nil {
-			usage = &schemas.BifrostLLMUsage{}
-			if response.Meta.Tokens.InputTokens != nil {
-				usage.PromptTokens = *response.Meta.Tokens.InputTokens
-			}
-			if response.Meta.Tokens.OutputTokens != nil {
-				usage.CompletionTokens = *response.Meta.Tokens.OutputTokens
-			}
-		} else if response.Meta.BilledUnits != nil {
-			usage = &schemas.BifrostLLMUsage{}
-			if response.Meta.BilledUnits.InputTokens != nil {
-				usage.PromptTokens = *response.Meta.BilledUnits.InputTokens
-			}
-			if response.Meta.BilledUnits.OutputTokens != nil {
-				usage.CompletionTokens = *response.Meta.BilledUnits.OutputTokens
-			}
-		}
-		// Images bill on their own counter, outside input_tokens, and only ever appear
-		// on billed_units. Kept out of PromptTokens so embedding cost stays text-only.
-		if response.Meta.BilledUnits != nil && response.Meta.BilledUnits.ImageTokens != nil && *response.Meta.BilledUnits.ImageTokens > 0 {
-			if usage == nil {
-				usage = &schemas.BifrostLLMUsage{}
-			}
-			usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{ImageTokens: *response.Meta.BilledUnits.ImageTokens}
-		}
-		if usage != nil {
-			usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-			if usage.PromptTokensDetails != nil {
-				usage.TotalTokens += usage.PromptTokensDetails.ImageTokens
-			}
-			bifrostResponse.Usage = usage
-		}
+		bifrostResponse.Usage = cohereEmbeddingUsage(response.Meta)
 	}
 
 	return bifrostResponse
@@ -404,9 +496,19 @@ func ToCohereEmbeddingResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *C
 			BilledUnits: &CohereBilledUnits{
 				InputTokens: &inputTokens,
 				ImageTokens: &imageTokens,
+				Images:      copyIntPointer(bifrostResp.Usage.InputImages),
 			},
 		}
 	}
 
 	return cohereResp
+}
+
+// copyIntPointer returns a copy of v, nil when v is nil.
+func copyIntPointer(v *int) *int {
+	if v == nil {
+		return nil
+	}
+	c := *v
+	return &c
 }

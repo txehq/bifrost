@@ -410,3 +410,27 @@ func BenchmarkAddBillingTurn(b *testing.B) {
 		}
 	})
 }
+
+// input_images is a vendor-reported count (contract C5): merging two reports sums it,
+// merging with a side that never reported it keeps the reported value, and a copy owns
+// its pointer.
+func TestBifrostLLMUsageInputImagesMergeAndCopy(t *testing.T) {
+	two, three := 2, 3
+	merged := MergeBifrostLLMUsage(&BifrostLLMUsage{InputImages: &two}, &BifrostLLMUsage{InputImages: &three})
+	if merged.InputImages == nil || *merged.InputImages != 5 {
+		t.Fatalf("merged input_images = %v, want 5", merged.InputImages)
+	}
+	if got := MergeBifrostLLMUsage(&BifrostLLMUsage{PromptTokens: 1}, &BifrostLLMUsage{PromptTokens: 2}); got.InputImages != nil {
+		t.Fatalf("neither side reported images, got %d", *got.InputImages)
+	}
+	if got := MergeBifrostLLMUsage(&BifrostLLMUsage{}, &BifrostLLMUsage{InputImages: &two}); got.InputImages == nil || *got.InputImages != 2 {
+		t.Fatalf("one-sided report lost: %v", got.InputImages)
+	}
+
+	orig := &BifrostLLMUsage{InputImages: &two}
+	copied := orig.DeepCopy()
+	*orig.InputImages = 9
+	if copied.InputImages == nil || *copied.InputImages != 2 {
+		t.Fatalf("copy shares the input_images pointer: %v", copied.InputImages)
+	}
+}

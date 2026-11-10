@@ -19,6 +19,11 @@ BifrostLLMUsage:
       $ref: "#/ChatCompletionTokensDetails"
     total_tokens:
       type: integer
+    input_images:
+      type: integer
+      description: >
+        Number of input images the provider billed (Cohere embeddings report it as
+        meta.billed_units.images). Present only when the provider reports it.
     tool_usage:
       $ref: "#/ToolUsage"
     cost:

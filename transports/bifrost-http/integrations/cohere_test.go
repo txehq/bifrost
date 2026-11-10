@@ -2,13 +2,17 @@ package integrations
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/providers/cohere"
+	"github.com/capsohq/bifrost/core/providers/gemini"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestCreateCohereRouteConfigsIncludesRerank(t *testing.T) {
@@ -303,4 +307,167 @@ func TestCohereChatResponseConverterConvertsCrossProviderRawResponse(t *testing.
 	require.True(t, ok, "cross-provider responses must be converted, not passed through")
 	require.NotNil(t, cohereResp.Message)
 	assert.Equal(t, text, *cohereResp.Message.Content.GetBlocks()[0].Text)
+}
+
+func cohereEmbedRoute(t *testing.T) *RouteConfig {
+	t.Helper()
+	routes := CreateCohereRouteConfigs("/cohere")
+	for i := range routes {
+		if routes[i].Path == "/cohere/v2/embed" {
+			return &routes[i]
+		}
+	}
+	t.Fatal("no /cohere/v2/embed route")
+	return nil
+}
+
+// /cohere/v2/embed, ingress to Cohere egress (TXE-6546, contract C4). The caller's own
+// input_type reaches Cohere unchanged; a request without one is refused with 400
+// caller_unsupported_parameter before any upstream call, where Bifrost used to send
+// search_document on the caller's behalf.
+func TestCohereEmbedRouteInputTypeReachesCohereAndIsNeverDefaulted(t *testing.T) {
+	route := cohereEmbedRoute(t)
+	toEgress := func(native *cohere.CohereEmbeddingRequest) (*cohere.CohereEmbeddingRequest, error) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bifrostReq, err := route.RequestConverter(ctx, native)
+		require.NoError(t, err)
+		require.NotNil(t, bifrostReq.EmbeddingRequest)
+		return cohere.ToCohereEmbeddingRequest(bifrostReq.EmbeddingRequest)
+	}
+
+	egress, err := toEgress(&cohere.CohereEmbeddingRequest{Model: "embed-v4.0", InputType: "search_query", Texts: []string{"hi"}})
+	require.NoError(t, err)
+	assert.Equal(t, "search_query", egress.InputType)
+	body, marshalErr := sonic.Marshal(egress)
+	require.NoError(t, marshalErr)
+	assert.Equal(t, 1, strings.Count(string(body), `"input_type"`), "input_type is sent once, not also as an extra field: %s", body)
+
+	_, err = toEgress(&cohere.CohereEmbeddingRequest{Model: "embed-v4.0", Texts: []string{"hi"}})
+	bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+	require.True(t, ok, "want a caller error, got %v", err)
+	require.Equal(t, 400, *bifrostErr.StatusCode)
+	assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+	assert.Equal(t, "task_type", bifrostErr.Error.Param)
+}
+
+// /cohere/v2/embed served by another provider (a fallback): the native response is built
+// from unified usage, and the billed image count comes back as meta.billed_units.images.
+func TestCohereEmbedRouteResponseReturnsBilledImages(t *testing.T) {
+	route := cohereEmbedRoute(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp := &schemas.BifrostEmbeddingResponse{
+		Data:  []schemas.EmbeddingData{{Index: 0, Object: "embedding", Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1}}}},
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, TotalTokens: 10, InputImages: schemas.Ptr(2)},
+	}
+	resp.ExtraFields.Provider = schemas.Bedrock
+	out, err := route.EmbeddingResponseConverter(ctx, resp)
+	require.NoError(t, err)
+	native, ok := out.(*cohere.CohereEmbeddingResponse)
+	require.True(t, ok, "got %T", out)
+	require.NotNil(t, native.Meta)
+	require.NotNil(t, native.Meta.BilledUnits)
+	require.NotNil(t, native.Meta.BilledUnits.Images)
+	assert.Equal(t, 2, *native.Meta.BilledUnits.Images)
+}
+
+// Gemini-shaped ingress to Cohere (TXE-6546): /genai/v1beta/models/cohere/...:embedContent
+// and :batchEmbedContents, also mounted under /langchain, carry Gemini's taskType into the
+// unified task_type, which reaches Cohere as its input_type. Without one the request is
+// refused with caller_unsupported_parameter before any upstream call.
+func TestGenAIRoutesToCohereMapTaskTypeAndRefuseAMissingOne(t *testing.T) {
+	content := func() *gemini.Content { return &gemini.Content{Parts: []*gemini.Part{{Text: "hi"}}} }
+	for _, prefix := range []string{"/genai", "/langchain"} {
+		var route *RouteConfig
+		routes := CreateGenAIRouteConfigs(prefix)
+		for i := range routes {
+			if routes[i].Path == prefix+"/v1beta/models/{model:*}" && routes[i].EmbeddingResponseConverter != nil {
+				route = &routes[i]
+			}
+		}
+		require.NotNil(t, route, prefix)
+		toEgress := func(native interface{}) (*cohere.CohereEmbeddingRequest, error) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq, err := route.RequestConverter(ctx, native)
+			require.NoError(t, err)
+			require.NotNil(t, bifrostReq.EmbeddingRequest)
+			require.Equal(t, schemas.Cohere, bifrostReq.EmbeddingRequest.Provider)
+			return cohere.ToCohereEmbeddingRequest(bifrostReq.EmbeddingRequest)
+		}
+		cases := map[string]struct {
+			withTask, withoutTask interface{}
+		}{
+			"embedContent": {
+				withTask:    &gemini.GeminiEmbeddingRequest{Model: "cohere/embed-v4.0", Content: content(), TaskType: schemas.Ptr("RETRIEVAL_QUERY")},
+				withoutTask: &gemini.GeminiEmbeddingRequest{Model: "cohere/embed-v4.0", Content: content()},
+			},
+			"batchEmbedContents": {
+				withTask: &gemini.GeminiBatchEmbeddingRequest{Model: "cohere/embed-v4.0", Requests: []gemini.GeminiEmbeddingRequest{
+					{Model: "models/embed-v4.0", Content: content(), TaskType: schemas.Ptr("RETRIEVAL_DOCUMENT")},
+				}},
+				withoutTask: &gemini.GeminiBatchEmbeddingRequest{Model: "cohere/embed-v4.0", Requests: []gemini.GeminiEmbeddingRequest{
+					{Model: "models/embed-v4.0", Content: content()},
+				}},
+			},
+		}
+		want := map[string]string{"embedContent": "search_query", "batchEmbedContents": "search_document"}
+		for name, tc := range cases {
+			t.Run(prefix+"/"+name, func(t *testing.T) {
+				egress, err := toEgress(tc.withTask)
+				require.NoError(t, err)
+				assert.Equal(t, want[name], egress.InputType)
+
+				_, err = toEgress(tc.withoutTask)
+				bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+				require.True(t, ok, "want a caller error, got %v", err)
+				assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+				assert.Equal(t, "task_type", bifrostErr.Error.Param)
+			})
+		}
+	}
+}
+
+// OpenAI-shaped ingress to Cohere (TXE-6546): /openai/v1/embeddings, and the same route
+// under the alias prefixes such as /litellm, decodes task_type from the body into the
+// unified parameters, so it reaches Cohere as input_type; without one the request is
+// refused, and the unified response returns input_images as reported.
+func TestOpenAIEmbeddingsRouteToCohereCarriesTaskType(t *testing.T) {
+	for _, prefix := range []string{"/openai", "/litellm"} {
+		t.Run(prefix, func(t *testing.T) {
+			var route *RouteConfig
+			routes := CreateOpenAIRouteConfigs(prefix, nil)
+			for i := range routes {
+				if routes[i].Path == prefix+"/v1/embeddings" {
+					route = &routes[i]
+				}
+			}
+			require.NotNil(t, route)
+			toEgress := func(body string) (*cohere.CohereEmbeddingRequest, error) {
+				native := route.GetRequestTypeInstance(context.Background())
+				require.NoError(t, sonic.Unmarshal([]byte(body), native))
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				bifrostReq, err := route.RequestConverter(ctx, native)
+				require.NoError(t, err)
+				require.Equal(t, schemas.Cohere, bifrostReq.EmbeddingRequest.Provider)
+				return cohere.ToCohereEmbeddingRequest(bifrostReq.EmbeddingRequest)
+			}
+
+			egress, err := toEgress(`{"model":"cohere/embed-v4.0","input":"hi","task_type":"search_query"}`)
+			require.NoError(t, err)
+			assert.Equal(t, "search_query", egress.InputType)
+
+			_, err = toEgress(`{"model":"cohere/embed-v4.0","input":"hi"}`)
+			bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err)
+			require.True(t, ok, "want a caller error, got %v", err)
+			assert.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp := &schemas.BifrostEmbeddingResponse{Usage: &schemas.BifrostLLMUsage{PromptTokens: 3, TotalTokens: 3, InputImages: schemas.Ptr(1)}}
+			resp.ExtraFields.Provider = schemas.Cohere
+			out, err := route.EmbeddingResponseConverter(ctx, resp)
+			require.NoError(t, err)
+			body, err := sonic.Marshal(out)
+			require.NoError(t, err)
+			assert.Equal(t, int64(1), gjson.GetBytes(body, "usage.input_images").Int(), "%s", body)
+		})
+	}
 }

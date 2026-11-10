@@ -546,9 +546,21 @@ func PrepareContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ClearContextForInternalRequest(ctx)
 }
 
+// MarkInternalEmbeddingRequest marks an embedding request as Bifrost's own (semantic cache,
+// routing, Warp index), not a caller's. A caller must name the task its vectors serve
+// (contract C4: Cohere's input_type is refused when missing), but Bifrost's own lookups
+// have no caller to ask, so a provider that needs one applies its documented default to
+// a marked request only. Every internal embedding request is prepared with
+// PrepareContextForInternalEmbeddingRequest, or calls this directly; one that does
+// neither is refused like a caller's would be, loudly, never embedded silently.
+func MarkInternalEmbeddingRequest(ctx *schemas.BifrostContext) {
+	ctx.SetValue(schemas.BifrostContextKeyInternalEmbeddingRequest, true)
+}
+
 // PrepareContextForInternalEmbeddingRequest prepares a plugin-owned embedding request without capturing its raw payloads.
 func PrepareContextForInternalEmbeddingRequest(ctx *schemas.BifrostContext) {
 	PrepareContextForInternalRequest(ctx)
+	MarkInternalEmbeddingRequest(ctx)
 	ctx.SetValue(schemas.BifrostContextKeyAllowPerRequestRawOverride, true)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawRequest, false)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, false)
