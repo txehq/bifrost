@@ -101,6 +101,11 @@ func (provider *GoogleCloudTTSProvider) Speech(ctx *schemas.BifrostContext, key 
 	if fieldErr := checkSpeechParams(request.Model, request.Params); fieldErr != nil {
 		return nil, fieldErr
 	}
+	if isSSML(request.Input.Input) {
+		if fieldErr := checkSSMLVoices(request.Model, request.Input.Input); fieldErr != nil {
+			return nil, fieldErr
+		}
+	}
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()

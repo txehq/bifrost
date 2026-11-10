@@ -416,6 +416,70 @@ func TestSpeechTakesAVoiceOfTheModelFamily(t *testing.T) {
 	}
 }
 
+// Google lets an SSML <voice name="..."> element read part of the input in a voice of another
+// family (https://docs.cloud.google.com/text-to-speech/docs/ssml#select_a_voice), so the voice
+// parameter alone does not bind the family. An SSML document that selects a voice outside the
+// model's family, or in a way whose family cannot be established, is refused on input before
+// any upstream call.
+func TestSpeechRefusesAnSSMLVoiceOutsideTheModelFamily(t *testing.T) {
+	tests := map[string]string{
+		"a Studio voice inside a wavenet request": `<speak><voice name="en-US-Studio-O">Hello</voice></speak>`,
+		"single quotes":                            `<speak><voice name='en-US-Studio-O'>Hello</voice></speak>`,
+		"spaces around the equals sign":            `<speak><voice name = "en-US-Studio-O">Hello</voice></speak>`,
+		"the name after another attribute":         `<speak><voice language="en-US" name="en-US-Neural2-A">Hello</voice></speak>`,
+		"a greater-than sign in another attribute": `<speak><voice variant="a>b" name="en-US-Studio-O">Hello</voice></speak>`,
+		"an upper-case tag":                        `<speak><VOICE NAME="en-US-Studio-O">Hello</VOICE></speak>`,
+		"the second of two voices":                 `<speak><voice name="en-US-Wavenet-A">Hi</voice><voice name="en-US-Studio-O">Hello</voice></speak>`,
+		"a voice selected by gender":               `<speak><voice gender="female">Hello</voice></speak>`,
+		"a voice with no attributes":               `<speak><voice>Hello</voice></speak>`,
+		"a name with no family":                    `<speak><voice name="alloy">Hello</voice></speak>`,
+		"an entity reference in the name":          `<speak><voice name="en-US-Wavenet-&#65;">Hello</voice></speak>`,
+		"an unquoted value":                        `<speak><voice name=en-US-Wavenet-A>Hello</voice></speak>`,
+		"an unterminated value":                    `<speak><voice name="en-US-Wavenet-A>Hello</voice></speak>`,
+		"a tag cut off at the end":                 `<speak>Hello <voice`,
+		"behind an XML declaration":                `<?xml version="1.0"?><speak><voice name="en-US-Studio-O">Hello</voice></speak>`,
+	}
+	for name, ssml := range tests {
+		t.Run(name, func(t *testing.T) {
+			provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+			_, bifrostErr := provider.Speech(testContext(t), testKey(), speechRequest(ssml, &schemas.SpeechParameters{VoiceConfig: voice("en-US-Wavenet-D")}))
+			assertUnsupportedParameter(t, bifrostErr, "input")
+			if n := len(captured()); n != 0 {
+				t.Errorf("made %d upstream calls for a refused request, want 0", n)
+			}
+		})
+	}
+}
+
+// <voice> elements of the model's own family are sent as written, and so is text that only
+// mentions the tag.
+func TestSpeechTakesSSMLVoicesOfTheModelFamily(t *testing.T) {
+	tests := map[string]struct {
+		input string
+		field string
+	}{
+		"two wavenet voices":                  {`<speak><voice name="en-US-Wavenet-A">Hi</voice> <voice name='en-GB-Wavenet-B' >Hello</voice></speak>`, "ssml"},
+		"another element starting with voice": {`<speak><voiceover>Hi</voiceover></speak>`, "ssml"},
+		"an escaped tag is text":              {`<speak>Write &lt;voice name="en-US-Studio-O"&gt; to switch.</speak>`, "ssml"},
+		"plain text is not scanned":           {`To switch, write <voice name="en-US-Studio-O">.`, "text"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+			if _, bifrostErr := provider.Speech(testContext(t), testKey(), speechRequest(tt.input, &schemas.SpeechParameters{VoiceConfig: voice("en-US-Wavenet-D")})); bifrostErr != nil {
+				t.Fatalf("Speech error: %+v", bifrostErr.Error)
+			}
+			reqs := captured()
+			if len(reqs) != 1 {
+				t.Fatalf("made %d upstream calls, want exactly 1", len(reqs))
+			}
+			if got := sentBody(t, reqs)["input"]; !reflect.DeepEqual(got, map[string]any{tt.field: tt.input}) {
+				t.Errorf("upstream input = %v, want %s as given", got, tt.field)
+			}
+		})
+	}
+}
+
 func assertUnsupportedParameter(t *testing.T, bifrostErr *schemas.BifrostError, wantParam string) {
 	t.Helper()
 	if bifrostErr == nil {

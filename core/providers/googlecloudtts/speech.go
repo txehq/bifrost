@@ -92,6 +92,98 @@ func checkVoiceFamily(model string, params *schemas.SpeechParameters) *schemas.B
 	return nil
 }
 
+// ssmlVoiceTag is the start of an SSML <voice> element, which reads its content in another
+// voice (https://docs.cloud.google.com/text-to-speech/docs/ssml#select_a_voice).
+const ssmlVoiceTag = "<voice"
+
+// checkSSMLVoices refuses an SSML document that selects a voice the request's model does not
+// cover. Google lets a <voice name="..."> element switch family inside one request (a Studio
+// voice inside a Standard request), so the voice parameter alone does not bind the family
+// that is served. Every <voice> element must carry a name of the model's family; an element
+// that selects its voice any other way (gender, language, variant), or whose name cannot be
+// read as written (an entity reference, a malformed tag), is refused, because its family
+// cannot be established. The scan matches the tag name without regard to case and does not
+// skip comments or CDATA, so it can only refuse more than Google would read, never less.
+// It allocates nothing unless it refuses.
+func checkSSMLVoices(model, ssml string) *schemas.BifrostError {
+	rest := ssml
+	for {
+		at := indexFoldASCII(rest, ssmlVoiceTag)
+		if at < 0 {
+			return nil
+		}
+		rest = rest[at+len(ssmlVoiceTag):]
+		if rest == "" {
+			return ssmlVoiceError(model, "a <voice> element is not closed")
+		}
+		if !isXMLSpace(rest[0]) && rest[0] != '>' && rest[0] != '/' {
+			continue // another element whose name starts with "voice"
+		}
+		named := false
+		for {
+			rest = strings.TrimLeft(rest, " \t\r\n")
+			if rest == "" {
+				return ssmlVoiceError(model, "a <voice> element is not closed")
+			}
+			if rest[0] == '>' || rest[0] == '/' {
+				break
+			}
+			nameEnd := strings.IndexAny(rest, "= \t\r\n>/")
+			if nameEnd <= 0 {
+				return ssmlVoiceError(model, "a <voice> element has a malformed attribute")
+			}
+			attr := rest[:nameEnd]
+			rest = strings.TrimLeft(rest[nameEnd:], " \t\r\n")
+			if rest == "" || rest[0] != '=' {
+				return ssmlVoiceError(model, "a <voice> element has a malformed attribute")
+			}
+			rest = strings.TrimLeft(rest[1:], " \t\r\n")
+			if rest == "" || (rest[0] != '"' && rest[0] != '\'') {
+				return ssmlVoiceError(model, "a <voice> element has a malformed attribute")
+			}
+			valueEnd := strings.IndexByte(rest[1:], rest[0])
+			if valueEnd < 0 {
+				return ssmlVoiceError(model, "a <voice> element has a malformed attribute")
+			}
+			value := rest[1 : 1+valueEnd]
+			rest = rest[valueEnd+2:]
+			if !strings.EqualFold(attr, "name") {
+				continue
+			}
+			named = true
+			family, ok := voiceFamily(value)
+			if !ok || strings.ContainsRune(value, '&') {
+				return ssmlVoiceError(model, fmt.Sprintf("<voice name=%q> is not a Cloud Text-to-Speech voice name of the form <language>-<REGION>-<family>-<variant>", value))
+			}
+			if !strings.EqualFold(family, model) {
+				return ssmlVoiceError(model, fmt.Sprintf("<voice name=%q> selects a %s voice", value, strings.ToLower(family)))
+			}
+		}
+		if !named {
+			return ssmlVoiceError(model, "a <voice> element selects its voice without a name")
+		}
+	}
+}
+
+func ssmlVoiceError(model, what string) *schemas.BifrostError {
+	return schemas.NewUnsupportedParameterError("input", fmt.Sprintf("%s and the request's model is %q: every <voice> element in the SSML must name a voice of the model's family", what, model))
+}
+
+func isXMLSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n'
+}
+
+// indexFoldASCII returns the index of the first occurrence of the lower-case ASCII needle in
+// s, comparing ASCII letters without regard to case, or -1.
+func indexFoldASCII(s, needle string) int {
+	for i := 0; i+len(needle) <= len(s); i++ {
+		if strings.EqualFold(s[i:i+len(needle)], needle) {
+			return i
+		}
+	}
+	return -1
+}
+
 // checkSpeechParams refuses the values text:synthesize cannot take as given, each with
 // caller_unsupported_parameter naming the field. Nothing is dropped, rewritten or clamped.
 // Fields the provider does not take at all are refused by core from SupportedUnifiedFields.

@@ -133,6 +133,7 @@ These return `400` with `extra_fields.error_type: "caller_unsupported_parameter"
 - `speed` outside `0.25` to `2.0`
 - `voice` given as a multi-speaker list
 - `voice` of another family than the model, or a name that carries no family
+- `input` as SSML with a `<voice>` element that names a voice of another family, or that selects its voice without a name
 
 ### Model and Voice Family
 
@@ -144,6 +145,8 @@ Google names every voice `<language>-<REGION>-<family>-<variant>`: `en-US-Wavene
 | `google-cloud-tts/chirp3-hd` | `en-US-Chirp3-HD-Achernar` | Sent |
 | `google-cloud-tts/wavenet` | `en-US-Chirp3-HD-Achernar` | `400`, `error.param: "voice"` |
 | `google-cloud-tts/wavenet` | none | `400` (the speech route requires a voice) |
+
+SSML can switch voice inside one request with [`<voice name="...">`](https://docs.cloud.google.com/text-to-speech/docs/ssml#select_a_voice), and Google allows a different family there (a Studio voice inside a Standard request). The same rule therefore applies to every `<voice>` element of an SSML input: its `name` must be a voice of the model's family. An element that selects its voice by `gender`, `language` or `variant` instead of a name is refused, with `error.param: "input"`.
 
 Voices that are not selected by name (an instant custom voice, which takes a voice cloning key) cannot be requested.
 
