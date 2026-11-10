@@ -360,6 +360,9 @@ bifrost:
     # loggingHeaders: []                     # Headers to capture in log metadata
     # allowedHeaders: []                     # Additional allowed headers for CORS and WebSocket
     # hideDeletedVirtualKeysInFilters: false # Omit deleted virtual keys from logs/MCP filter data
+    # disableProviderJobAccounting: false    # Fork: true writes no provider job rows for videos and batches and runs neither accounting sweeper; the caller prices them
+    # disablePassthroughSseHeartbeat: false  # Fork: true sends no SSE comment heartbeat on idle passthrough streams; the caller gets only the vendor's bytes
+    # disableEncryptedReasoningRetry: false  # Fork: true makes no second upstream call after a 400 on replayed encrypted reasoning; the caller gets the vendor's 400
     # deleteExpiredVirtualKeys: false        # Daily job deletes virtual keys past expires_at (per-key delete_after_expire overrides)
     # whitelistedRoutes: []                  # Routes that bypass auth middleware
     # routingChainMaxDepth: 10               # Maximum depth for routing rule chain evaluation
