@@ -1,0 +1,209 @@
+---
+title: "Azure AI Speech"
+description: "Azure AI Speech conversion guide - text to speech through SSML (MAI-Voice and neural voices) and fast transcription (MAI-Transcribe)"
+icon: "microphone"
+---
+
+## Overview
+
+Azure AI Speech is Microsoft's speech service. It is a different API from Azure OpenAI audio, which the [`azure`](/providers/supported-providers/azure) provider serves. Bifrost's `azurespeech` provider covers:
+
+- **Text to speech** - the request is converted to SSML and sent to the text to speech REST API; the audio bytes come back unchanged
+- **Streamed text to speech** - the same API, read in chunks and forwarded as each chunk arrives
+- **Fast transcription** - the audio and a `definition` JSON are sent as multipart; MAI-Transcribe models are selected through `enhancedMode`
+- **Resource key authentication** - the key value is sent as `Ocp-Apim-Subscription-Key`
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Speech (TTS) | ✅ | ✅ | `/cognitiveservices/v1` |
+| Transcription (STT) | ✅ | ❌ | `/speechtotext/transcriptions:transcribe` |
+| List Models | ❌ | - | - |
+| Chat Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+
+<Note>
+**Unsupported Operations** (❌): everything except speech and transcription returns `UnsupportedOperationError`. Azure AI Speech lists voices, not models, so List Models is unsupported too. Batch synthesis and batch transcription are not implemented.
+</Note>
+
+## Setup & Configuration
+
+Every Speech resource lives in one region and has its own key, so each key carries where its resource is in `azure_key_config.endpoint`. The value is either:
+
+- **a region**, such as `eastus` - Bifrost calls `https://eastus.tts.speech.microsoft.com/cognitiveservices/v1` for speech and `https://eastus.api.cognitive.microsoft.com/speechtotext/transcriptions:transcribe` for transcription
+- **a resource endpoint**, such as `https://my-resource.cognitiveservices.azure.com` - Bifrost calls `<endpoint>/tts/cognitiveservices/v1` for speech and `<endpoint>/speechtotext/transcriptions:transcribe` for transcription
+
+A key without `azure_key_config.endpoint` uses the provider's `network_config.base_url`, set to the resource endpoint URL (the management API accepts only a URL there). A request fails with a configuration error when neither is set.
+
+`azure_key_config.endpoint` is a dial target, so the management API applies the same rules to it as to an Azure OpenAI endpoint.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**, click **Add New Provider** and select **Azure AI Speech**.
+2. In the provider's network settings, set **Base URL** to the resource endpoint of your Speech resource (`https://<resource>.cognitiveservices.azure.com`).
+3. Click **Add Key**, set a name and paste the resource key (or an environment variable such as `env.AZURE_SPEECH_API_KEY`).
+4. Save the provider configuration.
+
+The key form has no field for `azure_key_config.endpoint`. Keys in different Speech resources under one provider are configured through the API or `config.json`.
+
+</Tab>
+<Tab title="API">
+
+```bash
+curl -X POST http://localhost:8080/api/providers \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "azurespeech",
+    "keys": [
+      {
+        "name": "speech-eastus",
+        "value": "env.AZURE_SPEECH_API_KEY",
+        "models": ["*"],
+        "weight": 1.0,
+        "azure_key_config": { "endpoint": "eastus" }
+      }
+    ]
+  }'
+```
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "azurespeech": {
+      "keys": [
+        {
+          "name": "speech-eastus",
+          "value": "env.AZURE_SPEECH_API_KEY",
+          "models": ["*"],
+          "weight": 1.0,
+          "azure_key_config": {
+            "endpoint": "env.AZURE_SPEECH_ENDPOINT"
+          }
+        }
+      ],
+      "network_config": {
+        "max_retries": 0
+      }
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+Azure AI Speech bills every synthesis and transcription call, including a synthesis that produces no speech because the voice and the language do not match. Keep `max_retries` at `0` unless a retried call being billed twice is acceptable.
+</Note>
+
+## Text to Speech
+
+```bash
+curl http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "azurespeech/mai-voice-2.1-flash",
+    "input": "Hello from Bifrost.",
+    "voice": "en-US-Harper:MAI-Voice-2.1-Flash",
+    "speed": 1.25,
+    "response_format": "mp3"
+  }' --output speech.mp3
+```
+
+Azure AI Speech has no model field. **The voice name selects the model**: `en-US-Harper:MAI-Voice-2.1-Flash` is synthesized, and billed, as MAI-Voice-2.1-Flash whatever `model` says. Bifrost sends the voice name exactly as given and uses `model` for routing, key selection and logs only.
+
+### Request conversion
+
+| Unified field | Sent to Azure AI Speech |
+|---------------|-------------------------|
+| `input` | Text of the SSML document, XML-escaped. Markup in `input` is spoken as text, never interpreted as SSML |
+| `voice` | `<voice name="...">`, as given |
+| `speed` | `<prosody rate="...">` as a relative rate. Accepted range `0.5` to `2` |
+| `language_code` | `xml:lang` of `<speak>`. Without it, the locale the voice name starts with (`en-US`), else `en-US` |
+| `response_format` | `X-Microsoft-OutputFormat` header, see below |
+
+The request above sends:
+
+```xml
+<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US"><voice name="en-US-Harper:MAI-Voice-2.1-Flash"><prosody rate="1.25">Hello from Bifrost.</prosody></voice></speak>
+```
+
+### Output formats
+
+| `response_format` | `X-Microsoft-OutputFormat` |
+|-------------------|----------------------------|
+| `mp3` (default) | `audio-24khz-48kbitrate-mono-mp3` |
+| `wav` | `riff-24khz-16bit-mono-pcm` |
+| `pcm` | `raw-24khz-16bit-mono-pcm` |
+| `opus` | `ogg-24khz-16bit-mono-opus` |
+| an Azure format name, such as `audio-48khz-192kbitrate-mono-mp3` | sent as given |
+
+`aac` and `flac` have no Azure AI Speech output format and are refused.
+
+### Streaming
+
+Set `stream_format: "sse"` to receive `speech.audio.delta` events as the audio arrives, followed by `speech.audio.done`. A vendor error before the first chunk is returned as the vendor's HTTP status, not as a `200` followed by an error event.
+
+### Usage
+
+Real-time synthesis reports no billed character count, so the provider fills no usage. `usage.input_chars` is Bifrost's own code-point count of `input`; it is not what Azure bills (Azure counts CJK characters twice and bills the SSML text).
+
+## Transcription
+
+```bash
+curl http://localhost:8080/v1/audio/transcriptions \
+  -F model=azurespeech/mai-transcribe-2 \
+  -F file=@audio.wav \
+  -F language=en
+```
+
+### Request conversion
+
+| Unified field | Sent to Azure AI Speech |
+|---------------|-------------------------|
+| `file` | The `audio` part of the multipart form |
+| `model` | `definition.enhancedMode = {"enabled": true, "model": "MAI-Transcribe-2"}`. A `mai-transcribe-*` id is sent with the vendor's casing; any other id is sent as given |
+| `language` | `definition.locales = ["en"]` |
+| `timestamp_granularities` | `definition.enhancedMode.modelOptions.timestamps`: `word` or `segment`. Both together send `word`, which carries each word's timing inside its phrase |
+| `response_format` | `json` and `verbose_json` change nothing in the request. `diarized_json` sets `definition.diarization.enabled = true` |
+| `prompt` | Not sent: the fast transcription definition has no prompt |
+
+Fields outside the unified structure are merged into `definition` under their own names when the request carries `x-bf-passthrough-extra-params: true`. Objects are merged key by key, and in a multipart form an object is sent JSON-encoded:
+
+```bash
+curl http://localhost:8080/v1/audio/transcriptions \
+  -H "x-bf-passthrough-extra-params: true" \
+  -F model=azurespeech/mai-transcribe-2 \
+  -F file=@audio.wav \
+  -F 'diarization={"enabled":true}' \
+  -F 'phraseList={"phrases":["Contoso","Jessie"]}' \
+  -F 'enhancedMode={"modelOptions":{"transcribeStyle":"clean"}}'
+```
+
+### Response conversion
+
+| Azure AI Speech | Unified response |
+|-----------------|------------------|
+| `combinedPhrases[].text` | `text`, joined with a space (one entry per channel) |
+| `durationMilliseconds` | `usage = {"type": "duration", "seconds": <ms / 1000>}` and `duration` |
+| `phrases[]` | `segments[]` (`start`, `end`, `text`), or speaker-labelled segments for `diarized_json` |
+| `phrases[].words[]` | `words[]` (`word`, `start`, `end`, `speaker`) |
+| `phrases[0].locale` | `language` |
+
+`usage.seconds` is always the vendor's `durationMilliseconds`. When the response does not carry it, `usage` is omitted; the duration is never measured from the file. The vendor's body is in `extra_fields.raw_response` when raw responses are enabled.
+
+## Errors
+
+| Case | Response |
+|------|----------|
+| A unified field Azure AI Speech has no place for (`instructions`, `with_timestamps`, `temperature`, ...) | `400`, `extra_fields.error_type: "caller_unsupported_parameter"`, the field in `error.param`. Nothing is sent upstream |
+| A value that cannot be sent as given (`speed` outside `0.5` to `2`, `response_format: "aac"`, transcription `response_format: "srt"`) | `400` `caller_unsupported_parameter`. The value is never clamped or replaced |
+| A vendor error | The vendor's HTTP status, with the vendor's `code` and `message` when it sent a body, and `extra_fields.error_type` |
+| A `200` with no audio, or with no transcription fields | `502`, `extra_fields.error_type: "provider_empty_result"` |
+
+Azure AI Speech documents no marker for a request blocked for its content on either API, so no error is classified as `caller_content_filtered` yet.

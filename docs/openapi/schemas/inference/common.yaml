@@ -43,6 +43,7 @@ ModelProvider:
     - dashscope
     - bfl
     - google-cloud-tts
+    - azurespeech
 
 Fallback:
   type: object
