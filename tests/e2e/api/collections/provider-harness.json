@@ -294451,7 +294451,7 @@
       ]
     },
     {
-      "name": "290. Moonshot Kimi Responses API and Anthropic-compatible Messages (moonshot kimi native)",
+      "name": "303. Moonshot Kimi Responses API and Anthropic-compatible Messages (moonshot kimi native)",
       "description": "Moonshot (Kimi) serves its own Responses API at /v1/responses and an Anthropic-compatible Messages API at /anthropic/v1/messages (https://platform.kimi.ai/docs/api/responses.md, https://platform.kimi.ai/docs/api/messages.md). The moonshot provider used to convert every Responses request to chat completions, which drops Responses-only fields: a server-side web_search tool never reached Kimi and no web_search_call output item came back. It did not advertise an Anthropic endpoint either, so /anthropic/v1/messages was converted twice (Messages to Responses to chat). The provider now calls Kimi's /v1/responses, and /anthropic/v1/messages with a moonshot/ model is passed through byte for byte to Kimi's Anthropic-compatible endpoint with bearer auth (core/providers/moonshot/moonshot.go, core/providers/anthropicmsg). Byte-exactness of the Messages body is pinned by TestAnthropicMessagesRouteNativeMoonshotEndToEnd and TestMoonshotMessagesPassthroughToKimiAnthropicEndpoint; these cases pin the live wire path. Chat completions on moonshot are unchanged and not covered here.",
       "item": [
         {
