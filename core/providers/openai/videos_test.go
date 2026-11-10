@@ -187,24 +187,27 @@ func TestToBifrostVideoEditRequest_ProviderFallback(t *testing.T) {
 // TXE-7018: a video create whose extra params name the model is refused, in any spelling,
 // before the form is written; any other extra param leaves the request as it was.
 func TestParseVideoGenerationFormDataBodyFromRequest_RefusesAModelAmongExtraParams(t *testing.T) {
-	for _, param := range []string{"model", "Model", "MODEL"} {
+	// The refusal holds whether or not extra params are passed through to the form (TXE-6532).
+	for _, passthrough := range []bool{false, true} {
+		for _, param := range []string{"model", "Model", "MODEL"} {
+			var body bytes.Buffer
+			bifrostErr := parseVideoGenerationFormDataBodyFromRequest(multipart.NewWriter(&body), &OpenAIVideoGenerationRequest{
+				Model: "sora-2", Prompt: "a dog", ExtraParams: map[string]interface{}{param: "sora-2-pro"},
+			}, schemas.OpenAI, passthrough)
+			if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 ||
+				bifrostErr.Error.Param != param || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest {
+				t.Errorf("passthrough=%v extra param %q: want a 400 caller_invalid_request naming it, got %+v", passthrough, param, bifrostErr)
+			}
+			if body.Len() != 0 {
+				t.Errorf("passthrough=%v extra param %q: the form was written before the refusal", passthrough, param)
+			}
+		}
 		var body bytes.Buffer
-		bifrostErr := parseVideoGenerationFormDataBodyFromRequest(multipart.NewWriter(&body), &OpenAIVideoGenerationRequest{
-			Model: "sora-2", Prompt: "a dog", ExtraParams: map[string]interface{}{param: "sora-2-pro"},
-		}, schemas.OpenAI)
-		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 ||
-			bifrostErr.Error.Param != param || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerInvalidRequest {
-			t.Errorf("extra param %q: want a 400 caller_invalid_request naming it, got %+v", param, bifrostErr)
+		if bifrostErr := parseVideoGenerationFormDataBodyFromRequest(multipart.NewWriter(&body), &OpenAIVideoGenerationRequest{
+			Model: "sora-2", Prompt: "a dog", ExtraParams: map[string]interface{}{"watermark": false},
+		}, schemas.OpenAI, passthrough); bifrostErr != nil {
+			t.Fatalf("passthrough=%v: an ordinary extra param was refused: %+v", passthrough, bifrostErr)
 		}
-		if body.Len() != 0 {
-			t.Errorf("extra param %q: the form was written before the refusal", param)
-		}
-	}
-	var body bytes.Buffer
-	if bifrostErr := parseVideoGenerationFormDataBodyFromRequest(multipart.NewWriter(&body), &OpenAIVideoGenerationRequest{
-		Model: "sora-2", Prompt: "a dog", ExtraParams: map[string]interface{}{"watermark": false},
-	}, schemas.OpenAI); bifrostErr != nil {
-		t.Fatalf("an ordinary extra param was refused: %+v", bifrostErr)
 	}
 }
 

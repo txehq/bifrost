@@ -115,6 +115,28 @@
           "azure_key_config": {
             "endpoint": "http://127.0.0.1:8791"
           }
+        },
+        {
+          "name": "azure-sora-a",
+          "value": "azure-sora-secret-a",
+          "models": [
+            "sora-2"
+          ],
+          "weight": 1,
+          "azure_key_config": {
+            "endpoint": "http://127.0.0.1:8791/sora-a"
+          }
+        },
+        {
+          "name": "azure-sora-b",
+          "value": "azure-sora-secret-b",
+          "models": [
+            "sora-2"
+          ],
+          "weight": 1,
+          "azure_key_config": {
+            "endpoint": "http://127.0.0.1:8791/sora-b"
+          }
         }
       ],
       "network_config": {

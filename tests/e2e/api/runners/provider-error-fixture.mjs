@@ -1456,6 +1456,41 @@ const handleRequest = (req, res) => {
 		countHit(`bfl get_result ${id}`);
 		return send(200, {}, JSON.stringify(bflResult(id)));
 	}
+	// Sora 2 on two Azure resources (folder 419, TXE-6532): each key's endpoint is its own path
+	// prefix, so a counter names the resource a request reached and the key it carried. Every
+	// create's form fields are kept for /__sent?model=sora-form. A prompt containing "blocked" gets
+	// the content filter error of Azure's v1-preview schema.
+	const soraMatch = path.match(/^\/sora-(a|b)\/openai\/v1\/videos(?:\/([^/]+)(\/content)?)?$/);
+	if (soraMatch) {
+		const [, resource, soraId, soraContent] = soraMatch;
+		const chunks = [];
+		req.on("data", (c) => chunks.push(c));
+		req.on("end", () => {
+			countHit(`sora ${req.method} ${resource} ${req.headers["api-key"] || ""}${soraContent ? " content" : ""}`);
+			if (req.method === "POST" && !soraId) {
+				const form = {};
+				const raw = Buffer.concat(chunks).toString("latin1");
+				for (const m of raw.matchAll(/name="([^"]+)"[^\r\n]*\r\n(?:[^\r\n]+\r\n)*\r\n([\s\S]*?)\r\n--/g)) form[m[1]] = m[2];
+				sentBodies["sora-form"] = JSON.stringify(form);
+				if ((form.prompt || "").includes("blocked")) {
+					return send(400, {}, JSON.stringify({ error: { code: "invalid_prompt", message: "Your request was rejected by the safety system.", param: "prompt", type: "invalid_request_error", inner_error: { code: "ResponsibleAIPolicyViolation", error_details: { sexual: { filtered: true, severity: "high" } } } } }));
+				}
+				return send(200, {}, JSON.stringify({ id: "video_fixture_sora", object: "video", status: "queued", created_at: 1, model: form.model, seconds: form.seconds || "4", size: form.size }));
+			}
+			if (req.method === "GET" && soraContent) {
+				res.writeHead(200, { "Content-Type": "video/mp4", "Content-Length": FIXTURE_MP4.length });
+				return res.end(FIXTURE_MP4);
+			}
+			if (req.method === "GET" && soraId) {
+				return send(200, {}, JSON.stringify({ id: decodeURIComponent(soraId), object: "video", status: "completed", created_at: 1, completed_at: 2, model: "sora-2", seconds: "8", size: "1280x720" }));
+			}
+			if (req.method === "DELETE" && soraId) {
+				return send(200, {}, JSON.stringify({ id: decodeURIComponent(soraId), object: "video.deleted", deleted: true }));
+			}
+			return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
+		});
+		return undefined;
+	}
 	// The OpenAI video task routes (TXE-6521). Every request is counted under
 	// "videos <METHOD> <bearer token>", so a case can prove which key a task query used and that a
 	// request the gateway refuses never got here. A query answers a queued task; a create answers the
@@ -1801,6 +1836,10 @@ const throwawayCertificate = () => {
 	}
 };
 
+// A gateway keeps connections open between rows; closing an idle one (Node's default after 5s) makes
+// the next non-idempotent request fail with "the server closed connection before returning the first
+// response byte", which is the fixture's doing, not the gateway's.
+server.keepAliveTimeout = 0;
 stallProxy.listen(stallPort, "127.0.0.1", () => {
 	server.listen(port, "127.0.0.1", () => {
 		console.log(`provider-error-fixture stall proxy on http://127.0.0.1:${stallPort}`);

@@ -2332,6 +2332,9 @@ type ErrorField struct {
 	Error   error       `json:"-"`
 	Param   interface{} `json:"param,omitempty"`
 	EventID *string     `json:"event_id,omitempty"`
+	// InnerCode is the vendor's inner_error.code (fork, TXE-6532, contract C6): Azure's
+	// ResponsibleAIPolicyViolation arrives there, behind a generic outer code.
+	InnerCode *string `json:"inner_code,omitempty"`
 }
 
 // MarshalJSON implements custom JSON marshaling for ErrorField.
@@ -2362,6 +2365,8 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 		Error   *string     `json:"error,omitempty"`
 		Param   interface{} `json:"param,omitempty"`
 		EventID *string     `json:"event_id,omitempty"`
+
+		InnerCode *string `json:"inner_code,omitempty"`
 	}{}
 
 	if err := json.Unmarshal(data, aux); err != nil {
@@ -2372,6 +2377,7 @@ func (e *ErrorField) UnmarshalJSON(data []byte) error {
 	e.Message = aux.Message
 	e.Param = aux.Param
 	e.EventID = aux.EventID
+	e.InnerCode = aux.InnerCode
 	if aux.Error != nil {
 		e.Error = errors.New(*aux.Error)
 	}

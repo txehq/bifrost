@@ -4737,6 +4737,9 @@ func HandleOpenAIVideoGenerationRequest(
 	// Use centralized converter
 	reqBody, err := ToOpenAIVideoGenerationRequest(request)
 	if err != nil {
+		if badRequest, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			return nil, badRequest
+		}
 		return nil, providerUtils.NewBifrostOperationError("failed to convert video generation request to openai format", err)
 	}
 	if reqBody == nil {
@@ -4746,7 +4749,7 @@ func HandleOpenAIVideoGenerationRequest(
 	// Create multipart form
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	if err := parseVideoGenerationFormDataBodyFromRequest(writer, reqBody, providerName); err != nil {
+	if err := parseVideoGenerationFormDataBodyFromRequest(writer, reqBody, providerName, passthroughExtraParamsEnabled(ctx)); err != nil {
 		return nil, err
 	}
 
@@ -4795,6 +4798,7 @@ func HandleOpenAIVideoGenerationRequest(
 	if response.ID != "" {
 		response.ID = providerUtils.AddVideoIDProviderSuffix(response.ID, providerName)
 	}
+	fillOpenAIVideoTaskObject(response)
 
 	response.ExtraFields = schemas.BifrostResponseExtraFields{
 		Latency:                 latency.Milliseconds(),
@@ -4988,6 +4992,7 @@ func HandleOpenAIVideoRetrieveRequest(
 		remixID := providerUtils.AddVideoIDProviderSuffix(*response.RemixedFromVideoID, providerName)
 		response.RemixedFromVideoID = &remixID
 	}
+	fillOpenAIVideoTaskObject(response)
 
 	if videoDownloaddHandler != nil {
 		downloadVideo, ok := ctx.Value(schemas.BifrostContextKeyVideoOutputRequested).(bool)
@@ -5007,7 +5012,7 @@ func HandleOpenAIVideoRetrieveRequest(
 				}
 				base64Data := base64.StdEncoding.EncodeToString(videoDownloadResponse.Content)
 				output.Base64Data = &base64Data
-				response.Videos = append(response.Videos, output)
+				response.Videos = []schemas.VideoOutput{output}
 			} else {
 				logger.Warn("no content found for video download request for %s video retrieve request", providerName)
 			}

@@ -325,7 +325,7 @@ func buildImageEditRequestBody(openaiReq *OpenAIImageEditRequest, providerName s
 // passthroughExtraParams is set (BifrostContextKeyPassthroughExtraParams: the
 // x-bf-passthrough-extra-params header, and every /v1/images/edits request, whose handler turns it
 // on), every extra param is also written as a form field, as the JSON paths merge them into the
-// body (fork, TXE-6518, contract C4 BF5); see writeImageEditExtraParamFields.
+// body (fork, TXE-6518, contract C4 BF5); see writeExtraParamFormFields.
 func parseImageEditFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAIImageEditRequest, providerName schemas.ModelProvider, passthroughExtraParams bool) *schemas.BifrostError {
 	// Add model field (required)
 	if err := writer.WriteField("model", openaiReq.Model); err != nil {
@@ -407,7 +407,7 @@ func parseImageEditFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *
 
 	// Extra params go with the other fields, before the file parts.
 	if passthroughExtraParams {
-		if bifrostErr := writeImageEditExtraParamFields(writer, openaiReq.ExtraParams); bifrostErr != nil {
+		if bifrostErr := writeExtraParamFormFields(writer, openaiReq.ExtraParams, imageEditFormFieldNames); bifrostErr != nil {
 			return bifrostErr
 		}
 	}
@@ -515,11 +515,12 @@ func imageEditExtraParamNamesATypedField(key string) bool {
 	return providerUtils.ExtraParamNamesField(key, imageEditFormFieldNames...)
 }
 
-// writeImageEditExtraParamFields writes each extra param as one form field, keys sorted so the form
-// is deterministic. A string is written verbatim, as the multipart route received it; any other
-// value (a number, a bool, an object or an array from a JSON request) is written as its JSON
-// encoding, since a form field is a string. A nil value is skipped.
-func writeImageEditExtraParamFields(writer *multipart.Writer, extraParams map[string]interface{}) *schemas.BifrostError {
+// writeExtraParamFormFields writes each extra param as one form field, keys sorted so the form is
+// deterministic, skipping any that names a typedFields entry in any spelling, since the typed request already wrote it. A string
+// is written verbatim, as the multipart route received it; any other value (a number, a bool, an
+// object or an array from a JSON request) is written as its JSON encoding, since a form field is a
+// string. A nil value is skipped.
+func writeExtraParamFormFields(writer *multipart.Writer, extraParams map[string]interface{}, typedFields []string) *schemas.BifrostError {
 	if len(extraParams) == 0 {
 		return nil
 	}
@@ -529,7 +530,7 @@ func writeImageEditExtraParamFields(writer *multipart.Writer, extraParams map[st
 	}
 	keys := make([]string, 0, len(extraParams))
 	for key := range extraParams {
-		if imageEditExtraParamNamesATypedField(key) {
+		if providerUtils.ExtraParamNamesField(key, typedFields...) {
 			continue
 		}
 		// A field only the gateway decides (another vendor's name for the model) cannot

@@ -278,3 +278,54 @@ func BenchmarkParseOpenAIError(b *testing.B) {
 		}
 	}
 }
+
+// TestParseOpenAIError_AzureResponsibleAIPolicyViolation pins contract C6 with the error body of
+// Azure's pinned v1-preview schema: the vendor's status and outer code stay, inner_error.code
+// reaches its fixed place, and the block is classified as the caller's content.
+func TestParseOpenAIError_AzureResponsibleAIPolicyViolation(t *testing.T) {
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+	resp.SetStatusCode(fasthttp.StatusBadRequest)
+	resp.SetBodyString(`{"error":{"code":"invalid_prompt","message":"Your request was rejected by the safety system.","param":"prompt","type":"invalid_request_error","inner_error":{"code":"ResponsibleAIPolicyViolation","revised_prompt":"a fox","error_details":{"sexual":{"filtered":true,"severity":"high"}}}}}`)
+
+	bifrostErr := ParseOpenAIError(resp)
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != fasthttp.StatusBadRequest {
+		t.Fatalf("status = %v, want the vendor's 400", bifrostErr.StatusCode)
+	}
+	if bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "invalid_prompt" {
+		t.Fatalf("error.code = %v, want the vendor's outer code", bifrostErr.Error.Code)
+	}
+	if bifrostErr.Error.InnerCode == nil || *bifrostErr.Error.InnerCode != "ResponsibleAIPolicyViolation" {
+		t.Fatalf("error.inner_code = %v", bifrostErr.Error.InnerCode)
+	}
+	if got := bifrostErr.ResolveErrorType(); got != schemas.ErrorTypeCallerContentFiltered {
+		t.Fatalf("error_type = %q, want %q", got, schemas.ErrorTypeCallerContentFiltered)
+	}
+	if bifrostErr.ExtraFields.RawResponse == nil {
+		t.Fatal("raw_response lost the vendor's error_details")
+	}
+}
+
+// TestParseOpenAIError_OtherInnerCodeIsKeptButNotAFilter: inner_code is carried for any vendor
+// value, while only the policy violation is the caller's content. A body without inner_error is
+// unchanged.
+func TestParseOpenAIError_OtherInnerCodeIsKeptButNotAFilter(t *testing.T) {
+	parse := func(body string) *schemas.BifrostError {
+		resp := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseResponse(resp)
+		resp.SetStatusCode(fasthttp.StatusBadRequest)
+		resp.SetBodyString(body)
+		return ParseOpenAIError(resp)
+	}
+	other := parse(`{"error":{"code":"bad","message":"x","inner_error":{"code":"SomethingElse"}}}`)
+	if other.Error.InnerCode == nil || *other.Error.InnerCode != "SomethingElse" {
+		t.Fatalf("error.inner_code = %v", other.Error.InnerCode)
+	}
+	if got := other.ResolveErrorType(); got == schemas.ErrorTypeCallerContentFiltered {
+		t.Fatalf("error_type = %q for a code that is not a content block", got)
+	}
+	plain := parse(`{"error":{"code":"bad","message":"x"}}`)
+	if plain.Error.InnerCode != nil {
+		t.Fatalf("error.inner_code = %v, want none", *plain.Error.InnerCode)
+	}
+}
