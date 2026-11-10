@@ -902,14 +902,24 @@ func TestToAzureSpeechTranscriptionRequest(t *testing.T) {
 		}
 	})
 
-	// The request's model is the one key selection and governance authorized: a passthrough
-	// field cannot swap it, turn enhanced mode off or replace the object, and nothing is sent.
-	t.Run("passthrough fields cannot change the transcription model", func(t *testing.T) {
-		for name, enhancedMode := range map[string]interface{}{
-			"another model":      `{"model":"MAI-Transcribe-9"}`,
-			"enhanced mode off":  `{"enabled":false}`,
-			"model not a string": map[string]interface{}{"model": 2},
-			"not an object":      "off",
+	// The request's model is the one key selection and governance authorized. Passthrough
+	// fields follow the extra-params rule (providerUtils.MergeExtraParams): they add fields and
+	// never replace one the request set, nor name the model or stream. Nothing is sent.
+	t.Run("passthrough fields cannot replace what the request set", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			extra map[string]interface{}
+			param string
+		}{
+			"another model":      {map[string]interface{}{"enhancedMode": `{"model":"MAI-Transcribe-9"}`}, "enhancedMode.model"},
+			"enhanced mode off":  {map[string]interface{}{"enhancedMode": `{"enabled":false}`}, "enhancedMode.enabled"},
+			"model not a string": {map[string]interface{}{"enhancedMode": map[string]interface{}{"model": 2}}, "enhancedMode.model"},
+			"not an object":      {map[string]interface{}{"enhancedMode": "off"}, "enhancedMode"},
+			"another spelling":   {map[string]interface{}{"enhanced_mode": `{"model":"MAI-Transcribe-9"}`}, "enhanced_mode.model"},
+			"another locale":     {map[string]interface{}{"locales": `["fr-FR"]`}, "locales"},
+			"a top-level model":  {map[string]interface{}{"Model": "MAI-Transcribe-9"}, "Model"},
+			"a deployment":       {map[string]interface{}{"deployment_id": "other"}, "deployment_id"},
+			"stream":             {map[string]interface{}{"stream": true}, "stream"},
+			"timestamps another": {map[string]interface{}{"enhancedMode": `{"modelOptions":{"timestamps":"segment"}}`}, "enhancedMode.modelOptions.timestamps"},
 		} {
 			t.Run(name, func(t *testing.T) {
 				provider, captured := newMockAzureSpeech(t, map[string]http.HandlerFunc{
@@ -918,21 +928,35 @@ func TestToAzureSpeechTranscriptionRequest(t *testing.T) {
 				ctx := testContext(t)
 				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 				_, bifrostErr := provider.Transcription(ctx, testKey(), transcriptionRequest(&schemas.TranscriptionParameters{
-					ExtraParams: map[string]interface{}{"enhancedMode": enhancedMode},
+					Language:               schemas.Ptr("en"),
+					TimestampGranularities: []string{"word"},
+					ExtraParams:            tc.extra,
 				}))
 				if bifrostErr == nil || bifrostErr.Error == nil {
-					t.Fatal("want a caller_unsupported_parameter error, got none")
+					t.Fatal("want a caller_invalid_request error, got none")
 				}
-				if got := bifrostErr.ResolveErrorType(); got != schemas.ErrorTypeCallerUnsupportedParameter {
-					t.Errorf("error_type = %q, want %q", got, schemas.ErrorTypeCallerUnsupportedParameter)
+				if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+					t.Errorf("status = %v, want 400", bifrostErr.StatusCode)
 				}
-				if bifrostErr.Error.Param != "enhancedMode" {
-					t.Errorf("param = %v, want enhancedMode", bifrostErr.Error.Param)
+				if got := bifrostErr.ResolveErrorType(); got != schemas.ErrorTypeCallerInvalidRequest {
+					t.Errorf("error_type = %q, want %q", got, schemas.ErrorTypeCallerInvalidRequest)
+				}
+				if bifrostErr.Error.Param != tc.param {
+					t.Errorf("param = %v, want %s", bifrostErr.Error.Param, tc.param)
 				}
 				if n := len(captured()); n != 0 {
 					t.Errorf("upstream calls = %d, want 0", n)
 				}
 			})
+		}
+	})
+
+	t.Run("a null extra field adds nothing", func(t *testing.T) {
+		got := definition(t, &schemas.TranscriptionParameters{
+			ExtraParams: map[string]interface{}{"phraseList": nil},
+		}, true)
+		if want := `{"enhancedMode":{"enabled":true,"model":"MAI-Transcribe-2"}}`; got != want {
+			t.Errorf("definition = %s\nwant         %s", got, want)
 		}
 	})
 

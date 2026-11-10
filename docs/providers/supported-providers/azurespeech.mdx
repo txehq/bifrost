@@ -173,7 +173,7 @@ curl http://localhost:8080/v1/audio/transcriptions \
 | `response_format` | `json` changes nothing in the request. `verbose_json` and `diarized_json` ask for segment timestamps when no `timestamp_granularities` is given (the API's default omits all timing), and `diarized_json` also sets `definition.diarization.enabled = true` |
 | `prompt` | Not sent: the fast transcription definition has no prompt |
 
-Fields outside the unified structure are merged into `definition` under their own names when the request carries `x-bf-passthrough-extra-params: true`. Objects are merged key by key, and in a multipart form an object is sent JSON-encoded. A merged field cannot change `enhancedMode.model` or set `enhancedMode.enabled` to false: the model is the one named in `model`, and such a request is refused with `400 caller_unsupported_parameter` before anything is sent:
+Fields outside the unified structure are merged into `definition` under their own names when the request carries `x-bf-passthrough-extra-params: true`. Objects are merged key by key, and in a multipart form an object is sent JSON-encoded. A merged field adds to the definition and never replaces what the request set: one that names a field the request already set to another value (`enhancedMode.model`, `enhancedMode.enabled`, `locales` when `language` is sent, `enhancedMode.modelOptions.timestamps`), a top-level `model`, another vendor's name for the model (`deployment`, `model_id`, `version`, `engine`) or `stream` is refused with `400 caller_invalid_request`, `error.param` naming the field, before anything is sent. The model is the one named in `model`:
 
 ```bash
 curl http://localhost:8080/v1/audio/transcriptions \

@@ -2,6 +2,7 @@ package azurespeech
 
 import (
 	"mime/multipart"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -65,36 +66,39 @@ func decodeExtraParam(value interface{}) interface{} {
 	return decoded
 }
 
-// mergeDefinition merges src into dst: an object is merged key by key, any other value
-// replaces what dst holds.
-func mergeDefinition(dst, src map[string]interface{}) {
-	for key, value := range src {
-		if srcMap, ok := value.(map[string]interface{}); ok {
-			if dstMap, ok := dst[key].(map[string]interface{}); ok {
-				mergeDefinition(dstMap, srcMap)
-				continue
-			}
+// mergeExtraFields adds the passthrough fields to definition under the extra-params rule
+// (providerUtils.MergeExtraParams): a field the definition does not hold is added, objects
+// are merged key by key, and a field that names something the request already set to
+// another value is refused, so enhancedMode.model and enhancedMode.enabled stay what the
+// authorized request made them. A top-level model, another vendor's name for it, or stream
+// is refused too: only the gateway decides those. A null value adds nothing.
+func mergeExtraFields(definition, extraParams map[string]interface{}) *schemas.BifrostError {
+	keys := make([]string, 0, len(extraParams))
+	for key := range extraParams {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	extra := make(map[string]interface{}, len(extraParams))
+	for _, key := range keys {
+		var err error
+		if providerUtils.ExtraParamNamesField(key, "model") {
+			err = providerUtils.ExtraParamConflictError(key, "model")
+		} else if field := providerUtils.ExtraParamUnsettableField(key); field != "" {
+			err = providerUtils.ExtraParamUnsettableError(key, field)
 		}
-		dst[key] = value
+		if err != nil {
+			bifrostErr, _ := providerUtils.AsBifrostBadRequestError(err)
+			return bifrostErr
+		}
+		if value := decodeExtraParam(extraParams[key]); value != nil {
+			extra[key] = value
+		}
 	}
-}
-
-// checkEnhancedModeKept refuses a definition whose passthrough fields changed which model
-// transcribes the audio. The request's model is the one key selection and governance
-// authorized, so enhancedMode must still be an object, enabled, naming that model; other
-// enhancedMode fields (modelOptions, prompt, task) stay the caller's.
-func checkEnhancedModeKept(definition map[string]interface{}, model string) *schemas.BifrostError {
-	enhancedMode, ok := definition["enhancedMode"].(map[string]interface{})
-	if !ok {
-		return schemas.NewUnsupportedParameterError("enhancedMode", "enhancedMode must be an object")
-	}
-	if enabled, ok := enhancedMode["enabled"].(bool); !ok || !enabled {
-		return schemas.NewUnsupportedParameterError("enhancedMode",
-			"enhancedMode.enabled cannot be turned off: the request's model is transcribed through enhanced mode")
-	}
-	if named, ok := enhancedMode["model"].(string); !ok || named != model {
-		return schemas.NewUnsupportedParameterError("enhancedMode",
-			"enhancedMode.model cannot differ from the request's model ("+model+"): name the model in the model field")
+	if err := providerUtils.MergeExtraParams(definition, extra); err != nil {
+		if bifrostErr, ok := providerUtils.AsBifrostBadRequestError(err); ok {
+			return bifrostErr
+		}
+		return providerUtils.NewBifrostOperationError("failed to merge the extra fields into the transcription definition", err)
 	}
 	return nil
 }
@@ -106,18 +110,17 @@ func checkEnhancedModeKept(definition map[string]interface{}, model string) *sch
 // response_format diarized_json turns on diarization. When passthroughExtraParams is set
 // (x-bf-passthrough-extra-params), fields outside the unified structure are merged into
 // the definition under their own names (diarization, phraseList, enhancedMode, channels,
-// profanityFilterMode), objects recursively; they cannot change enhancedMode.model or turn
-// enhanced mode off, because the request's model is the one that was authorized. A value the API cannot take as given returns
-// a caller_unsupported_parameter error.
+// profanityFilterMode), objects key by key. They add fields; they never replace one the
+// request set, so the model that was authorized is the one that transcribes. A value the
+// API cannot take as given returns a caller_unsupported_parameter error.
 func ToAzureSpeechTranscriptionRequest(request *schemas.BifrostTranscriptionRequest, passthroughExtraParams bool) (*AzureSpeechTranscriptionRequest, *schemas.BifrostError) {
 	if request == nil || request.Input == nil || len(request.Input.File) == 0 {
 		return nil, providerUtils.NewBifrostBadRequestError("transcription file is required")
 	}
 
-	model := transcriptionModelName(request.Model)
 	enhancedMode := map[string]interface{}{
 		"enabled": true,
-		"model":   model,
+		"model":   transcriptionModelName(request.Model),
 	}
 	definition := map[string]interface{}{"enhancedMode": enhancedMode}
 
@@ -154,12 +157,7 @@ func ToAzureSpeechTranscriptionRequest(request *schemas.BifrostTranscriptionRequ
 			enhancedMode["modelOptions"] = map[string]interface{}{"timestamps": timestamps}
 		}
 		if passthroughExtraParams && len(params.ExtraParams) > 0 {
-			extra := make(map[string]interface{}, len(params.ExtraParams))
-			for key, value := range params.ExtraParams {
-				extra[key] = decodeExtraParam(value)
-			}
-			mergeDefinition(definition, extra)
-			if bifrostErr := checkEnhancedModeKept(definition, model); bifrostErr != nil {
+			if bifrostErr := mergeExtraFields(definition, params.ExtraParams); bifrostErr != nil {
 				return nil, bifrostErr
 			}
 		}
