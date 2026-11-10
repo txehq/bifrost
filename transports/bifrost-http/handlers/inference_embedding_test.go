@@ -207,7 +207,7 @@ func TestEmbeddingRequestInputLastDuplicateWins(t *testing.T) {
 	if err := sonic.Unmarshal([]byte(`{"input":"first","input":[15339,1917]}`), &req); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	items := req.Input.toEmbeddingInput()
+	items := req.Input.ToEmbeddingInput()
 	if len(items) != 1 || len(items[0].Content) != 1 || items[0].Content[0].Text != nil || len(items[0].Content[0].Tokens) != 2 {
 		t.Fatalf("embedded %+v, want the last input's two tokens", items)
 	}

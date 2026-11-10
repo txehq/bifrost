@@ -166,18 +166,8 @@ var compactionParamsKnownFields = map[string]bool{
 	"service_tier":           true,
 }
 
-var embeddingParamsKnownFields = map[string]bool{
-	"model":            true,
-	"input":            true,
-	"fallbacks":        true,
-	"encoding_format":  true,
-	"dimensions":       true,
-	"task_type":        true,
-	"title":            true,
-	"auto_truncate":    true,
-	"instructions":     true,
-	"sparse_embedding": true,
-}
+// embeddingParamsKnownFields is the core's table, shared with inline batch lines.
+var embeddingParamsKnownFields = schemas.EmbeddingRequestKnownFields
 
 var rerankParamsKnownFields = map[string]bool{
 	"model":              true,
@@ -535,113 +525,9 @@ type CompactionHTTPRequest struct {
 	BifrostParams
 }
 
-// EmbeddingRequest is a bifrost embedding request
-// EmbeddingRequestInput is a union of the input shapes /v1/embeddings accepts:
-//
-//	Str    → "input": "text"                              (single text shorthand)
-//	Strs   → "input": ["text1", "text2"]                   (multi-text shorthand)
-//	Tokens → "input": [15339, 1917]                        (single pre-tokenized input)
-//	TokenB → "input": [[15339, 1917], [9906]]               (several pre-tokenized inputs)
-//	Items  → "input": [[{"type":"text",...}], ...]         (multimodal parts)
-//	         "input": [{"content": [...], "params": {...}}] (per-item parameter overrides)
-//	         "input": [{"type":"text","text":...},{"type":"image_url","image_url":{"url":...}}]
-//	                                                          (the fork's flat multimodal list: one item)
-//
-// The middle two are both handled by EmbeddingInputItem, which accepts either shape per entry,
-// so one array may mix plain content entries and entries carrying their own params. The flat
-// list predates upstream's content parts; it is kept so existing clients (Volcengine
-// multimodal embeddings) keep working, and becomes one item whose parts are its entries.
-type EmbeddingRequestInput struct {
-	Str          *string
-	Strs         []string
-	Tokens       []int
-	TokenBatches [][]int
-	Items        []schemas.EmbeddingInputItem
-}
-
-func (e *EmbeddingRequestInput) UnmarshalJSON(data []byte) error {
-	// A body repeating "input" decodes into the same receiver again: start clean, so
-	// the last value is the one embedded, as every other field reads it, rather than
-	// an earlier shape that toEmbeddingInput would check first.
-	*e = EmbeddingRequestInput{}
-	var str string
-	if err := sonic.Unmarshal(data, &str); err == nil {
-		e.Str = &str
-		return nil
-	}
-	var strs []string
-	if err := sonic.Unmarshal(data, &strs); err == nil {
-		e.Strs = strs
-		return nil
-	}
-	// Both token forms must precede Items: a bare number array would otherwise be read as
-	// an item list and fail to decode.
-	var tokens []int
-	if err := sonic.Unmarshal(data, &tokens); err == nil {
-		e.Tokens = tokens
-		return nil
-	}
-	var tokenBatches [][]int
-	if err := sonic.Unmarshal(data, &tokenBatches); err == nil {
-		e.TokenBatches = tokenBatches
-		return nil
-	}
-	// The flat list's entries are objects with a "type"; upstream's item objects carry
-	// "content" instead and have none, so they fall through to Items.
-	var flat []schemas.MultiModalEmbeddingInput
-	if err := sonic.Unmarshal(data, &flat); err == nil && isFlatMultiModalEmbeddingInput(flat) {
-		content := make(schemas.EmbeddingContent, len(flat))
-		for i, entry := range flat {
-			part, err := entry.ToEmbeddingContentPart()
-			if err != nil {
-				return err
-			}
-			content[i] = part
-		}
-		e.Items = []schemas.EmbeddingInputItem{{Content: content}}
-		return nil
-	}
-	return sonic.Unmarshal(data, &e.Items)
-}
-
-// isFlatMultiModalEmbeddingInput reports whether every entry names its type, which is what
-// separates the fork's flat multimodal list from upstream's item objects.
-func isFlatMultiModalEmbeddingInput(entries []schemas.MultiModalEmbeddingInput) bool {
-	if len(entries) == 0 {
-		return false
-	}
-	for _, entry := range entries {
-		if entry.Type == "" {
-			return false
-		}
-	}
-	return true
-}
-
-// toEmbeddingInput normalises every input variant into []EmbeddingInputItem.
-func (e *EmbeddingRequestInput) toEmbeddingInput() []schemas.EmbeddingInputItem {
-	switch {
-	case e.Str != nil:
-		t := *e.Str
-		return []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &t}}}}
-	case len(e.Strs) > 0:
-		items := make([]schemas.EmbeddingInputItem, len(e.Strs))
-		for i, str := range e.Strs {
-			sc := str
-			items[i] = schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &sc}}}
-		}
-		return items
-	case len(e.Tokens) > 0:
-		return []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeTokens, Tokens: e.Tokens}}}}
-	case len(e.TokenBatches) > 0:
-		items := make([]schemas.EmbeddingInputItem, len(e.TokenBatches))
-		for i, tokens := range e.TokenBatches {
-			items[i] = schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeTokens, Tokens: tokens}}}
-		}
-		return items
-	}
-	return e.Items
-}
+// EmbeddingRequestInput is the core's union of the input shapes /v1/embeddings accepts,
+// shared with inline batch lines so both routes read an input the same way.
+type EmbeddingRequestInput = schemas.EmbeddingRequestInput
 
 // EmbeddingRequest is a bifrost embedding request.
 type EmbeddingRequest struct {
@@ -1395,7 +1281,7 @@ func prepareEmbeddingRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*Emb
 	if err != nil {
 		return nil, nil, err
 	}
-	contents := req.Input.toEmbeddingInput()
+	contents := req.Input.ToEmbeddingInput()
 	if len(contents) == 0 {
 		return nil, nil, fmt.Errorf("input is required for embeddings")
 	}

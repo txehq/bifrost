@@ -10,6 +10,8 @@ import (
 // the sync route builds from that body, so a provider converts a batch line with the sync
 // operation's converter and the two routes send the vendor the same parameters.
 //
+// (EmbeddingRequestKnownFields and EmbeddingRequestInput are in embedding.go.)
+//
 // The known-field tables say which top-level fields of a body the unified request models;
 // every other field is an extra param. The HTTP transport's sync routes read the same
 // tables, so the two routes cannot disagree about what is an extra param.
@@ -194,6 +196,44 @@ func (item BatchRequestItem) ToBifrostImageGenerationRequest(provider ModelProvi
 	}
 	params.ExtraParams = batchLineExtraParams(body, ImageGenerationRequestKnownFields)
 	return &BifrostImageGenerationRequest{
+		Provider: provider,
+		Model:    model,
+		Input:    input,
+		Params:   params,
+	}, nil
+}
+
+// ToBifrostEmbeddingRequest builds the embedding request the sync /v1/embeddings route
+// builds from the line's body: the input in any shape that route accepts, the embedding
+// parameters and every unmodelled field as an extra param.
+func (item BatchRequestItem) ToBifrostEmbeddingRequest(provider ModelProvider, model string) (*BifrostEmbeddingRequest, error) {
+	body := item.RequestBody()
+	if body == nil {
+		return nil, fmt.Errorf("body is required")
+	}
+	encoded, err := Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	var parsed struct {
+		Input EmbeddingRequestInput `json:"input"`
+	}
+	if err := Unmarshal(encoded, &parsed); err != nil {
+		return nil, fmt.Errorf("invalid input: %w", err)
+	}
+	input := parsed.Input.ToEmbeddingInput()
+	if len(input) == 0 {
+		return nil, fmt.Errorf("input is required for embeddings")
+	}
+	if err := ValidateEmbeddingInput(input); err != nil {
+		return nil, err
+	}
+	params := &EmbeddingParameters{}
+	if err := Unmarshal(encoded, params); err != nil {
+		return nil, fmt.Errorf("invalid embedding parameters: %w", err)
+	}
+	params.ExtraParams = batchLineExtraParams(body, EmbeddingRequestKnownFields)
+	return &BifrostEmbeddingRequest{
 		Provider: provider,
 		Model:    model,
 		Input:    input,
