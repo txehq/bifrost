@@ -1,0 +1,1408 @@
+{
+  "name": "423. DashScope Wan video: create per family, task object, cancel, list (dashscope wan video)",
+  "description": "Pins TXE-6432 (contract C4, C5, C6, C7, C9; vendor sheet Alibaba, video B11 to B15): Wan video on the dashscope provider. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json (dashscope has both bases at the fixture's /pp/dashscope) and run with providerErrorFixture=1; every case is skipped otherwise. The fixture answers in DashScope's documented shapes and keeps every request it receives, with its method and X-DashScope-Async header, in /__wire. Rows 2 to 4: a Wan 3.0, a Wan 2.7 and a Wan 2.6 create each reach DashScope in their family's shape (input.media with resolution and ratio; resolution and ratio; parameters.size as 1280*720). Rows 5 to 8: each task control field is refused with 400 caller_unsupported_parameter, because DashScope has no parameter for it. Row 9: a size outside the Wan 2.6 tiers is refused, not moved to a tier. Row 10 reads the capture: three creates, each with X-DashScope-Async: enable and the exact body, and nothing from the five refused requests. Rows 11 to 14: a task query builds the task object (completed with usage.output_seconds, usage.input_seconds, the vendor link and expires_at 24 hours after submit_time read as UTC+8; failed with content_filter for DataInspectionFailed and IPInfringementSuspect; expired for UNKNOWN). Row 15: cancel on a PENDING task. Row 16: cancel on a RUNNING task is 400 provider_cancel_unsupported. Row 17 reads the capture: every query and cancel was exactly one call. Rows 18 and 19: the video list reaches GET /api/v1/tasks with limit as page_size and DashScope's own filters (start_time, end_time, a repeated status, page_no) unchanged, and next is the following page number until DashScope's total_page. Row 20: an after cursor is refused with 400, because DashScope pages by number. Row 21 reads the capture: two list calls with the exact queries, none for the refused request. Row 22: with x-bf-passthrough-extra-params on, a size nested under a parameters extra param is refused with 400 caller_unsupported_parameter naming parameters.size, because the nested key is out of sight of the price-field check and would be merged into the vendor body. Row 23 reads the capture: no fourth create reached DashScope. Red before the change: every row from 2 on was 400 unsupported_operation. Rows 24 to 26: the download. dashscope's proxy_config is the fixture's media tunnel, so the task ds-media-gapped can name its file at 203.0.113.10 (public to the SSRF check, routed nowhere): GET /v1/videos/{id}/content queries the task once and forwards the file as it arrives, the first byte reaching the caller before the file host wrote the second half. A task that names a file on the fixture's loopback address is refused with 500 and the signed query is not echoed. Row 26 reads the capture and the hit counters: one task query per download, the file asked for at the public address through a tunnel, the loopback file never asked for.",
+  "item": [
+    {
+      "name": "423.1 reset the fixture's wire capture (dashscope wan video)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__reset",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__reset"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture reset its capture', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  pm.expect(pm.response.json().data[0].reset).to.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.2 dashscope/wan3.0-video POST /v1/videos - Wan 3.0 reaches DashScope with input.media, resolution and ratio (dashscope wan video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"dashscope/wan3.0-video\",\n  \"prompt\": \"The cat looks up at the sky\",\n  \"input_reference\": \"https://cdn.example.test/first.png\",\n  \"last_frame\": \"https://cdn.example.test/last.png\",\n  \"seconds\": \"5\",\n  \"resolution\": \"720p\",\n  \"aspect_ratio\": \"16:9\",\n  \"audio\": false,\n  \"seed\": 7,\n  \"negative_prompt\": \"blurry\",\n  \"watermark\": true,\n  \"prompt_extend\": false\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var want = {\"model\":\"wan3.0-video\",\"input\":{\"prompt\":\"The cat looks up at the sky\",\"negative_prompt\":\"blurry\",\"media\":[{\"type\":\"first_frame\",\"url\":\"https://cdn.example.test/first.png\"},{\"type\":\"last_frame\",\"url\":\"https://cdn.example.test/last.png\"}]},\"parameters\":{\"resolution\":\"720P\",\"ratio\":\"16:9\",\"duration\":5,\"audio\":false,\"seed\":7,\"watermark\":true,\"prompt_extend\":false}};",
+              "pm.test('the create is a queued task object with the vendor state', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.eql('ds-pending:dashscope');",
+              "  pm.expect(j.object, pm.response.text()).to.eql('video');",
+              "  pm.expect(j.status, pm.response.text()).to.eql('queued');",
+              "  pm.expect(j.provider_status, pm.response.text()).to.eql('PENDING');",
+              "});",
+              "pm.test('the body sent to DashScope is the family shape, nothing dropped or added', function () {",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.raw_request, 'raw_request: ' + pm.response.text()).to.eql(want);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.3 dashscope/wan2.7-t2v POST /v1/videos - Wan 2.7 text-to-video reaches DashScope with resolution and ratio (dashscope wan video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"dashscope/wan2.7-t2v\",\n  \"prompt\": \"A paper boat on a pond\",\n  \"seconds\": \"10\",\n  \"resolution\": \"1080P\",\n  \"aspect_ratio\": \"9:16\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var want = {\"model\":\"wan2.7-t2v\",\"input\":{\"prompt\":\"A paper boat on a pond\"},\"parameters\":{\"resolution\":\"1080P\",\"ratio\":\"9:16\",\"duration\":10}};",
+              "pm.test('the create is a queued task object with the vendor state', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.eql('ds-pending:dashscope');",
+              "  pm.expect(j.object, pm.response.text()).to.eql('video');",
+              "  pm.expect(j.status, pm.response.text()).to.eql('queued');",
+              "  pm.expect(j.provider_status, pm.response.text()).to.eql('PENDING');",
+              "});",
+              "pm.test('the body sent to DashScope is the family shape, nothing dropped or added', function () {",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.raw_request, 'raw_request: ' + pm.response.text()).to.eql(want);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.4 dashscope/wan2.6-t2v POST /v1/videos - Wan 2.6 text-to-video reaches DashScope with parameters.size (dashscope wan video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-send-back-raw-request",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"dashscope/wan2.6-t2v\",\n  \"prompt\": \"A paper boat on a pond\",\n  \"seconds\": \"5\",\n  \"size\": \"1280x720\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var want = {\"model\":\"wan2.6-t2v\",\"input\":{\"prompt\":\"A paper boat on a pond\"},\"parameters\":{\"size\":\"1280*720\",\"duration\":5}};",
+              "pm.test('the create is a queued task object with the vendor state', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.eql('ds-pending:dashscope');",
+              "  pm.expect(j.object, pm.response.text()).to.eql('video');",
+              "  pm.expect(j.status, pm.response.text()).to.eql('queued');",
+              "  pm.expect(j.provider_status, pm.response.text()).to.eql('PENDING');",
+              "});",
+              "pm.test('the body sent to DashScope is the family shape, nothing dropped or added', function () {",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.raw_request, 'raw_request: ' + pm.response.text()).to.eql(want);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.5 [EXPECT-400] dashscope/wan3.0-video POST /v1/videos refuses the task control field callback_url DashScope has no parameter for (dashscope wan video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"dashscope/wan3.0-video\",\n  \"prompt\": \"A paper boat on a pond\",\n  \"callback_url\": \"https://hooks.example.test/v/task_1\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('callback_url is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('callback_url');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.6 [EXPECT-400] dashscope/wan3.0-video POST /v1/videos refuses the task control field client_reference_id DashScope has no parameter for (dashscope wan video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"dashscope/wan3.0-video\",\n  \"prompt\": \"A paper boat on a pond\",\n  \"client_reference_id\": \"task_1\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('client_reference_id is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('client_reference_id');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.7 [EXPECT-400] dashscope/wan3.0-video POST /v1/videos refuses the task control field expires_after_seconds DashScope has no parameter for (dashscope wan video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"dashscope/wan3.0-video\",\n  \"prompt\": \"A paper boat on a pond\",\n  \"expires_after_seconds\": 3600\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('expires_after_seconds is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('expires_after_seconds');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.8 [EXPECT-400] dashscope/wan3.0-video POST /v1/videos refuses the task control field output_storage_uri DashScope has no parameter for (dashscope wan video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"dashscope/wan3.0-video\",\n  \"prompt\": \"A paper boat on a pond\",\n  \"output_storage_uri\": \"oss://bucket/task_1\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('output_storage_uri is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('output_storage_uri');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.9 [EXPECT-400] dashscope/wan2.6-t2v POST /v1/videos refuses a size outside the Wan 2.6 tiers instead of moving it to one (dashscope wan video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"dashscope/wan2.6-t2v\",\n  \"prompt\": \"A paper boat on a pond\",\n  \"size\": \"1024x1024\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the size is refused as caller_unsupported_parameter naming size', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('size');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.10 dashscope wire capture: the three creates reached DashScope once each with X-DashScope-Async: enable, the five refused requests never did (dashscope wan video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__wire",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__wire"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var want = [{\"model\":\"wan3.0-video\",\"input\":{\"prompt\":\"The cat looks up at the sky\",\"negative_prompt\":\"blurry\",\"media\":[{\"type\":\"first_frame\",\"url\":\"https://cdn.example.test/first.png\"},{\"type\":\"last_frame\",\"url\":\"https://cdn.example.test/last.png\"}]},\"parameters\":{\"resolution\":\"720P\",\"ratio\":\"16:9\",\"duration\":5,\"audio\":false,\"seed\":7,\"watermark\":true,\"prompt_extend\":false}},{\"model\":\"wan2.7-t2v\",\"input\":{\"prompt\":\"A paper boat on a pond\"},\"parameters\":{\"resolution\":\"1080P\",\"ratio\":\"9:16\",\"duration\":10}},{\"model\":\"wan2.6-t2v\",\"input\":{\"prompt\":\"A paper boat on a pond\"},\"parameters\":{\"size\":\"1280*720\",\"duration\":5}}];",
+              "var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/dashscope/') === 0; });",
+              "pm.test('exactly three calls reached DashScope, all creates on the video-synthesis path', function () {",
+              "  pm.expect(calls.map(function (c) { return c.method + ' ' + c.path; }), JSON.stringify(calls)).to.eql([",
+              "    'POST /pp/dashscope/api/v1/services/aigc/video-generation/video-synthesis',",
+              "    'POST /pp/dashscope/api/v1/services/aigc/video-generation/video-synthesis',",
+              "    'POST /pp/dashscope/api/v1/services/aigc/video-generation/video-synthesis'",
+              "  ]);",
+              "});",
+              "pm.test('every create carried X-DashScope-Async: enable', function () {",
+              "  pm.expect(calls.map(function (c) { return c.async; }), JSON.stringify(calls)).to.eql(['enable', 'enable', 'enable']);",
+              "});",
+              "pm.test('the bytes DashScope received are the family shapes', function () {",
+              "  pm.expect(calls.map(function (c) { return JSON.parse(c.body); }), JSON.stringify(calls)).to.eql(want);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.11 dashscope GET /v1/videos/{id} - a succeeded task is a completed task object with usage seconds, the vendor link and expires_at 24 hours after submission (dashscope wan video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/ds-succeeded:dashscope",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "ds-succeeded:dashscope"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// submit_time 2026-11-10 14:18:52 and end_time 14:23:39 are UTC+8.",
+              "var submitted = Date.UTC(2026, 10, 10, 6, 18, 52) / 1000;",
+              "var ended = Date.UTC(2026, 10, 10, 6, 23, 39) / 1000;",
+              "pm.test('status completed with the vendor state and times', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.eql('ds-succeeded:dashscope');",
+              "  pm.expect(j.status, pm.response.text()).to.eql('completed');",
+              "  pm.expect(j.provider_status, pm.response.text()).to.eql('SUCCEEDED');",
+              "  pm.expect(j.created_at, pm.response.text()).to.eql(submitted);",
+              "  pm.expect(j.completed_at, pm.response.text()).to.eql(ended);",
+              "});",
+              "pm.test('usage carries the durations DashScope reported', function () {",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.usage && j.usage.output_seconds, pm.response.text()).to.eql(10);",
+              "  pm.expect(j.usage.input_seconds, pm.response.text()).to.eql(0);",
+              "});",
+              "pm.test('the link is the vendor link, and expires 24 hours after submission', function () {",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.videos, pm.response.text()).to.eql([{ type: 'url', url: 'https://dashscope-result.example.test/fixture/ds-succeeded.mp4?Expires=1762842232&Signature=fixture', content_type: 'video/mp4' }]);",
+              "  pm.expect(j.expires_at, pm.response.text()).to.eql(submitted + 24 * 60 * 60);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.12 dashscope GET /v1/videos/{id} - a task moderation failed with DataInspectionFailed is failed with content_filter (dashscope wan video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/ds-filtered:dashscope",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "ds-filtered:dashscope"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status failed with the vendor code verbatim and content_filter', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status, pm.response.text()).to.eql('failed');",
+              "  pm.expect(j.provider_status, pm.response.text()).to.eql('FAILED');",
+              "  pm.expect(j.error && j.error.code, pm.response.text()).to.eql('DataInspectionFailed');",
+              "  pm.expect(j.content_filter, pm.response.text()).to.eql({ filtered_count: 1, reasons: ['DataInspectionFailed'] });",
+              "  pm.expect(j.videos, pm.response.text()).to.eql(undefined);",
+              "  pm.expect(j.expires_at, pm.response.text()).to.eql(undefined);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.13 dashscope GET /v1/videos/{id} - a task moderation failed with IPInfringementSuspect is failed with content_filter (dashscope wan video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/ds-infringing:dashscope",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "ds-infringing:dashscope"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status failed with the vendor code verbatim and content_filter', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status, pm.response.text()).to.eql('failed');",
+              "  pm.expect(j.provider_status, pm.response.text()).to.eql('FAILED');",
+              "  pm.expect(j.error && j.error.code, pm.response.text()).to.eql('IPInfringementSuspect');",
+              "  pm.expect(j.content_filter, pm.response.text()).to.eql({ filtered_count: 1, reasons: ['IPInfringementSuspect'] });",
+              "  pm.expect(j.videos, pm.response.text()).to.eql(undefined);",
+              "  pm.expect(j.expires_at, pm.response.text()).to.eql(undefined);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.14 dashscope GET /v1/videos/{id} - a task past DashScope's 24 hours (UNKNOWN) is expired, not failed (dashscope wan video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/ds-expired:dashscope",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "ds-expired:dashscope"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status expired with the vendor state', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status, pm.response.text()).to.eql('expired');",
+              "  pm.expect(j.provider_status, pm.response.text()).to.eql('UNKNOWN');",
+              "  pm.expect(j.error, pm.response.text()).to.eql(undefined);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.15 dashscope POST /v1/videos/{id}/cancel - a PENDING task is cancelled (dashscope wan video)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/ds-pending:dashscope/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "ds-pending:dashscope",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the task object is cancelled', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id, pm.response.text()).to.eql('ds-pending:dashscope');",
+              "  pm.expect(j.status, pm.response.text()).to.eql('cancelled');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.16 [EXPECT-400] dashscope POST /v1/videos/{id}/cancel - a task that is not PENDING is provider_cancel_unsupported (dashscope wan video)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/ds-running:dashscope/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "ds-running:dashscope",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the cancel is refused as provider_cancel_unsupported with the vendor reason', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('provider_cancel_unsupported');",
+              "  pm.expect(j.extra_fields.request_type, 'request_type: ' + pm.response.text()).to.eql('video_cancel');",
+              "  pm.expect(j.error && j.error.message, pm.response.text()).to.include('PENDING');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.17 dashscope wire capture: each query and each cancel was one call to DashScope, and a cancel queried nothing first (dashscope wan video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__wire",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__wire"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/dashscope/api/v1/tasks/') === 0; });",
+              "pm.test('four task queries and two cancels reached DashScope, one call each, in order', function () {",
+              "  pm.expect(calls.map(function (c) { return c.method + ' ' + c.path.slice('/pp/dashscope'.length); }), JSON.stringify(calls)).to.eql([",
+              "    'GET /api/v1/tasks/ds-succeeded',",
+              "    'GET /api/v1/tasks/ds-filtered',",
+              "    'GET /api/v1/tasks/ds-infringing',",
+              "    'GET /api/v1/tasks/ds-expired',",
+              "    'POST /api/v1/tasks/ds-pending/cancel',",
+              "    'POST /api/v1/tasks/ds-running/cancel'",
+              "  ]);",
+              "});",
+              "pm.test('no query or cancel carried X-DashScope-Async or a body', function () {",
+              "  pm.expect(calls.filter(function (c) { return c.async !== '' || c.body !== ''; }), JSON.stringify(calls)).to.eql([]);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.18 dashscope GET /v1/videos - the first page forwards limit as page_size and DashScope's filters unchanged, and names the next page (dashscope wan video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos?provider=dashscope&limit=2&start_time=20261110000000&end_time=20261110235959&status=SUCCEEDED&status=RUNNING",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "dashscope"
+            },
+            {
+              "key": "limit",
+              "value": "2"
+            },
+            {
+              "key": "start_time",
+              "value": "20261110000000"
+            },
+            {
+              "key": "end_time",
+              "value": "20261110235959"
+            },
+            {
+              "key": "status",
+              "value": "SUCCEEDED"
+            },
+            {
+              "key": "status",
+              "value": "RUNNING"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the first page is the vendor\\'s, ids carrying the provider, with the next page number', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.object, pm.response.text()).to.eql('list');",
+              "  pm.expect(j.data.map(function (v) { return [v.id, v.model, v.status, v.created_at, v.completed_at]; }), pm.response.text()).to.eql([",
+              "    ['ds-succeeded:dashscope', 'wan2.6-t2v', 'completed', 1762755532, 1762755819],",
+              "    ['ds-running:dashscope', 'wan3.0-video', 'in_progress', 1762755600, undefined]",
+              "  ]);",
+              "  pm.expect(j.first_id, pm.response.text()).to.eql('ds-succeeded:dashscope');",
+              "  pm.expect(j.last_id, pm.response.text()).to.eql('ds-running:dashscope');",
+              "  pm.expect(j.has_more, pm.response.text()).to.equal(true);",
+              "  pm.expect(j.next, pm.response.text()).to.eql('2');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.19 dashscope GET /v1/videos - next sent back as page_no reaches the last page (dashscope wan video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos?provider=dashscope&limit=2&page_no=2",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "dashscope"
+            },
+            {
+              "key": "limit",
+              "value": "2"
+            },
+            {
+              "key": "page_no",
+              "value": "2"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the last page has the cancelled task and no next', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.data.map(function (v) { return [v.id, v.status, v.completed_at]; }), pm.response.text()).to.eql([['ds-canceled:dashscope', 'cancelled', 1762755710]]);",
+              "  pm.expect(j.has_more, pm.response.text()).to.equal(false);",
+              "  pm.expect(j.next, pm.response.text()).to.eql(undefined);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.20 [EXPECT-400] dashscope GET /v1/videos - an after cursor is refused, not ignored (dashscope wan video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos?provider=dashscope&after=ds-running:dashscope",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ],
+          "query": [
+            {
+              "key": "provider",
+              "value": "dashscope"
+            },
+            {
+              "key": "after",
+              "value": "ds-running:dashscope"
+            }
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('after is a 400 that names page_no', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.error && j.error.message, pm.response.text()).to.include('page_no');",
+              "  pm.expect(j.extra_fields && j.extra_fields.request_type, 'request_type: ' + pm.response.text()).to.eql('video_list');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.21 dashscope wire capture: each list was one GET /api/v1/tasks with the filters by DashScope's names, and the refused one sent nothing (dashscope wan video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__wire",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__wire"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path === '/pp/dashscope/api/v1/tasks'; });",
+              "pm.test('two list calls reached DashScope, each query exact', function () {",
+              "  pm.expect(calls.map(function (c) { return c.method + ' ' + c.query; }), JSON.stringify(calls)).to.eql([",
+              "    'GET ?end_time=20261110235959&page_size=2&start_time=20261110000000&status=SUCCEEDED&status=RUNNING',",
+              "    'GET ?page_no=2&page_size=2'",
+              "  ]);",
+              "});",
+              "pm.test('no list call carried X-DashScope-Async or a body', function () {",
+              "  pm.expect(calls.filter(function (c) { return c.async !== '' || c.body !== ''; }), JSON.stringify(calls)).to.eql([]);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.22 [EXPECT-400] dashscope/wan2.6-t2v POST /v1/videos - a size nested under a parameters extra param is refused, passthrough on (dashscope wan video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "x-bf-passthrough-extra-params",
+            "value": "true"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"dashscope/wan2.6-t2v\",\n  \"prompt\": \"A paper boat on a pond\",\n  \"size\": \"1280x720\",\n  \"parameters\": {\n    \"size\": \"1920*1080\"\n  }\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the nested size is refused by name, not merged into the vendor body', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, pm.response.text()).to.eql('parameters.size');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.23 dashscope wire capture: the request with the nested size never reached DashScope (dashscope wan video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__wire",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__wire"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var creates = pm.response.json().data[0].calls.filter(function (c) { return c.path === '/pp/dashscope/api/v1/services/aigc/video-generation/video-synthesis'; });",
+              "pm.test('DashScope still saw the three creates of rows 2 to 4 and no other', function () {",
+              "  pm.expect(creates.length, JSON.stringify(creates)).to.eql(3);",
+              "  pm.expect(creates.filter(function (c) { return c.body.indexOf('1920*1080') !== -1; }), JSON.stringify(creates)).to.eql([]);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.24 dashscope GET /v1/videos/{id}/content forwards the file its task names while the file host is still sending it (dashscope wan video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"base_url\": \"{{baseUrl}}\",\n  \"path\": \"/v1/videos/ds-media-gapped:dashscope/content\",\n  \"headers\": {{mediaProbeHeaders}}\n}"
+        },
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__probe/download",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__probe",
+            "download"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}",
+              "// The probe calls the gateway itself, so it carries the gateway credential the harness would have sent.",
+              "var auth = pm.variables.get('admin_auth_header') || pm.environment.get('admin_auth_header');",
+              "var headers = {};",
+              "if (auth) { headers.Authorization = auth; }",
+              "pm.variables.set('mediaProbeHeaders', JSON.stringify(headers));"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.expect(pm.response.code, 'probe failed: ' + pm.response.text()).to.equal(200);",
+              "var r = pm.response.json().data[0];",
+              "pm.test('/v1/videos/{id}/content answered 200 with the whole video/mp4 file', function () {",
+              "  pm.expect(r.status, JSON.stringify(r)).to.equal(200);",
+              "  pm.expect(r.content_type, JSON.stringify(r)).to.equal('video/mp4');",
+              "  pm.expect(r.bytes, JSON.stringify(r)).to.equal(2 * 256 * 1024);",
+              "  pm.expect(r.sends.length, 'the fixture wrote the file in ' + r.sends.length + ' halves: ' + JSON.stringify(r)).to.equal(2);",
+              "});",
+              "pm.test('the first bytes reach the caller before the file host has sent the second half: the file is not held whole', function () {",
+              "  pm.expect(r.first_byte_ms, 'the first byte arrived at ' + r.first_byte_ms + 'ms, after the file host wrote the second half at ' + r.sends[1] + 'ms: ' + JSON.stringify(r)).to.be.below(r.sends[1]);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.25 [EXPECT-500] dashscope GET /v1/videos/{id}/content refuses a file its task names on a loopback address (dashscope wan video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/ds-media-loopback:dashscope/content",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "ds-media-loopback:dashscope",
+            "content"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a task that names a loopback file is refused, and the error does not carry the signed query', function () {",
+              "  pm.expect(pm.response.code, 'the loopback file was served: ' + pm.response.text().slice(0, 200)).to.equal(500);",
+              "  var body = pm.response.text();",
+              "  pm.expect(body, body).to.include('failed to download video');",
+              "  pm.expect(body, body).to.include('non-public address');",
+              "  pm.expect(body, body).to.not.include('X-Fixture-Signature');",
+              "  pm.expect(body, body).to.not.include('signed');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "423.26 dashscope wire capture: each download queried its task once without the async header, and the file left through the proxy to the address the task named (dashscope wan video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__wire",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__wire"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/dashscope/api/v1/tasks/ds-media-') === 0; });",
+              "pm.test('one task query per download, in order, with no body and no X-DashScope-Async', function () {",
+              "  pm.expect(calls.map(function (c) { return c.method + ' ' + c.path.slice('/pp/dashscope'.length) + ' ' + c.async + c.body; }), JSON.stringify(calls)).to.eql([",
+              "    'GET /api/v1/tasks/ds-media-gapped ',",
+              "    'GET /api/v1/tasks/ds-media-loopback '",
+              "  ]);",
+              "});",
+              "pm.sendRequest(pm.variables.get('providerErrorFixtureUrl') + '/__hits', function (err, res) {",
+              "  var hits = err ? {} : res.json().data[0].hits;",
+              "  var text = JSON.stringify(hits);",
+              "  pm.test('the gapped file was asked for at the public address, through a tunnel the proxy opened to it', function () {",
+              "    pm.expect(err, String(err)).to.equal(null);",
+              "    pm.expect(hits['media.gapped@203.0.113.10'] || 0, text).to.be.at.least(1);",
+              "    pm.expect(hits['__media_tunnel_connects@203.0.113.10:80'] || 0, text).to.be.at.least(1);",
+              "  });",
+              "  pm.test('the loopback file was never asked for', function () {",
+              "    pm.expect(Object.keys(hits).filter(function (k) { return k.indexOf('media.internal') === 0; }), text).to.eql([]);",
+              "  });",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

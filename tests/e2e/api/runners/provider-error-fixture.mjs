@@ -664,6 +664,38 @@ const miniMaxSpeechAnswer = (body) => {
 	return { status: 200, body: JSON.stringify({ data: { audio: "4944330000", status: 2 }, extra_info: miniMaxSpeechExtraInfo, trace_id: "t_pp", base_resp: miniMaxOk }) };
 };
 
+// DashScope tasks by id, TXE-6432: the output (and usage) of GET /api/v1/tasks/{id} in DashScope's documented
+// shapes. Times are UTC+8, as DashScope sends them.
+const dashScopeTimes = { submit_time: "2026-11-10 14:18:52.331", scheduled_time: "2026-11-10 14:18:59.290" };
+const dashScopeEnded = { ...dashScopeTimes, end_time: "2026-11-10 14:23:39.407" };
+const dashScopeTasks = {
+	"ds-pending": { output: { task_status: "PENDING", submit_time: dashScopeTimes.submit_time } },
+	"ds-running": { output: { task_status: "RUNNING", ...dashScopeTimes } },
+	"ds-succeeded": {
+		output: { task_status: "SUCCEEDED", ...dashScopeEnded, orig_prompt: "A kitten on a rooftop", video_url: "https://dashscope-result-sh.oss-accelerate.aliyuncs.com/fixture/ds-succeeded.mp4?Expires=1762842232&Signature=fixture" },
+		usage: { duration: 10, input_video_duration: 0, output_video_duration: 10, video_count: 1, ratio: "16:9", SR: 720 },
+	},
+	"ds-filtered": { output: { task_status: "FAILED", ...dashScopeEnded, code: "DataInspectionFailed", message: "Output data may contain inappropriate content." } },
+	"ds-infringing": { output: { task_status: "FAILED", ...dashScopeEnded, code: "IPInfringementSuspect", message: "Input data is suspected of being involved in IP infringement." } },
+	"ds-canceled": { output: { task_status: "CANCELED", ...dashScopeEnded } },
+	"ds-expired": { output: { task_status: "UNKNOWN" } },
+};
+const dashScopeAnswer = (method, path) => {
+	if (method === "POST" && path === "/api/v1/services/aigc/video-generation/video-synthesis") {
+		return { status: 200, body: { output: { task_status: "PENDING", task_id: "ds-pending" }, request_id: "fixture-dashscope-create" } };
+	}
+	const task = /^\/api\/v1\/tasks\/([^/]+)(\/cancel)?$/.exec(path);
+	if (task && method === "POST" && task[2]) {
+		if (task[1] === "ds-pending") return { status: 200, body: { request_id: "fixture-dashscope-cancel" } };
+		return { status: 400, body: { code: "UnsupportedOperation", message: "Failed to cancel the task, please confirm if the task is in PENDING status.", request_id: "fixture-dashscope-cancel" } };
+	}
+	if (task && method === "GET" && !task[2] && Object.hasOwn(dashScopeTasks, task[1])) {
+		const known = dashScopeTasks[task[1]];
+		return { status: 200, body: { request_id: "fixture-dashscope-query", ...known, output: { task_id: task[1], ...known.output } } };
+	}
+	return { status: 404, body: { code: "NotFound", message: "the fixture has no DashScope answer here", request_id: "fixture-dashscope" } };
+};
+
 // MiniMax content-safety flags, native Responses and Messages, TXE-6595 (vendor sheet B1, B3, B4; contract C6).
 // Chat for the model "sensitive-flags" answers with MiniMax's four top-level flags; input_sensitive_type 5 is
 // "abusive" (platform.minimax.io/docs/api-reference/text-chat-openai). Streamed, the flags ride the content chunk and
@@ -1453,6 +1485,22 @@ const handleRequest = (req, res) => {
 	}
 	if (req.method === "GET" && path === "/__wire") {
 		return send(200, {}, JSON.stringify({ data: [{ calls: wireCalls }] }));
+	}
+	// DashScope's native Wan video API, TXE-6432 (folder 423). The gateway's dashscope provider has both of its
+	// bases at /pp/dashscope. Every request is kept in /__wire with its method and its X-DashScope-Async header (no
+	// other header, so no key reaches a report). A create answers a PENDING task. The task id of a query or a
+	// cancel picks the answer (see dashScopeTasks): only ds-pending can be cancelled, as at DashScope, which
+	// answers 400 UnsupportedOperation for a task in any other state.
+	if (path.startsWith("/pp/dashscope/")) {
+		const body = [];
+		req.on("data", (c) => body.push(c));
+		req.on("end", () => {
+			const url = new URL(req.url, "http://localhost");
+			wireCalls.push({ method: req.method, path, query: url.search, body: Buffer.concat(body).toString("utf8"), async: req.headers["x-dashscope-async"] || "" });
+			const answer = dashScopeAnswer(req.method, path.slice("/pp/dashscope".length));
+			send(answer.status, {}, JSON.stringify(answer.body));
+		});
+		return undefined;
 	}
 	if (path.startsWith("/pp/bigmodel/")) {
 		const body = [];
