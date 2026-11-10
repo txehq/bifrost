@@ -4980,3 +4980,26 @@ func TestCallerRefusalsAreBounded(t *testing.T) {
 		t.Errorf("InvalidRequestErrorf message is %d bytes, want at most %d", len(got.Error.Message), schemas.MaxRefusalMessageBytes)
 	}
 }
+
+// A provider whose request has no service_tier field refuses every tier but "default":
+// the tier sets the price, so it is never left out silently, and "default" is what the
+// vendor serves when the field is absent.
+func TestUndeliverableServiceTierError(t *testing.T) {
+	for _, tier := range []schemas.BifrostServiceTier{schemas.BifrostServiceTierPriority, schemas.BifrostServiceTierFlex, schemas.BifrostServiceTierAuto} {
+		got := UndeliverableServiceTierError(&tier, schemas.Perplexity)
+		if got == nil {
+			t.Fatalf("tier %q must be refused", tier)
+		}
+		if got.StatusCode == nil || *got.StatusCode != 400 ||
+			got.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter ||
+			got.Error == nil || got.Error.Param != "service_tier" || got.IsBifrostError {
+			t.Fatalf("tier %q: refusal = %+v (error %+v)", tier, got, got.Error)
+		}
+	}
+	if UndeliverableServiceTierError(nil, schemas.Perplexity) != nil {
+		t.Fatal("no tier is nothing to refuse")
+	}
+	if UndeliverableServiceTierError(schemas.Ptr(schemas.BifrostServiceTierDefault), schemas.Perplexity) != nil {
+		t.Fatal("the default tier is what the vendor serves without the field")
+	}
+}

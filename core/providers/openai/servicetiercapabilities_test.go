@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -63,7 +65,7 @@ func TestServiceTierForModel(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			caps := schemas.ResolveModelCaps(tt.provider, tt.model)
-			got := serviceTierForModel(caps, tt.tier)
+			got, _ := serviceTierOnWire(caps, tt.tier)
 			if tt.want == nil {
 				if got != nil {
 					t.Fatalf("service tier = %q, want nil", *got)
@@ -154,8 +156,18 @@ func TestOpenAIConvertersFilterServiceTierByModelCapability(t *testing.T) {
 			if responses == nil {
 				t.Fatal("responses conversion returned nil")
 			}
-			if (responses.ServiceTier != nil) != tt.wantTier {
-				t.Fatalf("responses service tier = %v, want present=%v", responses.ServiceTier, tt.wantTier)
+			// Responses follows the same rule: refused before the conversion, and the
+			// converter leaves the tier as sent.
+			responsesErr := ResponsesServiceTierError(ctx, &schemas.BifrostResponsesRequest{
+				Provider: tt.provider,
+				Model:    tt.model,
+				Params:   &schemas.ResponsesParameters{ServiceTier: &tier},
+			})
+			if (responsesErr == nil) != tt.wantTier {
+				t.Fatalf("ResponsesServiceTierError = %+v, want refused=%v", responsesErr, !tt.wantTier)
+			}
+			if responses.ServiceTier == nil || *responses.ServiceTier != tt.tier {
+				t.Fatalf("responses service tier = %v, want %q as sent", responses.ServiceTier, tt.tier)
 			}
 		})
 	}
@@ -363,4 +375,202 @@ func BenchmarkChatServiceTierError(b *testing.B) {
 			}
 		}
 	})
+}
+
+// TestResponsesServiceTierError pins the Responses refusal to the chat one: 400
+// caller_unsupported_parameter naming service_tier for a tier outside the model's list,
+// nil for a listed tier, for a model with no list, for no tier, and always for "default".
+func TestResponsesServiceTierError(t *testing.T) {
+	stubChatTierCatalog(t)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	request := func(provider schemas.ModelProvider, model string, tier *schemas.BifrostServiceTier) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{Provider: provider, Model: model, Params: &schemas.ResponsesParameters{ServiceTier: tier}}
+	}
+	flex := schemas.Ptr(schemas.BifrostServiceTierFlex)
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure, schemas.Moonshot, schemas.XAI, schemas.OpenRouter, "my-openai"} {
+		t.Run(string(provider), func(t *testing.T) {
+			got := ResponsesServiceTierError(ctx, request(provider, "tiered-model", flex))
+			if got == nil {
+				t.Fatal("a tier outside the model's list must be refused")
+			}
+			if got.StatusCode == nil || *got.StatusCode != 400 ||
+				got.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter ||
+				got.Error == nil || got.Error.Param != "service_tier" || got.IsBifrostError {
+				t.Fatalf("refusal = %+v (error %+v), want the caller's 400 caller_unsupported_parameter with param service_tier", got, got.Error)
+			}
+			for name, req := range map[string]*schemas.BifrostResponsesRequest{
+				"listed tier":            request(provider, "tiered-model", schemas.Ptr(schemas.BifrostServiceTierPriority)),
+				"default on a list":      request(provider, "tiered-model", schemas.Ptr(schemas.BifrostServiceTierDefault)),
+				"model with no list":     request(provider, "unlisted-model", flex),
+				"no tier":                request(provider, "tiered-model", nil),
+				"no params":              {Provider: provider, Model: "tiered-model"},
+				"default, model no list": request(provider, "unlisted-model", schemas.Ptr(schemas.BifrostServiceTierDefault)),
+			} {
+				if err := ResponsesServiceTierError(ctx, req); err != nil {
+					t.Fatalf("%s was refused: %+v", name, err.Error)
+				}
+			}
+		})
+	}
+	if ResponsesServiceTierError(ctx, nil) != nil {
+		t.Fatal("a nil request has no tier to refuse")
+	}
+}
+
+// TestResponsesHandlersRefuseUnsupportedServiceTierBeforeAnyUpstreamCall drives the three
+// shared handlers that send a Responses body (request, stream, input-token count) against
+// a counting upstream: an unsupported tier comes back as the 400 with no request made, and
+// a supported tier reaches the vendor in the body as sent.
+func TestResponsesHandlersRefuseUnsupportedServiceTierBeforeAnyUpstreamCall(t *testing.T) {
+	stubChatTierCatalog(t)
+	var calls atomic.Int64
+	var lastBody atomic.Value
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		lastBody.Store(body)
+		if body["stream"] == true {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"id\":\"r1\",\"object\":\"response\",\"model\":\"tiered-model\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/input_tokens") {
+			_, _ = w.Write([]byte(`{"object":"response.input_tokens","input_tokens":1}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"r1","object":"response","model":"tiered-model","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(upstream.Close)
+	client := &fasthttp.Client{}
+	request := func(tier schemas.BifrostServiceTier) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Moonshot,
+			Model:    "tiered-model",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ResponsesParameters{ServiceTier: &tier},
+		}
+	}
+	newCtx := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+		return ctx
+	}
+	send := map[string]func(schemas.BifrostServiceTier) *schemas.BifrostError{
+		"responses": func(tier schemas.BifrostServiceTier) *schemas.BifrostError {
+			_, bifrostErr := HandleOpenAIResponsesRequest(newCtx(), client, upstream.URL+"/v1/responses", request(tier), nil, nil, false, false,
+				schemas.Moonshot, nil, nil, nil, nil)
+			return bifrostErr
+		},
+		"responses stream": func(tier schemas.BifrostServiceTier) *schemas.BifrostError {
+			postHook := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return result, err
+			}
+			chunks, bifrostErr := HandleOpenAIResponsesStreaming(newCtx(), client, upstream.URL+"/v1/responses", request(tier), nil, nil, 5, false, false,
+				schemas.Moonshot, postHook, nil, nil, nil, nil, nil, nil, nil)
+			if bifrostErr != nil {
+				return bifrostErr
+			}
+			for range chunks {
+			}
+			return nil
+		},
+		"count tokens": func(tier schemas.BifrostServiceTier) *schemas.BifrostError {
+			_, bifrostErr := HandleOpenAICountTokensRequest(newCtx(), client, upstream.URL+"/v1/responses/input_tokens", request(tier), schemas.Key{}, nil, false, false,
+				schemas.Moonshot, nil)
+			return bifrostErr
+		},
+	}
+	for name, sendTier := range send {
+		t.Run(name, func(t *testing.T) {
+			before := calls.Load()
+			refused := sendTier(schemas.BifrostServiceTierFlex)
+			if refused == nil {
+				t.Fatal("an unsupported tier must be refused")
+			}
+			if got := calls.Load() - before; got != 0 {
+				t.Fatalf("%d upstream calls for a refused tier, want 0", got)
+			}
+			if refused.StatusCode == nil || *refused.StatusCode != 400 ||
+				refused.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter ||
+				refused.Error == nil || refused.Error.Param != "service_tier" {
+				t.Fatalf("refusal = %+v (error %+v), want 400 caller_unsupported_parameter with param service_tier", refused, refused.Error)
+			}
+
+			for _, tier := range []schemas.BifrostServiceTier{schemas.BifrostServiceTierPriority, schemas.BifrostServiceTierDefault} {
+				sent := calls.Load()
+				if bifrostErr := sendTier(tier); bifrostErr != nil {
+					t.Fatalf("tier %q failed: %+v", tier, bifrostErr.Error)
+				}
+				if got := calls.Load() - sent; got != 1 {
+					t.Fatalf("%d upstream calls for tier %q, want 1", got, tier)
+				}
+				body, _ := lastBody.Load().(map[string]any)
+				if body["service_tier"] != string(tier) {
+					t.Fatalf("vendor body service_tier = %v, want %q as sent (body %v)", body["service_tier"], tier, body)
+				}
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_MaxOutputTokensGoesOutAsSent pins that a small output cap
+// reaches the vendor unchanged. The converter used to raise anything below 16 to 16, so a
+// caller that held 5 tokens was billed for up to 16 (contract C4).
+func TestToOpenAIResponsesRequest_MaxOutputTokensGoesOutAsSent(t *testing.T) {
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure, schemas.Moonshot, schemas.XAI, "my-openai"} {
+		for _, sent := range []int{1, 5, 15, 16, 4096} {
+			t.Run(string(provider), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				out := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+					Provider: provider,
+					Model:    "some-model",
+					Input: []schemas.ResponsesMessage{{
+						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")},
+					}},
+					Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(sent)},
+				})
+				if out == nil {
+					t.Fatal("responses conversion returned nil")
+				}
+				raw, err := sonic.Marshal(out)
+				if err != nil {
+					t.Fatalf("marshal: %v", err)
+				}
+				var body map[string]any
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("unmarshal %s: %v", raw, err)
+				}
+				if got, ok := body["max_output_tokens"].(float64); !ok || int(got) != sent {
+					t.Fatalf("max_output_tokens = %v, want %d as sent (body %s)", body["max_output_tokens"], sent, raw)
+				}
+			})
+		}
+	}
+}
+
+// BenchmarkResponsesServiceTierError measures the check every Responses request pays:
+// none for a request with no tier, one capability lookup for a request with one.
+func BenchmarkResponsesServiceTierError(b *testing.B) {
+	stubChatTierCatalog(b)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for name, req := range map[string]*schemas.BifrostResponsesRequest{
+		"no tier":       {Provider: schemas.OpenAI, Model: "tiered-model", Params: &schemas.ResponsesParameters{}},
+		"listed tier":   {Provider: schemas.OpenAI, Model: "tiered-model", Params: &schemas.ResponsesParameters{ServiceTier: schemas.Ptr(schemas.BifrostServiceTierPriority)}},
+		"model no list": {Provider: schemas.OpenAI, Model: "unlisted-model", Params: &schemas.ResponsesParameters{ServiceTier: schemas.Ptr(schemas.BifrostServiceTierFlex)}},
+	} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if ResponsesServiceTierError(ctx, req) != nil {
+					b.Fatal("unexpected refusal")
+				}
+			}
+		})
+	}
 }

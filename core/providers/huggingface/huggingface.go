@@ -483,6 +483,12 @@ func (provider *HuggingFaceProvider) ChatCompletion(ctx *schemas.BifrostContext,
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			// Hugging Face's request has no service_tier: refused, never left out.
+			if request != nil && request.Params != nil {
+				if tierErr := providerUtils.UndeliverableServiceTierError(request.Params.ServiceTier, provider.GetProviderKey()); tierErr != nil {
+					return nil, providerUtils.ConverterBifrostError(tierErr)
+				}
+			}
 			reqBody, err := ToHuggingFaceChatCompletionRequest(request)
 			if err != nil {
 				return nil, err
@@ -563,6 +569,12 @@ func (provider *HuggingFaceProvider) ChatCompletionStream(ctx *schemas.BifrostCo
 	}
 
 	customRequestConverter := func(request *schemas.BifrostChatRequest) (providerUtils.RequestBodyWithExtraParams, error) {
+		// Hugging Face's request has no service_tier: refused, never left out.
+		if request != nil && request.Params != nil {
+			if tierErr := providerUtils.UndeliverableServiceTierError(request.Params.ServiceTier, provider.GetProviderKey()); tierErr != nil {
+				return nil, providerUtils.ConverterBifrostError(tierErr)
+			}
+		}
 		reqBody, err := ToHuggingFaceChatCompletionStreamRequest(request)
 		if err != nil {
 			return nil, err

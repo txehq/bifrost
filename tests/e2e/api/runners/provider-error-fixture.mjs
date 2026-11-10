@@ -1557,6 +1557,8 @@ const handleRequest = (req, res) => {
 			"pp-custom-legacy": { provider: "openai", mode: "responses", supported_endpoints: ["/v1/responses"], supports_custom_tools: false, supports_function_calling: true },
 			// TXE-6527: a model whose capability record lists its service tiers, so a tier outside the list is refused.
 			"oc-tiered": { provider: "moonshot", mode: "chat", service_tiers: ["default", "priority"] },
+			// TXE-6994: the same for the openai-based custom provider cp_plain, whose Responses requests the fixture records.
+			"cp-tiered": { provider: "cp_plain", mode: "chat", service_tiers: ["default", "priority"], supported_endpoints: ["/v1/chat/completions", "/v1/responses"] },
 			// TXE-7026: two models with a record that lists no parameters and a low output limit, so anything the compat
 			// plugin would drop or lower for them shows in the request the fixture records.
 			"cp-capped": { provider: "cp_plain", mode: "chat", max_output_tokens: 64, supported_endpoints: ["/v1/chat/completions", "/v1/responses"] },

@@ -20,7 +20,6 @@ import (
 	"github.com/tidwall/sjson"
 
 	"github.com/capsohq/bifrost/core/providers/anthropic"
-	openai "github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
 )
@@ -612,7 +611,9 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 				inferenceConfig.MaxTokens = schemas.Ptr(maxTokens)
 			}
 		}
-		inferenceConfig.MaxTokens = clampMaxTokens(ctx, inferenceConfig.MaxTokens, caps)
+		// The output cap goes out as sent. The OpenAI family and Grok on Bedrock refuse a
+		// cap below 16; that refusal is the vendor's to give, and raising the cap here
+		// would bill the caller for output it capped (contract C4).
 		bedrockReq.InferenceConfig = inferenceConfig
 	}
 
@@ -2858,34 +2859,6 @@ func converseRequiresSignedReasoning(model string) bool {
 // the requested effort onto a rung the model publishes.
 func setConverseReasoningEffort(fields *schemas.OrderedMap, caps schemas.ModelCaps, levels *schemas.EffortControl, effort string) {
 	fields.Set("reasoning", map[string]any{"effort": caps.NormalizeReasoningEffort(effort, levels)})
-}
-
-// clampMaxTokens raises maxTokens to the floor the model enforces on
-// max_output_tokens, leaving it alone when the model has none.
-//
-// Bedrock serves the OpenAI family and xAI Grok from an OpenAI-compatible
-// backend that rejects anything below 16, while Claude and Nova happily return a
-// single token — so this is gated rather than applied to Converse as a whole.
-// The mantle path goes through the OpenAI chat request builder, which sends the
-// caller's value as is and leaves a too-small one to the backend to refuse;
-// Converse builds its own body and clamps here. The datasheet's
-// min_output_tokens overrides the name-based guess.
-func clampMaxTokens(ctx *schemas.BifrostContext, maxTokens *int, caps schemas.ModelCaps) *int {
-	if maxTokens == nil {
-		return nil
-	}
-	// IsOpenAIModelFamily walks the alias chain (canonical name → wire id → alias
-	// key), so an application inference profile whose model_id is an opaque
-	// resource id is still recognised. Grok has no ModelFamily of its own, so it
-	// stays a name match on the canonical model.
-	fallback := 0
-	if schemas.IsOpenAIModelFamily(ctx, caps.Model()) || schemas.IsGrokModel(caps.Model()) {
-		fallback = openai.MinMaxCompletionTokens
-	}
-	if floor := caps.MinOutputTokens(fallback); floor > 0 && *maxTokens < floor {
-		return schemas.Ptr(floor)
-	}
-	return maxTokens
 }
 
 // convertInferenceConfig converts Bifrost parameters to Bedrock inference config
