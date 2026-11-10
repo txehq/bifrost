@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/providers/openai"
 	"github.com/capsohq/bifrost/core/schemas"
@@ -827,4 +828,66 @@ func TestOpenAIRawPassthroughSkipsRewrittenResponses(t *testing.T) {
 		}
 	}
 	require.NotZero(t, checked)
+}
+
+// TXE-6531 (contract C5): OpenAI's 30m/12h cache-write split, decoded from the vendor body,
+// reaches clients of the OpenAI drop-in routes (/openai/v1/chat/completions,
+// /openai/v1/responses and the unprefixed SDK routes) both as the unified tiers and in
+// OpenAI's own cache_write_tokens_details shape, with and without the float-cost wire wrapper.
+func TestOpenAIRoutesCarryCacheWriteTiers(t *testing.T) {
+	chatBody := `{"id":"chatcmpl-1","object":"chat.completion","created":1762000000,"model":"gpt-5.6",` +
+		`"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],` +
+		`"usage":{"prompt_tokens":40000,"completion_tokens":1,"total_tokens":40001,"prompt_tokens_details":{"cached_tokens":1024,` +
+		`"cache_write_tokens":38000,"cache_write_tokens_details":{"ttl_30m_tokens":30000,"ttl_12h_tokens":8000}}}}`
+	respBody := `{"id":"resp_1","object":"response","created_at":1762000000,"status":"completed","model":"gpt-5.6","output":[],` +
+		`"usage":{"input_tokens":40000,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":38000,` +
+		`"cache_write_tokens_details":{"ttl_30m_tokens":30000,"ttl_12h_tokens":8000}},` +
+		`"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":40001}}`
+	assertTiers := func(t *testing.T, where string, got interface{}) {
+		t.Helper()
+		js, err := sonic.Marshal(got)
+		require.NoError(t, err, where)
+		s := string(js)
+		for _, want := range []string{
+			`"cached_write_tokens_30m":30000`,
+			`"cached_write_tokens_12h":8000`,
+			`"cache_write_tokens_details":{"ttl_30m_tokens":30000,"ttl_12h_tokens":8000}`,
+		} {
+			require.Contains(t, s, want, "%s: %s", where, s)
+		}
+	}
+
+	checked := 0
+	for _, prefix := range []string{"", "/openai"} {
+		for _, route := range CreateOpenAIRouteConfigs(prefix, &mockHandlerStore{}) {
+			for _, withCost := range []bool{false, true} {
+				where := route.Path + map[bool]string{false: " (no cost)", true: " (cost wrapper)"}[withCost]
+				if route.ChatResponseConverter != nil {
+					var resp schemas.BifrostChatResponse
+					require.NoError(t, schemas.Unmarshal([]byte(chatBody), &resp))
+					resp.ExtraFields.Provider = schemas.OpenAI
+					if withCost {
+						resp.Usage.Cost = &schemas.BifrostCost{TotalCost: 0.5}
+					}
+					got, err := route.ChatResponseConverter(nil, &resp)
+					require.NoError(t, err)
+					assertTiers(t, where+" chat", got)
+					checked++
+				}
+				if route.ResponsesResponseConverter != nil {
+					var resp schemas.BifrostResponsesResponse
+					require.NoError(t, schemas.Unmarshal([]byte(respBody), &resp))
+					resp.ExtraFields.Provider = schemas.OpenAI
+					if withCost {
+						resp.Usage.Cost = &schemas.BifrostCost{TotalCost: 0.5}
+					}
+					got, err := route.ResponsesResponseConverter(nil, &resp)
+					require.NoError(t, err)
+					assertTiers(t, where+" responses", got)
+					checked++
+				}
+			}
+		}
+	}
+	require.Positive(t, checked, "no OpenAI chat/responses converters found")
 }

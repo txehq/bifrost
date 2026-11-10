@@ -296328,6 +296328,125 @@
               ]
             }
           }
+        },
+        {
+          "name": "pc sol dropinchat non-streaming [tiers 12h]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// TXE-6531 (contract C5), OpenAI drop-in route: an OpenAI SDK client must find the 30m/12h cache-write split where OpenAI puts it,",
+                  "// prompt_tokens_details.cache_write_tokens_details{ttl_30m_tokens, ttl_12h_tokens}. When Bifrost relays its typed response, the unified",
+                  "// cached_write_token_details.cached_write_tokens_30m/_12h must agree with that alias; when it relays OpenAI's raw body, the split is OpenAI's own.",
+                  "pm.test('dropin tiers: status 200', function(){ pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('dropin tiers: usage present', function(){ pm.expect(j.usage, 'usage').to.be.an('object'); pm.expect(j.usage.prompt_tokens_details, 'prompt_tokens_details').to.be.an('object'); });",
+                  "var det = (j.usage && j.usage.prompt_tokens_details) || {};",
+                  "var split = det.cache_write_tokens_details;",
+                  "var tiers = det.cached_write_token_details;",
+                  "pm.test('dropin tiers: unified tiers never appear without the OpenAI alias, and agree with it', function(){",
+                  "  var has = tiers && ((tiers.cached_write_tokens_30m || 0) > 0 || (tiers.cached_write_tokens_12h || 0) > 0);",
+                  "  if (has) {",
+                  "    pm.expect(split, 'cache_write_tokens_details alongside unified tiers').to.be.an('object');",
+                  "    pm.expect(split.ttl_30m_tokens || 0, '30m').to.eql(tiers.cached_write_tokens_30m || 0);",
+                  "    pm.expect(split.ttl_12h_tokens || 0, '12h').to.eql(tiers.cached_write_tokens_12h || 0);",
+                  "  }",
+                  "  if (split) {",
+                  "    pm.expect(split.ttl_30m_tokens || 0, 'ttl_30m_tokens is a number').to.be.a('number');",
+                  "    pm.expect(split.ttl_12h_tokens || 0, 'ttl_12h_tokens is a number').to.be.a('number');",
+                  "    if (tiers) { pm.expect(tiers.cached_write_tokens_12h || 0, 'typed 12h matches alias').to.eql(split.ttl_12h_tokens || 0); }",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"max_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-tiers-dropinchat-sol-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"12h\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} tiers-dropinchat-sol]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Answer in one short word: is the sky blue?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "pc sol dropinresp non-streaming [tiers 12h]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// TXE-6531 (contract C5), OpenAI drop-in route: an OpenAI SDK client must find the 30m/12h cache-write split where OpenAI puts it,",
+                  "// input_tokens_details.cache_write_tokens_details{ttl_30m_tokens, ttl_12h_tokens}. When Bifrost relays its typed response, the unified",
+                  "// cached_write_token_details.cached_write_tokens_30m/_12h must agree with that alias; when it relays OpenAI's raw body, the split is OpenAI's own.",
+                  "pm.test('dropin tiers: status 200', function(){ pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('dropin tiers: usage present', function(){ pm.expect(j.usage, 'usage').to.be.an('object'); pm.expect(j.usage.input_tokens_details, 'input_tokens_details').to.be.an('object'); });",
+                  "var det = (j.usage && j.usage.input_tokens_details) || {};",
+                  "var split = det.cache_write_tokens_details;",
+                  "var tiers = det.cached_write_token_details;",
+                  "pm.test('dropin tiers: unified tiers never appear without the OpenAI alias, and agree with it', function(){",
+                  "  var has = tiers && ((tiers.cached_write_tokens_30m || 0) > 0 || (tiers.cached_write_tokens_12h || 0) > 0);",
+                  "  if (has) {",
+                  "    pm.expect(split, 'cache_write_tokens_details alongside unified tiers').to.be.an('object');",
+                  "    pm.expect(split.ttl_30m_tokens || 0, '30m').to.eql(tiers.cached_write_tokens_30m || 0);",
+                  "    pm.expect(split.ttl_12h_tokens || 0, '12h').to.eql(tiers.cached_write_tokens_12h || 0);",
+                  "  }",
+                  "  if (split) {",
+                  "    pm.expect(split.ttl_30m_tokens || 0, 'ttl_30m_tokens is a number').to.be.a('number');",
+                  "    pm.expect(split.ttl_12h_tokens || 0, 'ttl_12h_tokens is a number').to.be.a('number');",
+                  "    if (tiers) { pm.expect(tiers.cached_write_tokens_12h || 0, 'typed 12h matches alias').to.eql(split.ttl_12h_tokens || 0); }",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.6-sol\",\n  \"max_output_tokens\": 8000,\n  \"prompt_cache_key\": \"bf-harness-tiers-dropinresp-sol-{{pcNonce}}\",\n  \"prompt_cache_options\": {\n    \"mode\": \"implicit\",\n    \"ttl\": \"12h\"\n  },\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} tiers-dropinresp-sol]\",\n          \"prompt_cache_breakpoint\": {\n            \"mode\": \"explicit\"\n          }\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Answer in one short word: is the sky blue?\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
         }
       ]
     }
