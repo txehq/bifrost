@@ -120,6 +120,11 @@ Voice settings are optional and controlled via `params`:
 | `extra_params.use_speaker_boost` | `voice_settings.use_speaker_boost` | true | boolean |
 | `extra_params.style` | `voice_settings.style` | 0 | 0-1.0 |
 
+Only the settings you send are written to `voice_settings`. A setting you leave out is
+absent from the upstream request, so ElevenLabs applies its own default (the "Default"
+column) or the voice's stored setting. A request with only `speed` sends
+`voice_settings: {"speed": ...}` and nothing else.
+
 ### Advanced Parameters
 
 Use `extra_params` for ElevenLabs-specific TTS features:
@@ -234,6 +239,25 @@ When enabled, the endpoint `/v1/text-to-speech/{voice_id}/with-timestamps` is us
 }
 ```
 
+### Usage
+
+ElevenLabs reports the credits it charged for a request in the `character-cost` response
+header. Bifrost forwards that header unchanged and also reports the same number as
+`usage.vendor_cost`:
+
+```json
+{ "vendor_cost": { "amount": 42, "unit": "credit" } }
+```
+
+- Non-streaming speech: in the `x-bifrost-usage` response header (the body is the audio).
+- Streaming speech (`stream_format: "sse"`): on the final `speech.audio.done` event.
+- With `with_timestamps`: in the JSON body's `usage`.
+
+When ElevenLabs sends no `character-cost` header, there is no `vendor_cost`. A `200` from
+ElevenLabs that carries no audio is returned as `502` with
+`extra_fields.error_type: "provider_empty_result"`; the `character-cost` header is still
+forwarded.
+
 ### Timestamp Response
 
 ```json
@@ -291,9 +315,14 @@ applies to `eleven_text_to_sound_v2` like any other model.
 | `input.input` | `text` | The sound-effect description / prompt (required) |
 | `model` | `model_id` | A sound model, e.g. `"eleven_text_to_sound_v2"` |
 | `response_format` | Query param `output_format` | e.g. `mp3_22050_32` (raw ElevenLabs formats pass through) |
-| `extra_params.duration_seconds` | `duration_seconds` | Optional. Clamped to `[0.5, 30]`. Omit to let the model choose the length |
+| `extra_params.duration_seconds` | `duration_seconds` | Optional, `0.5` to `30`. A value outside the range is refused with `400` (see below). Omit to let the model choose the length |
 | `extra_params.loop` | `loop` | Optional. Seamless looping (sound models only) |
-| `extra_params.prompt_influence` | `prompt_influence` | Optional, default `0.3`. Clamped to `[0, 1]` |
+| `extra_params.prompt_influence` | `prompt_influence` | Optional, default `0.3`, `0` to `1`. A value outside the range is refused with `400` (see below) |
+
+`duration_seconds` and `prompt_influence` reach ElevenLabs exactly as sent. A value outside
+its range is never clamped: the request returns `400` with
+`extra_fields.error_type: "caller_unsupported_parameter"` and `error.param` naming the
+field, and ElevenLabs is not called.
 
 <Tabs>
 <Tab title="Gateway">
@@ -343,9 +372,11 @@ resp, err := client.SpeechRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadl
 
 ## Response
 
-Returns binary audio (same delivery as text-to-speech). When `duration_seconds` is
-provided, the response usage carries `audio_seconds` (the requested duration) for
-observability and future duration-based pricing.
+Returns binary audio (same delivery as text-to-speech). The usage carries only what
+ElevenLabs reported: the credits of its `character-cost` header as `usage.vendor_cost`
+(`{"amount": <credits>, "unit": "credit"}`), in the `x-bifrost-usage` response header. The
+requested `duration_seconds` is not reported as `usage.audio_seconds`: it is a request
+value, not a vendor report.
 
 ## Notes
 
@@ -368,9 +399,9 @@ dollar cost is only computed when the model catalog has a pricing entry for it:
   currently bills on input characters, so an override that sets
   `input_cost_per_character` takes effect immediately, e.g.
   `{"input_cost_per_character":0.00018}`.
-- `output_cost_per_second` is the field that will reflect ElevenLabs' real
-  per-second pricing, but it only takes effect once the `audio_seconds` wiring
-  lands; until then it is recorded but not applied.
+- `output_cost_per_second` is recorded but not applied: ElevenLabs does not report the
+  generated duration, and Bifrost does not bill on the requested one. The credits
+  ElevenLabs charged are in `usage.vendor_cost`.
 
 ---
 
@@ -493,7 +524,18 @@ Request multiple output formats simultaneously:
 
 **Supported formats**: `segmented_json`, `docx`, `pdf`, `txt`, `html`, `srt`
 
+Any other form field is forwarded to ElevenLabs unchanged, so an addon Bifrost has no
+mapping for still reaches it: `keyterms` (repeat the field once per term),
+`transcript_edit`, `detect_speaker_roles`, `entity_detection` and so on.
+
 ## Response Conversion
+
+`usage` is `{"type": "duration", "seconds": <audio_duration_secs>}`: the duration
+ElevenLabs reports and bills on. On a multichannel transcript it is ElevenLabs' top-level
+`audio_duration_secs`, which is already the sum over the channels. When ElevenLabs reports
+no duration there is no `usage`; `duration` (the end of the last word) is not a billing
+figure. A `200` with no transcript in it is returned as `502` with
+`extra_fields.error_type: "provider_empty_result"`.
 
 ### Basic Transcription
 
