@@ -27,17 +27,18 @@ func (request *OpenAITranscriptionRequest) ToBifrostTranscriptionRequest(ctx *sc
 
 // ToOpenAITranscriptionRequest converts a Bifrost transcription request to OpenAI format
 func ToOpenAITranscriptionRequest(bifrostReq *schemas.BifrostTranscriptionRequest) *OpenAITranscriptionRequest {
-	if bifrostReq == nil || bifrostReq.Input.File == nil {
+	if bifrostReq == nil || ((bifrostReq.Input == nil || bifrostReq.Input.File == nil) && !bifrostReq.IsURLOnly()) {
 		return nil
 	}
 
-	transcriptionInput := bifrostReq.Input
 	params := bifrostReq.Params
 
-	openaiReq := &OpenAITranscriptionRequest{
-		Model:    bifrostReq.Model,
-		File:     transcriptionInput.File,
-		Filename: transcriptionInput.Filename,
+	// A URL-only request carries no file: the URL goes out as its own form field from the
+	// extra params, and the file part is omitted.
+	openaiReq := &OpenAITranscriptionRequest{Model: bifrostReq.Model}
+	if bifrostReq.Input != nil && !bifrostReq.IsURLOnly() {
+		openaiReq.File = bifrostReq.Input.File
+		openaiReq.Filename = bifrostReq.Input.Filename
 	}
 
 	if params != nil {
@@ -136,16 +137,20 @@ func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 	}
 
 	// Add file field last so large multipart uploads don't block model discovery upstream.
-	filename := openaiReq.Filename
-	if filename == "" {
-		filename = utils.AudioFilenameFromBytes(openaiReq.File)
-	}
-	fileWriter, err := writer.CreateFormFile("file", filename)
-	if err != nil {
-		return utils.NewBifrostOperationError("failed to create form file", err)
-	}
-	if _, err := fileWriter.Write(openaiReq.File); err != nil {
-		return utils.NewBifrostOperationError("failed to write file data", err)
+	// A URL-only request (the audio URL already written above from the extra params) has no
+	// file part.
+	if openaiReq.File != nil {
+		filename := openaiReq.Filename
+		if filename == "" {
+			filename = utils.AudioFilenameFromBytes(openaiReq.File)
+		}
+		fileWriter, err := writer.CreateFormFile("file", filename)
+		if err != nil {
+			return utils.NewBifrostOperationError("failed to create form file", err)
+		}
+		if _, err := fileWriter.Write(openaiReq.File); err != nil {
+			return utils.NewBifrostOperationError("failed to write file data", err)
+		}
 	}
 
 	// Close the multipart writer

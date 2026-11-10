@@ -86,6 +86,78 @@ func TestPrepareTranscriptionRequest_NoTimestampGranularities(t *testing.T) {
 	}
 }
 
+// multipartTranscriptionCtxWithoutFile builds a /v1/audio/transcriptions request with no file part.
+func multipartTranscriptionCtxWithoutFile(t testing.TB, fields [][2]string) *fasthttp.RequestCtx {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for _, f := range fields {
+		if err := writer.WriteField(f[0], f[1]); err != nil {
+			t.Fatalf("write field %s: %v", f[0], err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close writer: %v", err)
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.SetRequestURI("/v1/audio/transcriptions")
+	ctx.Request.Header.SetContentType(writer.FormDataContentType())
+	ctx.Request.SetBody(body.Bytes())
+	return ctx
+}
+
+// Groq takes an audio URL in place of the file (contract C4). The native route must accept "url"
+// without "file" and hand it to core as the url extra param, leaving the provider to decide; core
+// refuses it for a provider that takes only a file. Before, the route answered 400 "file is required".
+func TestPrepareTranscriptionRequest_URLWithoutFile(t *testing.T) {
+	const audioURL = "https://example.com/audio/clip.m4a"
+	req, _, err := prepareTranscriptionRequest(multipartTranscriptionCtxWithoutFile(t, [][2]string{
+		{"model", "groq/whisper-large-v3-turbo"},
+		{"url", audioURL},
+		{"response_format", "verbose_json"},
+	}), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Input == nil || req.Input.File != nil {
+		t.Fatalf("input = %+v, want an input with no file", req.Input)
+	}
+	if got, ok := req.AudioURL(); !ok || got != audioURL {
+		t.Fatalf("audio url = %q (%v), want %q", got, ok, audioURL)
+	}
+	if !req.IsURLOnly() {
+		t.Fatal("a request with a url and no file must be URL-only")
+	}
+}
+
+// With neither a file nor a url (or an empty url) the route still answers "file is required".
+func TestPrepareTranscriptionRequest_NoFileNoURL(t *testing.T) {
+	for name, fields := range map[string][][2]string{
+		"no url":    {{"model", "groq/whisper-large-v3-turbo"}},
+		"empty url": {{"model", "groq/whisper-large-v3-turbo"}, {"url", ""}},
+	} {
+		_, _, err := prepareTranscriptionRequest(multipartTranscriptionCtxWithoutFile(t, fields), nil)
+		if err == nil || err.Error() != "file is required" {
+			t.Fatalf("%s: err = %v, want file is required", name, err)
+		}
+	}
+}
+
+// A file with a url is a file request: the file is sent, and the url is the vendor's extra param.
+func TestPrepareTranscriptionRequest_FileAndURLIsNotURLOnly(t *testing.T) {
+	req, _, err := prepareTranscriptionRequest(multipartTranscriptionCtx(t, [][2]string{
+		{"model", "groq/whisper-large-v3-turbo"},
+		{"url", "https://example.com/audio/clip.m4a"},
+	}), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(req.Input.File) != "ID3fake-mp3" || req.IsURLOnly() {
+		t.Fatalf("input = %+v, URL-only = %v; want the file kept and not URL-only", req.Input, req.IsURLOnly())
+	}
+}
+
 // BenchmarkPrepareTranscriptionRequest measures native-route form parsing. The
 // timestamp_granularities[] read is one map lookup on the parsed form; the no_granularities
 // case is the common request.

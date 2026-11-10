@@ -1896,7 +1896,8 @@ func (bifrost *Bifrost) TranscriptionRequest(ctx *schemas.BifrostContext, req *s
 			},
 		}
 	}
-	if (req.Input == nil || req.Input.File == nil) && !isLargePayloadPassthrough(ctx) {
+	// An audio URL in place of the file is input too; the provider decides whether it takes one.
+	if (req.Input == nil || req.Input.File == nil) && !req.IsURLOnly() && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -1936,7 +1937,8 @@ func (bifrost *Bifrost) TranscriptionStreamRequest(ctx *schemas.BifrostContext, 
 			},
 		}
 	}
-	if (req.Input == nil || req.Input.File == nil) && !isLargePayloadPassthrough(ctx) {
+	// An audio URL in place of the file is input too; the provider decides whether it takes one.
+	if (req.Input == nil || req.Input.File == nil) && !req.IsURLOnly() && !isLargePayloadPassthrough(ctx) {
 		return nil, &schemas.BifrostError{
 			IsBifrostError: false,
 			Error: &schemas.ErrorField{
@@ -8099,6 +8101,15 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 		if fieldErr := schemas.CheckDeclaredUnifiedFields(provider, &req.BifrostRequest); fieldErr != nil {
 			fieldErr.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), model, model)
 			bifrost.sendWorkerError(req, *fieldErr)
+			continue
+		}
+
+		// A URL-only transcription is refused here, before a key is chosen, when this provider
+		// takes only a file: 400 caller_unsupported_parameter and no upstream call (contract C4).
+		if tr := req.BifrostRequest.TranscriptionRequest; tr != nil && tr.IsURLOnly() && !schemas.AcceptsTranscriptionURLInput(provider) {
+			urlErr := schemas.NewTranscriptionURLUnsupportedError()
+			urlErr.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), model, model)
+			bifrost.sendWorkerError(req, *urlErr)
 			continue
 		}
 

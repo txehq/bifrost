@@ -10418,3 +10418,98 @@ func TestIsPartialBatchResults(t *testing.T) {
 		}
 	}
 }
+
+// A transcription that carries only an audio URL (contract C4) is input the provider decides on.
+// Groq takes it: one upstream call with the named key, the URL as the "url" form field and no file
+// part, and the verbose_json duration reported as usage (C5). OpenAI does not: 400
+// caller_unsupported_parameter naming "url", refused before a key is chosen, with no upstream call.
+func TestTranscriptionURLOnlyReachesOnlyProvidersThatTakeAURL(t *testing.T) {
+	const audioURL = "https://example.com/audio/clip.m4a"
+	type upstreamCall struct {
+		auth, url, model string
+		hasFile          bool
+	}
+	var mu sync.Mutex
+	var calls []upstreamCall
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		call := upstreamCall{auth: r.Header.Get("Authorization")}
+		if err := r.ParseMultipartForm(1 << 20); err == nil {
+			call.url = r.FormValue("url")
+			call.model = r.FormValue("model")
+			_, call.hasFile = r.MultipartForm.File["file"]
+		}
+		mu.Lock()
+		calls = append(calls, call)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"task":"transcribe","language":"English","duration":12.4,"text":"hello","x_groq":{"id":"req_1"}}`))
+	}))
+	defer upstream.Close()
+
+	account := NewMockAccount()
+	for _, provider := range []schemas.ModelProvider{schemas.Groq, schemas.OpenAI} {
+		account.AddProviderWithBaseURL(provider, 4, 256, upstream.URL)
+		account.SetKeysForProvider(provider, []schemas.Key{scenarioKey(string(provider)+"-a", 1), scenarioKey(string(provider)+"-b", 1)})
+	}
+	client := scenarioClient(t, account, nil, nil)
+
+	responseFormat := "verbose_json"
+	urlOnly := func(provider schemas.ModelProvider) *schemas.BifrostTranscriptionRequest {
+		return &schemas.BifrostTranscriptionRequest{
+			Provider: provider,
+			Model:    "whisper-large-v3-turbo",
+			Input:    &schemas.TranscriptionInput{},
+			Params: &schemas.TranscriptionParameters{
+				ResponseFormat: &responseFormat,
+				ExtraParams:    map[string]interface{}{schemas.TranscriptionURLParam: audioURL},
+			},
+		}
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyAPIKeyName, "groq-b")
+	resp, bifrostErr := client.TranscriptionRequest(ctx, urlOnly(schemas.Groq))
+	if bifrostErr != nil {
+		t.Fatalf("groq URL-only transcription failed: %s", bifrostErr.GetErrorString())
+	}
+	if resp.Usage == nil || resp.Usage.Type != "duration" || resp.Usage.Seconds == nil || *resp.Usage.Seconds != 12.4 {
+		t.Fatalf("usage = %+v, want {type: duration, seconds: 12.4}", resp.Usage)
+	}
+	mu.Lock()
+	got := append([]upstreamCall(nil), calls...)
+	mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("upstream calls = %d, want exactly one", len(got))
+	}
+	if got[0].auth != "Bearer sk-groq-b" || got[0].url != audioURL || got[0].model != "whisper-large-v3-turbo" || got[0].hasFile {
+		t.Fatalf("upstream call = %+v, want the named key, the url field and no file part", got[0])
+	}
+
+	ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr = client.TranscriptionRequest(ctx, urlOnly(schemas.OpenAI))
+	if bifrostErr == nil {
+		t.Fatal("openai takes no audio url; the request must be refused")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %v, want 400", bifrostErr.StatusCode)
+	}
+	if bifrostErr.ExtraFields.ErrorType != "caller_unsupported_parameter" || bifrostErr.Error == nil || bifrostErr.Error.Param != "url" {
+		t.Fatalf("error = %+v / %+v, want caller_unsupported_parameter with param url", bifrostErr.ExtraFields, bifrostErr.Error)
+	}
+	if bifrostErr.ExtraFields.Provider != schemas.OpenAI {
+		t.Fatalf("error provider = %q, want openai", bifrostErr.ExtraFields.Provider)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("upstream calls = %d after the refused request, want still one", len(calls))
+	}
+
+	// With neither a file nor a URL there is still no input.
+	ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	noInput := urlOnly(schemas.Groq)
+	noInput.Params.ExtraParams = nil
+	if _, bifrostErr = client.TranscriptionRequest(ctx, noInput); bifrostErr == nil || !strings.Contains(bifrostErr.Error.Message, "transcription input not provided") {
+		t.Fatalf("a request with no file and no url must be refused as missing input, got %v", bifrostErr)
+	}
+}

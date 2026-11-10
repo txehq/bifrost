@@ -501,3 +501,137 @@ func TestParseTranscriptionFormDataBodyFromRequest_RepeatedExtraField(t *testing
 		t.Fatalf("include[] = %q, want [logprobs segments] as two fields", got)
 	}
 }
+
+// A URL-only transcription (Groq's "url" form field in place of the file, contract C4) must go
+// out with the URL as a form field and no file part; the URL is never fetched by Bifrost.
+func TestToOpenAITranscriptionRequest_URLOnlyHasURLFieldAndNoFilePart(t *testing.T) {
+	audioURL := "https://example.com/audio/clip.m4a"
+	request := &schemas.BifrostTranscriptionRequest{
+		Model: "whisper-large-v3-turbo",
+		Input: &schemas.TranscriptionInput{},
+		Params: &schemas.TranscriptionParameters{
+			ExtraParams: map[string]interface{}{schemas.TranscriptionURLParam: audioURL},
+		},
+	}
+	reqBody := ToOpenAITranscriptionRequest(request)
+	if reqBody == nil {
+		t.Fatal("expected a URL-only request to convert, got nil")
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if bifrostErr := ParseTranscriptionFormDataBodyFromRequest(writer, reqBody, schemas.Groq); bifrostErr != nil {
+		t.Fatalf("unexpected bifrost error: %v", bifrostErr.Error.Message)
+	}
+	contentType := writer.FormDataContentType()
+	if got := multipartFieldValue(t, contentType, body.Bytes(), "url"); got != audioURL {
+		t.Fatalf("url field = %q, want %q", got, audioURL)
+	}
+	for _, name := range multipartPartOrder(t, contentType, body.Bytes()) {
+		if name == "file" {
+			t.Fatal("a URL-only request must not carry a file part")
+		}
+	}
+}
+
+// With neither a file nor a URL there is no input to send.
+func TestToOpenAITranscriptionRequest_NoFileNoURLIsNil(t *testing.T) {
+	for name, request := range map[string]*schemas.BifrostTranscriptionRequest{
+		"nil input":   {Model: "whisper-1"},
+		"empty input": {Model: "whisper-1", Input: &schemas.TranscriptionInput{}},
+		"empty url": {Model: "whisper-1", Input: &schemas.TranscriptionInput{}, Params: &schemas.TranscriptionParameters{
+			ExtraParams: map[string]interface{}{schemas.TranscriptionURLParam: ""},
+		}},
+	} {
+		if got := ToOpenAITranscriptionRequest(request); got != nil {
+			t.Fatalf("%s: expected nil, got %+v", name, got)
+		}
+	}
+}
+
+// transcribeWithResponse runs one non-streaming transcription against an upstream that answers body.
+func transcribeWithResponse(t *testing.T, responseFormat, body string) *schemas.BifrostTranscriptionResponse {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+	}, &testLogger{})
+	request := &schemas.BifrostTranscriptionRequest{
+		Model:  "whisper-1",
+		Input:  &schemas.TranscriptionInput{File: []byte("fake-audio-bytes"), Filename: "sample.mp3"},
+		Params: &schemas.TranscriptionParameters{ResponseFormat: &responseFormat},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, bifrostErr := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewSecretVar("test-key")}, request)
+	if bifrostErr != nil {
+		t.Fatalf("expected no error, got: %v", bifrostErr.Error.Message)
+	}
+	return resp
+}
+
+// Contract C5: a verbose_json response with the vendor's duration and no usage (Groq's shape,
+// sample from console.groq.com/docs/speech-to-text) reports that duration as usage; Bifrost's
+// unified usage is where Tokun reads the billed length.
+func TestTranscription_VerboseJSONDurationWithoutUsageBecomesDurationUsage(t *testing.T) {
+	groqVerboseJSON := `{
+		"task": "transcribe",
+		"language": "English",
+		"duration": 12.4,
+		"text": "Your transcribed text appears here.",
+		"segments": [
+			{"id": 0, "seek": 0, "start": 0, "end": 3.24, "text": " Your transcribed text appears here.", "tokens": [50365, 2812], "temperature": 0, "avg_logprob": -0.097569615, "compression_ratio": 1.6637554, "no_speech_prob": 0.012814695}
+		],
+		"x_groq": {"id": "req_01jbd6g2qdfw2adyrt2az8hz4w"}
+	}`
+	resp := transcribeWithResponse(t, "verbose_json", groqVerboseJSON)
+	if resp.Usage == nil {
+		t.Fatal("expected usage filled from the vendor-reported duration, got none")
+	}
+	if resp.Usage.Type != "duration" || resp.Usage.Seconds == nil || *resp.Usage.Seconds != 12.4 {
+		t.Fatalf("usage = %+v, want {type: duration, seconds: 12.4}", resp.Usage)
+	}
+	if resp.Usage.InputTokens != nil || resp.Usage.OutputTokens != nil || resp.Usage.TotalTokens != nil {
+		t.Fatalf("no token counts were reported, none may be filled: %+v", resp.Usage)
+	}
+
+	marshaled, err := sonic.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	var wire struct {
+		Usage map[string]interface{} `json:"usage"`
+	}
+	if err := sonic.Unmarshal(marshaled, &wire); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+	if wire.Usage["type"] != "duration" || wire.Usage["seconds"] != 12.4 {
+		t.Fatalf("wire usage = %v, want {type: duration, seconds: 12.4}", wire.Usage)
+	}
+}
+
+// A response that already carries usage keeps it as the vendor sent it, and a response with no
+// duration gets no usage invented (C5 agreement two).
+func TestTranscription_ResponseUsageIsNeverReplacedOrInvented(t *testing.T) {
+	withUsage := `{"task":"transcribe","duration":12.4,"text":"hi","usage":{"type":"duration","seconds":13}}`
+	resp := transcribeWithResponse(t, "verbose_json", withUsage)
+	if resp.Usage == nil || resp.Usage.Type != "duration" || resp.Usage.Seconds == nil || *resp.Usage.Seconds != 13 {
+		t.Fatalf("usage = %+v, want the vendor's {type: duration, seconds: 13}", resp.Usage)
+	}
+
+	withTokens := `{"text":"hi","usage":{"type":"tokens","input_tokens":14,"output_tokens":45,"total_tokens":59}}`
+	resp = transcribeWithResponse(t, "json", withTokens)
+	if resp.Usage == nil || resp.Usage.Type != "tokens" || resp.Usage.Seconds != nil {
+		t.Fatalf("usage = %+v, want the vendor's token usage unchanged", resp.Usage)
+	}
+
+	noDuration := `{"text":"hi"}`
+	if resp = transcribeWithResponse(t, "json", noDuration); resp.Usage != nil {
+		t.Fatalf("usage = %+v, want none when the vendor reported nothing", resp.Usage)
+	}
+}

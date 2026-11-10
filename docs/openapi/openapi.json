@@ -120046,8 +120046,7 @@
       "TranscriptionRequest": {
         "type": "object",
         "required": [
-          "model",
-          "file"
+          "model"
         ],
         "properties": {
           "model": {
@@ -120057,7 +120056,12 @@
           "file": {
             "type": "string",
             "format": "binary",
-            "description": "Audio file to transcribe"
+            "description": "Audio file to transcribe. Required unless `url` is given."
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Audio URL in place of `file`, forwarded to the provider unchanged; Bifrost does not download it. Only providers whose transcription takes a URL accept it (Groq); any other provider answers 400 with `extra_fields.error_type` `caller_unsupported_parameter` and `error.param` `url`."
           },
           "fallbacks": {
             "type": "array",

@@ -1931,23 +1931,26 @@ func prepareTranscriptionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (
 	if err != nil {
 		return nil, false, err
 	}
-	fileHeaders := form.File["file"]
-	if len(fileHeaders) == 0 {
+	// An audio URL ("url", forwarded from the extra params below) may stand in for the file.
+	// The provider decides whether it takes one: core refuses a URL-only request to a provider
+	// that does not with 400 caller_unsupported_parameter (contract C4). Bifrost never
+	// downloads the URL.
+	transcriptionInput := &schemas.TranscriptionInput{}
+	if fileHeaders := form.File["file"]; len(fileHeaders) > 0 {
+		fileHeader := fileHeaders[0]
+		file, err := fileHeader.Open()
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to open uploaded file: %v", err)
+		}
+		defer file.Close()
+		fileData, err := io.ReadAll(file)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to read uploaded file: %v", err)
+		}
+		transcriptionInput.File = fileData
+		transcriptionInput.Filename = fileHeader.Filename
+	} else if urlValues := form.Value[schemas.TranscriptionURLParam]; len(urlValues) == 0 || urlValues[0] == "" {
 		return nil, false, fmt.Errorf("file is required")
-	}
-	fileHeader := fileHeaders[0]
-	file, err := fileHeader.Open()
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to open uploaded file: %v", err)
-	}
-	defer file.Close()
-	fileData, err := io.ReadAll(file)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to read uploaded file: %v", err)
-	}
-	transcriptionInput := &schemas.TranscriptionInput{
-		File:     fileData,
-		Filename: fileHeader.Filename,
 	}
 	transcriptionParams := &schemas.TranscriptionParameters{}
 	if languageValues := form.Value["language"]; len(languageValues) > 0 && languageValues[0] != "" {

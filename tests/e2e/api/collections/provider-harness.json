@@ -300539,6 +300539,251 @@
           ]
         }
       ]
+    },
+    {
+      "name": "310. Groq transcription from an audio URL with duration usage (groq transcription url)",
+      "description": "Groq takes an audio URL in the \"url\" form field in place of the file (contract C4). The native /v1/audio/transcriptions route accepts url without file and leaves the provider to decide: Groq forwards the URL unchanged as a form field with no file part (Bifrost never downloads it); a provider that takes only a file answers 400 caller_unsupported_parameter with error.param \"url\", refused before a key is chosen so no upstream call is made. Groq's verbose_json reports the audio length as \"duration\" and no usage; Bifrost reports that duration as usage {type: duration, seconds} (contract C5), the same for every OpenAI-compatible host, and keeps a vendor's own usage as sent. Groq's 10-second minimum is the caller's price rule and is not applied here. The URL is this fixture's public copy on the upstream repository, pinned to a commit. The /openai drop-in route still requires a file, so it takes no URL-only request; it reaches the duration-usage backfill, pinned by its own case.",
+      "item": [
+        {
+          "name": "/v1/audio/transcriptions - url without file reaches Groq on the named key, duration becomes usage - groq/whisper-large-v3-turbo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('url-only transcription returns text and duration usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'empty text: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.duration, 'verbose_json duration missing: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(j.usage && j.usage.type, 'usage type: ' + pm.response.text()).to.eql('duration');",
+                  "  pm.expect(j.usage.seconds, 'usage seconds must be the vendor duration: ' + pm.response.text()).to.eql(j.duration);",
+                  "});",
+                  "pm.test('one attempt on the named Groq key', function () {",
+                  "  var ef = pm.response.json().extra_fields || {};",
+                  "  var ri = ef.routing_info || {};",
+                  "  pm.expect(ef.provider, 'served by: ' + pm.response.text()).to.eql('groq');",
+                  "  pm.expect(ri.key, 'the caller named this key: ' + pm.response.text()).to.eql('Groq API Key');",
+                  "  pm.expect(!!ri.is_fallback, 'no fallback may run: ' + pm.response.text()).to.eql(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "Groq API Key"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "groq/whisper-large-v3-turbo",
+                  "type": "text"
+                },
+                {
+                  "key": "url",
+                  "value": "https://raw.githubusercontent.com/maximhq/bifrost/1e14ce7e5c9e51f9496d1897c5b12daacac8791f/tests/e2e/api/fixtures/sample.mp3",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "verbose_json",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/transcriptions - file upload verbose_json duration becomes usage - groq/whisper-large-v3-turbo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('file transcription reports the vendor duration as usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.duration, 'verbose_json duration missing: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(j.usage && j.usage.type, 'usage type: ' + pm.response.text()).to.eql('duration');",
+                  "  pm.expect(j.usage.seconds, 'usage seconds must be the vendor duration: ' + pm.response.text()).to.eql(j.duration);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "Groq API Key"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "groq/whisper-large-v3-turbo",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "response_format",
+                  "value": "verbose_json",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/audio/transcriptions - file upload verbose_json duration becomes usage on the OpenAI drop-in route - groq/whisper-large-v3-turbo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('drop-in transcription reports the vendor duration as usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.duration, 'verbose_json duration missing: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(j.usage && j.usage.type, 'usage type: ' + pm.response.text()).to.eql('duration');",
+                  "  pm.expect(j.usage.seconds, 'usage seconds must be the vendor duration: ' + pm.response.text()).to.eql(j.duration);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "Groq API Key"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "groq/whisper-large-v3-turbo",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "response_format",
+                  "value": "verbose_json",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/audio/transcriptions - url without file is refused for a provider that takes only a file - openai/whisper-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('url-only transcription to openai is caller_unsupported_parameter on url', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect((j.extra_fields || {}).error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect((j.error || {}).param, 'error.param: ' + pm.response.text()).to.eql('url');",
+                  "  pm.expect((j.extra_fields || {}).provider, 'refused for: ' + pm.response.text()).to.eql('openai');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "openai/whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "url",
+                  "value": "https://raw.githubusercontent.com/maximhq/bifrost/1e14ce7e5c9e51f9496d1897c5b12daacac8791f/tests/e2e/api/fixtures/sample.mp3",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
