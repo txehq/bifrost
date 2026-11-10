@@ -79,6 +79,26 @@ func mergeDefinition(dst, src map[string]interface{}) {
 	}
 }
 
+// checkEnhancedModeKept refuses a definition whose passthrough fields changed which model
+// transcribes the audio. The request's model is the one key selection and governance
+// authorized, so enhancedMode must still be an object, enabled, naming that model; other
+// enhancedMode fields (modelOptions, prompt, task) stay the caller's.
+func checkEnhancedModeKept(definition map[string]interface{}, model string) *schemas.BifrostError {
+	enhancedMode, ok := definition["enhancedMode"].(map[string]interface{})
+	if !ok {
+		return schemas.NewUnsupportedParameterError("enhancedMode", "enhancedMode must be an object")
+	}
+	if enabled, ok := enhancedMode["enabled"].(bool); !ok || !enabled {
+		return schemas.NewUnsupportedParameterError("enhancedMode",
+			"enhancedMode.enabled cannot be turned off: the request's model is transcribed through enhanced mode")
+	}
+	if named, ok := enhancedMode["model"].(string); !ok || named != model {
+		return schemas.NewUnsupportedParameterError("enhancedMode",
+			"enhancedMode.model cannot differ from the request's model ("+model+"): name the model in the model field")
+	}
+	return nil
+}
+
 // ToAzureSpeechTranscriptionRequest converts a unified transcription request into a fast
 // transcription call. The model goes to definition.enhancedMode, language to
 // definition.locales, timestamp_granularities to enhancedMode.modelOptions.timestamps
@@ -86,16 +106,18 @@ func mergeDefinition(dst, src map[string]interface{}) {
 // response_format diarized_json turns on diarization. When passthroughExtraParams is set
 // (x-bf-passthrough-extra-params), fields outside the unified structure are merged into
 // the definition under their own names (diarization, phraseList, enhancedMode, channels,
-// profanityFilterMode), objects recursively. A value the API cannot take as given returns
+// profanityFilterMode), objects recursively; they cannot change enhancedMode.model or turn
+// enhanced mode off, because the request's model is the one that was authorized. A value the API cannot take as given returns
 // a caller_unsupported_parameter error.
 func ToAzureSpeechTranscriptionRequest(request *schemas.BifrostTranscriptionRequest, passthroughExtraParams bool) (*AzureSpeechTranscriptionRequest, *schemas.BifrostError) {
 	if request == nil || request.Input == nil || len(request.Input.File) == 0 {
 		return nil, providerUtils.NewBifrostBadRequestError("transcription file is required")
 	}
 
+	model := transcriptionModelName(request.Model)
 	enhancedMode := map[string]interface{}{
 		"enabled": true,
-		"model":   transcriptionModelName(request.Model),
+		"model":   model,
 	}
 	definition := map[string]interface{}{"enhancedMode": enhancedMode}
 
@@ -137,6 +159,9 @@ func ToAzureSpeechTranscriptionRequest(request *schemas.BifrostTranscriptionRequ
 				extra[key] = decodeExtraParam(value)
 			}
 			mergeDefinition(definition, extra)
+			if bifrostErr := checkEnhancedModeKept(definition, model); bifrostErr != nil {
+				return nil, bifrostErr
+			}
 		}
 	}
 

@@ -891,6 +891,49 @@ func TestToAzureSpeechTranscriptionRequest(t *testing.T) {
 		}
 	})
 
+	// The request's model is the one key selection and governance authorized: a passthrough
+	// field cannot swap it, turn enhanced mode off or replace the object, and nothing is sent.
+	t.Run("passthrough fields cannot change the transcription model", func(t *testing.T) {
+		for name, enhancedMode := range map[string]interface{}{
+			"another model":      `{"model":"MAI-Transcribe-9"}`,
+			"enhanced mode off":  `{"enabled":false}`,
+			"model not a string": map[string]interface{}{"model": 2},
+			"not an object":      "off",
+		} {
+			t.Run(name, func(t *testing.T) {
+				provider, captured := newMockAzureSpeech(t, map[string]http.HandlerFunc{
+					transcriptionPath: bodyResponse(http.StatusOK, "application/json", transcriptionSample),
+				})
+				ctx := testContext(t)
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+				_, bifrostErr := provider.Transcription(ctx, testKey(), transcriptionRequest(&schemas.TranscriptionParameters{
+					ExtraParams: map[string]interface{}{"enhancedMode": enhancedMode},
+				}))
+				if bifrostErr == nil || bifrostErr.Error == nil {
+					t.Fatal("want a caller_unsupported_parameter error, got none")
+				}
+				if got := bifrostErr.ResolveErrorType(); got != schemas.ErrorTypeCallerUnsupportedParameter {
+					t.Errorf("error_type = %q, want %q", got, schemas.ErrorTypeCallerUnsupportedParameter)
+				}
+				if bifrostErr.Error.Param != "enhancedMode" {
+					t.Errorf("param = %v, want enhancedMode", bifrostErr.Error.Param)
+				}
+				if n := len(captured()); n != 0 {
+					t.Errorf("upstream calls = %d, want 0", n)
+				}
+			})
+		}
+	})
+
+	t.Run("naming the request's own model in enhancedMode is accepted", func(t *testing.T) {
+		got := definition(t, &schemas.TranscriptionParameters{
+			ExtraParams: map[string]interface{}{"enhancedMode": `{"model":"MAI-Transcribe-2","enabled":true}`},
+		}, true)
+		if want := `{"enhancedMode":{"enabled":true,"model":"MAI-Transcribe-2"}}`; got != want {
+			t.Errorf("definition = %s\nwant         %s", got, want)
+		}
+	})
+
 	t.Run("mai-transcribe model names get the documented casing", func(t *testing.T) {
 		for model, want := range map[string]string{
 			"mai-transcribe-2":   "MAI-Transcribe-2",
