@@ -84,6 +84,11 @@ type BatchLineError struct {
 	CustomID string // The line's custom_id
 	Param    string // The request field at fault, as a path under requests[i]
 	Message  string
+	// Unsupported marks a well-formed field whose value this provider's batch cannot take
+	// (a url it cannot run, a second model, a second url): error_type
+	// caller_unsupported_parameter. False is a malformed line (a missing body, a body the
+	// operation cannot parse): caller_invalid_request.
+	Unsupported bool
 }
 
 func (e *BatchLineError) Error() string {

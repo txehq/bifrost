@@ -638,7 +638,7 @@ func ConvertBatchLine(ctx *schemas.BifrostContext, item schemas.BatchRequestItem
 		return encoded, endpoint, nil
 	case schemas.BatchEndpointImageGeneration:
 		if schemas.IsImagenModel(model) {
-			return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "url", Message: fmt.Sprintf("model %s is an Imagen model, which a generateContent batch cannot run", model)}
+			return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "url", Unsupported: true, Message: fmt.Sprintf("model %s is an Imagen model, which a generateContent batch cannot run", model)}
 		}
 		imageRequest, err := item.ToBifrostImageGenerationRequest(provider, model)
 		if err != nil {
@@ -660,20 +660,28 @@ func ConvertBatchLine(ctx *schemas.BifrostContext, item schemas.BatchRequestItem
 	case "":
 		return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "url", Message: "url is required: the line's body is not a chat completion"}
 	default:
-		return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "url", Message: fmt.Sprintf("url %s cannot run in a generateContent batch (supported: %s, %s)", endpoint, schemas.BatchEndpointChatCompletions, schemas.BatchEndpointImageGeneration)}
+		return nil, "", &schemas.BatchLineError{CustomID: item.CustomID, Param: "url", Unsupported: true, Message: fmt.Sprintf("url %s cannot run in a generateContent batch (supported: %s, %s)", endpoint, schemas.BatchEndpointChatCompletions, schemas.BatchEndpointImageGeneration)}
 	}
 }
 
 // NewBatchLineBadRequestError answers a batch line the caller got wrong with a 400 that
-// names the line and the field.
+// names the line and the field in error.param. A field this provider's batch cannot take
+// is error_type caller_unsupported_parameter (contract C4); a malformed line is
+// caller_invalid_request.
 func NewBatchLineBadRequestError(index int, err error) *schemas.BifrostError {
 	var lineErr *schemas.BatchLineError
 	if !errors.As(err, &lineErr) {
 		return providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to convert batch request item %d", index), err)
 	}
 	lineErr.Index = index
+	param := fmt.Sprintf("requests[%d].%s", index, lineErr.Param)
+	if lineErr.Unsupported {
+		bifrostErr := schemas.NewUnsupportedParameterError(param, lineErr.Error())
+		bifrostErr.IsBifrostError = true
+		return bifrostErr
+	}
 	bifrostErr := providerUtils.NewBifrostBadRequestError(lineErr.Error())
-	bifrostErr.Error.Param = fmt.Sprintf("requests[%d].%s", index, lineErr.Param)
+	bifrostErr.Error.Param = param
 	return bifrostErr
 }
 
@@ -703,7 +711,7 @@ func CheckBatchLineModel(item schemas.BatchRequestItem, provider schemas.ModelPr
 			return nil
 		}
 	}
-	return &schemas.BatchLineError{CustomID: item.CustomID, Param: "body.model", Message: fmt.Sprintf("model %s differs from the batch's model %s: a batch runs one model", lineModel, batchModel)}
+	return &schemas.BatchLineError{CustomID: item.CustomID, Param: "body.model", Unsupported: true, Message: fmt.Sprintf("model %s differs from the batch's model %s: a batch runs one model", lineModel, batchModel)}
 }
 
 // batchLineOperation is the operation a line's result is priced and converted as: a line
@@ -727,7 +735,7 @@ func CheckBatchLineOperation(batchOperation *schemas.BatchEndpoint, item schemas
 	if *batchOperation == operation {
 		return nil
 	}
-	return &schemas.BatchLineError{CustomID: item.CustomID, Param: "url", Message: fmt.Sprintf("url %s differs from the batch's other lines (%s): a batch runs one url", operation, *batchOperation)}
+	return &schemas.BatchLineError{CustomID: item.CustomID, Param: "url", Unsupported: true, Message: fmt.Sprintf("url %s differs from the batch's other lines (%s): a batch runs one url", operation, *batchOperation)}
 }
 
 // AccumulateBatchResultsEndpoint folds one result line's endpoint into the endpoint reported
