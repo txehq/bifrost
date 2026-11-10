@@ -47,6 +47,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.GoogleCloudTTS,
 	schemas.Groq,
 	schemas.HuggingFace,
+	schemas.Kling,
 	schemas.MiniMax,
 	schemas.Mistral,
 	schemas.Nebius,

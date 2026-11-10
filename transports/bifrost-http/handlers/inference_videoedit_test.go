@@ -329,6 +329,7 @@ func videoTaskRoutes(t *testing.T) (fasthttp.RequestHandler, *atomic.Int64) {
 	r := router.New()
 	r.POST("/v1/videos", h.videoGeneration)
 	r.POST("/v1/videos/{video_id}/cancel", h.videoCancel)
+	r.GET("/v1/videos/{video_id}", h.videoRetrieve)
 	return r.Handler, &upstream
 }
 
@@ -752,4 +753,238 @@ func BenchmarkVideoListFilters(b *testing.B) {
 			}
 		})
 	}
+}
+
+// TXE-6430 (contract C7): GET /v1/videos/{id} names the task by the vendor's task id, or, with
+// ?id_type=client_reference_id, by the caller's own id. A reference keeps every colon but the
+// last, which separates the provider.
+func TestPrepareVideoRetrieveRequest(t *testing.T) {
+	for name, tc := range map[string]struct {
+		videoID, idType string
+		want            schemas.BifrostVideoRetrieveRequest
+		wantErr         string
+	}{
+		"task id":                   {videoID: "893605946402811985:kling", want: schemas.BifrostVideoRetrieveRequest{Provider: "kling", ID: "893605946402811985"}},
+		"task id, explicit":         {videoID: "893605946402811985:kling", idType: "task_id", want: schemas.BifrostVideoRetrieveRequest{Provider: "kling", ID: "893605946402811985"}},
+		"task id, url-encoded":      {videoID: "a%2Fb:kling", want: schemas.BifrostVideoRetrieveRequest{Provider: "kling", ID: "a/b"}},
+		"client reference":          {videoID: "tk_task_1:kling", idType: "client_reference_id", want: schemas.BifrostVideoRetrieveRequest{Provider: "kling", ID: "tk_task_1", IDType: schemas.VideoIDTypeClientReference}},
+		"client reference, colons":  {videoID: "tk:task:1:tkp_kling", idType: "client_reference_id", want: schemas.BifrostVideoRetrieveRequest{Provider: "tkp_kling", ID: "tk:task:1", IDType: schemas.VideoIDTypeClientReference}},
+		"client reference, encoded": {videoID: "tk%3Atask%201:kling", idType: "client_reference_id", want: schemas.BifrostVideoRetrieveRequest{Provider: "kling", ID: "tk:task 1", IDType: schemas.VideoIDTypeClientReference}},
+		"no provider":               {videoID: "893605946402811985", wantErr: "video_id must be in id:provider format"},
+		"reference, no provider":    {videoID: "tk_task_1", idType: "client_reference_id", wantErr: "client_reference_id:provider"},
+		"reference, empty provider": {videoID: "tk_task_1:", idType: "client_reference_id", wantErr: "client_reference_id:provider"},
+		"unknown id type":           {videoID: "x:kling", idType: "external_id", wantErr: `invalid id_type "external_id"`},
+		"empty id":                  {videoID: "", wantErr: "video_id is required"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := prepareVideoRetrieveRequest(tc.videoID, tc.idType)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, *got)
+		})
+	}
+}
+
+// TXE-6430 (contract C7): a provider whose vendor cannot be queried by the caller's own id
+// answers a retrieve by client_reference_id 400 caller_unsupported_parameter naming id_type, with
+// no upstream call. OpenAI has no such query.
+func TestVideoRetrieveByClientReferenceRefusedWhenUnsupported(t *testing.T) {
+	handler, upstream := videoTaskRoutes(t)
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/v1/videos/tk_task_1:openai?id_type=client_reference_id")
+	handler(ctx)
+	body := ctx.Response.Body()
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body: %s", body)
+	var got struct {
+		Error       struct{ Code, Param string }
+		ExtraFields struct {
+			ErrorType   string `json:"error_type"`
+			Provider    string `json:"provider"`
+			RequestType string `json:"request_type"`
+		} `json:"extra_fields"`
+	}
+	require.NoError(t, sonic.Unmarshal(body, &got), "body: %s", body)
+	assert.Equal(t, "caller_unsupported_parameter", got.ExtraFields.ErrorType, "body: %s", body)
+	assert.Equal(t, "id_type", got.Error.Param, "body: %s", body)
+	assert.Equal(t, "openai", got.ExtraFields.Provider, "body: %s", body)
+	assert.Equal(t, "video_retrieve", got.ExtraFields.RequestType, "body: %s", body)
+
+	ctx = &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/v1/videos/tk_task_1:openai?id_type=external_id")
+	handler(ctx)
+	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+	assert.Contains(t, string(ctx.Response.Body()), "invalid id_type")
+	assert.Zero(t, upstream.Load(), "a refused retrieve must not reach the provider")
+}
+
+// klingUpstreamCall is one request the local Kling upstream received.
+type klingUpstreamCall struct {
+	method, path, query, auth string
+	body                      []byte
+}
+
+// klingTaskAccount configures the built-in kling provider against a local upstream, with two keys.
+type klingTaskAccount struct{ baseURL string }
+
+func (klingTaskAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.Kling}, nil
+}
+
+func (klingTaskAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{
+		{ID: "k1", Name: "K1", Value: *schemas.NewSecretVar("kling-key-1"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		{ID: "k2", Name: "K2", Value: *schemas.NewSecretVar("kling-key-2"), Models: schemas.WhiteList{"*"}, Weight: 1},
+	}, nil
+}
+
+func (a klingTaskAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	network := schemas.DefaultNetworkConfig
+	network.BaseURL = a.baseURL
+	network.AllowPrivateNetwork = true
+	return &schemas.ProviderConfig{NetworkConfig: network, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// TXE-6430 (contract C3, C4, C7): through the HTTP routes, a Kling create and a Kling query are
+// each exactly one upstream call made with the key x-bf-api-key names; a query by
+// client_reference_id returns the same task object as a query by the task id; an undeliverable
+// field and a cancel are refused with no upstream call.
+func TestKlingVideoRoutes(t *testing.T) {
+	const task = `{"id":"893605946402811985","status":"succeeded","message":"","create_time":1781080778802,"update_time":1781080794151,` +
+		`"external_id":"tk:task:1","outputs":[{"type":"video","id":"vid_1","url":"https://v.klingai.com/out.mp4","watermark_url":"","duration":"5"}],` +
+		`"billing":[{"charge_type":"unit","amount":"3.5","package_type":"video"}]}`
+	var mu sync.Mutex
+	var calls []klingUpstreamCall
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		calls = append(calls, klingUpstreamCall{method: r.Method, path: r.URL.Path, query: r.URL.RawQuery, auth: r.Header.Get("Authorization"), body: body})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`{"code":0,"message":"SUCCEED","request_id":"r1","data":{"id":"893605946402811985","status":"submitted","create_time":1781080778802,"update_time":1781080778802,"external_id":"tk:task:1"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"message":"SUCCEED","request_id":"r2","data":[` + task + `]}`))
+	}))
+	t.Cleanup(server.Close)
+	upstreamCalls := func() []klingUpstreamCall {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]klingUpstreamCall(nil), calls...)
+	}
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: klingTaskAccount{baseURL: server.URL}, Logger: bifrost.NewDefaultLogger(schemas.LogLevelError)})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	h := &CompletionHandler{client: client, config: &lib.Config{ClientConfig: &configstore.ClientConfig{}}}
+	r := router.New()
+	r.POST("/v1/videos", h.videoGeneration)
+	r.GET("/v1/videos/{video_id}", h.videoRetrieve)
+	r.POST("/v1/videos/{video_id}/cancel", h.videoCancel)
+
+	do := func(method, uri, body string) *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(method)
+		ctx.Request.SetRequestURI(uri)
+		ctx.Request.Header.Set("x-bf-api-key", "K2")
+		if body != "" {
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.SetBody([]byte(body))
+		}
+		r.Handler(ctx)
+		return ctx
+	}
+	type taskObject struct {
+		ID             string `json:"id"`
+		Status         string `json:"status"`
+		ProviderStatus string `json:"provider_status"`
+		ExpiresAt      int64  `json:"expires_at"`
+		Videos         []struct {
+			Type string `json:"type"`
+			URL  string `json:"url"`
+		} `json:"videos"`
+		Usage struct {
+			OutputSeconds float64 `json:"output_seconds"`
+			VendorCost    struct {
+				Amount float64 `json:"amount"`
+				Unit   string  `json:"unit"`
+			} `json:"vendor_cost"`
+		} `json:"usage"`
+	}
+	type refusal struct {
+		Error       struct{ Code, Param string }
+		ExtraFields struct {
+			ErrorType string `json:"error_type"`
+		} `json:"extra_fields"`
+	}
+
+	// Create: one call, with K2, the fields unchanged and Tokun's ids in options.
+	created := do("POST", "/v1/videos", `{"model":"kling/kling-3.0","prompt":"a dog","seconds":"5","resolution":"1080p","aspect_ratio":"16:9","audio":true,`+
+		`"callback_url":"https://hooks.tokun.sh/v/tk:task:1","client_reference_id":"tk:task:1","watermark":true}`)
+	require.Equal(t, fasthttp.StatusOK, created.Response.StatusCode(), "body: %s", created.Response.Body())
+	var createdTask taskObject
+	require.NoError(t, sonic.Unmarshal(created.Response.Body(), &createdTask))
+	assert.Equal(t, "893605946402811985:kling", createdTask.ID)
+	assert.Equal(t, "queued", createdTask.Status)
+	assert.Equal(t, "submitted", createdTask.ProviderStatus)
+	got := upstreamCalls()
+	require.Len(t, got, 1, "a create is exactly one upstream call")
+	assert.Equal(t, "POST /text-to-video/kling-3.0", got[0].method+" "+got[0].path)
+	assert.Equal(t, "Bearer kling-key-2", got[0].auth, "the key x-bf-api-key names, and no other")
+	assert.JSONEq(t, `{"prompt":"a dog","settings":{"duration":5,"resolution":"1080p","aspect_ratio":"16:9","audio":"native"},`+
+		`"options":{"callback_url":"https://hooks.tokun.sh/v/tk:task:1","external_task_id":"tk:task:1","watermark_info":{"enabled":true}}}`, string(got[0].body))
+
+	// Query by the task id and by the client reference: one call each, the same task object.
+	byID := do("GET", "/v1/videos/893605946402811985:kling", "")
+	require.Equal(t, fasthttp.StatusOK, byID.Response.StatusCode(), "body: %s", byID.Response.Body())
+	byReference := do("GET", "/v1/videos/tk:task:1:kling?id_type=client_reference_id", "")
+	require.Equal(t, fasthttp.StatusOK, byReference.Response.StatusCode(), "body: %s", byReference.Response.Body())
+	got = upstreamCalls()
+	require.Len(t, got, 3, "each query is exactly one upstream call")
+	assert.Equal(t, "GET /tasks?task_ids=893605946402811985", got[1].method+" "+got[1].path+"?"+got[1].query)
+	assert.Equal(t, "GET /tasks?external_task_ids=tk%3Atask%3A1", got[2].method+" "+got[2].path+"?"+got[2].query)
+	assert.Equal(t, "Bearer kling-key-2", got[1].auth)
+	assert.Equal(t, "Bearer kling-key-2", got[2].auth)
+	var taskByID, taskByReference taskObject
+	require.NoError(t, sonic.Unmarshal(byID.Response.Body(), &taskByID))
+	require.NoError(t, sonic.Unmarshal(byReference.Response.Body(), &taskByReference))
+	assert.Equal(t, taskByID, taskByReference, "both queries return the same task object")
+	assert.Equal(t, "893605946402811985:kling", taskByReference.ID, "the id is Kling's task id either way")
+	assert.Equal(t, "completed", taskByID.Status)
+	assert.Equal(t, "succeeded", taskByID.ProviderStatus)
+	assert.Equal(t, int64(1781080794+30*24*3600), taskByID.ExpiresAt)
+	require.Len(t, taskByID.Videos, 1)
+	assert.Equal(t, "url", taskByID.Videos[0].Type)
+	assert.Equal(t, "https://v.klingai.com/out.mp4", taskByID.Videos[0].URL)
+	assert.Equal(t, 5.0, taskByID.Usage.OutputSeconds)
+	assert.Equal(t, 3.5, taskByID.Usage.VendorCost.Amount)
+	assert.Equal(t, "unit", taskByID.Usage.VendorCost.Unit)
+
+	// Undeliverable fields and the cancel are refused before any upstream call.
+	for param, field := range map[string]string{
+		"seconds":               `"seconds":"20"`,
+		"seed":                  `"seed":7`,
+		"size":                  `"size":"1280x720"`,
+		"expires_after_seconds": `"expires_after_seconds":7200`,
+		"output_storage_uri":    `"output_storage_uri":"s3://bucket/task/"`,
+	} {
+		refused := do("POST", "/v1/videos", `{"model":"kling/kling-3.0","prompt":"a dog",`+field+`}`)
+		var r refusal
+		require.NoError(t, sonic.Unmarshal(refused.Response.Body(), &r), "body: %s", refused.Response.Body())
+		assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), "%s body: %s", param, refused.Response.Body())
+		assert.Equal(t, "caller_unsupported_parameter", r.ExtraFields.ErrorType, "%s body: %s", param, refused.Response.Body())
+		assert.Equal(t, param, r.Error.Param, "body: %s", refused.Response.Body())
+	}
+	cancelled := do("POST", "/v1/videos/893605946402811985:kling/cancel", "")
+	var cancelRefusal refusal
+	require.NoError(t, sonic.Unmarshal(cancelled.Response.Body(), &cancelRefusal))
+	assert.Equal(t, fasthttp.StatusBadRequest, cancelled.Response.StatusCode())
+	assert.Equal(t, "provider_cancel_unsupported", cancelRefusal.ExtraFields.ErrorType)
+	assert.Len(t, upstreamCalls(), 3, "a refused request must not reach Kling")
 }

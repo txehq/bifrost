@@ -60,6 +60,12 @@ type providerObjectRef struct {
 // value is the ids of the containers the same request named outright, which are never claimed.
 const governanceAutoContainerContextKey schemas.BifrostContextKey = "bf-governance-auto-container"
 
+// governanceVideoByReferenceContextKey marks a video retrieve that names the task by the
+// client_reference_id it was created with (schemas.VideoIDTypeClientReference). The id in such a
+// request is the caller's own, not an object id, so no creator is recorded under it and the
+// pre-hook cannot check it; the post-hook checks the task the vendor returned instead.
+const governanceVideoByReferenceContextKey schemas.BifrostContextKey = "bf-governance-video-by-client-reference"
+
 // providerObjectLabel is the noun a kind goes by in client-facing messages.
 func providerObjectLabel(kind string) string {
 	switch kind {
@@ -1314,6 +1320,13 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 			Error:      &schemas.ErrorField{Message: fmt.Sprintf("the objects this request names cannot be verified for this virtual key: it names more than %d files, containers or caches, its provider-specific fields could not be read (raw JSON that does not parse, or data nested more than %d levels deep), or it names a stored object that cannot be resolved to one name (a wildcard or a '.' or '..' in its path, or an S3 access point or its alias in place of the bucket)", maxFileReferences, openValueDepth)},
 		}}
 	}
+	// A retrieve by client_reference_id names no object id. With a config store the task the
+	// vendor returns is checked in the post-hook (hideForeignVideoByReference); without one the
+	// request falls through and is refused like any other video read that cannot be verified.
+	if r := req.VideoRetrieveRequest; r != nil && r.IDType == schemas.VideoIDTypeClientReference && p.configStore != nil {
+		ctx.SetValue(governanceVideoByReferenceContextKey, true)
+		return nil
+	}
 	for _, ref := range refs {
 		if ref.isList {
 			continue
@@ -1499,6 +1512,51 @@ func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, ki
 		}
 		return false
 	}, nil
+}
+
+// hideForeignVideoByReference is the ownership check of a video retrieve by client_reference_id:
+// it returns a 404 when the task the vendor returned was created by a virtual key other than the
+// request's own, exactly as the pre-hook answers a retrieve by another key's task id. It returns
+// nil for every other response, and a 500 when the creator cannot be looked up, so an unchecked
+// task is never sent.
+func (p *GovernancePlugin) hideForeignVideoByReference(ctx *schemas.BifrostContext, provider string, result *schemas.BifrostResponse) *schemas.BifrostError {
+	if marked, _ := ctx.Value(governanceVideoByReferenceContextKey).(bool); !marked {
+		return nil
+	}
+	if p.configStore == nil || result == nil || result.VideoGenerationResponse == nil || !p.objectOwnershipEnforced() {
+		return nil
+	}
+	vkID := requestVirtualKeyID(ctx)
+	if vkID == "" {
+		return nil
+	}
+	video := result.VideoGenerationResponse
+	label := providerObjectLabel(configstoreTables.ProviderObjectKindVideo)
+	hidden, err := p.hiddenProviderObjects(ctx, configstoreTables.ProviderObjectKindVideo, provider, vkID, []string{video.ID})
+	if err != nil {
+		p.logger.Error("failed to load %s ownership for a retrieve by client_reference_id: %v", label, err)
+		return &schemas.BifrostError{
+			StatusCode: bifrost.Ptr(500),
+			Error:      &schemas.ErrorField{Message: fmt.Sprintf("failed to verify access to the %s", label)},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.VideoRetrieveRequest,
+				Provider:    schemas.ModelProvider(provider),
+				ErrorType:   schemas.ErrorTypeBifrostInternal,
+			},
+		}
+	}
+	if hidden == nil || !hidden(video.ID) {
+		return nil
+	}
+	return &schemas.BifrostError{
+		Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
+		StatusCode: bifrost.Ptr(404),
+		Error:      &schemas.ErrorField{Message: fmt.Sprintf("%s not found for this client_reference_id", label)},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType: schemas.VideoRetrieveRequest,
+			Provider:    schemas.ModelProvider(provider),
+		},
+	}
 }
 
 // filterProviderObjectList narrows a list of provider objects to the ones the request's virtual

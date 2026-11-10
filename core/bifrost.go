@@ -44,6 +44,7 @@ import (
 	"github.com/capsohq/bifrost/core/providers/googlecloudtts"
 	"github.com/capsohq/bifrost/core/providers/groq"
 	"github.com/capsohq/bifrost/core/providers/huggingface"
+	"github.com/capsohq/bifrost/core/providers/kling"
 	"github.com/capsohq/bifrost/core/providers/minimax"
 	"github.com/capsohq/bifrost/core/providers/mistral"
 	"github.com/capsohq/bifrost/core/providers/moonshot"
@@ -5258,6 +5259,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return bfl.NewBFLProvider(config, bifrost.logger)
 	case schemas.AzureSpeech:
 		return azurespeech.NewAzureSpeechProvider(config, bifrost.logger)
+	case schemas.Kling:
+		return kling.NewKlingProvider(config, bifrost.logger)
 	case schemas.Cloudflare:
 		return cloudflare.NewCloudflareProvider(config, bifrost.logger)
 	case schemas.Gemini:
@@ -8352,15 +8355,19 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 			continue
 		}
 
-		// The async task contract (C7) refuses two requests here, before a key is chosen, so
-		// neither makes an upstream call: a task control field this provider does not take, and
-		// a cancel on a provider with no cancel API.
+		// The async task contract (C7) refuses three requests here, before a key is chosen, so
+		// none makes an upstream call: a task control field this provider does not take, a
+		// cancel on a provider with no cancel API, and a query by client_reference_id on a
+		// provider whose vendor cannot be queried by the caller's own id.
 		taskErr := schemas.CheckTaskControlFields(provider, &req.BifrostRequest)
 		if taskErr == nil {
 			taskErr = schemas.CheckVideoCancelSupported(provider, &req.BifrostRequest)
 		}
 		if taskErr == nil {
 			taskErr = schemas.CheckImageTaskCancelSupported(provider, &req.BifrostRequest)
+		}
+		if taskErr == nil {
+			taskErr = schemas.CheckVideoRetrieveByClientReference(provider, &req.BifrostRequest)
 		}
 		if taskErr != nil {
 			taskErr.PopulateExtraFields(req.RequestType, provider.GetProviderKey(), model, model)
@@ -9605,7 +9612,21 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		videoEditResponse.BackfillParams(&req.BifrostRequest)
 		response.VideoGenerationResponse = videoEditResponse
 	case schemas.VideoRetrieveRequest:
-		videoRetrieveResponse, bifrostError := provider.VideoRetrieve(req.Context, key, req.BifrostRequest.VideoRetrieveRequest)
+		retrieveRequest := req.BifrostRequest.VideoRetrieveRequest
+		var videoRetrieveResponse *schemas.BifrostVideoGenerationResponse
+		var bifrostError *schemas.BifrostError
+		if retrieveRequest != nil && retrieveRequest.IDType == schemas.VideoIDTypeClientReference {
+			// The worker already refused a provider that cannot query by the caller's own id
+			// (CheckVideoRetrieveByClientReference); the assertion is repeated so this path
+			// cannot hand a client reference to VideoRetrieve as if it were a task id.
+			retriever, ok := provider.(schemas.VideoClientReferenceRetriever)
+			if !ok {
+				return nil, schemas.NewVideoRetrieveByClientReferenceUnsupportedError()
+			}
+			videoRetrieveResponse, bifrostError = retriever.VideoRetrieveByClientReferenceID(req.Context, key, retrieveRequest)
+		} else {
+			videoRetrieveResponse, bifrostError = provider.VideoRetrieve(req.Context, key, retrieveRequest)
+		}
 		if bifrostError != nil {
 			return nil, bifrostError
 		}

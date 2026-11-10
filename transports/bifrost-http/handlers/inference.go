@@ -3573,33 +3573,59 @@ func (h *CompletionHandler) videoEdit(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, resp)
 }
 
+// videoIDTypeQueryParam is the query parameter of GET /v1/videos/{video_id} that says what the
+// id in the path is (fork, TXE-6430, contract C7).
+const videoIDTypeQueryParam = "id_type"
+
+// prepareVideoRetrieveRequest parses GET /v1/videos/{video_id} into a Bifrost video retrieve
+// request. Every error it returns is the caller's, answered with 400 and the error's text.
+//
+// The path is {task id}:{provider}, the id a create response gave. With
+// ?id_type=client_reference_id it is {client_reference_id}:{provider} instead: the task is looked
+// up by the caller's own id, for a caller that sent a create and never saw its response. The
+// provider is then the text after the last colon, so a reference that itself contains a colon is
+// kept whole; a task id keeps the split at the first colon it always had.
+func prepareVideoRetrieveRequest(videoID string, idType string) (*schemas.BifrostVideoRetrieveRequest, error) {
+	if videoID == "" {
+		return nil, errors.New("video_id is required")
+	}
+	decodedID, err := url.PathUnescape(videoID)
+	if err != nil {
+		return nil, errors.New("invalid video_id encoding")
+	}
+
+	req := &schemas.BifrostVideoRetrieveRequest{}
+	var id, provider string
+	switch schemas.VideoIDType(idType) {
+	case "", schemas.VideoIDTypeTask:
+		idParts := strings.SplitN(decodedID, ":", 2)
+		if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
+			return nil, errors.New("video_id must be in id:provider format")
+		}
+		id, provider = idParts[0], idParts[1]
+	case schemas.VideoIDTypeClientReference:
+		idx := strings.LastIndex(decodedID, ":")
+		if idx <= 0 || idx == len(decodedID)-1 {
+			return nil, errors.New("video_id must be in client_reference_id:provider format when id_type is client_reference_id")
+		}
+		id, provider = decodedID[:idx], decodedID[idx+1:]
+		req.IDType = schemas.VideoIDTypeClientReference
+	default:
+		return nil, fmt.Errorf("invalid %s %q: expected %s or %s", videoIDTypeQueryParam, idType, schemas.VideoIDTypeTask, schemas.VideoIDTypeClientReference)
+	}
+	req.Provider = schemas.ModelProvider(provider)
+	req.ID = id
+	return req, nil
+}
+
 // videoRetrieve handles GET /v1/videos/{video_id} - Retrieve a video generation job
 func (h *CompletionHandler) videoRetrieve(ctx *fasthttp.RequestCtx) {
 	// Get video ID from URL parameter
-	videoID, ok := ctx.UserValue("video_id").(string)
-	if !ok || videoID == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "video_id is required")
-		return
-	}
-
-	// Decode URL-encoded video ID
-	decodedID, err := url.PathUnescape(videoID)
+	videoID, _ := ctx.UserValue("video_id").(string)
+	bifrostVideoReq, err := prepareVideoRetrieveRequest(videoID, string(ctx.QueryArgs().Peek(videoIDTypeQueryParam)))
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "invalid video_id encoding")
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
-	}
-	idParts := strings.SplitN(decodedID, ":", 2)
-	if len(idParts) != 2 || idParts[0] == "" || idParts[1] == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "video_id must be in id:provider format")
-		return
-	}
-
-	provider := schemas.ModelProvider(idParts[1])
-
-	// Build Bifrost video retrieve request
-	bifrostVideoReq := &schemas.BifrostVideoRetrieveRequest{
-		Provider: provider,
-		ID:       idParts[0],
 	}
 
 	// Convert context
