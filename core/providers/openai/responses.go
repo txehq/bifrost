@@ -1567,6 +1567,11 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 				if webSearchContentTypesSupported && len(tool.ResponsesToolWebSearch.SearchContentTypes) > 0 {
 					newWebSearch.SearchContentTypes = append([]string(nil), tool.ResponsesToolWebSearch.SearchContentTypes...)
 				}
+				// image_settings configures the image search that search_content_types turns
+				// on, so it travels with it: kept where content types are, dropped where they are.
+				if webSearchContentTypesSupported && len(tool.ResponsesToolWebSearch.ImageSettings) > 0 {
+					newWebSearch.ImageSettings = append(json.RawMessage(nil), tool.ResponsesToolWebSearch.ImageSettings...)
+				}
 
 				// Copy other fields if they exist
 				if tool.ResponsesToolWebSearch.UserLocation != nil {

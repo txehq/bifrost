@@ -295785,6 +295785,181 @@
           }
         }
       ]
+    },
+    {
+      "name": "327. Responses web_search keeps image_settings and web_search_call results (web search image fields)",
+      "description": "Kimi's Responses web_search tool can run an image search: search_content_types includes image, image_settings sets max_results and caption, and with include web_search_call.results the web_search_call item carries a results array of image_result entries (https://platform.kimi.ai/docs/api/responses.md). The shared Responses schema (core/schemas/responses.go) lost both ends. ResponsesToolWebSearch had no image_settings field, so the tool reached the vendor without it. And a web_search_call's results were decoded by the embedded file-search struct into the file-search result type, so every entry came back as {} and the item gained a queries: null that the vendor never sent. image_settings is now carried as raw JSON, kept wherever search_content_types is kept; a web_search_call keeps its results as raw JSON and gets no queries field unless the vendor sent one. file_search_call is unchanged. Pinned in Go by TestResponsesWebSearchCallKeepsVendorResults, TestResponsesWebSearchToolKeepsImageSettings and the Moonshot provider tests; these cases pin the live wire on both Responses routes.",
+      "item": [
+        {
+          "name": "/v1/responses - image_settings reaches Kimi and web_search_call results come back whole - moonshot/kimi-k3.1-pro",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('web search image fields: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('web search image fields: image_settings on the request Kimi received', function () {",
+                  "  var rr = (j.extra_fields || {}).raw_request;",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "  var tool = (rr.tools || []).filter(function (t) { return t.type === 'web_search'; })[0];",
+                  "  pm.expect(tool, 'no web_search tool on the wire: ' + JSON.stringify(rr.tools)).to.exist;",
+                  "  pm.expect(tool.image_settings, 'image_settings dropped: ' + JSON.stringify(tool)).to.eql({ max_results: 2, caption: true });",
+                  "  pm.expect(tool.search_content_types, JSON.stringify(tool)).to.eql(['text', 'image']);",
+                  "});",
+                  "var calls = (j.output || []).filter(function (o) { return o.type === 'web_search_call'; });",
+                  "pm.test('web search image fields: a web_search_call item came back', function () { pm.expect(calls.length, 'no web_search_call item: ' + pm.response.text().slice(0, 800)).to.be.above(0); });",
+                  "pm.test('web search image fields: no queries field Kimi did not send', function () {",
+                  "  calls.forEach(function (c) { pm.expect(c, JSON.stringify(c).slice(0, 600)).to.not.have.property('queries'); });",
+                  "});",
+                  "pm.test('web search image fields: image results keep Kimi\\'s fields, none emptied', function () {",
+                  "  var withResults = calls.filter(function (c) { return Array.isArray(c.results) && c.results.length > 0; });",
+                  "  pm.expect(withResults.length, 'no web_search_call carried results (include web_search_call.results, image search on): ' + JSON.stringify(calls).slice(0, 800)).to.be.above(0);",
+                  "  withResults.forEach(function (c) { c.results.forEach(function (r) {",
+                  "    pm.expect(r.type, JSON.stringify(r)).to.eql('image_result');",
+                  "    pm.expect(r.image_url, JSON.stringify(r)).to.be.a('string').and.not.empty;",
+                  "  }); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"moonshot/kimi-k3.1-pro\",\n  \"input\": \"Search the web for a photo of a red panda and describe it in one sentence.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search\",\n      \"search_content_types\": [\n        \"text\",\n        \"image\"\n      ],\n      \"image_settings\": {\n        \"max_results\": 2,\n        \"caption\": true\n      }\n    }\n  ],\n  \"include\": [\n    \"web_search_call.action.sources\",\n    \"web_search_call.results\"\n  ],\n  \"max_output_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/responses stream - web_search_call results whole on output_item.done and response.completed - moonshot/kimi-k3.1-pro",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('web search image fields stream: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var events = pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "var last = events[events.length - 1] || {};",
+                  "pm.test('web search image fields stream: ends with response.completed', function () { pm.expect(last.type, JSON.stringify(last).slice(0, 600)).to.eql('response.completed'); });",
+                  "var calls = events.filter(function (e) { return e.type === 'response.output_item.done' && e.item && e.item.type === 'web_search_call'; }).map(function (e) { return e.item; })",
+                  "  .concat(((last.response || {}).output || []).filter(function (o) { return o.type === 'web_search_call'; }));",
+                  "pm.test('web search image fields stream: a web_search_call item came back', function () { pm.expect(calls.length, 'no web_search_call item: ' + pm.response.text().slice(0, 800)).to.be.above(0); });",
+                  "pm.test('web search image fields stream: no queries field Kimi did not send', function () {",
+                  "  calls.forEach(function (c) { pm.expect(c, JSON.stringify(c).slice(0, 600)).to.not.have.property('queries'); });",
+                  "});",
+                  "pm.test('web search image fields stream: image results keep Kimi\\'s fields, none emptied', function () {",
+                  "  var withResults = calls.filter(function (c) { return Array.isArray(c.results) && c.results.length > 0; });",
+                  "  pm.expect(withResults.length, 'no web_search_call carried results (include web_search_call.results, image search on): ' + JSON.stringify(calls).slice(0, 800)).to.be.above(0);",
+                  "  withResults.forEach(function (c) { c.results.forEach(function (r) {",
+                  "    pm.expect(r.type, JSON.stringify(r)).to.eql('image_result');",
+                  "    pm.expect(r.image_url, JSON.stringify(r)).to.be.a('string').and.not.empty;",
+                  "  }); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"moonshot/kimi-k3.1-pro\",\n  \"input\": \"Search the web for a photo of a red panda and describe it in one sentence.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search\",\n      \"search_content_types\": [\n        \"text\",\n        \"image\"\n      ],\n      \"image_settings\": {\n        \"max_results\": 2,\n        \"caption\": true\n      }\n    }\n  ],\n  \"include\": [\n    \"web_search_call.action.sources\",\n    \"web_search_call.results\"\n  ],\n  \"max_output_tokens\": 1024,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/responses - web_search_call results come back whole on the OpenAI drop-in route - moonshot/kimi-k3.1-pro",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('web search image fields drop-in: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "var calls = (j.output || []).filter(function (o) { return o.type === 'web_search_call'; });",
+                  "pm.test('web search image fields drop-in: a web_search_call item came back', function () { pm.expect(calls.length, 'no web_search_call item: ' + pm.response.text().slice(0, 800)).to.be.above(0); });",
+                  "pm.test('web search image fields drop-in: no queries field Kimi did not send', function () {",
+                  "  calls.forEach(function (c) { pm.expect(c, JSON.stringify(c).slice(0, 600)).to.not.have.property('queries'); });",
+                  "});",
+                  "pm.test('web search image fields drop-in: image results keep Kimi\\'s fields, none emptied', function () {",
+                  "  var withResults = calls.filter(function (c) { return Array.isArray(c.results) && c.results.length > 0; });",
+                  "  pm.expect(withResults.length, 'no web_search_call carried results (include web_search_call.results, image search on): ' + JSON.stringify(calls).slice(0, 800)).to.be.above(0);",
+                  "  withResults.forEach(function (c) { c.results.forEach(function (r) {",
+                  "    pm.expect(r.type, JSON.stringify(r)).to.eql('image_result');",
+                  "    pm.expect(r.image_url, JSON.stringify(r)).to.be.a('string').and.not.empty;",
+                  "  }); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"moonshot/kimi-k3.1-pro\",\n  \"input\": \"Search the web for a photo of a red panda and describe it in one sentence.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search\",\n      \"search_content_types\": [\n        \"text\",\n        \"image\"\n      ],\n      \"image_settings\": {\n        \"max_results\": 2,\n        \"caption\": true\n      }\n    }\n  ],\n  \"include\": [\n    \"web_search_call.action.sources\",\n    \"web_search_call.results\"\n  ],\n  \"max_output_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

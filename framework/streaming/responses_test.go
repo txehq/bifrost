@@ -649,6 +649,34 @@ func TestDeepCopyResponsesMessageCopiesToolsetName(t *testing.T) {
 	}
 }
 
+// TXE-6958: a streamed web_search_call keeps the results the vendor sent (Kimi's image
+// results) in the accumulated output, which is what logs persist. This package copies
+// messages with its own helper, which did not know the raw field that holds them.
+func TestAccumulatorKeepsWebSearchCallResults(t *testing.T) {
+	const item = `{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"red pandas"},` +
+		`"results":[{"type":"image_result","image_url":"https://example.com/i.png","caption":"A red panda"}]}`
+	const results = `[{"type":"image_result","image_url":"https://example.com/i.png","caption":"A red panda"}]`
+	var done schemas.BifrostResponsesStreamResponse
+	require.NoError(t, schemas.Unmarshal([]byte(`{"type":"response.output_item.done","sequence_number":1,"output_index":0,"item":`+item+`}`), &done))
+	var completed schemas.BifrostResponsesStreamResponse
+	require.NoError(t, schemas.Unmarshal([]byte(`{"type":"response.completed","sequence_number":2,"response":{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"kimi-k3.1-pro","output":[`+item+`]}}`), &completed))
+
+	copiedDone := deepCopyResponsesStreamResponse(&done)
+	require.JSONEq(t, results, string(copiedDone.Item.WebSearchResults))
+	copiedDone.Item.WebSearchResults[0] = 'X'
+	require.JSONEq(t, results, string(done.Item.WebSearchResults), "the copy shares the original's bytes")
+
+	copiedCompleted := deepCopyResponsesStreamResponse(&completed)
+	require.JSONEq(t, results, string(copiedCompleted.Response.Output[0].WebSearchResults))
+
+	// The accumulator builds its output from output_item.done.
+	messages := BuildResponsesMessagesFromChunks([]*ResponsesStreamChunk{{StreamResponse: &done}})
+	require.Len(t, messages, 1)
+	encoded, err := schemas.MarshalSorted(messages[0])
+	require.NoError(t, err)
+	require.JSONEq(t, item, string(encoded))
+}
+
 // Only output_item.done carries a custom_tool_call's `input`, so the accumulator
 // must take that item wholesale.
 func TestBuildResponsesMessagePreservesCustomToolCallInput(t *testing.T) {

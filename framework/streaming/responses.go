@@ -272,6 +272,7 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 	// when a workspace build provides them.
 	copyRawMessageFieldByName(&copy, original, "ToolSearchOutputTools")
 	copyRawMessageFieldByName(&copy, original, "AdditionalTools")
+	copyRawMessageFieldByName(&copy, original, "WebSearchResults")
 
 	// Deep copy ResponsesReasoning if present
 	if original.ResponsesReasoning != nil {
