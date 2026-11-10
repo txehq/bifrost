@@ -87,7 +87,8 @@
           "value": "test-key",
           "models": [
             "azure-filtered",
-            "gpt-image-1.5"
+            "gpt-image-1.5",
+            "azure-content-filter"
           ],
           "weight": 1,
           "azure_key_config": {
@@ -443,6 +444,40 @@
         }
       ],
       "network_config": {
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "moonshot": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/oc",
+        "max_retries": 0,
+        "default_request_timeout_in_seconds": 10
+      }
+    },
+    "deepseek": {
+      "keys": [
+        {
+          "name": "local-error-fixture",
+          "value": "test-key",
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:8791/pp/oc",
         "max_retries": 0,
         "default_request_timeout_in_seconds": 10
       }

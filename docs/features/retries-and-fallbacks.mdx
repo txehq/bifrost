@@ -228,6 +228,22 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
 </Tab>
 </Tabs>
 
+### The encrypted-reasoning retry and its switch
+
+One retry runs outside `max_retries`. When a request replays encrypted reasoning (an OpenAI `encrypted_content` item, an Anthropic thinking signature or `redacted_thinking` block, a Gemini thought signature) and the provider answers `400`, Bifrost strips the encrypted content from the request and calls the provider once more on the same key. The token is bound to the key, organization and endpoint that minted it, so a conversation that moved between keys or providers would otherwise fail on every later turn.
+
+That retry is a second upstream call the caller did not ask for. A deployment that settles each request against exactly one provider call turns it off (txehq/bifrost):
+
+```json
+{
+  "client": {
+    "disable_encrypted_reasoning_retry": true
+  }
+}
+```
+
+With the switch on, the provider's `400` is returned unchanged after one upstream call and the request is not rewritten. It defaults to `false`, can also be set through `PUT /api/config`, and applies to the next request without a restart.
+
 ### Key rotation on per-key failures
 
 <Note>

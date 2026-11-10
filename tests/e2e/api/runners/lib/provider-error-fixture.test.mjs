@@ -328,3 +328,30 @@ test("a Gemini generateContent path answers by its image fixture model", async (
   const other = await call("gemini-2.5-flash");
   assert.ok(other.candidates[0].content.parts.some((p) => p.executableCode || p.codeExecutionResult || p.text !== undefined), "the code-execution answer");
 });
+
+// TXE-6527: the OpenAI-compatible chat paths record the body the vendor received, so a harness row can read
+// max_completion_tokens, the prompt-cache fields and the service tier back; the Azure blocked-prompt answer is
+// the documented 400 with code content_filter; the capability sheet lists the tiers of oc-tiered.
+test("compatible chat requests are recorded, and the azure content filter answer is the documented 400", async (t) => {
+  const post = await startFixture(t);
+  const base = `http://127.0.0.1:${post.port}`;
+  for (const path of ["/pp/oc/v1/chat/completions", "/pp/oc/chat/completions"]) {
+    const res = await post({ model: "oc-plain", messages: [{ role: "user", content: "hi" }], max_completion_tokens: 5, service_tier: "priority", prompt_cache_options: { ttl: "1h" } }, path);
+    assert.equal(res.status, 200, path);
+    assert.equal((await res.json()).service_tier, "priority", `${path} echoes the tier it was asked for`);
+  }
+  const { calls } = (await (await fetch(`${base}/__wire`)).json()).data[0];
+  assert.deepEqual(calls.map((c) => c.path), ["/pp/oc/v1/chat/completions", "/pp/oc/chat/completions"]);
+  assert.equal(JSON.parse(calls[0].body).max_completion_tokens, 5);
+  assert.equal(JSON.parse(calls[0].body).prompt_cache_options.ttl, "1h");
+
+  const blocked = await post({ model: "azure-content-filter", messages: [{ role: "user", content: "hi" }] }, "/openai/v1/chat/completions");
+  assert.equal(blocked.status, 400);
+  const { error } = await blocked.json();
+  assert.equal(error.code, "content_filter");
+  assert.equal(error.innererror.code, "ResponsibleAIPolicyViolation");
+
+  const sheet = await (await fetch(`${base}/model-parameters.json`)).json();
+  assert.deepEqual(sheet["oc-tiered"].service_tiers, ["default", "priority"]);
+  assert.equal(sheet["oc-tiered"].provider, "moonshot");
+});

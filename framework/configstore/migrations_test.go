@@ -4831,6 +4831,30 @@ func TestMigrationAddClientConfigForkDeploymentSwitchColumns(t *testing.T) {
 	require.NoError(t, migrationAddClientConfigForkDeploymentSwitchColumns(ctx, db, testMigrationLogger))
 }
 
+// The fork's encrypted-reasoning retry switch (TXE-6527) reads back as off on an upgrade: the
+// one stripped retry stays until a deployment turns it off.
+func TestMigrationAddClientConfigDisableEncryptedReasoningRetryColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	mg := db.Migrator()
+	const column = "disable_encrypted_reasoning_retry"
+	require.NoError(t, mg.DropColumn(&tables.TableClientConfig{}, column))
+	require.False(t, mg.HasColumn(&tables.TableClientConfig{}, column))
+
+	require.NoError(t, migrationAddClientConfigDisableEncryptedReasoningRetryColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, column))
+
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.False(t, cfg.DisableEncryptedReasoningRetry, "an upgrade keeps the encrypted-reasoning retry")
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_disable_encrypted_reasoning_retry_column").Error)
+	require.NoError(t, migrationAddClientConfigDisableEncryptedReasoningRetryColumn(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddVirtualKeyDeleteAfterExpireColumn(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()
