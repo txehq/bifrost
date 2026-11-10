@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -355,6 +356,17 @@ func convertImagenFormatToSize(sampleImageSize *string, aspectRatio *string) str
 	return strconv.Itoa(baseSize) + "x" + strconv.Itoa(baseSize)
 }
 
+// ToBifrostImageGenerationResponse converts a generateContent response of an image model.
+//
+// Fork (TXE-6526, contract C5 and C6). A vendor 200 is one of three things:
+//   - images came: they are Data, and usage.output_images is their count;
+//   - no image came and the vendor marked a block (promptFeedback.blockReason, a safety
+//     finishReason, or a candidate that answered in text only): a 200 with "data": [] and
+//     content_filter carrying the vendor's values verbatim (see geminiImageBlockReasons);
+//   - no image came and nothing marks a block: 502 provider_empty_result, with the vendor's
+//     finishReason as error.code and its finishMessage as the message when it sent them.
+//
+// Usage is the vendor's usageMetadata whenever it sent one, on a block too.
 func (response *GenerateContentResponse) ToBifrostImageGenerationResponse() (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	bifrostResp := &schemas.BifrostImageGenerationResponse{
 		ID:    response.ResponseID,
@@ -362,58 +374,263 @@ func (response *GenerateContentResponse) ToBifrostImageGenerationResponse() (*sc
 		Data:  []schemas.ImageData{},
 	}
 
-	// Process candidates to extract image data
-	if len(response.Candidates) > 0 {
-		candidate := response.Candidates[0]
-		if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
-			var imageData []schemas.ImageData
-			var imageMetadata []schemas.ImageGenerationResponseParameters
-
-			// Extract image data from all parts
-			for idx, part := range candidate.Content.Parts {
-				// Check that part is not nil before accessing its fields
-				if part != nil && part.InlineData != nil {
-					imageData = append(imageData, schemas.ImageData{
-						B64JSON: part.InlineData.Data,
-						Index:   idx,
-					})
-					// Convert MIME type to file extension for OutputFormat
-					outputFormat := convertMimeTypeToExtension(part.InlineData.MIMEType)
-					imageMetadata = append(imageMetadata, schemas.ImageGenerationResponseParameters{
-						OutputFormat: outputFormat,
-					})
-				}
-			}
-
-			// Set usage information with modality details
-			bifrostResp.Usage = convertGeminiUsageMetadataToImageUsage(response.UsageMetadata)
-			// Only assign imageData when it has elements
-			if len(imageData) > 0 {
-				bifrostResp.Data = imageData
-				// Only set ImageGenerationResponseParameters when metadata exists
-				if len(imageMetadata) > 0 {
-					bifrostResp.ImageGenerationResponseParameters = &imageMetadata[0]
-				}
-			}
-		} else {
-			return nil, &schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: candidate.FinishMessage,
-					Code:    schemas.Ptr(string(candidate.FinishReason)),
-				},
-			}
+	// Extract image data from the parts of every candidate. Index is the part's index in its
+	// candidate, as before.
+	var firstOutputFormat string
+	for _, candidate := range response.Candidates {
+		if candidate == nil || candidate.Content == nil {
+			continue
 		}
-	} else {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: "No candidates found in response",
-			},
+		for idx, part := range candidate.Content.Parts {
+			if part == nil || part.InlineData == nil {
+				continue
+			}
+			if len(bifrostResp.Data) == 0 {
+				// Convert MIME type to file extension for OutputFormat
+				firstOutputFormat = convertMimeTypeToExtension(part.InlineData.MIMEType)
+			}
+			bifrostResp.Data = append(bifrostResp.Data, schemas.ImageData{
+				B64JSON: part.InlineData.Data,
+				Index:   idx,
+			})
 		}
 	}
 
+	// Set usage information with modality details
+	bifrostResp.Usage = convertGeminiUsageMetadataToImageUsage(response.UsageMetadata)
+
+	if len(bifrostResp.Data) > 0 {
+		bifrostResp.ImageGenerationResponseParameters = &schemas.ImageGenerationResponseParameters{
+			OutputFormat: firstOutputFormat,
+		}
+	} else {
+		reasons, blocked := geminiImageBlockReasons(response)
+		if !blocked {
+			return nil, geminiImageEmptyResultError(response)
+		}
+		// One generateContent call asks for one image (n other than 1 is refused), so a block
+		// filters exactly the one image requested.
+		bifrostResp.ContentFilter = &schemas.ContentFilterInfo{FilteredCount: 1, Reasons: reasons}
+	}
+
+	// usage.output_images is the count of images the vendor delivered (0 on a block).
+	if bifrostResp.Usage == nil {
+		bifrostResp.Usage = &schemas.ImageUsage{}
+	}
+	bifrostResp.Usage.OutputImages = schemas.Ptr(len(bifrostResp.Data))
+
 	return bifrostResp, nil
+}
+
+// geminiImageBlockFinishReasons are the finishReason values with which Gemini says it withheld
+// the output for safety or policy. Any other finishReason on a candidate with no content (OTHER,
+// NO_IMAGE, IMAGE_OTHER, MAX_TOKENS, ...) is not a block.
+var geminiImageBlockFinishReasons = []FinishReason{
+	FinishReasonSafety,
+	FinishReasonRecitation,
+	FinishReasonBlocklist,
+	FinishReasonProhibitedContent,
+	FinishReasonSPII,
+	FinishReasonImageSafety,
+	FinishReasonImageProhibitedContent,
+	FinishReasonImageRecitation,
+}
+
+// geminiImageBlockReasons reports whether a generateContent response that delivered no image
+// carries a block marker, and the vendor's values for content_filter.reasons, verbatim and in
+// the order the vendor sent them: promptFeedback.blockReason; then, per candidate that is a
+// marker, its finishReason and its finishMessage when present. A candidate is a marker when its
+// finishReason is one of geminiImageBlockFinishReasons, or when it answered in text only (the
+// model declined in prose; its finishReason is then usually STOP).
+func geminiImageBlockReasons(response *GenerateContentResponse) (reasons []string, blocked bool) {
+	if response.PromptFeedback != nil && response.PromptFeedback.BlockReason != "" {
+		blocked = true
+		reasons = append(reasons, response.PromptFeedback.BlockReason)
+	}
+	for _, candidate := range response.Candidates {
+		if candidate == nil {
+			continue
+		}
+		if !slices.Contains(geminiImageBlockFinishReasons, candidate.FinishReason) && !geminiCandidateHasText(candidate) {
+			continue
+		}
+		blocked = true
+		if candidate.FinishReason != "" {
+			reasons = append(reasons, string(candidate.FinishReason))
+		}
+		if candidate.FinishMessage != "" {
+			reasons = append(reasons, candidate.FinishMessage)
+		}
+	}
+	return reasons, blocked
+}
+
+// geminiCandidateHasText reports whether the candidate carries answer text (thought summaries
+// are not an answer).
+func geminiCandidateHasText(candidate *Candidate) bool {
+	if candidate.Content == nil {
+		return false
+	}
+	for _, part := range candidate.Content.Parts {
+		if part != nil && part.Text != "" && !part.Thought {
+			return true
+		}
+	}
+	return false
+}
+
+// geminiImageEmptyResultError is the error for a vendor 200 with no image and no block marker:
+// 502 provider_empty_result (contract C6). The first candidate's finishReason and finishMessage
+// are kept as error.code and the message.
+func geminiImageEmptyResultError(response *GenerateContentResponse) *schemas.BifrostError {
+	var code, message string
+	for _, candidate := range response.Candidates {
+		if candidate != nil {
+			code, message = string(candidate.FinishReason), candidate.FinishMessage
+			break
+		}
+	}
+	if message == "" {
+		if len(response.Candidates) == 0 {
+			message = "No candidates found in response"
+		} else {
+			message = "the provider returned a successful response with no image"
+		}
+	}
+	bifrostErr := schemas.NewProviderEmptyResultError(message)
+	if code != "" {
+		bifrostErr.Error.Code = schemas.Ptr(code)
+	}
+	return bifrostErr
+}
+
+// geminiImageUnifiedFields are the unified image fields the Gemini API image models (Nano
+// Banana, served by generateContent) take on generation and on edit: size and aspect_ratio
+// become imageConfig.aspectRatio and imageSize, resolution becomes imageConfig.imageSize, and n
+// and response_format are accepted only with the one value the vendor delivers (see
+// checkGeminiImageValues). Every other typed parameter (quality, output_format, background,
+// input_images, mask, input_fidelity, ...) cannot be delivered and is refused.
+var geminiImageUnifiedFields = []string{"aspect_ratio", "n", "resolution", "response_format", "size"}
+
+// CheckGeminiImageGenerationRequest refuses, with 400 caller_unsupported_parameter naming the
+// field in error.param, an image generation request for a Gemini API image model that carries a
+// field the vendor cannot be sent as given (fork, TXE-6526, contract C4). The gemini provider
+// calls it before building the upstream request, so a refused request makes no upstream call.
+// Imagen models take a different field set and are not checked here.
+func CheckGeminiImageGenerationRequest(request *schemas.BifrostImageGenerationRequest) *schemas.BifrostError {
+	if request == nil || request.Params == nil {
+		return nil
+	}
+	if bifrostErr := schemas.CheckUnifiedFields(&schemas.BifrostRequest{ImageGenerationRequest: request}, geminiImageUnifiedFields); bifrostErr != nil {
+		return bifrostErr
+	}
+	return checkGeminiImageValues(request.Params.N, request.Params.Size, request.Params.ResponseFormat)
+}
+
+// CheckGeminiImageEditRequest is CheckGeminiImageGenerationRequest for an image edit. It also
+// refuses an input image given as a data URL that cannot be decoded: such an image cannot be
+// sent, and dropping it would turn the edit into a different request.
+func CheckGeminiImageEditRequest(request *schemas.BifrostImageEditRequest) *schemas.BifrostError {
+	if request == nil {
+		return nil
+	}
+	if request.Input != nil {
+		for i := range request.Input.Images {
+			image := &request.Input.Images[i]
+			if len(image.Image) == 0 && strings.HasPrefix(image.URL, "data:") {
+				if _, isBase64, _, ok := schemas.ParseDataURL(image.URL); !ok || !isBase64 {
+					return schemas.NewUnsupportedParameterError("image", "an input image given as a data URL must be base64-encoded")
+				}
+			}
+		}
+	}
+	if request.Params == nil {
+		return nil
+	}
+	if bifrostErr := schemas.CheckUnifiedFields(&schemas.BifrostRequest{ImageEditRequest: request}, geminiImageUnifiedFields); bifrostErr != nil {
+		return bifrostErr
+	}
+	return checkGeminiImageValues(request.Params.N, request.Params.Size, request.Params.ResponseFormat)
+}
+
+// checkGeminiImageValues refuses the values of supported fields that cannot be sent as given:
+// n other than 1 (one generateContent call returns one image), a size from which no aspect
+// ratio and resolution tier can be derived ("auto" leaves both to the vendor), and a
+// response_format other than b64_json (the vendor returns image bytes, never a URL).
+func checkGeminiImageValues(n *int, size *string, responseFormat *string) *schemas.BifrostError {
+	if n != nil && *n != 1 {
+		return schemas.NewUnsupportedParameterError("n", "this model returns one image per request; n must be 1")
+	}
+	if size != nil && strings.ToLower(*size) != "auto" {
+		if aspectRatio, imageSize := utils.ConvertSizeToAspectRatioAndResolution(*size); aspectRatio == "" || imageSize == "" {
+			return schemas.NewUnsupportedParameterError("size", fmt.Sprintf("size %q has no aspect ratio (1:1, 3:4, 4:3, 9:16, 16:9) and resolution tier (up to 4096 per edge) this model takes; send aspect_ratio and resolution instead", *size))
+		}
+	}
+	if responseFormat != nil && *responseFormat != "b64_json" {
+		return schemas.NewUnsupportedParameterError("response_format", "this model returns image bytes; response_format must be b64_json")
+	}
+	return nil
+}
+
+// geminiImageEditInputPart converts one input image of an edit to a request part: image bytes
+// and a base64 data URL become inlineData; any other URL is sent unchanged as
+// fileData{fileUri} (fork, TXE-6526, contract C4: Bifrost does not download an input URL),
+// with the MIME type its extension names when it names one. Nil when the image carries nothing
+// that can be sent.
+func geminiImageEditInputPart(image *schemas.ImageInput) *Part {
+	if len(image.Image) > 0 {
+		// Detect MIME type from image bytes
+		mimeType := http.DetectContentType(image.Image)
+		// Fallback to PNG if detection fails
+		if mimeType == "application/octet-stream" || mimeType == "" {
+			mimeType = "image/png"
+		}
+		return &Part{InlineData: &Blob{MIMEType: mimeType, Data: encodeBytesToBase64String(image.Image)}}
+	}
+	if image.URL == "" {
+		return nil
+	}
+	if strings.HasPrefix(image.URL, "data:") {
+		mediaType, isBase64, payload, ok := schemas.ParseDataURL(image.URL)
+		if !ok || !isBase64 {
+			return nil
+		}
+		return &Part{InlineData: &Blob{MIMEType: mediaType, Data: payload}}
+	}
+	return &Part{FileData: &FileData{FileURI: image.URL, MIMEType: mimeTypeFromURI(image.URL)}}
+}
+
+// SetGeminiImageEditInputImages writes usage.input_images on an edit response: the number of
+// input images that were sent to the vendor (fork, TXE-6526, contract C5; gemini-3-pro-image
+// bills input images per image). Gemini reports input images only as tokens
+// (promptTokensDetails[IMAGE]), so the count is of the image parts of the request.
+func SetGeminiImageEditInputImages(response *schemas.BifrostImageGenerationResponse, request *schemas.BifrostImageEditRequest) {
+	if response == nil || request == nil || request.Input == nil {
+		return
+	}
+	count := 0
+	for i := range request.Input.Images {
+		if geminiImageEditInputSent(&request.Input.Images[i]) {
+			count++
+		}
+	}
+	if response.Usage == nil {
+		response.Usage = &schemas.ImageUsage{}
+	}
+	response.Usage.InputImages = schemas.Ptr(count)
+}
+
+// geminiImageEditInputSent reports whether geminiImageEditInputPart sends the image, without
+// building the part.
+func geminiImageEditInputSent(image *schemas.ImageInput) bool {
+	if len(image.Image) > 0 {
+		return true
+	}
+	if !strings.HasPrefix(image.URL, "data:") {
+		return image.URL != ""
+	}
+	_, isBase64, _, ok := schemas.ParseDataURL(image.URL)
+	return ok && isBase64
 }
 
 func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRequest) *GeminiGenerationRequest {
@@ -446,6 +663,14 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 		}
 		if bifrostReq.Params.AspectRatio != nil && *bifrostReq.Params.AspectRatio != "" {
 			imageConfig.AspectRatio = *bifrostReq.Params.AspectRatio
+		}
+		// Fork (TXE-6526, contract C4): the unified resolution tier goes to imageSize as sent and
+		// wins over the tier derived from size, the way aspect_ratio wins over the derived ratio.
+		// The handlers also keep the field in ExtraParams (schemas.UnifiedImageFields); it is
+		// converted here, so the extra must not reach the vendor as a top-level "resolution".
+		if resolution := string(bifrostReq.Params.Resolution); resolution != "" {
+			imageConfig.ImageSize = resolution
+			delete(geminiReq.ExtraParams, "resolution")
 		}
 		if imageConfig.AspectRatio != "" || imageConfig.ImageSize != "" {
 			geminiReq.GenerationConfig.ImageConfig = imageConfig
@@ -515,8 +740,10 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 		},
 	}
 
-	// Note: Gemini image generation always returns a single image, so we do not propagate
-	// bifrostReq.Params.N to GenerationConfig.CandidateCount. The N parameter is silently dropped.
+	// Gemini image generation returns a single image per call, so N is not sent as
+	// GenerationConfig.CandidateCount. The gemini provider refuses n other than 1 before this
+	// conversion (CheckGeminiImageGenerationRequest); a caller of this converter that does not run
+	// that check still has N dropped.
 
 	return geminiReq
 }
@@ -817,6 +1044,16 @@ func ToGeminiImageGenerationResponse(ctx context.Context, bifrostResp *schemas.B
 				FinishReason: FinishReasonStop,
 			},
 		}
+	} else if bifrostResp.ContentFilter != nil && len(bifrostResp.ContentFilter.Reasons) > 0 {
+		// A block (fork, TXE-6526): the native shape of "no image" is a candidate with no content
+		// whose finishReason says why. content_filter.reasons does not record whether its first
+		// value was promptFeedback.blockReason or a finishReason, so both come back as the
+		// candidate's finishReason; a second value is the vendor's finishMessage.
+		candidate := &Candidate{FinishReason: FinishReason(bifrostResp.ContentFilter.Reasons[0])}
+		if len(bifrostResp.ContentFilter.Reasons) > 1 {
+			candidate.FinishMessage = bifrostResp.ContentFilter.Reasons[1]
+		}
+		geminiResp.Candidates = []*Candidate{candidate}
 	}
 
 	// Convert usage metadata with modality details
@@ -852,6 +1089,14 @@ func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 		}
 		if bifrostReq.Params.AspectRatio != nil && *bifrostReq.Params.AspectRatio != "" {
 			imageConfig.AspectRatio = *bifrostReq.Params.AspectRatio
+		}
+		// Fork (TXE-6526, contract C4): the unified resolution tier goes to imageSize as sent and
+		// wins over the tier derived from size, the way aspect_ratio wins over the derived ratio.
+		// The handlers also keep the field in ExtraParams (schemas.UnifiedImageFields); it is
+		// converted here, so the extra must not reach the vendor as a top-level "resolution".
+		if resolution := string(bifrostReq.Params.Resolution); resolution != "" {
+			imageConfig.ImageSize = resolution
+			delete(geminiReq.ExtraParams, "resolution")
 		}
 		if imageConfig.AspectRatio != "" || imageConfig.ImageSize != "" {
 			geminiReq.GenerationConfig.ImageConfig = imageConfig
@@ -914,23 +1159,10 @@ func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 		},
 	}
 
-	for _, image := range bifrostReq.Input.Images {
-		if len(image.Image) == 0 {
-			continue
+	for i := range bifrostReq.Input.Images {
+		if part := geminiImageEditInputPart(&bifrostReq.Input.Images[i]); part != nil {
+			parts = append(parts, part)
 		}
-		// Detect MIME type from image bytes
-		mimeType := http.DetectContentType(image.Image)
-		// Fallback to PNG if detection fails
-		if mimeType == "application/octet-stream" || mimeType == "" {
-			mimeType = "image/png"
-		}
-
-		parts = append(parts, &Part{
-			InlineData: &Blob{
-				MIMEType: mimeType,
-				Data:     encodeBytesToBase64String(image.Image),
-			},
-		})
 	}
 
 	geminiReq.Contents = []Content{

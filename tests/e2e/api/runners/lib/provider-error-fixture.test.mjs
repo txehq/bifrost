@@ -298,3 +298,33 @@ test("video task routes answer a queued task and count requests per key", async 
   await fetch(`${base}/__reset`, { method: "POST" });
   assert.deepEqual(await hits(), {});
 });
+
+// TXE-6526: the model in a Gemini generateContent path picks the image answer; any other model keeps the
+// answer the path had before.
+test("a Gemini generateContent path answers by its image fixture model", async (t) => {
+  const post = await startFixture(t);
+  const call = async (model) => (await post({ contents: [] }, `/pp/gemini/models/${model}:generateContent`)).json();
+  const delivered = await call("fixture-image-delivered");
+  assert.equal(delivered.candidates[0].content.parts[1].inlineData.mimeType, "image/png");
+  assert.equal(delivered.usageMetadata.thoughtsTokenCount, 200);
+  assert.equal((await call("fixture-image-safety")).candidates[0].finishReason, "IMAGE_SAFETY");
+  const blocked = await call("fixture-image-prompt-blocked");
+  assert.equal(blocked.promptFeedback.blockReason, "PROHIBITED_CONTENT");
+  assert.equal(blocked.candidates, undefined);
+  assert.equal((await call("fixture-image-text-only")).candidates[0].content.parts[0].text, "I can't create that image.");
+  const thoughtsOnly = await call("fixture-image-thoughts-only");
+  assert.equal(thoughtsOnly.usageMetadata.thoughtsTokenCount, 200);
+  assert.equal(thoughtsOnly.usageMetadata.candidatesTokensDetails, undefined);
+  const pricing = await (await fetch(`http://127.0.0.1:${post.port}/pricing.json`)).json();
+  assert.equal(pricing["fixture-image-thoughts-only"].output_cost_per_token, 0.00003);
+  const uploadA = await (await post({}, "/pp/gemini/files")).json();
+  const uploadB = await (await post({}, "/pp/gemini/files")).json();
+  assert.match(uploadA.file.name, /^files\/fixture-upload-/);
+  assert.notEqual(uploadA.file.name, uploadB.file.name);
+  assert.equal(uploadA.file.uri, `https://generativelanguage.googleapis.com/v1beta/${uploadA.file.name}`);
+  const empty = await call("fixture-image-empty");
+  assert.equal(empty.candidates, undefined);
+  assert.equal(empty.promptFeedback, undefined);
+  const other = await call("gemini-2.5-flash");
+  assert.ok(other.candidates[0].content.parts.some((p) => p.executableCode || p.codeExecutionResult || p.text !== undefined), "the code-execution answer");
+});

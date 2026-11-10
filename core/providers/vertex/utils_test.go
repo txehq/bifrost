@@ -1423,3 +1423,181 @@ func BenchmarkApplyVertexSessionRouting(b *testing.B) {
 		})
 	}
 }
+
+// TXE-6526: Vertex serves the Gemini image models through the gemini provider's generateContent
+// converters, so what those converters changed reaches Vertex too: resolution goes to
+// imageConfig.imageSize, a URL input image of an edit is sent as fileData, thoughtsTokenCount and
+// the delivered count land in usage, a vendor block is a 200 with content_filter, and a 200 with
+// no image and no block marker is 502 provider_empty_result. The request-field refusals and
+// usage.input_images are the gemini provider's own and do not apply here: n is still not sent.
+func TestVertexGeminiImageSharedConverters(t *testing.T) {
+	const (
+		delivered     = `{"candidates":[{"content":{"role":"model","parts":[{"inlineData":{"mimeType":"image/png","data":"aW1hZ2U="}}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":1300,"totalTokenCount":1512,"thoughtsTokenCount":200,"candidatesTokensDetails":[{"modality":"IMAGE","tokenCount":1300}]},"modelVersion":"gemini-3-pro-image","responseId":"resp-1"}`
+		safetyFinish  = `{"candidates":[{"finishReason":"IMAGE_SAFETY","finishMessage":"Unable to show the generated image.","index":0}],"usageMetadata":{"promptTokenCount":9,"totalTokenCount":9},"modelVersion":"gemini-3-pro-image","responseId":"resp-2"}`
+		promptBlocked = `{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"},"usageMetadata":{"promptTokenCount":7,"totalTokenCount":7},"modelVersion":"gemini-3-pro-image","responseId":"resp-3"}`
+		empty         = `{"usageMetadata":{"promptTokenCount":7,"totalTokenCount":7},"modelVersion":"gemini-3-pro-image","responseId":"resp-4"}`
+	)
+	var mu sync.Mutex
+	var answer string
+	var paths, bodies []string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		bodies = append(bodies, string(body))
+		reply := answer
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(reply))
+	}))
+	defer upstream.Close()
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	provider.client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+	provider.client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	key := schemas.Key{
+		Value:           *schemas.NewSecretVar("api-key"),
+		VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar("proj"), Region: *schemas.NewSecretVar("global")},
+	}
+	// serve sets the upstream's answer and returns the body of the one request the call makes.
+	serve := func(t *testing.T, reply string, call func(ctx *schemas.BifrostContext)) string {
+		t.Helper()
+		mu.Lock()
+		answer, paths, bodies = reply, nil, nil
+		mu.Unlock()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyCaptureRawResponse, true)
+		call(ctx)
+		mu.Lock()
+		defer mu.Unlock()
+		if len(bodies) != 1 {
+			t.Fatalf("upstream calls = %d (%v), want 1", len(bodies), paths)
+		}
+		if want := "/v1/projects/proj/locations/global/publishers/google/models/gemini-3-pro-image:generateContent"; paths[0] != want {
+			t.Fatalf("upstream path = %q, want %q", paths[0], want)
+		}
+		return bodies[0]
+	}
+	generation := func(params *schemas.ImageGenerationParameters) *schemas.BifrostImageGenerationRequest {
+		return &schemas.BifrostImageGenerationRequest{
+			Provider: schemas.Vertex,
+			Model:    "gemini-3-pro-image",
+			Input:    &schemas.ImageGenerationInput{Prompt: "a red bicycle"},
+			Params:   params,
+		}
+	}
+
+	t.Run("generation: resolution on the wire, reasoning_tokens and output_images in usage", func(t *testing.T) {
+		var resp *schemas.BifrostImageGenerationResponse
+		var bifrostErr *schemas.BifrostError
+		sent := serve(t, delivered, func(ctx *schemas.BifrostContext) {
+			resp, bifrostErr = provider.ImageGeneration(ctx, key, generation(&schemas.ImageGenerationParameters{
+				N:           schemas.Ptr(2), // not refused on Vertex, and not sent
+				AspectRatio: schemas.Ptr("16:9"),
+				Resolution:  "2K",
+				ExtraParams: map[string]interface{}{"resolution": "2K"},
+			}))
+		})
+		if bifrostErr != nil {
+			t.Fatalf("ImageGeneration: %+v", bifrostErr.Error)
+		}
+		if got := gjson.Get(sent, "generationConfig.imageConfig").Raw; got != `{"aspectRatio":"16:9","imageSize":"2K"}` {
+			t.Fatalf("imageConfig = %s in %s", got, sent)
+		}
+		if gjson.Get(sent, "resolution").Exists() || gjson.Get(sent, "generationConfig.candidateCount").Exists() {
+			t.Fatalf("resolution or candidateCount leaked into %s", sent)
+		}
+		if len(resp.Data) != 1 || resp.ContentFilter != nil {
+			t.Fatalf("data = %d, content_filter = %+v", len(resp.Data), resp.ContentFilter)
+		}
+		usage := resp.Usage
+		if usage == nil || usage.OutputTokensDetails == nil || usage.OutputTokensDetails.ReasoningTokens == nil || *usage.OutputTokensDetails.ReasoningTokens != 200 {
+			t.Fatalf("reasoning_tokens missing from usage %+v", usage)
+		}
+		if usage.OutputTokens != 1300 || usage.OutputImages == nil || *usage.OutputImages != 1 || usage.InputImages != nil {
+			t.Fatalf("usage = %+v", usage)
+		}
+	})
+
+	for _, tc := range []struct {
+		name    string
+		reply   string
+		reasons []string
+	}{
+		{"generation: a safety finishReason is a 200 with content_filter", safetyFinish, []string{"IMAGE_SAFETY", "Unable to show the generated image."}},
+		{"generation: blockReason and no candidates is a 200 with content_filter", promptBlocked, []string{"PROHIBITED_CONTENT"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var resp *schemas.BifrostImageGenerationResponse
+			var bifrostErr *schemas.BifrostError
+			serve(t, tc.reply, func(ctx *schemas.BifrostContext) {
+				resp, bifrostErr = provider.ImageGeneration(ctx, key, generation(nil))
+			})
+			if bifrostErr != nil {
+				t.Fatalf("ImageGeneration: %+v", bifrostErr.Error)
+			}
+			if len(resp.Data) != 0 || resp.ContentFilter == nil || resp.ContentFilter.FilteredCount != 1 || !reflect.DeepEqual(resp.ContentFilter.Reasons, tc.reasons) {
+				t.Fatalf("data = %d, content_filter = %+v, want reasons %v", len(resp.Data), resp.ContentFilter, tc.reasons)
+			}
+			if resp.Usage == nil || resp.Usage.OutputImages == nil || *resp.Usage.OutputImages != 0 || resp.Usage.InputTokens == 0 {
+				t.Fatalf("usage = %+v", resp.Usage)
+			}
+		})
+	}
+
+	t.Run("generation: an empty 200 is 502 provider_empty_result with the vendor body", func(t *testing.T) {
+		var resp *schemas.BifrostImageGenerationResponse
+		var bifrostErr *schemas.BifrostError
+		serve(t, empty, func(ctx *schemas.BifrostContext) {
+			resp, bifrostErr = provider.ImageGeneration(ctx, key, generation(nil))
+		})
+		if resp != nil || bifrostErr == nil {
+			t.Fatalf("resp = %+v, err = %+v", resp, bifrostErr)
+		}
+		if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 502 || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeProviderEmptyResult {
+			t.Fatalf("status = %v, error_type = %q", bifrostErr.StatusCode, bifrostErr.ExtraFields.ErrorType)
+		}
+		if bifrostErr.ExtraFields.RawResponse == nil {
+			t.Fatal("the vendor's raw response is missing from the error")
+		}
+	})
+
+	t.Run("edit: a URL input image is sent as fileData, bytes as inlineData", func(t *testing.T) {
+		var resp *schemas.BifrostImageGenerationResponse
+		var bifrostErr *schemas.BifrostError
+		sent := serve(t, delivered, func(ctx *schemas.BifrostContext) {
+			resp, bifrostErr = provider.ImageEdit(ctx, key, &schemas.BifrostImageEditRequest{
+				Provider: schemas.Vertex,
+				Model:    "gemini-3-pro-image",
+				Input: &schemas.ImageEditInput{
+					Prompt: "make it blue",
+					Images: []schemas.ImageInput{{URL: "https://example.com/cat.png"}, {Image: []byte("\x89PNG\r\n\x1a\n")}},
+				},
+				Params: &schemas.ImageEditParameters{Resolution: "2K"},
+			})
+		})
+		if bifrostErr != nil {
+			t.Fatalf("ImageEdit: %+v", bifrostErr.Error)
+		}
+		if got := gjson.Get(sent, "contents.0.parts.1.fileData").Raw; got != `{"fileUri":"https://example.com/cat.png","mimeType":"image/png"}` {
+			t.Fatalf("fileData = %s in %s", got, sent)
+		}
+		if got := gjson.Get(sent, "contents.0.parts.2.inlineData.mimeType").String(); got != "image/png" {
+			t.Fatalf("inlineData mimeType = %q in %s", got, sent)
+		}
+		if got := gjson.Get(sent, "generationConfig.imageConfig.imageSize").String(); got != "2K" {
+			t.Fatalf("imageSize = %q in %s", got, sent)
+		}
+		if len(resp.Data) != 1 || resp.Usage == nil || resp.Usage.OutputImages == nil || *resp.Usage.OutputImages != 1 {
+			t.Fatalf("data = %d, usage = %+v", len(resp.Data), resp.Usage)
+		}
+		if resp.Usage.InputImages != nil {
+			t.Fatalf("usage.input_images = %d on Vertex, want it unset", *resp.Usage.InputImages)
+		}
+	})
+}

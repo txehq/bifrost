@@ -594,11 +594,29 @@ Gemini supports two image generation formats depending on the model:
 | Parameter | Transformation |
 |-----------|----------------|
 | `prompt` | Text description of the image to generate |
-| `n` | Number of images (mapped to `sampleCount` for Imagen, `candidateCount` for Gemini) |
+| `n` | Number of images (mapped to `sampleCount` for Imagen; the standard Gemini format takes only `1`, see below) |
 | `size` | Image size in WxH format (e.g., `"1024x1024"`). Converted to Imagen's `imageSize` + `aspectRatio` format |
 | `output_format` | Output format: `"png"`, `"jpeg"`, `"webp"`. Converted to MIME type for Imagen |
 | `seed` | Seed for reproducible generation (passed directly) |
 | `negative_prompt` | Negative prompt (passed directly) |
+
+### Standard Gemini Format: fields that are sent, and fields that are refused
+
+The standard format (`gemini-3.1-flash-image`, `gemini-3-pro-image`, `gemini-2.5-flash-image` and the other non-Imagen image models) returns one image per `generateContent` call. A field that cannot be sent as given is refused with HTTP 400, `extra_fields.error_type: "caller_unsupported_parameter"` and the field name in `error.param`, before any upstream call. It is never dropped or changed. The same rules apply to image edit.
+
+| Parameter | Standard Gemini Format |
+|-----------|------------------------|
+| `size` | `WxH` → `generationConfig.imageConfig.aspectRatio` and `imageSize` (longest edge ≤1024 → `1K`, ≤2048 → `2K`, ≤4096 → `4K`). `"auto"` sends neither. A size whose ratio is not `1:1`, `3:4`, `4:3`, `9:16` or `16:9`, or whose edge is above 4096, is refused; send `aspect_ratio` and `resolution` instead |
+| `aspect_ratio` | → `imageConfig.aspectRatio` as sent; wins over the ratio derived from `size` |
+| `resolution` | → `imageConfig.imageSize` as sent (`"1K"`, `"2K"`, `"4K"`); wins over the tier derived from `size` |
+| `n` | Only `1`; any other value is refused |
+| `response_format` | Only `"b64_json"` (the vendor returns image bytes); any other value is refused |
+| `quality`, `output_format`, `background`, `input_images`, `mask`, `input_fidelity` and every other typed image parameter | Refused |
+| `seed`, `negative_prompt` | Not refused |
+
+**Usage.** `usage.output_tokens_details.reasoning_tokens` is the vendor's `thoughtsTokenCount` (reported beside `candidatesTokenCount`, so it is in addition to `usage.output_tokens` and inside `usage.total_tokens`). `usage.output_images` is the number of images delivered. On an edit, `usage.input_images` is the number of input images sent.
+
+**Blocked output.** When the vendor answers 200 with no image and marks a block, the response is HTTP 200 with `"data": []` and `content_filter: {"filtered_count": 1, "reasons": [...]}`. `reasons` holds the vendor's values verbatim: `promptFeedback.blockReason`, then the candidate's `finishReason` and its `finishMessage` when present. A block marker is `promptFeedback.blockReason`, a safety `finishReason` (`SAFETY`, `IMAGE_SAFETY`, `PROHIBITED_CONTENT`, `IMAGE_PROHIBITED_CONTENT`, `RECITATION`, `IMAGE_RECITATION`, `BLOCKLIST`, `SPII`), or an answer in text only. A 200 with no image and no marker is HTTP 502 with `error_type: "provider_empty_result"`; `error.code` is the vendor's `finishReason` when it sent one.
 
 ### Extra Parameters
 
@@ -746,6 +764,8 @@ Gemini supports image editing through two different APIs depending on the model:
   - MIME type detection (`image/jpeg`, `image/webp`, `image/png`) with fallback to `image/png`
   - Base64 encoding: `image.Image` → `Part.InlineData.Data` (base64 string)
   - MIME type: `Part.InlineData.MIMEType`
+  - An image given as a URL (`image_url`, or a string in `images`) is sent unchanged as `Part.FileData.FileURI`; Bifrost does not download it. A base64 data URL is decoded to `Part.InlineData`
+- **Fields**: `size`, `aspect_ratio`, `resolution`, `n` (only `1`) and `response_format` (only `"b64_json"`) as for image generation. `mask`, `type`, `quality`, `output_format`, `background`, `input_fidelity` and every other typed parameter are refused with HTTP 400 `caller_unsupported_parameter`; see "Standard Gemini Format: fields that are sent, and fields that are refused" under Image Generation, which also covers usage and blocked output
 - **Response Modality**: `GenerationConfig.ResponseModalities` is set to `[ModalityImage]` to indicate image generation
 - **Extra Parameters**: Extracted from `ExtraParams`:
   - `safetySettings` / `safety_settings` → `SafetySettings`

@@ -302553,6 +302553,1713 @@
           ]
         }
       ]
+    },
+    {
+      "name": "332. Gemini API image generation and edit meet the contract: 400 for an undeliverable field, resolution to imageSize, thinking tokens and image counts in usage, a block as 200 with content_filter, URL input images sent (gemini image contract) [SERIAL]",
+      "description": "TXE-6526 regression, contract C3, C4, C5, C6. Local fixture regression, no live provider calls: run with providerErrorFixture=1 against the gateway of tests/e2e/api/provider_config/provider-error-fixture.config.json, with tests/e2e/api/runners/provider-error-fixture.mjs as the only upstream. The gemini provider there points at the fixture, whose generateContent answer is picked by the model in the path: fixture-image-delivered (one image, thoughtsTokenCount 200), fixture-image-safety (a candidate with finishReason IMAGE_SAFETY and no content, priced per image in the fixture's datasheet), fixture-image-prompt-blocked (promptFeedback.blockReason and no candidates), fixture-image-text-only (text, no image), fixture-image-empty (no candidates, no blockReason), fixture-image-thoughts-only (one image, thoughtsTokenCount with no candidatesTokensDetails, priced in the fixture's datasheet). Before the change: n and an underivable size were dropped and the request went upstream; resolution reached the vendor only as an extra field; thoughtsTokenCount was dropped; a safety finishReason was an error with no status code, a blockReason was lost in 'No candidates found in response', a text-only answer was a 200 with empty data and no marker; a URL input image of an edit was skipped. The rows read back the bytes that reached the fixture from /__wire. Run the whole folder in order. The last two rows are live Vertex rows, skipped under providerErrorFixture=1: Vertex reuses the gemini provider's generateContent converters, so resolution to imageSize, URL input images as fileData and usage.output_images reach it too; they read the request Bifrost sent from extra_fields.raw_request. Vertex's block and empty-200 handling cannot be produced on demand against the live API and Vertex's host cannot be pointed at the fixture; TestVertexGeminiImageSharedConverters covers them through the provider against a local server. The request-field refusals and usage.input_images are the gemini provider's own and do not apply to Vertex. The last seven fixture rows are the file-ownership rows: two virtual keys share the fixture's one Gemini key, the first uploads a file (the fixture answers the upload with a file name of its own), the second is refused with 404 when its edit names that file's URI as an input image and nothing reaches generateContent, and the first key's edit with the same URI goes upstream as fileData.",
+      "item": [
+        {
+          "name": "gemini/fixture-image-delivered /v1/images/generations resolution 2K with x-bf-api-key: one upstream call, imageConfig.imageSize 2K, reasoning_tokens and output_images in usage (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/fixture-image-delivered\",\"prompt\":\"a lighthouse at dusk\",\"n\":1,\"aspect_ratio\":\"16:9\",\"resolution\":\"2K\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('gemini image contract setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function generateCalls(calls) { return calls.filter(function (c) { return /:generateContent$/.test(c.path); }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('data carries the one image the vendor delivered and no content_filter', function () { pm.expect(body.data, pm.response.text()).to.be.an('array').with.length(1); pm.expect(body.data[0].b64_json, pm.response.text()).to.equal('iVBORw0KGgo='); pm.expect(body.content_filter, pm.response.text()).to.equal(undefined); });",
+                  "pm.test('usage.output_tokens_details.reasoning_tokens is thoughtsTokenCount', function () { pm.expect(body.usage && body.usage.output_tokens_details, pm.response.text()).to.be.an('object'); pm.expect(body.usage.output_tokens_details.reasoning_tokens, pm.response.text()).to.equal(200); pm.expect(body.usage.output_tokens_details.image_tokens, pm.response.text()).to.equal(1290); pm.expect(body.usage.output_tokens, pm.response.text()).to.equal(1300); });",
+                  "pm.test('usage.output_images is the delivered count; input_images is absent on a generation', function () { pm.expect(body.usage.output_images, pm.response.text()).to.equal(1); pm.expect(body.usage.input_images, pm.response.text()).to.equal(undefined); });",
+                  "pm.test('the named key served the request', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), JSON.stringify(pm.response.headers.toObject())).to.equal('local-error-fixture'); });",
+                  "pm.test('the vendor raw response is returned', function () { pm.expect(body.extra_fields && body.extra_fields.raw_response, pm.response.text()).to.be.an('object'); pm.expect(body.extra_fields.raw_response.usageMetadata.thoughtsTokenCount, pm.response.text()).to.equal(200); });",
+                  "wire(function (calls) { var sent = generateCalls(calls); pm.test('exactly one upstream call, resolution sent as imageConfig.imageSize and not as a top-level field', function () { pm.expect(sent, JSON.stringify(calls)).to.have.length(1); var upstream = JSON.parse(sent[0].body); pm.expect(upstream.generationConfig && upstream.generationConfig.imageConfig, sent[0].body).to.deep.equal({ aspectRatio: '16:9', imageSize: '2K' }); pm.expect(upstream.resolution, sent[0].body).to.equal(undefined); pm.expect(upstream.candidateCount, sent[0].body).to.equal(undefined); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] gemini/fixture-image-delivered /v1/images/generations n=2 is refused with caller_unsupported_parameter and no upstream call (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/fixture-image-delivered\",\"prompt\":\"a lighthouse at dusk\",\"n\":2}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('gemini image contract setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function generateCalls(calls) { return calls.filter(function (c) { return /:generateContent$/.test(c.path); }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+                  "pm.test('error.param names n', function () { pm.expect(body.error && body.error.param, pm.response.text()).to.equal('n'); });",
+                  "wire(function (calls) { pm.test('no upstream call was made', function () { pm.expect(generateCalls(calls), JSON.stringify(calls)).to.have.length(0); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] gemini/fixture-image-delivered /v1/images/generations size 1000x700 has no derivable ratio: refused with error.param size and no upstream call (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/fixture-image-delivered\",\"prompt\":\"a lighthouse at dusk\",\"size\":\"1000x700\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('gemini image contract setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function generateCalls(calls) { return calls.filter(function (c) { return /:generateContent$/.test(c.path); }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+                  "pm.test('error.param names size', function () { pm.expect(body.error && body.error.param, pm.response.text()).to.equal('size'); });",
+                  "wire(function (calls) { pm.test('no upstream call was made', function () { pm.expect(generateCalls(calls), JSON.stringify(calls)).to.have.length(0); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] gemini/fixture-image-delivered /v1/images/generations quality is refused with caller_unsupported_parameter and no upstream call (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/fixture-image-delivered\",\"prompt\":\"a lighthouse at dusk\",\"quality\":\"high\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('gemini image contract setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function generateCalls(calls) { return calls.filter(function (c) { return /:generateContent$/.test(c.path); }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+                  "pm.test('error.param names quality', function () { pm.expect(body.error && body.error.param, pm.response.text()).to.equal('quality'); });",
+                  "wire(function (calls) { pm.test('no upstream call was made', function () { pm.expect(generateCalls(calls), JSON.stringify(calls)).to.have.length(0); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] gemini/fixture-image-delivered /openai/v1/images/generations drop-in n=2 is refused with error.param n and no upstream call (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/fixture-image-delivered\",\"prompt\":\"a lighthouse at dusk\",\"n\":2}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('gemini image contract setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function generateCalls(calls) { return calls.filter(function (c) { return /:generateContent$/.test(c.path); }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('error.param names n', function () { pm.expect(body.error && body.error.param, pm.response.text()).to.equal('n'); });",
+                  "wire(function (calls) { pm.test('no upstream call was made', function () { pm.expect(generateCalls(calls), JSON.stringify(calls)).to.have.length(0); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/fixture-image-prompt-blocked /v1/images/generations promptFeedback.blockReason with no candidates is a 200 with content_filter (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/fixture-image-prompt-blocked\",\"prompt\":\"a lighthouse at dusk\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('gemini image contract setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function generateCalls(calls) { return calls.filter(function (c) { return /:generateContent$/.test(c.path); }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('data is an empty array, not null', function () { pm.expect(body.data, pm.response.text()).to.be.an('array').with.length(0); });",
+                  "pm.test('content_filter carries the vendor values verbatim', function () { pm.expect(body.content_filter, pm.response.text()).to.deep.equal({ filtered_count: 1, reasons: [\"PROHIBITED_CONTENT\"] }); });",
+                  "pm.test('usage.output_images is 0 and the vendor usage is kept', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.output_images, pm.response.text()).to.equal(0); pm.expect(body.usage.input_tokens, pm.response.text()).to.be.above(0); });",
+                  "wire(function (calls) { pm.test('exactly one upstream call', function () { var sent = generateCalls(calls); pm.expect(sent, JSON.stringify(calls)).to.have.length(1); pm.expect(sent[0].path, sent[0].path).to.contain('fixture-image-prompt-blocked:generateContent'); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/fixture-image-safety /v1/images/generations a safety finishReason with no content is a 200 with content_filter (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/fixture-image-safety\",\"prompt\":\"a lighthouse at dusk\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('gemini image contract setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function generateCalls(calls) { return calls.filter(function (c) { return /:generateContent$/.test(c.path); }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('data is an empty array, not null', function () { pm.expect(body.data, pm.response.text()).to.be.an('array').with.length(0); });",
+                  "pm.test('content_filter carries the vendor values verbatim', function () { pm.expect(body.content_filter, pm.response.text()).to.deep.equal({ filtered_count: 1, reasons: [\"IMAGE_SAFETY\",\"Unable to show the generated image because it may violate our policies.\"] }); });",
+                  "pm.test('usage.output_images is 0 and the vendor usage is kept', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.output_images, pm.response.text()).to.equal(0); pm.expect(body.usage.input_tokens, pm.response.text()).to.be.above(0); });",
+                  "wire(function (calls) { pm.test('exactly one upstream call', function () { var sent = generateCalls(calls); pm.expect(sent, JSON.stringify(calls)).to.have.length(1); pm.expect(sent[0].path, sent[0].path).to.contain('fixture-image-safety:generateContent'); }); });",
+                  "// The fixture prices fixture-image-safety at 0.04 per output image and 0.000001 per input token. The vendor delivered no",
+                  "// image and reported 9 prompt tokens, so the cost is 9 * 0.000001 = 0.000009. Charging the blocked image made it 0.040009.",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+                  "var token = pm.variables.get('setup_token') || 'bifrost-e2e-setup-token';",
+                  "function readCost(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?limit=50', method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+                  "    var rows = (!err && res.code === 200 && res.json().logs) || [];",
+                  "    var row = rows.filter(function (r) { return r.id === requestId; })[0];",
+                  "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
+                  "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
+                  "    pm.test('the blocked image is not charged: the logged cost is the input tokens only', function () { pm.expect(row && (row.cost || 0), JSON.stringify(row && { cost: row.cost, token_usage: row.token_usage })).to.be.closeTo(0.000009, 1e-9); });",
+                  "  });",
+                  "}",
+                  "readCost(40);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/fixture-image-text-only /v1/images/generations a text-only answer is a 200 with content_filter (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/fixture-image-text-only\",\"prompt\":\"a lighthouse at dusk\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('gemini image contract setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function generateCalls(calls) { return calls.filter(function (c) { return /:generateContent$/.test(c.path); }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('data is an empty array, not null', function () { pm.expect(body.data, pm.response.text()).to.be.an('array').with.length(0); });",
+                  "pm.test('content_filter carries the vendor values verbatim', function () { pm.expect(body.content_filter, pm.response.text()).to.deep.equal({ filtered_count: 1, reasons: [\"STOP\"] }); });",
+                  "pm.test('usage.output_images is 0 and the vendor usage is kept', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.output_images, pm.response.text()).to.equal(0); pm.expect(body.usage.input_tokens, pm.response.text()).to.be.above(0); });",
+                  "wire(function (calls) { pm.test('exactly one upstream call', function () { var sent = generateCalls(calls); pm.expect(sent, JSON.stringify(calls)).to.have.length(1); pm.expect(sent[0].path, sent[0].path).to.contain('fixture-image-text-only:generateContent'); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-502] gemini/fixture-image-empty /v1/images/generations a 200 with no image and no block marker is provider_empty_result (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/fixture-image-empty\",\"prompt\":\"a lighthouse at dusk\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('gemini image contract setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function generateCalls(calls) { return calls.filter(function (c) { return /:generateContent$/.test(c.path); }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 502', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(502); });",
+                  "pm.test('error_type is provider_empty_result and it is not a Bifrost error', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('provider_empty_result'); pm.expect(body.is_bifrost_error, pm.response.text()).to.equal(false); });",
+                  "pm.test('the vendor raw response is kept on the error', function () { pm.expect(body.extra_fields.raw_response, pm.response.text()).to.be.an('object'); pm.expect(body.extra_fields.raw_response.responseId, pm.response.text()).to.equal('fixture-image-empty'); });",
+                  "wire(function (calls) { pm.test('exactly one upstream call', function () { pm.expect(generateCalls(calls), JSON.stringify(calls)).to.have.length(1); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/fixture-image-thoughts-only /v1/images/generations thinking tokens with no modality breakdown: the logged cost prices the aggregate output tokens (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/fixture-image-thoughts-only\",\"prompt\":\"a lighthouse at dusk\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('gemini image contract setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function generateCalls(calls) { return calls.filter(function (c) { return /:generateContent$/.test(c.path); }); }",
+                  "var body = pm.response.json();",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// The fixture prices fixture-image-thoughts-only at 0.000001 per input token and 0.00003 per output token and answers",
+                  "// promptTokenCount 10, candidatesTokenCount 1300, thoughtsTokenCount 200 and no candidatesTokensDetails:",
+                  "// 10 * 0.000001 + 1300 * 0.00003 = 0.03901. With the output details hiding the aggregate, the cost was 0.00001.",
+                  "var wantCost = 0.03901;",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('usage carries the aggregate output tokens and reasoning_tokens, with no modality breakdown invented', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.output_tokens, pm.response.text()).to.equal(1300); pm.expect(body.usage.output_tokens_details, pm.response.text()).to.deep.equal({ reasoning_tokens: 200 }); });",
+                  "var requestId = pm.response.headers.get('x-bifrost-request-id');",
+                  "var token = pm.variables.get('setup_token') || 'bifrost-e2e-setup-token';",
+                  "function readCost(tries) {",
+                  "  pm.sendRequest({ url: BASE + '/api/logs?limit=50', method: 'GET', header: { 'X-Bifrost-Setup-Token': token } }, function (err, res) {",
+                  "    var rows = (!err && res.code === 200 && res.json().logs) || [];",
+                  "    var row = rows.filter(function (r) { return r.id === requestId; })[0];",
+                  "    if (tries > 0 && (!row || row.status === 'processing')) { setTimeout(function () { readCost(tries - 1); }, 300); return; }",
+                  "    pm.test('the log row of this request is readable', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(row, 'no log row for ' + requestId).to.be.an('object'); });",
+                  "    pm.test('the logged cost prices the 1300 aggregate output tokens', function () { pm.expect(row && row.cost, JSON.stringify(row && { cost: row.cost, token_usage: row.token_usage })).to.be.closeTo(wantCost, 1e-9); });",
+                  "  });",
+                  "}",
+                  "readCost(40);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[NO-CONTENT] gemini/fixture-image-prompt-blocked /genai/v1beta/models/gemini/fixture-image-prompt-blocked:generateContent native route reports the block as a candidate finishReason (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"a lighthouse at dusk\"}]}],\"generationConfig\":{\"responseModalities\":[\"IMAGE\"]}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/fixture-image-prompt-blocked:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini/fixture-image-prompt-blocked:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('gemini image contract setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function generateCalls(calls) { return calls.filter(function (c) { return /:generateContent$/.test(c.path); }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('one candidate with no content and the vendor block reason as finishReason', function () { pm.expect(body.candidates, pm.response.text()).to.be.an('array').with.length(1); pm.expect(body.candidates[0].finishReason, pm.response.text()).to.equal('PROHIBITED_CONTENT'); pm.expect(body.candidates[0].content, pm.response.text()).to.equal(undefined); });",
+                  "wire(function (calls) { pm.test('exactly one upstream call', function () { pm.expect(generateCalls(calls), JSON.stringify(calls)).to.have.length(1); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/fixture-image-delivered /v1/images/edits with a URL input image and x-bf-api-key: one upstream call, the URL sent as fileData.fileUri, input_images in usage (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/fixture-image-delivered\",\"prompt\":\"make the sky purple\",\"images\":[\"https://example.com/lighthouse.png\",{\"image\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}],\"resolution\":\"2K\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('gemini image contract setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function generateCalls(calls) { return calls.filter(function (c) { return /:generateContent$/.test(c.path); }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('data carries the one image the vendor delivered', function () { pm.expect(body.data, pm.response.text()).to.be.an('array').with.length(1); });",
+                  "pm.test('usage.input_images is the two input images, output_images the one delivered, reasoning_tokens the vendor count', function () { pm.expect(body.usage, pm.response.text()).to.be.an('object'); pm.expect(body.usage.input_images, pm.response.text()).to.equal(2); pm.expect(body.usage.output_images, pm.response.text()).to.equal(1); pm.expect(body.usage.output_tokens_details.reasoning_tokens, pm.response.text()).to.equal(200); });",
+                  "wire(function (calls) { var sent = generateCalls(calls); pm.test('exactly one upstream call: the URL as fileData.fileUri, the bytes as inlineData, resolution as imageSize', function () { pm.expect(sent, JSON.stringify(calls)).to.have.length(1); var upstream = JSON.parse(sent[0].body); var parts = upstream.contents[0].parts; pm.expect(parts, sent[0].body).to.have.length(3); pm.expect(parts[0].text, sent[0].body).to.equal('make the sky purple'); pm.expect(parts[1].fileData, sent[0].body).to.deep.equal({ fileUri: 'https://example.com/lighthouse.png', mimeType: 'image/png' }); pm.expect(parts[2].inlineData && parts[2].inlineData.mimeType, sent[0].body).to.equal('image/png'); pm.expect(upstream.generationConfig.imageConfig, sent[0].body).to.deep.equal({ imageSize: '2K' }); pm.expect(upstream.resolution, sent[0].body).to.equal(undefined); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] gemini/fixture-image-delivered /v1/images/edits with mask is refused with caller_unsupported_parameter and no upstream call (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "local-error-fixture"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/fixture-image-delivered\",\"prompt\":\"make the sky purple\",\"images\":[{\"image\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}],\"mask\":\"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('gemini image contract setup: the fixture was reset', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code).to.equal(200);",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function generateCalls(calls) { return calls.filter(function (c) { return /:generateContent$/.test(c.path); }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 400', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(400); });",
+                  "pm.test('error_type is caller_unsupported_parameter', function () { pm.expect(body.extra_fields && body.extra_fields.error_type, pm.response.text()).to.equal('caller_unsupported_parameter'); });",
+                  "pm.test('error.param names mask', function () { pm.expect(body.error && body.error.param, pm.response.text()).to.equal('mask'); });",
+                  "wire(function (calls) { pm.test('no upstream call was made', function () { pm.expect(generateCalls(calls), JSON.stringify(calls)).to.have.length(0); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini image edit file ownership setup: create virtual key A (owner) (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{gimOwnVkIdName}}\",\"provider_configs\":[{\"provider\":\"gemini\",\"allowed_models\":[\"*\"],\"key_ids\":[\"*\"],\"weight\":1}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: pm.variables.get('setup_token') || 'bifrost-e2e-setup-token' });",
+                  "pm.collectionVariables.unset('gimOwnVkId'); pm.collectionVariables.unset('gimOwnVkValue'); pm.collectionVariables.unset('gimFileId');",
+                  "pm.collectionVariables.set('gimOwnVkIdName', 'harness-gemini-image-ownership-A (owner)-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('virtual key A (owner) is created with an id and a value', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(vk.id, pm.response.text()).to.be.a('string').and.not.equal(''); pm.expect(vk.value, pm.response.text()).to.be.a('string').and.not.equal(''); });",
+                  "if (vk.id) { pm.collectionVariables.set('gimOwnVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('gimOwnVkValue', vk.value); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini image edit file ownership setup: create virtual key B (other) (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{gimOtherVkIdName}}\",\"provider_configs\":[{\"provider\":\"gemini\",\"allowed_models\":[\"*\"],\"key_ids\":[\"*\"],\"weight\":1}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: pm.variables.get('setup_token') || 'bifrost-e2e-setup-token' });",
+                  "pm.collectionVariables.unset('gimOtherVkId'); pm.collectionVariables.unset('gimOtherVkValue'); pm.collectionVariables.unset('gimFileId');",
+                  "pm.collectionVariables.set('gimOtherVkIdName', 'harness-gemini-image-ownership-B (other)-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('virtual key B (other) is created with an id and a value', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(vk.id, pm.response.text()).to.be.a('string').and.not.equal(''); pm.expect(vk.value, pm.response.text()).to.be.a('string').and.not.equal(''); });",
+                  "if (vk.id) { pm.collectionVariables.set('gimOtherVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('gimOtherVkValue', vk.value); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini image edit file ownership: the owning virtual key uploads a file to gemini (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{gimOwnVkValue}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/files",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "files"
+              ]
+            },
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                },
+                {
+                  "key": "purpose",
+                  "value": "user_data",
+                  "type": "text"
+                },
+                {
+                  "key": "provider",
+                  "value": "gemini",
+                  "type": "text"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: pm.variables.get('setup_token') || 'bifrost-e2e-setup-token' });",
+                  "if (!pm.collectionVariables.get('gimOwnVkValue') || !pm.collectionVariables.get('gimOtherVkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('the upload under the owning key is 200 and names a Gemini file', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(j.id, pm.response.text()).to.match(/^files\\//); });",
+                  "if (j.id) { pm.collectionVariables.set('gimFileId', j.id); }"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-404] gemini/fixture-image-delivered /v1/images/edits naming another virtual key's Gemini file URI is refused before any upstream call (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{gimOtherVkValue}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/fixture-image-delivered\",\"prompt\":\"make the sky purple\",\"images\":[\"https://generativelanguage.googleapis.com/v1beta/{{gimFileId}}\"]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: pm.variables.get('setup_token') || 'bifrost-e2e-setup-token' });",
+                  "if (!pm.collectionVariables.get('gimOwnVkValue') || !pm.collectionVariables.get('gimOtherVkValue') || !pm.collectionVariables.get('gimFileId')) { pm.execution.skipRequest(); return; }",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('gemini image contract setup: the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function generateCalls(calls) { return calls.filter(function (c) { return /:generateContent$/.test(c.path); }); }",
+                  "var body = pm.response.json();",
+                  "// The URL input of an edit is forwarded to Gemini as fileData under the shared key, so a Gemini file URI there is an",
+                  "// uploaded file: another key's file is a 404 on the file, never an image and never a 401/403/500.",
+                  "pm.test('the client gets 404', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(404); });",
+                  "pm.test('the 404 names the file as not found', function () { pm.expect(body.error && body.error.message, pm.response.text()).to.be.a('string'); pm.expect(body.error.message, pm.response.text()).to.include('not found'); pm.expect(body.error.message, pm.response.text()).to.include(pm.collectionVariables.get('gimFileId')); });",
+                  "wire(function (calls) { pm.test('no upstream call was made', function () { pm.expect(generateCalls(calls), JSON.stringify(calls)).to.have.length(0); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/fixture-image-delivered /v1/images/edits naming the virtual key's own Gemini file URI sends it as fileData.fileUri (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{gimOwnVkValue}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/fixture-image-delivered\",\"prompt\":\"make the sky purple\",\"images\":[\"https://generativelanguage.googleapis.com/v1beta/{{gimFileId}}\"]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: pm.variables.get('setup_token') || 'bifrost-e2e-setup-token' });",
+                  "if (!pm.collectionVariables.get('gimOwnVkValue') || !pm.collectionVariables.get('gimOtherVkValue') || !pm.collectionVariables.get('gimFileId')) { pm.execution.skipRequest(); return; }",
+                  "pm.sendRequest({ url: pm.variables.get('providerErrorFixtureUrl') + '/__reset', method: 'POST' }, function (err, res) {",
+                  "  pm.test('gemini image contract setup: the fixture was reset', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var FX = pm.variables.get('providerErrorFixtureUrl');",
+                  "// wire: the requests that reached the fixture, bytes as they arrived.",
+                  "function wire(cb) { pm.sendRequest({ url: FX + '/__wire', method: 'GET' }, function (err, res) { pm.test('the fixture answered /__wire', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code).to.equal(200); }); cb(res.json().data[0].calls); }); }",
+                  "function generateCalls(calls) { return calls.filter(function (c) { return /:generateContent$/.test(c.path); }); }",
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 200 with the delivered image', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); pm.expect(body.data, pm.response.text()).to.be.an('array').with.length(1); });",
+                  "wire(function (calls) { var sent = generateCalls(calls); pm.test('exactly one upstream call carries the file URI as fileData.fileUri', function () { pm.expect(sent, JSON.stringify(calls)).to.have.length(1); var parts = JSON.parse(sent[0].body).contents[0].parts; pm.expect(parts[1].fileData && parts[1].fileData.fileUri, sent[0].body).to.equal('https://generativelanguage.googleapis.com/v1beta/' + pm.collectionVariables.get('gimFileId')); }); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini image edit file ownership cleanup: delete virtual key A (owner) (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{gimOwnVkId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{gimOwnVkId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: pm.variables.get('setup_token') || 'bifrost-e2e-setup-token' });",
+                  "if (!pm.collectionVariables.get('gimOwnVkId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('virtual key A (owner) is deleted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.collectionVariables.unset('gimOwnVkId');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini image edit file ownership cleanup: delete virtual key B (other) (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{gimOtherVkId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{gimOtherVkId}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.request.headers.upsert({ key: 'X-Bifrost-Setup-Token', value: pm.variables.get('setup_token') || 'bifrost-e2e-setup-token' });",
+                  "if (!pm.collectionVariables.get('gimOtherVkId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('virtual key B (other) is deleted', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.collectionVariables.unset('gimOtherVkId');"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-3-pro-image /v1/images/generations resolution 1K reaches Vertex as imageConfig.imageSize and usage.output_images is the delivered count (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-3-pro-image\",\"prompt\":\"A simple red apple on a white background\",\"aspect_ratio\":\"1:1\",\"resolution\":\"1K\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Live Vertex row: the fixture gateway has no Vertex provider (its host cannot be pointed at the fixture).",
+                  "if (pm.variables.get('providerErrorFixture') === '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('one image delivered, no content_filter, usage.output_images equals the length of data', function () { pm.expect(body.data, pm.response.text()).to.be.an('array').with.length(1); pm.expect(body.content_filter, pm.response.text()).to.equal(undefined); pm.expect(body.usage && body.usage.output_images, pm.response.text()).to.equal(1); });",
+                  "pm.test('usage.input_images is not filled on Vertex', function () { pm.expect(body.usage.input_images, pm.response.text()).to.equal(undefined); });",
+                  "pm.test('the request sent to Vertex carries resolution as imageConfig.imageSize, not as a top-level field', function () { var sent = body.extra_fields && body.extra_fields.raw_request; pm.expect(sent, pm.response.text()).to.be.an('object'); pm.expect(sent.generationConfig && sent.generationConfig.imageConfig, JSON.stringify(sent)).to.deep.equal({ aspectRatio: '1:1', imageSize: '1K' }); pm.expect(sent.resolution, JSON.stringify(sent)).to.equal(undefined); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-3-pro-image /v1/images/edits with a URL input image sends it to Vertex as fileData.fileUri (gemini image contract)",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-3-pro-image\",\"prompt\":\"Add a small blue flower next to the plate\",\"images\":[\"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Live Vertex row: the fixture gateway has no Vertex provider (its host cannot be pointed at the fixture).",
+                  "if (pm.variables.get('providerErrorFixture') === '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.json();",
+                  "pm.test('the client gets 200', function () { pm.expect(pm.response.code, pm.response.text()).to.equal(200); });",
+                  "pm.test('one image delivered and usage.output_images equals the length of data', function () { pm.expect(body.data, pm.response.text().slice(0, 2000)).to.be.an('array').with.length(1); pm.expect(body.usage && body.usage.output_images, JSON.stringify(body.usage)).to.equal(1); });",
+                  "pm.test('the request sent to Vertex carries the URL unchanged as a fileData part', function () { var sent = body.extra_fields && body.extra_fields.raw_request; pm.expect(sent, 'no raw_request').to.be.an('object'); var parts = sent.contents[0].parts; pm.expect(parts, JSON.stringify(sent)).to.have.length(2); pm.expect(parts[1].fileData, JSON.stringify(sent)).to.deep.equal({ fileUri: 'https://storage.googleapis.com/generativeai-downloads/images/scones.jpg', mimeType: 'image/jpeg' }); pm.expect(parts[1].inlineData, JSON.stringify(sent)).to.equal(undefined); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

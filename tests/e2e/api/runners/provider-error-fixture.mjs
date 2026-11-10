@@ -299,6 +299,11 @@ const fixturePricing = {
 	"typesafe/jev-1.13": { provider: "openrouter", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
 	"decision-emulated": { provider: "openai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002, cache_read_input_token_cost: 0.0000001 },
 	"pp-custom-legacy": { provider: "openai", mode: "responses", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
+	// TXE-6526: a token-priced Gemini image model, for the row that reads back the cost of a response whose usage
+	// carries thinking tokens and no modality breakdown.
+	"fixture-image-thoughts-only": { provider: "gemini", mode: "image_generation", input_cost_per_token: 0.000001, output_cost_per_token: 0.00003 },
+	// A per-image-priced Gemini image model whose answer is a safety block: nothing delivered, nothing charged per image.
+	"fixture-image-safety": { provider: "gemini", mode: "image_generation", input_cost_per_token: 0.000001, output_cost_per_image: 0.04 },
 	// A provider the datasheet knows and list-models cannot enumerate, for run-bounds-wire.mjs.
 	"fireworks_ai/accounts/fixture/models/known": { provider: "fireworks_ai", mode: "chat", input_cost_per_token: 0.000001, output_cost_per_token: 0.000002 },
 };
@@ -495,8 +500,42 @@ const openAIImageAnswer = (body, bytes, isEdit) => {
 // Azure runs the same images API on its endpoint under /openai/v1 (the azure key's endpoint is this fixture).
 const isOpenAIImagePath = (path) => path === "/v1/images/generations" || path === "/v1/images/edits" || path === "/openai/v1/images/generations";
 
+// Gemini API image generation and edit (Nano Banana), TXE-6526, contract C4, C5, C6. The gemini provider's
+// generateContent path names the model, and the model picks the answer: one delivered image with thinking tokens,
+// the three ways the vendor answers 200 with no image and a block marker (a safety finishReason, promptFeedback
+// with no candidates, text only), and a 200 with no image and no marker. The bodies are in the shape the Gemini
+// API documents for generateContent on an image model.
+const geminiImageAnswers = {
+	"fixture-image-delivered": { candidates: [{ content: { role: "model", parts: [{ text: "Here is your image." }, { inlineData: { mimeType: "image/png", data: "iVBORw0KGgo=" } }] }, finishReason: "STOP", index: 0 }], usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 1300, totalTokenCount: 1512, thoughtsTokenCount: 200, promptTokensDetails: [{ modality: "TEXT", tokenCount: 12 }], candidatesTokensDetails: [{ modality: "IMAGE", tokenCount: 1290 }, { modality: "TEXT", tokenCount: 10 }] }, modelVersion: "fixture-image-delivered", responseId: "fixture-image-delivered" },
+	"fixture-image-safety": { candidates: [{ finishReason: "IMAGE_SAFETY", finishMessage: "Unable to show the generated image because it may violate our policies.", index: 0 }], usageMetadata: { promptTokenCount: 9, totalTokenCount: 9, promptTokensDetails: [{ modality: "TEXT", tokenCount: 9 }] }, modelVersion: "fixture-image-safety", responseId: "fixture-image-safety" },
+	"fixture-image-prompt-blocked": { promptFeedback: { blockReason: "PROHIBITED_CONTENT" }, usageMetadata: { promptTokenCount: 7, totalTokenCount: 7 }, modelVersion: "fixture-image-prompt-blocked", responseId: "fixture-image-prompt-blocked" },
+	"fixture-image-text-only": { candidates: [{ content: { role: "model", parts: [{ text: "I can't create that image." }] }, finishReason: "STOP", index: 0 }], usageMetadata: { promptTokenCount: 8, candidatesTokenCount: 7, totalTokenCount: 15, candidatesTokensDetails: [{ modality: "TEXT", tokenCount: 7 }] }, modelVersion: "fixture-image-text-only", responseId: "fixture-image-text-only" },
+	// Thinking reported with no modality breakdown: candidatesTokenCount is the only output count. Priced in
+	// fixturePricing, so the row can read the cost the gateway computed from the aggregate.
+	"fixture-image-thoughts-only": { candidates: [{ content: { role: "model", parts: [{ inlineData: { mimeType: "image/png", data: "iVBORw0KGgo=" } }] }, finishReason: "STOP", index: 0 }], usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 1300, totalTokenCount: 1510, thoughtsTokenCount: 200 }, modelVersion: "fixture-image-thoughts-only", responseId: "fixture-image-thoughts-only" },
+	"fixture-image-empty": { usageMetadata: { promptTokenCount: 7, totalTokenCount: 7 }, modelVersion: "fixture-image-empty", responseId: "fixture-image-empty" },
+};
+// geminiImageAnswerFor returns the answer for a generateContent path whose model is one of the above, else undefined.
+const geminiImageAnswerFor = (path) => {
+	const match = /\/models\/([^/:]+):generateContent$/.exec(path);
+	if (!match || !Object.hasOwn(geminiImageAnswers, match[1])) return undefined;
+	return { status: 200, body: JSON.stringify(geminiImageAnswers[match[1]]) };
+};
+
+// A Gemini file upload, TXE-6526: each upload gets its own file name, so the gateway records one owner per file and
+// a row can name another key's file. The gemini provider's base URL here has no /v1beta, so the upload arrives at
+// /pp/gemini/files.
+let geminiUploads = 0;
+const geminiFileUpload = () => {
+	const name = `files/fixture-upload-${Date.now()}-${++geminiUploads}`;
+	return { status: 200, body: JSON.stringify({ file: { name, displayName: "sample.png", mimeType: "image/png", sizeBytes: "70", createTime: "2026-11-10T00:00:00Z", state: "ACTIVE", uri: `https://generativelanguage.googleapis.com/v1beta/${name}` } }) };
+};
+
 const wireAnswer = (path, body, bytes) => {
 	if (isOpenAIImagePath(path)) return openAIImageAnswer(body, bytes, path === "/v1/images/edits");
+	const geminiImage = geminiImageAnswerFor(path);
+	if (geminiImage) return geminiImage;
+	if (path === "/pp/gemini/files") return geminiFileUpload();
 	if (path === "/pp/bounds/v1/chat/completions") {
 		return { status: 200, body: JSON.stringify({ id: "chatcmpl_bounds", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
 	}
