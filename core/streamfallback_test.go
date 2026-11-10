@@ -2178,6 +2178,10 @@ func (u *elevenlabsStreamUpstream) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		// 一次写完：客户端第一次读取就同时拿到全部数据和 io.EOF
 		w.Header().Set("Content-Length", "28")
 		u.write(w, []byte("TXE-5677-owned-audio-payload"))
+	case "cost":
+		// ElevenLabs reports the credits it charged in the character-cost response header
+		w.Header().Set("character-cost", "17")
+		u.write(w, elevenlabsStreamAudio)
 	case "empty":
 		w.Header().Set("Content-Length", "0")
 	case "multi":
@@ -2230,6 +2234,10 @@ type elevenlabsStreamResult struct {
 	deltas int
 	done   bool
 	errors []string
+	// doneUsage is the usage of the speech.audio.done chunk; deltaVendorCosts counts the
+	// delta chunks that carried a vendor cost (none should).
+	doneUsage        *schemas.SpeechUsage
+	deltaVendorCosts int
 }
 
 func newElevenlabsStreamClient(t *testing.T) (*Bifrost, *elevenlabsStreamUpstream) {
@@ -2283,8 +2291,12 @@ func drainElevenlabsSpeechStream(t *testing.T, stream chan *schemas.BifrostStrea
 		case schemas.SpeechStreamResponseTypeDelta:
 			result.deltas++
 			result.audio = append(result.audio, response.Audio...)
+			if response.Usage != nil && response.Usage.VendorCost != nil {
+				result.deltaVendorCosts++
+			}
 		case schemas.SpeechStreamResponseTypeDone:
 			result.done = true
+			result.doneUsage = response.Usage
 		default:
 			t.Fatalf("unexpected speech stream type %q", response.Type)
 		}
@@ -2310,6 +2322,42 @@ func TestElevenlabsSpeechStreamDeliversDataReturnedWithEOF(t *testing.T) {
 	}
 	if !result.done || len(result.errors) != 0 {
 		t.Fatalf("short response done=%v errors=%v, want done and no error", result.done, result.errors)
+	}
+}
+
+// Contract C5 and C10 (TXE-6524): the final speech.audio.done frame carries
+// usage.vendor_cost = {amount: <character-cost>, unit: "credit"}, the credits ElevenLabs
+// reported in its response header. Before, the done frame had no vendor cost. Nothing else is
+// reported as the vendor's: no billed_characters, no audio_seconds, no tokens.
+func TestElevenlabsSpeechStreamDoneCarriesVendorCost(t *testing.T) {
+	client, _ := newElevenlabsStreamClient(t)
+	result := runElevenlabsSpeechStream(t, client, "cost")
+	if !bytes.Equal(result.audio, elevenlabsStreamAudio) || !result.done || len(result.errors) != 0 {
+		t.Fatalf("stream audio=%d bytes done=%v errors=%v, want the full audio, done and no error", len(result.audio), result.done, result.errors)
+	}
+	if result.doneUsage == nil || result.doneUsage.VendorCost == nil {
+		t.Fatalf("speech.audio.done usage = %+v, want vendor_cost", result.doneUsage)
+	}
+	if got, want := *result.doneUsage.VendorCost, (schemas.VendorCost{Amount: 17, Unit: schemas.VendorCostUnitCredit}); got != want {
+		t.Fatalf("speech.audio.done usage.vendor_cost = %+v, want %+v", got, want)
+	}
+	if u := result.doneUsage; u.BilledCharacters != nil || u.AudioSeconds != 0 || u.InputTokens != 0 || u.OutputTokens != 0 || u.TotalTokens != 0 {
+		t.Fatalf("speech.audio.done usage = %+v, want nothing reported besides vendor_cost", *u)
+	}
+	if result.deltaVendorCosts != 0 {
+		t.Fatalf("%d delta frames carried a vendor cost, want it only on speech.audio.done", result.deltaVendorCosts)
+	}
+}
+
+// Without a character-cost header the done frame carries no vendor cost: nothing is invented.
+func TestElevenlabsSpeechStreamDoneWithoutCharacterCostHasNoVendorCost(t *testing.T) {
+	client, _ := newElevenlabsStreamClient(t)
+	result := runElevenlabsSpeechStream(t, client, "short")
+	if !result.done {
+		t.Fatal("stream did not send speech.audio.done")
+	}
+	if result.doneUsage != nil && result.doneUsage.VendorCost != nil {
+		t.Fatalf("speech.audio.done usage.vendor_cost = %+v, want none", *result.doneUsage.VendorCost)
 	}
 }
 

@@ -1,7 +1,7 @@
 package elevenlabs
 
 import (
-	"math"
+	"fmt"
 	"net/http"
 
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
@@ -11,7 +11,8 @@ import (
 
 // ToElevenlabsSoundGenerationRequest maps a Bifrost speech request onto the
 // sound-generation body. SFX-specific fields arrive via ExtraParams (they are not
-// known fields of the speech schema) and are clamped to the upstream-allowed ranges.
+// known fields of the speech schema) and are sent as given: checkSoundGenerationRanges
+// refuses an out-of-range value before this runs, nothing is clamped (contract C4).
 // model_id uses the canonical model resolved from virtual-key aliases so upstream
 // receives a real ElevenLabs identifier, not the user-facing alias string.
 func ToElevenlabsSoundGenerationRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostSpeechRequest) *ElevenlabsSoundGenerationRequest {
@@ -36,7 +37,7 @@ func ToElevenlabsSoundGenerationRequest(ctx *schemas.BifrostContext, bifrostReq 
 
 		if v, ok := schemas.SafeExtractFloat64Pointer(extra["duration_seconds"]); ok {
 			delete(extra, "duration_seconds")
-			out.DurationSeconds = clampFloat64Ptr(v, 0.5, 30)
+			out.DurationSeconds = v
 		}
 		if v, ok := schemas.SafeExtractBoolPointer(extra["loop"]); ok {
 			delete(extra, "loop")
@@ -44,32 +45,48 @@ func ToElevenlabsSoundGenerationRequest(ctx *schemas.BifrostContext, bifrostReq 
 		}
 		if v, ok := schemas.SafeExtractFloat64Pointer(extra["prompt_influence"]); ok {
 			delete(extra, "prompt_influence")
-			out.PromptInfluence = clampFloat64Ptr(v, 0, 1)
+			out.PromptInfluence = v
 		}
 	}
 
 	return out
 }
 
-// clampFloat64Ptr returns a pointer to v clamped to [min, max].
-func clampFloat64Ptr(v *float64, min, max float64) *float64 {
-	if v == nil {
+// Ranges ElevenLabs accepts on POST /v1/sound-generation.
+const (
+	soundDurationSecondsMin = 0.5
+	soundDurationSecondsMax = 30.0
+	soundPromptInfluenceMin = 0.0
+	soundPromptInfluenceMax = 1.0
+)
+
+// checkSoundGenerationRanges returns 400 caller_unsupported_parameter, with error.param
+// naming the field, when duration_seconds or prompt_influence is outside the range
+// ElevenLabs accepts. duration_seconds sets the price, so an out-of-range value is refused
+// before any upstream call and never clamped into range (TXE-6524, contract C4). A NaN is
+// outside every range.
+func checkSoundGenerationRanges(request *schemas.BifrostSpeechRequest) *schemas.BifrostError {
+	if request == nil || request.Params == nil || len(request.Params.ExtraParams) == 0 {
 		return nil
 	}
-	c := *v
-	if c < min {
-		c = min
+	extra := request.Params.ExtraParams
+	if v, ok := schemas.SafeExtractFloat64Pointer(extra["duration_seconds"]); ok && !(*v >= soundDurationSecondsMin && *v <= soundDurationSecondsMax) {
+		return schemas.NewUnsupportedParameterError("duration_seconds", fmt.Sprintf("duration_seconds must be between %g and %g, got %g", soundDurationSecondsMin, soundDurationSecondsMax, *v))
 	}
-	if c > max {
-		c = max
+	if v, ok := schemas.SafeExtractFloat64Pointer(extra["prompt_influence"]); ok && !(*v >= soundPromptInfluenceMin && *v <= soundPromptInfluenceMax) {
+		return schemas.NewUnsupportedParameterError("prompt_influence", fmt.Sprintf("prompt_influence must be between %g and %g, got %g", soundPromptInfluenceMin, soundPromptInfluenceMax, *v))
 	}
-	return &c
+	return nil
 }
 
 // soundGeneration performs a text-to-sound-effects request against
 // POST /v1/sound-generation. It mirrors Speech() but targets a different endpoint
 // and has no voice / timestamps concept. Returns audio bytes in BifrostSpeechResponse.
 func (provider *ElevenlabsProvider) soundGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+	if bifrostErr := checkSoundGenerationRanges(request); bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseRequest(req)
@@ -89,14 +106,11 @@ func (provider *ElevenlabsProvider) soundGeneration(ctx *schemas.BifrostContext,
 		req.Header.Set("xi-api-key", key.Value.GetValue())
 	}
 
-	// Build once so the resolved duration can also feed per-second billing below.
-	soundReq := ToElevenlabsSoundGenerationRequest(ctx, request)
-
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return soundReq, nil
+			return ToElevenlabsSoundGenerationRequest(ctx, request), nil
 		})
 	if bifrostErr != nil {
 		return nil, bifrostErr
@@ -138,15 +152,10 @@ func (provider *ElevenlabsProvider) soundGeneration(ctx *schemas.BifrostContext,
 		},
 	}
 
-	// ElevenLabs bills sound effects per generated second when a duration is
-	// specified. Surface it on usage so the model-catalog per-second rate
-	// (OutputCostPerSecond) can bill accurately; auto-duration requests carry no
-	// known length and fall back to whatever token/char pricing is configured.
-	if soundReq != nil && soundReq.DurationSeconds != nil {
-		bifrostResponse.Usage = &schemas.SpeechUsage{
-			AudioSeconds: int(math.Round(*soundReq.DurationSeconds)),
-		}
-	}
+	// usage carries only what ElevenLabs reported: the credits of the character-cost header.
+	// The requested duration is a request value, not a vendor report, so audio_seconds stays
+	// empty (TXE-6524, contract C5).
+	bifrostResponse.Usage = speechUsageFromVendorCost(characterCostFromHeaders(resp))
 
 	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 		providerUtils.ParseAndSetRawRequest(&bifrostResponse.ExtraFields, jsonData)

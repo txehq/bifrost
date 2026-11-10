@@ -1,6 +1,8 @@
 package elevenlabs
 
 import (
+	"maps"
+
 	"github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -15,66 +17,67 @@ func ToElevenlabsSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *Eleven
 	}
 
 	if bifrostReq.Params != nil {
-		elevenlabsReq.ExtraParams = bifrostReq.Params.ExtraParams
-		voiceSettings := ElevenlabsVoiceSettings{}
-		hasVoiceSettings := false
+		// Only the voice settings the caller gave are sent; the rest stay absent so the
+		// vendor's defaults apply (contract C4).
+		voiceSettings := ElevenlabsVoiceSettings{Speed: bifrostReq.Params.Speed}
+		hasVoiceSettings := voiceSettings.Speed != nil
 
-		if bifrostReq.Params.Speed != nil {
-			voiceSettings.Speed = *bifrostReq.Params.Speed
-			hasVoiceSettings = true
-		}
+		if len(bifrostReq.Params.ExtraParams) > 0 {
+			// Work on a copy: the keys consumed below are deleted from it, and the caller's
+			// map must stay whole for any later use of the same request.
+			extra := maps.Clone(bifrostReq.Params.ExtraParams)
+			elevenlabsReq.ExtraParams = extra
 
-		if bifrostReq.Params.ExtraParams != nil {
-			if stability, ok := schemas.SafeExtractFloat64Pointer(bifrostReq.Params.ExtraParams["stability"]); ok {
-				delete(elevenlabsReq.ExtraParams, "stability")
-				voiceSettings.Stability = *stability
+			if stability, ok := schemas.SafeExtractFloat64Pointer(extra["stability"]); ok {
+				delete(extra, "stability")
+				voiceSettings.Stability = stability
 				hasVoiceSettings = true
 			}
-			if useSpeakerBoost, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["use_speaker_boost"]); ok {
-				delete(elevenlabsReq.ExtraParams, "use_speaker_boost")
-				voiceSettings.UseSpeakerBoost = *useSpeakerBoost
+			if useSpeakerBoost, ok := schemas.SafeExtractBoolPointer(extra["use_speaker_boost"]); ok {
+				delete(extra, "use_speaker_boost")
+				voiceSettings.UseSpeakerBoost = useSpeakerBoost
 				hasVoiceSettings = true
 			}
-			if similarityBoost, ok := schemas.SafeExtractFloat64Pointer(bifrostReq.Params.ExtraParams["similarity_boost"]); ok {
-				delete(elevenlabsReq.ExtraParams, "similarity_boost")
-				voiceSettings.SimilarityBoost = *similarityBoost
+			if similarityBoost, ok := schemas.SafeExtractFloat64Pointer(extra["similarity_boost"]); ok {
+				delete(extra, "similarity_boost")
+				voiceSettings.SimilarityBoost = similarityBoost
 				hasVoiceSettings = true
 			}
-			if style, ok := schemas.SafeExtractFloat64Pointer(bifrostReq.Params.ExtraParams["style"]); ok {
-				delete(elevenlabsReq.ExtraParams, "style")
-				voiceSettings.Style = *style
+			if style, ok := schemas.SafeExtractFloat64Pointer(extra["style"]); ok {
+				delete(extra, "style")
+				voiceSettings.Style = style
 				hasVoiceSettings = true
 			}
-			if seed, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["seed"]); ok {
-				delete(elevenlabsReq.ExtraParams, "seed")
+			if seed, ok := schemas.SafeExtractIntPointer(extra["seed"]); ok {
+				delete(extra, "seed")
 				elevenlabsReq.Seed = seed
 			}
-			if previousText, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["previous_text"]); ok {
-				delete(elevenlabsReq.ExtraParams, "previous_text")
+			if previousText, ok := schemas.SafeExtractStringPointer(extra["previous_text"]); ok {
+				delete(extra, "previous_text")
 				elevenlabsReq.PreviousText = previousText
 			}
-			if nextText, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["next_text"]); ok {
-				delete(elevenlabsReq.ExtraParams, "next_text")
+			if nextText, ok := schemas.SafeExtractStringPointer(extra["next_text"]); ok {
+				delete(extra, "next_text")
 				elevenlabsReq.NextText = nextText
 			}
-			if previousRequestIDs, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["previous_request_ids"]); ok {
-				delete(elevenlabsReq.ExtraParams, "previous_request_ids")
+			if previousRequestIDs, ok := schemas.SafeExtractStringSlice(extra["previous_request_ids"]); ok {
+				delete(extra, "previous_request_ids")
 				elevenlabsReq.PreviousRequestIDs = previousRequestIDs
 			}
-			if nextRequestIDs, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["next_request_ids"]); ok {
-				delete(elevenlabsReq.ExtraParams, "next_request_ids")
+			if nextRequestIDs, ok := schemas.SafeExtractStringSlice(extra["next_request_ids"]); ok {
+				delete(extra, "next_request_ids")
 				elevenlabsReq.NextRequestIDs = nextRequestIDs
 			}
-			if applyTextNormalization, ok := schemas.SafeExtractStringPointer(bifrostReq.Params.ExtraParams["apply_text_normalization"]); ok {
-				delete(elevenlabsReq.ExtraParams, "apply_text_normalization")
+			if applyTextNormalization, ok := schemas.SafeExtractStringPointer(extra["apply_text_normalization"]); ok {
+				delete(extra, "apply_text_normalization")
 				elevenlabsReq.ApplyTextNormalization = applyTextNormalization
 			}
-			if applyLanguageTextNormalization, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["apply_language_text_normalization"]); ok {
-				delete(elevenlabsReq.ExtraParams, "apply_language_text_normalization")
+			if applyLanguageTextNormalization, ok := schemas.SafeExtractBoolPointer(extra["apply_language_text_normalization"]); ok {
+				delete(extra, "apply_language_text_normalization")
 				elevenlabsReq.ApplyLanguageTextNormalization = applyLanguageTextNormalization
 			}
-			if usePVCAsIVC, ok := schemas.SafeExtractBoolPointer(bifrostReq.Params.ExtraParams["use_pvc_as_ivc"]); ok {
-				delete(elevenlabsReq.ExtraParams, "use_pvc_as_ivc")
+			if usePVCAsIVC, ok := schemas.SafeExtractBoolPointer(extra["use_pvc_as_ivc"]); ok {
+				delete(extra, "use_pvc_as_ivc")
 				elevenlabsReq.UsePVCAsIVC = usePVCAsIVC
 			}
 		}
