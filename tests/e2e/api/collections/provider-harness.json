@@ -294449,6 +294449,254 @@
           }
         }
       ]
+    },
+    {
+      "name": "290. Moonshot Kimi Responses API and Anthropic-compatible Messages (moonshot kimi native)",
+      "description": "Moonshot (Kimi) serves its own Responses API at /v1/responses and an Anthropic-compatible Messages API at /anthropic/v1/messages (https://platform.kimi.ai/docs/api/responses.md, https://platform.kimi.ai/docs/api/messages.md). The moonshot provider used to convert every Responses request to chat completions, which drops Responses-only fields: a server-side web_search tool never reached Kimi and no web_search_call output item came back. It did not advertise an Anthropic endpoint either, so /anthropic/v1/messages was converted twice (Messages to Responses to chat). The provider now calls Kimi's /v1/responses, and /anthropic/v1/messages with a moonshot/ model is passed through byte for byte to Kimi's Anthropic-compatible endpoint with bearer auth (core/providers/moonshot/moonshot.go, core/providers/anthropicmsg). Byte-exactness of the Messages body is pinned by TestAnthropicMessagesRouteNativeMoonshotEndToEnd and TestMoonshotMessagesPassthroughToKimiAnthropicEndpoint; these cases pin the live wire path. Chat completions on moonshot are unchanged and not covered here.",
+      "item": [
+        {
+          "name": "/openai/v1/responses - web_search tool reaches Kimi's Responses API and returns a web_search_call - moonshot/kimi-k3.1-pro",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('moonshot kimi native responses: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('moonshot kimi native responses: output carries a web_search_call item', function () {",
+                  "  pm.expect(j.output, 'output not an array: ' + pm.response.text().slice(0, 800)).to.be.an('array');",
+                  "  var calls = j.output.filter(function (o) { return o.type === 'web_search_call'; });",
+                  "  pm.expect(calls.length, 'no web_search_call item (a chat fallback cannot produce one): ' + pm.response.text().slice(0, 800)).to.be.above(0);",
+                  "  pm.expect(calls[0].action, JSON.stringify(calls[0])).to.be.an('object');",
+                  "  pm.expect(calls[0].action.type, JSON.stringify(calls[0])).to.eql('search');",
+                  "});",
+                  "pm.test('moonshot kimi native responses: output carries the answer message', function () {",
+                  "  var msg = (j.output || []).filter(function (o) { return o.type === 'message'; })[0];",
+                  "  pm.expect(msg, 'no message item: ' + pm.response.text().slice(0, 800)).to.exist;",
+                  "});",
+                  "pm.test('moonshot kimi native responses: usage as Kimi reports it', function () {",
+                  "  pm.expect(j.usage, pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(j.usage.input_tokens, JSON.stringify(j.usage)).to.be.above(0);",
+                  "  pm.expect(j.usage.output_tokens, JSON.stringify(j.usage)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"moonshot/kimi-k3.1-pro\",\n  \"input\": \"Search the web for the latest stable Go release and reply with its version number only.\",\n  \"tools\": [\n    {\n      \"type\": \"web_search\"\n    }\n  ],\n  \"include\": [\n    \"web_search_call.action.sources\"\n  ],\n  \"max_output_tokens\": 1024\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/responses stream - ends with response.completed carrying usage - moonshot/kimi-k3.1-pro",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('moonshot kimi native responses stream: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var events = pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "pm.test('moonshot kimi native responses stream: last event is response.completed with usage', function () {",
+                  "  pm.expect(events.length, 'no data events: ' + pm.response.text().slice(0, 800)).to.be.above(0);",
+                  "  var last = events[events.length - 1];",
+                  "  pm.expect(last.type, JSON.stringify(last).slice(0, 800)).to.eql('response.completed');",
+                  "  pm.expect(last.response && last.response.usage, JSON.stringify(last).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(last.response.usage.input_tokens, JSON.stringify(last.response.usage)).to.be.above(0);",
+                  "  pm.expect(last.response.usage.output_tokens, JSON.stringify(last.response.usage)).to.be.above(0);",
+                  "});",
+                  "pm.test('moonshot kimi native responses stream: text arrived as output_text deltas', function () {",
+                  "  pm.expect(events.some(function (e) { return e.type === 'response.output_text.delta'; }), pm.response.text().slice(0, 800)).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"moonshot/kimi-k3.1-pro\",\n  \"input\": \"Name one primary color.\",\n  \"stream\": true,\n  \"max_output_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/anthropic/v1/messages - passed through to Kimi's Anthropic-compatible endpoint - moonshot/kimi-k3.1-pro",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('moonshot kimi native messages: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('moonshot kimi native messages: Kimi\\'s Messages response body', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.type, pm.response.text().slice(0, 800)).to.eql('message');",
+                  "  pm.expect(j.role, pm.response.text().slice(0, 800)).to.eql('assistant');",
+                  "  pm.expect(j.content, pm.response.text().slice(0, 800)).to.be.an('array').and.not.empty;",
+                  "  pm.expect(j.usage, pm.response.text().slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(j.usage.input_tokens, JSON.stringify(j.usage)).to.be.above(0);",
+                  "  pm.expect(j.usage.output_tokens, JSON.stringify(j.usage)).to.be.above(0);",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('moonshot kimi native messages: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('moonshot kimi native messages: log row is a successful passthrough, not a conversion to chat', function () { pm.expect(j.status, JSON.stringify(j)).to.eql('success'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); pm.expect(j.stream, JSON.stringify(j)).to.eql(false); });",
+                  "      pm.test('moonshot kimi native messages: usage read from Kimi\\'s response recorded', function () { pm.expect(j.token_usage, JSON.stringify(j)).to.be.an('object'); pm.expect(j.token_usage.total_tokens, JSON.stringify(j.token_usage)).to.be.above(0); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('moonshot kimi native messages: log row finalized', function () { pm.expect.fail('log ' + reqId + ' still processing or missing after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"moonshot/kimi-k3.1-pro\",\n  \"max_tokens\": 512,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Name one primary color.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/anthropic/v1/messages stream - Kimi's SSE frames with usage in message_start and message_delta - moonshot/kimi-k3.1-pro",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('moonshot kimi native messages stream: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var events = pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "pm.test('moonshot kimi native messages stream: message_start carries usage', function () {",
+                  "  var start = events.filter(function (e) { return e.type === 'message_start'; })[0];",
+                  "  pm.expect(start, 'no message_start: ' + pm.response.text().slice(0, 800)).to.exist;",
+                  "  pm.expect(start.message && start.message.usage, JSON.stringify(start)).to.be.an('object');",
+                  "});",
+                  "pm.test('moonshot kimi native messages stream: last message_delta carries output usage, then message_stop', function () {",
+                  "  var deltas = events.filter(function (e) { return e.type === 'message_delta'; });",
+                  "  pm.expect(deltas.length, 'no message_delta: ' + pm.response.text().slice(0, 800)).to.be.above(0);",
+                  "  var last = deltas[deltas.length - 1];",
+                  "  pm.expect(last.usage, JSON.stringify(last)).to.be.an('object');",
+                  "  pm.expect(last.usage.output_tokens, JSON.stringify(last.usage)).to.be.above(0);",
+                  "  pm.expect(events[events.length - 1].type, JSON.stringify(events[events.length - 1])).to.eql('message_stop');",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('moonshot kimi native messages stream: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('moonshot kimi native messages stream: log row is a successful passthrough, not a conversion to chat', function () { pm.expect(j.status, JSON.stringify(j)).to.eql('success'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); pm.expect(j.stream, JSON.stringify(j)).to.eql(true); });",
+                  "      pm.test('moonshot kimi native messages stream: usage read from Kimi\\'s response recorded', function () { pm.expect(j.token_usage, JSON.stringify(j)).to.be.an('object'); pm.expect(j.token_usage.total_tokens, JSON.stringify(j.token_usage)).to.be.above(0); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('moonshot kimi native messages stream: log row finalized', function () { pm.expect.fail('log ' + reqId + ' still processing or missing after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"moonshot/kimi-k3.1-pro\",\n  \"max_tokens\": 512,\n  \"stream\": true,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Name one primary color.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

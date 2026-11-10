@@ -6,7 +6,7 @@ icon: "moon"
 
 ## Overview
 
-Moonshot is integrated as an OpenAI-compatible provider. Bifrost maps Moonshot endpoints for models, text completion, chat completion, and Responses API fallback.
+Moonshot is integrated as an OpenAI-compatible provider. Bifrost maps Moonshot endpoints for models, text completion, chat completion, Kimi's own Responses API, and Kimi's Anthropic-compatible Messages API.
 
 ### Supported Operations
 
@@ -15,9 +15,36 @@ Moonshot is integrated as an OpenAI-compatible provider. Bifrost maps Moonshot e
 | List Models | ✅ | - | `/v1/models` |
 | Text Completions | ✅ | ✅ | `/v1/completions` |
 | Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
-| Responses API | ✅ | ✅ | Fallback to Chat Completions |
+| Responses API | ✅ | ✅ | `/v1/responses` |
+| Anthropic Messages (`/anthropic/v1/messages`) | ✅ | ✅ | `/anthropic/v1/messages` (passthrough) |
 | Embeddings | ❌ | ❌ | - |
 | Image / Audio / Files / Batch / Video | ❌ | ❌ | - |
+
+## Responses API
+
+Responses requests go to Kimi's own [Responses API](https://platform.kimi.ai/docs/api/responses.md) at `{base_url}/v1/responses`. They are not converted to chat completions, so Responses-only fields reach Kimi. The server-side `web_search` tool is one: when Kimi runs a search, a `web_search_call` item comes back at the front of `output`, and usage is returned as Kimi reports it. A streamed request ends with `response.completed`, which carries the usage.
+
+```bash
+curl --location 'http://localhost:8080/openai/v1/responses' \
+--header 'Content-Type: application/json' \
+--data '{
+  "model": "moonshot/kimi-k3.1-pro",
+  "input": "What are the top news stories today?",
+  "tools": [{"type": "web_search"}],
+  "include": ["web_search_call.action.sources"]
+}'
+```
+
+## Anthropic Messages API
+
+A request to `/anthropic/v1/messages` with a `moonshot/<model>` model is passed through to Kimi's Anthropic-compatible [Messages API](https://platform.kimi.ai/docs/api/messages.md) at `{base_url}/anthropic/v1/messages`. With the default base URL that is `https://api.moonshot.ai/anthropic/v1/messages`.
+
+- The request body is sent byte for byte. The only change is the model id: `moonshot/kimi-k3.1-pro` becomes `kimi-k3.1-pro`.
+- The response body, or the SSE stream, is returned as Kimi sent it. Usage is in `message_start` and the last `message_delta`.
+- Bifrost authenticates with `Authorization: Bearer <key>`, as Kimi documents, not with `x-api-key`.
+- Only the Messages create path is passed through. Other Anthropic paths, such as `/v1/messages/count_tokens`, are not supported for Moonshot.
+
+A custom `base_url` must serve `/anthropic/v1/messages` and `/v1/responses` for these two APIs to work.
 
 ## Curated Models
 
@@ -65,5 +92,8 @@ case schemas.Moonshot:
 
 ## Reference Links
 
+- [Kimi API overview: base URLs per protocol](https://platform.kimi.ai/docs/api/overview.md)
+- [Kimi Responses API](https://platform.kimi.ai/docs/api/responses.md)
+- [Kimi Messages API](https://platform.kimi.ai/docs/api/messages.md)
 - [Moonshot Kimi K2.5 quickstart](https://platform.moonshot.ai/docs/guide/kimi-k2-5-quickstart#overview-of-kimi-k25-model)
 - [Moonshot API changelog](https://platform.moonshot.ai/docs/changelog)

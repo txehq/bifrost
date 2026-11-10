@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/capsohq/bifrost/core/providers/anthropicmsg"
 	"github.com/capsohq/bifrost/core/providers/openai"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
@@ -17,6 +18,7 @@ import (
 type MoonshotProvider struct {
 	logger              schemas.Logger        // Logger for provider operations
 	client              *fasthttp.Client      // HTTP client for API requests
+	streamingClient     *fasthttp.Client      // HTTP client for the Responses and Messages streams (no ReadTimeout; the idle timeout bounds them)
 	networkConfig       schemas.NetworkConfig // Network configuration including extra headers
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
@@ -48,6 +50,7 @@ func NewMoonshotProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	return &MoonshotProvider{
 		logger:              logger,
 		client:              client,
+		streamingClient:     providerUtils.BuildStreamingClient(client),
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
@@ -57,6 +60,29 @@ func NewMoonshotProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 // GetProviderKey returns the provider identifier for Moonshot.
 func (provider *MoonshotProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Moonshot
+}
+
+// anthropicMessagesPathPrefix is where Kimi serves its Anthropic-compatible Messages
+// API, relative to the provider base URL: POST {base}/anthropic/v1/messages
+// (https://platform.kimi.ai/docs/api/messages.md, https://platform.kimi.ai/docs/api/overview.md).
+const anthropicMessagesPathPrefix = "/anthropic"
+
+// AnthropicMessagesEndpoint advertises Kimi's Anthropic-compatible endpoint, so a
+// native Messages request is passed through instead of converted to chat.
+func (provider *MoonshotProvider) AnthropicMessagesEndpoint() (string, bool) {
+	return provider.networkConfig.BaseURL + anthropicMessagesPathPrefix, provider.networkConfig.BaseURL != ""
+}
+
+// anthropicMessagesConfig is the transport configuration for Kimi's Messages API.
+// Kimi authenticates it with the same bearer key as its OpenAI-compatible API,
+// not Anthropic's x-api-key header.
+func (provider *MoonshotProvider) anthropicMessagesConfig() anthropicmsg.Config {
+	endpoint, _ := provider.AnthropicMessagesEndpoint()
+	return anthropicmsg.Config{
+		Provider: provider.GetProviderKey(), Endpoint: endpoint,
+		APIKeyHeader: "Authorization", APIKeyPrefix: "Bearer ",
+		NetworkConfig: provider.networkConfig, Logger: provider.logger,
+	}
 }
 
 // ListModels performs a list models request to Moonshot's API.
@@ -172,30 +198,48 @@ func (provider *MoonshotProvider) ChatCompletionStream(ctx *schemas.BifrostConte
 	)
 }
 
-// Responses performs a responses request to the Moonshot API.
+// Responses calls Kimi's own Responses API (https://platform.kimi.ai/docs/api/responses.md),
+// so Responses-only fields such as the server-side web_search tool reach Kimi and its
+// web_search_call output items and usage come back as Kimi reports them.
 func (provider *MoonshotProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
-	if err != nil {
-		return nil, err
-	}
-
-	response := chatResponse.ToBifrostResponsesResponse()
-	response.ExtraFields.RequestType = schemas.ResponsesRequest
-	response.ExtraFields.Provider = provider.GetProviderKey()
-	response.ExtraFields.OriginalModelRequested = request.Model
-
-	return response, nil
+	return openai.HandleOpenAIResponsesRequest(
+		ctx,
+		provider.client,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		request,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
+		nil,
+		nil,
+		nil,
+		provider.logger,
+	)
 }
 
-// ResponsesStream performs a streaming responses request to the Moonshot API.
+// ResponsesStream streams from Kimi's own Responses API; usage arrives on response.completed.
 func (provider *MoonshotProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-	return provider.ChatCompletionStream(
+	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
+		provider.streamingClient,
+		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		request,
+		openai.BearerAuthHeader(key),
+		provider.networkConfig.ExtraHeaders,
+		provider.networkConfig.StreamIdleTimeoutInSeconds,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.GetProviderKey(),
 		postHookRunner,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		provider.logger,
 		postHookSpanFinalizer,
-		key,
-		request.ToChatRequest(),
 	)
 }
 
@@ -408,14 +452,22 @@ func (provider *MoonshotProvider) ContainerFileDelete(_ *schemas.BifrostContext,
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ContainerFileDeleteRequest, provider.GetProviderKey())
 }
 
-// Passthrough is not supported by the Moonshot provider.
-func (provider *MoonshotProvider) Passthrough(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
+// Passthrough forwards a native Messages body to Kimi's Anthropic-compatible endpoint
+// byte for byte and returns Kimi's response body unchanged. Every other path is unsupported.
+func (provider *MoonshotProvider) Passthrough(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
+	if req == nil || !anthropicmsg.IsMessagesPath(req.Path) {
+		return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughRequest, provider.GetProviderKey())
+	}
+	return anthropicmsg.Passthrough(ctx, provider.client, key, req, provider.anthropicMessagesConfig())
 }
 
-// PassthroughStream is not supported by the Moonshot provider.
-func (provider *MoonshotProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+// PassthroughStream forwards the body byte for byte as Passthrough does and relays
+// Kimi's SSE frames unchanged.
+func (provider *MoonshotProvider) PassthroughStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, req *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if req == nil || !anthropicmsg.IsMessagesPath(req.Path) {
+		return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+	}
+	return anthropicmsg.PassthroughStream(ctx, postHookRunner, postHookSpanFinalizer, provider.streamingClient, key, req, provider.anthropicMessagesConfig())
 }
 
 // ModelRetrieve is not supported by the Moonshot provider.
