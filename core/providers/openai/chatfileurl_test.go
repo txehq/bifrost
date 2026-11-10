@@ -1,7 +1,12 @@
 package openai
 
 import (
+	"context"
 	"encoding/base64"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/capsohq/bifrost/core/schemas"
@@ -354,4 +359,107 @@ func TestResponsesMarshalFoldsFileTypeIntoFileData(t *testing.T) {
 	assert.Equal(t, "data:application/pdf;base64,"+barePDFBase64, wire.Get("file_data").String())
 	assert.False(t, wire.Get("file_type").Exists())
 	assert.Equal(t, barePDFBase64, *file.FileData, "the caller's request must not change")
+}
+
+// TXE-6531 (contract C4 rule four): the Responses API accepts input_file.file_url, so a
+// URL-sourced document reaches OpenAI as the link and Bifrost never downloads it. Chat
+// Completions is the documented exception (OpenAI: "file_url ... Not supported"), which is why
+// ResolveChatFileURLs still fetches for chat; this pins that the fetch never leaks into
+// Responses. The same round trip pins that the 30m/12h cache-write split OpenAI reports comes
+// back as the unified tiers (contract C5).
+func TestResponsesForwardsFileURLWithoutFetchingAndDecodesCacheWriteTiers(t *testing.T) {
+	var documentHits atomic.Int64
+	document := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		documentHits.Add(1)
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write([]byte("%PDF-1.4"))
+	}))
+	t.Cleanup(document.Close)
+	docURL := document.URL + "/invoice.pdf"
+
+	var upstreamBody atomic.Value
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		upstreamBody.Store(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1762000000,"status":"completed","model":"gpt-5.6",` +
+			`"output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],` +
+			`"usage":{"input_tokens":40000,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":38000,` +
+			`"cache_write_tokens_details":{"ttl_30m_tokens":30000,"ttl_12h_tokens":8000}},` +
+			`"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":40001}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, nil)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bErr := provider.Responses(ctx, schemas.Key{Value: *schemas.NewSecretVar("sk-test")}, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.6",
+		Input: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Summarise this.")},
+				{
+					Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
+					ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileURL: schemas.Ptr(docURL)},
+				},
+			}},
+		}},
+	})
+	require.Nil(t, bErr, "responses request failed: %+v", bErr)
+
+	body, _ := upstreamBody.Load().([]byte)
+	require.NotEmpty(t, body, "the request must reach the fake OpenAI")
+	file := gjson.GetBytes(body, "input.0.content.1")
+	assert.Equal(t, "input_file", file.Get("type").String(), string(body))
+	assert.Equal(t, docURL, file.Get("file_url").String(), "the link must reach OpenAI as is: %s", body)
+	assert.False(t, file.Get("file_data").Exists(), "Bifrost must not inline the document: %s", body)
+	assert.Zero(t, documentHits.Load(), "Bifrost must not download a file_url it forwards")
+
+	require.NotNil(t, resp.Usage)
+	require.NotNil(t, resp.Usage.InputTokensDetails)
+	tiers := resp.Usage.InputTokensDetails.CachedWriteTokenDetails
+	require.NotNil(t, tiers)
+	assert.Equal(t, 38000, resp.Usage.InputTokensDetails.CachedWriteTokens)
+	assert.Equal(t, 30000, tiers.CachedWriteTokens30m)
+	assert.Equal(t, 8000, tiers.CachedWriteTokens12h)
+	assert.Zero(t, tiers.CachedWriteTokens5m)
+	assert.Zero(t, tiers.CachedWriteTokens1h)
+}
+
+// TXE-6531 (contract C5): an OpenAI Chat Completions response's 30m/12h cache-write split
+// reaches the unified chat usage through the provider's own decode path.
+func TestChatCompletionDecodesOpenAICacheWriteTiers(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","created":1762000000,"model":"gpt-5.6",` +
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],` +
+			`"usage":{"prompt_tokens":40000,"completion_tokens":1,"total_tokens":40001,"prompt_tokens_details":{"cached_tokens":1024,` +
+			`"cache_write_tokens":38000,"cache_write_tokens_details":{"ttl_30m_tokens":30000,"ttl_12h_tokens":8000}}}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, nil)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bErr := provider.ChatCompletion(ctx, schemas.Key{Value: *schemas.NewSecretVar("sk-test")}, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.6",
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	})
+	require.Nil(t, bErr, "chat request failed: %+v", bErr)
+	require.NotNil(t, resp.Usage)
+	d := resp.Usage.PromptTokensDetails
+	require.NotNil(t, d)
+	assert.Equal(t, 1024, d.CachedReadTokens)
+	assert.Equal(t, 38000, d.CachedWriteTokens)
+	require.NotNil(t, d.CachedWriteTokenDetails)
+	assert.Equal(t, 30000, d.CachedWriteTokenDetails.CachedWriteTokens30m)
+	assert.Equal(t, 8000, d.CachedWriteTokenDetails.CachedWriteTokens12h)
+	assert.Zero(t, d.CachedWriteTokenDetails.CachedWriteTokens5m)
+	assert.Zero(t, d.CachedWriteTokenDetails.CachedWriteTokens1h)
 }
