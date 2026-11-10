@@ -30,6 +30,7 @@ const (
 var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Anthropic,
 	schemas.Azure,
+	schemas.AzureSpeech,
 	schemas.Bedrock,
 	schemas.BedrockMantle,
 	schemas.BFL,
