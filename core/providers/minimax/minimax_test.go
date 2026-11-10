@@ -1363,6 +1363,32 @@ func BenchmarkMiniMaxChatCompletion(b *testing.B) {
 	}
 }
 
+// BenchmarkMiniMaxChatBaseRespError is the chat round trip when MiniMax answers 200 with only
+// a base_resp error: the path miniMaxStatusToHTTP serves.
+func BenchmarkMiniMaxChatBaseRespError(b *testing.B) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		jsonResponse(http.StatusOK, `{"id":"","choices":null,"base_resp":{"status_code":1004,"status_msg":"login fail"}}`)(w)
+	}))
+	b.Cleanup(server.Close)
+	provider, err := minimax.NewMiniMaxProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		b.Fatalf("NewMiniMaxProvider: %v", err)
+	}
+	key := testKey()
+	req := userChatRequest(nil)
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := provider.ChatCompletion(ctx, key, req); bifrostErr == nil {
+			b.Fatal("expected a base_resp error")
+		}
+		ctx.Cancel()
+	}
+}
+
 // BenchmarkMiniMaxTextCompletion is the fork's text completion round trip against a local server.
 func BenchmarkMiniMaxTextCompletion(b *testing.B) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1961,6 +1987,32 @@ func TestMiniMaxContentFilterCodesOnEveryOperation(t *testing.T) {
 				"POST /v1/t2a_v2": jsonResponse(http.StatusOK, `{`+baseResp+`}`),
 			})
 			_, bifrostErr := provider.Speech(testContext(t), testKey(), speechRequest("English_Graceful_Lady", nil))
+			assertMiniMaxError(t, bifrostErr, http.StatusBadRequest, schemas.ErrorTypeCallerContentFiltered, code)
+		})
+		t.Run("responses/"+code, func(t *testing.T) {
+			provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+				"POST /v1/chat/completions": jsonResponse(http.StatusOK, `{"id":"","choices":null,`+baseResp+`}`),
+			})
+			_, bifrostErr := provider.Responses(testContext(t), testKey(), &schemas.BifrostResponsesRequest{
+				Provider: schemas.MiniMax,
+				Model:    "MiniMax-M3",
+				Input: []schemas.ResponsesMessage{{
+					Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				}},
+			})
+			assertMiniMaxError(t, bifrostErr, http.StatusBadRequest, schemas.ErrorTypeCallerContentFiltered, code)
+		})
+		t.Run("image/"+code, func(t *testing.T) {
+			provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+				"POST /v1/image_generation": jsonResponse(http.StatusOK, `{"id":"img1","data":{},`+baseResp+`}`),
+			})
+			_, bifrostErr := provider.ImageGeneration(testContext(t), testKey(), &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.MiniMax,
+				Model:    "image-01",
+				Input:    &schemas.ImageGenerationInput{Prompt: "a cat"},
+			})
 			assertMiniMaxError(t, bifrostErr, http.StatusBadRequest, schemas.ErrorTypeCallerContentFiltered, code)
 		})
 		t.Run("video create/"+code, func(t *testing.T) {

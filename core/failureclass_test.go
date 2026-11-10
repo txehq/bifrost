@@ -533,6 +533,8 @@ func BenchmarkClassifyFailure(b *testing.B) {
 		{"401", providerError(401, "invalid_request_error", "invalid_api_key", "Incorrect API key provided")},
 		{"400", providerError(400, "invalid_request_error", "", "Invalid value for 'temperature'")},
 		{"403_content_block", providerError(403, "invalid_request_error", "content_policy_violation", "Your request was rejected as a result of our safety system.")},
+		{"502_declared_auth", declaredFailure(providerError(502, "authentication_error", "1004", "login fail"), schemas.ErrorTypeProviderAuthFailed)},
+		{"502_undeclared", providerError(502, "", "", "Bad Gateway")},
 	}
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
