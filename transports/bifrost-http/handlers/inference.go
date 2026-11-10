@@ -2614,7 +2614,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 							return
 						}
 						if stripExtraFields {
-							errorJSON = lib.StripExtraFields(errorJSON)
+							errorJSON = lib.StripStreamErrorExtraFields(errorJSON)
 						}
 						// Return error event and stop streaming
 						reader.SendError(errorJSON)
@@ -2641,7 +2641,11 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			cpuStart := time.Now()
 			chunkJSON, err := sonic.Marshal(chunk)
 			if err == nil && stripExtraFields {
-				chunkJSON = lib.StripExtraFields(chunkJSON)
+				if chunk.BifrostError != nil {
+					chunkJSON = lib.StripStreamErrorExtraFields(chunkJSON)
+				} else {
+					chunkJSON = lib.StripExtraFields(chunkJSON)
+				}
 			}
 			streamTransportCPUNs += time.Since(cpuStart).Nanoseconds()
 			if err != nil {

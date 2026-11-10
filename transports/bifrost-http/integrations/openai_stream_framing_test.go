@@ -13,7 +13,9 @@ import (
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/providers/openai"
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -186,5 +188,74 @@ func TestStreamErrorEventFramingPerRoute(t *testing.T) {
 			}
 			require.NotContains(t, wire, "[DONE]")
 		})
+	}
+}
+
+// With extra_fields_placement "headers", a provider error after the stream's headers went
+// out keeps extra_fields.error_type in the frame, the only place it can reach the client
+// (TXE-6985). Chat and Responses routes both emit the BifrostError itself; body placement
+// keeps the full extra_fields.
+func TestStreamErrorFrameKeepsErrorTypeInHeadersPlacement(t *testing.T) {
+	openAIRoutes := CreateOpenAIRouteConfigs("/openai", &mockHandlerStore{})
+	findRoute := func(path string) RouteConfig {
+		t.Helper()
+		for _, route := range openAIRoutes {
+			if route.Method == "POST" && route.Path == path {
+				return route
+			}
+		}
+		t.Fatalf("route POST %s not found", path)
+		return RouteConfig{}
+	}
+	for _, tc := range []struct {
+		name        string
+		path        string
+		requestType schemas.RequestType
+	}{
+		{"chat completions", "/openai/v1/chat/completions", schemas.ChatCompletionStreamRequest},
+		{"responses", "/openai/v1/responses", schemas.ResponsesStreamRequest},
+		{"azure deployments chat", "/openai/openai/deployments/{deploymentPath:*}", schemas.ChatCompletionStreamRequest},
+	} {
+		for _, inHeaders := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/headers=%v", tc.name, inHeaders), func(t *testing.T) {
+				bifrostErr := &schemas.BifrostError{
+					StatusCode: schemas.Ptr(fasthttp.StatusTooManyRequests),
+					Error:      &schemas.ErrorField{Message: "upstream rate limited mid-stream"},
+				}
+				bifrostErr.ExtraFields.RequestType = tc.requestType
+				bifrostErr.ExtraFields.Provider = schemas.OpenAI
+				bifrostErr.ExtraFields.Latency = 9
+				stream := make(chan *schemas.BifrostStreamChunk, 1)
+				stream <- &schemas.BifrostStreamChunk{BifrostError: bifrostErr}
+				close(stream)
+
+				parent, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+				router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+				httpCtx := &fasthttp.RequestCtx{}
+				if inHeaders {
+					httpCtx.SetUserValue(lib.FastHTTPUserValueExtraFieldsInHeaders, true)
+				}
+				router.handleStreaming(httpCtx, ctx, findRoute(tc.path), "", stream, cancel)
+				body, err := io.ReadAll(httpCtx.Response.BodyStream())
+				require.NoError(t, err)
+				var frame string
+				for _, line := range strings.Split(string(body), "\n") {
+					if value, ok := strings.CutPrefix(line, "data: "); ok {
+						frame = value
+					}
+				}
+				require.NotEmpty(t, frame, "wire stream: %q", body)
+				require.Equal(t, string(schemas.ErrorTypeProviderRateLimited), gjson.Get(frame, "extra_fields.error_type").String(), "frame: %s", frame)
+				require.Contains(t, frame, "upstream rate limited mid-stream")
+				if inHeaders {
+					require.JSONEq(t, `{"error_type":"provider_rate_limited"}`, gjson.Get(frame, "extra_fields").Raw, "headers placement keeps only error_type: %s", frame)
+				} else {
+					require.Equal(t, "openai", gjson.Get(frame, "extra_fields.provider").String(), "body placement keeps the full extra_fields: %s", frame)
+					require.EqualValues(t, 9, gjson.Get(frame, "extra_fields.latency").Int())
+				}
+			})
+		}
 	}
 }

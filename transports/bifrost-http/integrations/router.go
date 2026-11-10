@@ -3140,7 +3140,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				}
 
 				if stripExtraFields {
-					errorJSON = lib.StripExtraFields(errorJSON)
+					errorJSON = lib.StripStreamErrorExtraFields(errorJSON)
 				}
 				// Send error as SSE data, typed for routes whose frames carry an event line
 				reader.SendEvent(streamErrorEventType(config, bifrostErr, streamRequestType), errorJSON)
