@@ -158,27 +158,6 @@ func isGeminiEmbedContentResponse(response []byte) bool {
 	return node.TypeSafe() == ast.V_OBJECT
 }
 
-// geminiSniffedInlinedResponse is an inline response with its response kept as raw JSON.
-type geminiSniffedInlinedResponse struct {
-	Response sonic.NoCopyRawMessage `json:"response,omitempty"`
-}
-
-type geminiSniffedInlinedResponses struct {
-	InlinedResponses []geminiSniffedInlinedResponse `json:"inlinedResponses,omitempty"`
-}
-
-type geminiSniffedBatchOutput struct {
-	InlinedResponses             *geminiSniffedInlinedResponses `json:"inlinedResponses,omitempty"`
-	InlinedEmbedContentResponses *geminiSniffedInlinedResponses `json:"inlinedEmbedContentResponses,omitempty"`
-}
-
-type geminiSniffedBatchJob struct {
-	Response *geminiSniffedBatchOutput `json:"response,omitempty"`
-	Metadata *struct {
-		Output *geminiSniffedBatchOutput `json:"output,omitempty"`
-	} `json:"metadata,omitempty"`
-}
-
 // sniffGeminiEmbeddingResponses sets EmbedResponse on the inline responses of a batch job
 // that are EmbedContentResponses. body is the job as the vendor sent it and inlined the
 // responses geminiBatchOutput read from it. A job is decoded directly, as a generateContent
@@ -189,12 +168,12 @@ func sniffGeminiEmbeddingResponses(body []byte, inlined []GeminiInlinedResponse)
 	if len(inlined) == 0 || !bytes.Contains(body, geminiEmbeddingKey) {
 		return nil
 	}
-	var job geminiSniffedBatchJob
+	var job GeminiRawBatchJob
 	if err := sonic.Unmarshal(body, &job); err != nil {
 		return err
 	}
 	// The same choice geminiBatchOutput made, so the raw responses line up with inlined.
-	pick := func(output *geminiSniffedBatchOutput) []geminiSniffedInlinedResponse {
+	pick := func(output *GeminiRawBatchOutput) []GeminiRawInlinedResponse {
 		if output == nil {
 			return nil
 		}
@@ -227,11 +206,6 @@ func sniffGeminiEmbeddingResponses(body []byte, inlined []GeminiInlinedResponse)
 	return nil
 }
 
-// geminiInlinedLine is the half-open range of inline responses that answer one batch line.
-type geminiInlinedLine struct {
-	start, end int
-}
-
 // hasGeminiMultiInputLines reports whether any inline response says it is one of several
 // requests a line was sent as. It allocates nothing, so a batch with no such line is paged
 // without grouping.
@@ -249,8 +223,8 @@ func hasGeminiMultiInputLines(inlined []GeminiInlinedResponse) bool {
 // requests one embedding line was sent as; the responses that follow it with the same key
 // and count, at the next positions, belong to the same line. Responses arrive in the order
 // of the requests, so a line's responses are consecutive.
-func groupGeminiInlinedResponses(inlined []GeminiInlinedResponse) []geminiInlinedLine {
-	lines := make([]geminiInlinedLine, 0, len(inlined))
+func groupGeminiInlinedResponses(inlined []GeminiInlinedResponse) []GeminiInlinedLine {
+	lines := make([]GeminiInlinedLine, 0, len(inlined))
 	for i := 0; i < len(inlined); {
 		end := i + 1
 		if count, index, ok := geminiInlinedInputPosition(inlined[i]); ok && index == 0 {
@@ -262,7 +236,7 @@ func groupGeminiInlinedResponses(inlined []GeminiInlinedResponse) []geminiInline
 				end++
 			}
 		}
-		lines = append(lines, geminiInlinedLine{start: i, end: end})
+		lines = append(lines, GeminiInlinedLine{Start: i, End: end})
 		i = end
 	}
 	return lines
