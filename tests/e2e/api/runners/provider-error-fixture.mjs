@@ -1050,6 +1050,11 @@ const wireAnswer = (path, body, bytes) => {
 	if (path === "/pp/minimax/v1/chat/completions" && body.model === "sensitive-flags") return miniMaxSensitiveChatAnswer(body);
 	if (path === "/pp/minimax/v1/responses") return miniMaxResponsesAnswer(body);
 	if (path === "/anthropic/v1/messages") return { status: 200, body: JSON.stringify(anthropicMessage(body.model)) };
+	// A delivered Seedream image, TXE-7051: ModelArk serves generation and edit on one endpoint and reports its own
+	// creation time, which the expiry is counted from.
+	if (path === "/pp/byteplus/api/v3/images/generations") {
+		return { status: 200, body: JSON.stringify({ model: body.model, created: 1762000000, data: [{ url: "https://delivery.example.test/seedream/1.jpeg?Expires=1", size: "2048x2048" }], usage: { generated_images: 1, output_tokens: 16384, total_tokens: 16384 } }) };
+	}
 	// A delivered MiniMax image, TXE-7051: links by default, bytes when the body asks for base64. MiniMax's image
 	// body carries no creation time.
 	if (path === "/pp/minimax/v1/image_generation") {
