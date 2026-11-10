@@ -151,7 +151,7 @@ Set `stream_format: "sse"` to receive `speech.audio.delta` events as the audio a
 
 ### Usage
 
-The response's `Content-Type` is the one Azure AI Speech sent with the audio (`audio/mpeg`, `audio/x-wav`, ...). Real-time synthesis reports no billed character count, so the provider fills no usage and the `x-bifrost-usage` response header carries no `billed_characters`. `usage.input_chars` is Bifrost's own code-point count of `input`; it is not what Azure bills (Azure counts CJK characters twice and bills the SSML text).
+The response's `Content-Type` is the one Azure AI Speech sent with the audio (`audio/mpeg`, `audio/x-wav`, ...). Real-time synthesis reports no billed character count, so the provider fills no usage and the `x-bifrost-usage` response header carries no `billed_characters`. A streamed response carries the same `usage.input_chars` on its final `speech.audio.done` event. `usage.input_chars` is Bifrost's own code-point count of `input`; it is not what Azure bills (Azure counts CJK characters twice and bills the SSML text).
 
 ## Transcription
 

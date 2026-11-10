@@ -347,6 +347,9 @@ func (provider *AzureSpeechProvider) SpeechStream(ctx *schemas.BifrostContext, p
 				Latency:    time.Since(startTime).Milliseconds(),
 			},
 		}
+		// The same input_chars a buffered response gets from core, so a streamed call is
+		// priced and budgeted like a buffered one. The vendor reports no count of its own.
+		finalResponse.BackfillParams(request)
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 			finalResponse.ExtraFields.RawRequest = string(ssml)
 		}

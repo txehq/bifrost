@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/internal/llmtests"
@@ -23,6 +24,9 @@ import (
 // maiVoice is the voice name the vendor sheet documents: the part after the colon is the
 // model Azure AI Speech bills.
 const maiVoice = "en-US-Harper:MAI-Voice-2.1-Flash"
+
+// speechInput is the text every speechRequest synthesizes.
+const speechInput = "I'm excited to try text to speech!"
 
 // TestAzureSpeech is the live entrypoint (make test-core PROVIDER=azurespeech). It
 // synthesizes one sentence and transcribes the audio it got back, so it needs a Speech
@@ -180,7 +184,7 @@ func speechRequest(voice string, params *schemas.SpeechParameters) *schemas.Bifr
 	return &schemas.BifrostSpeechRequest{
 		Provider: schemas.AzureSpeech,
 		Model:    "mai-voice-2.1-flash",
-		Input:    &schemas.SpeechInput{Input: "I'm excited to try text to speech!"},
+		Input:    &schemas.SpeechInput{Input: speechInput},
 		Params:   params,
 	}
 }
@@ -631,8 +635,15 @@ func TestAzureSpeechSpeechStreamForwardsChunksOnArrival(t *testing.T) {
 			response := chunk.BifrostSpeechStreamResponse
 			types = append(types, response.Type)
 			audio = append(audio, response.Audio...)
-			if response.Usage != nil {
-				t.Errorf("usage = %+v, want none: the vendor reports no character count", response.Usage)
+			// Only the final chunk carries usage: Bifrost's own input_chars, as on a buffered
+			// response, so a streamed call is priced the same. The vendor reports no count.
+			if response.Type == schemas.SpeechStreamResponseTypeDone {
+				wantChars := utf8.RuneCountInString(speechInput)
+				if response.Usage == nil || response.Usage.InputChars != wantChars || response.Usage.BilledCharacters != nil {
+					t.Errorf("final chunk usage = %+v, want input_chars %d and no billed_characters", response.Usage, wantChars)
+				}
+			} else if response.Usage != nil {
+				t.Errorf("usage on an audio chunk = %+v, want none", response.Usage)
 			}
 			if !released && len(audio) >= len(first) {
 				if len(audio) > len(first) {
