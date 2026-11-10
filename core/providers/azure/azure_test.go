@@ -1275,3 +1275,83 @@ func TestAzureHasNoVideoCancel(t *testing.T) {
 		t.Fatalf("cancel = %+v, want 400 provider_cancel_unsupported", bifrostErr)
 	}
 }
+
+// TXE-6984: Azure's image edit runs on the same OpenAI handler, so an edit to Azure carrying a
+// unified field OpenAI's edit API has no field for is refused the same way, sync and streaming,
+// before any upstream call; an edit with fields it takes makes its one call.
+func TestAzureImageEditRejectsUndeliverableFields(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"created":1,"data":[{"b64_json":"aGk="}]}`)
+	}))
+	defer server.Close()
+	provider := newAzureDecisionProvider(t)
+	key := newAzureDecisionKey(server.URL)
+	request := func(params schemas.ImageEditParameters) *schemas.BifrostImageEditRequest {
+		return &schemas.BifrostImageEditRequest{
+			Provider: schemas.Azure,
+			Model:    "gpt-image-1.5",
+			Input:    &schemas.ImageEditInput{Prompt: "add a hat", Images: []schemas.ImageInput{{Image: []byte("\x89PNG\r\n\x1a\nfake")}}},
+			Params:   &params,
+		}
+	}
+	checkRefused := func(t *testing.T, bifrostErr *schemas.BifrostError, param string) {
+		t.Helper()
+		if bifrostErr == nil {
+			t.Fatalf("want a 400 naming %s", param)
+		}
+		if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %v, want 400", bifrostErr.StatusCode)
+		}
+		if got := bifrostErr.ResolveErrorType(); got != schemas.ErrorTypeCallerUnsupportedParameter {
+			t.Fatalf("error_type = %q, want %q", got, schemas.ErrorTypeCallerUnsupportedParameter)
+		}
+		if bifrostErr.Error == nil || bifrostErr.Error.Param != param {
+			t.Fatalf("error.param = %+v, want %q", bifrostErr.Error, param)
+		}
+	}
+	for _, tc := range []struct {
+		param  string
+		params schemas.ImageEditParameters
+	}{
+		{"aspect_ratio", schemas.ImageEditParameters{AspectRatio: schemas.Ptr("16:9")}},
+		{"resolution", schemas.ImageEditParameters{Resolution: "2K"}},
+		{"target_megapixels", schemas.ImageEditParameters{TargetMegapixels: schemas.Ptr(4)}},
+		{"type", schemas.ImageEditParameters{Type: schemas.Ptr("upscale")}},
+		{"upscale_factor", schemas.ImageEditParameters{UpscaleFactor: schemas.Ptr(2)}},
+	} {
+		t.Run(tc.param, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.ImageEdit(ctx, key, request(tc.params))
+			checkRefused(t, bifrostErr, tc.param)
+		})
+		t.Run(tc.param+" stream", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			stream, bifrostErr := provider.ImageEditStream(ctx, nil, nil, key, request(tc.params))
+			if stream != nil {
+				t.Fatal("a stream was opened for a refused request")
+			}
+			checkRefused(t, bifrostErr, tc.param)
+		})
+	}
+	mu.Lock()
+	if len(paths) != 0 {
+		t.Fatalf("refused requests reached Azure: %v", paths)
+	}
+	mu.Unlock()
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, bifrostErr := provider.ImageEdit(ctx, key, request(schemas.ImageEditParameters{N: schemas.Ptr(1), Size: schemas.Ptr("1024x1024")})); bifrostErr != nil {
+		t.Fatalf("ImageEdit with deliverable fields: %+v", bifrostErr.Error)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) != 1 || paths[0] != "/openai/v1/images/edits" {
+		t.Fatalf("upstream calls = %v, want one to /openai/v1/images/edits", paths)
+	}
+}

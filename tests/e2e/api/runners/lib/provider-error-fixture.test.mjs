@@ -410,9 +410,16 @@ test("OpenAI image paths answer in the gpt-image shape, record the wire, and blo
   assert.deepEqual(events.map((e) => e.type), ["image_edit.partial_image", "image_edit.completed"]);
   assert.equal(events[1].usage.total_tokens, 284);
 
+  // A streamed generation with two previews: partial_image_index numbers the previews of the one image (TXE-6984).
+  const generatedStream = await post({ model: "gpt-image-1.5", prompt: "a fox", stream: true, partial_images: 2 }, "/v1/images/generations");
+  assert.match(generatedStream.headers.get("content-type"), /^text\/event-stream/);
+  const generationEvents = (await generatedStream.text()).split("\n\n").filter(Boolean).map((e) => JSON.parse(e.split("\ndata: ")[1]));
+  assert.deepEqual(generationEvents.map((e) => [e.type, e.partial_image_index]), [["image_generation.partial_image", 0], ["image_generation.partial_image", 1], ["image_generation.completed", undefined]]);
+  assert.equal(generationEvents[2].usage.output_images, undefined, "OpenAI reports no image count");
+
   const wire = await (await fetch(`http://127.0.0.1:${post.port}/__wire`)).json();
   const calls = wire.data[0].calls;
-  assert.deepEqual(calls.map((c) => c.path), ["/v1/images/generations", "/v1/images/edits", "/v1/images/edits", "/v1/images/edits"]);
+  assert.deepEqual(calls.map((c) => c.path), ["/v1/images/generations", "/v1/images/edits", "/v1/images/edits", "/v1/images/edits", "/v1/images/generations"]);
   assert.equal(calls[0].contentType, "application/json");
   assert.match(calls[1].contentType, /^multipart\/form-data/);
 });

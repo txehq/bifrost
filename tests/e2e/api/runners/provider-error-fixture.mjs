@@ -574,8 +574,8 @@ const cloudTTSAnswer = (body) => {
 // OpenAI's own images API, TXE-6528 (contract C4, C5, C6): the openai provider's base URL is this fixture's root, so
 // an image request to it arrives on /v1/images/generations or /v1/images/edits. gpt-image-blocked answers with
 // OpenAI's documented moderation block (HTTP 400, code moderation_blocked); every other model answers in the
-// gpt-image shape, n images with the token usage block OpenAI reports and no image count. A streamed edit is answered
-// as server-sent events. An edit arrives as a
+// gpt-image shape, n images with the token usage block OpenAI reports and no image count. A streamed generation
+// or edit is answered as server-sent events. An edit arrives as a
 // multipart form, or as OpenAI's JSON edit body when its input images are links, so the model and n are read from
 // whichever body came.
 const openAIImageModerationBlocked = JSON.stringify({ error: { message: "Your request was rejected by the safety system. If you believe this is an error, contact us at help.openai.com and include the request ID req_fixture.", type: "image_generation_user_error", param: null, code: "moderation_blocked" } });
@@ -591,12 +591,17 @@ const openAIImageAnswer = (body, bytes, isEdit) => {
 	if (model === "gpt-image-drop") return { drop: true };
 	const requested = Number.isInteger(body.n) ? body.n : Number(formField(bytes, "n"));
 	const n = Number.isInteger(requested) && requested > 0 ? requested : 1;
-	// A streamed edit (stream: true in either body) is answered as OpenAI streams it: one partial image, then the
-	// completed event carrying the token usage.
-	if (isEdit && (body.stream === true || formField(bytes, "stream") === "true")) {
+	// A streamed request (stream: true in either body) is answered as OpenAI streams it: partial_images previews of
+	// the one image (default 1), numbered by partial_image_index, then the completed event carrying the image and
+	// the token usage, and no image count (TXE-6984).
+	if (body.stream === true || formField(bytes, "stream") === "true") {
+		const kind = isEdit ? "image_edit" : "image_generation";
+		const asked = Number.isInteger(body.partial_images) ? body.partial_images : Number(formField(bytes, "partial_images"));
+		const previews = Number.isInteger(asked) && asked >= 0 ? asked : 1;
+		const frame = { created_at: 1, size: "1024x1024", quality: "low", background: "opaque", output_format: "png" };
 		const events = [
-			{ type: "image_edit.partial_image", b64_json: "iVBORw0KGgo=", partial_image_index: 0, sequence_number: 1, created_at: 1, size: "1024x1024", quality: "low", background: "opaque", output_format: "png" },
-			{ type: "image_edit.completed", b64_json: "iVBORw0KGgo=", sequence_number: 2, created_at: 1, size: "1024x1024", quality: "low", background: "opaque", output_format: "png", usage: { input_tokens: 12, input_tokens_details: { image_tokens: 0, text_tokens: 12 }, output_tokens: 272, output_tokens_details: { image_tokens: 272, text_tokens: 0 }, total_tokens: 284 } },
+			...Array.from({ length: previews }, (_, i) => ({ type: `${kind}.partial_image`, b64_json: "iVBORw0KGgo=", partial_image_index: i, sequence_number: i + 1, ...frame })),
+			{ type: `${kind}.completed`, b64_json: "iVBORw0KGgo=", sequence_number: previews + 1, ...frame, usage: { input_tokens: 12, input_tokens_details: { image_tokens: 0, text_tokens: 12 }, output_tokens: 272, output_tokens_details: { image_tokens: 272, text_tokens: 0 }, total_tokens: 284 } },
 		];
 		return { status: 200, stream: events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join("") };
 	}
@@ -610,7 +615,7 @@ const openAIImageAnswer = (body, bytes, isEdit) => {
 	};
 };
 // Azure runs the same images API on its endpoint under /openai/v1 (the azure key's endpoint is this fixture).
-const isOpenAIImagePath = (path) => path === "/v1/images/generations" || path === "/v1/images/edits" || path === "/openai/v1/images/generations";
+const isOpenAIImagePath = (path) => path === "/v1/images/generations" || path === "/v1/images/edits" || path === "/openai/v1/images/generations" || path === "/openai/v1/images/edits";
 
 // Gemini API image generation and edit (Nano Banana), TXE-6526, contract C4, C5, C6. The gemini provider's
 // generateContent path names the model, and the model picks the answer: one delivered image with thinking tokens,
@@ -799,7 +804,7 @@ const wireAnswer = (path, body, bytes) => {
 	if (isBedrockConversePath(path)) return bedrockConverseAnswer(path);
 	if (path.startsWith("/pp/storage/")) return storageAnswer(path, body);
 	if (path.startsWith("/pp/bfl/v1/")) return { status: 200, body: JSON.stringify(bflSubmitAnswer()) };
-	if (isOpenAIImagePath(path)) return openAIImageAnswer(body, bytes, path === "/v1/images/edits");
+	if (isOpenAIImagePath(path)) return openAIImageAnswer(body, bytes, path.endsWith("/images/edits"));
 	const geminiImage = geminiImageAnswerFor(path);
 	if (geminiImage) return geminiImage;
 	if (path === "/pp/gemini/files") return geminiFileUpload();

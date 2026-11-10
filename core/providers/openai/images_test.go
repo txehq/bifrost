@@ -3,6 +3,7 @@ package openai
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -44,9 +45,11 @@ func readMultipartParts(t *testing.T, contentType string, body []byte) []multipa
 	}
 }
 
+// imageEditWithExtras is an edit for a custom provider on the openai base type: it shares the
+// handler and its multipart form, and is not openai or azure, which refuse resolution (TXE-6984).
 func imageEditWithExtras() *schemas.BifrostImageEditRequest {
 	return &schemas.BifrostImageEditRequest{
-		Provider: schemas.OpenAI,
+		Provider: schemas.ModelProvider("custom-openai"),
 		Model:    "gpt-image-1",
 		Input: &schemas.ImageEditInput{
 			Prompt: "add a hat",
@@ -270,6 +273,30 @@ func BenchmarkImageGenerationFieldCheck(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				if err := checkOpenAIImageGenerationFields(ctx, tc.req); err != nil {
+					b.Fatal(err.Error)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkImageEditFieldCheck is the cost TXE-6984 adds to every image edit on the shared
+// handler: the common cases are a request with no params, one with only fields OpenAI takes, and
+// one for another provider.
+func BenchmarkImageEditFieldCheck(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, tc := range []struct {
+		name string
+		req  *schemas.BifrostImageEditRequest
+	}{
+		{"no params", &schemas.BifrostImageEditRequest{Provider: schemas.OpenAI}},
+		{"deliverable params", &schemas.BifrostImageEditRequest{Provider: schemas.OpenAI, Params: &schemas.ImageEditParameters{N: schemas.Ptr(2), Size: schemas.Ptr("1024x1024")}}},
+		{"another provider", &schemas.BifrostImageEditRequest{Provider: schemas.XAI, Params: &schemas.ImageEditParameters{AspectRatio: schemas.Ptr("16:9")}}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := checkOpenAIImageEditFields(ctx, tc.req); err != nil {
 					b.Fatal(err.Error)
 				}
 			}
@@ -742,5 +769,221 @@ func TestImageEditBodyChoice(t *testing.T) {
 	want := `{"model":"gpt-image-1.5","prompt":"add a hat","images":[{"image_url":"https://example.com/a.png"}],"stream":true}`
 	if contentType != "application/json" || string(body) != want {
 		t.Fatalf("stream body (%s) = %s\nwant %s", contentType, body, want)
+	}
+}
+
+// TXE-6984 (contract C4): OpenAI's edit API has no aspect_ratio, resolution, target_megapixels,
+// type or upscale_factor, in the multipart form or in the JSON edit body. An edit carrying one is
+// answered 400 caller_unsupported_parameter naming the field, sync and streaming, with no upstream
+// call. Before, the field was dropped and the edit ran without it.
+func TestImageEditRejectsUndeliverableFields(t *testing.T) {
+	for _, tc := range []struct {
+		param  string
+		params schemas.ImageEditParameters
+		images []schemas.ImageInput
+	}{
+		{"aspect_ratio", schemas.ImageEditParameters{AspectRatio: schemas.Ptr("16:9")}, nil},
+		// The HTTP route also leaves resolution among the extras; it is refused all the same.
+		{"resolution", schemas.ImageEditParameters{Resolution: "2K", ExtraParams: map[string]interface{}{"resolution": "2K"}}, nil},
+		{"target_megapixels", schemas.ImageEditParameters{TargetMegapixels: schemas.Ptr(4)}, nil},
+		{"type", schemas.ImageEditParameters{Type: schemas.Ptr("upscale")}, nil},
+		{"upscale_factor", schemas.ImageEditParameters{UpscaleFactor: schemas.Ptr(2)}, nil},
+		// Several set: the first in alphabetical order is named, as schemas.CheckUnifiedFields does.
+		{"aspect_ratio", schemas.ImageEditParameters{UpscaleFactor: schemas.Ptr(2), Type: schemas.Ptr("upscale"), AspectRatio: schemas.Ptr("1:1"), N: schemas.Ptr(2)}, nil},
+		// The JSON edit body (link inputs) is refused the same way as the form.
+		{"type", schemas.ImageEditParameters{Type: schemas.Ptr("inpainting")}, []schemas.ImageInput{{URL: "https://example.com/a.png"}}},
+	} {
+		t.Run(tc.param, func(t *testing.T) {
+			provider, calls, _, _ := imageTestProvider(t, http.StatusOK, imageTestOKBody)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			// As on /v1/images/edits, which turns extra-param passthrough on for every request.
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			request := func() *schemas.BifrostImageEditRequest {
+				params := tc.params
+				images := tc.images
+				if images == nil {
+					images = []schemas.ImageInput{{Image: []byte("\x89PNG\r\n\x1a\nfake")}}
+				}
+				return &schemas.BifrostImageEditRequest{
+					Provider: schemas.OpenAI,
+					Model:    "gpt-image-1.5",
+					Input:    &schemas.ImageEditInput{Prompt: "add a hat", Images: images},
+					Params:   &params,
+				}
+			}
+			resp, bifrostErr := provider.ImageEdit(ctx, imageTestKey(), request())
+			if bifrostErr == nil {
+				t.Fatalf("ImageEdit succeeded (%+v), want a 400 naming %s", resp, tc.param)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+				t.Fatalf("status = %v, want 400", bifrostErr.StatusCode)
+			}
+			if got := bifrostErr.ResolveErrorType(); got != schemas.ErrorTypeCallerUnsupportedParameter {
+				t.Fatalf("error_type = %q, want %q", got, schemas.ErrorTypeCallerUnsupportedParameter)
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Param != tc.param {
+				t.Fatalf("error.param = %+v, want %q", bifrostErr.Error, tc.param)
+			}
+
+			// The streaming route refuses the same request before it opens a stream.
+			stream, streamErr := provider.ImageEditStream(ctx, passthroughPostHook, nil, imageTestKey(), request())
+			if stream != nil || streamErr == nil {
+				t.Fatalf("ImageEditStream opened a stream (err %+v), want a 400 naming %s", streamErr, tc.param)
+			}
+			if streamErr.StatusCode == nil || *streamErr.StatusCode != 400 || streamErr.ResolveErrorType() != schemas.ErrorTypeCallerUnsupportedParameter || streamErr.Error == nil || streamErr.Error.Param != tc.param {
+				t.Fatalf("stream error = %+v (status %v), want 400 caller_unsupported_parameter naming %q", streamErr.Error, streamErr.StatusCode, tc.param)
+			}
+			if *calls != 0 {
+				t.Fatalf("upstream calls = %d, want 0", *calls)
+			}
+		})
+	}
+}
+
+// The edit check is for the two providers whose edit API is OpenAI's own. Fields OpenAI takes make
+// one call; seed, negative_prompt and num_inference_steps are still dropped, not refused; and the
+// other providers on the shared handler, or a large payload streamed as sent, are left alone.
+func TestImageEditFieldCheckScope(t *testing.T) {
+	png := []schemas.ImageInput{{Image: []byte("\x89PNG\r\n\x1a\nfake")}}
+	t.Run("deliverable and unpriced fields make one call", func(t *testing.T) {
+		provider, calls, gotType, gotBody := imageTestProvider(t, http.StatusOK, imageTestOKBody)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		_, bifrostErr := provider.ImageEdit(ctx, imageTestKey(), &schemas.BifrostImageEditRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-image-1.5",
+			Input:    &schemas.ImageEditInput{Prompt: "add a hat", Images: png},
+			Params: &schemas.ImageEditParameters{
+				N: schemas.Ptr(2), Size: schemas.Ptr("1024x1024"), Quality: schemas.Ptr("low"),
+				Seed: schemas.Ptr(7), NegativePrompt: schemas.Ptr("blur"), NumInferenceSteps: schemas.Ptr(20),
+			},
+		})
+		if bifrostErr != nil {
+			t.Fatalf("ImageEdit: %+v", bifrostErr.Error)
+		}
+		if *calls != 1 {
+			t.Fatalf("upstream calls = %d, want 1", *calls)
+		}
+		if mediaType, _, _ := mime.ParseMediaType(*gotType); mediaType != "multipart/form-data" {
+			t.Fatalf("Content-Type = %q, want multipart/form-data", *gotType)
+		}
+		for _, dropped := range []string{"seed", "negative_prompt", "num_inference_steps"} {
+			if bytes.Contains(*gotBody, []byte(`name="`+dropped+`"`)) {
+				t.Fatalf("%s reached OpenAI: %s", dropped, *gotBody)
+			}
+		}
+	})
+
+	withType := func(provider schemas.ModelProvider) *schemas.BifrostImageEditRequest {
+		return &schemas.BifrostImageEditRequest{
+			Provider: provider,
+			Model:    "gpt-image-1.5",
+			Input:    &schemas.ImageEditInput{Prompt: "add a hat", Images: png},
+			Params:   &schemas.ImageEditParameters{Type: schemas.Ptr("upscale"), AspectRatio: schemas.Ptr("16:9")},
+		}
+	}
+	if err := checkOpenAIImageEditFields(nil, withType(schemas.OpenAI)); err == nil || err.Error.Param != "aspect_ratio" {
+		t.Fatalf("openai: %+v, want a refusal naming aspect_ratio", err)
+	}
+	if err := checkOpenAIImageEditFields(nil, withType(schemas.Azure)); err == nil || err.Error.Param != "aspect_ratio" {
+		t.Fatalf("azure: %+v, want a refusal naming aspect_ratio", err)
+	}
+	for _, other := range []schemas.ModelProvider{schemas.XAI, schemas.ModelProvider("my-custom-openai")} {
+		if err := checkOpenAIImageEditFields(nil, withType(other)); err != nil {
+			t.Fatalf("%s: refused %+v, want no check", other, err.Error)
+		}
+	}
+	if err := checkOpenAIImageEditFields(nil, &schemas.BifrostImageEditRequest{Provider: schemas.OpenAI}); err != nil {
+		t.Fatalf("nil params: refused %+v", err.Error)
+	}
+	largePayload := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	largePayload.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	largePayload.SetValue(schemas.BifrostContextKeyLargePayloadReader, io.Reader(bytes.NewReader([]byte("form"))))
+	if err := checkOpenAIImageEditFields(largePayload, withType(schemas.OpenAI)); err != nil {
+		t.Fatalf("large payload passthrough: refused %+v, want no check", err.Error)
+	}
+}
+
+// TXE-6984 (contract C5): the completed frame of a streamed image generation or edit carries
+// usage.output_images, the finished images the stream delivered. OpenAI's partial_image_index
+// numbers the previews of one image, so a stream with two previews and one completed image
+// reports 1, not 2 or 3; a completed event with no image reports 0; a stream with no usage block
+// still reports the count.
+func TestImageStreamReportsOutputImages(t *testing.T) {
+	const usage = `"usage":{"input_tokens":12,"output_tokens":272,"total_tokens":284}`
+	for _, tc := range []struct {
+		name      string
+		completed string // fields of the completed event after its type
+		want      int
+		wantUsage bool
+	}{
+		{"completed image with usage", `"b64_json":"aGk=",` + usage, 1, true},
+		{"completed image, no usage block", `"b64_json":"aGk="`, 1, false},
+		{"completed event without an image", usage, 0, true},
+	} {
+		for _, kind := range []string{"image_generation", "image_edit"} {
+			t.Run(tc.name+" "+kind, func(t *testing.T) {
+				sse := "data: " + `{"type":"` + kind + `.partial_image","b64_json":"cDA=","partial_image_index":0,"sequence_number":1}` + "\n\n" +
+					"data: " + `{"type":"` + kind + `.partial_image","b64_json":"cDE=","partial_image_index":1,"sequence_number":2}` + "\n\n" +
+					"data: " + `{"type":"` + kind + `.completed","sequence_number":3,` + tc.completed + `}` + "\n\n"
+				server := completeSSEServer(t, sse)
+				defer server.Close()
+				provider := newStreamTestProvider(server.URL)
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				var stream chan *schemas.BifrostStreamChunk
+				var bifrostErr *schemas.BifrostError
+				if kind == "image_generation" {
+					stream, bifrostErr = provider.ImageGenerationStream(ctx, passthroughPostHook, nil, imageTestKey(), &schemas.BifrostImageGenerationRequest{
+						Provider: schemas.OpenAI,
+						Model:    "gpt-image-1.5",
+						Input:    &schemas.ImageGenerationInput{Prompt: "a fox"},
+						Params:   &schemas.ImageGenerationParameters{PartialImages: schemas.Ptr(2)},
+					})
+				} else {
+					stream, bifrostErr = provider.ImageEditStream(ctx, passthroughPostHook, nil, imageTestKey(), &schemas.BifrostImageEditRequest{
+						Provider: schemas.OpenAI,
+						Model:    "gpt-image-1.5",
+						Input:    &schemas.ImageEditInput{Prompt: "add a hat", Images: []schemas.ImageInput{{Image: []byte("\x89PNG\r\n\x1a\nfake")}}},
+						Params:   &schemas.ImageEditParameters{PartialImages: schemas.Ptr(2)},
+					})
+				}
+				if bifrostErr != nil {
+					t.Fatalf("stream setup: %+v", bifrostErr.Error)
+				}
+				chunks := collectChunks(t, stream)
+				if len(chunks) != 3 {
+					t.Fatalf("chunks = %d, want 3 (two previews, completed)", len(chunks))
+				}
+				for i, chunk := range chunks[:2] {
+					got := chunk.BifrostImageGenerationStreamResponse
+					if got == nil || got.Usage != nil {
+						t.Fatalf("preview %d = %+v, want a preview frame with no usage", i, got)
+					}
+				}
+				final := chunks[2].BifrostImageGenerationStreamResponse
+				if final == nil || final.Usage == nil || final.Usage.OutputImages == nil {
+					t.Fatalf("completed frame = %+v, want usage.output_images", final)
+				}
+				if *final.Usage.OutputImages != tc.want {
+					t.Fatalf("usage.output_images = %d, want %d", *final.Usage.OutputImages, tc.want)
+				}
+				if tc.wantUsage && (final.Usage.InputTokens != 12 || final.Usage.OutputTokens != 272 || final.Usage.TotalTokens != 284) {
+					t.Fatalf("usage = %+v, want OpenAI's 12/272/284 kept", final.Usage)
+				}
+				encoded, err := schemas.MarshalSorted(final)
+				if err != nil {
+					t.Fatalf("marshal: %v", err)
+				}
+				if want := fmt.Sprintf(`"output_images":%d`, tc.want); !bytes.Contains(encoded, []byte(want)) {
+					t.Fatalf("serialised frame has no %s: %s", want, encoded)
+				}
+			})
+		}
+	}
+
+	// A count the vendor reported itself is kept.
+	reported := &schemas.BifrostImageGenerationStreamResponse{B64JSON: "aGk=", Usage: &schemas.ImageUsage{OutputImages: schemas.Ptr(4)}}
+	setStreamedOutputImages(reported)
+	if *reported.Usage.OutputImages != 4 {
+		t.Fatalf("a vendor-reported count was overwritten: %d", *reported.Usage.OutputImages)
 	}
 }
