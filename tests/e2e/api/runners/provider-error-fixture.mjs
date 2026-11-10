@@ -761,11 +761,16 @@ const miniMaxResponsesAnswer = (body) => ({
 // is Content Moderated with the vendor's reasons, bfl-pending is Pending, anything else is "Task not found". The
 // polling_url is plain http, so the gateway polls its configured base, which is this fixture.
 const BFL_FIXTURE_BASE = "http://127.0.0.1:8791/pp/bfl";
+// FLUX 3 Video, TXE-6617 (folder 422): a submit to /pp/bfl/v1/flux-3-video gets its own task, bfl-video-ready, whose
+// result is an MP4 link.
+const bflVideoSubmitAnswer = () => ({ id: "bfl-video-ready", polling_url: `${BFL_FIXTURE_BASE}/v1/get_result?id=bfl-video-ready`, cost: 30 });
 const bflSubmitAnswer = () => ({ id: "bfl-ready", polling_url: `${BFL_FIXTURE_BASE}/v1/get_result?id=bfl-ready`, cost: 4, input_mp: 0, output_mp: 1.05 });
 const bflResult = (id) => {
 	switch (id) {
 	case "bfl-ready":
 		return { id, status: "Ready", result: { sample: "https://delivery.example.test/bfl/sample.jpeg", end_time: 1762700000, seed: 7 }, progress: null, details: null, cost: 4 };
+	case "bfl-video-ready":
+		return { id, status: "Ready", result: { sample: "https://delivery.example.test/bfl/sample.mp4", end_time: 1762700000 }, progress: null, details: null, cost: 30 };
 	case "bfl-moderated":
 		return { id, status: "Content Moderated", result: null, progress: null, details: { "Moderation Reasons": ["Derivative Works Filter"] }, cost: 0 };
 	case "bfl-pending":
@@ -966,6 +971,7 @@ const dashScopeImageAnswer = (body) => {
 const wireAnswer = (path, body, bytes) => {
 	if (isBedrockConversePath(path)) return bedrockConverseAnswer(path);
 	if (path.startsWith("/pp/storage/")) return storageAnswer(path, body);
+	if (path === "/pp/bfl/v1/flux-3-video") return { status: 200, body: JSON.stringify(bflVideoSubmitAnswer()) };
 	if (path.startsWith("/pp/bfl/v1/")) return { status: 200, body: JSON.stringify(bflSubmitAnswer()) };
 	if (isOpenAIImagePath(path)) return openAIImageAnswer(body, bytes, path.endsWith("/images/edits"));
 	const geminiImage = geminiImageAnswerFor(path);

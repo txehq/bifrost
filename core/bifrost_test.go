@@ -11825,6 +11825,10 @@ func guardModel(provider schemas.ModelProvider) string {
 	case schemas.DashScope:
 		// The Wan family is read from the model's name; a name of no known family is refused.
 		return "wan3.0-" + guardAllowedModel
+	case schemas.BFL:
+		// BFL's only video model, which is also its endpoint (TXE-6617); its images are served
+		// on the image task routes, which this guard does not drive.
+		return "flux-3-video"
 	}
 	return guardAllowedModel
 }

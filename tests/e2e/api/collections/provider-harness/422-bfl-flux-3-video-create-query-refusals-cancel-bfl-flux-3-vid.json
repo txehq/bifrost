@@ -1,0 +1,537 @@
+{
+  "name": "422. BFL FLUX 3 Video: create, query, refusals, cancel (bfl flux 3 video)",
+  "description": "Pins TXE-6617 (contract C4 to C7, C9; BFL vendor sheet B15 to B19) on the unified video routes. Local fixture regression, no live provider calls: start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json and run with providerErrorFixture=1; every case is skipped otherwise. The config points bfl at the fixture's /pp/bfl, which answers POST /v1/flux-3-video with task bfl-video-ready and GET /v1/get_result by task id. Row 2 creates a task and reads the task object: queued, an id {vendor id}:bfl, the credit cost; row 3 reads the bytes BFL received: seconds as duration, 1080p as fhd, mode t2v, an extra field merged unchanged, no unified name left. Row 4 queries it: completed, the MP4 link in videos[], expires_at two hours after BFL's end_time. Row 5 queries a moderated task: failed with content_filter. Rows 6 to 8 are refused with caller_unsupported_parameter before any upstream call: callback_url and client_reference_id (FLUX 3 Video has no webhook_url or external id), size (BFL has no size). Row 9 is the cancel route: 400 provider_cancel_unsupported. Row 10 reads the fixture: one create and one query of each task. Before the change every bfl video request answered unsupported_operation. Every status, the dropped-connection once-only create and the download path are pinned by core/providers/bfl's Go tests.",
+  "item": [
+    {
+      "name": "422.1 reset the fixture's counters (bfl flux 3 video)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__reset",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__reset"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the fixture reset its counters', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "422.2 bfl/flux-3-video POST /v1/videos creates a FLUX 3 Video task (bfl flux 3 video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bfl/flux-3-video\",\n  \"prompt\": \"a paper boat drifting down a rain gutter\",\n  \"seconds\": \"5\",\n  \"aspect_ratio\": \"16:9\",\n  \"resolution\": \"1080p\",\n  \"safety_tolerance\": 2\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the create returns a queued video task with the credit cost', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.id).to.eql('bfl-video-ready%7Cflux-3-video:bfl');",
+              "  pm.expect(j.status).to.eql('queued');",
+              "  pm.expect(j.seconds).to.eql('5');",
+              "  pm.expect(j.usage.vendor_cost).to.eql({ amount: 30, unit: 'credit' });",
+              "  pm.collectionVariables.set('bflVideoTaskId', j.id);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "422.3 the create BFL received carries the converted fields (bfl flux 3 video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__wire",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__wire"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('seconds became duration, 1080p became fhd, mode t2v, the extra field passed unchanged', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path === '/pp/bfl/v1/flux-3-video'; });",
+              "  pm.expect(calls.length, JSON.stringify(calls)).to.eql(1);",
+              "  var sent = JSON.parse(calls[0].body);",
+              "  pm.expect(sent.mode).to.eql('t2v');",
+              "  pm.expect(sent.duration).to.eql(5);",
+              "  pm.expect(sent.aspect_ratio).to.eql('16:9');",
+              "  pm.expect(sent.resolution).to.eql('fhd');",
+              "  pm.expect(sent.safety_tolerance).to.eql(2);",
+              "  pm.expect(sent).to.not.have.property('seconds');",
+              "  pm.expect(sent).to.not.have.property('model');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "422.4 GET /v1/videos/{id} maps the Ready result (bfl flux 3 video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{bflVideoTaskId}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{bflVideoTaskId}}"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('a Ready task is completed with the MP4 link and its two-hour expiry', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status).to.eql('completed');",
+              "  pm.expect(j.provider_status).to.eql('Ready');",
+              "  pm.expect(j.videos).to.eql([{ type: 'url', url: 'https://delivery.example.test/bfl/sample.mp4', content_type: 'video/mp4' }]);",
+              "  pm.expect(j.completed_at).to.eql(1762700000);",
+              "  pm.expect(j.expires_at).to.eql(1762707200);",
+              "  pm.expect(j.usage.vendor_cost).to.eql({ amount: 30, unit: 'credit' });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "422.5 GET /v1/videos/{id} maps a moderated task to failed with content_filter (bfl flux 3 video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/bfl-moderated%7Cflux-3-video:bfl",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "bfl-moderated%7Cflux-3-video:bfl"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Content Moderated is failed with the vendor code and its reasons', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.status).to.eql('failed');",
+              "  pm.expect(j.provider_status).to.eql('Content Moderated');",
+              "  pm.expect(j.error.code).to.eql('Content Moderated');",
+              "  pm.expect(j.content_filter).to.eql({ filtered_count: 1, reasons: ['Derivative Works Filter'] });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "422.6 [EXPECT-400] /v1/videos refuses callback_url: FLUX 3 Video has no webhook_url (bfl flux 3 video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bfl/flux-3-video\",\n  \"prompt\": \"a boat\",\n  \"callback_url\": \"https://hooks.example.test/v/task_422\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('callback_url is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('callback_url');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "422.7 [EXPECT-400] /v1/videos refuses client_reference_id: BFL has no external task id (bfl flux 3 video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bfl/flux-3-video\",\n  \"prompt\": \"a boat\",\n  \"client_reference_id\": \"task_422\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('client_reference_id is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('client_reference_id');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "422.8 [EXPECT-400] /v1/videos refuses size: BFL takes resolution, not size (bfl flux 3 video)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"model\": \"bfl/flux-3-video\",\n  \"prompt\": \"a boat\",\n  \"size\": \"1280x720\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('size is refused as caller_unsupported_parameter naming the field', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, 'error_type: ' + pm.response.text()).to.eql('caller_unsupported_parameter');",
+              "  pm.expect(j.error && j.error.param, 'error.param: ' + pm.response.text()).to.eql('size');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "422.9 [EXPECT-400] POST /v1/videos/{id}/cancel is provider_cancel_unsupported (bfl flux 3 video)",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/v1/videos/{{bflVideoTaskId}}/cancel",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "videos",
+            "{{bflVideoTaskId}}",
+            "cancel"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('BFL has no cancel API: 400 provider_cancel_unsupported', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+              "  var j = pm.response.json();",
+              "  pm.expect(j.extra_fields && j.extra_fields.error_type, pm.response.text()).to.eql('provider_cancel_unsupported');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "422.10 the fixture saw one create and one query of each task (bfl flux 3 video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__hits",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__hits"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('no refused request reached BFL', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var hits = pm.response.json().data[0].hits;",
+              "  pm.expect(hits['bfl get_result bfl-video-ready'], JSON.stringify(hits)).to.eql(1);",
+              "  pm.expect(hits['bfl get_result bfl-moderated'], JSON.stringify(hits)).to.eql(1);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "422.11 BFL received exactly one create, the one of row 2 (bfl flux 3 video)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{providerErrorFixtureUrl}}/__wire",
+          "host": [
+            "{{providerErrorFixtureUrl}}"
+          ],
+          "path": [
+            "__wire"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.variables.get('providerErrorFixture') !== '1') {",
+              "  pm.execution.skipRequest();",
+              "}"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('the refused creates sent nothing to BFL', function () {",
+              "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+              "  var calls = pm.response.json().data[0].calls.filter(function (c) { return c.path.indexOf('/pp/bfl/') === 0; });",
+              "  pm.expect(calls.length, JSON.stringify(calls)).to.eql(1);",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
