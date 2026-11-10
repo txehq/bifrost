@@ -1,7 +1,6 @@
 package bfl
 
 import (
-	"bytes"
 	"encoding/base64"
 	"fmt"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
+	"github.com/tidwall/sjson"
 )
 
 // BFL image tasks (TXE-6431, contract C4 to C7 and C9, BFL vendor sheet B2 to B10). BFL serves
@@ -52,6 +52,9 @@ func (provider *BFLProvider) SupportedUnifiedFields(requestType schemas.RequestT
 type bflImageBody struct {
 	fields map[string]any
 	extra  map[string]any
+	// injectedSecret reports that fields["webhook_secret"] is the key's secret, which the caller
+	// never sent, so every captured copy of the body must redact it (TXE-7062).
+	injectedSecret bool
 }
 
 // MarshalJSON encodes the endpoint's fields.
@@ -90,6 +93,7 @@ func refuse(param, message string) error {
 func toBFLImageBody(in imageTaskInput) (*bflImageBody, error) {
 	spec := specFor(in.model)
 	fields := map[string]any{}
+	injected := false
 	if in.prompt != "" {
 		fields["prompt"] = in.prompt
 	}
@@ -148,9 +152,10 @@ func toBFLImageBody(in imageTaskInput) (*bflImageBody, error) {
 		// The key's secret signs the webhook unless the request names its own (TXE-7062).
 		if _, own := in.extra["webhook_secret"]; !own && in.keyWebhookSecret != "" {
 			fields["webhook_secret"] = in.keyWebhookSecret
+			injected = true
 		}
 	}
-	return &bflImageBody{fields: fields, extra: in.extra}, nil
+	return &bflImageBody{fields: fields, extra: in.extra, injectedSecret: injected}, nil
 }
 
 // setInputImages writes the input images and the mask in the form the model takes.
@@ -274,21 +279,20 @@ func editTaskInput(request *schemas.BifrostImageEditRequest) imageTaskInput {
 	return in
 }
 
-// redactedSecret replaces a configured credential in a captured body.
+// redactedSecret replaces the key's webhook secret in a captured body.
 const redactedSecret = "[REDACTED]"
 
-// redactSecret returns body with every JSON string equal to secret replaced by redactedSecret.
-// The secret is matched in its JSON-encoded form, so escaping cannot hide it. body itself is not
-// modified; it is returned as is when secret is empty or absent.
-func redactSecret(body []byte, secret string) []byte {
-	if secret == "" || len(body) == 0 {
-		return body
+// redactInjectedSecret returns a copy of body whose webhook_secret field reads redactedSecret.
+// It is called only when the provider wrote the key's secret into that field, and touches no
+// other part of the body: redacting the secret's value wherever it appeared would tell a caller
+// who planted a guess elsewhere in the request whether the guess was right.
+func redactInjectedSecret(body []byte) []byte {
+	redacted, err := sjson.SetBytes(append([]byte(nil), body...), "webhook_secret", redactedSecret)
+	if err != nil {
+		// Never fall back to the body that holds the secret.
+		return []byte(`{"webhook_secret":"` + redactedSecret + `"}`)
 	}
-	quoted, err := sonic.Marshal(secret)
-	if err != nil || !bytes.Contains(body, quoted) {
-		return body
-	}
-	return bytes.ReplaceAll(body, quoted, []byte(`"`+redactedSecret+`"`))
+	return redacted
 }
 
 // keyWebhookSecret is the key's BFL webhook secret, or "" when the key configures none.
@@ -301,7 +305,7 @@ func keyWebhookSecret(key schemas.Key) string {
 
 // ImageGenerationTask submits an image generation task: one POST /v1/{model}.
 func (provider *BFLProvider) ImageGenerationTask(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
-	return provider.submitImageTask(ctx, key, request, request.Model, func() (providerUtils.RequestBodyWithExtraParams, error) {
+	return provider.submitImageTask(ctx, key, request, request.Model, func() (*bflImageBody, error) {
 		in := generationTaskInput(request)
 		in.keyWebhookSecret = keyWebhookSecret(key)
 		return toBFLImageBody(in)
@@ -310,7 +314,7 @@ func (provider *BFLProvider) ImageGenerationTask(ctx *schemas.BifrostContext, ke
 
 // ImageEditTask submits an image edit task: one POST /v1/{model}.
 func (provider *BFLProvider) ImageEditTask(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
-	return provider.submitImageTask(ctx, key, request, request.Model, func() (providerUtils.RequestBodyWithExtraParams, error) {
+	return provider.submitImageTask(ctx, key, request, request.Model, func() (*bflImageBody, error) {
 		in := editTaskInput(request)
 		in.keyWebhookSecret = keyWebhookSecret(key)
 		return toBFLImageBody(in)
@@ -318,14 +322,19 @@ func (provider *BFLProvider) ImageEditTask(ctx *schemas.BifrostContext, key sche
 }
 
 // submitImageTask converts, sends the one submit, and returns the queued task object.
-func (provider *BFLProvider) submitImageTask(ctx *schemas.BifrostContext, key schemas.Key, request providerUtils.RequestBodyGetter, model string, convert providerUtils.RequestBodyConverter) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
+func (provider *BFLProvider) submitImageTask(ctx *schemas.BifrostContext, key schemas.Key, request providerUtils.RequestBodyGetter, model string, build func() (*bflImageBody, error)) (*schemas.BifrostImageTaskResponse, *schemas.BifrostError) {
 	if !modelPathPattern.MatchString(model) {
 		return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("invalid BFL model name %q", model))
 	}
 	// The caller's extra fields (safety_tolerance, prompt_upsampling, webhook_secret) are part of
 	// BFL's request body, so they are always merged.
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(ctx, request, convert)
+	var built *bflImageBody
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (providerUtils.RequestBodyWithExtraParams, error) {
+		body, err := build()
+		built = body
+		return body, err
+	})
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -333,10 +342,11 @@ func (provider *BFLProvider) submitImageTask(ctx *schemas.BifrostContext, key sc
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
 	// BFL receives the key's webhook secret; every copy Bifrost keeps of the body (raw_request on
-	// the response or on an error, and the logs built from it) has it redacted (TXE-7062).
+	// the response or on an error, and the logs built from it) has that one field redacted
+	// (TXE-7062). A body the caller wrote entirely is captured as it was sent.
 	captured := jsonData
-	if sendBackRawRequest {
-		captured = redactSecret(jsonData, keyWebhookSecret(key))
+	if sendBackRawRequest && built != nil && built.injectedSecret {
+		captured = redactInjectedSecret(jsonData)
 	}
 	submittedAt := time.Now().Unix()
 	body, latency, bifrostErr := provider.doRequestCaptured(ctx, key, http.MethodPost, provider.requestURL(ctx, "/v1/"+model), jsonData, captured, sendBackRawRequest, sendBackRawResponse)

@@ -1058,8 +1058,56 @@ func TestBFLKeyWebhookSecretIsRedactedFromCapturedBodies(t *testing.T) {
 			t.Fatalf("status %d: raw_request lost the redaction marker: %s", status, data)
 		}
 	}
-	if got := string(redactSecret([]byte(`{"a":"x\"y"}`), `x"y`)); got != `{"a":"[REDACTED]"}` {
-		t.Errorf("an escaped secret was not redacted: %s", got)
+}
+
+// TXE-7062 security review: only the field the provider filled is redacted, so the captured copy
+// is no oracle. A caller who plants a guess of the key's secret in the prompt gets the prompt back
+// unchanged whether or not the guess is right, and a caller's own webhook_secret is its own input,
+// captured as sent.
+func TestBFLCapturedBodyIsNoSecretOracle(t *testing.T) {
+	const secret = "key-secret-7062"
+	key := schemas.Key{Value: *schemas.NewSecretVar("k"), BFLKeyConfig: &schemas.BFLKeyConfig{WebhookSecret: schemas.NewSecretVar(secret)}}
+	capture := func(req *schemas.BifrostImageGenerationRequest) map[string]any {
+		rec := &bflRecorder{submit: `{"id":"t1"}`}
+		server := httptest.NewServer(http.HandlerFunc(rec.serve))
+		defer server.Close()
+		provider, err := NewBFLProvider(&schemas.ProviderConfig{
+			NetworkConfig:      schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true},
+			SendBackRawRequest: true,
+		}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		task, bifrostErr := provider.ImageGenerationTask(imageTaskCtx(t), key, req)
+		if bifrostErr != nil {
+			t.Fatalf("submit: %+v", bifrostErr.Error)
+		}
+		data, _ := json.Marshal(task.ExtraFields.RawRequest)
+		var raw string
+		_ = json.Unmarshal(data, &raw)
+		if raw != "" {
+			data = []byte(raw)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(data, &body); err != nil {
+			t.Fatalf("raw_request %s: %v", data, err)
+		}
+		return body
+	}
+	cb := &schemas.TaskControlParameters{CallbackURL: schemas.Ptr("https://hooks.example.test/v/1")}
+
+	guessed := capture(&schemas.BifrostImageGenerationRequest{Model: "flux-pro-1.1", Input: &schemas.ImageGenerationInput{Prompt: secret}, TaskControl: cb})
+	if guessed["prompt"] != secret {
+		t.Fatalf("the caller's own prompt was rewritten, which confirms the guess: %v", guessed["prompt"])
+	}
+	if guessed["webhook_secret"] != redactedSecret {
+		t.Fatalf("the injected secret was not redacted: %v", guessed["webhook_secret"])
+	}
+
+	own := capture(&schemas.BifrostImageGenerationRequest{Model: "flux-pro-1.1", Input: &schemas.ImageGenerationInput{Prompt: "p"}, TaskControl: cb,
+		Params: &schemas.ImageGenerationParameters{ExtraParams: map[string]any{"webhook_secret": "caller-secret"}}})
+	if own["webhook_secret"] != "caller-secret" {
+		t.Fatalf("the caller's own webhook_secret should be captured as sent: %v", own["webhook_secret"])
 	}
 }
 
@@ -1089,7 +1137,9 @@ func BenchmarkBFLImageTaskKeySecret(b *testing.B) {
 				if err != nil {
 					b.Fatal(err)
 				}
-				_ = redactSecret(data, run.keyWebhookSecret)
+				if body.injectedSecret {
+					_ = redactInjectedSecret(data)
+				}
 			}
 		})
 	}
