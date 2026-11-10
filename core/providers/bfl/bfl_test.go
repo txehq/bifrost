@@ -174,3 +174,22 @@ func TestBFLErrorParsing(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkBFLUnsupportedOperation measures what a request routed to bfl costs while its
+// operations are unsupported: one unsupported-operation error, no network call. The
+// constructor runs once per provider config load and is not on the request path.
+func BenchmarkBFLUnsupportedOperation(b *testing.B) {
+	provider, err := NewBFLProvider(&schemas.ProviderConfig{}, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	ctx := schemas.NewBifrostContext(b.Context(), schemas.NoDeadline)
+	request := &schemas.BifrostImageGenerationRequest{Provider: schemas.BFL, Model: "flux-2-pro"}
+	key := schemas.Key{Value: *schemas.NewSecretVar("bfl-key")}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, bifrostErr := provider.ImageGeneration(ctx, key, request); bifrostErr == nil {
+			b.Fatal("want the unsupported-operation error")
+		}
+	}
+}
