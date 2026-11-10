@@ -1,9 +1,10 @@
 // Package bfl implements the provider for Black Forest Labs' own API: FLUX images, which
 // BFL serves only as tasks (submit, then poll a polling_url), and FLUX 3 video.
 //
-// This file registers the provider. Each operation answers the unsupported-operation
-// error until the ticket that adds it lands, so a configured provider never calls
-// upstream for an operation it cannot convert.
+// This file registers the provider. Images are served on the image task routes
+// (images.go, schemas.ImageTaskProvider); every operation of the Provider interface,
+// sync images included, answers the unsupported-operation error, so a configured
+// provider never calls upstream for an operation it cannot convert.
 package bfl
 
 import (

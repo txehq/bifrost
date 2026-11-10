@@ -827,3 +827,103 @@ ImageEditStreamResponse:
       description: Error information if edit failed
     extra_fields:
       $ref: "./common.yaml#/BifrostResponseExtraFields"
+
+ImageTaskControl:
+  type: object
+  description: |
+    The task control fields of an image task create, beside the body of the matching sync route. A
+    field the provider does not take is never dropped: the request is refused with 400 and
+    `extra_fields.error_type` `caller_unsupported_parameter`, `error.param` naming the field, before
+    any call to the provider.
+  properties:
+    callback_url:
+      type: string
+      format: uri
+      description: |
+        Where the provider notifies task state changes (BFL: `webhook_url`). Sent unchanged; Bifrost
+        receives no callback. `webhook_secret`, when the provider takes one, travels as an extra field.
+    client_reference_id:
+      type: string
+      description: The caller's own task id, sent in the provider's external-task-id field.
+    expires_after_seconds:
+      type: integer
+      description: Upper bound on the task's whole lifetime, in seconds from creation.
+    output_storage_uri:
+      type: string
+      description: Where the provider writes the artifact.
+
+ImageGenerationTaskRequest:
+  allOf:
+    - $ref: '#/ImageGenerationRequest'
+    - $ref: '#/ImageTaskControl'
+
+ImageEditTaskRequest:
+  allOf:
+    - $ref: '#/ImageEditRequest'
+    - $ref: '#/ImageTaskControl'
+
+ImageTaskResponse:
+  type: object
+  description: |
+    The image task object, the response of all four image task routes. It has the shape of the video
+    task object with the artifacts in `data`. Bifrost stores no task: each route is one call to the
+    provider, and the id carries what the provider needs to query the task again.
+  properties:
+    id:
+      type: string
+      description: |
+        `{URL-encoded provider task id}:{provider}`. Pass it unchanged to
+        `GET /v1/images/tasks/{task_id}` and `POST /v1/images/tasks/{task_id}/cancel`.
+    object:
+      type: string
+      enum:
+        - "image.task"
+    model:
+      type: string
+      description: The model the task was created with, when known
+    status:
+      $ref: './videos.yaml#/VideoStatus'
+    provider_status:
+      type: string
+      description: The provider's raw status string, verbatim
+    created_at:
+      type: integer
+      format: int64
+      description: Unix timestamp (seconds) when the task was submitted
+    completed_at:
+      type: integer
+      format: int64
+      description: Unix timestamp (seconds) of the provider's completion time
+    expires_at:
+      type: integer
+      format: int64
+      description: |
+        Unix timestamp (seconds) when the artifact links expire: the provider's own value, or the
+        completion time plus the provider's documented link lifetime (BFL: one hour for FLUX 3, ten
+        minutes for the other models). Absent when neither is known.
+    data:
+      type: array
+      description: The delivered images; a blocked image takes no slot
+      items:
+        type: object
+        properties:
+          type:
+            type: string
+            enum:
+              - "url"
+              - "content"
+            description: "`url`: a public link, valid until `expires_at`"
+          url:
+            type: string
+            format: uri
+          content_type:
+            type: string
+            description: MIME type of the image, when the link names it
+    error:
+      $ref: './videos.yaml#/VideoError'
+    content_filter:
+      $ref: './videos.yaml#/VideoContentFilter'
+    usage:
+      $ref: '#/ImageUsage'
+    extra_fields:
+      $ref: './common.yaml#/BifrostResponseExtraFields'

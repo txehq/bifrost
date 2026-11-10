@@ -1,6 +1,6 @@
 ---
 title: "Black Forest Labs"
-description: "Black Forest Labs' own API for FLUX: provider registration, x-key auth, global or regional base and error mapping"
+description: "Black Forest Labs' own API for FLUX: image tasks on the image task routes, x-key auth, global or regional base and error mapping"
 icon: "b"
 ---
 
@@ -9,16 +9,20 @@ icon: "b"
 The `bfl` provider is Black Forest Labs' own API for FLUX images and FLUX 3 video. BFL serves images only as tasks: a submit returns an id and a `polling_url`, and the result is polled.
 
 <Note>
-This release registers the provider only. Every operation returns `UnsupportedOperationError` (HTTP 400, `error.code` `unsupported_operation`) without calling BFL. Image tasks and FLUX 3 video are added in later releases.
+BFL images are served only on the image task routes. The sync routes `POST /v1/images/generations` and `/v1/images/edits` return `UnsupportedOperationError` (HTTP 400, `error.code` `unsupported_operation`) for `bfl` without calling BFL. FLUX 3 video is added in a later release.
 </Note>
 
 ### Supported Operations
 
-| Operation | Status |
-|-----------|--------|
-| Image generation and edit (FLUX, as tasks) | ❌ (planned) |
-| Video (FLUX 3 Video) | ❌ (planned) |
-| Chat, Embeddings, Speech, Files, Batch, List Models, everything else | ❌ |
+| Operation | Route | Status |
+|-----------|-------|--------|
+| Image generation task | `POST /v1/images/generations/tasks` | ✅ |
+| Image edit task | `POST /v1/images/edits/tasks` | ✅ |
+| Image task query | `GET /v1/images/tasks/{task_id}` | ✅ |
+| Image task cancel | `POST /v1/images/tasks/{task_id}/cancel` | 400 `provider_cancel_unsupported`: BFL has no cancel API |
+| Sync image generation and edit | `/v1/images/generations`, `/v1/images/edits` | ❌ |
+| Video (FLUX 3 Video) | `/v1/videos` | ❌ (planned) |
+| Chat, Embeddings, Speech, Files, Batch, List Models, everything else | | ❌ |
 
 ## Setup & Configuration
 
@@ -90,3 +94,55 @@ BFL's errors are FastAPI bodies. `detail` is either a string or a list of valida
 | 503 | BFL unavailable | `provider_overloaded` |
 
 BFL reports moderation as a task status (`Request Moderated`, `Content Moderated`), not as an HTTP error. The image task operation maps it.
+
+## Image tasks
+
+Each route is one call to BFL; Bifrost stores no task. A create is `POST /v1/{model}` (the model is the endpoint name, such as `flux-pro-1.1` or `flux-kontext-pro`) and returns the task object with `status` `queued`. A query is one `GET /v1/get_result`.
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bfl/flux-pro-1.1",
+    "prompt": "A red fox in fresh snow",
+    "size": "1024x768",
+    "callback_url": "https://hooks.example.com/tasks/123",
+    "webhook_secret": "my-signing-secret",
+    "safety_tolerance": 2
+  }'
+
+curl http://localhost:8080/v1/images/tasks/<id from the create>
+```
+
+### Request fields
+
+The unified fields are converted per model, from BFL's OpenAPI. A field the model has no counterpart for is refused with 400 `caller_unsupported_parameter`, `error.param` naming it, before any call to BFL. `seed` is dropped where a model has none. Fields outside the unified set (`safety_tolerance`, `prompt_upsampling`, `webhook_secret`, `image_prompt`, ...) are sent to BFL unchanged.
+
+| Unified field | BFL field | Notes |
+|---------------|-----------|-------|
+| `size` (`WIDTHxHEIGHT`) | `width`, `height` | Models with width and height; refused on Kontext |
+| `aspect_ratio` | `aspect_ratio` | FLUX 3 Image and Kontext |
+| `resolution` (`1K`, `2K`, `4K`) | `resolution` (`1k`, `2k`, `4k`) | FLUX 3 Image |
+| `output_format` | `output_format` | Refused on `flux-3-image` |
+| `num_inference_steps` | `steps` | `flux-dev`, `flux-2-flex`, fill, FLUX 3 Image Klein |
+| `input_images`, edit `images` | `images` (FLUX 3), `input_image`, `input_image_2`, ... (FLUX.2, Kontext), `image` (fill) | Bytes are sent as base64, URLs unchanged, a data URL as its base64 payload |
+| edit `mask` | `mask` | `flux-pro-1.0-fill` only |
+| `callback_url` | `webhook_url` | Refused on `flux-3-image` and `flux-3-image-klein`, which have no webhook |
+| `n` | | One image per task: any value other than 1 is refused |
+| `response_format` | | Only `url` |
+| `client_reference_id`, `expires_after_seconds`, `output_storage_uri` | | BFL has no external task id, deadline or storage target: always refused |
+
+A model outside this table receives only the prompt and the extra fields; any unified field that would need converting is refused.
+
+### The task object
+
+| Field | From BFL |
+|-------|----------|
+| `id` | `{BFL id}%7C{model}[%7C{polling host}]:bfl`: the BFL id, the model and a regional polling host, joined by a URL-encoded vertical bar. It carries the model (for the link lifetime) and a regional polling host. The host is honoured only when it is BFL's own (`api.bfl.ai`, `api.<region>.bfl.ai`) |
+| `status`, `provider_status` | BFL's nine statuses: `Pending` is `queued`; `Reasoning`, `Generating` are `in_progress`; `Ready` is `completed`; `Request Moderated`, `Content Moderated`, `No Card Generated`, `Error`, `Task not found` are `failed`. `provider_status` keeps BFL's string |
+| `error` | A failed task's BFL status as `error.code` |
+| `content_filter` | Both Moderated states: `filtered_count` 1, `reasons` from BFL's `details["Moderation Reasons"]` |
+| `data` | `result.sample` as `{type: "url", url, content_type}` |
+| `completed_at`, `expires_at` | `result.end_time`; `expires_at` is one hour later for FLUX 3 models and ten minutes later otherwise. Both are absent when BFL reports no end time |
+| `usage.vendor_cost` | BFL's `cost`, `unit` `credit`: the submit's cost on the create, the settled cost on a query |
+| `usage.input_megapixels`, `usage.output_megapixels` | The submit's `input_mp`, `output_mp` (the query does not report them) |
