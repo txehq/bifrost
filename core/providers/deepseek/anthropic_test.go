@@ -467,3 +467,244 @@ func TestChatCompletion_AliasOverrideUsesAnthropicEndpoint(t *testing.T) {
 		t.Fatalf("Authorization = %q, want empty (bearer auth belongs to the OpenAI-compatible wire)", gotAuthorization)
 	}
 }
+
+// TXE-6548: /anthropic/v1/messages for DeepSeek passes through to DeepSeek's
+// Anthropic-compatible endpoint instead of round-tripping through Bifrost Responses.
+// The fixtures follow DeepSeek's Anthropic API guide
+// (api-docs.deepseek.com/guides/anthropic_api): x-api-key auth, input_tokens that
+// exclude cache hits, cache_read_input_tokens for the hits, and streaming usage that
+// the final message_delta restates in full.
+const (
+	deepSeekMessagesRequest = "{\"model\":\"deepseek-v4-flash\",\n  \"max_tokens\":\t1024,\n" +
+		"  \"system\":[{\"type\":\"text\",\"text\":\"Caf\\u00e9 \\ud83d\\ude00\",\"cache_control\":{\"type\":\"ephemeral\"}}],\n" +
+		"  \"thinking\":{\"type\":\"enabled\",\"budget_tokens\":512},\n" +
+		"  \"tools\":[{\"name\":\"lookup\",\"input_schema\":{\"type\":\"object\"}}],\"tool_choice\":{\"type\":\"auto\",\"disable_parallel_tool_use\":true},\n" +
+		"  \"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}],\n" +
+		"  \"metadata\":{\"user_id\":\"u-1\"},\"top_k\":5,\"zz_unknown\":{\"b\":1,\"a\":[]} }"
+	deepSeekMessagesResponse = `{"id":"msg_ds","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[{"type":"thinking","thinking":"plan","signature":"sig"},{"type":"text","text":"Hello"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":20,"cache_read_input_tokens":4736,"cache_creation_input_tokens":0,"output_tokens":52}}`
+	deepSeekMessagesSSE      = "event: message_start\n" +
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_ds\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-v4-flash\",\"content\":[],\"usage\":{\"input_tokens\":20,\"cache_read_input_tokens\":4736,\"cache_creation_input_tokens\":0,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_start\n" +
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+		"event: ping\n" +
+		"data: {\"type\":\"ping\"}\n\n" +
+		"event: content_block_delta\n" +
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Caf\\u00e9\"}}\n\n" +
+		"event: content_block_stop\n" +
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		"event: message_delta\n" +
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":20,\"cache_read_input_tokens\":4736,\"cache_creation_input_tokens\":0,\"output_tokens\":52}}\n\n" +
+		"event: message_stop\n" +
+		"data: {\"type\":\"message_stop\"}\n\n"
+)
+
+type capturedMessagesCall struct {
+	path, apiKey, authorization string
+	body                        []byte
+}
+
+func newDeepSeekMessagesServer(t *testing.T, status int, contentType, response string) (*httptest.Server, chan capturedMessagesCall) {
+	t.Helper()
+	calls := make(chan capturedMessagesCall, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		calls <- capturedMessagesCall{path: r.URL.Path, apiKey: r.Header.Get("x-api-key"), authorization: r.Header.Get("Authorization"), body: body}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("x-ds-trace-id", "trace-1")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(response))
+	}))
+	t.Cleanup(server.Close)
+	return server, calls
+}
+
+func assertDeepSeekMessagesCall(t *testing.T, call capturedMessagesCall, wantBody string) {
+	t.Helper()
+	if call.path != "/anthropic/v1/messages" {
+		t.Fatalf("upstream path = %q, want /anthropic/v1/messages", call.path)
+	}
+	if call.apiKey != "ds-secret" || call.authorization != "" {
+		t.Fatalf("auth headers = x-api-key %q, Authorization %q; want only x-api-key", call.apiKey, call.authorization)
+	}
+	if string(call.body) != wantBody {
+		t.Fatalf("upstream body is not byte-exact:\n got: %s\nwant: %s", call.body, wantBody)
+	}
+}
+
+func TestDeepSeekAdvertisesAnthropicMessagesEndpoint(t *testing.T) {
+	t.Parallel()
+
+	provider, err := newTestDeepSeekProvider("https://api.deepseek.com/")
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	capable, ok := any(provider).(schemas.AnthropicMessagesCapable)
+	if !ok {
+		t.Fatal("DeepSeek provider does not advertise Anthropic Messages capability")
+	}
+	if endpoint, enabled := capable.AnthropicMessagesEndpoint(); !enabled || endpoint != "https://api.deepseek.com/anthropic" {
+		t.Fatalf("endpoint = %q, enabled = %v; want https://api.deepseek.com/anthropic, true", endpoint, enabled)
+	}
+}
+
+func TestPassthrough_ForwardsMessagesToAnthropicEndpointByteExact(t *testing.T) {
+	t.Parallel()
+
+	server, calls := newDeepSeekMessagesServer(t, http.StatusOK, "application/json", deepSeekMessagesResponse)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Passthrough(ctx, schemas.Key{Value: schemas.SecretVar{Val: "ds-secret"}}, &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "/v1/messages", Body: []byte(deepSeekMessagesRequest),
+		SafeHeaders: map[string]string{"anthropic-version": "2023-06-01", "anthropic-beta": "interleaved-thinking-2025-05-14"},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Passthrough: %+v", bifrostErr)
+	}
+	assertDeepSeekMessagesCall(t, <-calls, deepSeekMessagesRequest)
+
+	if resp.StatusCode != http.StatusOK || string(resp.Body) != deepSeekMessagesResponse {
+		t.Fatalf("response = %d %s; want DeepSeek's bytes unchanged", resp.StatusCode, resp.Body)
+	}
+	if resp.Headers["X-Ds-Trace-Id"] != "trace-1" {
+		t.Fatalf("vendor response headers lost: %v", resp.Headers)
+	}
+	usage := resp.PassthroughUsage
+	if usage == nil || usage.LLMUsage == nil || usage.LLMUsage.PromptTokensDetails == nil {
+		t.Fatalf("missing passthrough usage: %+v", usage)
+	}
+	if got := usage.LLMUsage; got.PromptTokens != 4756 || got.CompletionTokens != 52 || got.PromptTokensDetails.CachedReadTokens != 4736 {
+		t.Fatalf("usage = prompt %d, completion %d, cache_read %d; want 4756, 52, 4736", got.PromptTokens, got.CompletionTokens, got.PromptTokensDetails.CachedReadTokens)
+	}
+}
+
+// DeepSeek's 400 for a named tool_choice in thinking mode is the documented case where
+// the converted path used to switch thinking off. Passthrough forwards the body as sent,
+// so the vendor's status and error body come back as they are (contract C11).
+func TestPassthrough_ReturnsDeepSeekErrorStatusAndBodyAsIs(t *testing.T) {
+	t.Parallel()
+
+	const errorBody = `{"type":"error","error":{"type":"invalid_request_error","message":"tool_choice of type tool is not supported in thinking mode"}}`
+	server, calls := newDeepSeekMessagesServer(t, http.StatusBadRequest, "application/json", errorBody)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	request := `{"model":"deepseek-v4-flash","max_tokens":64,"tools":[{"name":"lookup","input_schema":{"type":"object"}}],"tool_choice":{"type":"tool","name":"lookup"},"messages":[{"role":"user","content":"hi"}]}`
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Passthrough(ctx, schemas.Key{Value: schemas.SecretVar{Val: "ds-secret"}}, &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "/v1/messages", Body: []byte(request),
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Passthrough: %+v", bifrostErr)
+	}
+	assertDeepSeekMessagesCall(t, <-calls, request)
+	if resp.StatusCode != http.StatusBadRequest || string(resp.Body) != errorBody {
+		t.Fatalf("response = %d %s; want DeepSeek's 400 unchanged", resp.StatusCode, resp.Body)
+	}
+	if resp.PassthroughUsage != nil {
+		t.Fatalf("an error response carries no usage, got %+v", resp.PassthroughUsage)
+	}
+}
+
+func TestPassthroughStream_RelaysDeepSeekSSEVerbatimWithUsage(t *testing.T) {
+	t.Parallel()
+
+	server, calls := newDeepSeekMessagesServer(t, http.StatusOK, "text/event-stream", deepSeekMessagesSSE)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	request := strings.Replace(deepSeekMessagesRequest, `"max_tokens":`, `"stream":true,"max_tokens":`, 1)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	postHook := func(_ *schemas.BifrostContext, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return response, err
+	}
+	stream, bifrostErr := provider.PassthroughStream(ctx, postHook, nil, schemas.Key{Value: schemas.SecretVar{Val: "ds-secret"}}, &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "/v1/messages", Body: []byte(request),
+	})
+	if bifrostErr != nil {
+		t.Fatalf("PassthroughStream: %+v", bifrostErr)
+	}
+	var relayed []byte
+	var usage *schemas.BifrostPassthroughUsage
+	for chunk := range stream {
+		if chunk == nil || chunk.BifrostPassthroughResponse == nil {
+			continue
+		}
+		relayed = append(relayed, chunk.BifrostPassthroughResponse.Body...)
+		if chunk.BifrostPassthroughResponse.PassthroughUsage != nil {
+			usage = chunk.BifrostPassthroughResponse.PassthroughUsage
+		}
+	}
+	assertDeepSeekMessagesCall(t, <-calls, request)
+	if string(relayed) != deepSeekMessagesSSE {
+		t.Fatalf("SSE bytes changed:\n got: %q\nwant: %q", relayed, deepSeekMessagesSSE)
+	}
+	// DeepSeek restates the full usage in the final message_delta; it must not be
+	// added to message_start's.
+	if usage == nil || usage.LLMUsage == nil || usage.LLMUsage.PromptTokens != 4756 || usage.LLMUsage.CompletionTokens != 52 {
+		t.Fatalf("stream usage = %+v; want prompt 4756, completion 52", usage)
+	}
+}
+
+func TestPassthrough_RefusesNonMessagesPaths(t *testing.T) {
+	t.Parallel()
+
+	provider, err := newTestDeepSeekProvider("https://api.deepseek.com")
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{Value: schemas.SecretVar{Val: "ds-secret"}}
+	req := &schemas.BifrostPassthroughRequest{Method: http.MethodPost, Path: "/v1/messages/count_tokens", Body: []byte(`{}`)}
+	if _, bifrostErr := provider.Passthrough(ctx, key, req); bifrostErr == nil {
+		t.Fatal("Passthrough accepted a non-Messages path")
+	}
+	if _, bifrostErr := provider.PassthroughStream(ctx, nil, nil, key, req); bifrostErr == nil {
+		t.Fatal("PassthroughStream accepted a non-Messages path")
+	}
+}
+
+// Advertising the Messages endpoint must not move chat or Responses: without
+// use_anthropic_endpoints both stay on the OpenAI-compatible /chat/completions.
+func TestAnthropicMessagesEndpointLeavesChatAndResponsesOnChatCompletions(t *testing.T) {
+	t.Parallel()
+
+	paths := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths <- r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"c1","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	defer server.Close()
+
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{Value: schemas.SecretVar{Val: "ds-secret"}}
+	if _, bifrostErr := provider.ChatCompletion(ctx, key, &schemas.BifrostChatRequest{
+		Provider: schemas.DeepSeek, Model: "deepseek-v4-flash",
+		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	}); bifrostErr != nil {
+		t.Fatalf("ChatCompletion: %+v", bifrostErr)
+	}
+	if _, bifrostErr := provider.Responses(ctx, key, &schemas.BifrostResponsesRequest{
+		Provider: schemas.DeepSeek, Model: "deepseek-v4-flash",
+		Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+	}); bifrostErr != nil {
+		t.Fatalf("Responses: %+v", bifrostErr)
+	}
+	for i := 0; i < 2; i++ {
+		if got := <-paths; got != "/chat/completions" {
+			t.Fatalf("request %d path = %q, want /chat/completions", i, got)
+		}
+	}
+}

@@ -22,6 +22,7 @@ DeepSeek is a provider with a dedicated Bifrost provider implementation. By defa
 | Chat Completions | ✅ | ✅ | `/chat/completions` | `/anthropic/v1/messages` |
 | Responses API | ✅ | ✅ | `/chat/completions` (via Chat Completions fallback) | `/anthropic/v1/messages` |
 | Text Completions | ✅ | ✅ | `/beta/completions` | `/beta/completions` (unaffected) |
+| Anthropic Messages (`/anthropic/v1/messages`) | ✅ | ✅ | `/anthropic/v1/messages` (native passthrough) | `/anthropic/v1/messages` (unaffected) |
 | List Models | ✅ | - | `/models` | `/models` (unaffected) |
 | Embeddings | ❌ | ❌ | - | - |
 | Image Generation | ❌ | ❌ | - | - |
@@ -154,6 +155,19 @@ To override this per-alias (for example, on a virtual key's model config), set `
 
 ---
 
+## Native Anthropic Messages
+
+A request to Bifrost's own Anthropic Messages route, `POST /anthropic/v1/messages`, with a `deepseek/` model is forwarded natively to DeepSeek's Anthropic-compatible endpoint (`https://api.deepseek.com/anthropic/v1/messages`), whatever `use_anthropic_endpoints` says. It is not converted to the Responses API and back, so every Anthropic field the caller sends reaches DeepSeek.
+
+- **Request body** - Forwarded byte for byte. The only change is the `model` value: the `deepseek/` prefix is removed, and a key alias is replaced by its `model_id`.
+- **Authentication** - `x-api-key: <key>` with the key Bifrost selected. `anthropic-version` and `anthropic-beta` are forwarded as sent.
+- **Response** - DeepSeek's status code, headers and body come back unchanged, streaming included, with DeepSeek's Anthropic-format `usage` (`input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`). This includes error responses.
+- **Identification** - The response header `x-bifrost-request-type` is `passthrough` (`passthrough_stream` when streaming).
+
+Because the body is not rewritten, the [forced tool choice](#forced-tool-choice) fix does not apply on this route. A `tool_choice` that pins a named tool, sent without `"thinking": {"type": "disabled"}`, gets DeepSeek's own `400`.
+
+---
+
 # 1. Chat Completions
 
 ## Request Parameters
@@ -182,6 +196,7 @@ DeepSeek models run with thinking enabled by default, even when no `reasoning` p
 
 - **Default (OpenAI-compatible):** Thinking is disabled when `tool_choice` is the generic `"required"` string (forcing some tool call, without pinning a specific one).
 - **`use_anthropic_endpoints: true`:** Thinking is disabled when `tool_choice` pins a specific named function, for both Chat Completions and the Responses API. `tool_choice: "required"`/`"any"` is left untouched in this mode, since DeepSeek's Anthropic-compatible endpoint accepts that combination with thinking on.
+- **Native Anthropic Messages (`/anthropic/v1/messages`):** Nothing is changed. The body reaches DeepSeek as sent, so the caller disables thinking itself when it pins a tool (see [Native Anthropic Messages](#native-anthropic-messages)).
 
 ### Extra Parameters
 

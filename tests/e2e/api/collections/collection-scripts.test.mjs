@@ -1154,11 +1154,17 @@ test("routing-wiring: a trail check resolves run variables in the lines it expec
   assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
 });
 
-// Native Anthropic Messages calls (/anthropic/v1/messages with a bare or anthropic/ model) take
-// the byte-preserving passthrough, which answers with Anthropic's own body: there is no
-// extra_fields.raw_request and none of the typed bridge's rewrites run. A harness row on that
-// route that reads raw_request must either be tagged [SKIP] [NATIVE-PASSTHROUGH] (it asserts a
-// typed rewrite) or check the passthrough identity in every test that reads the capture.
+// Native Anthropic Messages calls (/anthropic/v1/messages with a bare model or one prefixed by a
+// provider that serves Messages natively) take the byte-preserving passthrough, which answers
+// with the vendor's own body: there is no extra_fields.raw_request and none of the typed bridge's
+// rewrites run. A harness row on that route that reads raw_request must either be tagged
+// [SKIP] [NATIVE-PASSTHROUGH] (it asserts a typed rewrite) or check the passthrough identity in
+// every test that reads the capture.
+//
+// nativeMessagesProviders is every provider whose Go type implements AnthropicMessagesEndpoint.
+// TestNativeMessagesProvidersMatchHarnessCheck (transports/bifrost-http/integrations) fails when
+// a provider gains or loses that method without this list following (TXE-6548 added deepseek; TXE-6547 brought moonshot).
+const nativeMessagesProviders = ["anthropic", "deepseek", "moonshot", "xai"];
 const providerHarness = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8"));
 // On main before the upstream merge that brought the other rows; kept out of this check.
 const nativeRawRequestPreExisting = ["75.01 ", "75.06 "];
@@ -1171,7 +1177,7 @@ function nativeAnthropicRawRequestRows() {
       const url = typeof item.request?.url === "string" ? item.request.url : item.request?.url?.raw || "";
       if (!/\/anthropic\/v1\/messages(\?|$)/.test(url)) continue;
       const model = (/"model"\s*:\s*"([^"]+)"/.exec(item.request?.body?.raw || "") || [])[1] || "";
-      if (model.includes("/") && !model.startsWith("anthropic/")) continue;
+      if (model.includes("/") && !nativeMessagesProviders.includes(model.slice(0, model.indexOf("/")))) continue;
       const test = (item.event || []).filter((e) => e.listen === "test").map((e) => e.script.exec.join("\n")).join("\n");
       if (test.includes("raw_request")) rows.push({ item, test });
     }

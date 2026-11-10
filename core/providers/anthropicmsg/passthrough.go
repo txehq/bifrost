@@ -50,15 +50,38 @@ func (c Config) requestURL(req *schemas.BifrostPassthroughRequest) (string, *sch
 	return url, nil
 }
 
-func (c Config) requestBody(req *schemas.BifrostPassthroughRequest) ([]byte, *schemas.BifrostError) {
-	if !c.StripAnthropicOnlyFields || !IsMessagesPath(req.Path) {
-		return req.Body, nil
+func (c Config) requestBody(ctx *schemas.BifrostContext, req *schemas.BifrostPassthroughRequest) ([]byte, *schemas.BifrostError) {
+	body, err := applyResolvedAliasModel(ctx, req)
+	if err != nil {
+		return nil, providerUtils.NewBifrostOperationError("failed to apply the key alias to the native Messages model", err)
 	}
-	body, err := StripAnthropicOnlyFields(req.Body)
+	if !c.StripAnthropicOnlyFields || !IsMessagesPath(req.Path) {
+		return body, nil
+	}
+	body, err = StripAnthropicOnlyFields(body)
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to prepare native Messages request body", err)
 	}
 	return body, nil
+}
+
+// applyResolvedAliasModel swaps the top-level model of a native Messages body for the
+// model id of the key alias core resolved for this attempt. Core resolves aliases per
+// key but BifrostRequest.SetModel has no passthrough branch, so without this a key
+// alias reached the vendor as the alias name. Only the model value changes, and only
+// when it still spells the alias key; any other body is returned as sent.
+func applyResolvedAliasModel(ctx *schemas.BifrostContext, req *schemas.BifrostPassthroughRequest) ([]byte, error) {
+	if !IsMessagesPath(req.Path) {
+		return req.Body, nil
+	}
+	alias := schemas.GetResolvedAlias(ctx)
+	if alias == nil || alias.Config == nil || alias.Config.ModelID == "" || alias.Config.ModelID == alias.Key {
+		return req.Body, nil
+	}
+	if model := providerUtils.GetJSONField(req.Body, "model"); model.Type != gjson.String || model.Str != alias.Key {
+		return req.Body, nil
+	}
+	return providerUtils.SetJSONField(req.Body, "model", alias.Config.ModelID)
 }
 
 // StripAnthropicOnlyFields removes from a native Messages body what only Anthropic
@@ -155,7 +178,7 @@ func Passthrough(ctx *schemas.BifrostContext, client *fasthttp.Client, key schem
 	providerUtils.StripCallerAuthForInsecureURL(requestURL, req.SafeHeaders)
 	cfg.setHeaders(ctx, upstreamReq, key, req.SafeHeaders)
 	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, upstreamReq, cfg.Provider) {
-		body, bifrostErr := cfg.requestBody(req)
+		body, bifrostErr := cfg.requestBody(ctx, req)
 		if bifrostErr != nil {
 			return nil, bifrostErr
 		}
@@ -210,7 +233,7 @@ func PassthroughStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostH
 	cfg.setHeaders(ctx, upstreamReq, key, req.SafeHeaders)
 	upstreamReq.Header.Set("Connection", "close")
 	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, upstreamReq, cfg.Provider) {
-		body, bifrostErr := cfg.requestBody(req)
+		body, bifrostErr := cfg.requestBody(ctx, req)
 		if bifrostErr != nil {
 			fasthttp.ReleaseResponse(resp)
 			return nil, bifrostErr

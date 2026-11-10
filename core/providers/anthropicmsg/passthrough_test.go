@@ -3,6 +3,7 @@ package anthropicmsg
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -308,5 +309,81 @@ func TestPassthroughRefusesPathsThatLeaveTheEndpointHost(t *testing.T) {
 	}
 	if hits != 0 {
 		t.Fatalf("the endpoint was dialed %d times for refused paths", hits)
+	}
+}
+
+// Core resolves a key alias per attempt and stashes it on the context, but
+// BifrostRequest.SetModel has no passthrough branch. The native Messages body must
+// therefore swap the alias key for the alias's model id itself, on both transports,
+// and change nothing else (TXE-6548). A body whose model is not the alias key, and a
+// non-Messages path, are forwarded as sent.
+func TestPassthroughAppliesResolvedKeyAliasToModel(t *testing.T) {
+	const sent = "{\"model\":\"flash-anthropic\",\n \"max_tokens\":\t64,\"stream\":%s,\"messages\":[{\"role\":\"user\",\"content\":\"Caf\\u00e9\"}],\"zz\":{\"b\":1}}"
+	const want = "{\"model\":\"deepseek-v4-flash\",\n \"max_tokens\":\t64,\"stream\":%s,\"messages\":[{\"role\":\"user\",\"content\":\"Caf\\u00e9\"}],\"zz\":{\"b\":1}}"
+	received := make(chan []byte, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ := io.ReadAll(r.Body)
+		received <- got
+		if bytes.Contains(got, []byte(`"stream":true`)) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message","content":[]}`))
+	}))
+	defer server.Close()
+
+	aliasCtx := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+			Key: "flash-anthropic", Config: &schemas.AliasConfig{ModelID: "deepseek-v4-flash"},
+		})
+		return ctx
+	}
+	cfg := Config{Provider: schemas.DeepSeek, Endpoint: server.URL}
+	postHook := func(_ *schemas.BifrostContext, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return response, err
+	}
+
+	if _, bifrostErr := Passthrough(aliasCtx(), &fasthttp.Client{}, testKey("k"), &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "/v1/messages", Body: []byte(fmt.Sprintf(sent, "false")),
+	}, cfg); bifrostErr != nil {
+		t.Fatalf("Passthrough: %+v", bifrostErr)
+	}
+	if got := string(<-received); got != fmt.Sprintf(want, "false") {
+		t.Fatalf("buffered body:\n got: %s\nwant: %s", got, fmt.Sprintf(want, "false"))
+	}
+
+	stream, bifrostErr := PassthroughStream(aliasCtx(), postHook, nil, &fasthttp.Client{}, testKey("k"), &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "/v1/messages", Body: []byte(fmt.Sprintf(sent, "true")),
+	}, cfg)
+	if bifrostErr != nil {
+		t.Fatalf("PassthroughStream: %+v", bifrostErr)
+	}
+	for range stream {
+	}
+	if got := string(<-received); got != fmt.Sprintf(want, "true") {
+		t.Fatalf("streamed body:\n got: %s\nwant: %s", got, fmt.Sprintf(want, "true"))
+	}
+
+	other := `{"model":"deepseek-v4-pro","messages":[]}`
+	if _, bifrostErr := Passthrough(aliasCtx(), &fasthttp.Client{}, testKey("k"), &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "/v1/messages", Body: []byte(other),
+	}, cfg); bifrostErr != nil {
+		t.Fatalf("Passthrough: %+v", bifrostErr)
+	}
+	if got := string(<-received); got != other {
+		t.Fatalf("a model other than the alias key changed:\n got: %s\nwant: %s", got, other)
+	}
+
+	countTokens := `{"model":"flash-anthropic","messages":[]}`
+	if _, bifrostErr := Passthrough(aliasCtx(), &fasthttp.Client{}, testKey("k"), &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "/v1/messages/count_tokens", Body: []byte(countTokens),
+	}, cfg); bifrostErr != nil {
+		t.Fatalf("Passthrough: %+v", bifrostErr)
+	}
+	if got := string(<-received); got != countTokens {
+		t.Fatalf("a non-Messages path changed:\n got: %s\nwant: %s", got, countTokens)
 	}
 }
