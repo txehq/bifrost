@@ -617,6 +617,10 @@ func (request *GeminiVideoGenerationRequest) ToBifrostVideoGenerationRequest(ctx
 			params.ExtraParams["aspectRatio"] = *request.Parameters.AspectRatio
 		}
 		if request.Parameters.Resolution != nil {
+			// The unified field carries the tier; the extra param stays for the converters
+			// that still read it there (schemas.UnifiedVideoGenerationFields). Sent only as
+			// an extra param it would be refused (schemas.CheckExtraParamPriceFields).
+			params.Resolution = schemas.TolerantString(*request.Parameters.Resolution)
 			params.ExtraParams["resolution"] = *request.Parameters.Resolution
 		}
 		if request.Parameters.SampleCount != nil {

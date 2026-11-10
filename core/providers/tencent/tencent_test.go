@@ -477,11 +477,12 @@ func TestTencentUnsupportedOperations(t *testing.T) {
 	}
 }
 
-// An extra param naming a field the converter writes is refused before any call, in any letter
-// case: an extra model would run a model governance never checked, an extra size would change the
-// price tier unseen (contract C3/C4).
+// An extra param naming the model or an input field is refused before any call, in any letter
+// case: an extra model would run a model governance never checked (the shared extra-params
+// merge), an extra prompt, messages or images would sit beside the input the converter wrote
+// (this provider's own guard). size is covered by the next test.
 func TestTencentImageGenerationRefusesExtraParamsOverridingTheBody(t *testing.T) {
-	for _, name := range []string{"model", "Model", "size", "messages", "prompt", "images", "seed"} {
+	for _, name := range []string{"model", "Model", "messages", "prompt", "images"} {
 		t.Run(name, func(t *testing.T) {
 			provider, captured := newMockTencent(t, nil, http.StatusOK, v35SuccessBody)
 			ctx := testContext(t)
@@ -499,6 +500,27 @@ func TestTencentImageGenerationRefusesExtraParamsOverridingTheBody(t *testing.T)
 				t.Errorf("upstream calls = %d, want 0", n)
 			}
 		})
+	}
+}
+
+// TXE-7059: size among the extra params of a request that sent no size would change the price
+// tier unseen. Core refuses it for every provider, before the provider is called, with
+// caller_unsupported_parameter; Tencent's own guard no longer lists it.
+func TestTencentImageGenerationExtraSizeIsRefusedByTheSharedPriceFieldRule(t *testing.T) {
+	for _, name := range []string{"size", "Size", "n", "response_format", "input_images"} {
+		request := imageRequest("hy-image-v3.5-preview", &schemas.ImageGenerationParameters{
+			ExtraParams: map[string]interface{}{name: "1024x1024"},
+		})
+		bifrostErr := schemas.CheckExtraParamPriceFields(&schemas.BifrostRequest{RequestType: schemas.ImageGenerationRequest, ImageGenerationRequest: request})
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest ||
+			bifrostErr.Error.Param != name || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter {
+			t.Errorf("extra param %q: want a 400 caller_unsupported_parameter naming it, got %+v", name, bifrostErr)
+		}
+	}
+	// seed is unpriced (contract C4): it is not refused.
+	request := imageRequest("hy-image-v3.5-preview", &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"seed": 7}})
+	if bifrostErr := schemas.CheckExtraParamPriceFields(&schemas.BifrostRequest{RequestType: schemas.ImageGenerationRequest, ImageGenerationRequest: request}); bifrostErr != nil {
+		t.Errorf("seed among the extra params was refused: %+v", bifrostErr)
 	}
 }
 

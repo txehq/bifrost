@@ -11936,3 +11936,112 @@ func TestExtraParamsCannotSwitchStreaming(t *testing.T) {
 		assertRefused(t, bifrostErr)
 	})
 }
+
+// countingImageProvider counts the image generation calls that reach it and makes none
+// of its own: it declares no unified fields, like every provider but one.
+type countingImageProvider struct {
+	schemas.Provider
+	calls atomic.Int32
+}
+
+func (p *countingImageProvider) ImageGeneration(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	p.calls.Add(1)
+	return &schemas.BifrostImageGenerationResponse{Data: []schemas.ImageData{{URL: "https://example.invalid/a.png"}}}, nil
+}
+
+// TXE-7059 through the real request worker: a price-affecting unified field named among
+// the extra params of a request that did not send it is a 400 caller_unsupported_parameter
+// naming the extra param, on a provider that declares nothing, and the provider is never
+// called. The same field sent as the request's own, and a vendor switch, reach it.
+func TestRequestWorkerRejectsPriceFieldAmongExtraParamsBeforeUpstream(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 4)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID: "k", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100,
+	}})
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	cfg, err := account.GetConfigForProvider(schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetConfigForProvider: %v", err)
+	}
+	cfg.NetworkConfig.MaxRetries = 0
+
+	// The wrapped provider answers image generation itself, so no request is ever sent.
+	upstream := &countingImageProvider{Provider: openaiprovider.NewOpenAIProvider(cfg, NewNoOpLogger())}
+	pq := &ProviderQueue{queue: make(chan *ChannelMessage, 2), done: make(chan struct{})}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go client.requestWorker(upstream, cfg, pq, &wg)
+	t.Cleanup(func() { pq.signalClosing(); wg.Wait() })
+
+	send := func(params *schemas.ImageGenerationParameters) *schemas.BifrostError {
+		t.Helper()
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		tracer := client.getTracer()
+		ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, tracer.CreateTrace(""))
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		msg := client.getChannelMessage(schemas.BifrostRequest{
+			RequestType: schemas.ImageGenerationRequest,
+			ImageGenerationRequest: &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.OpenAI, Model: "gpt-image-1",
+				Input:  &schemas.ImageGenerationInput{Prompt: "a cat"},
+				Params: params,
+			},
+		})
+		msg.Context = ctx
+		pq.queue <- msg
+		select {
+		case <-msg.Response:
+			return nil
+		case e := <-msg.Err:
+			return &e
+		case <-time.After(5 * time.Second):
+			t.Fatal("worker never answered")
+		}
+		return nil
+	}
+
+	for _, extra := range []map[string]interface{}{
+		{"size": "4096x4096"},
+		{"Size": "4096x4096"},
+		{"n": 8},
+		{"resolution": "4K"},
+		{"quality": "high", "watermark": false},
+	} {
+		var param string
+		for key := range extra {
+			if key != "watermark" {
+				param = key
+			}
+		}
+		bErr := send(&schemas.ImageGenerationParameters{ExtraParams: extra})
+		if bErr == nil {
+			t.Fatalf("a request with %v among its extra params was served", extra)
+		}
+		if bErr.StatusCode == nil || *bErr.StatusCode != 400 || bErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter ||
+			bErr.Error == nil || bErr.Error.Param != param {
+			t.Fatalf("extra params %v: want 400 %s with error.param %q, got %+v", extra, schemas.ErrorTypeCallerUnsupportedParameter, param, bErr)
+		}
+	}
+	if got := upstream.calls.Load(); got != 0 {
+		t.Fatalf("the provider was called %d times for refused requests, want 0", got)
+	}
+
+	// Controls: the field sent as the request's own (and kept among the extra params, as
+	// the HTTP handlers keep it), and a vendor switch with no general meaning.
+	if bErr := send(&schemas.ImageGenerationParameters{Resolution: "4K", ExtraParams: map[string]interface{}{"resolution": "4K"}}); bErr != nil {
+		t.Fatalf("the unified field sent as the request's own was refused: %+v", bErr.Error)
+	}
+	if bErr := send(&schemas.ImageGenerationParameters{Size: schemas.Ptr("1024x1024"), ExtraParams: map[string]interface{}{"watermark": false}}); bErr != nil {
+		t.Fatalf("a vendor switch among the extra params was refused: %+v", bErr.Error)
+	}
+	if got := upstream.calls.Load(); got != 2 {
+		t.Fatalf("the provider was called %d times for the two accepted requests, want 2", got)
+	}
+}

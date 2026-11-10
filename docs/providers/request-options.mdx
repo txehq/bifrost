@@ -691,6 +691,8 @@ An extra parameter can add a field the request left unset. It can never replace 
 
 To change a field Bifrost sets, send it in the request itself.
 
+On image, video, embedding, speech and transcription requests, an extra parameter also cannot supply a unified field that affects the price (`size`, `n`, `quality`, `resolution`, `seconds`, `dimensions`, `voice`, `speed`, and the others listed for the operation) when the request did not send that field itself. Such a request is refused with `400` `caller_unsupported_parameter`, with the extra parameter in `error.param`. Send the field as the request's own. `prompt`, `seed` and `negative_prompt` are exempt, as is a provider's own name for the field (for example `ratio`).
+
 How parameters are collected depends on the entrypoint:
 
 - Standard inference routes such as `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, and `/v1/images/generations` collect all unknown top-level JSON fields as extra parameters.

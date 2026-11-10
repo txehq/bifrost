@@ -151,3 +151,31 @@ func TestGeminiVideoGenerationRequest_RoundTripsInstanceReferenceFields(t *testi
 	assert.Empty(t, got.Parameters.ReferenceImages)
 	assert.Nil(t, got.Parameters.LastFrame)
 }
+
+// TXE-7059: the genai route carries resolution as the unified field as well as the extra
+// param the Gemini converter reads, so core's price-field rule sees it as sent and does
+// not refuse the route's own requests. aspectRatio keeps Gemini's own name.
+func TestGenAIVideoIngressSetsTheUnifiedResolution(t *testing.T) {
+	in := &gemini.GeminiVideoGenerationRequest{
+		Model:     "gemini/veo-3.1-generate-preview",
+		Instances: []gemini.GeminiVideoGenerationInstance{{Prompt: "a paper boat"}},
+		Parameters: &gemini.VideoGenerationParameters{
+			Resolution:  schemas.Ptr("1080p"),
+			AspectRatio: schemas.Ptr("16:9"),
+		},
+	}
+	bifrostReq, err := in.ToBifrostVideoGenerationRequest(nil)
+	require.NoError(t, err)
+	require.NotNil(t, bifrostReq.Params)
+	assert.Equal(t, schemas.TolerantString("1080p"), bifrostReq.Params.Resolution)
+	assert.Equal(t, "1080p", bifrostReq.Params.ExtraParams["resolution"])
+	assert.Nil(t, schemas.CheckExtraParamPriceFields(&schemas.BifrostRequest{
+		RequestType: schemas.VideoGenerationRequest, VideoGenerationRequest: bifrostReq,
+	}), "the genai route's own request must not be refused")
+
+	got, err := gemini.ToGeminiVideoGenerationRequest(bifrostReq)
+	require.NoError(t, err)
+	require.NotNil(t, got.Parameters)
+	assert.Equal(t, schemas.Ptr("1080p"), got.Parameters.Resolution)
+	assert.Equal(t, schemas.Ptr("16:9"), got.Parameters.AspectRatio)
+}

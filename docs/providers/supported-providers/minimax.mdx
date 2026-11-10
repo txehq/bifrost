@@ -225,10 +225,13 @@ curl -X POST http://localhost:8080/v1/videos \
 | `input_reference` | `content[]` image item with role `first_frame` | Image to video |
 | `seconds` | `duration` | Defaults to 6. Clamped to 4 to 15 on `MiniMax-H3` and 5 to 15 on `MiniMax-H3-Max`. |
 | `size` | `resolution` + `ratio` | The short side picks the tier (`480P` only on H3-Max, `2K` only on H3 above 1080 pixels, otherwise `768P`) and the shape picks the closest ratio. |
-| `extra_params.resolution`, `extra_params.ratio` | `resolution`, `ratio` | Override the values derived from `size` |
-| `extra_params.last_frame` | `content[]` image item with role `last_frame` | |
-| `extra_params.reference_images` | `content[]` image items with role `reference_image` | Can't be combined with first or last frame images |
-| `extra_params.callback_url` | `callback_url` | |
+| `resolution` | `resolution` | Unified field. Overrides the tier derived from `size`. |
+| `extra_params.ratio` | `ratio` | Overrides the ratio derived from `size` |
+| `last_frame` | `content[]` image item with role `last_frame` | |
+| `reference_images` | `content[]` image items with role `reference_image` | Can't be combined with first or last frame images |
+| `callback_url` | not sent | A task control field. Refused with `400` `caller_unsupported_parameter`, as a request field or as an extra parameter, because this provider does not declare it. |
+
+`resolution`, `last_frame` and `reference_images` are unified request fields: send them as the request's own fields. Naming one only among the extra parameters is refused with `400` `caller_unsupported_parameter`, because a field that affects the price must be visible on the request. Go SDK callers set the field on `Params` and keep the same value in `ExtraParams`, where this provider's converter reads it; the HTTP routes do that for you.
 
 Without a `size`, text to video uses `16:9` (MiniMax needs a concrete ratio there) and image to video uses `adaptive`. `video_uri` and video list aren't supported.
 
