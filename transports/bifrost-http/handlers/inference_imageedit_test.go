@@ -305,8 +305,8 @@ func TestPrepareImageEditRequest_Resolution(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if req.Params.Resolution == nil || *req.Params.Resolution != "4K" {
-			t.Fatalf("resolution = %v, want 4K", req.Params.Resolution)
+		if req.Params.Resolution != "4K" {
+			t.Fatalf("resolution = %q, want 4K", req.Params.Resolution)
 		}
 		if req.Params.ExtraParams["resolution"] != "4K" {
 			t.Fatalf("ExtraParams resolution = %v, want 4K", req.Params.ExtraParams["resolution"])
@@ -318,8 +318,8 @@ func TestPrepareImageEditRequest_Resolution(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if req.Params.Resolution == nil || *req.Params.Resolution != "1K" {
-			t.Fatalf("resolution = %v, want 1K", req.Params.Resolution)
+		if req.Params.Resolution != "1K" {
+			t.Fatalf("resolution = %q, want 1K", req.Params.Resolution)
 		}
 		if req.Params.ExtraParams["resolution"] != "1K" {
 			t.Fatalf("ExtraParams resolution = %v, want 1K", req.Params.ExtraParams["resolution"])

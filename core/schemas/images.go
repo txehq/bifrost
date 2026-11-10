@@ -53,7 +53,7 @@ type ImageGenerationParameters struct {
 	User              *string                `json:"user,omitempty"`
 	InputImages       []string               `json:"input_images,omitempty"` // input images for image generation, base64 encoded or URL
 	AspectRatio       *string                `json:"aspect_ratio,omitempty"` // aspect ratio of the image
-	Resolution        *string                `json:"resolution,omitempty"`   // fork (TXE-6518): unified resolution tier, e.g. "1K", "2K", "4K"; see UnifiedImageFields
+	Resolution        TolerantString         `json:"resolution,omitempty"`   // fork (TXE-6518): unified resolution tier, e.g. "1K", "2K", "4K"; see UnifiedImageFields
 	ExtraParams       map[string]interface{} `json:"-"`
 }
 
@@ -449,7 +449,7 @@ type ImageEditParameters struct {
 	UpscaleFactor     *int                   `json:"upscale_factor,omitempty"`      // type "upscale": multiply each dimension by N
 	TargetMegapixels  *int                   `json:"target_megapixels,omitempty"`   // type "upscale": target output size; mutually exclusive with upscale_factor
 	AspectRatio       *string                `json:"aspect_ratio,omitempty"`        // aspect ratio of the edited image
-	Resolution        *string                `json:"resolution,omitempty"`          // fork (TXE-6518): unified resolution tier, see ImageGenerationParameters.Resolution
+	Resolution        TolerantString         `json:"resolution,omitempty"`          // fork (TXE-6518): unified resolution tier, see ImageGenerationParameters.Resolution
 	ExtraParams       map[string]interface{} `json:"-"`
 }
 

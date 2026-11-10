@@ -115,14 +115,14 @@ func TestImageParametersResolution(t *testing.T) {
 	if err := Unmarshal([]byte(`{"resolution":"2K","aspect_ratio":"1:1"}`), &gen); err != nil {
 		t.Fatalf("unmarshal generation: %v", err)
 	}
-	if gen.Resolution == nil || *gen.Resolution != "2K" {
+	if gen.Resolution != "2K" {
 		t.Fatalf("generation resolution = %v, want 2K", gen.Resolution)
 	}
 	var edit ImageEditParameters
 	if err := Unmarshal([]byte(`{"resolution":"4K"}`), &edit); err != nil {
 		t.Fatalf("unmarshal edit: %v", err)
 	}
-	if edit.Resolution == nil || *edit.Resolution != "4K" {
+	if edit.Resolution != "4K" {
 		t.Fatalf("edit resolution = %v, want 4K", edit.Resolution)
 	}
 }

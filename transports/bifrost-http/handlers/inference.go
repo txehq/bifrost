@@ -2939,7 +2939,7 @@ func parseImageEditMultipartForm(form *multipart.Form, req *ImageEditHTTPRequest
 	// Fork (TXE-6518): the unified resolution tier. It is not in imageEditParamsKnownFields, so the
 	// extra-param loop in prepareImageEditRequest also keeps it under its own name.
 	if resolutionValues := form.Value["resolution"]; len(resolutionValues) > 0 && resolutionValues[0] != "" {
-		req.ImageEditParameters.Resolution = &resolutionValues[0]
+		req.ImageEditParameters.Resolution = schemas.TolerantString(resolutionValues[0])
 	}
 	if qualityValues := form.Value["quality"]; len(qualityValues) > 0 && qualityValues[0] != "" {
 		req.ImageEditParameters.Quality = &qualityValues[0]

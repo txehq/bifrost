@@ -123,14 +123,14 @@ func TestPrepareVideoGenerationRequest_UnifiedFields(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	p := req.Params
-	if p.AspectRatio == nil || *p.AspectRatio != "16:9" {
-		t.Fatalf("aspect_ratio = %v, want 16:9", p.AspectRatio)
+	if p.AspectRatio != "16:9" {
+		t.Fatalf("aspect_ratio = %q, want 16:9", p.AspectRatio)
 	}
-	if p.Resolution == nil || *p.Resolution != "720p" {
-		t.Fatalf("resolution = %v, want 720p", p.Resolution)
+	if p.Resolution != "720p" {
+		t.Fatalf("resolution = %q, want 720p", p.Resolution)
 	}
-	if p.LastFrame == nil || *p.LastFrame != "https://example.com/last.png" {
-		t.Fatalf("last_frame = %v", p.LastFrame)
+	if p.LastFrame != "https://example.com/last.png" {
+		t.Fatalf("last_frame = %q", p.LastFrame)
 	}
 	if !slices.Equal([]string(p.ReferenceImages), []string{"https://example.com/a.png", "data:image/png;base64,AAAA"}) {
 		t.Fatalf("reference_images = %v", p.ReferenceImages)
@@ -165,6 +165,22 @@ func TestPrepareVideoGenerationRequest_ObjectReferenceImagesStayExtra(t *testing
 	}
 }
 
+// Runware 3D tasks take a numeric resolution, sent before the field was unified. It must not fail
+// the request: the typed field stays empty and the number reaches Runware as an extra param.
+func TestPrepareVideoGenerationRequest_NumericResolutionStaysExtra(t *testing.T) {
+	req, err := prepareVideoGenerationRequest(jsonRequestCtx("/v1/videos",
+		`{"model":"runware/tencent:hunyuan3d@2.1","input_reference":"https://example.com/chair.png","type":"3d","resolution":1024}`), nil)
+	if err != nil {
+		t.Fatalf("numeric resolution must not fail the request: %v", err)
+	}
+	if req.Params.Resolution != "" {
+		t.Fatalf("typed resolution = %q, want empty for a number", req.Params.Resolution)
+	}
+	if v, ok := req.Params.ExtraParams["resolution"].(float64); !ok || v != 1024 {
+		t.Fatalf("ExtraParams resolution = %#v, want the number 1024", req.Params.ExtraParams["resolution"])
+	}
+}
+
 func TestPrepareVideoGenerationRequest_Validation(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
 		{"bad json", `{`, "Invalid request payload"},
@@ -187,8 +203,8 @@ func TestPrepareImageGenerationRequest_Resolution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if req.Params.Resolution == nil || *req.Params.Resolution != "2K" {
-		t.Fatalf("resolution = %v, want 2K", req.Params.Resolution)
+	if req.Params.Resolution != "2K" {
+		t.Fatalf("resolution = %q, want 2K", req.Params.Resolution)
 	}
 	if req.Params.ExtraParams["resolution"] != "2K" {
 		t.Fatalf("ExtraParams resolution = %v, want 2K", req.Params.ExtraParams["resolution"])

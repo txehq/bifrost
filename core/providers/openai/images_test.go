@@ -54,7 +54,7 @@ func imageEditWithExtras() *schemas.BifrostImageEditRequest {
 		},
 		Params: &schemas.ImageEditParameters{
 			Size:       schemas.Ptr("1024x1024"),
-			Resolution: schemas.Ptr("2K"),
+			Resolution: "2K",
 			ExtraParams: map[string]interface{}{
 				"resolution":  "2K",                                   // a unified field is still an extra until a provider converts it
 				"watermark":   false,                                  // a JSON bool
@@ -148,7 +148,7 @@ func TestImageEditMultipartPassthroughExtraParams(t *testing.T) {
 // raw extra param (sent only with the passthrough header) unchanged.
 func TestToOpenAIImageGenerationRequestDropsUnifiedResolution(t *testing.T) {
 	params := &schemas.ImageGenerationParameters{
-		Resolution:  schemas.Ptr("2K"),
+		Resolution:  "2K",
 		ExtraParams: map[string]interface{}{"resolution": "2K"},
 	}
 	req := ToOpenAIImageGenerationRequest(&schemas.BifrostImageGenerationRequest{
@@ -167,7 +167,7 @@ func TestToOpenAIImageGenerationRequestDropsUnifiedResolution(t *testing.T) {
 	if req.ExtraParams["resolution"] != "2K" {
 		t.Fatalf("extra resolution = %v, want it kept for the passthrough channel", req.ExtraParams["resolution"])
 	}
-	if params.Resolution == nil {
+	if params.Resolution != "2K" {
 		t.Fatalf("the caller's request was mutated")
 	}
 }

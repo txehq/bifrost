@@ -102,10 +102,11 @@ type VideoGenerationParameters struct {
 	// Fork (TXE-6518, contract C4 BF3): unified video fields with one name on every vendor. A
 	// provider converts each one to its vendor's own field; until it does, the value also stays in
 	// ExtraParams under the same name (see UnifiedVideoGenerationFields), so a provider that read it
-	// from there keeps working unchanged.
-	AspectRatio     *string              `json:"aspect_ratio,omitempty"`     // e.g. "16:9", "9:16", "1:1"
-	Resolution      *string              `json:"resolution,omitempty"`       // tier, e.g. "480p", "720p", "1080p"
-	LastFrame       *string              `json:"last_frame,omitempty"`       // last frame: a URL or a data URL, like input_reference
+	// from there keeps working unchanged. Each decodes tolerantly: a value of another JSON type
+	// (Runware 3D's numeric resolution) leaves the typed field empty, never fails the request.
+	AspectRatio     TolerantString       `json:"aspect_ratio,omitempty"`     // e.g. "16:9", "9:16", "1:1"
+	Resolution      TolerantString       `json:"resolution,omitempty"`       // tier, e.g. "480p", "720p", "1080p"
+	LastFrame       TolerantString       `json:"last_frame,omitempty"`       // last frame: a URL or a data URL, like input_reference
 	ReferenceImages VideoReferenceImages `json:"reference_images,omitempty"` // reference images: URLs or data URLs
 
 	// Upscale operations (type "upscale"); mutually exclusive.
@@ -136,6 +137,25 @@ type BifrostVideoGenerationResponse struct {
 	Usage              *VideoUsage        `json:"usage,omitempty"`                 // Provider-reported usage/cost, when the provider returns it
 
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields,omitempty"`
+}
+
+// TolerantString is a unified string field that existed under the same name as a vendor's extra
+// param before it was unified (fork, TXE-6518). It decodes only a JSON string. Any other JSON value
+// (a number such as Runware 3D's "resolution": 1024, an object, an array) leaves it empty instead
+// of failing the request: the handlers keep the raw value in ExtraParams, where the provider that
+// understands it reads it, exactly as before the field existed. Empty means absent; with omitempty
+// an empty value is not serialised.
+type TolerantString string
+
+// UnmarshalJSON implements json.Unmarshaler; see TolerantString.
+func (s *TolerantString) UnmarshalJSON(data []byte) error {
+	var v string
+	if err := Unmarshal(data, &v); err != nil {
+		*s = ""
+		return nil
+	}
+	*s = TolerantString(v)
+	return nil
 }
 
 // VideoReferenceImages is the unified reference_images list: each entry a URL or a data URL.

@@ -28,7 +28,7 @@ func ToOpenAIImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 	// The unified resolution tier is not an OpenAI images field; each OpenAI-shaped provider maps it
 	// to its own field in its vendor ticket. Until then the body is what it was before the field
 	// existed: the value reaches the vendor only through the extra-param channel (TXE-6518).
-	req.ImageGenerationParameters.Resolution = nil
+	req.ImageGenerationParameters.Resolution = ""
 
 	switch bifrostReq.Provider {
 	case schemas.XAI:
