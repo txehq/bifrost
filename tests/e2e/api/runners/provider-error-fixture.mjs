@@ -556,6 +556,12 @@ const wireAnswer = (path, body, bytes) => {
 		return { status: 200, body: JSON.stringify({ id: "chatcmpl_bounds", object: "chat.completion", created: 1, model: body.model, choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: "hello" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) };
 	}
 	if (path === "/pp/cp/v1/chat/completions") return cpChatAnswerFor(body);
+	// MiniMax answers its failures inside a 200 as base_resp, with no result (TXE-6588, contract C6). The model
+	// "base-resp-<code>" selects the code, so a case asks for exactly the MiniMax error it pins.
+	if (path === "/pp/minimax/v1/chat/completions") {
+		const m = /^base-resp-(\d+)$/.exec(body.model || "");
+		if (m) return { status: 200, body: JSON.stringify({ id: "", choices: null, base_resp: { status_code: Number(m[1]), status_msg: `fixture base_resp ${m[1]}` } }) };
+	}
 	if (path === "/pp/minimax/v1/t2a_v2") return miniMaxSpeechAnswer(body);
 	if (path === "/pp/vercel/v1/images/generations") return { status: 200, body: JSON.stringify(vercelImageAnswer(body)) };
 	if (path === "/pp/cp/v1/responses") return cpResponsesAnswerFor(body);
