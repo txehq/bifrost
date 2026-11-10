@@ -3740,12 +3740,22 @@ func parseTranscriptionMultipartRequest(ctx *fasthttp.RequestCtx, req interface{
 		"response_format": true, "stream": true, "chunking_strategy": true,
 		"temperature": true, "timestamp_granularities[]": true,
 	}
-	for key, values := range form.Value {
-		if knownTranscriptionFields[key] || len(values) == 0 || values[0] == "" {
+	for key, formValues := range form.Value {
+		if knownTranscriptionFields[key] {
+			continue
+		}
+		values := lib.NonEmptyFormValues(formValues)
+		if len(values) == 0 {
 			continue
 		}
 		if transcriptionReq.ExtraParams == nil {
 			transcriptionReq.ExtraParams = map[string]interface{}{}
+		}
+		// A field the caller repeated (include[]=a&include[]=b) keeps every value verbatim and is
+		// written back as repeated form fields (TXE-6530); a single value is decoded as before.
+		if len(values) > 1 {
+			transcriptionReq.ExtraParams[key] = values
+			continue
 		}
 		raw := values[0]
 		var decoded interface{}

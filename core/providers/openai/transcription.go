@@ -99,9 +99,10 @@ func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 	}
 
 	// Forward provider-specific passthrough params (e.g. chunking_strategy, required by
-	// OpenAI diarization models). String values are written verbatim; object values are
-	// encoded as JSON since multipart form fields are strings. Keys are sorted so the
-	// emitted form is deterministic.
+	// OpenAI diarization models). String values are written verbatim; a []string (a form
+	// field the caller repeated, as the transports' multipart parsers store it) is written as one field per value in
+	// order; other values are encoded as JSON since multipart form fields are strings. Keys
+	// are sorted so the emitted form is deterministic.
 	if len(openaiReq.ExtraParams) > 0 {
 		extraKeys := make([]string, 0, len(openaiReq.ExtraParams))
 		for key := range openaiReq.ExtraParams {
@@ -114,6 +115,13 @@ func ParseTranscriptionFormDataBodyFromRequest(writer *multipart.Writer, openaiR
 			switch v := value.(type) {
 			case string:
 				fieldValue = v
+			case []string:
+				for _, item := range v {
+					if err := writer.WriteField(key, item); err != nil {
+						return utils.NewBifrostOperationError(fmt.Sprintf("failed to write %s field", key), err)
+					}
+				}
+				continue
 			default:
 				encoded, err := schemas.MarshalSorted(v)
 				if err != nil {

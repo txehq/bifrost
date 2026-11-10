@@ -25,16 +25,18 @@ type BifrostSpeechResponse struct {
 	NormalizedAlignment *SpeechAlignment           `json:"normalized_alignment,omitempty"` // Character-level timing information for normalized text
 	AudioBase64         *string                    `json:"audio_base64,omitempty"`         // Base64-encoded audio (when timestamps are requested)
 	ExtraFields         BifrostResponseExtraFields `json:"extra_fields"`
+
+	ContentType string `json:"content_type,omitempty"` // media type of Audio as the provider reported or converted it; empty when unknown
 }
 
+// BackfillParams fills Usage.InputChars with the code-point count of the input only when the
+// provider left it empty. A character count the vendor reported (MiniMax usage_characters) is
+// the vendor's figure and is never overwritten by Bifrost's own count (TXE-6530, contract C5).
 func (r *BifrostSpeechResponse) BackfillParams(request *BifrostSpeechRequest) {
 	if r == nil || request == nil || request.Input == nil {
 		return
 	}
-	if r.Usage == nil {
-		r.Usage = &SpeechUsage{}
-	}
-	r.Usage.InputChars = utf8.RuneCountInString(request.Input.Input)
+	r.Usage = backfillSpeechInputChars(r.Usage, request.Input.Input)
 }
 
 // SpeechAlignment represents character-level timing information for audio-text synchronization
@@ -146,14 +148,25 @@ type BifrostSpeechStreamResponse struct {
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 
+// BackfillParams applies the same rule as BifrostSpeechResponse.BackfillParams to a stream chunk.
 func (r *BifrostSpeechStreamResponse) BackfillParams(request *BifrostSpeechRequest) {
 	if r == nil || request == nil || request.Input == nil {
 		return
 	}
-	if r.Usage == nil {
-		r.Usage = &SpeechUsage{}
+	r.Usage = backfillSpeechInputChars(r.Usage, request.Input.Input)
+}
+
+// backfillSpeechInputChars returns usage with InputChars set to the code-point count of input
+// when the provider reported none. Bifrost's per-character pricing reads InputChars, so it is
+// still filled for vendors that report nothing; a vendor-reported count is kept as is.
+func backfillSpeechInputChars(usage *SpeechUsage, input string) *SpeechUsage {
+	if usage == nil {
+		usage = &SpeechUsage{}
 	}
-	r.Usage.InputChars = utf8.RuneCountInString(request.Input.Input)
+	if usage.InputChars == 0 {
+		usage.InputChars = utf8.RuneCountInString(input)
+	}
+	return usage
 }
 
 type SpeechUsageInputTokenDetails struct {

@@ -467,3 +467,37 @@ func TestParseTranscriptionFormDataBodyFromRequest_ChunkingStrategyObject(t *tes
 		t.Fatalf("expected type=server_vad, got %v", decoded["type"])
 	}
 }
+
+// A form field the caller repeated (include[]=a&include[]=b) reaches ExtraParams as a []string
+// and must go out as one form field per value, not as one JSON-encoded field (TXE-6530).
+func TestParseTranscriptionFormDataBodyFromRequest_RepeatedExtraField(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	req := &OpenAITranscriptionRequest{
+		Model:    "gpt-4o-transcribe",
+		File:     []byte("audio-bytes"),
+		Filename: "sample.mp3",
+		TranscriptionParameters: schemas.TranscriptionParameters{
+			ExtraParams: map[string]interface{}{
+				"include[]": []string{"logprobs", "segments"},
+			},
+		},
+	}
+
+	if bifrostErr := ParseTranscriptionFormDataBodyFromRequest(writer, req, schemas.OpenAI); bifrostErr != nil {
+		t.Fatalf("unexpected bifrost error: %v", bifrostErr.Error.Message)
+	}
+
+	_, params, err := mime.ParseMediaType(writer.FormDataContentType())
+	if err != nil {
+		t.Fatal(err)
+	}
+	form, err := multipart.NewReader(bytes.NewReader(body.Bytes()), params["boundary"]).ReadForm(1 << 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := form.Value["include[]"]
+	if len(got) != 2 || got[0] != "logprobs" || got[1] != "segments" {
+		t.Fatalf("include[] = %q, want [logprobs segments] as two fields", got)
+	}
+}

@@ -1326,6 +1326,10 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 
 		bifrostExtraFields = speechResponse.ExtraFields
 
+		if config.SpeechResponseConverter == nil {
+			// Raw audio body: the unified usage travels in x-bifrost-usage (TXE-6530).
+			lib.SetSpeechUsageHeader(ctx, speechResponse.Usage)
+		}
 		if g.tryStreamLargeResponse(ctx, bifrostCtx, bifrostExtraFields) {
 			return
 		}
@@ -1342,10 +1346,11 @@ func (g *GenericRouter) handleNonStreamingRequest(ctx *fasthttp.RequestCtx, conf
 			return
 		} else {
 			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, bifrostExtraFields)
-			ctx.Response.Header.Set("Content-Type", "audio/mpeg")
-			ctx.Response.Header.Set("Content-Disposition", "attachment; filename=speech.mp3")
-			ctx.Response.Header.Set("Content-Length", strconv.Itoa(len(speechResponse.Audio)))
-			ctx.Response.SetBody(speechResponse.Audio)
+			responseFormat := ""
+			if bifrostReq.SpeechRequest.Params != nil {
+				responseFormat = bifrostReq.SpeechRequest.Params.ResponseFormat
+			}
+			lib.WriteSpeechAudioResponse(ctx, speechResponse, responseFormat)
 			return
 		}
 	case bifrostReq.TranscriptionRequest != nil:

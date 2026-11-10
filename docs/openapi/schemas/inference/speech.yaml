@@ -86,6 +86,9 @@ SpeechResponse:
       $ref: '#/SpeechAlignment'
     normalized_alignment:
       $ref: '#/SpeechAlignment'
+    content_type:
+      type: string
+      description: Media type of the audio as the provider reported or converted it (for example audio/L16;codec=pcm;rate=24000). Omitted when unknown.
     audio_base64:
       type: string
     extra_fields:

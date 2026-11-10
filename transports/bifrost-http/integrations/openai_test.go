@@ -16,6 +16,7 @@ import (
 	bifrost "github.com/capsohq/bifrost/core"
 	"github.com/capsohq/bifrost/core/providers/openai"
 	"github.com/capsohq/bifrost/core/schemas"
+	"github.com/capsohq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/fasthttp/router"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -248,6 +249,27 @@ func TestParseTranscriptionMultipartRequest_PreservesFilename(t *testing.T) {
 
 	if req.Filename != "sample.mp3" {
 		t.Errorf("Filename = %q, want %q (multipart part filename dropped)", req.Filename, "sample.mp3")
+	}
+}
+
+// A repeated form field (include[]=a&include[]=b) used to keep only its first value on the
+// /openai transcription route (TXE-6530).
+func TestParseTranscriptionMultipartRequest_RepeatedExtraFieldKeepsEveryValue(t *testing.T) {
+	ctx := buildTranscriptionMultipartCtx(t, map[string][]string{
+		"include[]":    {"logprobs", "segments"},
+		"num_speakers": {"2"},
+	})
+
+	req := &openai.OpenAITranscriptionRequest{}
+	if err := parseTranscriptionMultipartRequest(ctx, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, _ := req.ExtraParams["include[]"].([]string)
+	if len(got) != 2 || got[0] != "logprobs" || got[1] != "segments" {
+		t.Errorf("ExtraParams[include[]] = %#v, want [logprobs segments]", req.ExtraParams["include[]"])
+	}
+	if req.ExtraParams["num_speakers"] != float64(2) {
+		t.Errorf("ExtraParams[num_speakers] = %#v, want the single value decoded as before", req.ExtraParams["num_speakers"])
 	}
 }
 
@@ -565,6 +587,52 @@ func TestOpenAISpeechRoutesReturnRawAudio(t *testing.T) {
 			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
 			require.Contains(t, string(ctx.Response.Header.ContentType()), "audio/", "body: %.200s", ctx.Response.Body())
 			require.Equal(t, audio, ctx.Response.Body())
+		})
+	}
+}
+
+// The /openai speech routes wrote every audio body as audio/mpeg named speech.mp3 and carried no
+// usage. It now shares /v1/audio/speech's writer: the vendor's Content-Type, a matching filename
+// and the unified usage in x-bifrost-usage (TXE-6530).
+func TestOpenAISpeechRouteLabelsAudioAndCarriesUsage(t *testing.T) {
+	audio := []byte("RIFF\x24\x00\x00\x00WAVEfmt ")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write(audio)
+	}))
+	defer upstream.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: speechTestAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	// Both routes reach the router's raw-audio branch: the OpenAI SDK path and the Azure OpenAI
+	// SDK deployment path (served by the azure provider).
+	for _, uri := range []string{
+		"/openai/v1/audio/speech",
+		"/openai/openai/deployments/gpt-4o-mini-tts/audio/speech?api-version=2025-04-01-preview",
+	} {
+		t.Run(uri, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI(uri)
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.SetBodyString(`{"model":"openai/gpt-4o-mini-tts","input":"Hello","voice":"alloy","response_format":"wav"}`)
+
+			r.Handler(&ctx)
+
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			require.Equal(t, "audio/wav", string(ctx.Response.Header.ContentType()))
+			require.Equal(t, "attachment; filename=speech.wav", string(ctx.Response.Header.Peek("Content-Disposition")))
+			require.Equal(t, audio, ctx.Response.Body())
+			require.JSONEq(t, `{"input_chars":5,"input_tokens":0,"output_tokens":0,"total_tokens":0}`, string(ctx.Response.Header.Peek(lib.HeaderBifrostUsage)))
 		})
 	}
 }
