@@ -2,12 +2,14 @@ package cohere_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	bifrost "github.com/capsohq/bifrost/core"
@@ -268,4 +270,63 @@ func cohereErrorResponsesRequest() *schemas.BifrostResponsesRequest {
 			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
 		}},
 	}
+}
+
+// Bifrost's own embedding requests (semantic cache, routing, Warp index) have no caller to
+// name a task, so an internal request that names none gets search_document, the value
+// every request got before callers had to choose, and vectors cached before stay
+// comparable. A task the internal request does name wins, and a caller's request that
+// names none is still refused with caller_unsupported_parameter before any upstream call.
+func TestCohereInternalEmbeddingGetsTheDocumentedInputType(t *testing.T) {
+	var calls atomic.Int32
+	var gotInputType atomic.Value
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var body struct {
+			InputType string `json:"input_type"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotInputType.Store(body.InputType)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"e1","embeddings":{"float":[[0.1,0.2]]},"meta":{"billed_units":{"input_tokens":3}}}`))
+	}))
+	defer server.Close()
+	provider, err := cohere.NewCohereProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+	}, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+	key := schemas.Key{Value: *schemas.NewSecretVar("co-test")}
+	request := func(params *schemas.EmbeddingParameters) *schemas.BifrostEmbeddingRequest {
+		return &schemas.BifrostEmbeddingRequest{
+			Provider: schemas.Cohere,
+			Model:    "embed-v4.0",
+			Input: []schemas.EmbeddingInputItem{
+				{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("hi")}}},
+			},
+			Params: params,
+		}
+	}
+	internalCtx := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		bifrost.PrepareContextForInternalEmbeddingRequest(ctx)
+		return ctx
+	}
+
+	dims := 256
+	original := request(&schemas.EmbeddingParameters{Dimensions: &dims})
+	_, bifrostErr := provider.Embedding(internalCtx(), key, original)
+	require.Nil(t, bifrostErr)
+	require.Equal(t, "search_document", gotInputType.Load())
+	require.Nil(t, original.Params.TaskType, "the caller's request object is not modified")
+
+	_, bifrostErr = provider.Embedding(internalCtx(), key, request(&schemas.EmbeddingParameters{TaskType: schemas.Ptr("search_query")}))
+	require.Nil(t, bifrostErr)
+	require.Equal(t, "search_query", gotInputType.Load())
+	require.Equal(t, int32(2), calls.Load())
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr = provider.Embedding(ctx, key, request(nil))
+	require.NotNil(t, bifrostErr)
+	require.Equal(t, schemas.ErrorTypeCallerUnsupportedParameter, bifrostErr.ExtraFields.ErrorType)
+	require.Equal(t, int32(2), calls.Load(), "a caller's request without a task is refused before any upstream call")
 }

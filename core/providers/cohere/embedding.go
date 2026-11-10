@@ -145,6 +145,36 @@ func cohereEmbeddingInputType(params *schemas.EmbeddingParameters) (string, erro
 	return inputType, nil
 }
 
+// cohereInternalEmbeddingInputType is the input_type Bifrost's own embedding requests
+// (semantic cache, routing, Warp index) get when they name no task: search_document, the
+// value Bifrost sent for every request before callers had to choose, so vectors stored
+// before this change stay comparable with new ones.
+const cohereInternalEmbeddingInputType = "search_document"
+
+// withInternalEmbeddingInputType gives an internal embedding request that names no task
+// Cohere's documented default. A caller's request is returned unchanged and is refused by
+// ToCohereEmbeddingRequest when it names none (contract C4); see
+// bifrost.MarkInternalEmbeddingRequest.
+func withInternalEmbeddingInputType(ctx *schemas.BifrostContext, req *schemas.BifrostEmbeddingRequest) *schemas.BifrostEmbeddingRequest {
+	if ctx == nil || req == nil {
+		return req
+	}
+	if internal, _ := ctx.Value(schemas.BifrostContextKeyInternalEmbeddingRequest).(bool); !internal {
+		return req
+	}
+	if req.Params != nil && (req.Params.TaskType != nil || req.Params.ExtraParams["input_type"] != nil) {
+		return req
+	}
+	params := &schemas.EmbeddingParameters{}
+	if req.Params != nil {
+		params = req.Params.Clone()
+	}
+	params.TaskType = schemas.Ptr(cohereInternalEmbeddingInputType)
+	withDefault := *req
+	withDefault.Params = params
+	return &withDefault
+}
+
 // ToCohereEmbeddingRequest converts a Bifrost embedding request to Cohere format.
 func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*CohereEmbeddingRequest, error) {
 	if bifrostReq == nil || len(bifrostReq.Input) == 0 {

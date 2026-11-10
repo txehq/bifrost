@@ -356,6 +356,7 @@ func generateWarpEmbedding(ctx context.Context, executor EmbeddingExecutor, conf
 	defer embeddingCtx.Cancel()
 	embeddingCtx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 	bifrost.ClearContextForInternalRequest(embeddingCtx)
+	bifrost.MarkInternalEmbeddingRequest(embeddingCtx)
 	if config.EmbeddingAPIKeyID != "" {
 		embeddingCtx.SetValue(schemas.BifrostContextKeyAPIKeyID, config.EmbeddingAPIKeyID)
 	}

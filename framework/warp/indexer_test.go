@@ -417,3 +417,19 @@ func TestWarpIndexerProvisionsNamespaceOncePerConfig(t *testing.T) {
 	require.Equal(t, IndexOutcomeIndexed, outcome)
 	require.Equal(t, 2, vectors.createCalls, "a failed write must invalidate the provisioning cache")
 }
+
+// Warp's index embeddings are Bifrost's own requests, so they are marked internal: a
+// provider that needs a task the caller would otherwise name (Cohere's input_type, which
+// a caller's request is refused without) applies its documented default to them.
+func TestGenerateWarpEmbeddingIsMarkedInternal(t *testing.T) {
+	var marked any
+	executor := func(ctx *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		marked = ctx.Value(schemas.BifrostContextKeyInternalEmbeddingRequest)
+		return &schemas.BifrostEmbeddingResponse{
+			Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0.1, 0.2}}}},
+		}, nil
+	}
+	config := &schemas.WarpConfig{EmbeddingProvider: schemas.Cohere, EmbeddingModel: "embed-v4.0", EmbeddingDimension: 2}
+	_, _, _ = generateWarpEmbedding(context.Background(), executor, config, "hello")
+	require.Equal(t, true, marked)
+}
