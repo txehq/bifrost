@@ -92,6 +92,71 @@ func TestAnthropicMessagesRouteNativeXAIEndToEnd(t *testing.T) {
 	}
 }
 
+// TXE-6547: /anthropic/v1/messages with moonshot/<id> is passed through to Kimi's
+// Anthropic-compatible endpoint ({base}/anthropic/v1/messages, bearer auth). Kimi
+// receives the caller's bytes with only the provider prefix removed from the model id,
+// and the caller receives Kimi's response bytes.
+func TestAnthropicMessagesRouteNativeMoonshotEndToEnd(t *testing.T) {
+	requestBody := []byte(`{"model":"moonshot/kimi-k3.1-pro", "max_tokens":64,"system":[{"type":"text","text":"You are Kimi — helpful.","cache_control":{"type":"ephemeral"}}],"thinking":{"type":"enabled","budget_tokens":1024},"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"thinking","thinking":"greet","signature":"c2ln"},{"type":"text","text":"hello"}]},{"role":"user","content":"again"}]}`)
+	wantUpstream := bytes.Replace(requestBody, []byte(`"model":"moonshot/kimi-k3.1-pro"`), []byte(`"model":"kimi-k3.1-pro"`), 1)
+	responseBody := []byte(`{"id":"msg_kimi","type":"message","role":"assistant","model":"kimi-k3.1-pro","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":128, "cache_read_input_tokens":4736,"cache_creation_input_tokens":64,"output_tokens":12}}`)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/anthropic/v1/messages" {
+			t.Errorf("upstream path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer kimi-secret" {
+			t.Errorf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("x-api-key"); got != "" {
+			t.Errorf("x-api-key = %q, want none", got)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		if !bytes.Equal(body, wantUpstream) {
+			t.Errorf("body sent to Kimi:\n got: %s\nwant: %s", body, wantUpstream)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(responseBody)
+	}))
+	defer upstream.Close()
+
+	account := &nativeMessagesTestAccount{
+		configs: map[schemas.ModelProvider]*schemas.ProviderConfig{
+			schemas.Moonshot: {NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true}},
+		},
+		keys: map[schemas.ModelProvider][]schemas.Key{
+			schemas.Moonshot: {{ID: "kimi-key", Value: schemas.SecretVar{Val: "kimi-secret"}, Models: schemas.WhiteList{"*"}, Weight: 1}},
+		},
+	}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: account, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("init Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	route := createAnthropicMessagesRouteConfig("/anthropic", bifrost.NewNoOpLogger())[0]
+	handler := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger()).createHandler(route)
+	httpCtx := &fasthttp.RequestCtx{}
+	httpCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+	httpCtx.Request.SetRequestURI("/anthropic/v1/messages")
+	httpCtx.Request.Header.Set("anthropic-version", "2023-06-01")
+	httpCtx.Request.Header.Set("x-api-key", "caller-credential")
+	httpCtx.Request.SetBody(requestBody)
+	handler(httpCtx)
+
+	if httpCtx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("status = %d, body = %s", httpCtx.Response.StatusCode(), httpCtx.Response.Body())
+	}
+	if !bytes.Equal(httpCtx.Response.Body(), responseBody) {
+		t.Fatalf("response bytes changed:\n got: %s\nwant: %s", httpCtx.Response.Body(), responseBody)
+	}
+}
+
 func (a *nativeMessagesTestAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schemas.ProviderConfig, error) {
 	return a.configs[provider], nil
 }
