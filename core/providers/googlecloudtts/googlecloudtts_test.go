@@ -503,15 +503,17 @@ func TestSpeechTakesSSMLVoicesOfTheModelFamily(t *testing.T) {
 // The extra-params channel merges caller fields into the body after the voice and the SSML
 // have been checked, so it may not carry voice or input, whether or not the merge is on.
 func TestSpeechRefusesProtectedFieldsAsExtraParams(t *testing.T) {
-	for _, field := range []string{"voice", "input"} {
+	// The merge matches names ignoring case and underscores, so "Voice" would add customVoice
+	// to the checked voice object exactly as "voice" would.
+	for key, field := range map[string]string{"voice": "voice", "input": "input", "Voice": "voice", "VOICE": "voice", "v_oice": "voice", "Input": "input", "in_put": "input"} {
 		for _, passthrough := range []bool{true, false} {
-			t.Run(fmt.Sprintf("%s passthrough=%v", field, passthrough), func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s passthrough=%v", key, passthrough), func(t *testing.T) {
 				provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
 				ctx := testContext(t)
 				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, passthrough)
 				_, bifrostErr := provider.Speech(ctx, testKey(), speechRequest("hi", &schemas.SpeechParameters{
 					VoiceConfig: voice("en-US-Wavenet-D"),
-					ExtraParams: map[string]any{field: map[string]any{"name": "en-US-Chirp3-HD-Achernar", "ssml": `<speak><voice name="en-US-Studio-O">hi</voice></speak>`}},
+					ExtraParams: map[string]any{key: map[string]any{"customVoice": map[string]any{"model": "projects/p/locations/l/models/m"}, "name": "en-US-Chirp3-HD-Achernar", "ssml": `<speak><voice name="en-US-Studio-O">hi</voice></speak>`}},
 				}))
 				assertUnsupportedParameter(t, bifrostErr, field)
 				if n := len(captured()); n != 0 {
@@ -525,16 +527,23 @@ func TestSpeechRefusesProtectedFieldsAsExtraParams(t *testing.T) {
 // response_format chooses the encoding and labels the response; an audioEncoding slipped in
 // through extra params would return audio the Content-Type does not describe.
 func TestSpeechRefusesAudioEncodingAsExtraParam(t *testing.T) {
-	provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
-	ctx := testContext(t)
-	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
-	_, bifrostErr := provider.Speech(ctx, testKey(), speechRequest("hi", &schemas.SpeechParameters{
-		VoiceConfig: voice("en-US-Wavenet-D"),
-		ExtraParams: map[string]any{"audioConfig": map[string]any{"audioEncoding": "PCM", "pitch": -2.0}},
-	}))
-	assertUnsupportedParameter(t, bifrostErr, "response_format")
-	if n := len(captured()); n != 0 {
-		t.Errorf("made %d upstream calls for a refused request, want 0", n)
+	for name, extra := range map[string]map[string]any{
+		"as the vendor spells it": {"audioConfig": map[string]any{"audioEncoding": "PCM", "pitch": -2.0}},
+		"spelled another way":     {"Audio_Config": map[string]any{"audio_encoding": "PCM"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+			ctx := testContext(t)
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			_, bifrostErr := provider.Speech(ctx, testKey(), speechRequest("hi", &schemas.SpeechParameters{
+				VoiceConfig: voice("en-US-Wavenet-D"),
+				ExtraParams: extra,
+			}))
+			assertUnsupportedParameter(t, bifrostErr, "response_format")
+			if n := len(captured()); n != 0 {
+				t.Errorf("made %d upstream calls for a refused request, want 0", n)
+			}
+		})
 	}
 }
 

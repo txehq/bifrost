@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	schemas "github.com/capsohq/bifrost/core/schemas"
 )
 
@@ -208,9 +209,13 @@ func checkSpeechParams(model string, params *schemas.SpeechParameters) *schemas.
 	if params == nil {
 		return checkVoiceFamily(model, nil)
 	}
+	// The merge matches an extra param to a body field ignoring case and underscores, so
+	// "Voice" adds to the voice object as "voice" does: the names are compared the same way.
 	for _, field := range protectedBodyFields {
-		if _, ok := params.ExtraParams[field]; ok {
-			return schemas.NewUnsupportedParameterError(field, fmt.Sprintf("%s cannot be set as a vendor-specific field on google-cloud-tts: the provider checks it against the request's model before sending, so it is taken only from the request's own %s", field, field))
+		for key := range params.ExtraParams {
+			if providerUtils.ExtraParamNamesField(key, field) {
+				return schemas.NewUnsupportedParameterError(field, fmt.Sprintf("%s cannot be set as a vendor-specific field on google-cloud-tts: the provider checks it against the request's model before sending, so it is taken only from the request's own %s", field, field))
+			}
 		}
 	}
 	if params.VoiceConfig != nil && len(params.VoiceConfig.MultiVoiceConfig) > 0 {
@@ -219,9 +224,15 @@ func checkSpeechParams(model string, params *schemas.SpeechParameters) *schemas.
 	// audioConfig is the one object extra params may add to, but not its audioEncoding: the
 	// response's Content-Type and file name follow response_format, and headerless PCM
 	// returned under an mp3 request cannot be told from its bytes.
-	if audioConfig, ok := params.ExtraParams["audioConfig"].(map[string]interface{}); ok {
-		if _, ok := audioConfig["audioEncoding"]; ok {
-			return schemas.NewUnsupportedParameterError("response_format", "audioConfig.audioEncoding cannot be set as a vendor-specific field on google-cloud-tts: the audio encoding is chosen with response_format, which also labels the response")
+	for key, value := range params.ExtraParams {
+		audioConfig, ok := value.(map[string]interface{})
+		if !ok || !providerUtils.ExtraParamNamesField(key, "audioConfig") {
+			continue
+		}
+		for nested := range audioConfig {
+			if providerUtils.ExtraParamNamesField(nested, "audioEncoding") {
+				return schemas.NewUnsupportedParameterError("response_format", "audioConfig.audioEncoding cannot be set as a vendor-specific field on google-cloud-tts: the audio encoding is chosen with response_format, which also labels the response")
+			}
 		}
 	}
 	if _, ok := audioEncodingFor(params.ResponseFormat); !ok {
