@@ -213,6 +213,9 @@ func (provider *XAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key sc
 	if request == nil {
 		return nil, providerUtils.NewBifrostOperationError("invalid request: nil", nil)
 	}
+	if rawBody, ok := xaiRawImageBody(ctx, request); ok {
+		return provider.doXAIImageRequest(ctx, key, xaiImageGenerationsPath, rawBody)
+	}
 	if params := request.Params; params != nil {
 		if bifrostErr := checkXAIImageRequest(request.Model, params.Quality, params.ExtraParams); bifrostErr != nil {
 			return nil, bifrostErr
@@ -271,6 +274,9 @@ func (provider *XAIProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.
 	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
 		return nil, providerUtils.NewBifrostBadRequestError("large payload passthrough is not supported for xai image edit: xAI's edit takes JSON with the source image inlined, not a streamed multipart body; send a smaller upload or the image as a URL")
 	}
+	if rawBody, ok := xaiRawImageBody(ctx, request); ok {
+		return provider.doXAIImageRequest(ctx, key, xaiImageEditsPath, rawBody)
+	}
 	if params := request.Params; params != nil {
 		if bifrostErr := checkXAIImageRequest(request.Model, params.Quality, params.ExtraParams); bifrostErr != nil {
 			return nil, bifrostErr
@@ -295,6 +301,16 @@ func (provider *XAIProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.
 		return nil, bifrostErr
 	}
 	return provider.doXAIImageRequest(ctx, key, xaiImageEditsPath, jsonData)
+}
+
+// xaiRawImageBody returns the caller's own body when raw-request-body mode is on. That body
+// reaches xAI as written, so the typed fields are neither checked nor converted: they are not
+// what is sent, and a field they carry must not refuse a body that does not contain it.
+func xaiRawImageBody(ctx *schemas.BifrostContext, request providerUtils.RequestBodyGetter) ([]byte, bool) {
+	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, false
+	}
+	return providerUtils.CheckAndGetRawRequestBody(ctx, request)
 }
 
 // doXAIImageRequest posts an image body, parses an error with xAI's own error shape, and

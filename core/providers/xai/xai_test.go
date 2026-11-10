@@ -643,3 +643,41 @@ func TestXAIImageEditRefusesLargePayloadPassthrough(t *testing.T) {
 	require.Contains(t, bifrostErr.Error.Message, "large payload passthrough is not supported for xai image edit")
 	require.Zero(t, recorder.calls())
 }
+
+// In raw-request-body mode the caller's own body reaches xAI as written: the typed fields are not
+// what is sent, so a typed field xAI would refuse (quality on a model without it, a 4K tier)
+// must not refuse a raw body that does not carry it.
+func TestXAIImageRawRequestBodyBypassesTypedChecks(t *testing.T) {
+	t.Parallel()
+	const genBody = `{"model":"grok-imagine-image","prompt":"a lighthouse","resolution":"2k"}`
+	const editBody = `{"model":"grok-imagine-image-2.0","prompt":"make it blue","image":{"url":"https://example.com/a.png","type":"image_url"}}`
+
+	recorder := &xaiImageRecorder{response: xaiRecordedImageResponse}
+	provider := newXAIImageProvider(t, recorder.serve(t).URL)
+	ctx := xaiImageCtx()
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	_, bifrostErr := provider.ImageGeneration(ctx, xaiImageKey, &schemas.BifrostImageGenerationRequest{
+		Provider:       schemas.XAI,
+		Model:          "grok-imagine-image",
+		Input:          &schemas.ImageGenerationInput{Prompt: "a lighthouse"},
+		Params:         &schemas.ImageGenerationParameters{Quality: schemas.Ptr("low"), Resolution: "4K"},
+		RawRequestBody: []byte(genBody),
+	})
+	require.Nil(t, bifrostErr)
+	path, body, _ := recorder.last(t)
+	require.Equal(t, "/v1/images/generations", path)
+	require.Equal(t, "2k", body["resolution"], "the raw body is sent, not the typed tier")
+	require.NotContains(t, body, "quality")
+
+	_, bifrostErr = provider.ImageEdit(ctx, xaiImageKey, &schemas.BifrostImageEditRequest{
+		Provider:       schemas.XAI,
+		Model:          "grok-imagine-image-2.0",
+		Params:         &schemas.ImageEditParameters{Size: schemas.Ptr("1024x1024")},
+		RawRequestBody: []byte(editBody),
+	})
+	require.Nil(t, bifrostErr)
+	path, body, _ = recorder.last(t)
+	require.Equal(t, "/v1/images/edits", path)
+	require.Equal(t, map[string]any{"url": "https://example.com/a.png", "type": "image_url"}, body["image"])
+	require.NotContains(t, body, "size")
+}
