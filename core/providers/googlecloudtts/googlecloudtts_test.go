@@ -92,7 +92,17 @@ func testKey() schemas.Key {
 	return schemas.Key{Value: *schemas.NewSecretVar("test-key"), Models: []string{"*"}}
 }
 
+// speechRequest builds a wavenet request. A request must name a voice of its model's family,
+// so params that name no voice get sampleVoice.
 func speechRequest(input string, params *schemas.SpeechParameters) *schemas.BifrostSpeechRequest {
+	withVoice := schemas.SpeechParameters{}
+	if params != nil {
+		withVoice = *params
+	}
+	if withVoice.VoiceConfig == nil {
+		withVoice.VoiceConfig = voice(sampleVoice)
+	}
+	params = &withVoice
 	return &schemas.BifrostSpeechRequest{
 		Provider: schemas.GoogleCloudTTS,
 		Model:    "wavenet",
@@ -179,7 +189,7 @@ func TestSpeechRequestMapping(t *testing.T) {
 			name:  "no params sends the required audioEncoding as mp3",
 			input: "hi",
 			want: map[string]any{
-				"input": map[string]any{"text": "hi"}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
+				"input": map[string]any{"text": "hi"}, "voice": map[string]any{"name": sampleVoice}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
 			},
 		},
 		{
@@ -194,28 +204,28 @@ func TestSpeechRequestMapping(t *testing.T) {
 			name:  "an XML declaration and a comment may precede the speak root",
 			input: `<?xml version="1.0"?>` + "\n<!-- greeting -->\n" + ssml,
 			want: map[string]any{
-				"input": map[string]any{"ssml": `<?xml version="1.0"?>` + "\n<!-- greeting -->\n" + ssml}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
+				"input": map[string]any{"ssml": `<?xml version="1.0"?>` + "\n<!-- greeting -->\n" + ssml}, "voice": map[string]any{"name": sampleVoice}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
 			},
 		},
 		{
 			name:  "a declaration before another root element stays text",
 			input: `<?xml version="1.0"?><note>hi</note>`,
 			want: map[string]any{
-				"input": map[string]any{"text": `<?xml version="1.0"?><note>hi</note>`}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
+				"input": map[string]any{"text": `<?xml version="1.0"?><note>hi</note>`}, "voice": map[string]any{"name": sampleVoice}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
 			},
 		},
 		{
 			name:  "an unterminated comment stays text",
 			input: "<!-- <speak>hi</speak>",
 			want: map[string]any{
-				"input": map[string]any{"text": "<!-- <speak>hi</speak>"}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
+				"input": map[string]any{"text": "<!-- <speak>hi</speak>"}, "voice": map[string]any{"name": sampleVoice}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
 			},
 		},
 		{
 			name:  "text that only mentions a speak tag stays text",
 			input: "<speaker> is not SSML, and neither is a late <speak>",
 			want: map[string]any{
-				"input": map[string]any{"text": "<speaker> is not SSML, and neither is a late <speak>"}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
+				"input": map[string]any{"text": "<speaker> is not SSML, and neither is a late <speak>"}, "voice": map[string]any{"name": sampleVoice}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
 			},
 		},
 		{
@@ -223,7 +233,7 @@ func TestSpeechRequestMapping(t *testing.T) {
 			input:  "hi",
 			params: &schemas.SpeechParameters{ResponseFormat: "opus"},
 			want: map[string]any{
-				"input": map[string]any{"text": "hi"}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "OGG_OPUS"},
+				"input": map[string]any{"text": "hi"}, "voice": map[string]any{"name": sampleVoice}, "audioConfig": map[string]any{"audioEncoding": "OGG_OPUS"},
 			},
 		},
 		{
@@ -231,7 +241,7 @@ func TestSpeechRequestMapping(t *testing.T) {
 			input:  "hi",
 			params: &schemas.SpeechParameters{ResponseFormat: "wav"},
 			want: map[string]any{
-				"input": map[string]any{"text": "hi"}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "LINEAR16"},
+				"input": map[string]any{"text": "hi"}, "voice": map[string]any{"name": sampleVoice}, "audioConfig": map[string]any{"audioEncoding": "LINEAR16"},
 			},
 		},
 		{
@@ -239,7 +249,7 @@ func TestSpeechRequestMapping(t *testing.T) {
 			input:  "hi",
 			params: &schemas.SpeechParameters{ResponseFormat: "pcm"},
 			want: map[string]any{
-				"input": map[string]any{"text": "hi"}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "PCM"},
+				"input": map[string]any{"text": "hi"}, "voice": map[string]any{"name": sampleVoice}, "audioConfig": map[string]any{"audioEncoding": "PCM"},
 			},
 		},
 		{
@@ -247,7 +257,7 @@ func TestSpeechRequestMapping(t *testing.T) {
 			input:  "hi",
 			params: &schemas.SpeechParameters{ResponseFormat: "MULAW"},
 			want: map[string]any{
-				"input": map[string]any{"text": "hi"}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "MULAW"},
+				"input": map[string]any{"text": "hi"}, "voice": map[string]any{"name": sampleVoice}, "audioConfig": map[string]any{"audioEncoding": "MULAW"},
 			},
 		},
 		{
@@ -255,7 +265,7 @@ func TestSpeechRequestMapping(t *testing.T) {
 			input:  "hi",
 			params: &schemas.SpeechParameters{Speed: schemas.Ptr(0.25)},
 			want: map[string]any{
-				"input": map[string]any{"text": "hi"}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "MP3", "speakingRate": 0.25},
+				"input": map[string]any{"text": "hi"}, "voice": map[string]any{"name": sampleVoice}, "audioConfig": map[string]any{"audioEncoding": "MP3", "speakingRate": 0.25},
 			},
 		},
 	}
@@ -321,6 +331,86 @@ func TestSpeechRefusesWhatTheVendorCannotTake(t *testing.T) {
 			assertUnsupportedParameter(t, bifrostErr, tt.wantParam)
 			if n := len(captured()); n != 0 {
 				t.Errorf("made %d upstream calls for a refused request, want 0", n)
+			}
+		})
+	}
+}
+
+// The model is what governance admits and what the caller is priced on; text:synthesize has
+// no model field, so the voice name alone decides the family Google serves. A voice of
+// another family, a name with no family, or no voice at all is refused before any upstream call.
+func TestSpeechRefusesAVoiceOutsideTheModelFamily(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		voice *schemas.SpeechVoiceInput
+	}{
+		{"a Chirp3-HD voice under wavenet", "wavenet", voice("en-US-Chirp3-HD-Achernar")},
+		{"a Studio voice under standard", "standard", voice("en-US-Studio-O")},
+		{"a Chirp-HD voice under chirp3-hd", "chirp3-hd", voice("en-US-Chirp-HD-F")},
+		{"a WaveNet voice under a model that is no family", "tts-1", voice("en-US-Wavenet-D")},
+		{"a named voice under instant-custom-voice", "instant-custom-voice", voice("en-US-Wavenet-D")},
+		{"a name with no family", "wavenet", voice("alloy")},
+		{"a name with an empty part", "wavenet", voice("en-US--D")},
+		{"an empty voice name", "wavenet", voice("")},
+		{"no voice", "wavenet", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+			req := &schemas.BifrostSpeechRequest{
+				Provider: schemas.GoogleCloudTTS,
+				Model:    tt.model,
+				Input:    &schemas.SpeechInput{Input: "hi"},
+				Params:   &schemas.SpeechParameters{VoiceConfig: tt.voice, LanguageCode: schemas.Ptr("en-US")},
+			}
+			_, bifrostErr := provider.Speech(testContext(t), testKey(), req)
+			assertUnsupportedParameter(t, bifrostErr, "voice")
+			if n := len(captured()); n != 0 {
+				t.Errorf("made %d upstream calls for a refused request, want 0", n)
+			}
+		})
+	}
+
+	t.Run("no params at all", func(t *testing.T) {
+		provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+		req := &schemas.BifrostSpeechRequest{Provider: schemas.GoogleCloudTTS, Model: "wavenet", Input: &schemas.SpeechInput{Input: "hi"}}
+		_, bifrostErr := provider.Speech(testContext(t), testKey(), req)
+		assertUnsupportedParameter(t, bifrostErr, "voice")
+		if n := len(captured()); n != 0 {
+			t.Errorf("made %d upstream calls for a refused request, want 0", n)
+		}
+	})
+}
+
+// Each priced family takes its own voices; the model name is compared without regard to case.
+func TestSpeechTakesAVoiceOfTheModelFamily(t *testing.T) {
+	for model, voiceName := range map[string]string{
+		"wavenet":   "cmn-CN-Wavenet-A",
+		"neural2":   "en-US-Neural2-A",
+		"standard":  "yue-HK-Standard-A",
+		"studio":    "en-US-Studio-O",
+		"polyglot":  "en-US-Polyglot-1",
+		"chirp3-hd": "en-US-Chirp3-HD-Achernar",
+		"Chirp3-HD": "en-US-Chirp3-HD-Achernar",
+	} {
+		t.Run(model, func(t *testing.T) {
+			provider, captured := newMockCloudTTS(t, jsonResponse(http.StatusOK, sampleResponseBody))
+			req := &schemas.BifrostSpeechRequest{
+				Provider: schemas.GoogleCloudTTS,
+				Model:    model,
+				Input:    &schemas.SpeechInput{Input: "hi"},
+				Params:   &schemas.SpeechParameters{VoiceConfig: voice(voiceName)},
+			}
+			if _, bifrostErr := provider.Speech(testContext(t), testKey(), req); bifrostErr != nil {
+				t.Fatalf("Speech error: %+v", bifrostErr.Error)
+			}
+			reqs := captured()
+			if len(reqs) != 1 {
+				t.Fatalf("made %d upstream calls, want exactly 1", len(reqs))
+			}
+			if got := sentBody(t, reqs)["voice"]; !reflect.DeepEqual(got, map[string]any{"name": voiceName}) {
+				t.Errorf("upstream voice = %v, want the name %q as given", got, voiceName)
 			}
 		})
 	}

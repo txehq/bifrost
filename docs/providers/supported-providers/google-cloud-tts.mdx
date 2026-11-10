@@ -107,11 +107,11 @@ curl -X POST http://localhost:8080/v1/audio/speech \
 | Bifrost field | `text:synthesize` field | Notes |
 |---------------|-------------------------|-------|
 | `input` | `input.text` | An SSML document (an input whose root element is `<speak>`) is sent as `input.ssml` |
-| `voice` | `voice.name` | A voice name such as `en-US-Wavenet-D`. A multi-speaker voice list is refused |
+| `voice` | `voice.name` | Required. A voice name such as `en-US-Wavenet-D`, of the family the model names. A multi-speaker voice list is refused |
 | `language_code` | `voice.languageCode` | Required by the API. Bifrost does not derive it from the voice name |
 | `response_format` | `audioConfig.audioEncoding` | See the table below. Defaults to `mp3` |
 | `speed` | `audioConfig.speakingRate` | `0.25` to `2.0`. A value outside the range is refused, not clamped |
-| `model` | - | Not sent. The API has no model field for these voices: the voice name selects the voice. Use the voice family (`wavenet`, `neural2`, `chirp3-hd`, `standard`, `studio`, `polyglot`) as the model name |
+| `model` | - | Not sent. The API has no model field for these voices: the voice name selects the voice. The model is the voice family (`wavenet`, `neural2`, `chirp3-hd`, `standard`, `studio`, `polyglot`), and the voice must belong to it |
 
 | `response_format` | `audioEncoding` | Audio |
 |-------------------|-----------------|-------|
@@ -132,6 +132,20 @@ These return `400` with `extra_fields.error_type: "caller_unsupported_parameter"
 - `response_format` values with no `audioEncoding` (`aac`, `flac`)
 - `speed` outside `0.25` to `2.0`
 - `voice` given as a multi-speaker list
+- `voice` absent, or of another family than the model
+
+### Model and Voice Family
+
+Google names every voice `<language>-<REGION>-<family>-<variant>`: `en-US-Wavenet-D` is a `wavenet` voice, `en-US-Chirp3-HD-Achernar` a `chirp3-hd` voice. Google serves and bills the family of the voice, whatever the request calls its model. Bifrost therefore compares the two, ignoring case, and refuses a request whose voice is of another family, whose voice name has no family, or which names no voice, so a model allowed by a virtual key or priced by a catalog is the family that is served.
+
+| `model` | `voice` | Result |
+|---------|---------|--------|
+| `google-cloud-tts/wavenet` | `en-US-Wavenet-D` | Sent |
+| `google-cloud-tts/chirp3-hd` | `en-US-Chirp3-HD-Achernar` | Sent |
+| `google-cloud-tts/wavenet` | `en-US-Chirp3-HD-Achernar` | `400`, `error.param: "voice"` |
+| `google-cloud-tts/wavenet` | none | `400`, `error.param: "voice"` |
+
+Voices that are not selected by name (an instant custom voice, which takes a voice cloning key) cannot be requested.
 
 ### Vendor-specific Fields
 

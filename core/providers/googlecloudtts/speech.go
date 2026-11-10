@@ -43,12 +43,61 @@ func audioEncodingFor(responseFormat string) (string, bool) {
 	return encoding, ok
 }
 
+// voiceFamily returns the voice family a Cloud Text-to-Speech voice name carries, as written
+// in the name, and false when the name has none. Every name in Google's voice list
+// (https://docs.cloud.google.com/text-to-speech/docs/list-voices-and-types) is
+// <language>-<REGION>-<family>-<variant>: en-US-Wavenet-D is Wavenet, en-US-Chirp3-HD-Achernar
+// is Chirp3-HD. It allocates nothing: it runs on every request.
+func voiceFamily(voiceName string) (string, bool) {
+	if strings.HasPrefix(voiceName, "-") || strings.HasSuffix(voiceName, "-") || strings.Contains(voiceName, "--") {
+		return "", false
+	}
+	language := strings.IndexByte(voiceName, '-')
+	if language < 0 {
+		return "", false
+	}
+	region := strings.IndexByte(voiceName[language+1:], '-')
+	if region < 0 {
+		return "", false
+	}
+	familyStart := language + 1 + region + 1
+	variant := strings.LastIndexByte(voiceName, '-')
+	if variant < familyStart {
+		return "", false
+	}
+	return voiceName[familyStart:variant], true
+}
+
+// checkVoiceFamily refuses a voice that is not of the family the request names as its model.
+// text:synthesize has no model field, so the voice name alone decides which voice family
+// Google serves and bills, while the model is what governance admits and what the caller is
+// priced on: a wavenet request carrying a Chirp3-HD voice would be served the dearer family
+// under the cheaper name. A request with no voice name is refused for the same reason: Google
+// would pick the voice, and its family, by itself.
+func checkVoiceFamily(model string, params *schemas.SpeechParameters) *schemas.BifrostError {
+	voiceName := ""
+	if params != nil && params.VoiceConfig != nil && params.VoiceConfig.Voice != nil {
+		voiceName = *params.VoiceConfig.Voice
+	}
+	if voiceName == "" {
+		return schemas.NewUnsupportedParameterError("voice", fmt.Sprintf("voice is required by google-cloud-tts: name a voice of the %s family", model))
+	}
+	family, ok := voiceFamily(voiceName)
+	if !ok {
+		return schemas.NewUnsupportedParameterError("voice", fmt.Sprintf("voice %q is not a Cloud Text-to-Speech voice name of the form <language>-<REGION>-<family>-<variant>, so google-cloud-tts cannot tell that it belongs to model %q", voiceName, model))
+	}
+	if !strings.EqualFold(family, model) {
+		return schemas.NewUnsupportedParameterError("voice", fmt.Sprintf("voice %q is a %s voice and the request's model is %q: the model must name the voice's family", voiceName, strings.ToLower(family), model))
+	}
+	return nil
+}
+
 // checkSpeechParams refuses the values text:synthesize cannot take as given, each with
 // caller_unsupported_parameter naming the field. Nothing is dropped, rewritten or clamped.
 // Fields the provider does not take at all are refused by core from SupportedUnifiedFields.
-func checkSpeechParams(params *schemas.SpeechParameters) *schemas.BifrostError {
+func checkSpeechParams(model string, params *schemas.SpeechParameters) *schemas.BifrostError {
 	if params == nil {
-		return nil
+		return checkVoiceFamily(model, nil)
 	}
 	if params.VoiceConfig != nil && len(params.VoiceConfig.MultiVoiceConfig) > 0 {
 		return schemas.NewUnsupportedParameterError("voice", "voice must be one voice name: a multi-speaker voice list is not supported by google-cloud-tts")
@@ -59,7 +108,7 @@ func checkSpeechParams(params *schemas.SpeechParameters) *schemas.BifrostError {
 	if params.Speed != nil && (*params.Speed < minSpeakingRate || *params.Speed > maxSpeakingRate) {
 		return schemas.NewUnsupportedParameterError("speed", fmt.Sprintf("speed %v is outside the range google-cloud-tts takes (%v to %v)", *params.Speed, minSpeakingRate, maxSpeakingRate))
 	}
-	return nil
+	return checkVoiceFamily(model, params)
 }
 
 // isSSML reports whether the input is an SSML document: its root element is <speak>
@@ -97,7 +146,8 @@ func isSSML(input string) bool {
 // body: input → input.text (input.ssml for an SSML document), voice → voice.name,
 // language_code → voice.languageCode, response_format → audioConfig.audioEncoding,
 // speed → audioConfig.speakingRate. The request's model is the caller's price tier
-// (wavenet, neural2, ...) and has no vendor field: the voice name selects the voice.
+// (wavenet, neural2, ...) and has no vendor field: the voice name selects the voice, and
+// checkSpeechParams has checked that the voice is of that family.
 // The caller is expected to have run checkSpeechParams.
 func ToGoogleCloudTTSSpeechRequest(bifrostReq *schemas.BifrostSpeechRequest) *GoogleCloudTTSSynthesizeRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {

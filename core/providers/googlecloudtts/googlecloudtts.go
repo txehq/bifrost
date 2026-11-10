@@ -98,7 +98,7 @@ func (provider *GoogleCloudTTSProvider) Speech(ctx *schemas.BifrostContext, key 
 	if request == nil || request.Input == nil || request.Input.Input == "" {
 		return nil, providerUtils.NewBifrostBadRequestError("speech input text is required")
 	}
-	if fieldErr := checkSpeechParams(request.Params); fieldErr != nil {
+	if fieldErr := checkSpeechParams(request.Model, request.Params); fieldErr != nil {
 		return nil, fieldErr
 	}
 

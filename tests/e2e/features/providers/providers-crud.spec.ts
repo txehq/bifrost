@@ -328,6 +328,46 @@ test.describe("Providers", () => {
       expect(saved, "saved key must be listed").toBeTruthy();
       expect(saved?.cloudflare_key_config?.account_id?.value).toBe(accountId);
     });
+
+    test("should add Google Cloud Text-to-Speech from the dropdown and save its API key", async ({
+      providersPage,
+      page,
+    }) => {
+      // The provider is offered under its display name and is created with no keys.
+      if (!(await providersPage.providerExists("google-cloud-tts"))) {
+        await providersPage.addProviderBtn.click();
+        const option = page.getByTestId("add-provider-option-google-cloud-tts");
+        await expect(option).toBeVisible({ timeout: 5000 });
+        await expect(option).toContainText("Google Cloud Text-to-Speech");
+        await option.click();
+        createdProviders.push("google-cloud-tts");
+      }
+      await expect(providersPage.getProviderItem("google-cloud-tts")).toBeVisible({
+        timeout: 15000,
+      });
+      await providersPage.selectProvider("google-cloud-tts");
+      await expect(page).toHaveURL(/provider=google-cloud-tts/);
+
+      // The provider requires a key: the key form asks for an API key and saves it.
+      const keyData = createProviderKeyData({
+        name: `Cloud-TTS-Key-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        value: "e2e-google-cloud-tts-api-key",
+        weight: 1.0,
+      });
+      createdKeys.push({ provider: "google-cloud-tts", keyName: keyData.name });
+      await providersPage.addKey(keyData);
+      expect(await providersPage.keyExists(keyData.name)).toBe(true);
+
+      // The saved key is listed under the provider, and its value comes back masked.
+      const keysResponse = await page.request.get("/api/providers/google-cloud-tts/keys");
+      expect(keysResponse.ok()).toBe(true);
+      const provider = (await keysResponse.json()) as {
+        keys: { name: string; value?: { value?: string } }[];
+      };
+      const saved = provider.keys.find((k) => k.name === keyData.name);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.value?.value).not.toBe(keyData.value);
+    });
   });
 
   for (const { name, label } of REGISTRATION_ONLY_PROVIDERS) {
