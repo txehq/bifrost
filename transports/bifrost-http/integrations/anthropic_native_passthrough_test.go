@@ -3,9 +3,12 @@ package integrations
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -590,6 +593,348 @@ func TestAnthropicMessagesRouteNativeAnthropicEndToEnd(t *testing.T) {
 		}
 		if !bytes.Equal(frames, streamBody) {
 			t.Fatalf("SSE frames changed:\n got: %q\nwant: %q", frames, streamBody)
+		}
+	})
+}
+
+// nativeMessagesProviders is every provider that implements
+// schemas.AnthropicMessagesCapable, with the model a caller names and the path its
+// Anthropic-compatible endpoint serves Messages on. A provider that starts implementing
+// the interface must get a row: TestAnthropicNativeMessagesRedactionCoversEveryCapableProvider
+// fails until it has one, and the redaction tests below then run for it.
+var nativeMessagesProviders = []struct {
+	provider     schemas.ModelProvider
+	model        string
+	upstreamPath string
+}{
+	{schemas.Anthropic, "claude-sonnet-4-5", "/v1/messages"},
+	{schemas.XAI, "grok-4.5", "/v1/messages"},
+	{schemas.Moonshot, "kimi-k3.1-pro", "/anthropic/v1/messages"},
+}
+
+const (
+	redactionSecret      = "4111-1111-1111-1111"
+	redactionPlaceholder = "[CARD]"
+)
+
+// redactionGuardrailPlugin stands in for a runtime-redaction guardrail. That plugin is
+// not in this repository; what the gateway owes it is the Anthropic raw-body adapters on
+// the request context, which are the only way to change a body that is forwarded as bytes.
+// This double uses each adapter the way its contract in core/schemas/redaction.go
+// describes: the request rewriter on the body before it is sent, the response
+// transformer on a buffered body, the stream codec on each SSE event.
+type redactionGuardrailPlugin struct {
+	mu      sync.Mutex
+	missing []string
+}
+
+func (p *redactionGuardrailPlugin) GetName() string { return "txe-6965-redaction-guardrail" }
+func (p *redactionGuardrailPlugin) Cleanup() error  { return nil }
+func (p *redactionGuardrailPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+
+func (p *redactionGuardrailPlugin) miss(what string) {
+	p.mu.Lock()
+	p.missing = append(p.missing, what)
+	p.mu.Unlock()
+}
+
+func (p *redactionGuardrailPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if req == nil || req.PassthroughRequest == nil {
+		return req, nil, nil
+	}
+	if _, ok := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextTransformer).(schemas.RawRequestBodyTextTransformer); !ok {
+		p.miss("request transformer at PreLLMHook")
+	}
+	rewriter, ok := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+	if !ok {
+		p.miss("request rewriter at PreLLMHook")
+		return req, nil, nil
+	}
+	body, err := rewriter(append([]byte(nil), req.PassthroughRequest.Body...), map[string]string{redactionSecret: redactionPlaceholder})
+	if err != nil {
+		return req, nil, err
+	}
+	req.PassthroughRequest.Body = body
+	return req, nil, nil
+}
+
+func (p *redactionGuardrailPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if resp == nil || resp.PassthroughResponse == nil || len(resp.PassthroughResponse.Body) == 0 {
+		return resp, bifrostErr, nil
+	}
+	body := resp.PassthroughResponse.Body
+	if !bytes.Contains(body, []byte("data: ")) {
+		transformer, ok := ctx.Value(schemas.BifrostContextKeyRawResponseTextTransformer).(schemas.RawResponseTextTransformer)
+		if !ok {
+			p.miss("response transformer at PostLLMHook")
+			return resp, bifrostErr, nil
+		}
+		text := gjson.GetBytes(body, "content.0.text").String()
+		rewritten, err := transformer(append([]byte(nil), body...), []schemas.TextRewrite{{
+			TargetID: schemas.TextTargetIDForIndex(0), Original: text,
+			Replacement: strings.ReplaceAll(text, redactionSecret, redactionPlaceholder),
+		}})
+		if err != nil {
+			return resp, bifrostErr, err
+		}
+		resp.PassthroughResponse.Body = rewritten.([]byte)
+		return resp, bifrostErr, nil
+	}
+	codec, ok := ctx.Value(schemas.BifrostContextKeyRawStreamTextCodec).(schemas.RawStreamTextCodec)
+	if !ok {
+		p.miss("stream codec at PostLLMHook")
+		return resp, bifrostErr, nil
+	}
+	lines := strings.Split(string(body), "\n")
+	for i, line := range lines {
+		event, found := strings.CutPrefix(line, "data: ")
+		if !found {
+			continue
+		}
+		inspected, eligible, err := codec.Inspect(event)
+		if err != nil {
+			return resp, bifrostErr, err
+		}
+		if !eligible || !strings.Contains(inspected.Text, redactionSecret) {
+			continue
+		}
+		rewritten, err := codec.Rewrite(event, strings.ReplaceAll(inspected.Text, redactionSecret, redactionPlaceholder))
+		if err != nil {
+			return resp, bifrostErr, err
+		}
+		lines[i] = "data: " + rewritten
+	}
+	resp.PassthroughResponse.Body = []byte(strings.Join(lines, "\n"))
+	return resp, bifrostErr, nil
+}
+
+// TXE-6965: the table above names every provider that serves native Messages. The set is
+// read from the providers themselves, so a provider that starts implementing
+// AnthropicMessagesEndpoint fails here until it has a row, and with the row it is run
+// through the redaction cases below.
+func TestAnthropicNativeMessagesRedactionCoversEveryCapableProvider(t *testing.T) {
+	configs := map[schemas.ModelProvider]*schemas.ProviderConfig{}
+	for _, provider := range schemas.StandardProviders {
+		configs[provider] = &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: "https://native-messages.example"}}
+	}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: &nativeMessagesTestAccount{configs: configs}, Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1,
+	})
+	if err != nil {
+		t.Fatalf("init Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	covered := map[schemas.ModelProvider]bool{}
+	for _, row := range nativeMessagesProviders {
+		covered[row.provider] = true
+	}
+	var built int
+	for _, provider := range schemas.StandardProviders {
+		instance := client.GetProviderByKey(provider)
+		if instance == nil {
+			continue
+		}
+		built++
+		capable, ok := instance.(schemas.AnthropicMessagesCapable)
+		if !ok {
+			if covered[provider] {
+				t.Errorf("%s has a row in nativeMessagesProviders but does not implement AnthropicMessagesEndpoint", provider)
+			}
+			continue
+		}
+		if _, enabled := capable.AnthropicMessagesEndpoint(); enabled && !covered[provider] {
+			t.Errorf("%s implements AnthropicMessagesEndpoint but has no row in nativeMessagesProviders: add one so its native Messages redaction is tested", provider)
+		}
+		delete(covered, provider)
+	}
+	for provider := range covered {
+		t.Errorf("%s has a row in nativeMessagesProviders but was not built", provider)
+	}
+	// A provider that cannot be built from a bare base URL would be skipped silently.
+	if built != len(schemas.StandardProviders) {
+		t.Errorf("built %d of %d standard providers; the ones not built were not checked", built, len(schemas.StandardProviders))
+	}
+}
+
+// TXE-6965: with a runtime-redaction guardrail in the pipeline, a native Messages
+// request to any provider that serves them is redacted before it leaves and its response
+// is redacted before the caller sees it, buffered and streamed. With no guardrail the
+// bytes are untouched in both directions (contract C4, C11): installing the adapters
+// changes nothing by itself.
+func TestAnthropicNativeMessagesRedaction(t *testing.T) {
+	for _, row := range nativeMessagesProviders {
+		for _, stream := range []bool{false, true} {
+			for _, guardrail := range []bool{true, false} {
+				name := fmt.Sprintf("%s/stream=%v/guardrail=%v", row.provider, stream, guardrail)
+				t.Run(name, func(t *testing.T) {
+					callerModel := string(row.provider) + "/" + row.model
+					requestBody := `{"model":"` + callerModel + `", "max_tokens":64,"metadata":{"user_id":"` + redactionSecret + `"},"system":"Card on file — ` + redactionSecret + `.","messages":[{"role":"user","content":"charge ` + redactionSecret + ` please"},{"role":"assistant","content":[{"type":"text","text":"which card?"}]},{"role":"user","content":[{"type":"text","text":"` + redactionSecret + `"}]}]}`
+					if stream {
+						requestBody = strings.Replace(requestBody, `"max_tokens":64,`, `"max_tokens":64,"stream":true,`, 1)
+					}
+					responseBody := `{"id":"msg_1","type":"message","role":"assistant","model":"` + row.model + `","content":[{"type":"text","text":"Charging ` + redactionSecret + ` now."}],"stop_reason":"end_turn","usage":{"input_tokens":12, "output_tokens":6}}`
+					contentType := "application/json"
+					if stream {
+						contentType = "text/event-stream"
+						responseBody = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"" + row.model + "\",\"content\":[],\"usage\":{\"input_tokens\":12,\"output_tokens\":1}}}\n\n" +
+							"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+							"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Charging " + redactionSecret + " now.\"}}\n\n" +
+							"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+							"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":6}}\n\n" +
+							"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+					}
+
+					var mu sync.Mutex
+					var upstreamBody []byte
+					upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						body, _ := io.ReadAll(r.Body)
+						mu.Lock()
+						upstreamBody = body
+						mu.Unlock()
+						if r.URL.Path != row.upstreamPath {
+							t.Errorf("upstream path = %q, want %q", r.URL.Path, row.upstreamPath)
+						}
+						w.Header().Set("Content-Type", contentType)
+						_, _ = io.WriteString(w, responseBody)
+					}))
+					defer upstream.Close()
+
+					plugin := &redactionGuardrailPlugin{}
+					var plugins []schemas.LLMPlugin
+					if guardrail {
+						plugins = append(plugins, plugin)
+					}
+					client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+						Account: &nativeMessagesTestAccount{
+							configs: map[schemas.ModelProvider]*schemas.ProviderConfig{
+								row.provider: {NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true}},
+							},
+							keys: map[schemas.ModelProvider][]schemas.Key{
+								row.provider: {{ID: "key", Value: schemas.SecretVar{Val: "secret"}, Models: schemas.WhiteList{"*"}, Weight: 1}},
+							},
+						},
+						Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1, LLMPlugins: plugins,
+					})
+					if err != nil {
+						t.Fatalf("init Bifrost: %v", err)
+					}
+					defer client.Shutdown()
+
+					handler := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger()).
+						createHandler(createAnthropicMessagesRouteConfig("/anthropic", bifrost.NewNoOpLogger())[0])
+					httpCtx := &fasthttp.RequestCtx{}
+					httpCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+					httpCtx.Request.SetRequestURI("/anthropic/v1/messages")
+					httpCtx.Request.Header.SetContentType("application/json")
+					httpCtx.Request.Header.Set("anthropic-version", "2023-06-01")
+					httpCtx.Request.SetBody([]byte(requestBody))
+					handler(httpCtx)
+
+					if httpCtx.Response.StatusCode() != fasthttp.StatusOK {
+						t.Fatalf("status = %d, body = %s", httpCtx.Response.StatusCode(), httpCtx.Response.Body())
+					}
+					clientBody := httpCtx.Response.Body()
+					if stream && httpCtx.Response.IsBodyStream() {
+						if clientBody, err = io.ReadAll(httpCtx.Response.BodyStream()); err != nil {
+							t.Fatalf("read client stream: %v", err)
+						}
+					}
+					mu.Lock()
+					sent := string(upstreamBody)
+					mu.Unlock()
+					wantSent := strings.Replace(requestBody, `"model":"`+callerModel+`"`, `"model":"`+row.model+`"`, 1)
+
+					if !guardrail {
+						if sent != wantSent {
+							t.Errorf("no guardrail: upstream body is not byte-exact:\n got: %s\nwant: %s", sent, wantSent)
+						}
+						if string(clientBody) != responseBody {
+							t.Errorf("no guardrail: client bytes changed:\n got: %q\nwant: %q", clientBody, responseBody)
+						}
+						return
+					}
+
+					if missing := plugin.missing; len(missing) > 0 {
+						t.Errorf("adapters not on the request context: %v", missing)
+					}
+					// Text the guardrail sees is redacted; metadata, which it does not, is the caller's.
+					for _, path := range []string{"system", "messages.0.content", "messages.2.content.0.text"} {
+						if got := gjson.Get(sent, path).String(); strings.Contains(got, redactionSecret) || !strings.Contains(got, redactionPlaceholder) {
+							t.Errorf("upstream %s was not redacted: %q", path, got)
+						}
+					}
+					if got := gjson.Get(sent, "metadata.user_id").String(); got != redactionSecret {
+						t.Errorf("upstream metadata.user_id = %q, want it untouched", got)
+					}
+					if got := gjson.Get(sent, "model").String(); got != row.model {
+						t.Errorf("upstream model = %q", got)
+					}
+					if bytes.Contains(clientBody, []byte(redactionSecret)) || !bytes.Contains(clientBody, []byte("Charging "+redactionPlaceholder+" now.")) {
+						t.Errorf("client response was not redacted: %q", clientBody)
+					}
+					if want := strings.ReplaceAll(responseBody, redactionSecret, redactionPlaceholder); !stream && !sameJSONBytes(clientBody, []byte(want)) {
+						t.Errorf("redaction changed more than the text:\n got: %s\nwant: %s", clientBody, want)
+					} else if stream && string(clientBody) != want {
+						t.Errorf("redaction changed more than the text delta:\n got: %q\nwant: %q", clientBody, want)
+					}
+				})
+			}
+		}
+	}
+}
+
+func sameJSONBytes(a, b []byte) bool {
+	var av, bv any
+	if json.Unmarshal(a, &av) != nil || json.Unmarshal(b, &bv) != nil {
+		return false
+	}
+	return reflect.DeepEqual(av, bv)
+}
+
+// BenchmarkAnthropicNativeMessagesSelection is what the route does per native Messages
+// request before the provider call: select the passthrough and, since TXE-6965, put the
+// four raw-body adapters on the request context. "install" is that added step alone.
+func BenchmarkAnthropicNativeMessagesSelection(b *testing.B) {
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: &nativeMessagesTestAccount{configs: map[schemas.ModelProvider]*schemas.ProviderConfig{
+			schemas.Moonshot: {NetworkConfig: schemas.NetworkConfig{BaseURL: "https://native-messages.example"}},
+		}},
+		Logger: bifrost.NewNoOpLogger(), InitialPoolSize: 1,
+	})
+	if err != nil {
+		b.Fatalf("init Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	rawBody := []byte(`{"model":"moonshot/kimi-k3.1-pro","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`)
+	parsed := createAnthropicMessagesRouteConfig("/anthropic", bifrost.NewNoOpLogger())[0].GetRequestTypeInstance(context.Background())
+	if err := parseJSONRequestBody(rawBody, parsed); err != nil {
+		b.Fatalf("parse request: %v", err)
+	}
+	selector := createAnthropicMessagesNativePassthrough("/anthropic")
+	httpCtx := &fasthttp.RequestCtx{}
+	httpCtx.Request.Header.SetMethod(fasthttp.MethodPost)
+	httpCtx.Request.SetRequestURI("/anthropic/v1/messages")
+
+	b.Run("selection", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if _, selected, err := selector(client, httpCtx, bifrostCtx, parsed, rawBody); err != nil || !selected {
+				b.Fatalf("selected = %v, err = %v", selected, err)
+			}
+			bifrostCtx.Cancel()
+		}
+	})
+	b.Run("install", func(b *testing.B) {
+		bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		defer bifrostCtx.Cancel()
+		b.ReportAllocs()
+		for b.Loop() {
+			installAnthropicNativeMessagesAdapters(bifrostCtx)
 		}
 	})
 }

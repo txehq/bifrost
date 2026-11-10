@@ -296449,6 +296449,384 @@
           }
         }
       ]
+    },
+    {
+      "name": "328. Native Messages passthrough carries the redaction adapters for every provider (native messages adapters)",
+      "description": "A provider that implements AnthropicMessagesEndpoint (anthropic, xai, moonshot) is sent /anthropic/v1/messages as the caller's bytes. A runtime-redaction guardrail can change such a body only through the Anthropic raw-body adapters on the request context, and those were installed only for Claude Code requests to Claude models, so a native Messages request to xAI or Moonshot, or a plain one to Anthropic, would have left unredacted. transports/bifrost-http/integrations/anthropic.go now installs the four adapters for every native Messages selection (installAnthropicNativeMessagesAdapters), and core keeps them on a passthrough attempt to a non-Anthropic provider. The redaction itself is pinned in Go, where a guardrail can be put in the pipeline: TestAnthropicNativeMessagesRedaction (every capable provider, buffered and streamed, with and without a guardrail) and TestAnthropicNativeMessagesRedactionCoversEveryCapableProvider. The harness profile has no guardrail plugin, so these cases pin the other half of the rule on the live wire: with no guardrail configured, the adapters change nothing. A marker string sent in the user turn reaches the vendor and comes back in the vendor's own response, buffered and streamed, through the native passthrough.",
+      "item": [
+        {
+          "name": "/anthropic/v1/messages - native passthrough unchanged with the redaction adapters installed - xai/grok-4-0709",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native messages adapters xai/grok-4-0709: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('native messages adapters xai/grok-4-0709: the vendor\\'s Messages body reaches the caller unchanged (no guardrail configured)', function () {",
+                  "  pm.expect(j.type, pm.response.text().slice(0, 800)).to.eql('message');",
+                  "  var text = (j.content || []).filter(function (b) { return b.type === 'text'; }).map(function (b) { return b.text; }).join('');",
+                  "  pm.expect(text, pm.response.text().slice(0, 800)).to.include('HARNESS-MARK-4111-1111');",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('native messages adapters xai/grok-4-0709: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('native messages adapters xai/grok-4-0709: served by the native passthrough', function () { pm.expect(j.status, JSON.stringify(j)).to.eql('success'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); pm.expect(j.stream, JSON.stringify(j)).to.eql(false); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('native messages adapters xai/grok-4-0709: log row finalized', function () { pm.expect.fail('log ' + reqId + ' still processing or missing after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Repeat this reference code back exactly, with nothing else: HARNESS-MARK-4111-1111\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/anthropic/v1/messages stream - native passthrough unchanged with the redaction adapters installed - xai/grok-4-0709",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native messages adapters xai/grok-4-0709 stream: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var events = pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "var text = events.filter(function (e) { return e.type === 'content_block_delta' && e.delta && e.delta.type === 'text_delta'; }).map(function (e) { return e.delta.text; }).join('');",
+                  "pm.test('native messages adapters xai/grok-4-0709 stream: the vendor\\'s text deltas reach the caller unchanged (no guardrail configured)', function () {",
+                  "  pm.expect(text, pm.response.text().slice(0, 800)).to.include('HARNESS-MARK-4111-1111');",
+                  "  pm.expect(events[events.length - 1].type, JSON.stringify(events[events.length - 1])).to.eql('message_stop');",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('native messages adapters xai/grok-4-0709 stream: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('native messages adapters xai/grok-4-0709 stream: served by the native passthrough', function () { pm.expect(j.status, JSON.stringify(j)).to.eql('success'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); pm.expect(j.stream, JSON.stringify(j)).to.eql(true); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('native messages adapters xai/grok-4-0709 stream: log row finalized', function () { pm.expect.fail('log ' + reqId + ' still processing or missing after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"xai/grok-4-0709\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Repeat this reference code back exactly, with nothing else: HARNESS-MARK-4111-1111\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/anthropic/v1/messages - native passthrough unchanged with the redaction adapters installed - moonshot/kimi-k3.1-pro",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native messages adapters moonshot/kimi-k3.1-pro: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('native messages adapters moonshot/kimi-k3.1-pro: the vendor\\'s Messages body reaches the caller unchanged (no guardrail configured)', function () {",
+                  "  pm.expect(j.type, pm.response.text().slice(0, 800)).to.eql('message');",
+                  "  var text = (j.content || []).filter(function (b) { return b.type === 'text'; }).map(function (b) { return b.text; }).join('');",
+                  "  pm.expect(text, pm.response.text().slice(0, 800)).to.include('HARNESS-MARK-4111-1111');",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('native messages adapters moonshot/kimi-k3.1-pro: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('native messages adapters moonshot/kimi-k3.1-pro: served by the native passthrough', function () { pm.expect(j.status, JSON.stringify(j)).to.eql('success'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); pm.expect(j.stream, JSON.stringify(j)).to.eql(false); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('native messages adapters moonshot/kimi-k3.1-pro: log row finalized', function () { pm.expect.fail('log ' + reqId + ' still processing or missing after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"moonshot/kimi-k3.1-pro\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Repeat this reference code back exactly, with nothing else: HARNESS-MARK-4111-1111\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/anthropic/v1/messages stream - native passthrough unchanged with the redaction adapters installed - moonshot/kimi-k3.1-pro",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native messages adapters moonshot/kimi-k3.1-pro stream: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var events = pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "var text = events.filter(function (e) { return e.type === 'content_block_delta' && e.delta && e.delta.type === 'text_delta'; }).map(function (e) { return e.delta.text; }).join('');",
+                  "pm.test('native messages adapters moonshot/kimi-k3.1-pro stream: the vendor\\'s text deltas reach the caller unchanged (no guardrail configured)', function () {",
+                  "  pm.expect(text, pm.response.text().slice(0, 800)).to.include('HARNESS-MARK-4111-1111');",
+                  "  pm.expect(events[events.length - 1].type, JSON.stringify(events[events.length - 1])).to.eql('message_stop');",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('native messages adapters moonshot/kimi-k3.1-pro stream: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('native messages adapters moonshot/kimi-k3.1-pro stream: served by the native passthrough', function () { pm.expect(j.status, JSON.stringify(j)).to.eql('success'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); pm.expect(j.stream, JSON.stringify(j)).to.eql(true); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('native messages adapters moonshot/kimi-k3.1-pro stream: log row finalized', function () { pm.expect.fail('log ' + reqId + ' still processing or missing after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"moonshot/kimi-k3.1-pro\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Repeat this reference code back exactly, with nothing else: HARNESS-MARK-4111-1111\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/anthropic/v1/messages - native passthrough unchanged with the redaction adapters installed - anthropic/claude-haiku-4-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native messages adapters anthropic/claude-haiku-4-5: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('native messages adapters anthropic/claude-haiku-4-5: the vendor\\'s Messages body reaches the caller unchanged (no guardrail configured)', function () {",
+                  "  pm.expect(j.type, pm.response.text().slice(0, 800)).to.eql('message');",
+                  "  var text = (j.content || []).filter(function (b) { return b.type === 'text'; }).map(function (b) { return b.text; }).join('');",
+                  "  pm.expect(text, pm.response.text().slice(0, 800)).to.include('HARNESS-MARK-4111-1111');",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('native messages adapters anthropic/claude-haiku-4-5: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('native messages adapters anthropic/claude-haiku-4-5: served by the native passthrough', function () { pm.expect(j.status, JSON.stringify(j)).to.eql('success'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); pm.expect(j.stream, JSON.stringify(j)).to.eql(false); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('native messages adapters anthropic/claude-haiku-4-5: log row finalized', function () { pm.expect.fail('log ' + reqId + ' still processing or missing after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Repeat this reference code back exactly, with nothing else: HARNESS-MARK-4111-1111\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/anthropic/v1/messages stream - native passthrough unchanged with the redaction adapters installed - anthropic/claude-haiku-4-5",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native messages adapters anthropic/claude-haiku-4-5 stream: 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var events = pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: {') === 0; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "var text = events.filter(function (e) { return e.type === 'content_block_delta' && e.delta && e.delta.type === 'text_delta'; }).map(function (e) { return e.delta.text; }).join('');",
+                  "pm.test('native messages adapters anthropic/claude-haiku-4-5 stream: the vendor\\'s text deltas reach the caller unchanged (no guardrail configured)', function () {",
+                  "  pm.expect(text, pm.response.text().slice(0, 800)).to.include('HARNESS-MARK-4111-1111');",
+                  "  pm.expect(events[events.length - 1].type, JSON.stringify(events[events.length - 1])).to.eql('message_stop');",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('native messages adapters anthropic/claude-haiku-4-5 stream: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('native messages adapters anthropic/claude-haiku-4-5 stream: served by the native passthrough', function () { pm.expect(j.status, JSON.stringify(j)).to.eql('success'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); pm.expect(j.stream, JSON.stringify(j)).to.eql(true); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('native messages adapters anthropic/claude-haiku-4-5 stream: log row finalized', function () { pm.expect.fail('log ' + reqId + ' still processing or missing after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 256,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Repeat this reference code back exactly, with nothing else: HARNESS-MARK-4111-1111\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

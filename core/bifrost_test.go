@@ -3698,6 +3698,43 @@ func TestAgentLoopContinuationStaysOnServingFallback(t *testing.T) {
 // routing rule retargeting a Claude Code request to a non-Claude model on a multi-family
 // provider (Vertex/Azure/Bedrock Mantle), which sent the raw Anthropic body to that provider's
 // OpenAI/Gemini surface.
+// TXE-6965: a passthrough attempt on the Anthropic integration forwards native Messages
+// bytes to a provider that serves them (xAI, Moonshot), so the native redaction codecs
+// still match what is sent and returned and must survive the per-attempt clear. Every
+// other request type to the same provider is converted, and loses them as before.
+func TestClearAnthropicPassthroughForAttemptKeepsCodecsOnPassthrough(t *testing.T) {
+	codecKeys := []schemas.BifrostContextKey{
+		schemas.BifrostContextKeyRawRequestBodyTextRewriter,
+		schemas.BifrostContextKeyRawStreamTextCodec,
+	}
+	for _, tt := range []struct {
+		requestType schemas.RequestType
+		wantKept    bool
+	}{
+		{schemas.PassthroughRequest, true},
+		{schemas.PassthroughStreamRequest, true},
+		{schemas.ResponsesRequest, false},
+		{schemas.ResponsesStreamRequest, false},
+		{schemas.ChatCompletionRequest, false},
+	} {
+		for _, provider := range []schemas.ModelProvider{schemas.XAI, schemas.Moonshot} {
+			t.Run(string(provider)+"/"+string(tt.requestType), func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+				for _, k := range codecKeys {
+					ctx.SetValue(k, "codec")
+				}
+				clearAnthropicPassthroughForAttempt(ctx, provider, tt.requestType, "model")
+				for _, k := range codecKeys {
+					if kept := ctx.Value(k) != nil; kept != tt.wantKept {
+						t.Errorf("%v kept = %v, want %v", k, kept, tt.wantKept)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestClearAnthropicPassthroughForNonNativeProvider(t *testing.T) {
 	flagKeys := []schemas.BifrostContextKey{
 		schemas.BifrostContextKeyUseRawRequestBody,
