@@ -483,6 +483,16 @@ func (provider *BytePlusProvider) VideoList(ctx *schemas.BifrostContext, key sch
 	} else {
 		values.Set("page_num", "1")
 	}
+	// Whether a page is the last one is worked out from Ark's total and the page size. Ark's
+	// default size is not something Bifrost knows, so a caller paging past the first page names
+	// the size (limit, or Ark's page_size); it is refused otherwise, not guessed.
+	pageSize := 0
+	if requested, err := strconv.Atoi(values.Get("page_size")); err == nil && requested > 0 {
+		pageSize = requested
+	}
+	if pageNum > 1 && pageSize == 0 {
+		return nil, providerUtils.NewBifrostBadRequestError("byteplus video list needs limit or page_size with a page_num above 1")
+	}
 
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 	body, latency, bifrostErr := provider.doBytePlusRequest(ctx, key, http.MethodGet, "/api/v3/contents/generations/tasks", values.Encode(), nil, false, sendBackRawResponse)
@@ -509,12 +519,8 @@ func (provider *BytePlusProvider) VideoList(ctx *schemas.BifrostContext, key sch
 		bifrostResp.LastID = schemas.Ptr(bifrostResp.Data[n-1].ID)
 	}
 	// Ark reports the total across all pages. The tasks before this page are counted by the page
-	// size the caller asked for, or by this page's length when none was named, and an empty page
-	// is always the last one.
-	pageSize := len(listResp.Items)
-	if requested, err := strconv.Atoi(values.Get("page_size")); err == nil && requested > 0 {
-		pageSize = requested
-	}
+	// size the caller named (required above for every page after the first, where this page's
+	// own length would miscount a partly filled last page), and an empty page is always the last.
 	hasMore := len(listResp.Items) > 0 && (pageNum-1)*pageSize+len(listResp.Items) < listResp.Total
 	bifrostResp.HasMore = schemas.Ptr(hasMore)
 	if hasMore {

@@ -796,6 +796,16 @@ func TestBytePlusVideoListPagesByNumberAndForwardsFilters(t *testing.T) {
 		t.Fatalf("Ark queries = %q, want %q", queries, want)
 	}
 
+	// Without a page size the last page cannot be told from a full one, so a later page is refused.
+	if _, bifrostErr := provider.VideoList(testContext(t), testKey(), &schemas.BifrostVideoListRequest{Provider: schemas.BytePlus, Filters: map[string][]string{"page_num": {"2"}}}); bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest || !strings.Contains(bifrostErr.Error.Message, "limit or page_size") {
+		t.Fatalf("page 2 with no page size is a 400 naming what to send, got %+v", bifrostErr)
+	}
+	// Ark's own page_size filter counts as the size, and a partly filled last page ends the paging.
+	last, bifrostErr := provider.VideoList(testContext(t), testKey(), &schemas.BifrostVideoListRequest{Provider: schemas.BytePlus, Filters: map[string][]string{"page_num": {"2"}, "page_size": {"2"}}})
+	if bifrostErr != nil || last.HasMore == nil || *last.HasMore || last.Next != nil {
+		t.Fatalf("page 2 of 2 by page_size must be the last page, got %+v %v", last, bifrostErr)
+	}
+
 	if _, bifrostErr := provider.VideoList(testContext(t), testKey(), &schemas.BifrostVideoListRequest{Provider: schemas.BytePlus, Filters: map[string][]string{"page_num": {"zero"}}}); bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
 		t.Fatalf("a page_num that is not a positive integer is a 400, got %+v", bifrostErr)
 	}

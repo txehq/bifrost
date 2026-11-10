@@ -47,7 +47,8 @@ video-generation:
 
       **Paging.** A vendor that pages by cursor returns `has_more` and `last_id`: send
       `last_id` back as `after`. A vendor that pages by a number or a token returns `next`:
-      send it back in the vendor's own filter parameter (BytePlus: `page_num`).
+      send it back in the vendor's own filter parameter (BytePlus: `page_num`, together
+      with `limit` or `page_size`, which a page after the first requires).
 
       With `x-bf-api-key` or `x-bf-api-key-id` the call is made with that key only.
     tags:
