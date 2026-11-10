@@ -139,9 +139,11 @@ func klingFirstFrame(request *schemas.BifrostVideoGenerationRequest) string {
 // the request, so it is refused.
 var klingSettingsKeys = []string{"duration", "resolution", "aspect_ratio", "audio"}
 
-// klingBodyContainers are the objects of the create body the converter builds. An extra field
-// named after one would land inside settings as a nested object Kling does not define.
-var klingBodyContainers = []string{"prompt", "contents", "settings", "options"}
+// klingBodyContainers are the fields of the create body the converter builds, and "model", which
+// Kling takes in the path. An extra field named after one would land inside settings as a value
+// Kling does not define there; an extra model is what a caller would send to reach a model its
+// key does not allow, and is refused like every other provider refuses it.
+var klingBodyContainers = []string{"model", "prompt", "contents", "settings", "options"}
 
 // klingWatermarkExtra is the extra field that asks for a watermarked result
 // (options.watermark_info.enabled).

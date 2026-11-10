@@ -350,7 +350,7 @@ func TestKlingVideoGenerationRefusesUndeliverableValues(t *testing.T) {
 // body, is refused before any call, in any letter case: it would overwrite the converted value
 // after governance and pricing read the request.
 func TestKlingVideoGenerationRefusesExtraParamsOverridingTheBody(t *testing.T) {
-	for _, name := range []string{"duration", "Duration", "audio", "settings", "options", "contents", "Prompt"} {
+	for _, name := range []string{"duration", "Duration", "audio", "settings", "options", "contents", "Prompt", "model", "MODEL"} {
 		t.Run(name, func(t *testing.T) {
 			provider, captured := newMockKling(t, nil, http.StatusOK, createBody)
 			_, bifrostErr := provider.VideoGeneration(testContext(t), testKey(), videoRequest("kling-3.0", nil, &schemas.VideoGenerationParameters{

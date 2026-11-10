@@ -11672,6 +11672,8 @@ func guardModel(provider schemas.ModelProvider) string {
 		return "hf-inference/" + guardAllowedModel
 	case schemas.Tencent:
 		return "hy-image-v3"
+	case schemas.Kling:
+		return "kling-3.0"
 	}
 	return guardAllowedModel
 }

@@ -125,7 +125,7 @@ These are refused with `400`, `extra_fields.error_type` `caller_unsupported_para
 - `seed`, `size`, `output_format`, `reference_images`, `video_uri`, `expires_after_seconds`, `output_storage_uri`: Kling has no parameter for them.
 - `last_frame` without `input_reference`: Kling does not generate from a last frame alone.
 
-An extra field named `duration`, `resolution`, `aspect_ratio`, `audio`, `prompt`, `contents`, `settings` or `options` is refused with `400` `caller_invalid_request`: it would overwrite a converted value.
+An extra field named `duration`, `resolution`, `aspect_ratio`, `audio`, `model`, `prompt`, `contents`, `settings` or `options` is refused with `400` `caller_invalid_request`: it would overwrite a converted value.
 
 ## The task object
 
