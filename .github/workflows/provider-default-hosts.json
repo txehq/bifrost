@@ -34,6 +34,7 @@
   "runway": "api.dev.runwayml.com",
   "sarvam": "api.sarvam.ai",
   "sgl": "",
+  "tencent": "tokenhub.tencentmaas.com",
   "typesafe": "api.typesafe.ai",
   "vertex": "",
   "vllm": "",

@@ -102,8 +102,8 @@ jobs:
           # Provider hosts: every provider in the harness profile
           # (tests/integrations/python/config.json) has its default host here, which
           # check-egress-allowlist.sh enforces from provider-default-hosts.json.
-          # api.minimax.io, api.runware.ai, ark.ap-southeast.bytepluses.com and
-          # api.moonshot.ai are listed although this job does not pass those
+          # api.minimax.io, api.runware.ai, ark.ap-southeast.bytepluses.com,
+          # tokenhub.tencentmaas.com and api.moonshot.ai are listed although this job does not pass those
           # providers' keys yet: the harness skips a provider only while its key is
           # absent, so the host must already be here the day a key is added (TXE-6981).
           allowed-endpoints: >
@@ -133,6 +133,7 @@ jobs:
             api.dev.runwayml.com:443
             api.typesafe.ai:443
             ark.ap-southeast.bytepluses.com:443
+            tokenhub.tencentmaas.com:443
             api.tokenfactory.nebius.com:443
             api.openai.com:443
             api.parasail.io:443
