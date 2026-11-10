@@ -119,9 +119,11 @@ PY
 #
 # The rule enforced here is deliberately blunt: every external host appearing in
 # the harness collection or its seeded provider config must be either
-# allowlisted or listed in NOT_DIALLED_HOSTS with a reason. The one exception is
-# text that is documentation by construction - Postman description fields and
-# whole-line script comments - which is not scanned at all. Classifying
+# allowlisted or listed in NOT_DIALLED_HOSTS with a reason. There are two
+# exceptions. Text that is documentation by construction - Postman description
+# fields and whole-line script comments - is not scanned at all. And a host under
+# a reserved TLD (.invalid, .example, .test, .localhost) can never be dialled, so
+# it is never required; see RESERVED_TLDS. Classifying
 # automatically would mean deciding which URLs Bifrost fetches and which the
 # provider fetches, which depends on per-provider API shape and would silently
 # get it wrong. Forcing a human to say which one it is cannot.
@@ -194,6 +196,23 @@ NOT_DIALLED_HOSTS = {
     "www.googleapis.com": "the cloud-platform OAuth SCOPE string; the token exchange itself goes to oauth2.googleapis.com",
     "www.ietf.org": "an RTP header-extension URI in a WebRTC SDP offer; extmap URIs are identifiers, not fetches",
 }
+
+# Top-level domains reserved so that a name under them never resolves on the public
+# internet: RFC 2606 (.test, .example, .invalid, .localhost) and RFC 6761. The harness
+# uses such names on purpose, as a host that must never be fetched or a value that is
+# only stored, so no job can need one in its allowlist and none is ever required here.
+# Before this rule each one had to be listed by hand in NOT_DIALLED_HOSTS, and the
+# check went red on main for images.example.invalid and hooks.example.test when two
+# harness folders added a canary nobody listed (TXE-7029). The reserved-TLD entries
+# above predate the rule and are kept for their reasons; a new one needs no entry.
+# example.com, example.net and example.org are real, resolvable names and are not
+# covered: they stay a per-host decision.
+RESERVED_TLDS = ("invalid", "example", "test", "localhost")
+
+
+def is_reserved_name(host):
+    return host.rstrip(".").rsplit(".", 1)[-1].lower() in RESERVED_TLDS
+
 
 HOST_RE = re.compile(r"https?://([A-Za-z0-9._-]+\.[A-Za-z]{2,})")
 # {{var}} placeholders resolve at run time from secrets; the concrete hosts they
@@ -353,7 +372,7 @@ required = (
     | profile_default_hosts
 )
 required -= set(NOT_DIALLED_HOSTS)
-required = {h for h in required if h not in ("localhost",)}
+required = {h for h in required if h not in ("localhost",) and not is_reserved_name(h)}
 
 failures = []
 checked = 0
@@ -413,7 +432,9 @@ if failures:
         "provider config, or is the default host of a provider in that config\n"
         "(.github/workflows/provider-default-hosts.json). Either add it to that job's\n"
         "allowed-endpoints, or - if the provider dereferences it server-side and the\n"
-        "runner never dials it - add it to NOT_DIALLED_HOSTS in this script with the reason.",
+        "runner never dials it - add it to NOT_DIALLED_HOSTS in this script with the reason.\n"
+        "A host that must never be fetched belongs under a reserved TLD (.invalid, .example,\n"
+        ".test), which this check never requires.",
         file=sys.stderr,
     )
     sys.exit(1)
