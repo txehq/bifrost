@@ -315,16 +315,6 @@ func isWriteOnce(ctx context.Context, req *fasthttp.Request) bool {
 	return marked
 }
 
-// maxStaleConnsDiscarded bounds how many dead pooled connections one write-once
-// request closes before it gives up looking: with FIFO pooling the oldest sockets
-// come first, and an upstream with a short keep-alive can have closed all of
-// them. Each discarded socket is one closed file descriptor and no upstream I/O.
-const maxStaleConnsDiscarded = 32
-
-// errStalePool is returned when a write-once request found only dead pooled
-// connections. Nothing was written, so the caller may send the request again.
-var errStalePool = errors.New("every pooled connection to the upstream was already closed; nothing was sent")
-
 // acquireOpenConn returns a connection a write-once request can be written to: cc
 // when it was dialed for this request or is still open, else the next pooled or
 // newly dialed connection that is. A reused connection the upstream has closed
@@ -337,15 +327,19 @@ var errStalePool = errors.New("every pooled connection to the upstream was alrea
 // cannot tell (a platform or a connection type it cannot inspect), the reused
 // connection is not trusted and is replaced, so the request still goes out once,
 // on a connection dialed for it.
+//
+// The walk has no budget of its own. Every connection it rejects is closed, which
+// takes it out of the pool, so it ends when the pool holds an open connection or is
+// empty, and an empty pool makes the next acquisition dial. An upstream that
+// expired a whole burst of connections therefore costs one close per dead socket
+// (no I/O to the upstream) and then one dial, never a failed request. The request
+// context still bounds it: each acquisition goes through acquireWithContext.
 func acquireOpenConn[C pooledConn](ctx context.Context, abort *AttemptAbort, reqTimeout time.Duration, cc C, acquire func(timeout time.Duration, connectionClose bool) (C, error), connectionClose bool, release func(C), closeConn func(C)) (C, error) {
-	for discarded := 0; ; discarded++ {
+	for {
 		if cc.LastUseTime().IsZero() || pooledConnIsOpen(cc.Conn()) {
 			return cc, nil
 		}
 		closeConn(cc)
-		if discarded >= maxStaleConnsDiscarded {
-			return cc, errStalePool
-		}
 		var err error
 		if cc, err = acquireWithContext(ctx, abort, reqTimeout, acquire, connectionClose, release); err != nil {
 			return cc, err

@@ -1185,6 +1185,55 @@ func TestContextTransport_WriteOnceRequestIsNeverResent(t *testing.T) {
 		}
 	})
 
+	// After a burst the pool can hold many connections, and the upstream can expire all of
+	// them at once. The next write-once request closes each dead one and then dials: it must
+	// succeed, however many there were.
+	t.Run("a pool full of connections the upstream closed still yields a new one", func(t *testing.T) {
+		const burst = 48
+		var closeAll atomic.Bool
+		release := make(chan struct{})
+		up := newWriteOnceUpstream(t, false, func(_, _ int32) upstreamAction {
+			if closeAll.Load() {
+				return answerAndKeep
+			}
+			<-release // hold the burst so every request needs its own connection
+			return answerThenClose
+		})
+		client := newClient()
+		var wg sync.WaitGroup
+		errs := make(chan *schemas.BifrostError, burst)
+		for range burst {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs <- postOnce(writeOnceContext(t), client, up.target)
+			}()
+		}
+		deadline := time.Now().Add(10 * time.Second)
+		for up.requests.Load() < burst && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		close(release)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("a burst request failed: %+v", err.Error)
+			}
+		}
+		if conns := up.accepted.Load(); conns != burst {
+			t.Fatalf("the burst used %d connections, want %d", conns, burst)
+		}
+		closeAll.Store(true)
+		time.Sleep(300 * time.Millisecond) // every pooled socket has seen the upstream's close
+		if err := postOnce(writeOnceContext(t), client, up.target); err != nil {
+			t.Fatalf("the request after the burst failed with %d dead pooled connections: %+v", burst, err.Error)
+		}
+		if got, conns := up.requests.Load(), up.accepted.Load(); got != burst+1 || conns != burst+1 {
+			t.Fatalf("upstream read %d requests on %d connections, want %d on %d", got, conns, burst+1, burst+1)
+		}
+	})
+
 	// A GET changes nothing upstream (a task query, a list, a download), so it keeps the
 	// retry even on a write-once request type.
 	t.Run("a marked GET keeps the retry", func(t *testing.T) {
