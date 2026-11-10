@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -739,6 +740,114 @@ func TestMiniMaxSpeechStream(t *testing.T) {
 	}
 	if !gjson.GetBytes(captured()[0].body, "stream_options.exclude_aggregated_audio").Bool() {
 		t.Errorf("exclude_aggregated_audio not sent: %s", captured()[0].body)
+	}
+}
+
+// TXE-6629 (contract C5): a recorded MiniMax speech response reports usage_characters as
+// billed_characters and audio_length as audio_seconds, and the streamed speech.audio.done carries
+// exactly the usage the non-streamed response carries for the same extra_info.
+func TestMiniMaxSpeechUsageStreamedAndNot(t *testing.T) {
+	const extraInfo = `"extra_info":{"audio_length":2500,"audio_sample_rate":32000,"audio_size":40960,"bitrate":128000,"word_count":30,"invisible_character_ratio":0,"usage_characters":37,"audio_format":"mp3","audio_channel":1,"usage_voice_count":1}`
+	audio := []byte("ID3fake-mp3")
+	provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"POST /v1/t2a_v2": jsonResponse(http.StatusOK, `{"data":{"audio":"`+hex.EncodeToString(audio)+`","status":2},`+extraInfo+`,"trace_id":"t1","base_resp":{"status_code":0,"status_msg":"success"}}`),
+	})
+	resp, bifrostErr := provider.Speech(testContext(t), testKey(), speechRequest("English_Graceful_Lady", nil))
+	if bifrostErr != nil {
+		t.Fatalf("Speech error: %+v", bifrostErr.Error)
+	}
+
+	streamProvider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"POST /v1/t2a_v2": sseResponse(
+			`{"data":{"audio":"aa","status":1},"trace_id":"t1","base_resp":{"status_code":0,"status_msg":""}}`,
+			`{"data":{"audio":"","status":2},`+extraInfo+`,"trace_id":"t1","base_resp":{"status_code":0,"status_msg":"success"}}`,
+		),
+	})
+	stream, bifrostErr := streamProvider.SpeechStream(testContext(t), passthroughPostHook, func(context.Context) {}, testKey(), speechRequest("English_Graceful_Lady", nil))
+	if bifrostErr != nil {
+		t.Fatalf("SpeechStream error: %+v", bifrostErr.Error)
+	}
+	var streamed *schemas.SpeechUsage
+	for _, c := range collectStream(t, stream) {
+		if c.BifrostError != nil {
+			t.Fatalf("unexpected stream error: %+v", c.BifrostError.Error)
+		}
+		if c.BifrostSpeechStreamResponse.Type == schemas.SpeechStreamResponseTypeDone {
+			streamed = c.BifrostSpeechStreamResponse.Usage
+		}
+	}
+
+	for name, u := range map[string]*schemas.SpeechUsage{"non-streamed": resp.Usage, "streamed": streamed} {
+		if u == nil {
+			t.Fatalf("%s: usage is nil", name)
+		}
+		if u.BilledCharacters == nil || *u.BilledCharacters != 37 {
+			t.Errorf("%s: billed_characters = %v, want usage_characters 37", name, u.BilledCharacters)
+		}
+		if u.AudioSeconds != 3 {
+			t.Errorf("%s: audio_seconds = %d, want 3 (audio_length 2500 ms rounded up)", name, u.AudioSeconds)
+		}
+	}
+	out, err := schemas.Marshal(streamed)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{`"billed_characters":37`, `"audio_seconds":3`} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("%s missing from streamed usage %s", want, out)
+		}
+	}
+	if strings.Contains(string(out), "voice_count") {
+		t.Errorf("usage_voice_count has no unified field and must not appear: %s", out)
+	}
+}
+
+// miniMaxRecordedSpeech decodes a non-streamed /v1/t2a_v2 body as the provider does and converts it.
+func miniMaxRecordedSpeech(t *testing.T, extraInfo string) *schemas.BifrostSpeechResponse {
+	t.Helper()
+	var raw minimax.MiniMaxSpeechResponse
+	body := `{"data":{"audio":"aabb","status":2}` + extraInfo + `,"base_resp":{"status_code":0,"status_msg":"success"}}`
+	if err := schemas.Unmarshal([]byte(body), &raw); err != nil {
+		t.Fatalf("unmarshal %s: %v", body, err)
+	}
+	resp, bifrostErr := minimax.ToBifrostSpeechResponse(&raw)
+	if bifrostErr != nil {
+		t.Fatalf("ToBifrostSpeechResponse: %+v", bifrostErr.Error)
+	}
+	return resp
+}
+
+// TXE-6629: audio_length is milliseconds and audio_seconds an int, so it is rounded up; a response
+// without extra_info reports no usage at all rather than zeros.
+func TestMiniMaxSpeechUsageAudioSeconds(t *testing.T) {
+	for _, tc := range []struct {
+		ms   int
+		want int
+	}{{0, 0}, {1, 1}, {900, 1}, {1000, 1}, {1001, 2}, {2500, 3}} {
+		resp := miniMaxRecordedSpeech(t, `,"extra_info":{"audio_length":`+strconv.Itoa(tc.ms)+`,"usage_characters":5}`)
+		if resp.Usage == nil || resp.Usage.AudioSeconds != tc.want {
+			t.Errorf("audio_length %d ms: usage = %+v, want audio_seconds %d", tc.ms, resp.Usage, tc.want)
+		}
+	}
+	if resp := miniMaxRecordedSpeech(t, ""); resp.Usage != nil {
+		t.Errorf("no extra_info: usage = %+v, want nil", resp.Usage)
+	}
+}
+
+// TXE-6629 (contract C5): Bifrost's own BackfillParams, which counts the input's code points,
+// does not replace the character count MiniMax billed, streamed or not.
+func TestMiniMaxSpeechBilledCharactersSurviveBackfill(t *testing.T) {
+	const extraInfo = `,"extra_info":{"audio_length":900,"usage_characters":37}`
+	req := speechRequest("English_Graceful_Lady", nil) // its input has a different code-point count
+
+	nonStreamed := miniMaxRecordedSpeech(t, extraInfo)
+	nonStreamed.BackfillParams(req)
+	streamed := &schemas.BifrostSpeechStreamResponse{Usage: miniMaxRecordedSpeech(t, extraInfo).Usage}
+	streamed.BackfillParams(req)
+	for name, u := range map[string]*schemas.SpeechUsage{"non-streamed": nonStreamed.Usage, "streamed": streamed.Usage} {
+		if u.BilledCharacters == nil || *u.BilledCharacters != 37 {
+			t.Errorf("%s: billed_characters = %v after BackfillParams, want 37", name, u.BilledCharacters)
+		}
 	}
 }
 
@@ -1760,5 +1869,21 @@ func TestMiniMaxVideoDownloadPinsVideoContentType(t *testing.T) {
 				t.Error("no content")
 			}
 		})
+	}
+}
+
+// TXE-6629: the request-path cost of converting a non-streamed MiniMax speech response, whose usage
+// now carries billed_characters and audio_seconds.
+func BenchmarkMiniMaxToBifrostSpeechResponse(b *testing.B) {
+	var raw minimax.MiniMaxSpeechResponse
+	body := `{"data":{"audio":"` + strings.Repeat("ab", 4096) + `","status":2},"extra_info":{"audio_length":2500,"usage_characters":37},"base_resp":{"status_code":0,"status_msg":"success"}}`
+	if err := schemas.Unmarshal([]byte(body), &raw); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, bifrostErr := minimax.ToBifrostSpeechResponse(&raw); bifrostErr != nil {
+			b.Fatal(bifrostErr.Error)
+		}
 	}
 }

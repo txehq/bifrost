@@ -106,15 +106,27 @@ func ToBifrostSpeechResponse(resp *MiniMaxSpeechResponse) (*schemas.BifrostSpeec
 	return &schemas.BifrostSpeechResponse{Audio: audio, Usage: miniMaxSpeechUsage(resp)}, nil
 }
 
+// miniMaxSpeechUsage maps the extra_info MiniMax returns on a non-streamed response and on the
+// status-2 chunk of a streamed one into the unified usage, so both carry the same figures
+// (TXE-6629, contract C5):
+//   - usage_characters is the count MiniMax bills: it goes into billed_characters, which
+//     BackfillParams never touches, and also stays in input_chars, so Bifrost's per-character
+//     pricing reads the vendor's figure.
+//   - audio_length (milliseconds) goes into audio_seconds, rounded up to whole seconds: the
+//     field is an int, and rounding up keeps a non-empty clip from reporting 0 (which would also
+//     drop it from the JSON). The exact milliseconds stay in the raw response.
+//
+// usage_voice_count has no unified field in the contract, so it is left in the raw response.
 func miniMaxSpeechUsage(resp *MiniMaxSpeechResponse) *schemas.SpeechUsage {
 	if resp == nil || resp.ExtraInfo == nil {
 		return nil
 	}
-	// usage_characters is the count MiniMax bills (TXE-6530, contract C5): it goes into
-	// billed_characters, and also stays in input_chars so Bifrost's per-character pricing reads
-	// the vendor's figure; BackfillParams no longer replaces it with a code-point count.
 	billed := resp.ExtraInfo.UsageCharacters
-	return &schemas.SpeechUsage{InputChars: billed, BilledCharacters: &billed}
+	usage := &schemas.SpeechUsage{InputChars: billed, BilledCharacters: &billed}
+	if ms := resp.ExtraInfo.AudioLength; ms > 0 {
+		usage.AudioSeconds = int((ms + 999) / 1000)
+	}
+	return usage
 }
 
 // popFloat removes key from m and returns it as a float64 when it holds a number.
