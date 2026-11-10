@@ -124,7 +124,7 @@ Stop the fixture and isolated gateway with Ctrl+C after testing.
 
 ## Streamed frames timing
 
-Folder 289 pins contract C10 BF22 (TXE-6522) on chat (`stream: true`) and speech (`stream_format: "sse"`),
+Folder 308 pins contract C10 BF22 (TXE-6522) on chat (`stream: true`) and speech (`stream_format: "sse"`),
 each on `/v1/...` and `/openai/v1/...`. The error rows send `upstream-503` and `upstream-429`, which the
 fixture answers with that status before any frame; the gateway must answer with the same status and a JSON
 error, never a 200 stream carrying an error frame. The gap rows send `upstream-gapped`, which writes three
