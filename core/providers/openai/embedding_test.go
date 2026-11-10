@@ -1,9 +1,12 @@
 package openai_test
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/capsohq/bifrost/core/providers/openai"
+	providerUtils "github.com/capsohq/bifrost/core/providers/utils"
 	"github.com/capsohq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 )
@@ -60,4 +63,53 @@ func TestToOpenAIEmbeddingRequestSendsOnlyOpenAIParams(t *testing.T) {
 	body, err := schemas.MarshalSorted(req)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"model":"mistral-embed","input":"hello","encoding_format":"float","dimensions":8}`, string(body))
+}
+
+// BenchmarkEmbeddingRequestBody measures the OpenAI embedding body build that
+// /v1/embeddings now always runs with the passthrough flag set (TXE-6635, contract
+// C4): "flag off" is the pre-change path for a caller without
+// x-bf-passthrough-extra-params, "flag on" the path every caller now takes. With
+// no extra fields the merge is skipped, so on and off must cost the same; with
+// extra fields "on" adds the JSON merge that delivers them.
+func BenchmarkEmbeddingRequestBody(b *testing.B) {
+	text := "The quick brown fox jumps over the lazy dog"
+	dims := 256
+	extras := map[string]interface{}{
+		"user":       "tokun-user-1",
+		"input_type": "query",
+		"provider":   map[string]interface{}{"only": []interface{}{"vendor-a"}},
+	}
+	for _, extra := range []struct {
+		name   string
+		params map[string]interface{}
+	}{{"no extras", nil}, {"3 extras", extras}} {
+		for _, flag := range []bool{false, true} {
+			name := extra.name + "/flag off"
+			if flag {
+				name = extra.name + "/flag on"
+			}
+			b.Run(name, func(b *testing.B) {
+				req := &schemas.BifrostEmbeddingRequest{
+					Provider: schemas.OpenAI,
+					Model:    "text-embedding-3-small",
+					Input:    []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+					Params:   &schemas.EmbeddingParameters{Dimensions: &dims, ExtraParams: extra.params},
+				}
+				ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+				if flag {
+					ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					body, err := providerUtils.CheckContextAndGetRequestBody(ctx, req, func() (providerUtils.RequestBodyWithExtraParams, error) {
+						return openai.ToOpenAIEmbeddingRequest(req, schemas.OpenAI)
+					})
+					if err != nil || len(body) == 0 {
+						b.Fatalf("body build failed: %v", err)
+					}
+				}
+			})
+		}
+	}
 }
