@@ -1454,16 +1454,19 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 }
 
 // SupportedUnifiedFields implements schemas.UnifiedFieldDeclarer for the operations whose
-// vendor sheet is wired up: speech and transcription, streamed or not. Core refuses a
-// request carrying any other unified field of those operations with
-// caller_unsupported_parameter before a key is chosen (contract C4). Every other operation
-// is undeclared and stays unchecked.
+// vendor sheet is wired up: speech and transcription, streamed or not, and video create
+// (TXE-6538; see VideoGenerationUnifiedFields for why that list is the union of the Veo and
+// the Omni paths). Core refuses a request carrying any other unified field of those
+// operations with caller_unsupported_parameter before a key is chosen (contract C4). Every
+// other operation is undeclared and stays unchecked.
 func (provider *GeminiProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
 	switch requestType {
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		return SpeechUnifiedFields, true
 	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
 		return TranscriptionUnifiedFields, true
+	case schemas.VideoGenerationRequest:
+		return VideoGenerationUnifiedFields, true
 	}
 	return nil, false
 }
@@ -2454,17 +2457,6 @@ func (provider *GeminiProvider) ImageEditStream(ctx *schemas.BifrostContext, pos
 // ImageVariation is not supported by the Gemini provider.
 func (provider *GeminiProvider) ImageVariation(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageVariationRequest, provider.GetProviderKey())
-}
-
-// SupportedUnifiedFields implements schemas.UnifiedFieldDeclarer for video create (fork,
-// TXE-6538); see VideoGenerationUnifiedFields for why the list is the union of the Veo and the
-// Omni paths. Every other operation is undeclared and stays unchecked.
-func (provider *GeminiProvider) SupportedUnifiedFields(requestType schemas.RequestType) ([]string, bool) {
-	switch requestType {
-	case schemas.VideoGenerationRequest:
-		return VideoGenerationUnifiedFields, true
-	}
-	return nil, false
 }
 
 // VideoGeneration creates a video generation task. An Omni model runs on the Interactions API
