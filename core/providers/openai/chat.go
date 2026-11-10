@@ -303,11 +303,21 @@ func serviceTierForModel(caps schemas.ModelCaps, tier *schemas.BifrostServiceTie
 //
 // A model with no tier list in the capability catalog takes any tier, as before, except
 // on Bedrock, where an unlisted non-default tier is refused.
+//
+// The standard tier, "default", is never refused. The catalog's lists come from a
+// datasheet that names the tiers a model adds, and for many models it leaves "default"
+// out (63 OpenAI models on 2026-11-10, gpt-4 and gpt-5 among them) although the vendor
+// takes it. Refusing on that would fail a correct request. "default" goes to the vendor
+// as sent, which is all the contract asks, and a vendor that does not know the field
+// answers with its own status.
 func ChatServiceTierError(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *schemas.BifrostError {
 	if bifrostReq == nil || bifrostReq.Params == nil || bifrostReq.Params.ServiceTier == nil {
 		return nil
 	}
 	tier := bifrostReq.Params.ServiceTier
+	if *tier == schemas.BifrostServiceTierDefault {
+		return nil
+	}
 	caps := schemas.ResolveModelCaps(bifrostReq.Provider, schemas.ResolveCanonicalModel(ctx, bifrostReq.Model))
 	if _, supported := serviceTierOnWire(caps, tier); supported {
 		return nil

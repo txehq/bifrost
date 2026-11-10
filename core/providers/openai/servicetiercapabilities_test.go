@@ -225,6 +225,23 @@ func TestChatServiceTierError(t *testing.T) {
 	if err := ChatServiceTierError(ctx, nil); err != nil {
 		t.Fatalf("a nil request was refused: %+v", err)
 	}
+	// "default" is never refused, even where the model's list leaves it out: the datasheet
+	// omits it for models that take it. It reaches the vendor as sent.
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities {
+		return &schemas.ModelCapabilities{ServiceTiers: []string{"auto", "priority"}}
+	})
+	defaultTier := schemas.Ptr(schemas.BifrostServiceTierDefault)
+	if err := ChatServiceTierError(ctx, request(schemas.OpenAI, "gpt-4", defaultTier)); err != nil {
+		t.Fatalf("the default tier was refused for a model whose list omits it: %+v", err)
+	}
+	if out := ToOpenAIChatRequest(ctx, request(schemas.OpenAI, "gpt-4", defaultTier)); out.ServiceTier == nil || *out.ServiceTier != schemas.BifrostServiceTierDefault {
+		t.Fatalf("the default tier must reach the vendor as sent, got %v", out.ServiceTier)
+	}
+	if err := ChatServiceTierError(ctx, request(schemas.OpenAI, "gpt-4", flex)); err == nil {
+		t.Fatal("a non-default tier outside the list must still be refused")
+	}
+	stubChatTierCatalog(t)
+
 	if err := ChatServiceTierError(ctx, request(schemas.BedrockMantle, "unlisted-model", schemas.Ptr(schemas.BifrostServiceTierDefault))); err != nil {
 		t.Fatalf("a Bedrock default tier was refused: %+v", err)
 	}
