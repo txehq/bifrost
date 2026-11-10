@@ -304260,6 +304260,697 @@
           ]
         }
       ]
+    },
+    {
+      "name": "402. ElevenLabs speech, transcription and sound effects meet the contract (elevenlabs contract)",
+      "description": "TXE-6524, contract C4, C5, C6 and C10 on the built-in elevenlabs provider, with the headers Tokun sends (x-bf-api-key naming one key, x-bf-passthrough-extra-params). Speech: voice_settings carries only the settings the caller gave (before, a request with only speed also sent stability 0, similarity_boost 0, style 0 and use_speaker_boost false, replacing the vendor's defaults); the credits of ElevenLabs' character-cost response header are usage.vendor_cost {amount, unit: credit}, in the x-bifrost-usage header of a byte response and on the speech.audio.done frame of an SSE one, while the header itself is still forwarded; the byte response is labeled with the format asked for (the shared writer of TXE-6530, proved here for mp3, opus and pcm). Transcription: usage is {type: duration, seconds} equal to ElevenLabs' audio_duration_secs; a form field Bifrost does not map (keyterms, transcript_edit, detect_speaker_roles) is written to the form sent upstream, which case 402.6 observes by sending a keyterm ElevenLabs refuses for its length (before, the field was dropped and the request returned 200); a vendor error keeps the vendor's status and carries error_type. Sound effects: an out-of-range duration_seconds or prompt_influence is 400 caller_unsupported_parameter naming the field, with no upstream call (before, 40 was clamped to 30 and 1.5 to 1), and usage no longer reports the requested duration as audio_seconds. Not reproducible against the live vendor, and pinned elsewhere: a 200 with no audio returning 502 provider_empty_result with the vendor's headers is case 330.6 on the provider error fixture (the handler is the same for every provider) and the Go tests TestWriteSpeechAudioElevenlabsEmptyAudioKeepsCharacterCost and TestElevenlabsTranscriptionEmptyAnswerIsProviderEmptyResult; the multichannel duration is TestTranscriptionUsageIsTheVendorAudioDuration.",
+      "item": [
+        {
+          "name": "402.1 elevenlabs/eleven_turbo_v2_5 - byte speech with only speed: audio/mpeg, character-cost forwarded and reported as vendor_cost, one call on the pinned key (elevenlabs contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "ElevenLabs API Key"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"elevenlabs/eleven_turbo_v2_5\",\n  \"input\": \"Hello from the contract harness.\",\n  \"voice\": \"21m00Tcm4TlvDq8ikWAM\",\n  \"speed\": 1.1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('mp3 (the default) audio comes back labeled audio/mpeg', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+                  "  var ct = (pm.response.headers.get('content-type') || '').split(';')[0].trim();",
+                  "  pm.expect(ct).to.eql('audio/mpeg');",
+                  "  pm.expect(pm.response.responseSize, 'audio bytes').to.be.above(0);",
+                  "});",
+                  "pm.test('character-cost is forwarded and x-bifrost-usage carries it as vendor_cost in credits', function () {",
+                  "  var cost = pm.response.headers.get('character-cost');",
+                  "  pm.expect(cost, 'ElevenLabs sent no character-cost header').to.be.a('string').and.to.match(/^[0-9]+(\\.[0-9]+)?$/);",
+                  "  var u = JSON.parse(pm.response.headers.get('x-bifrost-usage') || 'null');",
+                  "  pm.expect(u, 'no x-bifrost-usage header').to.be.an('object');",
+                  "  pm.expect(u.vendor_cost, JSON.stringify(u)).to.eql({ amount: Number(cost), unit: 'credit' });",
+                  "  pm.expect(u, 'a request value or Bifrost count reported as the vendor\\'s').to.not.have.any.keys('audio_seconds', 'billed_characters');",
+                  "});",
+                  "pm.test('served by the pinned key, no fallback: one upstream call', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'routing key').to.eql('ElevenLabs API Key');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback') || 'false').to.eql('false');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "402.2 elevenlabs/eleven_turbo_v2_5 - byte speech response_format opus is labeled audio/ogg (elevenlabs contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "ElevenLabs API Key"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"elevenlabs/eleven_turbo_v2_5\",\n  \"input\": \"Hello from the contract harness.\",\n  \"voice\": \"21m00Tcm4TlvDq8ikWAM\",\n  \"response_format\": \"opus\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('opus audio comes back labeled audio/ogg', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+                  "  var ct = (pm.response.headers.get('content-type') || '').split(';')[0].trim();",
+                  "  pm.expect(ct).to.eql('audio/ogg');",
+                  "  pm.expect(pm.response.responseSize, 'audio bytes').to.be.above(0);",
+                  "});",
+                  "pm.test('character-cost is forwarded and x-bifrost-usage carries it as vendor_cost in credits', function () {",
+                  "  var cost = pm.response.headers.get('character-cost');",
+                  "  pm.expect(cost, 'ElevenLabs sent no character-cost header').to.be.a('string').and.to.match(/^[0-9]+(\\.[0-9]+)?$/);",
+                  "  var u = JSON.parse(pm.response.headers.get('x-bifrost-usage') || 'null');",
+                  "  pm.expect(u, 'no x-bifrost-usage header').to.be.an('object');",
+                  "  pm.expect(u.vendor_cost, JSON.stringify(u)).to.eql({ amount: Number(cost), unit: 'credit' });",
+                  "  pm.expect(u, 'a request value or Bifrost count reported as the vendor\\'s').to.not.have.any.keys('audio_seconds', 'billed_characters');",
+                  "});",
+                  "pm.test('served by the pinned key, no fallback: one upstream call', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'routing key').to.eql('ElevenLabs API Key');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback') || 'false').to.eql('false');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "402.3 elevenlabs/eleven_turbo_v2_5 - byte speech response_format pcm_24000 is labeled audio/pcm (elevenlabs contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "ElevenLabs API Key"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"elevenlabs/eleven_turbo_v2_5\",\n  \"input\": \"Hello from the contract harness.\",\n  \"voice\": \"21m00Tcm4TlvDq8ikWAM\",\n  \"response_format\": \"pcm_24000\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('pcm_24000 audio comes back labeled audio/pcm', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+                  "  var ct = (pm.response.headers.get('content-type') || '').split(';')[0].trim();",
+                  "  pm.expect(ct).to.eql('audio/pcm');",
+                  "  pm.expect(pm.response.responseSize, 'audio bytes').to.be.above(0);",
+                  "});",
+                  "pm.test('character-cost is forwarded and x-bifrost-usage carries it as vendor_cost in credits', function () {",
+                  "  var cost = pm.response.headers.get('character-cost');",
+                  "  pm.expect(cost, 'ElevenLabs sent no character-cost header').to.be.a('string').and.to.match(/^[0-9]+(\\.[0-9]+)?$/);",
+                  "  var u = JSON.parse(pm.response.headers.get('x-bifrost-usage') || 'null');",
+                  "  pm.expect(u, 'no x-bifrost-usage header').to.be.an('object');",
+                  "  pm.expect(u.vendor_cost, JSON.stringify(u)).to.eql({ amount: Number(cost), unit: 'credit' });",
+                  "  pm.expect(u, 'a request value or Bifrost count reported as the vendor\\'s').to.not.have.any.keys('audio_seconds', 'billed_characters');",
+                  "});",
+                  "pm.test('served by the pinned key, no fallback: one upstream call', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'routing key').to.eql('ElevenLabs API Key');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback') || 'false').to.eql('false');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "402.4 elevenlabs/eleven_turbo_v2_5 - SSE speech: speech.audio.done carries usage.vendor_cost, and only the caller's speed is in voice_settings (elevenlabs contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "ElevenLabs API Key"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"elevenlabs/eleven_turbo_v2_5\",\n  \"input\": \"Hello from the contract harness.\",\n  \"voice\": \"21m00Tcm4TlvDq8ikWAM\",\n  \"speed\": 1.1,\n  \"stream_format\": \"sse\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function asObj(v) { if (typeof v === 'string') { try { return JSON.parse(v); } catch (e) { return null; } } return v || null; }",
+                  "var deltas = 0, dones = [], errors = [];",
+                  "pm.test('SSE speech stream delivers audio, then one speech.audio.done', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '').to.include('text/event-stream');",
+                  "  (pm.response.text() || '').split('\\n').forEach(function (l) {",
+                  "    if (l.indexOf('data: ') !== 0) { return; }",
+                  "    var p = l.slice(6).trim();",
+                  "    if (p === '[DONE]') { return; }",
+                  "    var j = JSON.parse(p);",
+                  "    if (j.error) { errors.push(p); return; }",
+                  "    if (j.type === 'speech.audio.delta') { deltas++; } else if (j.type === 'speech.audio.done') { dones.push(j); }",
+                  "  });",
+                  "  pm.expect(errors, 'error events: ' + errors.join(' | ')).to.be.empty;",
+                  "  pm.expect(deltas, 'speech.audio.delta events').to.be.above(0);",
+                  "  pm.expect(dones.length, 'speech.audio.done events').to.eql(1);",
+                  "});",
+                  "pm.test('speech.audio.done usage.vendor_cost is the character-cost header, in credits', function () {",
+                  "  var cost = pm.response.headers.get('character-cost');",
+                  "  pm.expect(cost, 'ElevenLabs sent no character-cost header').to.be.a('string').and.to.match(/^[0-9]+(\\.[0-9]+)?$/);",
+                  "  var u = (dones[0] || {}).usage;",
+                  "  pm.expect(u, 'speech.audio.done has no usage').to.be.an('object');",
+                  "  pm.expect(u.vendor_cost, JSON.stringify(u)).to.eql({ amount: Number(cost), unit: 'credit' });",
+                  "  pm.expect(u, 'a request value or Bifrost count reported as the vendor\\'s').to.not.have.any.keys('audio_seconds', 'billed_characters');",
+                  "});",
+                  "pm.test('voice_settings sent to ElevenLabs is exactly {speed: 1.1}', function () {",
+                  "  var sent = asObj(((dones[0] || {}).extra_fields || {}).raw_request);",
+                  "  pm.expect(sent, 'no raw_request on speech.audio.done').to.be.an('object');",
+                  "  pm.expect(sent.voice_settings, JSON.stringify(sent)).to.eql({ speed: 1.1 });",
+                  "});",
+                  "pm.test('served by the pinned key, no fallback: one upstream call', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'routing key').to.eql('ElevenLabs API Key');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback') || 'false').to.eql('false');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "402.5 elevenlabs/scribe_v2 - transcription usage is {type: duration, seconds} equal to audio_duration_secs, one call on the pinned key (elevenlabs contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "ElevenLabs API Key"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "elevenlabs/scribe_v2",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function asObj(v) { if (typeof v === 'string') { try { return JSON.parse(v); } catch (e) { return null; } } return v || null; }",
+                  "pm.test('200 with a transcript', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+                  "  pm.expect(pm.response.json().text).to.be.a('string');",
+                  "});",
+                  "pm.test('usage.seconds is the audio_duration_secs ElevenLabs reported', function () {",
+                  "  var j = pm.response.json(); var raw = asObj((j.extra_fields || {}).raw_response) || {};",
+                  "  pm.expect(raw.audio_duration_secs, 'ElevenLabs reported no audio_duration_secs: ' + JSON.stringify(raw).slice(0, 300)).to.be.a('number').and.to.be.above(0);",
+                  "  pm.expect(j.usage, 'no usage').to.be.an('object');",
+                  "  pm.expect(j.usage.type).to.eql('duration');",
+                  "  pm.expect(j.usage.seconds).to.eql(raw.audio_duration_secs);",
+                  "});",
+                  "pm.test('served by the pinned key, no fallback: one upstream call', function () {",
+                  "  var ri = (pm.response.json().extra_fields || {}).routing_info || {};",
+                  "  pm.expect(ri.key, JSON.stringify(ri)).to.eql('ElevenLabs API Key');",
+                  "  pm.expect(!!ri.is_fallback).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "402.6 [EXPECT-4XX] elevenlabs/scribe_v2 - a keyterms value ElevenLabs refuses for its length proves the unmapped form field reached it; the error keeps the vendor status and carries error_type (elevenlabs contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "ElevenLabs API Key"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "elevenlabs/scribe_v2",
+                  "type": "text"
+                },
+                {
+                  "key": "keyterms",
+                  "value": "Bifrost",
+                  "type": "text"
+                },
+                {
+                  "key": "keyterms",
+                  "value": "a keyterm that is far longer than the fifty characters ElevenLabs accepts for one keyterm",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function asObj(v) { if (typeof v === 'string') { try { return JSON.parse(v); } catch (e) { return null; } } return v || null; }",
+                  "pm.test('the keyterms field reached ElevenLabs, which rejects the over-long value', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'expected ElevenLabs to reject the request; got: ' + t.slice(0, 400)).to.be.within(400, 499);",
+                  "  pm.expect(t.toLowerCase(), 'the error does not name keyterm, so the field may not have reached ElevenLabs: ' + t.slice(0, 400)).to.include('keyterm');",
+                  "});",
+                  "pm.test('the vendor error keeps the vendor status and carries error_type', function () {",
+                  "  var j = pm.response.json(); var ef = j.extra_fields || {};",
+                  "  pm.expect(j.status_code, 'status_code in the envelope').to.eql(pm.response.code);",
+                  "  pm.expect(!!j.is_bifrost_error, 'a vendor error, not a Bifrost failure').to.be.false;",
+                  "  pm.expect(ef.error_type, 'error_type: ' + pm.response.text().slice(0, 400)).to.be.a('string').and.to.match(/^(caller|provider)_/);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-error-type')).to.eql(ef.error_type);",
+                  "  var raw = asObj(ef.raw_response);",
+                  "  pm.expect(raw, 'no raw vendor error body').to.be.an('object');",
+                  "  pm.expect(raw, 'ElevenLabs errors carry detail').to.have.property('detail');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "402.7 [EXPECT-4XX] elevenlabs/scribe_harness_no_such_model - a vendor transcription error keeps the vendor status and carries error_type (elevenlabs contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-api-key",
+                "value": "ElevenLabs API Key"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "elevenlabs/scribe_harness_no_such_model",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function asObj(v) { if (typeof v === 'string') { try { return JSON.parse(v); } catch (e) { return null; } } return v || null; }",
+                  "pm.test('ElevenLabs rejects the unknown transcription model', function () {",
+                  "  var t = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'expected ElevenLabs to reject the request; got: ' + t.slice(0, 400)).to.be.within(400, 499);",
+                  "});",
+                  "pm.test('the vendor error keeps the vendor status and carries error_type', function () {",
+                  "  var j = pm.response.json(); var ef = j.extra_fields || {};",
+                  "  pm.expect(j.status_code, 'status_code in the envelope').to.eql(pm.response.code);",
+                  "  pm.expect(!!j.is_bifrost_error, 'a vendor error, not a Bifrost failure').to.be.false;",
+                  "  pm.expect(ef.error_type, 'error_type: ' + pm.response.text().slice(0, 400)).to.be.a('string').and.to.match(/^(caller|provider)_/);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-error-type')).to.eql(ef.error_type);",
+                  "  var raw = asObj(ef.raw_response);",
+                  "  pm.expect(raw, 'no raw vendor error body').to.be.an('object');",
+                  "  pm.expect(raw, 'ElevenLabs errors carry detail').to.have.property('detail');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "402.8 [EXPECT-400] elevenlabs/eleven_text_to_sound_v2 - duration_seconds 40 is caller_unsupported_parameter with no upstream call (elevenlabs contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "ElevenLabs API Key"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"elevenlabs/eleven_text_to_sound_v2\",\n  \"input\": \"a short door knock\",\n  \"duration_seconds\": 40\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 caller_unsupported_parameter on duration_seconds, nothing clamped', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 400)).to.eql(400);",
+                  "  var j = pm.response.json(); var ef = j.extra_fields || {};",
+                  "  pm.expect(ef.error_type).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-error-type')).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect((j.error || {}).param).to.eql('duration_seconds');",
+                  "  pm.expect(!!j.is_bifrost_error, 'the caller is at fault, not Bifrost').to.be.false;",
+                  "});",
+                  "pm.test('ElevenLabs was never called', function () {",
+                  "  var ef = pm.response.json().extra_fields || {};",
+                  "  pm.expect(ef.raw_response, 'an upstream response came back').to.be.undefined;",
+                  "  pm.expect(pm.response.headers.get('character-cost'), 'a vendor header came back').to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "402.9 [EXPECT-400] elevenlabs/eleven_text_to_sound_v2 - prompt_influence 1.5 is caller_unsupported_parameter with no upstream call (elevenlabs contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "ElevenLabs API Key"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"elevenlabs/eleven_text_to_sound_v2\",\n  \"input\": \"a short door knock\",\n  \"prompt_influence\": 1.5\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 caller_unsupported_parameter on prompt_influence, nothing clamped', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text().slice(0, 400)).to.eql(400);",
+                  "  var j = pm.response.json(); var ef = j.extra_fields || {};",
+                  "  pm.expect(ef.error_type).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-error-type')).to.eql('caller_unsupported_parameter');",
+                  "  pm.expect((j.error || {}).param).to.eql('prompt_influence');",
+                  "  pm.expect(!!j.is_bifrost_error, 'the caller is at fault, not Bifrost').to.be.false;",
+                  "});",
+                  "pm.test('ElevenLabs was never called', function () {",
+                  "  var ef = pm.response.json().extra_fields || {};",
+                  "  pm.expect(ef.raw_response, 'an upstream response came back').to.be.undefined;",
+                  "  pm.expect(pm.response.headers.get('character-cost'), 'a vendor header came back').to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "402.10 elevenlabs/eleven_text_to_sound_v2 - a sound effect reports the vendor's credits and no audio_seconds, one call on the pinned key (elevenlabs contract)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "ElevenLabs API Key"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"elevenlabs/eleven_text_to_sound_v2\",\n  \"input\": \"a short door knock\",\n  \"duration_seconds\": 1,\n  \"prompt_influence\": 0.3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('sound effect audio comes back labeled audio/mpeg', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 400)).to.eql(200);",
+                  "  var ct = (pm.response.headers.get('content-type') || '').split(';')[0].trim();",
+                  "  pm.expect(ct).to.eql('audio/mpeg');",
+                  "  pm.expect(pm.response.responseSize, 'audio bytes').to.be.above(0);",
+                  "});",
+                  "pm.test('character-cost is forwarded and x-bifrost-usage carries it as vendor_cost in credits', function () {",
+                  "  var cost = pm.response.headers.get('character-cost');",
+                  "  pm.expect(cost, 'ElevenLabs sent no character-cost header').to.be.a('string').and.to.match(/^[0-9]+(\\.[0-9]+)?$/);",
+                  "  var u = JSON.parse(pm.response.headers.get('x-bifrost-usage') || 'null');",
+                  "  pm.expect(u, 'no x-bifrost-usage header').to.be.an('object');",
+                  "  pm.expect(u.vendor_cost, JSON.stringify(u)).to.eql({ amount: Number(cost), unit: 'credit' });",
+                  "  pm.expect(u, 'a request value or Bifrost count reported as the vendor\\'s').to.not.have.any.keys('audio_seconds', 'billed_characters');",
+                  "});",
+                  "pm.test('served by the pinned key, no fallback: one upstream call', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-key'), 'routing key').to.eql('ElevenLabs API Key');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback') || 'false').to.eql('false');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

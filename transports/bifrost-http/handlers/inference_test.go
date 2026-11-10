@@ -363,6 +363,96 @@ func TestWriteSpeechAudioMissingAudioIsProviderEmptyResult(t *testing.T) {
 	}
 }
 
+// TXE-6524, contract C6, on ElevenLabs: a 200 with no audio is 502 provider_empty_result, and
+// the vendor's character-cost header still reaches the caller, because ElevenLabs has charged
+// for the request. The success usage header does not: an error carries no success usage.
+func TestWriteSpeechAudioElevenlabsEmptyAudioKeepsCharacterCost(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	usage := &schemas.SpeechUsage{VendorCost: &schemas.VendorCost{Amount: 9, Unit: schemas.VendorCostUnitCredit}}
+	resp := &schemas.BifrostSpeechResponse{Usage: usage, ExtraFields: schemas.BifrostResponseExtraFields{
+		RequestType:             schemas.SpeechRequest,
+		Provider:                schemas.Elevenlabs,
+		ProviderResponseHeaders: map[string]string{"character-cost": "9", "request-id": "el-empty"},
+	}}
+	// What the speech handler does before writing the body.
+	lib.ApplyBifrostResponseHeaders(ctx, nil, resp.ExtraFields)
+	lib.SetSpeechUsageHeader(ctx, resp.Usage)
+	writeSpeechAudio(ctx, resp, "mp3_44100_128")
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", got)
+	}
+	if got := sentErrorType(t, ctx); got != string(schemas.ErrorTypeProviderEmptyResult) {
+		t.Fatalf("error_type = %q, want provider_empty_result", got)
+	}
+	if got := string(ctx.Response.Header.Peek("character-cost")); got != "9" {
+		t.Fatalf("character-cost = %q, want the vendor's 9 forwarded", got)
+	}
+	if got := string(ctx.Response.Header.Peek("request-id")); got != "el-empty" {
+		t.Fatalf("request-id = %q, want el-empty", got)
+	}
+	if got := ctx.Response.Header.Peek(lib.HeaderBifrostUsage); got != nil {
+		t.Fatalf("x-bifrost-usage = %q on a 502", got)
+	}
+}
+
+// TXE-6524 on ElevenLabs byte-mode TTS: the audio keeps the Content-Type of the format asked
+// for (the shared writer of TXE-6530), the vendor's character-cost header is forwarded
+// unchanged, and x-bifrost-usage carries the same credits as usage.vendor_cost.
+func TestWriteSpeechAudioElevenlabsFormatsAndVendorCost(t *testing.T) {
+	cases := []struct {
+		format, wantType string
+		audio            []byte
+	}{
+		{"mp3_44100_128", "audio/mpeg", []byte{0xFF, 0xFB, 0x90, 0x00}},
+		{"", "audio/mpeg", []byte("ID3\x04\x00")},
+		{"opus_48000_128", "audio/ogg", []byte("OggS\x00\x02")},
+		{"pcm_24000", "audio/pcm", []byte{0x01, 0x02, 0x03, 0x04}},
+		{"pcm_44100", "audio/pcm", []byte{0xFF, 0xFB, 0x03, 0x04}}, // raw samples that look like an MPEG frame
+		{"wav_24000", "audio/wav", []byte("RIFF\x24\x00\x00\x00WAVEfmt ")},
+		{"ulaw_8000", "audio/basic", []byte{0x7F, 0x7F}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.format, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			resp := &schemas.BifrostSpeechResponse{
+				Audio: tc.audio,
+				Usage: &schemas.SpeechUsage{InputChars: 11, VendorCost: &schemas.VendorCost{Amount: 11, Unit: schemas.VendorCostUnitCredit}},
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType:             schemas.SpeechRequest,
+					Provider:                schemas.Elevenlabs,
+					ProviderResponseHeaders: map[string]string{"character-cost": "11"},
+				},
+			}
+			lib.ApplyBifrostResponseHeaders(ctx, nil, resp.ExtraFields)
+			lib.SetSpeechUsageHeader(ctx, resp.Usage)
+			writeSpeechAudio(ctx, resp, tc.format)
+
+			if got := ctx.Response.StatusCode(); got != fasthttp.StatusOK {
+				t.Fatalf("status = %d: %s", got, ctx.Response.Body())
+			}
+			if got := string(ctx.Response.Header.ContentType()); got != tc.wantType {
+				t.Fatalf("Content-Type = %q, want %q", got, tc.wantType)
+			}
+			if !bytes.Equal(ctx.Response.Body(), tc.audio) {
+				t.Fatalf("body = %q, want the audio bytes", ctx.Response.Body())
+			}
+			if got := string(ctx.Response.Header.Peek("character-cost")); got != "11" {
+				t.Fatalf("character-cost = %q, want 11 forwarded unchanged", got)
+			}
+			var usage struct {
+				VendorCost *schemas.VendorCost `json:"vendor_cost"`
+			}
+			if err := json.Unmarshal(ctx.Response.Header.Peek(lib.HeaderBifrostUsage), &usage); err != nil {
+				t.Fatalf("x-bifrost-usage %q: %v", ctx.Response.Header.Peek(lib.HeaderBifrostUsage), err)
+			}
+			if usage.VendorCost == nil || *usage.VendorCost != (schemas.VendorCost{Amount: 11, Unit: schemas.VendorCostUnitCredit}) {
+				t.Fatalf("x-bifrost-usage vendor_cost = %+v, want {11 credit}", usage.VendorCost)
+			}
+		})
+	}
+}
+
 // A repeated unknown form field (include[]=a&include[]=b) used to keep only its first value.
 func TestPrepareTranscriptionRequest_RepeatedExtraFieldKeepsEveryValue(t *testing.T) {
 	req, _, err := prepareTranscriptionRequest(multipartTranscriptionCtx(t, [][2]string{

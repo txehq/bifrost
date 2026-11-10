@@ -63,8 +63,11 @@ func parseElevenlabsError(resp *fasthttp.Response) *schemas.BifrostError {
 						Type:    schemas.Ptr(errorType),
 						Message: message,
 					},
+					// The rebuilt error keeps what the shared handler read from the
+					// response: the retry hint and the vendor's raw error body.
 					ExtraFields: schemas.BifrostErrorExtraFields{
-						RetryAfter: bifrostErr.ExtraFields.RetryAfter,
+						RetryAfter:  bifrostErr.ExtraFields.RetryAfter,
+						RawResponse: bifrostErr.ExtraFields.RawResponse,
 					},
 				}
 				return result

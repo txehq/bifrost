@@ -1,6 +1,7 @@
 package elevenlabs
 
 import (
+	"math"
 	"testing"
 
 	schemas "github.com/capsohq/bifrost/core/schemas"
@@ -95,36 +96,86 @@ func TestToElevenlabsSoundGenerationRequest_ParamsFromExtraParams(t *testing.T) 
 	}
 }
 
-func TestToElevenlabsSoundGenerationRequest_Clamping(t *testing.T) {
+// Contract C4 (TXE-6524): duration_seconds and prompt_influence reach ElevenLabs as given or
+// the request is refused; nothing is clamped into range. Before, 40 seconds was sent as 30 and
+// 1.5 as 1 with no error.
+func TestCheckSoundGenerationRanges(t *testing.T) {
 	cases := []struct {
-		name         string
-		duration     float64
-		influence    float64
-		wantDuration float64
-		wantInfl     float64
+		name      string
+		extra     map[string]interface{}
+		wantParam string // "": accepted
 	}{
-		{"below range", 0.1, -0.5, 0.5, 0},
-		{"above range", 99, 5, 30, 1},
-		{"within range", 12.5, 0.3, 12.5, 0.3},
+		{"duration 40 above range", map[string]interface{}{"duration_seconds": float64(40)}, "duration_seconds"},
+		{"duration 0.1 below range", map[string]interface{}{"duration_seconds": 0.1}, "duration_seconds"},
+		{"duration NaN", map[string]interface{}{"duration_seconds": math.NaN()}, "duration_seconds"},
+		{"influence 1.5 above range", map[string]interface{}{"prompt_influence": 1.5}, "prompt_influence"},
+		{"influence -0.5 below range", map[string]interface{}{"prompt_influence": -0.5}, "prompt_influence"},
+		{"both out of range names duration first", map[string]interface{}{"duration_seconds": float64(99), "prompt_influence": float64(5)}, "duration_seconds"},
+		{"lower bounds accepted", map[string]interface{}{"duration_seconds": 0.5, "prompt_influence": float64(0)}, ""},
+		{"upper bounds accepted", map[string]interface{}{"duration_seconds": float64(30), "prompt_influence": float64(1)}, ""},
+		{"within range", map[string]interface{}{"duration_seconds": 12.5, "prompt_influence": 0.3}, ""},
+		{"neither given", map[string]interface{}{"loop": true}, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			req := &schemas.BifrostSpeechRequest{
-				Model: "eleven_text_to_sound_v2",
-				Input: &schemas.SpeechInput{Input: "x"},
-				Params: &schemas.SpeechParameters{ExtraParams: map[string]interface{}{
-					"duration_seconds": c.duration,
-					"prompt_influence": c.influence,
-				}},
+				Model:  "eleven_text_to_sound_v2",
+				Input:  &schemas.SpeechInput{Input: "x"},
+				Params: &schemas.SpeechParameters{ExtraParams: c.extra},
 			}
-			out := ToElevenlabsSoundGenerationRequest(nil, req)
-			if out.DurationSeconds == nil || *out.DurationSeconds != c.wantDuration {
-				t.Errorf("DurationSeconds = %v, want %v", out.DurationSeconds, c.wantDuration)
+			bifrostErr := checkSoundGenerationRanges(req)
+			if c.wantParam == "" {
+				if bifrostErr != nil {
+					t.Fatalf("unexpected error: %+v", bifrostErr.Error)
+				}
+				// An accepted value is sent exactly as given.
+				out := ToElevenlabsSoundGenerationRequest(nil, req)
+				if v, ok := c.extra["duration_seconds"]; ok && (out.DurationSeconds == nil || *out.DurationSeconds != v) {
+					t.Errorf("DurationSeconds = %v, want %v unchanged", out.DurationSeconds, v)
+				}
+				if v, ok := c.extra["prompt_influence"]; ok && (out.PromptInfluence == nil || *out.PromptInfluence != v) {
+					t.Errorf("PromptInfluence = %v, want %v unchanged", out.PromptInfluence, v)
+				}
+				return
 			}
-			if out.PromptInfluence == nil || *out.PromptInfluence != c.wantInfl {
-				t.Errorf("PromptInfluence = %v, want %v", out.PromptInfluence, c.wantInfl)
+			if bifrostErr == nil {
+				t.Fatal("expected caller_unsupported_parameter, got no error")
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+				t.Errorf("status = %v, want 400", bifrostErr.StatusCode)
+			}
+			if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter {
+				t.Errorf("error_type = %q, want %q", bifrostErr.ExtraFields.ErrorType, schemas.ErrorTypeCallerUnsupportedParameter)
+			}
+			if bifrostErr.Error == nil || bifrostErr.Error.Param != c.wantParam {
+				t.Errorf("error.param = %+v, want %q", bifrostErr.Error, c.wantParam)
 			}
 		})
+	}
+	if err := checkSoundGenerationRanges(nil); err != nil {
+		t.Errorf("nil request: %+v", err)
+	}
+	if err := checkSoundGenerationRanges(&schemas.BifrostSpeechRequest{}); err != nil {
+		t.Errorf("request without params: %+v", err)
+	}
+}
+
+// The converter itself never changes a value: an out-of-range one is refused before it runs.
+func TestToElevenlabsSoundGenerationRequest_DoesNotClamp(t *testing.T) {
+	req := &schemas.BifrostSpeechRequest{
+		Model: "eleven_text_to_sound_v2",
+		Input: &schemas.SpeechInput{Input: "x"},
+		Params: &schemas.SpeechParameters{ExtraParams: map[string]interface{}{
+			"duration_seconds": float64(40),
+			"prompt_influence": 1.5,
+		}},
+	}
+	out := ToElevenlabsSoundGenerationRequest(nil, req)
+	if out.DurationSeconds == nil || *out.DurationSeconds != 40 {
+		t.Errorf("DurationSeconds = %v, want 40 as given", out.DurationSeconds)
+	}
+	if out.PromptInfluence == nil || *out.PromptInfluence != 1.5 {
+		t.Errorf("PromptInfluence = %v, want 1.5 as given", out.PromptInfluence)
 	}
 }
 
@@ -147,15 +198,5 @@ func TestToElevenlabsSoundGenerationRequest_ResolvesAliasModelName(t *testing.T)
 	}
 	if out.ModelID != "eleven_text_to_sound_v2" {
 		t.Errorf("ModelID = %q, want canonical %q", out.ModelID, "eleven_text_to_sound_v2")
-	}
-}
-
-func TestClampFloat64Ptr(t *testing.T) {
-	if got := clampFloat64Ptr(nil, 0, 1); got != nil {
-		t.Errorf("expected nil passthrough, got %v", got)
-	}
-	v := 5.0
-	if got := clampFloat64Ptr(&v, 0, 1); got == nil || *got != 1 {
-		t.Errorf("expected clamp to 1, got %v", got)
 	}
 }

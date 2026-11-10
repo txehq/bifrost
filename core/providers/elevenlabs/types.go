@@ -44,12 +44,16 @@ type ElevenlabsAlignment struct {
 	Characters       []string  `json:"characters"`
 }
 
+// ElevenlabsVoiceSettings carries only the settings the caller gave. Every field is a pointer
+// with omitempty: a field the caller left out is absent from the body, so ElevenLabs applies
+// its own default (or the voice's stored setting) instead of a zero Bifrost invented
+// (TXE-6524, contract C4).
 type ElevenlabsVoiceSettings struct {
-	Stability       float64 `json:"stability"`         // 0-1, default 0.5
-	UseSpeakerBoost bool    `json:"use_speaker_boost"` // default true
-	SimilarityBoost float64 `json:"similarity_boost"`  // 0-1, default 0.75
-	Style           float64 `json:"style"`             // default 0
-	Speed           float64 `json:"speed"`             // default 1
+	Stability       *float64 `json:"stability,omitempty"`         // 0-1, vendor default 0.5
+	UseSpeakerBoost *bool    `json:"use_speaker_boost,omitempty"` // vendor default true
+	SimilarityBoost *float64 `json:"similarity_boost,omitempty"`  // 0-1, vendor default 0.75
+	Style           *float64 `json:"style,omitempty"`             // vendor default 0
+	Speed           *float64 `json:"speed,omitempty"`             // vendor default 1
 }
 
 type ElevenlabsPronunciationDictionaryLocator struct {
@@ -148,6 +152,7 @@ type ElevenlabsSpeechToTextChunkResponse struct {
 	ChannelIndex        *int                                  `json:"channel_index,omitempty"`
 	AdditionalFormats   []*ElevenlabsAdditionalFormatResponse `json:"additional_formats,omitempty"`
 	TranscriptionID     *string                               `json:"transcription_id,omitempty"`
+	AudioDurationSecs   *float64                              `json:"audio_duration_secs,omitempty"` // billed duration; nil when not reported
 }
 
 type ElevenlabsSpeechToTextWord struct {
@@ -175,8 +180,9 @@ type ElevenlabsAdditionalFormatResponse struct {
 }
 
 type ElevenlabsMultichannelSpeechToTextResponse struct {
-	Transcripts     []ElevenlabsSpeechToTextChunkResponse `json:"transcripts"`
-	TranscriptionID *string                               `json:"transcription_id,omitempty"`
+	Transcripts       []ElevenlabsSpeechToTextChunkResponse `json:"transcripts"`
+	TranscriptionID   *string                               `json:"transcription_id,omitempty"`
+	AudioDurationSecs *float64                              `json:"audio_duration_secs,omitempty"` // sum over channels; see parseTranscriptionResponse
 }
 
 type ElevenlabsSpeechToTextWebhookResponse struct {

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -268,8 +269,11 @@ func (provider *ElevenlabsProvider) Speech(ctx *schemas.BifrostContext, key sche
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
-	// Create response based on whether timestamps were requested
+	// Create response based on whether timestamps were requested. usage.vendor_cost is the
+	// credits ElevenLabs reported in character-cost; the header itself is still forwarded
+	// unchanged (TXE-6524, contract C5).
 	bifrostResponse := &schemas.BifrostSpeechResponse{
+		Usage: speechUsageFromVendorCost(characterCostFromHeaders(resp)),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
@@ -412,6 +416,11 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 		return nil, providerUtils.EnrichError(ctx, parseElevenlabsError(resp), jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
+	// The credits ElevenLabs charged arrive in the character-cost response header, before the
+	// audio. Read them now, while the response is still owned here, and report them on the
+	// final speech.audio.done frame (TXE-6524, contract C5 and C10).
+	vendorCost := characterCostFromHeaders(resp)
+
 	// Create response channel
 	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
 
@@ -495,6 +504,7 @@ func (provider *ElevenlabsProvider) SpeechStream(ctx *schemas.BifrostContext, po
 		finalResponse := &schemas.BifrostSpeechStreamResponse{
 			Type:  schemas.SpeechStreamResponseTypeDone,
 			Audio: []byte{},
+			Usage: speechUsageFromVendorCost(vendorCost),
 			ExtraFields: schemas.BifrostResponseExtraFields{
 				ChunkIndex: chunkIndex + 1,
 				Latency:    time.Since(startTime).Milliseconds(),
@@ -583,15 +593,17 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 	}
 	req.SetBody(body.Bytes())
 
+	// The request body is multipart with the audio in it, so no raw request is attached to an
+	// error; the vendor's raw error body is, when the caller asked for raw responses.
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 	// Extract and set provider response headers so they're available on error paths
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
 	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.SetErrorLatency(parseElevenlabsError(resp), latency)
+		return nil, providerUtils.EnrichError(ctx, parseElevenlabsError(resp), nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
@@ -604,22 +616,17 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 		}
 	}
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), nil, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
-	// Check for empty response
-	trimmed := strings.TrimSpace(string(responseBody))
-	if len(trimmed) == 0 {
-		return nil, &schemas.BifrostError{
-			IsBifrostError: true,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderResponseEmpty,
-			},
-		}
+	// A 200 with no body, or a body with no transcript and no error object, is the vendor's
+	// fault: 502 provider_empty_result (TXE-6524, contract C6).
+	if isEmptyTranscriptionBody(responseBody) {
+		return nil, providerUtils.EnrichError(ctx, schemas.NewProviderEmptyResultError("Transcription response is empty"), nil, rawJSONOrNil(responseBody), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	pt, ph := providerUtils.StartResponseParseSpan(ctx)
-	chunks, err := parseTranscriptionResponse(responseBody)
+	chunks, audioDurationSecs, err := parseTranscriptionResponse(responseBody)
 	if pt != nil {
 		if err != nil {
 			pt.EndSpan(ph, schemas.SpanStatusError, "response parse failed")
@@ -628,14 +635,14 @@ func (provider *ElevenlabsProvider) Transcription(ctx *schemas.BifrostContext, k
 		}
 	}
 	if err != nil {
-		return nil, providerUtils.NewBifrostOperationError(err.Error(), nil)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(err.Error(), nil), nil, rawJSONOrNil(responseBody), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
 	if len(chunks) == 0 {
-		return nil, providerUtils.NewBifrostOperationError("no chunks found in transcription response", nil)
+		return nil, providerUtils.EnrichError(ctx, schemas.NewProviderEmptyResultError("Transcription response has no transcript"), nil, rawJSONOrNil(responseBody), provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
-	response := ToBifrostTranscriptionResponse(chunks)
+	response := ToBifrostTranscriptionResponse(chunks, audioDurationSecs)
 	response.ExtraFields = schemas.BifrostResponseExtraFields{
 		Latency:                 latency.Milliseconds(),
 		ProviderResponseHeaders: providerUtils.ExtractProviderResponseHeaders(resp),
@@ -778,6 +785,58 @@ func writeTranscriptionMultipart(writer *multipart.Writer, reqBody *ElevenlabsTr
 		}
 	}
 
+	return writeTranscriptionExtraFields(writer, reqBody)
+}
+
+// writeTranscriptionExtraFields writes every caller field the converter did not map onto a
+// known form field (keyterms, transcript_edit, detect_speaker_roles, entity_detection and
+// whatever ElevenLabs adds next) into the form unchanged, so a priced addon the caller turned
+// on reaches the vendor (TXE-6524, contract C4). The encoding is the OpenAI form writer's: a
+// string verbatim, a []string (a form field the caller repeated, as the transports'
+// multipart parsers store it) as one field per value in order, anything else as JSON. Keys
+// are sorted so the form is deterministic.
+//
+// model_id and file are Bifrost's to write, and language_code is skipped when the unified
+// language already wrote it, so no field is sent twice with two values.
+func writeTranscriptionExtraFields(writer *multipart.Writer, reqBody *ElevenlabsTranscriptionRequest) *schemas.BifrostError {
+	extra := reqBody.ExtraParams
+	if len(extra) == 0 {
+		return nil
+	}
+	languageWritten := reqBody.LanguageCode != nil && strings.TrimSpace(*reqBody.LanguageCode) != ""
+	keys := make([]string, 0, len(extra))
+	for key := range extra {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if key == "model_id" || key == "file" || (key == "language_code" && languageWritten) {
+			continue
+		}
+		var fieldValue string
+		switch v := extra[key].(type) {
+		case nil:
+			continue
+		case string:
+			fieldValue = v
+		case []string:
+			for _, item := range v {
+				if err := writer.WriteField(key, item); err != nil {
+					return providerUtils.NewBifrostOperationError("failed to write "+key+" field", err)
+				}
+			}
+			continue
+		default:
+			encoded, err := providerUtils.MarshalSorted(v)
+			if err != nil {
+				return providerUtils.NewBifrostOperationError("failed to encode "+key+" field", err)
+			}
+			fieldValue = string(encoded)
+		}
+		if err := writer.WriteField(key, fieldValue); err != nil {
+			return providerUtils.NewBifrostOperationError("failed to write "+key+" field", err)
+		}
+	}
 	return nil
 }
 

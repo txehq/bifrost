@@ -22,4 +22,9 @@ func TestParseElevenlabsError_ValidationKeepsRetryHint(t *testing.T) {
 	if bifrostErr.ExtraFields.RetryAfter != 7000 {
 		t.Fatalf("RetryAfter = %d, want 7000", bifrostErr.ExtraFields.RetryAfter)
 	}
+	// The vendor's raw error body survives the rebuild too (TXE-6524): before, a validation
+	// error dropped it, so a caller asking for raw responses got none on a 422.
+	if bifrostErr.ExtraFields.RawResponse == nil {
+		t.Fatal("RawResponse is nil, want the vendor's error body")
+	}
 }
