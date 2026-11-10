@@ -104,7 +104,8 @@ if command -v make >/dev/null 2>&1; then
 	# $(EXPOSE_ENV) is make syntax, expanded by make, not here.
 	# shellcheck disable=SC2016
 	printf 'include %s/Makefile\noffline-probe:\n\t@$(EXPOSE_ENV); env | grep -c "^PROBE_API_KEY=" || true\n' "$ROOT" >"$probe/probe.mk"
-	control=$(cd "$probe" && make -s -f probe.mk -I "$ROOT" offline-probe 2>/dev/null | tail -1)
+	# The control must load .env even when this check itself runs under the runner.
+	control=$(cd "$probe" && env -u BIFROST_TEST_OFFLINE make -s -f probe.mk -I "$ROOT" offline-probe 2>/dev/null | tail -1)
 	offline=$(cd "$probe" && "$RUN" make -s -f probe.mk -I "$ROOT" offline-probe 2>/dev/null | tail -1)
 	rm -rf "$probe"
 	if [ "$control" != "1" ]; then
@@ -116,6 +117,25 @@ if command -v make >/dev/null 2>&1; then
 	fi
 else
 	echo "  skip - make recipe: make is not installed here"
+fi
+
+# Every file that loads a .env file (the Makefile's EXPOSE_ENV, the integration suites' dotenv
+# setup, any loader added later) honours BIFROST_TEST_OFFLINE, or a test run under the runner
+# could re-load the credentials it removed. The patterns are the loaders the repository uses:
+# shell `set -a; . ./.env`, dotenv's config(), python-dotenv's load_dotenv() and godotenv.
+loader_pattern='set -a; \. \./\.env|from .dotenv.|load_dotenv\(|godotenv\.(Load|Overload)|require\(.dotenv.\)|dotenv/config'
+if loaders=$(git -C "$ROOT" grep -lE "$loader_pattern" -- . ':!docs' ':!**/node_modules/**' ':!tests/test_offline_test.sh' 2>/dev/null); then
+	unguarded=()
+	for file in $loaders; do
+		if ! grep -q 'BIFROST_TEST_OFFLINE' "$ROOT/$file"; then unguarded+=("$file"); fi
+	done
+	if [ "${#unguarded[@]}" -gt 0 ]; then
+		fail ".env loaders that ignore BIFROST_TEST_OFFLINE: ${unguarded[*]}"
+	else
+		pass "every .env loader honours BIFROST_TEST_OFFLINE ($(printf '%s\n' "$loaders" | wc -l | tr -d ' ') files)"
+	fi
+else
+	fail "no .env loader found: the loader pattern no longer matches the Makefile's EXPOSE_ENV"
 fi
 
 # --list prints names only, never a value.

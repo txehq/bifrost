@@ -24,8 +24,10 @@ from typing import List, Dict, Optional
 import concurrent.futures
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+# Load environment variables, except under scripts/test-offline.sh (BIFROST_TEST_OFFLINE=1,
+# TXE-7053): there no .env is loaded, so no credential the runner removed comes back.
+if os.environ.get("BIFROST_TEST_OFFLINE") != "1":
+    load_dotenv()
 
 
 class BifrostTestRunner:

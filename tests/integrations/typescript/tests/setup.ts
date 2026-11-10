@@ -13,11 +13,15 @@ import { fileURLToPath } from 'url'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
-// Load environment variables from .env file in project root
-config({ path: resolve(__dirname, '../.env') })
+// Under scripts/test-offline.sh (BIFROST_TEST_OFFLINE=1, TXE-7053) no .env is loaded, so no
+// credential the runner removed comes back and the key-gated tests skip.
+if (process.env.BIFROST_TEST_OFFLINE !== '1') {
+  // Load environment variables from .env file in project root
+  config({ path: resolve(__dirname, '../.env') })
 
-// Also try loading from workspace root
-config({ path: resolve(__dirname, '../../../../.env') })
+  // Also try loading from workspace root
+  config({ path: resolve(__dirname, '../../../../.env') })
+}
 
 // Set default environment variables if not present
 if (!process.env.BIFROST_BASE_URL) {
