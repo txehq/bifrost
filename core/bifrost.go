@@ -7840,6 +7840,21 @@ func clearAnthropicPassthroughForNonNativeProvider(ctx *schemas.BifrostContext, 
 	disableAnthropicPassthrough(ctx)
 }
 
+// clearAnthropicPassthroughForAttempt applies clearAnthropicPassthroughForNonNativeProvider
+// to an attempt, except when the attempt is itself a passthrough request. A passthrough
+// request has no typed conversion to fall back to: the provider forwards the caller's
+// bytes, and on the Anthropic integration it is selected only for a provider that serves
+// Anthropic Messages natively (schemas.AnthropicMessagesCapable; xAI, Moonshot). The
+// body and the response stream are Anthropic's shape whatever the base provider is, so
+// the native redaction codecs still match them and must stay on the context: clearing
+// them would let the unredacted bytes through (TXE-6965).
+func clearAnthropicPassthroughForAttempt(ctx *schemas.BifrostContext, baseProvider schemas.ModelProvider, requestType schemas.RequestType, model string) {
+	if requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest {
+		return
+	}
+	clearAnthropicPassthroughForNonNativeProvider(ctx, baseProvider, model)
+}
+
 // disableAnthropicPassthrough switches an attempt from forwarding the caller's raw
 // Anthropic body to the typed conversion path.
 func disableAnthropicPassthrough(ctx *schemas.BifrostContext) {
@@ -8292,7 +8307,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// this attempt decides afresh from the caller's settings.
 				restoreAnthropicPassthroughAfterInjectedTools(req.Context)
 				// Disable Anthropic raw-body passthrough when this attempt's provider/model isn't Anthropic-native.
-				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
+				clearAnthropicPassthroughForAttempt(req.Context, baseProvider, req.RequestType, resolvedModel)
 				// Disable it too when this attempt's provider has no native structured outputs.
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
 				// Disable GenAI raw-body passthrough when this attempt's provider isn't Google's.
@@ -8422,7 +8437,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				restoreAnthropicPassthroughAfterInjectedTools(req.Context)
 				req.Context.SetValue(schemas.BifrostContextKeyInjectedToolsExecuted, false)
 				// Disable Anthropic raw-body passthrough when this attempt's provider/model isn't Anthropic-native.
-				clearAnthropicPassthroughForNonNativeProvider(req.Context, baseProvider, resolvedModel)
+				clearAnthropicPassthroughForAttempt(req.Context, baseProvider, req.RequestType, resolvedModel)
 				// Disable it too when this attempt's provider has no native structured outputs.
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
 				// Disable GenAI raw-body passthrough when this attempt's provider isn't Google's.

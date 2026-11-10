@@ -206,4 +206,5 @@ MCP-targeted rules continue to evaluate actual MCP execution arguments and resul
 - Check Point tool-call arguments are screened but are not rewritten from Check Point message-content spans. A flagged argument that cannot be mapped safely fails closed in `redact` mode.
 - Singulr tool-call arguments and tool-result content can be blocked but are never redacted.
 - Input redaction cannot safely run together with raw-body passthrough transformations; Bifrost fails closed rather than forwarding an inconsistent payload.
+- On `/anthropic/v1/messages`, a provider that serves Anthropic Messages on its own endpoint (Anthropic, xAI, Moonshot) receives the caller's body as bytes and its response is returned as bytes. Bifrost gives guardrails the Anthropic request and response adapters for every such request, whichever provider serves it, so that text in a native body can be rewritten. With no guardrail configured the adapters are not used, and the request and the response are forwarded unchanged.
 - If a request uses both input and output redaction, Bifrost carries replacements forward so raw log fields and exported trace content are redacted consistently.

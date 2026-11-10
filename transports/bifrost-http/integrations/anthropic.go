@@ -250,7 +250,7 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 }
 
 func createAnthropicMessagesNativePassthrough(pathPrefix string) NativePassthroughRequestConverter {
-	return func(client *bifrost.Bifrost, httpCtx *fasthttp.RequestCtx, _ *schemas.BifrostContext, req interface{}, rawBody []byte) (*schemas.BifrostPassthroughRequest, bool, error) {
+	return func(client *bifrost.Bifrost, httpCtx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}, rawBody []byte) (*schemas.BifrostPassthroughRequest, bool, error) {
 		anthropicReq, ok := req.(*anthropic.AnthropicMessageRequest)
 		if !ok || client == nil {
 			return nil, false, nil
@@ -290,6 +290,10 @@ func createAnthropicMessagesNativePassthrough(pathPrefix string) NativePassthrou
 			safeHeaders[name] = strings.Join(values, ",")
 		}
 
+		// The body leaves as the caller's bytes, whichever provider serves it, so a
+		// runtime-redaction guardrail can change it only through these adapters.
+		installAnthropicNativeMessagesAdapters(bifrostCtx)
+
 		return &schemas.BifrostPassthroughRequest{
 			Provider:    provider,
 			Model:       model,
@@ -300,6 +304,46 @@ func createAnthropicMessagesNativePassthrough(pathPrefix string) NativePassthrou
 			SafeHeaders: safeHeaders,
 		}, true, nil
 	}
+}
+
+// installAnthropicNativeMessagesAdapters puts the Anthropic raw-body adapters on the
+// context of a request that is forwarded as native Messages bytes: the two request
+// rewriters, the buffered response transformer and the stream event codec. It is the
+// one rule for every native Messages selection, so a provider that implements
+// schemas.AnthropicMessagesCapable is covered without a change of its own (TXE-6965).
+//
+// A native body is never serialized from the normalized request, so a runtime-redaction
+// guardrail has no other way to change what is sent or returned; without the adapters
+// the unredacted bytes would be forwarded. The adapters are handles and do nothing by
+// themselves: with no guardrail in the pipeline nobody calls them, and the request and
+// the response stay byte-exact.
+func installAnthropicNativeMessagesAdapters(bifrostCtx *schemas.BifrostContext) {
+	if bifrostCtx == nil {
+		return
+	}
+	bifrostCtx.SetValue(
+		schemas.BifrostContextKeyRawRequestBodyTextRewriter,
+		schemas.RawRequestBodyTextRewriter(rewriteAnthropicRawRequestBody),
+	)
+	bifrostCtx.SetValue(
+		schemas.BifrostContextKeyRawRequestBodyTextTransformer,
+		schemas.RawRequestBodyTextTransformer(rewriteAnthropicRawRequestBodyTransforms),
+	)
+	installAnthropicNativeMessagesResponseAdapters(bifrostCtx)
+}
+
+// installAnthropicNativeMessagesResponseAdapters installs the response half: what a
+// guardrail needs to change an Anthropic Messages response, or its SSE events, that is
+// returned to the caller in the provider's own bytes.
+func installAnthropicNativeMessagesResponseAdapters(bifrostCtx *schemas.BifrostContext) {
+	bifrostCtx.SetValue(
+		schemas.BifrostContextKeyRawStreamTextCodec,
+		schemas.RawStreamTextCodec(anthropicRawStreamTextCodec{}),
+	)
+	bifrostCtx.SetValue(
+		schemas.BifrostContextKeyRawResponseTextTransformer,
+		schemas.RawResponseTextTransformer(rewriteAnthropicRawResponseTransforms),
+	)
 }
 
 // CreateAnthropicRouteConfigs creates route configurations for Anthropic endpoints.
@@ -489,14 +533,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 			// Native Messages response forwarding is independent of raw request
 			// serialization. Vertex beta modes serialize the normalized request but
 			// still return Anthropic SSE that Guardrails must synchronize.
-			bifrostCtx.SetValue(
-				schemas.BifrostContextKeyRawStreamTextCodec,
-				schemas.RawStreamTextCodec(anthropicRawStreamTextCodec{}),
-			)
-			bifrostCtx.SetValue(
-				schemas.BifrostContextKeyRawResponseTextTransformer,
-				schemas.RawResponseTextTransformer(rewriteAnthropicRawResponseTransforms),
-			)
+			installAnthropicNativeMessagesResponseAdapters(bifrostCtx)
 		}
 		if provider == schemas.Vertex && (hasPromptCachingScopeBetaHeader(headers) || hasFastModeBetaHeader(headers)) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
