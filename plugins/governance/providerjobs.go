@@ -955,6 +955,7 @@ var baseProviderDefaultEndpoints = map[schemas.ModelProvider]string{
 	schemas.Gemini:      "https://generativelanguage.googleapis.com/v1beta",
 	schemas.HuggingFace: "https://router.huggingface.co",
 	schemas.Replicate:   "https://api.replicate.com",
+	schemas.Kling:       "https://api-singapore.klingai.com",
 }
 
 // providerEndpoint is the base URL a configured provider sends to, normalized for comparison. An
