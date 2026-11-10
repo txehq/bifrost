@@ -123,8 +123,8 @@ func (provider *OpenAIProvider) buildRequestURL(ctx *schemas.BifrostContext, def
 // providerUtils.ResourcePathPlaceholders) is replaced by the escaped id. requestTypes are
 // tried in order and the first one that has an override wins; an override without its
 // placeholder is a configuration error, never a request to a path that lost the id.
-func (provider *OpenAIProvider) buildResourceURL(ctx *schemas.BifrostContext, defaultPath string, escapedID string, requestTypes ...schemas.RequestType) (string, *schemas.BifrostError) {
-	path, isCompleteURL, err := providerUtils.GetResourceRequestPath(ctx, defaultPath, provider.customProviderConfig, escapedID, requestTypes...)
+func (provider *OpenAIProvider) buildResourceURL(defaultPath string, escapedID string, requestTypes ...schemas.RequestType) (string, *schemas.BifrostError) {
+	path, isCompleteURL, err := providerUtils.GetResourceRequestPath(defaultPath, provider.customProviderConfig, escapedID, requestTypes...)
 	if err != nil {
 		return "", providerUtils.NewConfigurationError(err.Error())
 	}
@@ -6488,7 +6488,7 @@ func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 	if idErr != nil {
 		return nil, idErr
 	}
-	requestURL, urlErr := provider.buildResourceURL(ctx, "/v1/files/"+escapedFileID, escapedFileID, schemas.FileRetrieveRequest)
+	requestURL, urlErr := provider.buildResourceURL("/v1/files/"+escapedFileID, escapedFileID, schemas.FileRetrieveRequest)
 	if urlErr != nil {
 		return nil, urlErr
 	}
@@ -6579,7 +6579,7 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 	if idErr != nil {
 		return nil, idErr
 	}
-	requestURL, urlErr := provider.buildResourceURL(ctx, "/v1/files/"+escapedFileID, escapedFileID, schemas.FileDeleteRequest)
+	requestURL, urlErr := provider.buildResourceURL("/v1/files/"+escapedFileID, escapedFileID, schemas.FileDeleteRequest)
 	if urlErr != nil {
 		return nil, urlErr
 	}
@@ -6687,7 +6687,7 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 	if idErr != nil {
 		return nil, idErr
 	}
-	requestURL, urlErr := provider.buildResourceURL(ctx, "/v1/files/"+escapedFileID+"/content", escapedFileID, schemas.FileContentRequest)
+	requestURL, urlErr := provider.buildResourceURL("/v1/files/"+escapedFileID+"/content", escapedFileID, schemas.FileContentRequest)
 	if urlErr != nil {
 		return nil, urlErr
 	}
@@ -7128,7 +7128,7 @@ func (provider *OpenAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 	if idErr != nil {
 		return nil, idErr
 	}
-	requestURL, urlErr := provider.buildResourceURL(ctx, "/v1/batches/"+escapedBatchID, escapedBatchID, schemas.BatchRetrieveRequest)
+	requestURL, urlErr := provider.buildResourceURL("/v1/batches/"+escapedBatchID, escapedBatchID, schemas.BatchRetrieveRequest)
 	if urlErr != nil {
 		return nil, urlErr
 	}
@@ -7223,7 +7223,7 @@ func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 	if idErr != nil {
 		return nil, idErr
 	}
-	requestURL, urlErr := provider.buildResourceURL(ctx, "/v1/batches/"+escapedBatchID+"/cancel", escapedBatchID, schemas.BatchCancelRequest)
+	requestURL, urlErr := provider.buildResourceURL("/v1/batches/"+escapedBatchID+"/cancel", escapedBatchID, schemas.BatchCancelRequest)
 	if urlErr != nil {
 		return nil, urlErr
 	}
@@ -7358,7 +7358,7 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 	if idErr != nil {
 		return nil, idErr
 	}
-	retrieveURL, urlErr := provider.buildResourceURL(ctx, "/v1/batches/"+escapedBatchID, escapedBatchID, schemas.BatchResultsRequest, schemas.BatchRetrieveRequest)
+	retrieveURL, urlErr := provider.buildResourceURL("/v1/batches/"+escapedBatchID, escapedBatchID, schemas.BatchResultsRequest, schemas.BatchRetrieveRequest)
 	if urlErr != nil {
 		return nil, urlErr
 	}
@@ -7389,7 +7389,7 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 		if idErr != nil {
 			return nil, providerUtils.NewBifrostOperationError("provider returned an invalid "+file.field, nil)
 		}
-		fileURL, urlErr := provider.buildResourceURL(ctx, "/v1/files/"+escapedFileID+"/content", escapedFileID, schemas.FileContentRequest)
+		fileURL, urlErr := provider.buildResourceURL("/v1/files/"+escapedFileID+"/content", escapedFileID, schemas.FileContentRequest)
 		if urlErr != nil {
 			return nil, urlErr
 		}

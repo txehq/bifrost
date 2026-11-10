@@ -1953,39 +1953,40 @@ func ValidateResourcePathOverride(requestType schemas.RequestType, override stri
 	return nil
 }
 
-// GetResourceRequestPath is GetRequestPath for a call that names one resource by its id.
+// GetResourceRequestPath resolves the path of a call that names one resource by its id.
 // defaultPath already holds the escaped id. requestTypes are tried in order and the first
 // one with a non-blank override wins: its placeholder (ResourcePathPlaceholders) is replaced
 // by escapedID. Every requestType must be listed in ResourcePathPlaceholders. An override
 // without its placeholder is an error, so a misconfigured provider never sends a request to
-// a path that lost the id. A path set in the context wins over every override, as in
-// GetRequestPath.
-func GetResourceRequestPath(ctx context.Context, defaultPath string, customProviderConfig *schemas.CustomProviderConfig, escapedID string, requestTypes ...schemas.RequestType) (string, bool, error) {
-	if _, inContext := ctx.Value(schemas.BifrostContextKeyURLPath).(string); !inContext && customProviderConfig != nil {
-		for _, requestType := range requestTypes {
-			override := strings.TrimSpace(customProviderConfig.RequestPathOverrides[requestType])
-			if override == "" {
-				continue
-			}
-			placeholder, ok := ResourcePathPlaceholders[requestType]
-			if !ok {
-				return "", false, fmt.Errorf("request type %s has no resource path placeholder", requestType)
-			}
-			if err := ValidateResourcePathOverride(requestType, override); err != nil {
-				return "", false, err
-			}
-			override = strings.ReplaceAll(override, placeholder, escapedID)
-			if IsAbsoluteRequestURL(override) {
-				return override, true, nil
-			}
-			if !strings.HasPrefix(override, "/") {
-				override = "/" + override
-			}
-			return override, false, nil
-		}
+// a path that lost the id. The boolean reports a full URL, as in GetRequestPath. Unlike
+// GetRequestPath it does not read a path from the context: a context path belongs to the
+// caller's own request and holds no id of a batch or a file.
+func GetResourceRequestPath(defaultPath string, customProviderConfig *schemas.CustomProviderConfig, escapedID string, requestTypes ...schemas.RequestType) (string, bool, error) {
+	if customProviderConfig == nil {
+		return defaultPath, false, nil
 	}
-	path, isCompleteURL := GetRequestPath(ctx, defaultPath, nil, "")
-	return path, isCompleteURL, nil
+	for _, requestType := range requestTypes {
+		override := strings.TrimSpace(customProviderConfig.RequestPathOverrides[requestType])
+		if override == "" {
+			continue
+		}
+		placeholder, ok := ResourcePathPlaceholders[requestType]
+		if !ok {
+			return "", false, fmt.Errorf("request type %s has no resource path placeholder", requestType)
+		}
+		if err := ValidateResourcePathOverride(requestType, override); err != nil {
+			return "", false, err
+		}
+		override = strings.ReplaceAll(override, placeholder, escapedID)
+		if IsAbsoluteRequestURL(override) {
+			return override, true, nil
+		}
+		if !strings.HasPrefix(override, "/") {
+			override = "/" + override
+		}
+		return override, false, nil
+	}
+	return defaultPath, false, nil
 }
 
 type RequestBodyGetter interface {

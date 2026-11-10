@@ -477,7 +477,6 @@ func TestGetResourceRequestPath(t *testing.T) {
 	}
 	tests := []struct {
 		name          string
-		contextPath   *string
 		config        *schemas.CustomProviderConfig
 		requestTypes  []schemas.RequestType
 		expectedPath  string
@@ -495,15 +494,10 @@ func TestGetResourceRequestPath(t *testing.T) {
 		{name: "an override without its placeholder is an error", config: overrides(map[schemas.RequestType]string{schemas.FileDeleteRequest: "/api/paas/v4/files"}), requestTypes: []schemas.RequestType{schemas.FileDeleteRequest}, expectedErr: "request_path_overrides.file_delete must contain {file_id}"},
 		{name: "the other resource's placeholder does not count", config: overrides(map[schemas.RequestType]string{schemas.FileDeleteRequest: "/api/paas/v4/files/{batch_id}"}), requestTypes: []schemas.RequestType{schemas.FileDeleteRequest}, expectedErr: "must contain {file_id}"},
 		{name: "a request type with no placeholder registered is an error", config: overrides(map[schemas.RequestType]string{schemas.BatchListRequest: "/api/paas/v4/batches"}), requestTypes: []schemas.RequestType{schemas.BatchListRequest}, expectedErr: "has no resource path placeholder"},
-		{name: "a path in the context wins over the override", contextPath: schemas.Ptr("/from/context"), config: overrides(map[schemas.RequestType]string{schemas.BatchRetrieveRequest: "/api/paas/v4/batches/{batch_id}"}), requestTypes: []schemas.RequestType{schemas.BatchRetrieveRequest}, expectedPath: "/from/context"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			if tt.contextPath != nil {
-				ctx = context.WithValue(ctx, schemas.BifrostContextKeyURLPath, *tt.contextPath)
-			}
-			path, isURL, err := GetResourceRequestPath(ctx, "/v1/batches/batch%201", tt.config, "batch%201", tt.requestTypes...)
+			path, isURL, err := GetResourceRequestPath("/v1/batches/batch%201", tt.config, "batch%201", tt.requestTypes...)
 			if tt.expectedErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.expectedErr) {
 					t.Fatalf("expected an error containing %q, got path %q err %v", tt.expectedErr, path, err)
