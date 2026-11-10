@@ -243,10 +243,16 @@ def collection_without_documentation(node, parent_key=None):
         }
     if isinstance(node, list):
         if parent_key == "exec":
+            # An exec entry is usually one line of the script, but some entries hold
+            # a whole multi-line script. Comments are dropped per physical line, so a
+            # script that merely begins with a comment keeps every statement after it.
             return [
-                line
-                for line in node
-                if not (isinstance(line, str) and line.lstrip().startswith("//"))
+                "\n".join(
+                    line for line in entry.split("\n") if not line.lstrip().startswith("//")
+                )
+                if isinstance(entry, str)
+                else entry
+                for entry in node
             ]
         return [collection_without_documentation(item, parent_key) for item in node]
     return node

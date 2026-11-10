@@ -106,6 +106,12 @@ run_case "host-in-request-body" fail "files.unlisted.test" \
   "$(collection '' '' | sed 's#{\\"model\\": \\"m\\"}#{\\"image_url\\": \\"https://files.unlisted.test/a.png\\"}#')"
 run_case "host-in-script-code" fail "callback.unlisted.test" \
   "$(collection '' '"pm.sendRequest({ url: \"https://callback.unlisted.test/hook\" }, function () {});",')"
+# One exec entry can hold a whole multi-line script. Only its comment lines are
+# documentation; a script that begins with a comment keeps the statements after it.
+run_case "host-in-code-after-a-comment-in-a-multiline-entry" fail "multiline.unlisted.test" \
+  "$(collection '' '"// initialize\npm.sendRequest(\"https://multiline.unlisted.test/hook\", function () {});",')"
+run_case "docs-link-in-a-comment-line-of-a-multiline-entry" pass "" \
+  "$(collection '' '"var a = 1;\n  // see https://learn.vendor.test/multiline\nvar b = 2;",')"
 run_case "host-in-trailing-comment-of-a-code-line" fail "trailing.unlisted.test" \
   "$(collection '' '"var x = 1; // https://trailing.unlisted.test/still-counted",')"
 run_case "host-in-a-key-that-only-resembles-description" fail "tool.unlisted.test" \
