@@ -52,6 +52,23 @@ VideoGenerationRequest:
     audio:
       type: boolean
       description: Enable audio generation in the video (supported by select providers/models)
+    aspect_ratio:
+      type: string
+      description: Aspect ratio of the video (e.g. `16:9`, `9:16`), one name on every provider
+    resolution:
+      type: string
+      description: Resolution tier of the video (e.g. `480p`, `720p`, `1080p`), one name on every provider
+    last_frame:
+      type: string
+      description: Last frame of the video, as a URL or a base64 data URL (the first frame is `input_reference`)
+    reference_images:
+      type: array
+      items:
+        type: string
+      description: |
+        Reference images, each a URL or a base64 data URL. Each provider maps these four fields
+        to its own; a provider that has not mapped one yet receives it only through
+        `x-bf-passthrough-extra-params: true`, under the same name.
     fallbacks:
       type: array
       items:
@@ -129,8 +146,36 @@ VideoGenerationResponse:
       $ref: '#/VideoError'
     content_filter:
       $ref: '#/VideoContentFilter'
+    usage:
+      $ref: '#/VideoUsage'
     extra_fields:
       $ref: './common.yaml#/BifrostResponseExtraFields'
+
+VideoUsage:
+  type: object
+  description: |
+    The billable quantities the provider reported for the task. A field the provider did not
+    report is absent: Bifrost never fills one from its own count, the request or a default.
+  properties:
+    cost:
+      $ref: './usage.yaml#/BifrostCost'
+    output_tokens:
+      type: integer
+      description: Tokens the provider bills the output by (e.g. Seedance `completion_tokens`)
+    output_seconds:
+      type: number
+      description: Seconds of output the provider billed
+    input_seconds:
+      type: number
+      description: Seconds of input media the provider billed
+    input_images:
+      type: integer
+      description: Input images the provider billed
+    compute_seconds:
+      type: number
+      description: Run time a hosting platform bills by (e.g. Replicate `metrics.predict_time`)
+    vendor_cost:
+      $ref: './usage.yaml#/VendorCost'
 
 VideoEditRequest:
   type: object

@@ -53,8 +53,16 @@ type ImageGenerationParameters struct {
 	User              *string                `json:"user,omitempty"`
 	InputImages       []string               `json:"input_images,omitempty"` // input images for image generation, base64 encoded or URL
 	AspectRatio       *string                `json:"aspect_ratio,omitempty"` // aspect ratio of the image
+	Resolution        TolerantString         `json:"resolution,omitempty"`   // fork (TXE-6518): unified resolution tier, e.g. "1K", "2K", "4K"; see UnifiedImageFields
 	ExtraParams       map[string]interface{} `json:"-"`
 }
+
+// UnifiedImageFields are the image generation and edit fields that became unified in the fork
+// (TXE-6518). The HTTP handlers parse them into the typed parameters and also keep them in
+// ExtraParams under the same name, because before they were unified they reached providers only as
+// extra params and some providers still read them from there. A provider that converts the typed
+// field deletes the extra.
+var UnifiedImageFields = []string{"resolution"}
 
 // BifrostImageGenerationResponse represents the image generation response in bifrost format
 type BifrostImageGenerationResponse struct {
@@ -64,6 +72,11 @@ type BifrostImageGenerationResponse struct {
 	Data    []ImageData `json:"data"`
 
 	*ImageGenerationResponseParameters
+
+	// Fork (TXE-6518, contract C6 BF10): images the vendor blocked while returning 200. Blocked images
+	// take no slot in Data; FilteredCount is how many were blocked and Reasons are the vendor's
+	// reason codes verbatim. When every image was blocked, Data is an empty array, never null.
+	ContentFilter *ContentFilterInfo `json:"content_filter,omitempty"`
 
 	Usage       *ImageUsage                `json:"usage,omitempty"`
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
@@ -75,8 +88,17 @@ type BifrostImageGenerationResponse struct {
 // - Size on ImageGenerationResponseParameters (from request params if not in response)
 // - Quality (low, medium, high, auto) only
 // - AspectRatio on ImageGenerationResponseParameters (from request params if not in response)
+//
+// It also keeps Data an array (fork, TXE-6518, contract C6): a response whose every image the
+// vendor blocked carries "data": [] next to its content_filter, never "data": null.
 func (r *BifrostImageGenerationResponse) BackfillParams(req *BifrostRequest) {
-	if r == nil || req == nil {
+	if r == nil {
+		return
+	}
+	if r.Data == nil {
+		r.Data = []ImageData{}
+	}
+	if req == nil {
 		return
 	}
 	numInputImages, size, quality, aspectRatio := getNumInputImagesSizeQualityAndAspectRatioFromRequest(req)
@@ -225,6 +247,16 @@ type ImageUsage struct {
 	Cost                *BifrostCost       `json:"cost,omitempty"` // Only for the providers which support cost calculation
 	// xAI-specific usage field, normalized into Cost by NormalizeProviderCost.
 	CostInUsdTicks *int64 `json:"cost_in_usd_ticks,omitempty"`
+
+	// Fork (TXE-6518, contract C5 BF6): billable quantities the vendor reported. Each one is set only
+	// from the vendor's own report: Bifrost never fills one with a value it counted, a request
+	// parameter or a default (NumInputImages and NImages above are Bifrost's own counts and stay
+	// unserialised), so a nil field means the vendor did not report it.
+	OutputImages     *int        `json:"output_images,omitempty"`
+	InputImages      *int        `json:"input_images,omitempty"`
+	OutputMegapixels *float64    `json:"output_megapixels,omitempty"`
+	InputMegapixels  *float64    `json:"input_megapixels,omitempty"`
+	VendorCost       *VendorCost `json:"vendor_cost,omitempty"`
 }
 
 // NormalizeProviderCost mirrors BifrostLLMUsage.NormalizeProviderCost for the image path.
@@ -239,6 +271,9 @@ type ImageTokenDetails struct {
 	NImages     int `json:"-"` // Number of images generated (used internally for bifrost)
 	ImageTokens int `json:"image_tokens,omitempty"`
 	TextTokens  int `json:"text_tokens,omitempty"`
+	// Fork (TXE-6518, contract C5 BF6): reasoning (thinking) tokens the vendor reported, on
+	// output_tokens_details. Nil when the vendor did not report them.
+	ReasoningTokens *int `json:"reasoning_tokens,omitempty"`
 }
 
 // DeepCopy returns an independent copy of u with no shared pointer fields,
@@ -250,18 +285,39 @@ func (u *ImageUsage) DeepCopy() *ImageUsage {
 	}
 	out := *u
 	if u.InputTokensDetails != nil {
-		details := *u.InputTokensDetails
-		out.InputTokensDetails = &details
+		out.InputTokensDetails = u.InputTokensDetails.deepCopy()
 	}
 	if u.OutputTokensDetails != nil {
-		details := *u.OutputTokensDetails
-		out.OutputTokensDetails = &details
+		out.OutputTokensDetails = u.OutputTokensDetails.deepCopy()
 	}
 	if u.CostInUsdTicks != nil {
 		out.CostInUsdTicks = new(*u.CostInUsdTicks)
 	}
 	if u.Cost != nil {
 		out.Cost = new(*u.Cost)
+	}
+	if u.OutputImages != nil {
+		out.OutputImages = new(*u.OutputImages)
+	}
+	if u.InputImages != nil {
+		out.InputImages = new(*u.InputImages)
+	}
+	if u.OutputMegapixels != nil {
+		out.OutputMegapixels = new(*u.OutputMegapixels)
+	}
+	if u.InputMegapixels != nil {
+		out.InputMegapixels = new(*u.InputMegapixels)
+	}
+	if u.VendorCost != nil {
+		out.VendorCost = new(*u.VendorCost)
+	}
+	return &out
+}
+
+func (d *ImageTokenDetails) deepCopy() *ImageTokenDetails {
+	out := *d
+	if d.ReasoningTokens != nil {
+		out.ReasoningTokens = new(*d.ReasoningTokens)
 	}
 	return &out
 }
@@ -393,6 +449,7 @@ type ImageEditParameters struct {
 	UpscaleFactor     *int                   `json:"upscale_factor,omitempty"`      // type "upscale": multiply each dimension by N
 	TargetMegapixels  *int                   `json:"target_megapixels,omitempty"`   // type "upscale": target output size; mutually exclusive with upscale_factor
 	AspectRatio       *string                `json:"aspect_ratio,omitempty"`        // aspect ratio of the edited image
+	Resolution        TolerantString         `json:"resolution,omitempty"`          // fork (TXE-6518): unified resolution tier, see ImageGenerationParameters.Resolution
 	ExtraParams       map[string]interface{} `json:"-"`
 }
 

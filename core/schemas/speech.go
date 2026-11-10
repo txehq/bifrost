@@ -172,4 +172,11 @@ type SpeechUsage struct {
 	AudioSeconds int `json:"audio_seconds,omitempty"`
 	// Cost is the per-category cost breakdown, populated when pricing is available.
 	Cost *BifrostCost `json:"cost,omitempty"`
+
+	// Fork (TXE-6518, contract C5 BF6): quantities the vendor reported. BilledCharacters is the
+	// character count the vendor billed (MiniMax usage_characters, ElevenLabs character-count); it
+	// is never Bifrost's own count of the input, which stays in InputChars. Nil when the vendor did
+	// not report it.
+	BilledCharacters *int        `json:"billed_characters,omitempty"`
+	VendorCost       *VendorCost `json:"vendor_cost,omitempty"`
 }

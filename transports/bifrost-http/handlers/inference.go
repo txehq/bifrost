@@ -266,6 +266,12 @@ var speechParamsKnownFields = map[string]bool{
 	"speed":           true,
 }
 
+// The fork's unified fields (schemas.UnifiedImageFields, schemas.UnifiedVideoGenerationFields) are
+// parsed into the typed parameters but are deliberately absent from the known-field tables below,
+// so they also stay in ExtraParams under their own name. Before they were unified they reached
+// providers only that way, and providers that have not converted the typed field yet still read
+// them there or forward them through x-bf-passthrough-extra-params (TXE-6518).
+
 // imageGenerationParamsKnownFields contains known fields for image generation requests
 // Based on ImageGenerationInput and ImageGenerationParameters structs
 var imageGenerationParamsKnownFields = map[string]bool{
@@ -2930,6 +2936,11 @@ func parseImageEditMultipartForm(form *multipart.Form, req *ImageEditHTTPRequest
 	if aspectRatioValues := form.Value["aspect_ratio"]; len(aspectRatioValues) > 0 && aspectRatioValues[0] != "" {
 		req.ImageEditParameters.AspectRatio = &aspectRatioValues[0]
 	}
+	// Fork (TXE-6518): the unified resolution tier. It is not in imageEditParamsKnownFields, so the
+	// extra-param loop in prepareImageEditRequest also keeps it under its own name.
+	if resolutionValues := form.Value["resolution"]; len(resolutionValues) > 0 && resolutionValues[0] != "" {
+		req.ImageEditParameters.Resolution = schemas.TolerantString(resolutionValues[0])
+	}
 	if qualityValues := form.Value["quality"]; len(qualityValues) > 0 && qualityValues[0] != "" {
 		req.ImageEditParameters.Quality = &qualityValues[0]
 	}
@@ -3255,23 +3266,22 @@ func (h *CompletionHandler) imageVariation(ctx *fasthttp.RequestCtx) {
 }
 
 // videoGeneration handles POST /v1/videos - Processes video generation requests
-func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
+// prepareVideoGenerationRequest parses a POST /v1/videos JSON body into a Bifrost video generation
+// request. Every error it returns is the caller's, answered with 400 and the error's text.
+func prepareVideoGenerationRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas.BifrostVideoGenerationRequest, error) {
 	var req VideoGenerationRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
-		return
+		return nil, errors.New("Invalid request payload")
 	}
 
-	provider, modelName, err := resolveModelAndProvider(ctx, h.config, req.Model)
+	provider, modelName, err := resolveModelAndProvider(ctx, config, req.Model)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
+		return nil, err
 	}
 
 	fallbacks, err := parseFallbacks(req.Fallbacks)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
+		return nil, err
 	}
 
 	if req.VideoGenerationParameters == nil {
@@ -3281,8 +3291,7 @@ func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 	// Operations driven by an input asset (video upscale, image-to-3D) carry no prompt.
 	if req.VideoGenerationInput == nil ||
 		(req.Prompt == "" && req.InputReference == nil && req.VideoURI == nil) {
-		SendError(ctx, fasthttp.StatusBadRequest, "prompt, input_reference or video_uri is required")
-		return
+		return nil, errors.New("prompt, input_reference or video_uri is required")
 	}
 
 	extraParams, err := extractExtraParams(ctx.PostBody(), videoGenerationParamsKnownFields)
@@ -3292,12 +3301,20 @@ func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
 		req.VideoGenerationParameters.ExtraParams = extraParams
 	}
 
-	bifrostReq := &schemas.BifrostVideoGenerationRequest{
+	return &schemas.BifrostVideoGenerationRequest{
 		Provider:  schemas.ModelProvider(provider),
 		Model:     modelName,
 		Input:     req.VideoGenerationInput,
 		Params:    req.VideoGenerationParameters,
 		Fallbacks: fallbacks,
+	}, nil
+}
+
+func (h *CompletionHandler) videoGeneration(ctx *fasthttp.RequestCtx) {
+	bifrostReq, err := prepareVideoGenerationRequest(ctx, h.config)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
 	}
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)

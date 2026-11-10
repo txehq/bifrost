@@ -1,6 +1,9 @@
 package schemas
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // An image source arrives either as the object form or as a bare string, so images: ["https://..."]
 // reads the way input_images does on /v1/images/generations.
@@ -104,4 +107,69 @@ func TestImageEditBackfillsAspectRatio(t *testing.T) {
 	if streamResp.AspectRatio != "3:2" {
 		t.Fatalf("stream aspect_ratio = %q, want 3:2", streamResp.AspectRatio)
 	}
+}
+
+// TXE-6518 (contract C4 BF3): resolution decodes on both image generation and image edit.
+func TestImageParametersResolution(t *testing.T) {
+	var gen ImageGenerationParameters
+	if err := Unmarshal([]byte(`{"resolution":"2K","aspect_ratio":"1:1"}`), &gen); err != nil {
+		t.Fatalf("unmarshal generation: %v", err)
+	}
+	if gen.Resolution != "2K" {
+		t.Fatalf("generation resolution = %v, want 2K", gen.Resolution)
+	}
+	var edit ImageEditParameters
+	if err := Unmarshal([]byte(`{"resolution":"4K"}`), &edit); err != nil {
+		t.Fatalf("unmarshal edit: %v", err)
+	}
+	if edit.Resolution != "4K" {
+		t.Fatalf("edit resolution = %v, want 4K", edit.Resolution)
+	}
+}
+
+// TXE-6518 (contract C6 BF10): a response with blocked images serialises content_filter, and a
+// response whose every image was blocked carries "data": [] after the pipeline's BackfillParams,
+// never "data": null.
+func TestImageResponseContentFilter(t *testing.T) {
+	t.Run("all blocked", func(t *testing.T) {
+		resp := &BifrostImageGenerationResponse{
+			ContentFilter: &ContentFilterInfo{FilteredCount: 2, Reasons: []string{"PROHIBITED_CONTENT", "58061214"}},
+		}
+		resp.BackfillParams(&BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{Model: "m"}})
+		out, err := Marshal(resp)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		for _, want := range []string{`"data":[]`, `"content_filter":{"filtered_count":2,"reasons":["PROHIBITED_CONTENT","58061214"]}`} {
+			if !strings.Contains(string(out), want) {
+				t.Fatalf("%s missing from %s", want, out)
+			}
+		}
+	})
+	t.Run("nil request still keeps data an array", func(t *testing.T) {
+		resp := &BifrostImageGenerationResponse{}
+		resp.BackfillParams(nil)
+		if resp.Data == nil || len(resp.Data) != 0 {
+			t.Fatalf("data = %#v, want an empty array", resp.Data)
+		}
+	})
+	t.Run("partly blocked keeps delivered images", func(t *testing.T) {
+		resp := &BifrostImageGenerationResponse{
+			Data:          []ImageData{{URL: "https://example.com/1.png"}},
+			ContentFilter: &ContentFilterInfo{FilteredCount: 1, Reasons: []string{"SAFETY"}},
+		}
+		resp.BackfillParams(&BifrostRequest{ImageGenerationRequest: &BifrostImageGenerationRequest{Model: "m"}})
+		if len(resp.Data) != 1 {
+			t.Fatalf("data = %#v, want the one delivered image", resp.Data)
+		}
+	})
+	t.Run("no filter, no key", func(t *testing.T) {
+		out, err := Marshal(&BifrostImageGenerationResponse{Data: []ImageData{{URL: "u"}}})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(out), "content_filter") {
+			t.Fatalf("content_filter present on an unfiltered response: %s", out)
+		}
+	})
 }

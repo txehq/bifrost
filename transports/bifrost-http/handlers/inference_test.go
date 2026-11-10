@@ -6,6 +6,7 @@ import (
 	"slices"
 	"testing"
 
+	schemas "github.com/capsohq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
@@ -98,5 +99,136 @@ func BenchmarkPrepareTranscriptionRequest(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+func jsonRequestCtx(uri, body string) *fasthttp.RequestCtx {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.SetRequestURI(uri)
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBody([]byte(body))
+	return ctx
+}
+
+// TXE-6518 (contract C4 BF3): the four unified video fields reach the typed parameters, and also
+// stay in ExtraParams under their own names, which is where byteplus, minimax and every provider
+// that forwards its extra params read them before they were unified.
+func TestPrepareVideoGenerationRequest_UnifiedFields(t *testing.T) {
+	req, err := prepareVideoGenerationRequest(jsonRequestCtx("/v1/videos",
+		`{"model":"byteplus/seedance-2-0-fast","prompt":"a fox","input_reference":"https://example.com/first.png",`+
+			`"aspect_ratio":"16:9","resolution":"720p","last_frame":"https://example.com/last.png",`+
+			`"reference_images":["https://example.com/a.png","data:image/png;base64,AAAA"],"watermark":false}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	p := req.Params
+	if p.AspectRatio != "16:9" {
+		t.Fatalf("aspect_ratio = %q, want 16:9", p.AspectRatio)
+	}
+	if p.Resolution != "720p" {
+		t.Fatalf("resolution = %q, want 720p", p.Resolution)
+	}
+	if p.LastFrame != "https://example.com/last.png" {
+		t.Fatalf("last_frame = %q", p.LastFrame)
+	}
+	if !slices.Equal([]string(p.ReferenceImages), []string{"https://example.com/a.png", "data:image/png;base64,AAAA"}) {
+		t.Fatalf("reference_images = %v", p.ReferenceImages)
+	}
+	for _, name := range schemas.UnifiedVideoGenerationFields {
+		if _, ok := p.ExtraParams[name]; !ok {
+			t.Errorf("%s missing from ExtraParams %v: providers that read it there would lose it", name, p.ExtraParams)
+		}
+	}
+	if p.ExtraParams["watermark"] != false {
+		t.Errorf("watermark = %v, the vendor switch must stay an extra param", p.ExtraParams["watermark"])
+	}
+	if req.Input == nil || req.Input.InputReference == nil || *req.Input.InputReference != "https://example.com/first.png" {
+		t.Fatalf("input_reference = %+v", req.Input)
+	}
+}
+
+// Runway callers send reference_images as objects. The typed list ignores that shape instead of
+// failing the whole request, and the objects still reach Runway through ExtraParams.
+func TestPrepareVideoGenerationRequest_ObjectReferenceImagesStayExtra(t *testing.T) {
+	req, err := prepareVideoGenerationRequest(jsonRequestCtx("/v1/videos",
+		`{"model":"runway/gen4_turbo","prompt":"a fox","reference_images":[{"uri":"https://example.com/a.png","tag":"fox"}]}`), nil)
+	if err != nil {
+		t.Fatalf("object reference_images must not fail the request: %v", err)
+	}
+	if req.Params.ReferenceImages != nil {
+		t.Fatalf("typed reference_images = %v, want nil for the object form", req.Params.ReferenceImages)
+	}
+	refs, ok := req.Params.ExtraParams["reference_images"].([]any)
+	if !ok || len(refs) != 1 {
+		t.Fatalf("ExtraParams reference_images = %#v, want the raw objects", req.Params.ExtraParams["reference_images"])
+	}
+}
+
+// Runware 3D tasks take a numeric resolution, sent before the field was unified. It must not fail
+// the request: the typed field stays empty and the number reaches Runware as an extra param.
+func TestPrepareVideoGenerationRequest_NumericResolutionStaysExtra(t *testing.T) {
+	req, err := prepareVideoGenerationRequest(jsonRequestCtx("/v1/videos",
+		`{"model":"runware/tencent:hunyuan3d@2.1","input_reference":"https://example.com/chair.png","type":"3d","resolution":1024}`), nil)
+	if err != nil {
+		t.Fatalf("numeric resolution must not fail the request: %v", err)
+	}
+	if req.Params.Resolution != "" {
+		t.Fatalf("typed resolution = %q, want empty for a number", req.Params.Resolution)
+	}
+	if v, ok := req.Params.ExtraParams["resolution"].(float64); !ok || v != 1024 {
+		t.Fatalf("ExtraParams resolution = %#v, want the number 1024", req.Params.ExtraParams["resolution"])
+	}
+}
+
+func TestPrepareVideoGenerationRequest_Validation(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"bad json", `{`, "Invalid request payload"},
+		{"no prompt or input", `{"model":"openai/sora-2","resolution":"720p"}`, "prompt, input_reference or video_uri is required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := prepareVideoGenerationRequest(jsonRequestCtx("/v1/videos", tc.body), nil)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TXE-6518 (contract C4 BF3): the unified image resolution reaches the typed parameters on
+// /v1/images/generations and stays an extra param under its own name.
+func TestPrepareImageGenerationRequest_Resolution(t *testing.T) {
+	_, req, err := prepareImageGenerationRequest(jsonRequestCtx("/v1/images/generations",
+		`{"model":"gemini/gemini-3-pro-image-preview","prompt":"a teapot","aspect_ratio":"16:9","resolution":"2K"}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Params.Resolution != "2K" {
+		t.Fatalf("resolution = %q, want 2K", req.Params.Resolution)
+	}
+	if req.Params.ExtraParams["resolution"] != "2K" {
+		t.Fatalf("ExtraParams resolution = %v, want 2K", req.Params.ExtraParams["resolution"])
+	}
+	if _, ok := req.Params.ExtraParams["aspect_ratio"]; ok {
+		t.Fatalf("aspect_ratio was already unified and must not become an extra param")
+	}
+}
+
+// The unified fields are kept out of the known-field tables on purpose (see the comment above
+// imageGenerationParamsKnownFields). Adding one there would silently stop it reaching every
+// provider that still reads it as an extra param.
+func TestUnifiedFieldsAreNotKnownFields(t *testing.T) {
+	for _, name := range schemas.UnifiedVideoGenerationFields {
+		if videoGenerationParamsKnownFields[name] {
+			t.Errorf("%s is in videoGenerationParamsKnownFields", name)
+		}
+	}
+	for _, name := range schemas.UnifiedImageFields {
+		if imageGenerationParamsKnownFields[name] {
+			t.Errorf("%s is in imageGenerationParamsKnownFields", name)
+		}
+		if imageEditParamsKnownFields[name] {
+			t.Errorf("%s is in imageEditParamsKnownFields", name)
+		}
 	}
 }
