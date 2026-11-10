@@ -63,17 +63,34 @@ func checkSpeechParams(params *schemas.SpeechParameters) *schemas.BifrostError {
 }
 
 // isSSML reports whether the input is an SSML document: its root element is <speak>
-// (https://docs.cloud.google.com/text-to-speech/docs/ssml).
+// (https://docs.cloud.google.com/text-to-speech/docs/ssml). An XML declaration, processing
+// instructions and comments may come before the root element.
 func isSSML(input string) bool {
-	rest, ok := strings.CutPrefix(strings.TrimSpace(input), "<speak")
-	if !ok || rest == "" {
-		return false
+	rest := strings.TrimSpace(input)
+	for {
+		var end string
+		switch {
+		case strings.HasPrefix(rest, "<?"):
+			end = "?>"
+		case strings.HasPrefix(rest, "<!--"):
+			end = "-->"
+		default:
+			after, ok := strings.CutPrefix(rest, "<speak")
+			if !ok || after == "" {
+				return false
+			}
+			switch after[0] {
+			case '>', ' ', '\t', '\r', '\n', '/':
+				return true
+			}
+			return false
+		}
+		_, after, found := strings.Cut(rest, end)
+		if !found {
+			return false
+		}
+		rest = strings.TrimSpace(after)
 	}
-	switch rest[0] {
-	case '>', ' ', '\t', '\r', '\n', '/':
-		return true
-	}
-	return false
 }
 
 // ToGoogleCloudTTSSpeechRequest maps a unified speech request onto the text:synthesize

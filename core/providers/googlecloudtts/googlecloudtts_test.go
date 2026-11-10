@@ -191,6 +191,27 @@ func TestSpeechRequestMapping(t *testing.T) {
 			},
 		},
 		{
+			name:  "an XML declaration and a comment may precede the speak root",
+			input: `<?xml version="1.0"?>` + "\n<!-- greeting -->\n" + ssml,
+			want: map[string]any{
+				"input": map[string]any{"ssml": `<?xml version="1.0"?>` + "\n<!-- greeting -->\n" + ssml}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
+			},
+		},
+		{
+			name:  "a declaration before another root element stays text",
+			input: `<?xml version="1.0"?><note>hi</note>`,
+			want: map[string]any{
+				"input": map[string]any{"text": `<?xml version="1.0"?><note>hi</note>`}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
+			},
+		},
+		{
+			name:  "an unterminated comment stays text",
+			input: "<!-- <speak>hi</speak>",
+			want: map[string]any{
+				"input": map[string]any{"text": "<!-- <speak>hi</speak>"}, "voice": map[string]any{}, "audioConfig": map[string]any{"audioEncoding": "MP3"},
+			},
+		},
+		{
 			name:  "text that only mentions a speak tag stays text",
 			input: "<speaker> is not SSML, and neither is a late <speak>",
 			want: map[string]any{
@@ -507,5 +528,75 @@ func TestDefaultBaseURL(t *testing.T) {
 	}
 	if config.NetworkConfig.BaseURL != "https://texttospeech.googleapis.com" {
 		t.Errorf("base URL = %q, want https://texttospeech.googleapis.com", config.NetworkConfig.BaseURL)
+	}
+}
+
+// The request-path cost of the provider (AGENTS.md "Every change states its cost on the
+// request flow"). The provider is new, so there is no before: the numbers are its whole
+// cost per speech request.
+
+// BenchmarkToGoogleCloudTTSSpeechRequest measures the unified request's conversion into
+// the text:synthesize body, the only per-request work before the upstream call besides
+// the JSON encode.
+func BenchmarkToGoogleCloudTTSSpeechRequest(b *testing.B) {
+	ssml := "<speak>" + sampleText + "</speak>"
+	for _, bc := range []struct {
+		name  string
+		input string
+	}{{"text", sampleText}, {"ssml", ssml}} {
+		req := speechRequest(bc.input, &schemas.SpeechParameters{
+			VoiceConfig:    voice(sampleVoice),
+			LanguageCode:   schemas.Ptr(sampleLanguageCode),
+			ResponseFormat: "mp3",
+			Speed:          schemas.Ptr(1.25),
+		})
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if googlecloudtts.ToGoogleCloudTTSSpeechRequest(req) == nil {
+					b.Fatal("no request")
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkSpeech measures one whole speech request against a loopback upstream that
+// answers 48 kB of audio (64 kB of base64): validation, conversion, the JSON encode, the
+// call on a kept-alive connection, the JSON decode and the base64 decode.
+func BenchmarkSpeech(b *testing.B) {
+	audio := bytes.Repeat([]byte{0xff, 0xf3, 0x44, 0xc4}, 12*1024)
+	body := []byte(`{"audioContent":"` + base64.StdEncoding.EncodeToString(audio) + `"}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+	provider, err := googlecloudtts.NewGoogleCloudTTSProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		b.Fatalf("NewGoogleCloudTTSProvider: %v", err)
+	}
+	ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	key := testKey()
+	req := speechRequest(sampleText, &schemas.SpeechParameters{
+		VoiceConfig:    voice(sampleVoice),
+		LanguageCode:   schemas.Ptr(sampleLanguageCode),
+		ResponseFormat: "mp3",
+	})
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(audio)))
+	for b.Loop() {
+		resp, bifrostErr := provider.Speech(ctx, key, req)
+		if bifrostErr != nil {
+			b.Fatalf("Speech error: %+v", bifrostErr.Error)
+		}
+		if len(resp.Audio) != len(audio) {
+			b.Fatalf("audio = %d bytes, want %d", len(resp.Audio), len(audio))
+		}
 	}
 }
