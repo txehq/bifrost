@@ -132,3 +132,150 @@ type DashScopeTaskListItem struct {
 	StartTime int64  `json:"start_time,omitempty"`
 	EndTime   int64  `json:"end_time,omitempty"`
 }
+
+// DashScopeTTSRequest is the body of a non-streamed Qwen3-TTS call to
+// /api/v1/services/aigc/multimodal-generation/generation.
+type DashScopeTTSRequest struct {
+	Model string            `json:"model"`
+	Input DashScopeTTSInput `json:"input"`
+
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// GetExtraParams returns the caller's extra fields, merged into the body only under
+// x-bf-passthrough-extra-params (contract C4, agreement two).
+func (r *DashScopeTTSRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// DashScopeTTSInput carries the text, the voice and the language. language_type is omitted
+// when the caller gave no language_code, which leaves the vendor default (Auto).
+type DashScopeTTSInput struct {
+	Text         string `json:"text"`
+	Voice        string `json:"voice"`
+	LanguageType string `json:"language_type,omitempty"`
+}
+
+// DashScopeTTSResponse is a non-streamed Qwen3-TTS answer. output.audio.data is empty for a
+// non-streamed call: the audio is the signed link in output.audio.url, valid until
+// output.audio.expires_at (Unix seconds).
+type DashScopeTTSResponse struct {
+	RequestID string             `json:"request_id,omitempty"`
+	Code      string             `json:"code,omitempty"`
+	Message   string             `json:"message,omitempty"`
+	Output    DashScopeTTSOutput `json:"output"`
+	Usage     *DashScopeTTSUsage `json:"usage,omitempty"`
+}
+
+// DashScopeTTSOutput is the output object of a Qwen3-TTS answer.
+type DashScopeTTSOutput struct {
+	FinishReason string             `json:"finish_reason,omitempty"`
+	Audio        *DashScopeTTSAudio `json:"audio,omitempty"`
+}
+
+// DashScopeTTSAudio is the synthesized audio: a link with its expiry, or base64 data.
+type DashScopeTTSAudio struct {
+	ID        string `json:"id,omitempty"`
+	URL       string `json:"url,omitempty"`
+	Data      string `json:"data,omitempty"`
+	ExpiresAt *int64 `json:"expires_at,omitempty"`
+}
+
+// DashScopeTTSUsage is the usage Qwen3-TTS reports. characters is the vendor's billed
+// character count (Qwen3-TTS-Flash only); the token counts are 0 for that model and are
+// kept as reported.
+type DashScopeTTSUsage struct {
+	Characters   *int `json:"characters,omitempty"`
+	InputTokens  *int `json:"input_tokens,omitempty"`
+	OutputTokens *int `json:"output_tokens,omitempty"`
+	TotalTokens  *int `json:"total_tokens,omitempty"`
+}
+
+// DashScopeASRRequest is the body of a synchronous Qwen3-ASR call to
+// /api/v1/services/aigc/multimodal-generation/generation.
+type DashScopeASRRequest struct {
+	Model      string                  `json:"model"`
+	Input      DashScopeASRInput       `json:"input"`
+	Parameters *DashScopeASRParameters `json:"parameters,omitempty"`
+
+	ExtraParams map[string]interface{} `json:"-"`
+}
+
+// GetExtraParams returns the caller's extra fields, merged into the body only under
+// x-bf-passthrough-extra-params (contract C4, agreement two).
+func (r *DashScopeASRRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// DashScopeASRInput holds the messages: an optional system message carrying the context
+// text, then the user message carrying the audio.
+type DashScopeASRInput struct {
+	Messages []DashScopeASRMessage `json:"messages"`
+}
+
+// DashScopeASRMessage is one message of a Qwen3-ASR request or answer.
+type DashScopeASRMessage struct {
+	Role        string                   `json:"role"`
+	Content     []DashScopeASRContent    `json:"content"`
+	Annotations []DashScopeASRAnnotation `json:"annotations,omitempty"`
+}
+
+// DashScopeASRContent is one content item: {"audio": <URL or data URL>} or {"text": ...}.
+type DashScopeASRContent struct {
+	Audio string  `json:"audio,omitempty"`
+	Text  *string `json:"text,omitempty"`
+}
+
+// DashScopeASRAnnotation is the audio_info annotation of a Qwen3-ASR answer.
+type DashScopeASRAnnotation struct {
+	Type     string `json:"type,omitempty"`
+	Language string `json:"language,omitempty"`
+	Emotion  string `json:"emotion,omitempty"`
+}
+
+// DashScopeASRParameters carries asr_options.
+type DashScopeASRParameters struct {
+	ASROptions *DashScopeASROptions `json:"asr_options,omitempty"`
+}
+
+// DashScopeASROptions are the recognition options Bifrost converts unified fields into.
+type DashScopeASROptions struct {
+	Language string `json:"language,omitempty"`
+}
+
+// DashScopeASRResponse is a synchronous Qwen3-ASR answer.
+type DashScopeASRResponse struct {
+	RequestID string             `json:"request_id,omitempty"`
+	Code      string             `json:"code,omitempty"`
+	Message   string             `json:"message,omitempty"`
+	Output    DashScopeASROutput `json:"output"`
+	Usage     *DashScopeASRUsage `json:"usage,omitempty"`
+}
+
+// DashScopeASROutput is the output object of a Qwen3-ASR answer.
+type DashScopeASROutput struct {
+	Choices []DashScopeASRChoice `json:"choices,omitempty"`
+}
+
+// DashScopeASRChoice is one choice of a Qwen3-ASR answer.
+type DashScopeASRChoice struct {
+	FinishReason string              `json:"finish_reason,omitempty"`
+	Message      DashScopeASRMessage `json:"message"`
+}
+
+// DashScopeASRUsage is the usage Qwen3-ASR reports: the billed audio seconds and the token
+// details. input_tokens and output_tokens are read when the vendor sends them.
+type DashScopeASRUsage struct {
+	Seconds             *float64                   `json:"seconds,omitempty"`
+	InputTokens         *int                       `json:"input_tokens,omitempty"`
+	OutputTokens        *int                       `json:"output_tokens,omitempty"`
+	TotalTokens         *int                       `json:"total_tokens,omitempty"`
+	InputTokensDetails  *DashScopeASRTokensDetails `json:"input_tokens_details,omitempty"`
+	OutputTokensDetails *DashScopeASRTokensDetails `json:"output_tokens_details,omitempty"`
+}
+
+// DashScopeASRTokensDetails splits a token count by modality.
+type DashScopeASRTokensDetails struct {
+	TextTokens  *int `json:"text_tokens,omitempty"`
+	AudioTokens *int `json:"audio_tokens,omitempty"`
+}

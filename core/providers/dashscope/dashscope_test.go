@@ -1,6 +1,7 @@
 package dashscope
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -26,7 +27,8 @@ func newTestProvider(t *testing.T, network schemas.NetworkConfig) *DashScopeProv
 }
 
 // TestDashScopeBases pins which base each operation family uses: the Singapore site by
-// default, the configured regional base when set, and the workspace base for video only.
+// default, the configured regional base when set, and the workspace base for video and
+// Qwen3-ASR transcription.
 func TestDashScopeBases(t *testing.T) {
 	const workspace = "https://ws-1.ap-southeast-1.maas.aliyuncs.com"
 	cases := []struct {
@@ -37,10 +39,10 @@ func TestDashScopeBases(t *testing.T) {
 	}{
 		{name: "defaults to the Singapore site", wantRegional: DefaultBaseURL, wantWorkspace: DefaultBaseURL},
 		{name: "configured regional base, no workspace base", network: schemas.NetworkConfig{BaseURL: "https://dashscope.example.com/"}, wantRegional: "https://dashscope.example.com", wantWorkspace: "https://dashscope.example.com"},
-		{name: "workspace base for video", network: schemas.NetworkConfig{WorkspaceBaseURL: workspace + "/"}, wantRegional: DefaultBaseURL, wantWorkspace: workspace},
+		{name: "workspace base for video and transcription", network: schemas.NetworkConfig{WorkspaceBaseURL: workspace + "/"}, wantRegional: DefaultBaseURL, wantWorkspace: workspace},
 	}
-	regional := []schemas.RequestType{schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.SpeechRequest, schemas.SpeechStreamRequest, schemas.TranscriptionRequest}
-	video := []schemas.RequestType{schemas.VideoGenerationRequest, schemas.VideoRetrieveRequest, schemas.VideoCancelRequest, schemas.VideoDownloadRequest, schemas.VideoListRequest, schemas.VideoDeleteRequest}
+	regional := []schemas.RequestType{schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.SpeechRequest, schemas.SpeechStreamRequest}
+	video := []schemas.RequestType{schemas.TranscriptionRequest, schemas.VideoGenerationRequest, schemas.VideoRetrieveRequest, schemas.VideoCancelRequest, schemas.VideoDownloadRequest, schemas.VideoListRequest, schemas.VideoDeleteRequest}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			provider := newTestProvider(t, tc.network)
@@ -79,7 +81,7 @@ func TestDashScopeRequestHeaders(t *testing.T) {
 }
 
 // dashScopeImplementedOperations are the Provider methods the provider implements; the video
-// tests are in videos_test.go and the image tests below.
+// tests are in videos_test.go and the image, speech and transcription tests below.
 var dashScopeImplementedOperations = map[string]bool{
 	"ImageGeneration": true,
 	"ImageEdit":       true,
@@ -87,6 +89,8 @@ var dashScopeImplementedOperations = map[string]bool{
 	"VideoRetrieve":   true,
 	"VideoDownload":   true,
 	"VideoList":       true,
+	"Speech":          true,
+	"Transcription":   true,
 }
 
 // TestDashScopeOperationsAreUnsupported pins that every operation the provider does not
@@ -535,7 +539,7 @@ func TestDashScopeDeclaresDeliverableImageFields(t *testing.T) {
 			}
 		})
 	}
-	if _, declared := provider.SupportedUnifiedFields(schemas.TranscriptionRequest); declared {
+	if _, declared := provider.SupportedUnifiedFields(schemas.ChatCompletionRequest); declared {
 		t.Error("dashscope declares unified fields for an operation it does not implement")
 	}
 }
@@ -754,5 +758,365 @@ func TestDashScopeImageKeepsProviderResponseHeaders(t *testing.T) {
 				t.Fatalf("provider response headers = %v, want Retry-After and X-Request-Id kept", headers)
 			}
 		})
+	}
+}
+
+// recordedVendor answers every request with one recorded DashScope response and keeps what it
+// was sent.
+type recordedVendor struct {
+	status int
+	body   string
+
+	mu      sync.Mutex
+	calls   int
+	path    string
+	auth    string
+	request map[string]any
+}
+
+func (v *recordedVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	raw, _ := io.ReadAll(r.Body)
+	v.mu.Lock()
+	v.calls++
+	v.path = r.URL.Path
+	v.auth = r.Header.Get("Authorization")
+	v.request = nil
+	_ = json.Unmarshal(raw, &v.request)
+	v.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	if v.status != 0 {
+		w.WriteHeader(v.status)
+	}
+	_, _ = io.WriteString(w, v.body)
+}
+
+func newRecordedProvider(t *testing.T, vendor *recordedVendor) *DashScopeProvider {
+	t.Helper()
+	server := httptest.NewServer(vendor)
+	t.Cleanup(server.Close)
+	return newTestProvider(t, schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true})
+}
+
+func testContext(t *testing.T) *schemas.BifrostContext {
+	return schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+}
+
+var testKey = schemas.Key{Value: *schemas.NewSecretVar("sk-dash")}
+
+// Recorded from the Qwen3-TTS API reference (Qwen3-TTS-Flash, non-streamed).
+const recordedTTSResponse = `{"status_code":200,"request_id":"5c63c65c-cad8-4bf4-959d-xxxxxxxxxxxx","code":"","message":"",` +
+	`"output":{"text":null,"finish_reason":"stop","choices":null,"audio":{"data":"",` +
+	`"url":"http://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/1d/ab/20251218/audio.wav?Expires=1766113409&OSSAccessKeyId=x&Signature=y",` +
+	`"id":"audio_5c63c65c-cad8-4bf4-959d-xxxxxxxxxxxx","expires_at":1766113409}},` +
+	`"usage":{"input_tokens":0,"output_tokens":0,"characters":195}}`
+
+// Recorded from the Qwen3-ASR API reference (qwen3-asr-flash, DashScope sync).
+const recordedASRResponse = `{"output":{"choices":[{"finish_reason":"stop","message":{"annotations":[{"language":"zh","type":"audio_info","emotion":"neutral"}],` +
+	`"content":[{"text":"Welcome to Alibaba Cloud."}],"role":"assistant"}}]},` +
+	`"usage":{"input_tokens_details":{"text_tokens":0},"output_tokens_details":{"text_tokens":6},"seconds":1},"request_id":"568e2bf0-d6f2-97f8-9f15-a57b11dc6977"}`
+
+func speechRequest(voice string, mutate func(*schemas.SpeechParameters)) *schemas.BifrostSpeechRequest {
+	params := &schemas.SpeechParameters{VoiceConfig: &schemas.SpeechVoiceInput{Voice: schemas.Ptr(voice)}}
+	if mutate != nil {
+		mutate(params)
+	}
+	return &schemas.BifrostSpeechRequest{Provider: schemas.DashScope, Model: "qwen3-tts-flash", Input: &schemas.SpeechInput{Input: "Hello"}, Params: params}
+}
+
+// TestDashScopeSpeech pins Qwen3-TTS: Tokun's text, voice and language reach input.text,
+// input.voice and input.language_type; the answer carries the vendor's link and expires_at;
+// usage.billed_characters is the vendor's characters (contract C4, C5, C9).
+func TestDashScopeSpeech(t *testing.T) {
+	vendor := &recordedVendor{body: recordedTTSResponse}
+	provider := newRecordedProvider(t, vendor)
+
+	resp, bifrostErr := provider.Speech(testContext(t), testKey, speechRequest("Cherry", func(p *schemas.SpeechParameters) {
+		p.LanguageCode = schemas.Ptr("English")
+		p.ExtraParams = map[string]interface{}{"language_code": "English"}
+	}))
+	if bifrostErr != nil {
+		t.Fatalf("Speech: %+v", bifrostErr.Error)
+	}
+
+	if vendor.path != multimodalGenerationPath || vendor.auth != "Bearer sk-dash" {
+		t.Errorf("path, auth = %q, %q", vendor.path, vendor.auth)
+	}
+	input, _ := vendor.request["input"].(map[string]any)
+	if vendor.request["model"] != "qwen3-tts-flash" || input["text"] != "Hello" || input["voice"] != "Cherry" || input["language_type"] != "English" {
+		t.Errorf("vendor body = %v, want model, input.text, input.voice, input.language_type", vendor.request)
+	}
+	if !resp.HasAudioURL() || !strings.Contains(*resp.URL, "Expires=1766113409") || resp.ExpiresAt == nil || *resp.ExpiresAt != 1766113409 {
+		t.Errorf("url, expires_at = %v, %v; want the vendor's link and expiry", resp.URL, resp.ExpiresAt)
+	}
+	if len(resp.Audio) != 0 {
+		t.Errorf("audio = %d bytes, want none: Bifrost does not download the link", len(resp.Audio))
+	}
+	if resp.Usage == nil || resp.Usage.BilledCharacters == nil || *resp.Usage.BilledCharacters != 195 {
+		t.Errorf("usage = %+v, want billed_characters 195", resp.Usage)
+	}
+
+	t.Run("language_code omitted leaves the vendor default", func(t *testing.T) {
+		if _, bifrostErr := provider.Speech(testContext(t), testKey, speechRequest("Cherry", nil)); bifrostErr != nil {
+			t.Fatalf("Speech: %+v", bifrostErr.Error)
+		}
+		input, _ := vendor.request["input"].(map[string]any)
+		if _, ok := input["language_type"]; ok {
+			t.Errorf("vendor input = %v, want no language_type", input)
+		}
+	})
+}
+
+// TestDashScopeSpeechRefusesUndeliverableFields pins that the unified TTS fields Qwen3-TTS
+// cannot take return 400 caller_unsupported_parameter naming the field, with no upstream call.
+func TestDashScopeSpeechRefusesUndeliverableFields(t *testing.T) {
+	vendor := &recordedVendor{body: recordedTTSResponse}
+	provider := newRecordedProvider(t, vendor)
+
+	cases := []struct {
+		param  string
+		mutate func(*schemas.SpeechParameters)
+	}{
+		{"response_format", func(p *schemas.SpeechParameters) { p.ResponseFormat = "mp3" }},
+		{"speed", func(p *schemas.SpeechParameters) { p.Speed = schemas.Ptr(1.25) }},
+		{"instructions", func(p *schemas.SpeechParameters) { p.Instructions = "whisper" }},
+		{"with_timestamps", func(p *schemas.SpeechParameters) { p.WithTimestamps = schemas.Ptr(true) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.param, func(t *testing.T) {
+			req := speechRequest("Cherry", tc.mutate)
+			bifrostErr := schemas.CheckDeclaredUnifiedFields(provider, &schemas.BifrostRequest{RequestType: schemas.SpeechRequest, SpeechRequest: req})
+			assertUnsupportedParameter(t, bifrostErr, tc.param)
+		})
+	}
+
+	t.Run("multi-speaker voice", func(t *testing.T) {
+		req := speechRequest("Cherry", func(p *schemas.SpeechParameters) {
+			p.VoiceConfig = &schemas.SpeechVoiceInput{MultiVoiceConfig: []schemas.VoiceConfig{{Speaker: "a", Voice: "Cherry"}}}
+		})
+		_, bifrostErr := provider.Speech(testContext(t), testKey, req)
+		assertUnsupportedParameter(t, bifrostErr, "voice")
+	})
+
+	t.Run("voice and language_code are delivered", func(t *testing.T) {
+		req := speechRequest("Cherry", func(p *schemas.SpeechParameters) { p.LanguageCode = schemas.Ptr("Chinese") })
+		if bifrostErr := schemas.CheckDeclaredUnifiedFields(provider, &schemas.BifrostRequest{RequestType: schemas.SpeechRequest, SpeechRequest: req}); bifrostErr != nil {
+			t.Fatalf("got %+v, want no refusal", bifrostErr.Error)
+		}
+	})
+
+	if vendor.calls != 0 {
+		t.Fatalf("refused requests made %d upstream calls", vendor.calls)
+	}
+}
+
+func assertUnsupportedParameter(t *testing.T, bifrostErr *schemas.BifrostError, param string) {
+	t.Helper()
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+		t.Fatalf("got %+v, want a 400", bifrostErr)
+	}
+	if bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerUnsupportedParameter || bifrostErr.Error == nil || bifrostErr.Error.Param != param {
+		t.Fatalf("error_type, param = %q, %+v; want caller_unsupported_parameter naming %q", bifrostErr.ExtraFields.ErrorType, bifrostErr.Error, param)
+	}
+}
+
+// TestDashScopeSpeechEmptyResult pins that a vendor 200 with neither a link nor audio data is
+// the vendor's empty result, not a success with nothing in it.
+func TestDashScopeSpeechEmptyResult(t *testing.T) {
+	provider := newRecordedProvider(t, &recordedVendor{body: `{"request_id":"r","output":{"finish_reason":"stop","audio":{"data":"","url":""}}}`})
+	_, bifrostErr := provider.Speech(testContext(t), testKey, speechRequest("Cherry", nil))
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 502 || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeProviderEmptyResult {
+		t.Fatalf("got %+v, want 502 provider_empty_result", bifrostErr)
+	}
+}
+
+// TestDashScopeSpeechAndTranscriptionVendorErrors pins that recorded DashScope errors keep the
+// vendor's status and code and carry error_type, on both operations.
+func TestDashScopeSpeechAndTranscriptionVendorErrors(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   schemas.ErrorType
+	}{
+		{"invalid parameter", 400, `{"request_id":"r1","code":"InvalidParameter","message":"The voice is invalid"}`, schemas.ErrorTypeCallerInvalidRequest},
+		{"invalid key", 401, `{"request_id":"r2","code":"InvalidApiKey","message":"Invalid API-key provided."}`, schemas.ErrorTypeProviderAuthFailed},
+		{"content inspection", 400, `{"request_id":"r3","code":"DataInspectionFailed","message":"Input data may contain inappropriate content."}`, schemas.ErrorTypeCallerContentFiltered},
+		{"throttled", 429, `{"request_id":"r4","code":"Throttling.RateQuota","message":"Requests rate limit exceeded"}`, schemas.ErrorTypeProviderRateLimited},
+		{"internal", 500, `{"request_id":"r5","code":"InternalError","message":"An internal error has occured"}`, schemas.ErrorTypeProviderServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := newRecordedProvider(t, &recordedVendor{status: tc.status, body: tc.body})
+			_, speechErr := provider.Speech(testContext(t), testKey, speechRequest("Cherry", nil))
+			_, asrErr := provider.Transcription(testContext(t), testKey, transcriptionRequest(nil, "https://example.com/a.wav", nil))
+			for op, bifrostErr := range map[schemas.RequestType]*schemas.BifrostError{schemas.SpeechRequest: speechErr, schemas.TranscriptionRequest: asrErr} {
+				if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tc.status {
+					t.Fatalf("%s: got %+v, want status %d", op, bifrostErr, tc.status)
+				}
+				if got := schemas.ClassifyErrorType(bifrostErr, op); got != tc.want {
+					t.Errorf("%s: error_type = %q, want %q", op, got, tc.want)
+				}
+			}
+		})
+	}
+
+	t.Run("error code in a 200", func(t *testing.T) {
+		provider := newRecordedProvider(t, &recordedVendor{body: `{"request_id":"r6","code":"DataInspectionFailed","message":"Output data may contain inappropriate content.","output":{}}`})
+		_, bifrostErr := provider.Speech(testContext(t), testKey, speechRequest("Cherry", nil))
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 || bifrostErr.ExtraFields.ErrorType != schemas.ErrorTypeCallerContentFiltered {
+			t.Fatalf("got %+v, want 400 caller_content_filtered", bifrostErr)
+		}
+		if bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "DataInspectionFailed" {
+			t.Fatalf("error.code = %+v, want the vendor's code", bifrostErr.Error)
+		}
+	})
+}
+
+func transcriptionRequest(file []byte, url string, mutate func(*schemas.TranscriptionParameters)) *schemas.BifrostTranscriptionRequest {
+	params := &schemas.TranscriptionParameters{ExtraParams: map[string]interface{}{}}
+	if url != "" {
+		params.ExtraParams[schemas.TranscriptionURLParam] = url
+	}
+	if mutate != nil {
+		mutate(params)
+	}
+	req := &schemas.BifrostTranscriptionRequest{Provider: schemas.DashScope, Model: "qwen3-asr-flash", Params: params}
+	if file != nil {
+		req.Input = &schemas.TranscriptionInput{File: file, Filename: "clip.wav"}
+	}
+	return req
+}
+
+// vendorMessages returns input.messages of the recorded request.
+func vendorMessages(t *testing.T, vendor *recordedVendor) []map[string]any {
+	t.Helper()
+	input, _ := vendor.request["input"].(map[string]any)
+	raw, _ := input["messages"].([]any)
+	out := make([]map[string]any, 0, len(raw))
+	for _, m := range raw {
+		message, _ := m.(map[string]any)
+		out = append(out, message)
+	}
+	return out
+}
+
+func firstContent(message map[string]any) map[string]any {
+	content, _ := message["content"].([]any)
+	if len(content) == 0 {
+		return nil
+	}
+	item, _ := content[0].(map[string]any)
+	return item
+}
+
+// TestDashScopeTranscription pins Qwen3-ASR: a URL input reaches the vendor unchanged as the
+// user message's audio item; the answer's text, language and the vendor's seconds and token
+// details come back (contract C4, C5).
+func TestDashScopeTranscription(t *testing.T) {
+	const clip = "https://example.com/audio/clip.wav?sig=a%2Fb"
+	vendor := &recordedVendor{body: recordedASRResponse}
+	provider := newRecordedProvider(t, vendor)
+
+	resp, bifrostErr := provider.Transcription(testContext(t), testKey, transcriptionRequest(nil, clip, func(p *schemas.TranscriptionParameters) {
+		p.Language = schemas.Ptr("en")
+		p.Prompt = schemas.Ptr("Alibaba Cloud, Model Studio")
+		p.ResponseFormat = schemas.Ptr("json")
+	}))
+	if bifrostErr != nil {
+		t.Fatalf("Transcription: %+v", bifrostErr.Error)
+	}
+
+	if vendor.path != multimodalGenerationPath || vendor.request["model"] != "qwen3-asr-flash" {
+		t.Errorf("path, model = %q, %v", vendor.path, vendor.request["model"])
+	}
+	messages := vendorMessages(t, vendor)
+	if len(messages) != 2 || messages[0]["role"] != "system" || firstContent(messages[0])["text"] != "Alibaba Cloud, Model Studio" {
+		t.Fatalf("messages = %v, want the prompt as the system message's text first", messages)
+	}
+	if messages[1]["role"] != "user" || firstContent(messages[1])["audio"] != clip {
+		t.Fatalf("user message = %v, want the URL unchanged as the audio item", messages[1])
+	}
+	parameters, _ := vendor.request["parameters"].(map[string]any)
+	options, _ := parameters["asr_options"].(map[string]any)
+	if options["language"] != "en" {
+		t.Errorf("parameters = %v, want asr_options.language en", parameters)
+	}
+	if _, ok := vendor.request["url"]; ok {
+		t.Errorf("vendor body carries the url extra param at the top level: %v", vendor.request)
+	}
+
+	if resp.Text != "Welcome to Alibaba Cloud." || resp.Language == nil || *resp.Language != "zh" {
+		t.Errorf("text, language = %q, %v", resp.Text, resp.Language)
+	}
+	u := resp.Usage
+	if u == nil || u.Type != "duration" || u.Seconds == nil || *u.Seconds != 1 || u.OutputTokens == nil || *u.OutputTokens != 6 {
+		t.Fatalf("usage = %+v, want type duration, seconds 1, output_tokens 6", u)
+	}
+	if u.InputTokens != nil || u.InputTokenDetails == nil || u.InputTokenDetails.TextTokens != 0 {
+		t.Errorf("usage input = %v, %+v; want no invented input_tokens and the reported text_tokens 0", u.InputTokens, u.InputTokenDetails)
+	}
+}
+
+// TestDashScopeTranscriptionInputs pins the byte input (a base64 data URL, the form the vendor
+// documents) and the refusals that make no upstream call.
+func TestDashScopeTranscriptionInputs(t *testing.T) {
+	vendor := &recordedVendor{body: recordedASRResponse}
+	provider := newRecordedProvider(t, vendor)
+
+	wav := []byte("RIFF\x24\x00\x00\x00WAVEfmt ")
+	if _, bifrostErr := provider.Transcription(testContext(t), testKey, transcriptionRequest(wav, "", nil)); bifrostErr != nil {
+		t.Fatalf("Transcription: %+v", bifrostErr.Error)
+	}
+	messages := vendorMessages(t, vendor)
+	if want := "data:audio/wav;base64," + base64.StdEncoding.EncodeToString(wav); len(messages) != 1 || firstContent(messages[0])["audio"] != want {
+		t.Fatalf("messages = %v, want the file as a wav data URL", messages)
+	}
+	if _, ok := vendor.request["parameters"]; ok {
+		t.Errorf("vendor body = %v, want no parameters without a language", vendor.request)
+	}
+	calls := vendor.calls
+
+	t.Run("file and url together", func(t *testing.T) {
+		_, bifrostErr := provider.Transcription(testContext(t), testKey, transcriptionRequest(wav, "https://example.com/a.wav", nil))
+		assertUnsupportedParameter(t, bifrostErr, "url")
+	})
+	t.Run("response_format other than json", func(t *testing.T) {
+		_, bifrostErr := provider.Transcription(testContext(t), testKey, transcriptionRequest(nil, "https://example.com/a.wav", func(p *schemas.TranscriptionParameters) {
+			p.ResponseFormat = schemas.Ptr("verbose_json")
+		}))
+		assertUnsupportedParameter(t, bifrostErr, "response_format")
+	})
+	t.Run("timestamp_granularities", func(t *testing.T) {
+		req := transcriptionRequest(nil, "https://example.com/a.wav", func(p *schemas.TranscriptionParameters) {
+			p.TimestampGranularities = []string{"word"}
+		})
+		assertUnsupportedParameter(t, schemas.CheckDeclaredUnifiedFields(provider, &schemas.BifrostRequest{RequestType: schemas.TranscriptionRequest, TranscriptionRequest: req}), "timestamp_granularities")
+	})
+	if vendor.calls != calls {
+		t.Fatalf("refused requests made %d upstream calls", vendor.calls-calls)
+	}
+	if !schemas.AcceptsTranscriptionURLInput(provider) {
+		t.Fatal("dashscope must declare that transcription takes an audio URL")
+	}
+}
+
+func TestDashScopeAudioMediaType(t *testing.T) {
+	cases := []struct {
+		filename string
+		data     string
+		want     string
+	}{
+		{"a.mp3", "", "audio/mpeg"},
+		{"a.M4A", "", "audio/mp4"},
+		{"", "RIFF\x00\x00\x00\x00WAVE", "audio/wav"},
+		{"", "ID3\x04", "audio/mpeg"},
+		{"", "fLaC", "audio/flac"},
+		{"", "OggS", "audio/ogg"},
+		{"blob", "????", "application/octet-stream"},
+	}
+	for _, tc := range cases {
+		if got := audioMediaType(tc.filename, []byte(tc.data)); got != tc.want {
+			t.Errorf("audioMediaType(%q, %q) = %q, want %q", tc.filename, tc.data, got, tc.want)
+		}
 	}
 }
