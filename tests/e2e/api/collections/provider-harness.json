@@ -308070,7 +308070,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"an embeddings line in a Vertex Gemini batch is a 400 caller_unsupported_parameter naming requests[0].url, before anything is uploaded\", function () {",
+                  "pm.test(\"a chat-shaped line addressed to /v1/embeddings in a Vertex Gemini batch is a 400 caller_unsupported_parameter naming requests[0].url, before anything is uploaded\", function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
                   "  var j = pm.response.json();",
                   "  pm.expect((j.extra_fields || {}).error_type, pm.response.text()).to.eql('caller_unsupported_parameter');",
@@ -308092,7 +308092,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"output_folder\": {\n    \"url\": \"gs://{{vertexGcsBucket}}/harness-batch-error-type/output/\"\n  },\n  \"requests\": [\n    {\n      \"custom_id\": \"bet-vertex-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"input\": \"hello\"\n      }\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"output_folder\": {\n    \"url\": \"gs://{{vertexGcsBucket}}/harness-batch-error-type/output/\"\n  },\n  \"requests\": [\n    {\n      \"custom_id\": \"bet-vertex-1\",\n      \"method\": \"POST\",\n      \"url\": \"/v1/embeddings\",\n      \"body\": {\n        \"model\": \"gemini-2.5-flash\",\n        \"messages\": [\n          {\n            \"role\": \"user\",\n            \"content\": \"Reply with the single word: ok\"\n          }\n        ],\n        \"max_tokens\": 8\n      }\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/batches",
