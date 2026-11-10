@@ -63,7 +63,10 @@ const (
 //   - Integer: treated as milliseconds (legacy format, e.g. 500 means 500ms)
 type NetworkConfig struct {
 	// BaseURL is supported for OpenAI, Anthropic, Cohere, Mistral, and Ollama providers (required for Ollama)
-	BaseURL                        string               `json:"base_url,omitempty"`                       // Base URL for the provider (optional)
+	BaseURL string `json:"base_url,omitempty"` // Base URL for the provider (optional)
+	// WorkspaceBaseURL is DashScope's workspace address (https://{WorkspaceId}.ap-southeast-1.maas.aliyuncs.com),
+	// which its video operations use instead of BaseURL. Other providers ignore it.
+	WorkspaceBaseURL               string               `json:"workspace_base_url,omitempty"`
 	ExtraHeaders                   map[string]SecretVar `json:"extra_headers,omitempty"`                  // Additional headers to include in requests (optional; values support env.* and vault.* references)
 	DefaultRequestTimeoutInSeconds int                  `json:"default_request_timeout_in_seconds"`       // Default timeout for requests
 	MaxRetries                     int                  `json:"max_retries"`                              // Maximum number of retries
@@ -90,6 +93,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 	// Use an alias type to avoid infinite recursion
 	type NetworkConfigAlias struct {
 		BaseURL                        string               `json:"base_url,omitempty"`
+		WorkspaceBaseURL               string               `json:"workspace_base_url,omitempty"`
 		ExtraHeaders                   map[string]SecretVar `json:"extra_headers,omitempty"`
 		DefaultRequestTimeoutInSeconds int                  `json:"default_request_timeout_in_seconds"`
 		MaxRetries                     int                  `json:"max_retries"`
@@ -113,6 +117,7 @@ func (nc *NetworkConfig) UnmarshalJSON(data []byte) error {
 
 	// Copy all non-duration fields
 	nc.BaseURL = alias.BaseURL
+	nc.WorkspaceBaseURL = alias.WorkspaceBaseURL
 	nc.ExtraHeaders = alias.ExtraHeaders
 	nc.DefaultRequestTimeoutInSeconds = alias.DefaultRequestTimeoutInSeconds
 	nc.MaxRetries = alias.MaxRetries
@@ -200,6 +205,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 	// Use an alias type to avoid infinite recursion
 	type NetworkConfigAlias struct {
 		BaseURL                        string            `json:"base_url,omitempty"`
+		WorkspaceBaseURL               string            `json:"workspace_base_url,omitempty"`
 		ExtraHeaders                   map[string]string `json:"extra_headers,omitempty"`
 		DefaultRequestTimeoutInSeconds int               `json:"default_request_timeout_in_seconds"`
 		MaxRetries                     int               `json:"max_retries"`
@@ -218,6 +224,7 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 
 	alias := NetworkConfigAlias{
 		BaseURL:                        nc.BaseURL,
+		WorkspaceBaseURL:               nc.WorkspaceBaseURL,
 		ExtraHeaders:                   extraHeadersAsStrings(nc.ExtraHeaders),
 		DefaultRequestTimeoutInSeconds: nc.DefaultRequestTimeoutInSeconds,
 		MaxRetries:                     nc.MaxRetries,

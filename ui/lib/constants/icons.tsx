@@ -35,6 +35,7 @@ export const ProviderIcons = {
 	modelark: GenericProviderIcon,
 	moonshot: GenericProviderIcon,
 	qwen: GenericProviderIcon,
+	dashscope: GenericProviderIcon,
 	volcengine: GenericProviderIcon,
 
 	anthropic: ({ size = "md", className = "", theme }: IconProps) => {

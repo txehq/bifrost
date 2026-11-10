@@ -7,6 +7,7 @@
   "cerebras": "api.cerebras.ai",
   "cloudflare": "api.cloudflare.com",
   "cohere": "api.cohere.ai",
+  "dashscope": "dashscope-intl.aliyuncs.com",
   "databricks": "",
   "deepseek": "api.deepseek.com",
   "elevenlabs": "api.elevenlabs.io",

@@ -342,6 +342,8 @@ jobs:
           # tokenhub.tencentmaas.com and api.moonshot.ai are listed although this job does not pass those
           # providers' keys yet: the harness skips a provider only while its key is
           # absent, so the host must already be here the day a key is added (TXE-6981).
+          # dashscope-intl.aliyuncs.com is dialled by no request yet: every dashscope
+          # operation is unsupported and its key is a non-secret sentinel (TXE-6590).
           allowed-endpoints: >
             127.0.0.1:8080
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
@@ -370,6 +372,7 @@ jobs:
             api.typesafe.ai:443
             ark.ap-southeast.bytepluses.com:443
             tokenhub.tencentmaas.com:443
+            dashscope-intl.aliyuncs.com:443
             api.openai.com:443
             api.parasail.io:443
             api.perplexity.ai:443
@@ -481,6 +484,9 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          # Registration-only provider: every operation answers unsupported with no upstream call,
+          # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
+          DASHSCOPE_API_KEY: registration-only-no-upstream-call
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
           VERCEL_AI_GATEWAY_API_KEY: ${{ secrets.VERCEL_AI_GATEWAY_API_KEY }}
@@ -719,6 +725,9 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          # Registration-only provider: every operation answers unsupported with no upstream call,
+          # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
+          DASHSCOPE_API_KEY: registration-only-no-upstream-call
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
@@ -1420,6 +1429,9 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          # Registration-only provider: every operation answers unsupported with no upstream call,
+          # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
+          DASHSCOPE_API_KEY: registration-only-no-upstream-call
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
@@ -1564,6 +1576,9 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          # Registration-only provider: every operation answers unsupported with no upstream call,
+          # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
+          DASHSCOPE_API_KEY: registration-only-no-upstream-call
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
@@ -2089,6 +2104,9 @@ jobs:
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          # Registration-only provider: every operation answers unsupported with no upstream call,
+          # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
+          DASHSCOPE_API_KEY: registration-only-no-upstream-call
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
@@ -2445,6 +2463,9 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          # Registration-only provider: every operation answers unsupported with no upstream call,
+          # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
+          DASHSCOPE_API_KEY: registration-only-no-upstream-call
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
@@ -2599,6 +2620,9 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          # Registration-only provider: every operation answers unsupported with no upstream call,
+          # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
+          DASHSCOPE_API_KEY: registration-only-no-upstream-call
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
@@ -2736,6 +2760,9 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          # Registration-only provider: every operation answers unsupported with no upstream call,
+          # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
+          DASHSCOPE_API_KEY: registration-only-no-upstream-call
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
@@ -2868,6 +2895,9 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          # Registration-only provider: every operation answers unsupported with no upstream call,
+          # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
+          DASHSCOPE_API_KEY: registration-only-no-upstream-call
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}
@@ -3012,6 +3042,9 @@ jobs:
           SGL_API_KEY: ${{ secrets.SGL_API_KEY }}
           CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
           SARVAM_API_KEY: ${{ secrets.SARVAM_API_KEY }}
+          # Registration-only provider: every operation answers unsupported with no upstream call,
+          # so a non-secret sentinel satisfies key selection. Replace with a secret when a live test needs one.
+          DASHSCOPE_API_KEY: registration-only-no-upstream-call
           TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
           DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
           DATABRICKS_WORKSPACE_URL: ${{ secrets.DATABRICKS_WORKSPACE_URL }}

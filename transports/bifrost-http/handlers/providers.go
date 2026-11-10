@@ -42,6 +42,45 @@ func validateProviderBaseURLShape(raw string) error {
 	return nil
 }
 
+// providerBaseURLs returns the network config's dial targets, by field name: base_url and,
+// for DashScope, workspace_base_url. Each one gets the same shape, auth and destination
+// checks, so a second base cannot reach what base_url may not.
+func providerBaseURLs(nc schemas.NetworkConfig) []struct{ field, url string } {
+	return []struct{ field, url string }{
+		{"base_url", nc.BaseURL},
+		{"workspace_base_url", nc.WorkspaceBaseURL},
+	}
+}
+
+// validateProviderBaseURLs runs the shape check on every dial target.
+func validateProviderBaseURLs(nc schemas.NetworkConfig) error {
+	for _, target := range providerBaseURLs(nc) {
+		if err := validateProviderBaseURLShape(target.url); err != nil {
+			if target.field == "base_url" {
+				return err
+			}
+			return fmt.Errorf("%s: %w", target.field, err)
+		}
+	}
+	return nil
+}
+
+// validateProviderBaseURLDestinations runs the SSRF destination check on every dial target.
+func validateProviderBaseURLDestinations(nc schemas.NetworkConfig) error {
+	for _, target := range providerBaseURLs(nc) {
+		if target.url == "" {
+			continue
+		}
+		if err := bifrost.ValidateExternalURL(target.url, nc.AllowPrivateNetwork); err != nil {
+			if target.field == "base_url" {
+				return fmt.Errorf("Invalid base URL: %w", err)
+			}
+			return fmt.Errorf("Invalid %s: %w", target.field, err)
+		}
+	}
+	return nil
+}
+
 // ModelsManager defines the interface for managing provider models
 type ModelsManager interface {
 	// ReloadProvider reloads a provider after a write; isNew is set when the add endpoint created
@@ -429,7 +468,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		// fail-open bypass could otherwise set both fields together and self-authorize its
 		// own SSRF target. The flag alone also widens what ConfigureDialer lets key-level
 		// URLs (Ollama/SGL/VLLM) reach.
-		if err := validateProviderBaseURLShape(payload.NetworkConfig.BaseURL); err != nil {
+		if err := validateProviderBaseURLs(*payload.NetworkConfig); err != nil {
 			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 			return
 		}
@@ -440,11 +479,9 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 		if requireGenuineAuthForHeaderSecretRefs(ctx, nil, payload.NetworkConfig.ExtraHeaders) {
 			return
 		}
-		if payload.NetworkConfig.BaseURL != "" {
-			if err := bifrost.ValidateExternalURL(payload.NetworkConfig.BaseURL, payload.NetworkConfig.AllowPrivateNetwork); err != nil {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
-				return
-			}
+		if err := validateProviderBaseURLDestinations(*payload.NetworkConfig); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
 		}
 	}
 	// Check if provider already exists
@@ -667,7 +704,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid retry backoff: %v", err))
 		return
 	}
-	if err := validateProviderBaseURLShape(nc.BaseURL); err != nil {
+	if err := validateProviderBaseURLs(nc); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
@@ -675,11 +712,9 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusForbidden, providerDialTargetForbiddenMsg)
 		return
 	}
-	if nc.BaseURL != "" {
-		if err := bifrost.ValidateExternalURL(nc.BaseURL, nc.AllowPrivateNetwork); err != nil {
-			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid base URL: %v", err))
-			return
-		}
+	if err := validateProviderBaseURLDestinations(nc); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
 	}
 
 	config.ConcurrencyAndBufferSize = &payload.ConcurrencyAndBufferSize
@@ -1907,13 +1942,18 @@ const providerDialTargetForbiddenMsg = "Setting a provider's base URL or allow_p
 // the dialer enforces it at connect time, where DNS can move an allowed hostname to a private
 // IP. Clearing the base URL or turning the flag off only narrows the target and passes.
 func providerDialTargetChanged(old *schemas.NetworkConfig, next schemas.NetworkConfig) bool {
-	var oldBaseURL string
-	var oldAllowPrivate bool
+	var stored schemas.NetworkConfig
 	if old != nil {
-		oldBaseURL, oldAllowPrivate = old.BaseURL, old.AllowPrivateNetwork
+		stored = *old
 	}
-	if next.AllowPrivateNetwork && !oldAllowPrivate {
+	if next.AllowPrivateNetwork && !stored.AllowPrivateNetwork {
 		return true
 	}
-	return next.BaseURL != "" && next.BaseURL != oldBaseURL
+	storedTargets := providerBaseURLs(stored)
+	for i, target := range providerBaseURLs(next) {
+		if target.url != "" && target.url != storedTargets[i].url {
+			return true
+		}
+	}
+	return false
 }
